@@ -191,10 +191,6 @@ impl WorldProtocol {
         self.connection_cap_refusals.load(Ordering::Relaxed)
     }
 
-    /// Snapshot of the per-(local node, remote endpoint) frame/byte
-    /// counters recorded by the shared evaluator — the operator
-    /// visibility surface for #2244 P0-A charging.
-    #[must_use]
     /// Estimated #2247 budget usage per scope and window — the
     /// operator-visibility surface for budgets, alongside
     /// [`WorldProtocol::abuse_counters`].
@@ -212,11 +208,23 @@ impl WorldProtocol {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the per-(local node, remote endpoint) frame/byte
+    /// counters recorded by the shared evaluator — the operator
+    /// visibility surface for #2244 P0-A charging.
+    #[must_use]
     pub fn abuse_counters(&self) -> Vec<((NodeId, AbuseEndpointId), Counters)> {
         self.abuse
             .lock()
             .map(|abuse| abuse.counters().snapshot())
             .unwrap_or_default()
+    }
+
+    /// The shared abuse evaluator, for surfaces that need more than
+    /// the aggregate snapshot: the meta protocol's `AbuseCounters`
+    /// request reads the per-direction split and the policy from it.
+    #[must_use]
+    pub(crate) fn abuse_handle(&self) -> Arc<Mutex<AbuseEvaluator>> {
+        Arc::clone(&self.abuse)
     }
 
     fn prune_abuse_state(&self) {
@@ -536,9 +544,16 @@ async fn charge_inbound_frame(
 /// transport's client uses this, so the same frame is the same bytes on iroh
 /// and on SSH.
 #[must_use]
+/// Route `frame` to the session's bound `world`.
+///
+/// The bound world wins: when `world` is `Some`, an object frame leaves
+/// naming that world even if it already carries a different `world` key —
+/// a frame must never drag a session bound to one world into another
+/// (issue #4576). When `world` is `None`, and for non-object frames, the
+/// frame passes through unchanged (the host's default world applies).
 pub fn route_frame(frame: &serde_json::Value, world: Option<&str>) -> String {
     match (world, frame) {
-        (Some(world), serde_json::Value::Object(object)) if !object.contains_key("world") => {
+        (Some(world), serde_json::Value::Object(object)) => {
             let mut routed = object.clone();
             routed.insert("world".to_owned(), serde_json::Value::from(world));
             serde_json::Value::Object(routed).to_string()
@@ -698,7 +713,9 @@ pub struct WorldClient {
     conn: Connection,
     send: SendStream,
     recv: RecvStream,
-    /// World named in every frame this client sends (host default if `None`).
+    /// World named in every frame this client sends (host default if
+    /// `None`). The bound world wins over any `world` key a frame already
+    /// carries — see [`route_frame`].
     world: Option<String>,
 }
 
@@ -899,8 +916,8 @@ impl WorldClient {
     /// unit-tested without a live host.
     fn parse_policy_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         let policy = reply.get("policy").context("host sent no policy")?;
-        let _: crate::world::WorldPolicy = serde_json::from_value(policy.clone())
-            .context("host sent a malformed policy")?;
+        let _: crate::world::WorldPolicy =
+            serde_json::from_value(policy.clone()).context("host sent a malformed policy")?;
         Ok(policy.clone())
     }
 
@@ -1167,9 +1184,7 @@ impl WorldClient {
     /// [`WorldClient::set_execution_profile`] so the validation can be
     /// unit-tested without a live host sending frames no real host
     /// sends.
-    fn parse_set_execution_profile_reply(
-        reply: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    fn parse_set_execution_profile_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "execution_profile" {
             bail!(
                 "{}",
@@ -4127,6 +4142,53 @@ mod tests {
         capability
     }
 
+    #[test]
+    fn route_frame_inserts_bound_world_when_absent() {
+        // Oracle: the routed frame is the input frame plus exactly one
+        // added key, `world` naming the bound world (issue #4576).
+        let frame = serde_json::json!({"type": "join", "capability": "cap"});
+        let routed: serde_json::Value =
+            serde_json::from_str(&route_frame(&frame, Some("alpha"))).unwrap();
+        assert_eq!(
+            routed,
+            serde_json::json!({"type": "join", "capability": "cap", "world": "alpha"})
+        );
+    }
+
+    #[test]
+    fn route_frame_bound_world_overrides_frames_own_world_key() {
+        // Issue #4576: a frame pre-keyed to another world must not drag a
+        // session bound to `alpha` into `beta` — the bound world wins.
+        let frame = serde_json::json!({"type": "join", "capability": "cap", "world": "beta"});
+        let routed: serde_json::Value =
+            serde_json::from_str(&route_frame(&frame, Some("alpha"))).unwrap();
+        assert_eq!(routed["world"], "alpha");
+        assert_eq!(routed["capability"], "cap");
+    }
+
+    #[test]
+    fn route_frame_noop_when_frame_world_equals_bound_world() {
+        let frame = serde_json::json!({"type": "chat", "text": "hi", "world": "alpha"});
+        let routed: serde_json::Value =
+            serde_json::from_str(&route_frame(&frame, Some("alpha"))).unwrap();
+        assert_eq!(routed, frame);
+    }
+
+    #[test]
+    fn route_frame_none_bound_world_leaves_frame_untouched() {
+        // No bound world: the host default applies, so a frame is passed
+        // through exactly as given, keyed or not, object or not.
+        let keyed = serde_json::json!({"type": "join", "world": "beta"});
+        assert_eq!(route_frame(&keyed, None), keyed.to_string());
+        let plain = serde_json::json!({"type": "join"});
+        assert_eq!(route_frame(&plain, None), plain.to_string());
+        let non_object = serde_json::json!(["world", "beta"]);
+        assert_eq!(
+            route_frame(&non_object, Some("alpha")),
+            non_object.to_string()
+        );
+    }
+
     #[tokio::test]
     async fn coordinator_holds_two_worlds_on_one_endpoint_concurrently() {
         let (router, hub, addr, host_ep) = hub_host().await;
@@ -4180,6 +4242,61 @@ mod tests {
         let frame = next(again).await.unwrap();
         assert!(frame.to_string().contains("still alpha"));
         assert_eq!(sessions.session_count(), 2);
+
+        sessions.close_all();
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        host_ep.close().await;
+    }
+
+    #[tokio::test]
+    async fn coordinator_session_cannot_lease_another_world_via_prekeyed_first_frame() {
+        // Issue #4576: a session the coordinator opened for world `alpha`
+        // must not end up leased to `beta` because its first frame arrives
+        // pre-keyed with `"world": "beta"`. The bound world wins in
+        // route_frame, so the join lands in alpha: the alpha capability
+        // validates there (snapshot, not an error), and alpha chat never
+        // reaches the genuine beta session.
+        let (router, hub, addr, host_ep) = hub_host().await;
+        let client_ep = endpoint().await;
+        let cap_alpha = invite_for(&client_ep, &addr, Some("alpha"), "ann").await;
+        let cap_beta = invite_for(&client_ep, &addr, Some("beta"), "bob").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let s = sessions
+            .open_session(addr.clone(), Some("alpha"))
+            .await
+            .unwrap();
+        let mut prekeyed = join(&cap_alpha, None);
+        prekeyed["world"] = serde_json::json!("beta");
+        s.send_json(&prekeyed).await.unwrap();
+        assert_eq!(
+            next(s).await.unwrap()["type"],
+            "snapshot",
+            "pre-keyed join must be re-routed to the bound world (alpha)"
+        );
+
+        // A genuine beta session joins beta; alpha's chat stays in alpha.
+        let b = sessions
+            .open_session(addr.clone(), Some("beta"))
+            .await
+            .unwrap();
+        b.send_json(&join(&cap_beta, None)).await.unwrap();
+        assert_eq!(next(b).await.unwrap()["type"], "snapshot");
+        let alpha = sessions.session(&addr, Some("alpha")).unwrap();
+        alpha
+            .send_json(&serde_json::json!({"type": "chat", "text": "alpha only"}))
+            .await
+            .unwrap();
+        let frame = next(alpha).await.unwrap();
+        assert!(frame.to_string().contains("alpha only"));
+        let beta = sessions.session(&addr, Some("beta")).unwrap();
+        let silent =
+            tokio::time::timeout(std::time::Duration::from_millis(500), beta.recv_json()).await;
+        assert!(
+            silent.is_err(),
+            "beta session received alpha's chat — the alpha session leaked into beta: {silent:?}"
+        );
 
         sessions.close_all();
         client_ep.close().await;

@@ -19,7 +19,7 @@ func fixtureDB(t *testing.T, withMessages bool) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	stmts := []string{
 		`CREATE TABLE session (id TEXT, project_id TEXT, directory TEXT, agent TEXT, model TEXT, cost REAL, tokens_input INTEGER, tokens_output INTEGER, time_created INTEGER, time_updated INTEGER)`,
 		`CREATE TABLE part (id TEXT, session_id TEXT, message_id TEXT, time_created INTEGER)`,
@@ -50,7 +50,7 @@ func openFixture(t *testing.T, withMessages bool) *DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 

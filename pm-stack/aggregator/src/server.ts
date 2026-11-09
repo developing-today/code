@@ -10,7 +10,7 @@ import { stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
 import {
   checkActionAgainstItem,
   effectiveNeedsOrder,
@@ -57,7 +57,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import { allRefs, buildAttention, deriveToday, filterAttentionViewByRefs, projectPace, type RoadmapGrain } from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -65,6 +65,7 @@ import {
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -127,7 +128,7 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotifications, renderDigest, esc } from "./render.ts";
-import { rollupNotificationSends } from "./notifications.ts";
+import { deriveSoleDoorPoolIds, rollupNotificationSends, type NotificationSnapshot } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import { searchWork } from "./search-view.ts";
@@ -137,6 +138,7 @@ import { liveSource } from "./sources/live.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
+import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -504,7 +506,7 @@ function emptyQuotaView(): QuotaView {
   return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
 }
 function emptyUsageView(): UsageView {
-  return { services: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+  return { services: [], uninstrumentedServices: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
 }
 
 async function boardContext() {
@@ -556,10 +558,27 @@ async function roadmapContext() {
 }
 
 async function searchContext(query: string) {
-  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
-  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
+  // #1212 slice 2: registry, DNS, services, and tier items join the
+  // board/roadmap subjects. Each extra source fails soft (empty on
+  // error) so one broken source never takes search down with it.
+  const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
+    source.board(),
+    source.roadmap(),
+    source.registry().catch(() => []),
+    source.dns().catch(() => null),
+    source.usage().catch(() => null),
+    source.orchestration().catch(() => null),
+  ]);
+  const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  // Codex P2 on PR #7331: refs carried only by the slice-2 sources
+  // (registry taskRefs, tier-item refs) join the resolution set, or
+  // their search badges always render unresolved even when the live
+  // pool/projector could resolve them.
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(isValidRef);
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await source.items(refs);
-  return { query, results: searchWork(board, rows, items, query), items };
+  const extras = { registry, dns, services: usage?.services ?? [], tierItems };
+  return { query, results: searchWork(board, rows, items, query, extras), items };
 }
 
 // #3321: watchdog gap-sync passes run whole and in observation
@@ -718,7 +737,7 @@ async function attentionRender() {
   return { view, coverage, counts, act, briefs, census };
 }
 
-async function todaySignals() {
+async function loadTodaySignals() {
   const [health, quotaResult] = await Promise.all([
     healthContext(false).catch(() => null),
     source
@@ -729,7 +748,17 @@ async function todaySignals() {
   return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
 }
 
-async function todayContext() {
+// #1179: the shell (/today) and the fragment (/frag/today) both need
+// the health+quota strip, seconds apart on every page view. Bound the
+// repeated live reads with a short TTL; concurrent cold requests share
+// the in-flight load. Provenance stays truthful: prov()/provDetail()
+// are still read live per request at the call sites below.
+const todaySignalsCache = new TodayCache<Awaited<ReturnType<typeof loadTodaySignals>>>(TODAY_CACHE_TTL_MS);
+async function todaySignals(): Promise<Awaited<ReturnType<typeof loadTodaySignals>>> {
+  return todaySignalsCache.get(loadTodaySignals);
+}
+
+async function loadTodayContext() {
   const [{ board, items }, { rows, pool }, { view, coverage, orchestration }, signals] = await Promise.all([
     boardContext(),
     roadmapContext(),
@@ -739,13 +768,22 @@ async function todayContext() {
   const diagnosis = source.diagnostics?.().orchestration;
   const queue = buildQueueView({ board, pool, items, orchestration });
   return {
-    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis),
+    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis, pool),
     view,
     coverage,
     ...signals,
     queue,
     queueStale: queueInputsStale(signals.health),
   };
+}
+
+// #1179: /today?full=1, /frag/today, and /api/today.json all render
+// from this one assembly. Same short-TTL + coalescing contract as the
+// signals cache above; a throwing load is never cached (the fetch
+// error boundary still 500s) and expiry triggers a fresh read.
+const todayContextCache = new TodayCache<Awaited<ReturnType<typeof loadTodayContext>>>(TODAY_CACHE_TTL_MS);
+async function todayContext(): Promise<Awaited<ReturnType<typeof loadTodayContext>>> {
+  return todayContextCache.get(loadTodayContext);
 }
 
 async function queueContext() {
@@ -1334,10 +1372,19 @@ async function handler(req: Request): Promise<Response> {
     const object = url.searchParams.get("object");
     const kind = url.searchParams.get("kind");
     const state = url.searchParams.get("state");
+    // #4620: state=all is the explicit all-history read (audit and
+    // retrospective consumers). It must not fall through to the literal
+    // state filter, which silently returned an empty list while the
+    // store held applied/rejected history — a false zero. Any other
+    // value that is not a real action state is a 400, never an empty
+    // list, so a mistyped filter cannot masquerade as "no history".
+    if (state && state !== "all" && !ACTION_STATES.has(state)) {
+      return json({ error: `state must be one of: all, ${[...ACTION_STATES].join(", ")}` }, 400);
+    }
     let list = await actionsStore.all();
     if (object) list = list.filter((a) => a.objectRef === object);
     if (kind) list = list.filter((a) => a.kind === kind);
-    if (state) list = list.filter((a) => a.state === state);
+    if (state && state !== "all") list = list.filter((a) => a.state === state);
     return json({ actions: list, pending: await actionsStore.pendingCounts() });
   }
 
@@ -1556,18 +1603,27 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/attention") {
     // #1444: shell first; header/queues/sessions stream in as
     // fragments. ?full=1 keeps the full server render (no-JS path).
+    // ?refs=<objectRefs> is the digest landing filter (#7193 Codex):
+    // only the named entries render, and the refs ride the fragment
+    // URLs so the streamed sections stay filtered.
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
     if (url.searchParams.get("full") !== "1") {
-      return html(renderAttentionShell(prov(), provDetail()));
+      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined));
     }
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs, census));
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    return html(renderAttention(view, rendered.coverage, prov(), rendered.counts, provDetail(), rendered.act, rendered.briefs, rendered.census));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs, census);
-    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    const sections = attentionSections(view, rendered.coverage, rendered.counts, rendered.act, rendered.briefs, rendered.census);
+    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)));
   }
   if (path === "/assets/app.css") {
     // The committed Tailwind + DaisyUI build (Phase C): source is
@@ -1897,6 +1953,7 @@ async function handler(req: Request): Promise<Response> {
       attention: usage.attention,
       domains: usage.domains,
       subscriptions: usage.subscriptions,
+      uninstrumentedServices: usage.uninstrumentedServices,
     });
   }
   if (req.method === "POST" && path === "/api/quota/refresh") {
@@ -1933,9 +1990,14 @@ async function handler(req: Request): Promise<Response> {
     // tier items are appended in their TierItem shape (tier-annotated
     // needs-orchestrator) so machine consumers see the same queue the
     // HTML renders — the array shape itself is unchanged (Codex P2
-    // on PR #2431).
+    // on PR #2431). #3317: include non-session needs-drew items too,
+    // matching the full queue rendered by the attention page.
     const { view } = await attentionContext();
-    return json([...view.all, ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const }))]);
+    return json([
+      ...view.all,
+      ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
+      ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+    ]);
   }
   if (path === "/api/coverage.json") {
     const { view, coverage } = await attentionContext();
@@ -2354,4 +2416,17 @@ if (source.ingestSnapshots) {
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
-startAlertEngine(cfg);
+startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
+  const [attention, quota, health, actions, comments] = await Promise.all([
+    attentionContext(),
+    source.quota().catch(() => emptyQuotaView()),
+    healthContext(false),
+    actionsStore.all().catch(() => []),
+    commentsStore.all().catch(() => []),
+  ]);
+  const drewActivity = [
+    ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
+    ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
+  ];
+  return { attention: attention.view, quota, health, drewActivity, soleDoorPoolIds: deriveSoleDoorPoolIds(quota) };
+});

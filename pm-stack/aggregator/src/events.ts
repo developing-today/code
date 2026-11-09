@@ -41,16 +41,37 @@
 // the next persist.
 //
 // Retention is bounded (#1739 acceptance): records older than 30 days
-// or beyond the newest 5000 are dropped on append and on load,
-// whichever bound hits first.
+// or beyond the newest 5000 leave the hot stream on append and on
+// load, whichever bound hits first. Since the #3322 retention
+// contract they are ARCHIVED BEFORE THEY ARE PRUNED, never silently
+// dropped: pruned records are appended (deduplicated by stable id) to
+// monthly archive partitions under `<file>.archive/`
+// (`events-archive-YYYY-MM.json`, keyed by the record's `at` month),
+// each partition carrying the records' original hashes so its
+// integrity verifies independently (`verifyArchivedRecords`). If an
+// archive write fails, pruning is deferred — the records stay in the
+// hot stream and health() reports the archive failure — because a
+// smaller hot stream is recoverable and a lost audit record is not.
+// The one exception is a record that was never chained (hash === "",
+// e.g. a v1 migration row pruned on its first load): it cannot carry
+// integrity evidence into the archive, so it is dropped with a loud
+// log and surfaces via health()'s history gap. A chain that FAILED
+// verification is never laundered into the archive either: load keeps
+// the legacy in-memory prune for it and the violation stays visible.
+// health() also reports the history gap directly: when the hot
+// chain's retention anchor names a pruned predecessor that no archive
+// partition holds (history pruned before this contract landed, or a
+// lost partition), the gap is a named field, not a silent hole. The
+// full contract and the restore procedure are documented in
+// docs/audit-event-retention.md.
 //
 // Writers are fire-and-forget (see emitEvent): an event write failure
 // never blocks or fails the underlying action, publish, or merge —
 // and since slice A the failed record waits in the retry outbox
 // instead of being lost.
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { isIsoDate } from "./validate.ts";
 
 export interface StreamEvent {
@@ -329,7 +350,7 @@ function isAuditEvent(value: unknown): value is AuditEvent {
     typeof v.id === "string" &&
     v.id !== "" &&
     typeof v.ingestedAt === "string" &&
-    Number.isFinite(Date.parse(v.ingestedAt)) &&
+    isIsoDate(v.ingestedAt) &&
     typeof v.prevHash === "string" &&
     typeof v.hash === "string"
   );
@@ -346,6 +367,90 @@ export function pruneEvents<T extends StreamEvent>(events: readonly T[], now = n
     .sort((a, b) => Date.parse(a.event.at) - Date.parse(b.event.at) || a.index - b.index)
     .map(({ event }) => event);
   return fresh.length > EVENT_RETENTION_MAX ? fresh.slice(fresh.length - EVENT_RETENTION_MAX) : fresh;
+}
+
+/** Split a stream into the records retention keeps hot and the
+ *  records it would drop, using exactly pruneEvents' bounds (older
+ *  than EVENT_RETENTION_DAYS, or beyond the newest
+ *  EVENT_RETENTION_MAX). WHICH records survive is pruneEvents'
+ *  decision; the ORDER of both halves is the input's (stored-chain)
+ *  order — never pruneEvents' chronological sort — because the store
+ *  persists `retained` and verifies its hash links in stored order
+ *  (#3322 Codex review, PR #7665: re-sorting a backfilled record
+ *  into the middle broke the chain and set the sticky
+ *  integrityViolation). `pruned` keeps that same stored order, which
+ *  is the order the archive partitions preserve. This partition is
+ *  the single gate for BOTH bounds: nothing leaves the hot stream
+ *  except through it, and the store archives `pruned` before
+ *  dropping it (#3322 retention contract). */
+export function partitionRetention<T extends StreamEvent>(
+  events: readonly T[],
+  now = new Date(),
+): { retained: T[]; pruned: T[] } {
+  const kept = new Set<T>(pruneEvents(events, now));
+  const retained: T[] = [];
+  const pruned: T[] = [];
+  for (const event of events) (kept.has(event) ? retained : pruned).push(event);
+  return { retained, pruned };
+}
+
+/** One monthly archive partition file: pruned audit records in
+ *  stored-chain order, with their original hashes. */
+export interface EventArchivePartition {
+  version: 1;
+  /** ISO timestamp of the most recent write to this partition. */
+  archivedAt: string;
+  records: AuditEvent[];
+}
+
+/** The partition file a record belongs to, by its `at` month. */
+export function archivePartitionName(atIso: string): string {
+  return `events-archive-${atIso.slice(0, 7)}.json`;
+}
+
+/** Verify archived records: every record's hash must recompute from
+ *  its fields and its recorded prevHash (the same per-record check
+ *  verifyEventChain makes). Inter-record links are counted, not
+ *  required: a partition holds a contiguous chain slice in the
+ *  normal flow, but a backfilled record pruned out of stored order
+ *  legitimately breaks contiguity while its own hash still proves
+ *  it unaltered. `linksVerified` reports how much of the chain the
+ *  archive proves continuous. */
+export function verifyArchivedRecords(
+  records: readonly AuditEvent[],
+): { ok: boolean; records: number; linksVerified: number; error?: string } {
+  let linksVerified = 0;
+  for (let i = 0; i < records.length; i++) {
+    const e = records[i]!;
+    // A damaged partition can hold non-records (e.g. a null from a
+    // torn write): that is an archive verdict, never a throw —
+    // health() must report the unhealthy archive, not reject
+    // (#3322 Codex re-review, PR #7665).
+    if (
+      typeof e !== "object" ||
+      e === null ||
+      typeof e.id !== "string" ||
+      typeof e.prevHash !== "string" ||
+      typeof e.hash !== "string"
+    ) {
+      return {
+        ok: false,
+        records: records.length,
+        linksVerified,
+        error: `archived record at index ${i} is malformed (not an audit record) — archive partition is damaged`,
+      };
+    }
+    if (e.hash === "" || eventHash(e.prevHash, e) !== e.hash) {
+      return {
+        ok: false,
+        records: records.length,
+        linksVerified,
+        error: `archived record ${e.id} (index ${i}): hash does not match its fields — archived record was altered`,
+      };
+    }
+    if (i > 0 && e.prevHash === records[i - 1]!.hash) linksVerified++;
+  }
+  return { ok: true, records: records.length, linksVerified };
 }
 
 export interface EventFilter {
@@ -493,6 +598,18 @@ export interface EventsHealth {
   /** Records waiting in the durable retry outbox. */
   pendingRetries: number;
   integrity: { ok: boolean; detail: string };
+  /** Records preserved in the archive partitions (#3322 retention
+   *  contract): history that left the hot stream is counted here,
+   *  never silently dropped. */
+  archivedRecords: number;
+  /** The archive's own integrity verdict (per-record hash
+   *  verification across all partitions), or the last archive
+   *  write failure that deferred pruning. */
+  archive: { ok: boolean; detail: string };
+  /** Visible-gap report: present when the hot chain's retention
+   *  anchor names a pruned predecessor that no archive partition
+   *  holds — history outside the retained+archived set. */
+  historyGap: { present: boolean; detail: string };
 }
 
 // -- the store ------------------------------------------------------------
@@ -504,6 +621,19 @@ export class EventsStore {
   private recordChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
   private integrityViolation: string | null = null;
+  private archiveError: string | null = null;
+  /** Missing-anchor evidence captured at load, before retention
+   *  or rechaining can touch the chain (#3322 Codex re-review,
+   *  PR #7665): preserved for health()'s history-gap report. */
+  private missingAnchorDetail: string | null = null;
+  /** Loss evidence for never-chained records dropped by retention
+   *  (#3322 Codex re-review, PR #7665): unstamped rows (e.g. v1
+   *  migration rows pruned on their first load) carry no hash and a
+   *  genesis predecessor, so the anchor check in archiveHealth()
+   *  cannot see their loss — it is recorded here at the moment the
+   *  records are actually dropped, and health() reports it as a
+   *  history gap. */
+  private droppedUnstampedDetail: string | null = null;
 
   constructor(private readonly file: string) {}
 
@@ -511,6 +641,13 @@ export class EventsStore {
    *  written when a persist fails, flushed on load / next append. */
   get outboxFile(): string {
     return `${this.file}.outbox.jsonl`;
+  }
+
+  /** The archive partition directory (#3322 retention contract):
+   *  monthly `events-archive-YYYY-MM.json` files holding the records
+   *  retention pruned from the hot stream. */
+  get archiveDir(): string {
+    return `${this.file}.archive`;
   }
 
   async load(): Promise<void> {
@@ -586,7 +723,54 @@ export class EventsStore {
       // violation is loud and is reported by health() until a
       // human looks.
       const verdict = verifyEventChain(normalized.filter((e) => e.hash !== ""));
-      this.events = pruneEvents(normalized);
+      // Missing-anchor evidence is captured BEFORE retention and
+      // before any persist can rechain the retained records from
+      // genesis (#3322 Codex re-review, PR #7665): if the loaded
+      // chain's first record names a predecessor that no archive
+      // partition holds, that gap is a fact about the loaded store
+      // and must survive this load's archiving + rechaining.
+      const loadAnchor = normalized[0]?.prevHash;
+      if (loadAnchor && loadAnchor !== EVENT_CHAIN_GENESIS) {
+        let anchorArchived = false;
+        let archiveReadable = false;
+        try {
+          const archivedNow = await this.listArchived();
+          archiveReadable = true;
+          anchorArchived = archivedNow.some((e) => e?.hash === loadAnchor);
+        } catch {
+          archiveReadable = false;
+        }
+        if (archiveReadable && !anchorArchived) {
+          this.missingAnchorDetail =
+            "the loaded chain's retention anchor (prevHash " + loadAnchor.slice(0, 12) + "…) names a predecessor " +
+            "that no archive partition holds — history before the anchor is outside the retained+archived set " +
+            "(pruned before the #3322 archive contract, or a lost partition)";
+        }
+      }
+      if (verdict.ok) {
+        // Archive before pruning (#3322 retention contract): records
+        // leaving the hot stream are preserved in the archive
+        // partitions first, then the retained set is persisted so
+        // the hot file no longer carries them. A chain that FAILED
+        // verification is never laundered into the archive — it
+        // keeps the legacy in-memory prune (else-branch) and the
+        // violation stays visible via health().
+        this.events = normalized;
+        const archived = await this.applyRetention();
+        if (archived > 0) {
+          try {
+            await this.persist();
+          } catch (err) {
+            console.error(
+              `[events] WARNING: archived ${archived} record(s) from ${this.file} but could not persist the retained stream ` +
+                `(${err instanceof Error ? err.message : String(err)}); the hot file still holds them and they will be ` +
+                `re-archived (deduplicated by id) on the next load.`,
+            );
+          }
+        }
+      } else {
+        this.events = pruneEvents(normalized);
+      }
       if (!verdict.ok) {
         this.integrityViolation = verdict.error;
         console.error(
@@ -701,9 +885,30 @@ export class EventsStore {
       }
     }
     const known = new Set(this.events.map((e) => e.id));
+    // An outbox record can already be archived (#3322 Codex
+    // re-review, PR #7665): a backup copies the outbox first, then
+    // the running store can flush and archive that record before
+    // the hot file and archive are copied. Deduping only against
+    // the hot stream would append a twin that can survive count
+    // retention and leave one stable id in both histories with
+    // different hashes — include archived ids, as recordSerialized
+    // does for direct replays.
+    try {
+      for (const e of await this.listArchived()) if (e?.id) known.add(e.id);
+    } catch (err) {
+      console.error(
+        `[events] WARNING: could not check the archive while flushing the retry outbox for ${this.file} ` +
+          `(${err instanceof Error ? err.message : String(err)}); proceeding with hot-stream dedupe only — ` +
+          `the archive failure is reported via health().`,
+      );
+    }
     const fresh = pending.filter((e) => !known.has(e.id));
     if (fresh.length > 0) {
-      this.events = pruneEvents([...this.events, ...fresh]);
+      // Merged unpruned: the persist below chains (hash-stamps) the
+      // fresh records first, and retention runs afterwards so a
+      // pruned record always carries its hash into the archive
+      // (#3322 retention contract).
+      this.events = [...this.events, ...fresh];
     }
     // Clear the outbox only after a successful persist of everything
     // it held (#3322 Codex re-review, PR #5137): a pending record can
@@ -718,6 +923,7 @@ export class EventsStore {
       } catch {
         return; // still failing — leave the outbox for the next attempt
       }
+      await this.applyRetentionAfterPersist();
     }
     await rm(this.outboxFile, { force: true });
   }
@@ -729,6 +935,220 @@ export class EventsStore {
     } catch {
       return 0;
     }
+  }
+
+  /** All archived records, partition by partition (filename order is
+   *  chronological by month), each partition in stored-chain order.
+   *  A missing archive directory is an empty archive; a corrupt
+   *  partition is a loud error, never a silent skip — the archive is
+   *  audit history. */
+  async listArchived(): Promise<AuditEvent[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.archiveDir);
+    } catch (err) {
+      if ((err as { code?: unknown })?.code === "ENOENT") return [];
+      throw err;
+    }
+    const records: AuditEvent[] = [];
+    for (const name of names
+      .filter((n) => n.startsWith("events-archive-") && n.endsWith(".json"))
+      .sort()) {
+      const parsed: unknown = JSON.parse(await readFile(join(this.archiveDir, name), "utf8"));
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !Array.isArray((parsed as EventArchivePartition).records)
+      ) {
+        throw new Error(`archive partition ${name} does not have the expected { records: [...] } shape`);
+      }
+      // Iterate, never spread: a monthly partition has no record-count
+      // bound, and pushing an entire partition as call arguments throws
+      // RangeError once it is large enough (#3322 Codex review, PR #7665).
+      for (const record of (parsed as EventArchivePartition).records) records.push(record);
+    }
+    return records;
+  }
+
+  /** Append records to their monthly archive partitions,
+   *  deduplicated by stable id, verifying each merged partition
+   *  before it is written (atomically, temp file + rename, like the
+   *  hot file). Throws on any failure — the caller then defers
+   *  pruning rather than lose the records. */
+  private async archivePruned(records: readonly AuditEvent[]): Promise<void> {
+    const byPartition = new Map<string, AuditEvent[]>();
+    for (const record of records) {
+      const name = archivePartitionName(record.at);
+      const batch = byPartition.get(name) ?? [];
+      batch.push(record);
+      byPartition.set(name, batch);
+    }
+    await mkdir(this.archiveDir, { recursive: true });
+    for (const [name, batch] of byPartition) {
+      const path = join(this.archiveDir, name);
+      let existing: AuditEvent[] = [];
+      try {
+        const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+        // A partition that parses but is not the expected shape is
+        // DAMAGED, not empty: treating it as empty would overwrite the
+        // original bytes with only this batch and destroy recoverable
+        // history. Fail instead, so pruning is deferred and the file
+        // stays available for investigation (#3322 Codex review, PR #7665).
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          !Array.isArray((parsed as EventArchivePartition).records)
+        ) {
+          throw new Error(`archive partition ${name} does not have the expected { records: [...] } shape`);
+        }
+        existing = (parsed as EventArchivePartition).records;
+      } catch (err) {
+        if ((err as { code?: unknown })?.code !== "ENOENT") throw err;
+      }
+      const known = new Set(existing.map((e) => e.id));
+      const merged = [...existing, ...batch.filter((e) => !known.has(e.id))];
+      const verdict = verifyArchivedRecords(merged);
+      if (!verdict.ok) {
+        throw new Error(`archive partition ${name} failed verification: ${verdict.error}`);
+      }
+      const data: EventArchivePartition = {
+        version: 1,
+        archivedAt: new Date().toISOString(),
+        records: merged,
+      };
+      const tmp = `${path}.tmp-${process.pid}-${++this.writeSeq}`;
+      await writeFile(tmp, JSON.stringify(data, null, 2));
+      await rename(tmp, path);
+    }
+  }
+
+  /** The retention gate (#3322): partition the hot stream, archive
+   *  the pruned records, and only then drop them from memory.
+   *  Returns how many records were archived. On archive failure the
+   *  hot stream is left untouched (pruning deferred, failure
+   *  recorded for health()) — a record is never dropped unarchived.
+   *  Never-chained records (hash === "") cannot carry integrity
+   *  evidence into an archive; they are dropped with a loud log and
+   *  surface through health()'s history gap. */
+  private async applyRetention(now = new Date()): Promise<number> {
+    const { retained, pruned } = partitionRetention(this.events, now);
+    if (pruned.length === 0) return 0;
+    const stamped = pruned.filter((e) => e.hash !== "");
+    const unstamped = pruned.length - stamped.length;
+    if (unstamped > 0) {
+      console.error(
+        `[events] WARNING: ${unstamped} never-chained record(s) in ${this.file} fell outside retention ` +
+          `before being persisted into the hash chain and cannot be archived with integrity evidence; ` +
+          `dropping them — this loss is reported via the events health history gap.`,
+      );
+    }
+    if (stamped.length > 0) {
+      try {
+        await this.archivePruned(stamped);
+      } catch (err) {
+        this.archiveError =
+          `archive write failed (${err instanceof Error ? err.message : String(err)}); ` +
+          `pruning deferred — records remain in the hot stream`;
+        console.error(`[events] WARNING: ${this.archiveError} for ${this.file}.`);
+        return 0;
+      }
+    }
+    this.archiveError = null;
+    if (unstamped > 0) {
+      // The unstamped records are dropped by the assignment below
+      // (they are not in `retained`): record the loss as sticky gap
+      // evidence now, because after rechaining the retained chain
+      // starts at genesis and the anchor check alone would report
+      // complete history.
+      this.droppedUnstampedDetail =
+        `${unstamped} never-chained record(s) in ${this.file} fell outside retention ` +
+        `before being persisted into the hash chain and were dropped unarchived \u2014 ` +
+        `history they carried is outside the retained+archived set`;
+    }
+    // A timestamp-based retention decision can remove a record from
+    // the middle of append/stored order when events were backfilled.
+    // We verified the complete old chain before reaching this gate
+    // (load verifies before retention; append persists/verifies before
+    // retention), and the removed records now have their original
+    // hashes safely archived. If their removal leaves a hole, rechain
+    // only the retained hot stream so its next persist verifies. This
+    // is a deliberate retention transition, not a repair of an
+    // unverified chain.
+    this.events = verifyEventChain(retained).ok ? retained : rechain(retained);
+    return stamped.length;
+  }
+
+  /** Retention after a successful persist (the records are chained,
+   *  so everything pruned can be archived): archive + prune in
+   *  memory, then persist the retained stream. Failures are logged
+   *  and swallowed — the records are durable in the hot file either
+   *  way and are re-archived (deduplicated) on the next load. */
+  private async applyRetentionAfterPersist(): Promise<void> {
+    try {
+      const archived = await this.applyRetention();
+      if (archived > 0) await this.persist();
+    } catch (err) {
+      console.error(
+        `[events] WARNING: retention after persist failed for ${this.file} ` +
+          `(${err instanceof Error ? err.message : String(err)}); records remain in the hot file on disk ` +
+          `and will be re-archived on the next load/append.`,
+      );
+    }
+  }
+
+  /** The archive side of health(): record count, the archive's own
+   *  integrity verdict, and the visible-gap report for the hot
+   *  chain's retention anchor. */
+  private async archiveHealth(): Promise<
+    Pick<EventsHealth, "archivedRecords" | "archive" | "historyGap">
+  > {
+    let archived: AuditEvent[] = [];
+    let readError: string | null = null;
+    try {
+      archived = await this.listArchived();
+    } catch (err) {
+      readError = `archive unreadable (${err instanceof Error ? err.message : String(err)})`;
+    }
+    const verification = readError ? null : verifyArchivedRecords(archived);
+    const archive = this.archiveError
+      ? { ok: false, detail: this.archiveError }
+      : readError
+        ? { ok: false, detail: readError }
+        : verification && !verification.ok
+          ? { ok: false, detail: verification.error ?? "archive verification failed" }
+          : {
+              ok: true,
+              detail: `${archived.length} archived record(s) verify (${verification?.linksVerified ?? 0} inter-record link(s) verified)`,
+            };
+    const stickyGap = [this.missingAnchorDetail, this.droppedUnstampedDetail]
+      .filter((d): d is string => d !== null)
+      .join("; ");
+    if (stickyGap) {
+      return {
+        archivedRecords: archived.length,
+        archive,
+        historyGap: { present: true, detail: stickyGap },
+      };
+    }
+    const first = this.events[0];
+    let historyGap: EventsHealth["historyGap"];
+    if (!first || first.prevHash === EVENT_CHAIN_GENESIS) {
+      historyGap = { present: false, detail: "the hot chain starts at genesis — no pruned predecessor" };
+    } else if (archived.some((e) => e.hash === first.prevHash)) {
+      historyGap = {
+        present: false,
+        detail: "the hot chain's retention anchor is the last archived record — retained + archived history is continuous",
+      };
+    } else {
+      historyGap = {
+        present: true,
+        detail:
+          `the hot chain's retention anchor (prevHash ${first.prevHash.slice(0, 12)}…) names a pruned predecessor ` +
+          `that no archive partition holds — history before the anchor is outside the retained+archived set ` +
+          `(pruned before the #3322 archive contract, or a lost partition)`,
+      };
+    }
+    return { archivedRecords: archived.length, archive, historyGap };
   }
 
   /** The readable failure/integrity surface (#3322 slice A): how
@@ -747,6 +1167,7 @@ export class EventsStore {
       events: this.events.length,
       pendingRetries: await this.pendingRetryCount(),
       integrity: verdict,
+      ...(await this.archiveHealth()),
     };
   }
 
@@ -806,21 +1227,54 @@ export class EventsStore {
     if (input.id !== undefined) {
       const existing = this.events.find((e) => e.id === input.id);
       if (existing) return existing;
+      // The id may already have left the hot stream: retention
+      // archives before pruning, so a replayed stable id can live
+      // only in the archive (#3322 Codex re-review, PR #7665).
+      // Resolve it there too — appending a twin would put two
+      // records with one stable id in the retained+archived set.
+      try {
+        const archivedHit = (await this.listArchived()).find((e) => e?.id === input.id);
+        if (archivedHit) return archivedHit;
+      } catch (err) {
+        console.error(
+          `[events] WARNING: could not check the archive for replayed id ${input.id} in ${this.file} ` +
+            `(${err instanceof Error ? err.message : String(err)}); proceeding with the append — if that id was ` +
+            `archived, this may duplicate it; the archive failure is reported via health().`,
+        );
+      }
     }
+    // Ingestion stamps are strictly monotonic within the stream
+    // (#3322, PR #7665): pageEvents fixes its snapshot at the newest
+    // ingestedAt it has seen and excludes anything ingested later,
+    // but a wall-clock stamp can tie at millisecond resolution when
+    // appends land in the same ms — a tied late append then leaks
+    // into a snapshot taken before it existed. Stamping at least
+    // 1ms past the newest stamp already in the stream (record calls
+    // are serialized on recordChain, so this is race-free) makes
+    // the snapshot boundary exact.
+    const lastIngestedMs = this.events.reduce(
+      (latest, e) => Math.max(latest, Date.parse(e.ingestedAt) || 0),
+      0,
+    );
+    const ingestedAt = new Date(Math.max(Date.now(), lastIngestedMs + 1)).toISOString();
     const event: AuditEvent = {
       ...parsed.value,
       version: 2,
       id: input.id ?? randomUUID(),
-      ingestedAt: new Date().toISOString(),
+      ingestedAt,
       attribution: input.attribution ?? { confidence: "unknown", asserted: false },
       source: input.source ?? { identity: "pm-stack/aggregator" },
       ...(input.corrects !== undefined ? { corrects: input.corrects } : {}),
       prevHash: EVENT_CHAIN_GENESIS,
       hash: "",
     };
-    this.events = pruneEvents([...this.events, event]);
+    this.events = [...this.events, event];
     try {
       await this.persist();
+      // Retention after the persist (#3322): the new record is now
+      // chained, so anything the bounds push out of the hot stream
+      // is archived before it is pruned.
+      await this.applyRetentionAfterPersist();
     } catch (err) {
       await this.queueForRetry(event, err);
       throw err;

@@ -45,7 +45,7 @@ import json, os, sys, time, urllib.request, urllib.parse
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root
+from ghb_common import load_config, backup_root, load_plan, load_state, report_problems, save_json, state_lock
 import fetch_mirrors
 
 COALESCE_S = 15 * 60
@@ -213,8 +213,16 @@ def event_owner(ev):
 def main():
     cfg = load_config()
     root = backup_root(cfg)
+    # #3240: same shared state lock as the daily fetch — see
+    # fetch_mirrors.main. The lock spans load -> modify -> save.
+    with state_lock(root):
+        return _main_locked(cfg, root)
+
+
+def _main_locked(cfg, root):
     state_path = os.path.join(root, "state.json")
-    state = json.load(open(state_path)) if os.path.exists(state_path) else {}
+    state, problems = load_state(root)
+    report_problems(problems)
     events = queue_events(cfg["worker"]["queue_poll_path"])
     if not events:
         print("queue empty")
@@ -222,12 +230,9 @@ def main():
     now = time.time()
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     log_path = os.path.join(root, "fetch.log")
-    plan_path = os.path.join(root, "plan.json")
-    planned = (
-        {p["repo"] for p in json.load(open(plan_path))}
-        if os.path.exists(plan_path)
-        else set()
-    )
+    plan, problems = load_plan(root)
+    report_problems(problems)
+    planned = {p["repo"] for p in plan}
 
     def log(line):
         with open(log_path, "a") as f:
@@ -301,8 +306,7 @@ def main():
         failed.append(
             {"repo": repo, "result": res, "consecutive_failures": fs["count"]}
         )
-    with open(state_path, "w") as f:
-        json.dump(state, f, indent=0)
+    save_json(state_path, state)
     if ack:
         ack_events(cfg, ack)
     print(

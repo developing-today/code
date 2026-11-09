@@ -236,7 +236,7 @@ func TestCheckDiffNeedsFragment(t *testing.T) {
 		t.Fatalf("fragment in the diff should satisfy the check, got %v", problems)
 	}
 	// Trivial marker also satisfies it (fragment removed again).
-	os.Remove(filepath.Join(dir, "docs/changes/lifetime.md"))
+	_ = os.Remove(filepath.Join(dir, "docs/changes/lifetime.md"))
 	if problems := Check([]string{p}, sampleDiff, true, ""); len(problems) != 0 {
 		t.Fatalf("trivial check should pass, got %v", problems)
 	}

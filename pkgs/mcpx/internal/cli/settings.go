@@ -137,7 +137,7 @@ func (a *App) ApplyGlobalSettingFlags(args []string) (rest []string, err error) 
 		mine = append(mine, args[0])
 		args = args[1:]
 		bf, isBool := f.Value.(interface{ IsBoolFlag() bool })
-		if !strings.Contains(mine[len(mine)-1], "=") && !(isBool && bf.IsBoolFlag()) && len(args) > 0 {
+		if !strings.Contains(mine[len(mine)-1], "=") && (!isBool || !bf.IsBoolFlag()) && len(args) > 0 {
 			mine = append(mine, args[0])
 			args = args[1:]
 		}

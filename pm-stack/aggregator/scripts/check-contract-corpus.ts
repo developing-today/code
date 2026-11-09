@@ -76,46 +76,107 @@ async function main(): Promise<void> {
   const { corpus, publisher } = args();
   const at = (name: string) => join(corpus, name);
 
-  const orchestration = await loadJson(at("orchestration.json"));
-  const problem = orchestrationSectionProblem(orchestration);
-  check("corpus orchestration passes isOrchestrationSection", problem === null, problem ?? undefined);
-  check(
-    "corpus orchestration pins the object provenance form (#1110)",
-    typeof (orchestration as { provenance: unknown }).provenance === "object" &&
-      Array.isArray((orchestration as { provenance: { sources: unknown } }).provenance.sources),
-  );
+  // A corpus file that is missing, non-JSON, or the wrong shape is a
+  // failed check naming the file (#7048), never a crash: this gate exists
+  // to report every divergence in one run, and a raw TypeError/SyntaxError
+  // aborts the remaining sections and hides their results. Load each file
+  // defensively up front (the publisher section below already works this
+  // way); a file that fails to load records its FAIL here and its section
+  // checks are skipped.
+  const loaded = new Map<string, unknown>();
+  const loadFailed = new Set<string>();
+  for (const name of ["orchestration.json", "dns.json", "projects.json", "registry.json", "quota.json", "feed.json"]) {
+    try {
+      loaded.set(name, await loadJson(at(name)));
+    } catch (err) {
+      loadFailed.add(name);
+      check(`corpus ${name} parses as JSON`, false, String(err));
+    }
+  }
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
 
-  const dns = await loadJson(at("dns.json"));
-  check("corpus dns passes isDnsSection", isDnsSection(dns));
-
-  const projects = (await loadJson(at("projects.json"))) as unknown[];
-  check("corpus projects passes isProjectPoolSection", isProjectPoolSection(projects));
-  check("corpus projects: every item passes isProjectPoolItem", projects.every(isProjectPoolItem));
-
-  const registry = (await loadJson(at("registry.json"))) as unknown[];
-  check("corpus registry: every row passes isSessionRecord", registry.every(isSessionRecord));
-  check("corpus registry sanitizes with zero drops", sanitizeRegistry(registry).dropped === 0);
-
-  const quota = (await loadJson(at("quota.json"))) as Parameters<typeof sanitizeQuotaView>[0];
-  check("corpus quota: every pool passes isQuotaPool", quota.pools.every(isQuotaPool));
-  check(
-    "corpus quota: every window passes isQuotaWindow",
-    quota.pools.every((p) => p.windows.every(isQuotaWindow)),
-  );
-  check("corpus quota: every burn segment passes isBurnSegment", quota.burn.every(isBurnSegment));
-  const san = sanitizeQuotaView(quota);
-  check(
-    "corpus quota sanitizes with zero drops",
-    san.droppedPools + san.droppedCredentials + san.droppedWindows + san.droppedActiveSessions + san.droppedBurn === 0,
-  );
-
-  const feed = (await loadJson(at("feed.json"))) as Record<string, unknown>;
-  check("corpus feed.json passes isFleetFeed", isFleetFeed(feed));
-  for (const name of ["orchestration", "quota", "dns", "registry", "projects"]) {
+  if (!loadFailed.has("orchestration.json")) {
+    const orchestration = loaded.get("orchestration.json");
+    const problem = orchestrationSectionProblem(orchestration);
+    check("corpus orchestration passes isOrchestrationSection", problem === null, problem ?? undefined);
+    const provenance = isPlainObject(orchestration) ? orchestration.provenance : undefined;
     check(
-      `corpus feed.json carries ${name}.json verbatim`,
-      JSON.stringify(feed[name]) === JSON.stringify(await loadJson(at(`${name}.json`))),
+      "corpus orchestration pins the object provenance form (#1110)",
+      isPlainObject(provenance) && Array.isArray(provenance.sources),
     );
+  }
+
+  if (!loadFailed.has("dns.json")) {
+    const dns = loaded.get("dns.json");
+    check("corpus dns passes isDnsSection", isDnsSection(dns));
+  }
+
+  if (!loadFailed.has("projects.json")) {
+    const projects = loaded.get("projects.json");
+    check("corpus projects passes isProjectPoolSection", isProjectPoolSection(projects));
+    check(
+      "corpus projects: every item passes isProjectPoolItem",
+      Array.isArray(projects) && projects.every(isProjectPoolItem),
+      Array.isArray(projects) ? undefined : "projects.json is not an array",
+    );
+  }
+
+  if (!loadFailed.has("registry.json")) {
+    const registry = loaded.get("registry.json");
+    check(
+      "corpus registry: every row passes isSessionRecord",
+      Array.isArray(registry) && registry.every(isSessionRecord),
+      Array.isArray(registry) ? undefined : "registry.json is not an array",
+    );
+    check("corpus registry sanitizes with zero drops", sanitizeRegistry(registry).dropped === 0);
+  }
+
+  if (!loadFailed.has("quota.json")) {
+    const quota = loaded.get("quota.json");
+    const quotaObj = isPlainObject(quota) ? quota : null;
+    const pools = quotaObj && Array.isArray(quotaObj.pools) ? (quotaObj.pools as unknown[]) : null;
+    const burn = quotaObj && Array.isArray(quotaObj.burn) ? (quotaObj.burn as unknown[]) : null;
+    check("corpus quota: every pool passes isQuotaPool", pools !== null && pools.every(isQuotaPool), pools === null ? "quota.json has no pools array" : undefined);
+    check(
+      "corpus quota: every window passes isQuotaWindow",
+      pools !== null &&
+        pools.every((p) => isPlainObject(p) && Array.isArray(p.windows) && (p.windows as unknown[]).every(isQuotaWindow)),
+      pools === null ? "quota.json has no pools array" : undefined,
+    );
+    check("corpus quota: every burn segment passes isBurnSegment", burn !== null && burn.every(isBurnSegment), burn === null ? "quota.json has no burn array" : undefined);
+    // sanitizeQuotaView is not total: a quota object missing the fields it
+    // dereferences (e.g. choices, feed.ts) throws instead of dropping. A
+    // throw here is one more shape failure to report, not a crash (#7048).
+    let san: ReturnType<typeof sanitizeQuotaView> | null = null;
+    let sanError: string | undefined;
+    if (quotaObj) {
+      try {
+        san = sanitizeQuotaView(quota as Parameters<typeof sanitizeQuotaView>[0]);
+      } catch (err) {
+        sanError = String(err);
+      }
+    }
+    check(
+      "corpus quota sanitizes with zero drops",
+      san !== null &&
+        san.droppedPools + san.droppedCredentials + san.droppedWindows + san.droppedActiveSessions + san.droppedBurn === 0,
+      sanError ?? (san === null ? "quota.json is not an object" : undefined),
+    );
+  }
+
+  if (!loadFailed.has("feed.json")) {
+    const feed = loaded.get("feed.json");
+    check("corpus feed.json passes isFleetFeed", isFleetFeed(feed));
+    for (const name of ["orchestration", "quota", "dns", "registry", "projects"]) {
+      check(
+        `corpus feed.json carries ${name}.json verbatim`,
+        !loadFailed.has(`${name}.json`) &&
+          isPlainObject(feed) &&
+          JSON.stringify(feed[name]) === JSON.stringify(loaded.get(`${name}.json`)),
+        loadFailed.has(`${name}.json`) ? `${name}.json did not load` : undefined,
+      );
+    }
   }
 
   if (publisher) {

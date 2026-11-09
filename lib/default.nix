@@ -660,6 +660,17 @@ let
       ) justRecipes.recipes;
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      mcpxContainer = pkgs.callPackage ../pkgs/mcpx/container-image.nix {
+        mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix {
+          wrapWithRuntimes = false;
+          doCheck = false;
+        };
+      };
+      identity = pkgs.callPackage ../pkgs/identity/package.nix { };
+      identityImage = pkgs.callPackage ../pkgs/identity/container-image.nix {
+        inherit identity;
+      };
+      identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -672,12 +683,16 @@ let
       packages = {
         inherit
           mcpx
+          identity
           idMailDeploy
           pkarrDeploy
           developingTodayBackupDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
+        mcpx-container = mcpxContainer;
+        identity-image = identityImage;
+        identity-provider-image = identityProviderImage;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -1206,6 +1221,60 @@ let
           };
         }
       );
+      validationService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      # Keep each registry valid except for the exact issue #6383 shape.
+      newlineNameRegistry = pkgs.writeText "deploy-targets-newline-name.json" ''
+        {"svc\n": ${builtins.toJSON validationService}}
+      '';
+      duplicateSecretsRegistry = pkgs.writeText "deploy-targets-duplicate-secrets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            secrets = [
+              "secret.name"
+              "secret.name"
+            ];
+          };
+        }
+      );
+      duplicateTargetsRegistry = pkgs.writeText "deploy-targets-duplicate-targets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            targets = [
+              "laptop"
+              "laptop"
+            ];
+          };
+        }
+      );
+      hostlessHealthCheckRegistry = pkgs.writeText "deploy-targets-hostless-health-check.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            healthCheck = "http://";
+          };
+        }
+      );
+      duplicatePortsRegistry = pkgs.writeText "deploy-targets-duplicate-ports.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            ports = [
+              8080
+              8080
+            ];
+          };
+        }
+      );
       # Duplicate keys cannot be expressed as a Nix attrset, so these
       # registries are raw JSON text (issue #6384): load_registry must
       # reject them naming the duplicated key.
@@ -1244,15 +1313,57 @@ let
               mkdir -p $out
               cp list.txt $out/list.txt
             '';
-        deploy-dupkeys-property = pkgs.runCommandLocal "check-deploy-dupkeys-property"
-          {
-            nativeBuildInputs = [ pkgs.python3 ];
-          }
-          ''
-            python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
-            mkdir -p $out
-          '';
+        deploy-dupkeys-property =
+          pkgs.runCommandLocal "check-deploy-dupkeys-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice2-tests =
+          pkgs.runCommandLocal "check-deploy-slice2-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv =
+          pkgs.runCommandLocal "check-deploy-argv"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv-property =
+          pkgs.runCommandLocal "check-deploy-argv-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
         deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
+          expect_invalid() {
+            registry="$1"
+            expected="$2"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > out.txt 2> err.txt; then
+              echo "deploy list accepted a malformed registry: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "$expected" err.txt; then
+              echo "deploy list did not report '$expected' for $registry" >&2
+              cat err.txt >&2
+              exit 1
+            fi
+            test ! -s out.txt
+          }
           if ${deployPkgs.deploy}/bin/deploy list --registry ${badRegistry} > out.txt 2> err.txt; then
             echo "deploy list accepted a malformed registry" >&2
             exit 1
@@ -1284,6 +1395,11 @@ let
             exit 1
           fi
           test ! -s unhash-out.txt
+          expect_invalid ${newlineNameRegistry} "name must match"
+          expect_invalid ${duplicateSecretsRegistry} "secrets must not repeat a secret name"
+          expect_invalid ${duplicateTargetsRegistry} "targets must not repeat a target"
+          expect_invalid ${hostlessHealthCheckRegistry} "healthCheck must be an http(s) URL with a host"
+          expect_invalid ${duplicatePortsRegistry} "ports must not repeat a port"
           mkdir -p $out
           cp err.txt $out/errors.txt
         '';

@@ -1,0 +1,67 @@
+name: id-mail worker tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Test verification for nixos/services/id-mail/worker (#6351).
+#
+# The id-mail worker suites — runtime.test.mjs (5 tests pinning the
+# #5739 caller-denial short-circuit and alarm-bounded limiter state,
+# added by #6336) and deploy.test.mjs (4 tests pinning the #3281
+# typo'd-flag deploy guard, see also #6082) — were run by no
+# workflow, flake check, justfile recipe, or Nix build. The only
+# invocation was the package's own `npm test` script, executed by
+# hand, so the #5739 throttling contract could regress with no
+# signal.
+#
+# This workflow runs the package's own test script (npm test =
+# node --test deploy.test.mjs runtime.test.mjs) on pushes to main
+# that touch nixos/services/id-mail/worker/ and on dispatch,
+# following the house pattern for test workflows
+# (id-hosted-worker-tests.yml, bin-tests.yml). Main tier only: not
+# a merge gate.
+#
+# The run step first fails if the suites or the package manifest
+# are missing, so a green run can never be a silently skipped suite.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "nixos/services/id-mail/worker/**"
+      - ".github/workflows/id-mail-worker-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: id-mail-worker-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  id-mail-worker-tests:
+    name: "full (main tier): id-mail worker suites"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Run the id-mail worker suites
+        working-directory: nixos/services/id-mail/worker
+        run: |
+          if [ ! -f runtime.test.mjs ]; then
+            echo "::error::nixos/services/id-mail/worker/runtime.test.mjs is missing — the runtime-contract suite was not run."
+            exit 1
+          fi
+          if [ ! -f deploy.test.mjs ]; then
+            echo "::error::nixos/services/id-mail/worker/deploy.test.mjs is missing — the deploy-guard suite was not run."
+            exit 1
+          fi
+          if [ ! -f package.json ]; then
+            echo "::error::nixos/services/id-mail/worker/package.json is missing — the suites were not run."
+            exit 1
+          fi
+          npm test
