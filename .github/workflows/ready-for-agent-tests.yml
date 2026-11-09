@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   ready-for-agent-tests:
-    name: ready-for-agent shell suites
+    name: "basic: ready-for-agent shell suites"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
