@@ -140,8 +140,12 @@ must satisfy for attachments.
    other references or grants exist; payload GC requires zero
    references and no retention hold.
 4. **Source immutability:** OCR, annotation, and preview generation
-   never mutate the source payload. All derived state is a separate
-   object that can be regenerated or discarded.
+   never mutate the source payload. Computed derivatives (OCR
+   output, thumbnails/previews) are separate objects that can be
+   regenerated or discarded. Authored annotations are **not**
+   derived state: they are durable user-authored objects (decision
+   3) and are never discarded or rebuilt as part of clearing or
+   regenerating derived state.
 5. **Sync shape:** payloads sync as content-addressed blobs,
    chunked and resumable; object records (metadata, derivatives,
    annotations) may sync ahead of payloads, and a missing payload
