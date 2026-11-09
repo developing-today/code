@@ -643,6 +643,14 @@ const SHELL_POOLS: QuotaPool[] = [
     windows: [],
     note: "PAYG balance ¥44.63 (2026-10-25 read), parked. Not a plan pool — never a fallback for supervised sessions; plan-covered Flash routes are preferred.",
   },
+  {
+    id: "mistral",
+    provider: "Mistral AI",
+    plan: "API + Vibe (monthly credits)",
+    state: "healthy",
+    windows: [],
+    note: "No dated read. Live windows arrive through the quota gatherer (the Mistral credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
+  },
 ];
 
 /**

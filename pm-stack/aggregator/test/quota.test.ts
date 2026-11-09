@@ -382,7 +382,7 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
     // #1114 the board lost anthropic:claude-pro, commandcode, deepseek
     // and BOTH Antigravity pools, and meta survived only through an
     // exemption hack — while the OpenCode quota read reported all of
-    // them. All twelve pools now render unconditionally; the dated
+    // them. Every pool now renders unconditionally; the dated
     // reads are the live read's fail-soft fallback, nothing more.
     expect(extractQuotaPools(VIEW, NOW).map((p) => p.id)).toEqual([
       "meta",
@@ -391,12 +391,14 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
       "openai.alternate",
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
+      "opencode-go.developing-today-0",
       "cline-pass",
       "_commandcode",
       "_antigravity.gemini",
       "_antigravity.claude-gpt",
       "opendesign",
       "deepseek",
+      "mistral",
     ]);
   });
 
