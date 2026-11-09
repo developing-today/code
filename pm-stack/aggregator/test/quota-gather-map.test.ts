@@ -4,6 +4,7 @@ import {
   ANTIGRAVITY_GEMINI_SERVICE_ID,
   GO_POPESDREW_SERVICE_ID,
   GO_DREWRYPOPE_SERVICE_ID,
+  canonicalProviderId,
   entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
@@ -598,6 +599,7 @@ describe("serviceIdFor", () => {
     expect(serviceIdFor("codex")).toBe("openai.main");
     expect(serviceIdFor("deepseek")).toBe("deepseek");
     expect(serviceIdFor("meta")).toBe("meta");
+    expect(serviceIdFor("_muse")).toBe("meta");
     expect(serviceIdFor("opendesign")).toBe("opendesign");
     // The module's provider id is "command-code"; the pool (and the
     // OpenCode config provider) is "commandcode". Without the mapping
@@ -716,6 +718,63 @@ describe("entryFromTurso (#1049)", () => {
     const byMetric = new Map(records.map((r) => [r.metricId, r]));
     expect(byMetric.get("storage")).toMatchObject({ value: 7.358009, unit: "gb", limit: 5 });
     expect(byMetric.get("rows-read")).toMatchObject({ value: 164.287, unit: "pct" });
+  });
+  test("dynamic limits: a /plans doc matched by plan name supplies the denominators (#5468)", () => {
+    // The 2026-11-08 live shape: org on Scaler since 2026-11-04, but
+    // Starter denominators made rows-read read ~235% and storage
+    // ~213%. /plans is the source of truth.
+    const plansDoc = {
+      plans: [
+        { name: "starter", quotas: { rowsRead: 500_000_000, rowsWritten: 10_000_000, databases: 100, storage: 5_000_000_000, bytesSynced: 3_000_000_000 } },
+        { name: "Scaler", quotas: { rowsRead: 100_000_000_000, rowsWritten: 100_000_000, databases: 1_000_000_000, storage: 24_000_000_000, bytesSynced: 24_000_000_000 } },
+      ],
+    };
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 40,
+            storage_bytes: 10_800_000_000,
+            rows_read: 1_180_000_000,
+            rows_written: 4_000_000,
+            bytes_synced: 1_200_000_000,
+          },
+        },
+      },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at, plansDoc },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.planLabel).toBe("scaler");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("rows-read")?.valueLabel).toBe("1,180,000,000 / 100,000,000,000");
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    expect(byName.get("rows-written")?.pctOfLimit).toBe(4);
+    expect(byName.get("sync")?.pctOfLimit).toBe(5);
+    expect(byName.get("sync")?.valueLabel).toBe("1.2 GB / 24 GB");
+    // Native-unit snapshot records carry the plan's limits too.
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 10.8, unit: "gb", limit: 24 });
+    expect(byMetric.get("sync")).toMatchObject({ value: 1.2, unit: "gb", limit: 24 });
+    expect(byMetric.get("databases")).toMatchObject({ value: 40, unit: "count", limit: 1_000_000_000 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 1.18, unit: "pct", limit: 100 });
+  });
+  test("plans doc absent: the per-plan fallback applies, so Scaler never regresses to Starter (#5468)", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { rows_read: 1_180_000_000, storage_bytes: 10_800_000_000 } } },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at },
+    );
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 24 });
   });
 });
 
@@ -1066,5 +1125,72 @@ describe("own-key guards on quota-gather-map lookups (#2781)", () => {
       expect(typeof r.unit).toBe("string");
       expect(Number.isFinite(r.limit)).toBe(true);
     }
+  });
+});
+
+describe("canonicalProviderId (config-id alignment, #1823)", () => {
+  const TICK = "2026-10-27T05:00:00.000Z";
+
+  test("module spellings map to the config provider ids; others pass through", () => {
+    expect(canonicalProviderId("antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("claude")).toBe("_claude");
+    expect(canonicalProviderId("command-code")).toBe("_commandcode");
+    expect(canonicalProviderId("meta")).toBe("_muse");
+    expect(canonicalProviderId("_antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("opendesign")).toBe("opendesign");
+    expect(canonicalProviderId("codex")).toBe("codex");
+  });
+
+  test("entryFromResult emits the canonical id and keeps the pool service id", () => {
+    const ag = entryFromResult({ ...OK_RESULT, providerId: "antigravity" }, TICK);
+    expect(ag.providerId).toBe("_antigravity");
+    expect(ag.serviceId).toBe("_antigravity");
+    const claude = entryFromResult({ ...OK_RESULT, providerId: "claude" }, TICK);
+    expect(claude.providerId).toBe("_claude");
+    expect(claude.serviceId).toBe("anthropic:claude-pro");
+    const cc = entryFromResult({ ...OK_RESULT, providerId: "command-code" }, TICK);
+    expect(cc.providerId).toBe("_commandcode");
+    expect(cc.serviceId).toBe("_commandcode");
+    const meta = entryFromResult({ ...OK_RESULT, providerId: "meta" }, TICK);
+    expect(meta.providerId).toBe("_muse");
+    expect(meta.serviceId).toBe("meta");
+  });
+
+  test("a module-spelled Antigravity entry splits into the renamed pool rows", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "antigravity",
+        providerName: "Antigravity",
+        ok: true,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        usage: {
+          models: {
+            "gemini-2.5-pro": {
+              windows: { weekly: { usedPercent: 40, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+            "claude-sonnet": {
+              windows: { weekly: { usedPercent: 90, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+          },
+        },
+      },
+      TICK,
+    );
+    const splits = entriesWithPoolSplits([entry]);
+    expect(splits.map((e) => e.serviceId)).toEqual([
+      "_antigravity",
+      ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+      ANTIGRAVITY_GEMINI_SERVICE_ID,
+    ]);
+  });
+
+  test("retention matches across the rename boundary and re-stamps the canonical id", () => {
+    const prevEntry = { ...entryFromResult(OK_RESULT, TICK), providerId: "claude" };
+    expect(lastKnownEntries([prevEntry], "claude")).toHaveLength(1);
+    expect(lastKnownEntries([prevEntry], "_claude")).toHaveLength(1);
+    const retained = markRetained([prevEntry], "2026-10-27T06:00:00.000Z");
+    expect(retained[0].providerId).toBe("_claude");
+    expect(retained[0].retainedFromFailedTick).toBe("2026-10-27T06:00:00.000Z");
   });
 });

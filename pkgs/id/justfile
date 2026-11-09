@@ -222,6 +222,11 @@ test-rust:
     cargo test --all-features
 alias test-cargo := test-rust
 
+# Planted-bug check: prove the voiding/frontier suites catch planted bugs (#1395, P2.3/P2.8)
+[group('test')]
+planted-bug-check:
+    bash tests/planted-bug-check.sh
+
 # Run all fast tests (Rust + TypeScript unit + typecheck)
 [group('test')]
 test: test-rust test-web-unit test-web-typecheck

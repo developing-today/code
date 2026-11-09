@@ -424,8 +424,27 @@ class ProcScanError(OSError):
     """
 
 
-def proc_cwds():
-    cwds = []
+def _strip_deleted(target):
+    if target.endswith(" (deleted)"):
+        target = target[: -len(" (deleted)")]
+    return target
+
+
+def proc_refs():
+    """All filesystem paths any process is tied to, from /proc (#6898).
+
+    For each pid: its cwd, its exe, every open fd target, and every
+    absolute-path token in its cmdline. The cwd-only scan this replaces
+    could not see a process holding an open file in a tree (or running
+    a binary from it) with its cwd elsewhere, so the reaper could
+    delete a tree in active use. Cost is bounded by the number of
+    processes plus their open fds (one readlink per fd), the same
+    order as any /proc scan. Per-pid errors (the process exited
+    mid-scan, or its entries are not ours to inspect) skip that entry,
+    exactly as the cwd scan did; only failing to list /proc itself
+    raises ProcScanError (fail closed, #5740).
+    """
+    refs = []
     me = str(os.getpid())
     try:
         pids = os.listdir("/proc")
@@ -434,20 +453,49 @@ def proc_cwds():
     for pid in pids:
         if not pid.isdigit() or pid == me:
             continue
+        base = os.path.join("/proc", pid)
+        for name in ("cwd", "exe"):
+            try:
+                target = os.readlink(os.path.join(base, name))
+            except OSError:
+                continue
+            target = _strip_deleted(target)
+            if target.startswith("/"):
+                refs.append(target)
         try:
-            target = os.readlink(os.path.join("/proc", pid, "cwd"))
+            fds = os.listdir(os.path.join(base, "fd"))
         except OSError:
-            continue
-        if target.endswith(" (deleted)"):
-            target = target[: -len(" (deleted)")]
-        cwds.append(target)
-    return cwds
+            fds = []
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join(base, "fd", fd))
+            except OSError:
+                continue
+            target = _strip_deleted(target)
+            if target.startswith("/"):
+                refs.append(target)
+        try:
+            with open(os.path.join(base, "cmdline"), "rb") as fh:
+                tokens = fh.read().split(b"\0")
+        except OSError:
+            tokens = []
+        for token in tokens:
+            path = token.decode("utf-8", "surrogateescape")
+            if path.startswith("/"):
+                refs.append(path)
+    return refs
+
+
+def proc_cwds():
+    """Backward-compatible name: the scan now returns every /proc path
+    reference (cwd, exe, fd targets, cmdline paths), not only cwds."""
+    return proc_refs()
 
 
 def tree_occupied(tree, cwds=None):
     rp = os.path.realpath(tree)
-    for cwd in (proc_cwds() if cwds is None else cwds):
-        c = os.path.realpath(cwd)
+    for ref in (proc_refs() if cwds is None else cwds):
+        c = os.path.realpath(ref)
         if c == rp or c.startswith(rp + os.sep):
             return True
     return False
@@ -620,7 +668,7 @@ def main(argv=None):
 
     primaries = [expand(p) for p in args.primary] or discover_primaries(cfg)
     try:
-        cwds = proc_cwds()
+        cwds = proc_refs()
     except ProcScanError as exc:
         # Fail closed (#5740): with no trustworthy occupancy scan,
         # nothing in this run may be removed — stop before evaluating.
