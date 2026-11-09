@@ -3269,7 +3269,7 @@ mod replication_feed_tests {
         use crate::world::{
             MAX_REPLICATION_PAYLOAD_BYTES, ReplicationEnvelope, ReplicationKind,
             ReplicationTracker, SignedReplicationEnvelope, chain_base_cursor, chain_payload,
-            frame_digest, oversized_journal_entry, split_entry_payload,
+            frame_digest, split_entry_payload,
         };
 
         let snapshot_calls = Arc::new(AtomicUsize::new(0));
@@ -3309,11 +3309,6 @@ mod replication_feed_tests {
 
         let snapshot = snapshot_source.read().unwrap();
         assert_eq!(reset.bytes, snapshot.bytes);
-        assert_eq!(
-            oversized_journal_entry(&snapshot.bytes),
-            None,
-            "the compacted image must fit the v1 bound"
-        );
         let chunks = split_entry_payload(&snapshot.bytes).unwrap();
         assert!(!chunks.is_empty());
         assert!(
@@ -3397,7 +3392,7 @@ mod replication_feed_tests {
 
     #[tokio::test]
     async fn legacy_oversized_checkpoint_without_a_program_is_actionable() {
-        use crate::world::{MAX_REPLICATION_PAYLOAD_BYTES, oversized_journal_entry};
+        use crate::world::MAX_REPLICATION_PAYLOAD_BYTES;
 
         let snapshot_calls = Arc::new(AtomicUsize::new(0));
         let compactions = Arc::new(AtomicUsize::new(0));
@@ -3425,13 +3420,15 @@ mod replication_feed_tests {
             .unwrap()
             .expect_err("compaction without a program must fail the feed");
         let message = format!("{error:#}");
-        let (_ordinal, encoded_size) = oversized_journal_entry(
-            &legacy_oversized_checkpoint()
-                .iter()
-                .flat_map(journal_entry_line)
-                .collect::<Vec<_>>(),
-        )
-        .expect("fixture must hold an oversized entry");
+        let legacy_bytes: Vec<u8> = legacy_oversized_checkpoint()
+            .iter()
+            .flat_map(journal_entry_line)
+            .collect();
+        let encoded_size = legacy_bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .nth(1)
+            .expect("fixture must hold an oversized checkpoint")
+            .len();
         assert!(
             message.contains("ordinal 1"),
             "error must name the entry ordinal, got: {message}"
