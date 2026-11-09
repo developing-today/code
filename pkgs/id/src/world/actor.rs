@@ -352,6 +352,12 @@ pub(crate) struct WorldActor {
     /// Restored schedules already overdue when the world opened. Their first
     /// fire is marked `late`; a cancel or fire removes the id.
     pub(crate) overdue_at_open: BTreeSet<String>,
+    /// The hosting device's capability manifest (#2338), enumerated
+    /// once by the adapter boundary and cached here: `device.info`
+    /// serves this copy, so repeated program requests never trigger
+    /// device re-enumeration. `None` when the host cannot describe
+    /// its device — `device.info` then refuses with `unknown_cap`.
+    pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
@@ -876,6 +882,7 @@ impl WorldActor {
                 "world": self.core.world_id,
                 "sequence": self.core.sequence,
             })),
+            "device.info" => self.execute_device_info(&request.args),
             "chat.say" => self.execute_chat(&request.args),
             "chat.history" => Ok(serde_json::json!({
                 "lines": chat_history(
@@ -893,6 +900,21 @@ impl WorldActor {
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
         }
+    }
+
+    /// `device.info` (#2338): the hosting device's capability
+    /// manifest, in the v1 shape the taxonomy specifies. The manifest
+    /// comes from the adapter boundary's cached copy — this provider
+    /// never enumerates the device itself. A host that cannot
+    /// describe its device refuses with `unknown_cap`, and a request
+    /// naming a manifest version this host does not speak is refused
+    /// rather than silently interpreted.
+    fn execute_device_info(&self, args: &serde_json::Value) -> Result<serde_json::Value, CapError> {
+        crate::world_caps::DeviceManifest::requested_version(args)?;
+        let Some(manifest) = &self.device_manifest else {
+            return Err(CapError::unknown());
+        };
+        Ok(manifest.to_json())
     }
 
     fn players_list(&self) -> Vec<serde_json::Value> {
@@ -2325,6 +2347,81 @@ mod replication_feed_tests {
 }
 
 #[cfg(test)]
+mod device_info_tests {
+    use super::*;
+    use crate::world_caps::{CapError, DeviceManifest};
+
+    struct DeviceInfoProgram;
+
+    impl WorldProgram for DeviceInfoProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            Ok(Some("{}".to_owned()))
+        }
+    }
+
+    fn granted_actor() -> WorldActor {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["device.info".to_owned()]));
+        WorldActor::for_test(core, Box::new(DeviceInfoProgram), None)
+    }
+
+    fn sample_manifest() -> DeviceManifest {
+        DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        }
+    }
+
+    fn request(args: serde_json::Value) -> Request {
+        Request {
+            id: "d1".to_owned(),
+            cap: "device.info".to_owned(),
+            args,
+        }
+    }
+
+    #[test]
+    fn device_info_result_round_trips_through_the_result_event() {
+        // Oracle: the declared v1 manifest contract (taxonomy §3.1) —
+        // the value delivered in the normal result event is the
+        // manifest the adapter boundary supplied.
+        let mut actor = granted_actor();
+        actor.device_manifest = Some(sample_manifest());
+        let outcome = actor.execute(&request(serde_json::json!({})));
+        let event = crate::world_caps::result_event("d1", outcome);
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["cap"], "result");
+        assert_eq!(event["id"], "d1");
+        assert_eq!(event["ok"], true);
+        assert_eq!(event["value"], sample_manifest().to_json());
+        assert_eq!(event["value"]["manifest"]["v"], 1);
+    }
+
+    #[test]
+    fn device_info_refuses_an_unsupported_manifest_version() {
+        // Oracle: the declared v1 manifest contract — a request for
+        // any other version is refused, never silently interpreted.
+        let mut actor = granted_actor();
+        actor.device_manifest = Some(sample_manifest());
+        let error = actor
+            .execute(&request(serde_json::json!({"v": 2})))
+            .unwrap_err();
+        assert_eq!(error.code(), CapError::bad_args().code());
+    }
+
+    #[test]
+    fn device_info_is_unknown_cap_when_the_host_cannot_describe_itself() {
+        let mut actor = granted_actor();
+        let error = actor.execute(&request(serde_json::json!({}))).unwrap_err();
+        assert_eq!(error.code(), CapError::unknown().code());
+    }
+}
+
+#[cfg(test)]
 impl WorldActor {
     /// Assemble an actor without spawning its run loop, for tests that drive
     /// [`WorldActor::handle`], [`WorldActor::after_change`], [`WorldActor::fire_ticks`]
@@ -2377,6 +2474,7 @@ impl WorldActor {
             overdue_at_open,
             acting: None,
             acting_session: None,
+            device_manifest: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }
