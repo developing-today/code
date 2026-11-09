@@ -86,6 +86,12 @@ describe("resolveTooltipDisplay", () => {
       "minimal",
     );
   });
+  it("an elapsed enlarge chain rests at minimal in full mode and during a long minimal-mode hover", () => {
+    expect(resolveTooltipDisplay({ mode: "full", enlargedAt: NOW - 5_000, now: NOW })).toBe("minimal");
+    expect(
+      resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW - 5_000, hoverSince: NOW - 2_000, now: NOW }),
+    ).toBe("minimal");
+  });
   it("hidden mode without a pin suppresses even an enlarged cursor", () => {
     expect(resolveTooltipDisplay({ mode: "hidden", enlargedAt: NOW, now: NOW })).toBe("hidden");
     expect(resolveTooltipDisplay({ mode: "hidden", pinned: true, enlargedAt: NOW, now: NOW })).toBe("big");
