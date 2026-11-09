@@ -68,6 +68,7 @@ pub use replication::{
     SignedReplicationEnvelope, advance_cursor, chain_base_cursor, chain_payload, frame_digest,
     journal_entry_line, payload_digest, split_entry_payload,
 };
+pub(crate) use replication::oversized_journal_entry;
 pub use replication_receiver::{
     DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
     ReceiverProgress,
@@ -1935,6 +1936,61 @@ impl JournalSnapshotSource {
             header_version: self.header_version,
             bytes,
         })
+    }
+
+    /// Scan the captured file for its first entry above the v1 payload bound
+    /// without materializing the full journal image. The caller creates a
+    /// separate source for this probe and retains its original source for the
+    /// network transfer.
+    ///
+    /// Returns `(ordinal, encoded_size)` with a zero-based ordinal and size
+    /// including the trailing newline.
+    pub(crate) fn first_oversized_entry(self) -> Result<Option<(usize, usize)>> {
+        let mut reader = self.reader.take(self.byte_len);
+        let mut remaining = self.byte_len;
+        let mut buffer = [0_u8; 8192];
+        let mut line = Vec::new();
+        let mut entry_size = 0_usize;
+        let mut ordinal = 0_usize;
+        let mut oversized = None;
+
+        while remaining > 0 {
+            let requested = usize::try_from(remaining.min(buffer.len() as u64))
+                .context("journal snapshot scan length does not fit this target")?;
+            let read = reader
+                .read(&mut buffer[..requested])
+                .context("scan captured journal snapshot")?;
+            ensure!(read > 0, "captured journal snapshot changed while scanning");
+            remaining -= read as u64;
+
+            for byte in &buffer[..read] {
+                line.push(*byte);
+                entry_size = entry_size
+                    .checked_add(1)
+                    .context("journal entry size overflow while scanning")?;
+                if *byte == b'\n' {
+                    if entry_size > replication::MAX_REPLICATION_PAYLOAD_BYTES {
+                        serde_json::from_slice::<JournalEntry>(&line).with_context(|| {
+                            format!("oversized journal entry at ordinal {ordinal} is malformed")
+                        })?;
+                        if oversized.is_none() {
+                            oversized = Some((ordinal, entry_size));
+                        }
+                    }
+                    entry_size = 0;
+                    ordinal = ordinal
+                        .checked_add(1)
+                        .context("journal entry ordinal overflow while scanning")?;
+                    line.clear();
+                }
+            }
+        }
+
+        ensure!(
+            entry_size == 0,
+            "captured journal snapshot has an unterminated final entry"
+        );
+        Ok(oversized)
     }
 }
 

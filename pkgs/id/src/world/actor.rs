@@ -3,7 +3,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -2767,16 +2767,52 @@ impl WorldActor {
                         "world storage failed; replication feed is unavailable"
                     ))
                 } else {
-                    // Subscribe before capturing the image. The actor is the
-                    // only journal owner and processes commands serially, so
-                    // no durable append can fall between these two operations.
-                    let updates = self.replication_sender.subscribe();
-                    let world_id = self.core.world_id().to_owned();
-                    self.journal
-                        .as_mut()
-                        .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
-                        .and_then(|journal| journal.replication_snapshot_source())
-                        .map(|snapshot_source| (world_id, snapshot_source, updates))
+                    async {
+                        // Subscribe before capturing the image. The actor is
+                        // the only journal owner and processes commands
+                        // serially, so no durable append can fall between
+                        // these operations. A feed-time compaction publishes
+                        // its reset to existing subscribers; replace this
+                        // receiver after compacting so this new feed starts
+                        // from the compacted image without a duplicate reset.
+                        let mut updates = self.replication_sender.subscribe();
+                        let world_id = self.core.world_id().to_owned();
+                        let mut snapshot_source = self
+                            .journal
+                            .as_mut()
+                            .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))?
+                            .replication_snapshot_source()?;
+
+                        // A small journal cannot contain an over-bound line,
+                        // so keep its existing fast path: no scan, no second
+                        // source, and no attempt to serialize a checkpoint.
+                        if snapshot_source.byte_len
+                            > super::replication::MAX_REPLICATION_PAYLOAD_BYTES as u64
+                        {
+                            let probe = self
+                                .journal
+                                .as_mut()
+                                .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))?
+                                .replication_snapshot_source()?;
+                            let oversized =
+                                tokio::task::spawn_blocking(move || probe.first_oversized_entry())
+                                    .await
+                                    .context("scan replication journal for oversized entries")??;
+
+                            if let Some((ordinal, encoded_size)) = oversized {
+                                self.force_compact_for_replication(ordinal, encoded_size)?;
+                                updates = self.replication_sender.subscribe();
+                                snapshot_source = self
+                                    .journal
+                                    .as_mut()
+                                    .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))?
+                                    .replication_snapshot_source()?;
+                            }
+                        }
+
+                        Ok((world_id, snapshot_source, updates))
+                    }
+                    .await
                 };
                 let _ = reply.send(result);
             }
@@ -2825,6 +2861,67 @@ impl WorldActor {
         }
     }
 
+    /// Re-compact a legacy journal only when a feed discovers an entry that
+    /// cannot fit the v1 per-entry payload bound. Unlike policy-driven
+    /// compaction, this intentionally ignores `checkpoint_due()`.
+    fn force_compact_for_replication(&mut self, ordinal: usize, encoded_size: usize) -> Result<()> {
+        let unavailable = if self.read_only {
+            Some("the world is read-only")
+        } else if self.compaction_off {
+            Some("compaction was disabled after an earlier failure")
+        } else if self.storage_failed {
+            Some("world storage has failed")
+        } else if !self.program_healthy {
+            Some("the active program is unhealthy")
+        } else if self.core.active_module_hash.is_none() {
+            Some("there is no active program to checkpoint")
+        } else if self.journal.is_none() {
+            Some("the world has no durable journal to compact")
+        } else {
+            None
+        };
+        if let Some(reason) = unavailable {
+            return Err(oversized_journal_compaction_error(
+                ordinal,
+                encoded_size,
+                reason,
+            ));
+        }
+
+        let started = std::time::Instant::now();
+        let Some(journal) = self.journal.as_mut() else {
+            return Err(oversized_journal_compaction_error(
+                ordinal,
+                encoded_size,
+                "the world has no durable journal to compact",
+            ));
+        };
+        let compacted = compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut());
+        match compacted {
+            Ok(true) => {
+                self.metrics.record_checkpoint(started.elapsed());
+                self.publish_replication_reset();
+                Ok(())
+            }
+            Ok(false) => {
+                self.compaction_off = true;
+                Err(oversized_journal_compaction_error(
+                    ordinal,
+                    encoded_size,
+                    "the active program cannot provide a checkpoint snapshot",
+                ))
+            }
+            Err(error) => {
+                self.compaction_off = true;
+                Err(oversized_journal_compaction_error(
+                    ordinal,
+                    encoded_size,
+                    &format!("forced compaction failed: {error:#}"),
+                ))
+            }
+        }
+    }
+
     fn publish_replication_reset(&mut self) {
         let Some(journal) = self.journal.as_mut() else {
             return;
@@ -2843,10 +2940,24 @@ impl WorldActor {
     }
 }
 
+fn oversized_journal_compaction_error(
+    ordinal: usize,
+    encoded_size: usize,
+    reason: &str,
+) -> anyhow::Error {
+    anyhow::anyhow!(
+        "oversized legacy journal entry at ordinal {ordinal} is {encoded_size} encoded bytes, exceeding MAX_REPLICATION_PAYLOAD_BYTES={}; replication needs compaction before it can continue, but {reason}",
+        super::replication::MAX_REPLICATION_PAYLOAD_BYTES
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod replication_feed_tests {
     use super::*;
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use tempfile::TempDir;
 
     struct SnapshotProgram;
@@ -2855,6 +2966,85 @@ mod replication_feed_tests {
         fn snapshot(&mut self) -> Result<Option<String>> {
             Ok(Some("{}".to_owned()))
         }
+    }
+
+    struct CountingSnapshotProgram {
+        snapshot_calls: Arc<AtomicUsize>,
+    }
+
+    impl WorldProgram for CountingSnapshotProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            self.snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some("recompacted-state".to_owned()))
+        }
+    }
+
+    struct FeedJournal {
+        version: u32,
+        entries: Vec<JournalEntry>,
+        compactions: Arc<AtomicUsize>,
+        source_captures: Arc<AtomicUsize>,
+    }
+
+    impl WorldJournal for FeedJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            self.entries.push(entry.clone());
+            Ok(())
+        }
+
+        fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+            Ok(JournalSnapshot {
+                header_version: self.version,
+                bytes: self.entries.iter().flat_map(journal_entry_line).collect(),
+            })
+        }
+
+        fn replication_snapshot_source(&mut self) -> Result<JournalSnapshotSource> {
+            self.source_captures.fetch_add(1, Ordering::SeqCst);
+            let bytes: Vec<u8> = self.entries.iter().flat_map(journal_entry_line).collect();
+            Ok(JournalSnapshotSource::from_reader(
+                self.version,
+                bytes.len() as u64,
+                Cursor::new(bytes),
+            ))
+        }
+
+        fn replication_header_version(&self) -> Option<u32> {
+            Some(self.version)
+        }
+
+        fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
+            self.compactions.fetch_add(1, Ordering::SeqCst);
+            self.entries = entries.to_vec();
+            if let Some(JournalEntry::Created { version, .. }) = self.entries.first() {
+                self.version = *version;
+            }
+            Ok(())
+        }
+    }
+
+    fn legacy_oversized_checkpoint() -> Vec<JournalEntry> {
+        vec![
+            JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            },
+            JournalEntry::Checkpoint {
+                sequence: 0,
+                module_hash: "legacy-module".to_owned(),
+                seed: 0,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: None,
+                lease: None,
+                snapshot: "x".repeat(super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES),
+                events: Vec::new(),
+                admin_history: None,
+                open_presence: None,
+            },
+        ]
     }
 
     struct BumpingJournal {
@@ -3072,6 +3262,238 @@ mod replication_feed_tests {
         };
         assert_eq!(snapshot.bytes, std::fs::read(path).unwrap());
         assert!(snapshot.bytes.ends_with(b"\n"));
+    }
+
+    #[tokio::test]
+    async fn legacy_oversized_checkpoint_is_recompacted_at_feed_build() {
+        use crate::world::{
+            MAX_REPLICATION_PAYLOAD_BYTES, ReplicationEnvelope, ReplicationKind,
+            ReplicationTracker, SignedReplicationEnvelope, chain_base_cursor, chain_payload,
+            frame_digest, oversized_journal_entry, split_entry_payload,
+        };
+
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        // Restored legacy worlds are never `checkpoint_due` (nothing has been
+        // committed since restore), so this must not matter to the feed.
+        assert!(!core.checkpoint_due());
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+        let mut existing_updates = actor.replication_sender.subscribe();
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, snapshot_source, mut updates) = response
+            .await
+            .unwrap()
+            .expect("legacy oversized journal must re-compact at feed build");
+        assert_eq!(compactions.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 1);
+        let ReplicationUpdate::Reset(reset) = existing_updates.try_recv().unwrap() else {
+            panic!("feed-time compaction must publish a reset to existing feeds");
+        };
+
+        let snapshot = snapshot_source.read().unwrap();
+        assert_eq!(reset.bytes, snapshot.bytes);
+        assert_eq!(
+            oversized_journal_entry(&snapshot.bytes),
+            None,
+            "the compacted image must fit the v1 bound"
+        );
+        let chunks = split_entry_payload(&snapshot.bytes).unwrap();
+        assert!(!chunks.is_empty());
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= MAX_REPLICATION_PAYLOAD_BYTES)
+        );
+
+        // End to end: split chunks frame and verify exactly like the network
+        // feed does, with a cursor chaining every accepted payload.
+        const NONCE: [u8; 16] = [7; 16];
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let source = *key.verifying_key().as_bytes();
+        let mut tracker =
+            ReplicationTracker::new("lobby", source, snapshot.header_version, NONCE).unwrap();
+        let mut previous_frame_digest = [0; 32];
+        let mut cursor = chain_base_cursor("lobby", &source, snapshot.header_version);
+        let mut received = Vec::new();
+        for (index, payload) in chunks.iter().enumerate() {
+            let envelope = if index == 0 {
+                ReplicationEnvelope::snapshot(
+                    "lobby",
+                    source,
+                    snapshot.header_version,
+                    NONCE,
+                    previous_frame_digest,
+                    payload.clone(),
+                )
+                .unwrap()
+            } else {
+                ReplicationEnvelope::tail(
+                    "lobby",
+                    source,
+                    snapshot.header_version,
+                    NONCE,
+                    cursor,
+                    previous_frame_digest,
+                    payload.clone(),
+                )
+                .unwrap()
+            };
+            cursor = envelope.cursor_after;
+            let frame = SignedReplicationEnvelope::sign(envelope, &key)
+                .unwrap()
+                .encode_frame()
+                .unwrap();
+            previous_frame_digest = frame_digest(&frame);
+            received.extend_from_slice(&tracker.accept(&frame).unwrap().payload);
+        }
+        let terminal = ReplicationEnvelope::terminal(
+            "lobby",
+            source,
+            snapshot.header_version,
+            NONCE,
+            cursor,
+            previous_frame_digest,
+        );
+        assert_eq!(
+            tracker
+                .accept(
+                    &SignedReplicationEnvelope::sign(terminal, &key)
+                        .unwrap()
+                        .encode_frame()
+                        .unwrap()
+                )
+                .unwrap()
+                .kind,
+            ReplicationKind::Terminal
+        );
+        assert_eq!(received, snapshot.bytes);
+        let mut expected = chain_base_cursor("lobby", &source, snapshot.header_version);
+        for chunk in split_entry_payload(&snapshot.bytes).unwrap() {
+            expected = chain_payload(expected, &chunk).unwrap();
+        }
+        assert_eq!(tracker.cursor(), expected);
+        assert!(
+            updates.try_recv().is_err(),
+            "the feed starts after its own compaction reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_oversized_checkpoint_without_a_program_is_actionable() {
+        use crate::world::{MAX_REPLICATION_PAYLOAD_BYTES, oversized_journal_entry};
+
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: legacy_oversized_checkpoint(),
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        assert!(core.active_module_hash.is_none());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let error = response
+            .await
+            .unwrap()
+            .expect_err("compaction without a program must fail the feed");
+        let message = format!("{error:#}");
+        let (_ordinal, encoded_size) = oversized_journal_entry(
+            &legacy_oversized_checkpoint()
+                .iter()
+                .flat_map(journal_entry_line)
+                .collect::<Vec<_>>(),
+        )
+        .expect("fixture must hold an oversized entry");
+        assert!(
+            message.contains("ordinal 1"),
+            "error must name the entry ordinal, got: {message}"
+        );
+        assert!(
+            message.contains(&encoded_size.to_string()),
+            "error must name the encoded size, got: {message}"
+        );
+        assert!(
+            message.contains(&MAX_REPLICATION_PAYLOAD_BYTES.to_string()),
+            "error must name the bound, got: {message}"
+        );
+        assert!(
+            message.contains("compaction"),
+            "error must ask for compaction, got: {message}"
+        );
+        assert!(
+            !message.contains("not a sequence of complete entries")
+                && !message.contains("not complete journal entries"),
+            "oversized-entry refusal must stay distinguishable from a malformed payload, got: {message}"
+        );
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn feed_without_an_oversized_entry_keeps_the_fast_path() {
+        let snapshot_calls = Arc::new(AtomicUsize::new(0));
+        let compactions = Arc::new(AtomicUsize::new(0));
+        let source_captures = Arc::new(AtomicUsize::new(0));
+        let journal = FeedJournal {
+            version: 1,
+            entries: vec![JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            }],
+            compactions: Arc::clone(&compactions),
+            source_captures: Arc::clone(&source_captures),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("test-module-hash".to_owned());
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(CountingSnapshotProgram {
+                snapshot_calls: Arc::clone(&snapshot_calls),
+            }),
+            Some(Box::new(journal)),
+        );
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let (_world_id, snapshot_source, mut updates) = response
+            .await
+            .unwrap()
+            .expect("a small journal must keep the fast path");
+        // Behavior, not timing: no compaction ran, the program was never
+        // serialized, and the actor captured exactly one journal source.
+        assert_eq!(compactions.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(source_captures.load(Ordering::SeqCst), 1);
+        assert!(snapshot_source.read().is_ok());
+        assert!(updates.try_recv().is_err());
     }
 }
 

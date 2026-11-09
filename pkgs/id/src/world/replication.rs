@@ -78,6 +78,14 @@
 //! [`super::WorldCore::restore`] demands of a journal against these
 //! checks; its one confirmed gap — per-entry version requirements are
 //! enforced at restore but not yet at accept — is filed as #7970.
+//! - A journal compacted by an older binary can still hold one oversized
+//!   `Checkpoint` entry above the v1 bound. The feed detects that entry at
+//!   build time (see [`oversized_journal_entry`]) and compacts the legacy
+//!   journal once through the existing compaction path before splitting it
+//!   (when the world can snapshot and compact); otherwise the feed fails
+//!   with the entry ordinal, encoded size, and payload bound and asks for
+//!   compaction rather than failing at [`split_entry_payload`] with no
+//!   context.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -182,6 +190,31 @@ pub fn frame_digest(frame_bytes: &[u8]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// The first journal entry in `payload` whose exact encoded bytes exceed
+/// [`MAX_REPLICATION_PAYLOAD_BYTES`], if any.
+///
+/// [`split_entry_payload`] refuses this payload with a bare
+/// [`ReplicationError::PayloadTooLarge`]; the feed uses this scan instead so
+/// it can attempt a one-shot re-compaction of a legacy journal (see the
+/// module docs) or name the entry, its size and the bound in the error.
+///
+/// Returns `(ordinal, encoded_size)`, where `ordinal` is the entry's
+/// zero-based position in the payload and `encoded_size` includes the
+/// entry's trailing newline. A non-empty payload that does not end at an
+/// entry boundary yields no result: that is malformed input for
+/// [`split_entry_payload`] to refuse, not an oversized entry.
+#[must_use]
+pub(crate) fn oversized_journal_entry(payload: &[u8]) -> Option<(usize, usize)> {
+    if payload.is_empty() || !payload.ends_with(b"\n") {
+        return None;
+    }
+    payload
+        .split_inclusive(|byte| *byte == b'\n')
+        .enumerate()
+        .find(|(_, entry)| entry.len() > MAX_REPLICATION_PAYLOAD_BYTES)
+        .map(|(ordinal, entry)| (ordinal, entry.len()))
+}
+
 /// Split a concatenated journal-entry payload into chunks of at most
 /// [`MAX_REPLICATION_PAYLOAD_BYTES`], breaking only at entry (newline)
 /// boundaries so every chunk is itself a valid frame payload.
@@ -191,7 +224,10 @@ pub fn frame_digest(frame_bytes: &[u8]) -> [u8; 32] {
 /// [`ReplicationError::MalformedPayload`] if a non-empty payload does not
 /// end at an entry boundary, or
 /// [`ReplicationError::PayloadTooLarge`] if one entry alone exceeds the
-/// per-frame bound (such an entry can never be replicated in v1).
+/// per-frame bound (such an entry can never be replicated in v1). The
+/// replication feed detects that case before this call (see
+/// [`oversized_journal_entry`]) so a legacy journal is re-compacted or
+/// reported actionably instead of failing here with no context.
 pub fn split_entry_payload(payload: &[u8]) -> Result<Vec<Vec<u8>>, ReplicationError> {
     if payload.is_empty() {
         return Ok(Vec::new());
