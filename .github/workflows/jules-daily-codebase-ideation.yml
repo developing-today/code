@@ -1,5 +1,7 @@
 name: Daily Codebase Innovation & Maintenance
 
+# NOT Jules dispatch: this legacy filename launches an OpenCode session via
+# pm-dispatch.
 # Daily automated codebase review, ideation, gap analysis, issue triage/refinement,
 # and opportunistic improvements across developing-today/code using an OpenCode
 # session launched via pm-dispatch (the pm-dispatch-start reusable action).

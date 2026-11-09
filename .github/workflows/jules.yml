@@ -1,5 +1,7 @@
 name: pm-dispatch
 
+# NOT Jules dispatch: this runs OpenCode via pm-dispatch. The `jules`
+# filename and issue label are legacy names only.
 # pm-dispatch dispatch hub -- fires a tracked OpenCode session on the
 # laptop (via pm-dispatch) from any GitHub event. This workflow was
 # previously backed by the Jules service; it now uses the reusable
