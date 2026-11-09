@@ -18,7 +18,10 @@ exercises the real step logic with no server and no queue:
   changes before launch, and main() writes those skips into the
   fires.jsonl entry;
 - supervision_step recovers a bound task whose session is gone from
-  the server (error body, zero messages) via delete + recovery bind.
+  the server (error body, zero messages) via delete + recovery bind;
+- supervision_step treats an unreadable message read as UNKNOWN, not
+  zero: no delete, no rebind, and a session that does have messages
+  is never recovered; recovery also requires an expired lease (#3026).
 
 Negative control (#6865 acceptance): this suite fails against the
 pre-fix claimant.py (65beb42c1a, unimported requests/subprocess) and
@@ -50,15 +53,19 @@ class Result:
 
 
 def make_fake_run(binds, *, session_get="gone", messages="[]",
-                  prompt_rc=0, prompts=None):
+                  messages_rc=0, prompt_rc=0, prompts=None, deletes=None):
     """Build a subprocess.run stub dispatching on argv shape.
 
     binds: list collecting every repo-queue bind argv.
     session_get: "gone" -> the session GET returns an error body
     (what curl -s prints for a 404); "active" -> a live session.
+    messages: body of the message read (GET /message).
+    messages_rc: return code for the message read; non-zero models a
+    non-2xx body (curl -f fails, as the server's 404 did).
     prompt_rc: return code for the prompt POST (curl -f fails on
     HTTP errors, so 1 models a rejected prompt send).
     prompts: optional list collecting every prompt POST argv.
+    deletes: optional list collecting every session DELETE argv.
     """
 
     def fake_run(cmd, **kwargs):
@@ -68,9 +75,11 @@ def make_fake_run(binds, *, session_get="gone", messages="[]",
             binds.append(cmd)
             return Result(0, "{}")
         if argv[0] == "curl" and "-X" in argv and "DELETE" in argv:
+            if deletes is not None:
+                deletes.append(cmd)
             return Result(0, "")
-        if argv[0] == "curl" and joined.rstrip().endswith("/messages"):
-            return Result(0, messages)
+        if argv[0] == "curl" and joined.rstrip().endswith("/message"):
+            return Result(messages_rc, messages)
         if argv[0] == "curl" and joined.rstrip().endswith("/prompt"):
             if prompts is not None:
                 prompts.append(cmd)
@@ -96,6 +105,7 @@ BOUND_ROW = {
     "id": 4242,
     "attempts": 0,
     "max_attempts": 5,
+    "lease_until": "2020-01-01T00:00:00Z",
     "progress": {"lane": "opencode", "session_id": "ses_gone"},
 }
 
@@ -242,6 +252,64 @@ class TestSupervisionStep(unittest.TestCase):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
+
+    def test_unreadable_messages_are_unknown_not_zero(self):
+        # #3026: the old endpoint 404s with an empty body, and the old
+        # read parsed that as []. Unknown must leave the task bound:
+        # no DELETE, no recovery bind, no candidate.
+        for rc, body in ((1, ""), (0, "")):
+            with self.subTest(returncode=rc, body=body):
+                binds = []
+                deletes = []
+                with stub_claimed_rows([BOUND_ROW]), \
+                     patch.object(claimant.subprocess, "run",
+                                  make_fake_run(binds, messages=body,
+                                                messages_rc=rc,
+                                                deletes=deletes)):
+                    recovered = claimant.supervision_step("live")
+                self.assertEqual(recovered, [])
+                self.assertEqual(binds, [])
+                self.assertEqual(deletes, [])
+
+    def test_bound_session_with_messages_is_not_recovered(self):
+        binds = []
+        deletes = []
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, messages='[{"id": "m1"}]',
+                                        deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_unexpired_lease_is_not_recovered(self):
+        # A live lease is still owned by a worker: recovery would
+        # double-launch over it even when the session looks gone.
+        row = dict(BOUND_ROW, lease_until="2999-01-01T00:00:00Z")
+        binds = []
+        deletes = []
+        with stub_claimed_rows([row]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_unparseable_lease_is_not_recovered(self):
+        # A lease we cannot read is a fact we do not have; it never
+        # counts as expired.
+        row = dict(BOUND_ROW, lease_until="not-a-timestamp")
+        binds = []
+        deletes = []
+        with stub_claimed_rows([row]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
 
     def test_shadow_mode_recovers_nothing(self):
         with patch.object(claimant.subprocess, "run", make_fake_run([])):
