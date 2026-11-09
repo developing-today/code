@@ -52,6 +52,84 @@ import json
 import sys
 
 
+class ShapeError(ValueError):
+    """A stored record or argument whose shape this script cannot use.
+    Raised before any comparison, so a wrong shape is one named error
+    identifying the leg and the field -- never a raw traceback from
+    deep inside total()/describe()/compare(), and never a silent
+    misreading (a string is not a list of names)."""
+
+
+_COUNT_FIELDS = ("passed_count", "failed_count", "total_count",
+                 "skipped_count", "warning_count", "info_count")
+_STRING_FIELDS = ("first_timestamp", "latest_timestamp", "run")
+
+
+def _shape(kind, value):
+    return f"{kind} ({value!r:.60})"
+
+
+def _validate_record(leg, key, rec):
+    base = f"stored record for leg '{leg}'"
+    if not isinstance(rec, dict):
+        raise ShapeError(f"{base}: field '{key}' must be an object, "
+                         f"got {_shape(type(rec).__name__, rec)}")
+    for field in _STRING_FIELDS:
+        if field not in rec:
+            raise ShapeError(f"{base}: field '{key}.{field}' is missing")
+        if not isinstance(rec[field], str):
+            raise ShapeError(f"{base}: field '{key}.{field}' must be a string, "
+                             f"got {_shape(type(rec[field]).__name__, rec[field])}")
+    for field in ("passed_count", "failed_count"):
+        if field not in rec:
+            raise ShapeError(f"{base}: field '{key}.{field}' is missing")
+    for field in _COUNT_FIELDS:
+        if field in rec:
+            v = rec[field]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ShapeError(f"{base}: field '{key}.{field}' must be a "
+                                 f"non-negative integer, "
+                                 f"got {_shape(type(v).__name__, v)}")
+    if "skipped" in rec:
+        v = rec["skipped"]
+        if not isinstance(v, list) or not all(isinstance(n, str) for n in v):
+            raise ShapeError(f"{base}: field '{key}.skipped' must be a list of "
+                             f"strings, got {_shape(type(v).__name__, v)}")
+
+
+def validate_stored(leg, stored):
+    """Reject a stored value whose shape the comparison cannot use.
+
+    The stored value is operator-editable (a repository variable) and
+    drifts; every field total()/describe()/bad()/complete() touches is
+    checked here, so a value that passes validation cannot raise
+    TypeError/AttributeError/KeyError in the comparison. Legacy records
+    (pre-total_count/skipped_count) pass: those fields are optional,
+    and complete() already routes such records to replacement.
+    Returns the value unchanged."""
+    if stored is None:
+        return None
+    if not isinstance(stored, dict):
+        raise ShapeError(f"stored record for leg '{leg}' must be a JSON object, "
+                         f"got {_shape(type(stored).__name__, stored)}")
+    for key in ("best", "largest"):
+        if key in stored:
+            _validate_record(leg, key, stored[key])
+    return stored
+
+
+def validate_names(leg, names):
+    """The skipped-names argument must be a JSON list of strings.
+    A string would otherwise be iterated as characters and an object
+    as its keys, silently inventing a skipped set (#6850)."""
+    if names is None:
+        return None
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ShapeError(f"skipped names for leg '{leg}' must be a JSON list of "
+                         f"strings, got {_shape(type(names).__name__, names)}")
+    return names
+
+
 def record(passed, failed, run, now, checks=None, warnings=0, skipped=None, info=0, names=None):
     r = {"first_timestamp": now, "latest_timestamp": now, "run": run,
          "passed_count": passed, "failed_count": failed}
@@ -118,6 +196,8 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
     both were updated from, and a passed increase cannot silently
     re-baseline best onto a newly skipped check.
     """
+    validate_stored(leg, stored)
+    validate_names(leg, names)
     cur = record(passed, failed, run, now, checks, warnings_count, skipped, info, names)
     state = json.loads(json.dumps(stored)) if stored else {}
     lines, warnings, errors = [], [], []
@@ -214,10 +294,24 @@ def main(argv):
     warn_n = int(argv[10]) if len(argv) > 10 and argv[10] else 0
     skipped = int(argv[11]) if len(argv) > 11 and argv[11] else None
     info = int(argv[12]) if len(argv) > 12 and argv[12] else 0
-    names = json.loads(argv[13]) if len(argv) > 13 and argv[13].strip() else None
-    stored = json.loads(stored_raw) if stored_raw.strip() else None
-    state, lines, warnings, errors = compare(leg, passed, failed, run, now, stored, checks,
-                                             warn_n, skipped, info, names)
+    try:
+        names = json.loads(argv[13]) if len(argv) > 13 and argv[13].strip() else None
+    except json.JSONDecodeError as e:
+        print(f"conformance-record: skipped names for leg '{leg}' are not valid "
+              f"JSON: {e}", file=sys.stderr)
+        return 1
+    try:
+        stored = json.loads(stored_raw) if stored_raw.strip() else None
+    except json.JSONDecodeError as e:
+        print(f"conformance-record: stored record for leg '{leg}' is not valid "
+              f"JSON: {e}", file=sys.stderr)
+        return 1
+    try:
+        state, lines, warnings, errors = compare(leg, passed, failed, run, now, stored,
+                                                 checks, warn_n, skipped, info, names)
+    except ShapeError as e:
+        print(f"conformance-record: {e}", file=sys.stderr)
+        return 1
 
     with open(summary, "a") as f:
         f.write(f"\n### Records for `{leg}`\n\n")

@@ -1120,6 +1120,18 @@ impl Directory {
     /// groups. A nested group passes on at most the level it is held at.
     #[must_use]
     pub fn level_in(&self, account: &str, group: u64) -> Option<Level> {
+        self.level_in_cached(account, group, &mut BTreeMap::new())
+    }
+
+    fn level_in_cached(
+        &self,
+        account: &str,
+        group: u64,
+        cache: &mut BTreeMap<u64, Option<Level>>,
+    ) -> Option<Level> {
+        if let Some(level) = cache.get(&group) {
+            return *level;
+        }
         let direct = self
             .members
             .get(&(
@@ -1129,15 +1141,18 @@ impl Directory {
                 },
             ))
             .copied();
-        self.members
+        let best = self
+            .members
             .range((group, Member::Group { id: 0 })..=(group, Member::Group { id: u64::MAX }))
             .fold(direct, |best, ((_, member), held_at)| match member {
-                Member::Group { id } => match self.level_in(account, *id) {
+                Member::Group { id } => match self.level_in_cached(account, *id, cache) {
                     Some(inner) => best.max(Some(inner.min(*held_at))),
                     None => best,
                 },
                 Member::Account { .. } => best,
-            })
+            });
+        cache.insert(group, best);
+        best
     }
 
     /// Every permission an account may use: its tier's set, plus the set of
@@ -2420,13 +2435,20 @@ impl Directory {
 
     /// Whether `target` is `from` or is nested, at any depth, inside it.
     fn reaches(&self, from: u64, target: u64) -> bool {
+        self.reaches_visited(from, target, &mut BTreeSet::new())
+    }
+
+    fn reaches_visited(&self, from: u64, target: u64, visited: &mut BTreeSet<u64>) -> bool {
         if from == target {
             return true;
+        }
+        if !visited.insert(from) {
+            return false;
         }
         self.members
             .range((from, Member::Group { id: 0 })..=(from, Member::Group { id: u64::MAX }))
             .any(|((_, member), _)| match member {
-                Member::Group { id } => self.reaches(*id, target),
+                Member::Group { id } => self.reaches_visited(*id, target, visited),
                 Member::Account { .. } => false,
             })
     }
@@ -2603,6 +2625,45 @@ mod tests {
         let (credential, _) = directory.sign_up(name).unwrap();
         let id = directory.account_for(&credential).unwrap();
         (id, credential)
+    }
+
+    fn diamond_directory() -> (Directory, String, Vec<Vec<u64>>, u64) {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        let (leaf, _) = directory.create_group(&ann, "Leaf", "", all()).unwrap();
+        let (holder, _) = directory.create_group(&ann, "Holder", "", all()).unwrap();
+        let mut layers = vec![vec![leaf]];
+
+        for layer in 0..25 {
+            let children = layers.last().unwrap();
+            let mut parents = Vec::new();
+            for branch in 0..2 {
+                let (parent, _) = directory
+                    .create_group(&ann, &format!("Layer {layer} branch {branch}"), "", all())
+                    .unwrap();
+                for child in children {
+                    let held_at = if layer == 0 {
+                        if branch == 0 {
+                            Level::Read
+                        } else {
+                            Level::Manage
+                        }
+                    } else {
+                        Level::Write
+                    };
+                    directory
+                        .members
+                        .insert((parent, Member::Group { id: *child }), held_at);
+                }
+                parents.push(parent);
+            }
+            layers.push(parents);
+        }
+        directory
+            .members
+            .insert((leaf, Member::Account { id: bo.clone() }), Level::Admin);
+        (directory, bo, layers, holder)
     }
 
     #[test]
@@ -4184,6 +4245,35 @@ mod tests {
                 )
                 .is_err(),
             "a group may not contain itself"
+        );
+    }
+
+    #[test]
+    fn diamond_nesting_preserves_max_of_min_and_checks_member_cycles() {
+        let (mut directory, bo, layers, holder) = diamond_directory();
+        let root = layers.last().unwrap()[0];
+
+        assert_eq!(directory.level_in(&bo, root), Some(Level::Write));
+
+        directory
+            .set_member(
+                Actor::Server,
+                holder,
+                Member::Group { id: root },
+                Some(Level::Read),
+            )
+            .unwrap();
+        assert_eq!(directory.level_in(&bo, holder), Some(Level::Read));
+        assert!(
+            directory
+                .set_member(
+                    Actor::Server,
+                    root,
+                    Member::Group { id: holder },
+                    Some(Level::Read),
+                )
+                .is_err(),
+            "the MemberSet path still refuses a cycle"
         );
     }
 

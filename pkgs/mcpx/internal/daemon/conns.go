@@ -159,7 +159,7 @@ func (c *handoffConn) freeze(wake bool) bool {
 		c.frozen = false
 		return false
 	}
-	_ = c.Conn.SetReadDeadline(pastDeadline)
+	_ = c.SetReadDeadline(pastDeadline)
 	c.woken = true
 	for c.reading {
 		c.cond.Wait()
@@ -190,7 +190,7 @@ func (c *handoffConn) thaw() {
 
 func (c *handoffConn) unwakeLocked() {
 	if c.woken {
-		_ = c.Conn.SetReadDeadline(time.Time{})
+		_ = c.SetReadDeadline(time.Time{})
 		c.woken = false
 	}
 }

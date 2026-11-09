@@ -118,7 +118,33 @@ def normalize_issue(raw: dict) -> dict | None:
         raise FetchError(f"issue entry is not a JSON object: {raw!r:.80}")
     if "pull_request" in raw:
         return None
-    return {field: raw.get(field) for field in ISSUE_FIELDS}
+    projected = {field: raw.get(field) for field in ISSUE_FIELDS}
+    error = _issue_field_error(projected)
+    if error is not None:
+        raise FetchError(error)
+    return projected
+
+
+def _issue_field_error(issue) -> str | None:
+    """Field-level shape rule for one issue mapping (#6757).
+
+    Shared by the fetch path (via normalize_issue) and the persisted
+    state path (via _valid_prior_entry), so a malformed issue is the
+    same defect in both places. Oracle: the GitHub issues API shape
+    this checker consumes — `number` is a JSON integer (never a bool,
+    string, or list) and every other persisted field is a string.
+    Returns a human-readable reason, or None when well-formed.
+    """
+    if not isinstance(issue, dict):
+        return f"issue entry is not a JSON object: {issue!r:.80}"
+    number = issue.get("number")
+    if isinstance(number, bool) or not isinstance(number, int):
+        return f"issue field 'number' is not an int: {number!r:.80}"
+    for field in ("state", "title", "updated_at", "html_url"):
+        value = issue.get(field)
+        if not isinstance(value, str):
+            return f"issue field {field!r} is not a string: {value!r:.80}"
+    return None
 
 
 def fetch_issues_gh(repo: str) -> list[dict]:
@@ -212,14 +238,18 @@ def _valid_prior_entry(entry) -> bool:
     """Shape-check one persisted per-repo state entry (#6652).
 
     A wrong-shape persisted entry (an int, a list, an issues mapping
-    whose values are not objects) is reported per-repo by run_check
-    instead of crashing diff_repo's subscripts for every repo.
+    whose values are not objects, or — #6757 — an issue object whose
+    fields are missing or wrong-typed, or whose key disagrees with its
+    number) is reported per-repo by run_check instead of crashing
+    diff_repo's subscripts for every repo.
     """
     if not isinstance(entry, dict):
         return False
     issues = entry.get("issues")
     return isinstance(issues, dict) and all(
-        isinstance(v, dict) for v in issues.values())
+        isinstance(v, dict) and _issue_field_error(v) is None
+        and k == str(v["number"])
+        for k, v in issues.items())
 
 def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, list[str], bool]:
     """Run one check over all watched repos.

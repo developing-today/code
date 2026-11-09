@@ -958,10 +958,11 @@ mod tests {
         let target = format!("/world/{}/isolation", lease.name());
         let now = unix_ms();
 
-        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged");
+        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged").unwrap();
         let last = forged.signature.pop().unwrap();
         forged.signature.push(if last == '0' { '1' } else { '0' });
-        let other_body = sign_request(&key, "PUT", &target, b"isolated", now, "other-body");
+        let other_body =
+            sign_request(&key, "PUT", &target, b"isolated", now, "other-body").unwrap();
         for signed in [&forged, &other_body] {
             assert!(
                 set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(signed))
@@ -974,7 +975,7 @@ mod tests {
             Isolation::Isolated
         );
 
-        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good");
+        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good").unwrap();
         assert_eq!(
             set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(&signed))
                 .await
@@ -2006,6 +2007,84 @@ mod tests {
                 .as_deref()
                 .is_some_and(|view| view.contains("count=1"))
         );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn admin_upload_rejects_duplicate_json_keys_in_chunk_and_install_end() {
+        // Regression test for issue #6523: install_module_session parsed
+        // chunk and install_end frames with plain serde_json::from_str, so
+        // duplicate keys in fields ClientFrame ignores (unknown fields, or
+        // nested inside an ignored object) collapsed silently — unlike
+        // every other ClientFrame path, which routes through
+        // parse_json_without_duplicate_keys (PR #6508, issue #6501).
+        // Oracle: the strict duplicate-key parser refuses the frame before
+        // any chunk bytes are appended or the upload counts as complete,
+        // ending the install with the existing parse-failure errors.
+        use iroh_blobs::store::mem::MemStore;
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: Store = MemStore::new().into();
+        let svc = WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs);
+
+        let chunk_frames: [(&str, &str); 2] = [
+            (
+                "duplicate unknown key in chunk",
+                r#"{"type":"install_chunk","offset":0,"data_hex":"00","bogus":1,"bogus":2}"#,
+            ),
+            (
+                "duplicate key nested in ignored chunk object",
+                r#"{"type":"install_chunk","offset":0,"data_hex":"00","extra":{"a":1,"a":2}}"#,
+            ),
+        ];
+        for (case, text) in chunk_frames {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({
+                "type": "install_begin",
+                "admin_token": "admin",
+                "total_bytes": 1,
+                "module_hash": null,
+                "seed": 12,
+            }))
+            .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "upload_ready", "{case}");
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(
+                reply["message"], "expected module chunk frame",
+                "{case}: {reply}"
+            );
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "admin_token": "admin",
+            "total_bytes": 1,
+            "module_hash": null,
+            "seed": 12,
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "upload_ready");
+        peer.say(serde_json::json!({
+            "type": "install_chunk",
+            "offset": 0,
+            "data_hex": "00",
+        }))
+        .await;
+        peer.say_text(r#"{"type":"install_end","bogus":1,"bogus":2}"#)
+            .await;
+        let reply = peer.next().await.unwrap();
+        assert_eq!(reply["type"], "error", "install_end: {reply}");
+        assert_eq!(
+            reply["message"], "expected install_end frame",
+            "install_end: {reply}"
+        );
+        assert!(peer.next().await.is_none(), "install_end");
+        peer.task.await.unwrap();
     }
 
     #[cfg(feature = "sandbox")]

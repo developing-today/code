@@ -307,6 +307,68 @@ class WrongShapeTests(unittest.TestCase):
         self.assertEqual(
             state["repos"]["dezren39/hatch-personal"]["issues"]["1"], 123)
 
+    def test_fixture_entry_empty_object_is_a_fetch_error(self):
+        # #6757: a fieldless object passed the #6652 entry guard and
+        # became a phantom issue persisted under the key "None".
+        fixture = {"dezren39/hatch-personal": [{}],
+                   "developing-today/code": [issue(9)]}
+        state, lines, had_error = check_issues.run_check(
+            INVENTORY, {"version": 1, "repos": {}}, self.fixture_fetch(fixture), NOW1)
+        self.assertTrue(had_error)
+        report = "\n".join(lines)
+        self.assertIn("- ERROR: fetch failed:", report)
+        self.assertIn("issue field 'number' is not an int", report)
+        self.assertNotIn("#None", report)
+        self.assertIn("baseline: 1 issues recorded", report)
+        self.assertNotIn("dezren39/hatch-personal", state["repos"])
+
+    def test_fixture_string_number_alongside_int_is_a_fetch_error(self):
+        # #6757: a string number used to reach sorted() in the report
+        # and crash the whole run with a TypeError.
+        string_numbered = {"number": "5", "state": "open", "title": "x",
+                           "updated_at": "2026-10-31T00:00:00Z",
+                           "html_url": "https://github.com/x/issues/5"}
+        fixture = {"dezren39/hatch-personal": [string_numbered, issue(2)],
+                   "developing-today/code": [issue(9)]}
+        prior = {"version": 1, "repos": {
+            "dezren39/hatch-personal": {
+                "watermark": None,
+                "issues": {"1": check_issues.normalize_issue(issue(1))}}}}
+        state, lines, had_error = check_issues.run_check(
+            INVENTORY, prior, self.fixture_fetch(fixture), NOW2)
+        self.assertTrue(had_error)
+        self.assertIn("- ERROR: fetch failed:", "\n".join(lines))
+        # The poisoned repo's prior state is left untouched.
+        self.assertEqual(state["repos"]["dezren39/hatch-personal"],
+                         prior["repos"]["dezren39/hatch-personal"])
+
+    def test_normalize_rejects_wrong_typed_fields(self):
+        # #6757: oracle is the GitHub issues API shape — number is an
+        # int (not bool/str/list); the other fields are strings.
+        for bad in ({"number": True}, {"number": [1]}, {"number": 1.5},
+                    {"number": 1, "state": None},
+                    {"number": 1, "state": "open", "title": 7}):
+            raw = issue(1)
+            raw.update(bad)
+            with self.assertRaises(check_issues.FetchError, msg=repr(bad)):
+                check_issues.normalize_issue(raw)
+
+    def test_persisted_issue_entry_empty_object_is_reported(self):
+        # #6757: a field-missing persisted entry passed _valid_prior_entry
+        # and re-crashed diff_repo with KeyError on every daily run.
+        good = {"dezren39/hatch-personal": [issue(2)],
+                "developing-today/code": []}
+        prior = {"version": 1, "repos": {
+            "dezren39/hatch-personal": {
+                "watermark": None, "issues": {"2": {}}}}}
+        state, lines, had_error = check_issues.run_check(
+            INVENTORY, prior, fetch_from(good), NOW2)
+        self.assertTrue(had_error)
+        self.assertIn("- ERROR: persisted state entry is malformed",
+                      "\n".join(lines))
+        self.assertEqual(
+            state["repos"]["dezren39/hatch-personal"]["issues"]["2"], {})
+
     def test_main_with_wrong_shape_state_file_exits_named_error(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:

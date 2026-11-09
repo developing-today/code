@@ -250,9 +250,14 @@ fn map_get_chunk_err(e: CoreError, chunk_id: i64) -> CliError {
 // ------------------------------------------------------------ backends --
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"))
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
 }
 
 /// The Python's `default_db_path`.
@@ -583,11 +588,11 @@ fn u(v: i64) -> usize {
 
 /// Validate one CLI count flag against the service's request
 /// contract (design section 2; `validate_request` in server.rs):
-/// `--k` at least 1, `--pool` between 1 and 400, and the
-/// zero-is-valid counts (`--expand`, `--trunc`, `--neighbors`) are
-/// non-negative; `--neighbors` is also capped at the service's limit.
-/// Out-of-range values are fatal (exit 2), never silently clamped to 0
-/// (#5407).
+/// `--k` at least 1, `--pool` between 1 and 400, `--expand` between
+/// 0 and `MAX_EXPAND_NEIGHBORS`, `--neighbors` also capped at the
+/// service's limit, and the other zero-is-valid counts (`--trunc`)
+/// non-negative. Out-of-range values are fatal (exit 2), never a
+/// silent clamp to 0 (#5407).
 fn count(flag: &str, v: i64, min: i64, max: Option<i64>) -> Result<usize, CliError> {
     if v >= min && max.is_none_or(|m| v <= m) {
         return Ok(usize::try_from(v).expect("range-checked count converts"));
@@ -611,7 +616,12 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
     // count fails identically whether or not a service is running.
     let k = count("--k", args.k, 1, None)?;
     let pool = count("--pool", args.pool, 1, Some(400))?;
-    let expand = count("--expand", args.expand, 0, None)?;
+    let expand = count(
+        "--expand",
+        args.expand,
+        0,
+        Some(i64::try_from(atlas_core::MAX_EXPAND_NEIGHBORS).expect("neighbor cap fits in i64")),
+    )?;
     let trunc = count("--trunc", args.vector.trunc, 0, None)?;
     let mut note: Option<String> = None;
     // The shard fan-out is standalone-only: the service does not
@@ -787,8 +797,18 @@ mod tests {
         );
         assert!(count("--pool", 0, 1, Some(400)).is_err());
         assert!(count("--pool", -5, 1, Some(400)).is_err());
+        // --expand shares the service's 100-neighbor ceiling.
+        let max_expand = atlas_core::MAX_EXPAND_NEIGHBORS as i64;
+        assert_eq!(count("--expand", max_expand, 0, Some(max_expand)), Ok(100));
+        assert_eq!(
+            count("--expand", max_expand + 1, 0, Some(max_expand)).unwrap_err(),
+            (
+                2,
+                "--expand must be between 0 and 100 (design section 2)".to_string()
+            )
+        );
         // zero-is-valid counts: 0 stays valid, negatives do not
-        for flag in ["--expand", "--trunc"] {
+        for flag in ["--trunc"] {
             assert_eq!(count(flag, 0, 0, None), Ok(0), "{flag}");
             assert_eq!(
                 count(flag, -1, 0, None).unwrap_err(),

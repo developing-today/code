@@ -8,6 +8,33 @@
 //! Iroh proves *which node* connected. That is logged for operators but never
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
+//!
+//! ## The validated-reply contract (#6669)
+//!
+//! Every `WorldClient` reply extraction in this module follows one
+//! contract — a reply is not its defaults:
+//!
+//! 1. A field that constitutes the answer is required and typed.
+//!    Missing or mistyped is a malformed-reply error naming the
+//!    field ("host sent a malformed …", "host omitted …"). Success
+//!    fields are never defaulted: a default that is also a real
+//!    value is a fabricated answer.
+//! 2. Optional means absent-or-null, never mistyped: absent/`null`
+//!    => `None`, a correctly typed value => `Some`, anything else
+//!    => the rule-1 error (the `parse_module_info_reply` shape).
+//! 3. Typed payloads are decoded at extraction, not cloned:
+//!    validate-then-return (`parse_caps_reply`,
+//!    `parse_caps_ceiling_reply`, `parse_policy_reply`).
+//! 4. A list reply's entries are part of the answer: a malformed
+//!    entry fails the listing. A listing is complete or it errors.
+//! 5. Extraction lives in `WorldClient`, never in callers. Callers
+//!    consume validated answers; a caller's typed decode of a
+//!    returned value is consumption, not validation.
+//!
+//! The closing inventory that dispositioned every public
+//! `WorldClient` method against these rules is recorded on issue
+//! #6670. A lax extraction found later is filed as a follow-up
+//! issue, not patched silently and not defaulted around.
 
 use std::collections::HashMap;
 use std::sync::{
@@ -509,9 +536,16 @@ async fn charge_inbound_frame(
 /// transport's client uses this, so the same frame is the same bytes on iroh
 /// and on SSH.
 #[must_use]
+/// Route `frame` to the session's bound `world`.
+///
+/// The bound world wins: when `world` is `Some`, an object frame leaves
+/// naming that world even if it already carries a different `world` key —
+/// a frame must never drag a session bound to one world into another
+/// (issue #4576). When `world` is `None`, and for non-object frames, the
+/// frame passes through unchanged (the host's default world applies).
 pub fn route_frame(frame: &serde_json::Value, world: Option<&str>) -> String {
     match (world, frame) {
-        (Some(world), serde_json::Value::Object(object)) if !object.contains_key("world") => {
+        (Some(world), serde_json::Value::Object(object)) => {
             let mut routed = object.clone();
             routed.insert("world".to_owned(), serde_json::Value::from(world));
             serde_json::Value::Object(routed).to_string()
@@ -671,7 +705,9 @@ pub struct WorldClient {
     conn: Connection,
     send: SendStream,
     recv: RecvStream,
-    /// World named in every frame this client sends (host default if `None`).
+    /// World named in every frame this client sends (host default if
+    /// `None`). The bound world wins over any `world` key a frame already
+    /// carries — see [`route_frame`].
     world: Option<String>,
 }
 
@@ -872,8 +908,8 @@ impl WorldClient {
     /// unit-tested without a live host.
     fn parse_policy_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         let policy = reply.get("policy").context("host sent no policy")?;
-        let _: crate::world::WorldPolicy = serde_json::from_value(policy.clone())
-            .context("host sent a malformed policy")?;
+        let _: crate::world::WorldPolicy =
+            serde_json::from_value(policy.clone()).context("host sent a malformed policy")?;
         Ok(policy.clone())
     }
 
@@ -1038,7 +1074,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if neither credential is accepted.
+    /// Fails with the host's message if neither credential is accepted,
+    /// or with "host sent a malformed seed" if the reply's `seed` field
+    /// is present but not a `u64`.
     pub async fn manifest_state(
         &mut self,
         admin_token: Option<&str>,
@@ -1054,12 +1092,42 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_world_state_reply(&reply)
+    }
+
+    /// Validate a `world_state` reply frame and extract the manifest
+    /// state: a `seed` that is *absent* is the one legitimate `None`
+    /// (a capability-only read, where the host deliberately hides the
+    /// seed, #240), but a seed that is present with the wrong type is
+    /// corruption, not a hidden seed -- reading it with a bare
+    /// `as_u64()` silently downgraded it to the capability-only shape,
+    /// and the manifest-capture consumer then baked it in as seed 0
+    /// (#6626). `schedules` keeps its strict decode. Factored out of
+    /// [`WorldClient::manifest_state`] (mirroring
+    /// [`WorldClient::parse_caps_reply`]) so the validation can be
+    /// unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_world_state_reply(
+        reply: &serde_json::Value,
+    ) -> Result<(Option<u64>, std::collections::BTreeMap<String, u64>)> {
         match reply["type"].as_str() {
-            Some("world_state") => Ok((
-                reply["seed"].as_u64(),
-                serde_json::from_value(reply["schedules"].clone())
-                    .context("host sent a malformed schedule map")?,
-            )),
+            Some("world_state") => {
+                let seed = match reply.get("seed") {
+                    // Absent, or null: the host serializes a hidden seed
+                    // as null (`ServerFrame::WorldState.seed` is an
+                    // `Option<u64>` with no skip-serializing, and both
+                    // host reply paths set it to
+                    // `admin_ok.then_some(seed)`), so null is the
+                    // legitimate capability-only shape (#240).
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(value.as_u64().context("host sent a malformed seed")?),
+                };
+                Ok((
+                    seed,
+                    serde_json::from_value(reply["schedules"].clone())
+                        .context("host sent a malformed schedule map")?,
+                ))
+            }
             _ => bail!(
                 "{}",
                 reply["message"]
@@ -1074,7 +1142,8 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or profile is refused.
+    /// Fails with the host's message if the admin token or profile is refused,
+    /// or if the reply does not carry a valid `update.requested` profile.
     pub async fn set_execution_profile(
         &mut self,
         admin_token: &str,
@@ -1090,6 +1159,24 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_set_execution_profile_reply(&reply)
+    }
+
+    /// Validate an `execution_profile` reply to a set request: the
+    /// host's typed contract (`ServerFrame::ExecutionProfile`) always
+    /// carries an `update` whose `requested` is a real
+    /// [`crate::world_limits::WorldExecutionProfile`], so a reply
+    /// whose `update.requested` is missing or malformed is not a
+    /// success — it is a host that did not confirm the profile change
+    /// (#6777, the setter leg of #6635: the getter already extracts
+    /// `update.requested` with this same refusal). On success the
+    /// frame is returned unchanged: consumers print it verbatim and
+    /// manifest apply counts the step on `Ok`, so a byte-identical
+    /// return keeps both honest. Factored out of
+    /// [`WorldClient::set_execution_profile`] so the validation can be
+    /// unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_set_execution_profile_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "execution_profile" {
             bail!(
                 "{}",
@@ -1098,7 +1185,14 @@ impl WorldClient {
                     .unwrap_or("host refused the execution profile change")
             );
         }
-        Ok(reply)
+        let requested = reply
+            .get("update")
+            .and_then(|update| update.get("requested"))
+            .context("host returned a malformed execution profile")?;
+        let _validated: crate::world_limits::WorldExecutionProfile =
+            serde_json::from_value(requested.clone())
+                .context("host returned a malformed execution profile")?;
+        Ok(reply.clone())
     }
 
     /// Read the world's requested execution profile.
@@ -1770,9 +1864,28 @@ impl WorldClient {
                     .with_context(|| format!("invalid record in page for sequence {sequence}"))?;
             }
 
-            // Check cursor validation: next_after must equal the last key of this page
-            let next_after = reply["next_after"].as_str();
-            if let Some(next) = next_after {
+            // Disposition the cursor strictly (#6778): the host's
+            // typed frame (ServerFrame::Records, world/actor.rs)
+            // serializes next_after as a string or null — null (or
+            // absent) ends the listing, a string continues it, and
+            // any other type is a malformed reply, never a silent
+            // end-of-listing. Same shape as parse_admin_history_cursor
+            // below and the SSH drain's records_cursor.
+            let next_after: Option<String> = match reply.get("next_after") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(next)) => Some(next.clone()),
+                Some(other) => anyhow::bail!(
+                    "malformed records reply: next_after must be a string or null, got {}",
+                    match other {
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::Array(_) => "array",
+                        serde_json::Value::Object(_) => "object",
+                        _ => "unknown",
+                    }
+                ),
+            };
+            if let Some(next) = &next_after {
                 // Validate that next_after matches the last key in this page
                 if let Some((last_key, _)) = page.iter().next_back() {
                     anyhow::ensure!(
@@ -1790,7 +1903,7 @@ impl WorldClient {
                 // Validate that the cursor advanced from what we sent
                 if let Some(cursor) = &after {
                     anyhow::ensure!(
-                        next > cursor.as_str(),
+                        next.as_str() > cursor.as_str(),
                         "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
                     );
                 }
@@ -1798,7 +1911,7 @@ impl WorldClient {
 
             pages.push((sequence, page));
             match next_after {
-                Some(next) => after = Some(next.to_owned()),
+                Some(next) => after = Some(next),
                 None => return Ok(pages),
             }
         }
@@ -2863,6 +2976,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_records_client_rejects_mistyped_cursor() {
+        // next_after as a number: present but mistyped must be
+        // refused as malformed (#6778), never read as the final page
+        // while the host may hold more records.
+        let page = serde_json::json!({
+            "type": "records",
+            "sequence": 7,
+            "records": {"a": 1},
+            "next_after": 42,
+        });
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("next_after"),
+            "mistyped cursor error must name next_after: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_records_client_accepts_conforming_pages() {
         let pages = vec![
             records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
@@ -3028,6 +3159,63 @@ mod tests {
     }
 
     #[test]
+    fn set_execution_profile_reply_requires_a_valid_requested() {
+        // Issue #6777: an `execution_profile` frame carrying no valid
+        // `update.requested` must not read as a successful profile
+        // change. Driven through the factored reply parser. Oracle:
+        // the host's typed `ServerFrame::ExecutionProfile` always
+        // carries a real profile, and the getter in this file extracts
+        // `update.requested` with the same refusal (#6635).
+        let requested = serde_json::to_value(crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(424242),
+            ..Default::default()
+        })
+        .unwrap();
+        let frame = serde_json::json!({
+            "type": "execution_profile",
+            "update": {
+                "requested": requested,
+                "applies_on_next_program_install_or_process_restart": false,
+            },
+            "message": "current persisted execution profile",
+        });
+        let ok = WorldClient::parse_set_execution_profile_reply(&frame).unwrap();
+        // Success returns the frame unchanged (byte-identical Value).
+        assert_eq!(ok, frame);
+
+        // Missing update, missing/null requested, and a mistyped
+        // requested all refuse with the malformed-profile error.
+        for bad_reply in [
+            serde_json::json!({"type": "execution_profile", "message": "ok"}),
+            serde_json::json!({"type": "execution_profile", "update": {}, "message": "ok"}),
+            serde_json::json!({"type": "execution_profile", "update": {"requested": null}, "message": "ok"}),
+            serde_json::json!({"type": "execution_profile", "update": {"requested": {"wasm_fuel": "lots"}}, "message": "ok"}),
+        ] {
+            let result = WorldClient::parse_set_execution_profile_reply(&bad_reply);
+            assert!(result.is_err(), "reply {bad_reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed execution profile"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A non-execution_profile frame still bails with the host's
+        // message.
+        let refused = WorldClient::parse_set_execution_profile_reply(&serde_json::json!({
+            "type": "error",
+            "message": "admin token refused",
+        }));
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("admin token refused")
+        );
+    }
+
+    #[test]
     fn policy_reply_requires_a_valid_policy() {
         // A well-formed policy is returned verbatim for Value consumers.
         let policy = serde_json::json!({
@@ -3050,6 +3238,127 @@ mod tests {
             assert!(
                 WorldClient::parse_policy_reply(&bad).is_err(),
                 "accepted a malformed policy reply: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn world_state_reply_requires_a_u64_seed_when_present() {
+        // Issue #6626: a present-but-mistyped `seed` must error, not
+        // silently read as the capability-only `None` (which the
+        // manifest-capture consumer then bakes in as seed 0). Only an
+        // absent seed is `None` outright; a null seed is also `None`,
+        // because that is how the host serializes a hidden seed
+        // (`ServerFrame::WorldState.seed`, #240 seed-hiding). Driven
+        // through the factored reply parser manifest_state() uses.
+        let parse = WorldClient::parse_world_state_reply;
+
+        // Controls: a numeric seed, and the legitimate absent seed.
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "seed": 42, "schedules": {"a": 1},
+        }))
+        .unwrap();
+        assert_eq!(seed, Some(42));
+        assert_eq!(schedules.get("a"), Some(&1));
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "schedules": {},
+        }))
+        .unwrap();
+        assert_eq!(seed, None);
+        assert!(schedules.is_empty());
+        // The host's actual capability-only shape: `"seed": null`.
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "seed": null, "schedules": {"b": 2},
+        }))
+        .unwrap();
+        assert_eq!(seed, None);
+        assert_eq!(schedules.get("b"), Some(&2));
+
+        // Every mistyped shape errors and names the malformed seed.
+        for bad in [
+            serde_json::json!("42"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!(true),
+        ] {
+            let err = parse(&serde_json::json!({
+                "type": "world_state", "seed": bad, "schedules": {},
+            }))
+            .err()
+            .unwrap_or_else(|| panic!("seed {bad} must be refused"));
+            assert!(
+                err.to_string().contains("malformed seed"),
+                "seed {bad}: {err}"
+            );
+        }
+
+        // The sibling field keeps its strict decode.
+        let err = parse(&serde_json::json!({
+            "type": "world_state", "seed": 42, "schedules": {"a": "x"},
+        }))
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("malformed schedule map"), "{err}");
+
+        // A refusal frame still surfaces the host's message.
+        let err = parse(&serde_json::json!({
+            "type": "error", "message": "admin token refused",
+        }))
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("admin token refused"), "{err}");
+    }
+
+    // Property coverage for the same parser (repo testing doctrine:
+    // a parser's invariants are stated once and hammered with
+    // generated inputs, not just the examples above). Oracle: the
+    // typed frame contract — `ServerFrame::WorldState.seed` is an
+    // `Option<u64>` on the wire (a u64, or null when the host hides
+    // the seed, #240), and `schedules` is a string→u64 map that
+    // passes through untouched.
+    proptest! {
+        #[test]
+        fn world_state_reply_seed_and_schedule_invariants(
+            seed in any::<u64>(),
+            schedules in proptest::collection::btree_map(any::<String>(), any::<u64>(), 0..8),
+            mistyped in prop_oneof![
+                any::<String>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<u64>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<u64>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let frame = |seed_value: serde_json::Value| {
+                serde_json::json!({
+                    "type": "world_state",
+                    "seed": seed_value,
+                    "schedules": serde_json::to_value(&schedules).unwrap(),
+                })
+            };
+            // A valid u64 seed is preserved; the schedule map passes
+            // through verbatim.
+            let (parsed_seed, parsed_schedules) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::from(seed)))
+                    .unwrap();
+            prop_assert_eq!(parsed_seed, Some(seed));
+            prop_assert_eq!(parsed_schedules, schedules.clone());
+            // Null (the host's hidden-seed shape) reads as None.
+            let (parsed_seed, _) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::Null)).unwrap();
+            prop_assert_eq!(parsed_seed, None);
+            // Any other seed type is refused as malformed.
+            let result = WorldClient::parse_world_state_reply(&frame(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed seed")
             );
         }
     }
@@ -3825,6 +4134,53 @@ mod tests {
         capability
     }
 
+    #[test]
+    fn route_frame_inserts_bound_world_when_absent() {
+        // Oracle: the routed frame is the input frame plus exactly one
+        // added key, `world` naming the bound world (issue #4576).
+        let frame = serde_json::json!({"type": "join", "capability": "cap"});
+        let routed: serde_json::Value =
+            serde_json::from_str(&route_frame(&frame, Some("alpha"))).unwrap();
+        assert_eq!(
+            routed,
+            serde_json::json!({"type": "join", "capability": "cap", "world": "alpha"})
+        );
+    }
+
+    #[test]
+    fn route_frame_bound_world_overrides_frames_own_world_key() {
+        // Issue #4576: a frame pre-keyed to another world must not drag a
+        // session bound to `alpha` into `beta` — the bound world wins.
+        let frame = serde_json::json!({"type": "join", "capability": "cap", "world": "beta"});
+        let routed: serde_json::Value =
+            serde_json::from_str(&route_frame(&frame, Some("alpha"))).unwrap();
+        assert_eq!(routed["world"], "alpha");
+        assert_eq!(routed["capability"], "cap");
+    }
+
+    #[test]
+    fn route_frame_noop_when_frame_world_equals_bound_world() {
+        let frame = serde_json::json!({"type": "chat", "text": "hi", "world": "alpha"});
+        let routed: serde_json::Value =
+            serde_json::from_str(&route_frame(&frame, Some("alpha"))).unwrap();
+        assert_eq!(routed, frame);
+    }
+
+    #[test]
+    fn route_frame_none_bound_world_leaves_frame_untouched() {
+        // No bound world: the host default applies, so a frame is passed
+        // through exactly as given, keyed or not, object or not.
+        let keyed = serde_json::json!({"type": "join", "world": "beta"});
+        assert_eq!(route_frame(&keyed, None), keyed.to_string());
+        let plain = serde_json::json!({"type": "join"});
+        assert_eq!(route_frame(&plain, None), plain.to_string());
+        let non_object = serde_json::json!(["world", "beta"]);
+        assert_eq!(
+            route_frame(&non_object, Some("alpha")),
+            non_object.to_string()
+        );
+    }
+
     #[tokio::test]
     async fn coordinator_holds_two_worlds_on_one_endpoint_concurrently() {
         let (router, hub, addr, host_ep) = hub_host().await;
@@ -3878,6 +4234,61 @@ mod tests {
         let frame = next(again).await.unwrap();
         assert!(frame.to_string().contains("still alpha"));
         assert_eq!(sessions.session_count(), 2);
+
+        sessions.close_all();
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        host_ep.close().await;
+    }
+
+    #[tokio::test]
+    async fn coordinator_session_cannot_lease_another_world_via_prekeyed_first_frame() {
+        // Issue #4576: a session the coordinator opened for world `alpha`
+        // must not end up leased to `beta` because its first frame arrives
+        // pre-keyed with `"world": "beta"`. The bound world wins in
+        // route_frame, so the join lands in alpha: the alpha capability
+        // validates there (snapshot, not an error), and alpha chat never
+        // reaches the genuine beta session.
+        let (router, hub, addr, host_ep) = hub_host().await;
+        let client_ep = endpoint().await;
+        let cap_alpha = invite_for(&client_ep, &addr, Some("alpha"), "ann").await;
+        let cap_beta = invite_for(&client_ep, &addr, Some("beta"), "bob").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let s = sessions
+            .open_session(addr.clone(), Some("alpha"))
+            .await
+            .unwrap();
+        let mut prekeyed = join(&cap_alpha, None);
+        prekeyed["world"] = serde_json::json!("beta");
+        s.send_json(&prekeyed).await.unwrap();
+        assert_eq!(
+            next(s).await.unwrap()["type"],
+            "snapshot",
+            "pre-keyed join must be re-routed to the bound world (alpha)"
+        );
+
+        // A genuine beta session joins beta; alpha's chat stays in alpha.
+        let b = sessions
+            .open_session(addr.clone(), Some("beta"))
+            .await
+            .unwrap();
+        b.send_json(&join(&cap_beta, None)).await.unwrap();
+        assert_eq!(next(b).await.unwrap()["type"], "snapshot");
+        let alpha = sessions.session(&addr, Some("alpha")).unwrap();
+        alpha
+            .send_json(&serde_json::json!({"type": "chat", "text": "alpha only"}))
+            .await
+            .unwrap();
+        let frame = next(alpha).await.unwrap();
+        assert!(frame.to_string().contains("alpha only"));
+        let beta = sessions.session(&addr, Some("beta")).unwrap();
+        let silent =
+            tokio::time::timeout(std::time::Duration::from_millis(500), beta.recv_json()).await;
+        assert!(
+            silent.is_err(),
+            "beta session received alpha's chat — the alpha session leaked into beta: {silent:?}"
+        );
 
         sessions.close_all();
         client_ep.close().await;

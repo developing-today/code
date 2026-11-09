@@ -7,7 +7,12 @@ The backup tree (default ~/backups/github) holds only data + generated
 state (plan.json, MANIFEST.json, logs); all logic lives in the repo.
 """
 
-import json, os, subprocess, sys
+import contextlib, json, os, shutil, subprocess, sys, tempfile
+
+try:
+    import fcntl
+except ImportError:  # non-Unix: the lock helper degrades to a no-op
+    fcntl = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GB_DIR = os.path.dirname(HERE)
@@ -33,10 +38,52 @@ def run(cmd, **kw):
 
 
 def valid_mirror(path):
+    """A mirror is valid only if it can prove it holds history (#3238).
+
+    Design #3282 rule 1 — validity is resolvability: the destination
+    must be a bare repository AND its HEAD must resolve to a commit
+    (`rev-parse --verify -q HEAD`, the same call manifest.head_sha
+    makes). Bareness alone is true from the moment `git clone
+    --mirror` creates the destination skeleton, before any ref or
+    object has transferred, so a clone killed in that window used to
+    pass everywhere as a verified mirror while holding nothing.
+
+    There is deliberately no emptiness exception: a planned repo is
+    never legitimately empty — build_plan excludes zero-commit repos
+    under the live config (skip_zero_commit_repos) — so an
+    unresolvable HEAD inside the plan is always a skeleton, never a
+    valid empty mirror.
+    """
     if not os.path.isdir(path):
         return False
     r = run(["git", "-C", path, "rev-parse", "--is-bare-repository"])
-    return r.returncode == 0 and r.stdout.strip() == "true"
+    if r.returncode != 0 or r.stdout.strip() != "true":
+        return False
+    h = run(["git", "-C", path, "rev-parse", "--verify", "-q", "HEAD"])
+    return h.returncode == 0 and bool(h.stdout.strip())
+
+
+def is_skeleton_mirror(path):
+    """True for a bare skeleton: bare, HEAD unresolvable, zero refs.
+
+    This is the destination state a `clone --mirror` creates before
+    transport and a killed clone leaves behind (#3238). By
+    construction it holds no refs and no reachable objects, so
+    removing it loses nothing — design #3282 rule 2's skeleton
+    disposition (remove and clone). A bare repository WITH refs is
+    never a skeleton, whatever its HEAD state: it may hold the only
+    copy of transferred objects and must be preserved.
+    """
+    if not os.path.isdir(path):
+        return False
+    r = run(["git", "-C", path, "rev-parse", "--is-bare-repository"])
+    if r.returncode != 0 or r.stdout.strip() != "true":
+        return False
+    h = run(["git", "-C", path, "rev-parse", "--verify", "-q", "HEAD"])
+    if h.returncode == 0:
+        return False
+    refs = run(["git", "-C", path, "for-each-ref"])
+    return refs.returncode == 0 and not refs.stdout.strip()
 
 
 def disk_kb(path):
@@ -64,11 +111,21 @@ query($login: String!, $after: String) {
 """
 
 
+# Hard page bound for inventory_owner (#6840): at 100 repos per page
+# this still admits 100,000 repos under one owner — far above any real
+# owner's page count — while guaranteeing the loop terminates even if
+# a server invents a fresh advancing cursor on every page forever.
+MAX_INVENTORY_PAGES = 1000
+
+
 def inventory_owner(owner):
     """All repos visible to the gh token under one owner, via GraphQL."""
     repos = []
     after = None
+    seen_cursors = set()
+    pages = 0
     while True:
+        pages += 1
         variables = {"login": owner}
         if after:
             variables["after"] = after
@@ -107,12 +164,28 @@ def inventory_owner(owner):
                 f"gh api graphql for {owner}: malformed repositories "
                 f"connection (nodes/pageInfo missing)"
             )
-        for n in conn["nodes"]:
+        for i, n in enumerate(conn["nodes"]):
+            if not (
+                isinstance(n, dict)
+                and isinstance(n.get("nameWithOwner"), str)
+                and n["nameWithOwner"]
+            ):
+                # A malformed node is a poison entry (#6637 discipline,
+                # #6840): name it and skip it — a raw TypeError/KeyError
+                # from the subscript would fail the owner's whole
+                # inventory over one bad repo record.
+                print(
+                    f"github-backup: inventory for {owner}: page {pages} "
+                    f"node {i} is not an object with a non-empty string "
+                    f"'nameWithOwner' (got {_shape(n)}) \u2014 skipped",
+                    file=sys.stderr,
+                )
+                continue
             repos.append(
                 {
                     "repo": n["nameWithOwner"],
-                    "fork": bool(n["isFork"]),
-                    "archived": bool(n["isArchived"]),
+                    "fork": bool(n.get("isFork")),
+                    "archived": bool(n.get("isArchived")),
                     "size_kb": n.get("diskUsage") or 0,
                     "parent": (n.get("parent") or {}).get("nameWithOwner"),
                     "branch": (n.get("defaultBranchRef") or {}).get("name"),
@@ -124,7 +197,24 @@ def inventory_owner(owner):
                 }
             )
         if conn["pageInfo"]["hasNextPage"]:
-            after = conn["pageInfo"]["endCursor"]
+            if pages >= MAX_INVENTORY_PAGES:
+                raise RuntimeError(
+                    f"gh api graphql for {owner}: pagination exceeded "
+                    f"{MAX_INVENTORY_PAGES} pages with hasNextPage still "
+                    f"true; refusing to page unboundedly"
+                )
+            next_after = conn["pageInfo"]["endCursor"]
+            if (
+                not isinstance(next_after, str)
+                or not next_after
+                or next_after in seen_cursors
+            ):
+                raise RuntimeError(
+                    f"gh api graphql for {owner}: hasNextPage true with malformed "
+                    f"endCursor {next_after!r}; expected a non-empty advancing cursor"
+                )
+            seen_cursors.add(next_after)
+            after = next_after
         else:
             return repos
 
@@ -141,9 +231,140 @@ def inventory(owners):
     return out, errors
 
 
+# ------------------------------------------- generated-state IO (#3240)
+# Design #3282 rule 6: generated state (plan.json, state.json,
+# MANIFEST.json, and the markdown reports built from them) is written
+# atomically and loaded tolerantly, only through these helpers. A
+# writer killed mid-dump (laptop sleep, reboot, driver timeout) must
+# never leave a torn live file, and a pre-existing torn file must
+# never wedge every reader at startup with a raw JSONDecodeError.
+
+LAST_GOOD_SUFFIX = ".last-good"
+
+
+def _atomic_replace(path, text):
+    """Write `text` to `path` atomically: temp file in the SAME
+    directory, fsync, os.replace, directory fsync (best effort). A
+    reader only ever observes the previous complete file or the new
+    complete file — never a partial one."""
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(
+        dir=directory, prefix=".ghb-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    with contextlib.suppress(OSError):
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+
+def atomic_write_text(path, text):
+    """Atomically replace `path` with `text`, keeping the previous
+    complete version at `<path>.last-good` for the tolerant loader."""
+    if os.path.exists(path):
+        with contextlib.suppress(OSError):
+            with open(path) as f:
+                previous = f.read()
+            _atomic_replace(path + LAST_GOOD_SUFFIX, previous)
+    _atomic_replace(path, text)
+
+
+def save_json(path, obj, **dump_kw):
+    """Serialize + atomically write a generated-state JSON file."""
+    dump_kw.setdefault("indent", 0)
+    atomic_write_text(path, json.dumps(obj, **dump_kw))
+
+
+def load_json_tolerant(path, default, source):
+    """Load a generated-state JSON file tolerantly (#3240).
+
+    Returns (value, problems). Missing file = (default, []). A torn
+    or unreadable live file falls back to the `<path>.last-good`
+    copy kept by atomic_write_text; if that also fails, (default,
+    [problem]). Every fallback is a loud, named problem — corruption
+    is surfaced by the callers' report_problems, never silent and
+    never a startup traceback.
+    """
+    if not os.path.exists(path):
+        return default, []
+    try:
+        with open(path) as f:
+            return json.load(f), []
+    except (OSError, ValueError) as e:
+        problems = [
+            f"{source}: cannot load {os.path.basename(path)} "
+            f"({type(e).__name__}: {e}) — trying last-good copy"
+        ]
+    backup = path + LAST_GOOD_SUFFIX
+    if os.path.exists(backup):
+        try:
+            with open(backup) as f:
+                value = json.load(f)
+            problems.append(
+                f"{source}: {os.path.basename(path)} is torn; fell "
+                f"back to the last-good copy — the live file needs "
+                f"repair on the next successful write"
+            )
+            return value, problems
+        except (OSError, ValueError) as e:
+            problems.append(
+                f"{source}: last-good copy also unusable "
+                f"({type(e).__name__}: {e})"
+            )
+    problems.append(
+        f"{source}: {os.path.basename(path)} treated as empty"
+    )
+    return default, problems
+
+
+@contextlib.contextmanager
+def state_lock(root):
+    """Shared flock for state.json read-modify-write (#3240).
+
+    The daily fetch and the 5-minute drainer both load state.json,
+    modify it, and write it back; without a lock, one writer's
+    read-modify-write window silently drops the other's updates.
+    Hold this around the whole load -> modify -> save cycle. The
+    lock lives on a dedicated lockfile (never replaced), and
+    degrades to a no-op where fcntl is unavailable.
+    """
+    if fcntl is None:
+        yield
+        return
+    os.makedirs(root, exist_ok=True)
+    fd = os.open(os.path.join(root, "state.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 # ------------------------------------------------------- plan/state files
 def _shape(value):
     return type(value).__name__
+
+
+# Plan fields every consumer treats as a repo name / branch name (or
+# null): clone_all hashes "reference" into its scheduler state and
+# passes "branch" to manifest's head_sha string concatenation;
+# manifest groups families by "reference", sorts the anchors, and
+# copies "parent" into MANIFEST.json. All three must be strings or
+# null — any other JSON shape is poison (#6834).
+_PLAN_STRING_FIELDS = ("reference", "branch", "parent")
 
 
 def validate_plan(plan, source="plan.json"):
@@ -154,6 +375,17 @@ def validate_plan(plan, source="plan.json"):
     poison entry (#6637): it is reported by index and skipped, never
     allowed to crash the run for every other repo. A non-list top
     level invalidates the whole file as a single named problem.
+
+    The consumed string fields ("reference", "branch", "parent")
+    are validated per entry (#6834): a value that is neither a string
+    nor null/absent is reported by entry and field and neutralized
+    to None — a list/dict reference is unhashable in clone_all's
+    scheduler and manifest's family grouping, a numeric reference
+    crashes manifest's mixed-type anchor sort (or writes a bogus
+    FAMILIES anchor), and a non-string branch crashes head_sha for a
+    present mirror. The entry itself is kept: its repo is fine, only
+    the poisoned field is dropped. Entries are copied, never mutated
+    in place.
     """
     if not isinstance(plan, list):
         return [], [
@@ -162,13 +394,23 @@ def validate_plan(plan, source="plan.json"):
         ]
     entries, problems = [], []
     for i, item in enumerate(plan):
-        if isinstance(item, dict) and isinstance(item.get("repo"), str):
-            entries.append(item)
-        else:
+        if not (isinstance(item, dict) and isinstance(item.get("repo"), str)):
             problems.append(
                 f"{source}: entry {i} is not an object with a string "
                 f"'repo' (got {_shape(item)}) — skipped"
             )
+            continue
+        entry = dict(item)
+        for field in _PLAN_STRING_FIELDS:
+            value = entry.get(field)
+            if value is not None and not isinstance(value, str):
+                problems.append(
+                    f"{source}: entry {i} ({entry['repo']}) field "
+                    f"'{field}' is {_shape(value)}, expected a string "
+                    f"or null — set to null"
+                )
+                entry[field] = None
+        entries.append(entry)
     return entries, problems
 
 
@@ -222,21 +464,25 @@ def validate_state(state, source="state.json"):
 
 
 def load_plan(root):
-    """Load + validate plan.json under `root` (missing file = empty)."""
+    """Load + validate plan.json under `root` (missing file = empty).
+
+    Tolerant (#3240): a torn plan.json falls back to its last-good
+    copy (or empty) with named problems, never a JSONDecodeError at
+    startup."""
     path = os.path.join(root, "plan.json")
-    if not os.path.exists(path):
-        return [], []
-    with open(path) as f:
-        return validate_plan(json.load(f))
+    raw, problems = load_json_tolerant(path, [], "plan.json")
+    entries, shape_problems = validate_plan(raw)
+    return entries, problems + shape_problems
 
 
 def load_state(root):
-    """Load + validate state.json under `root` (missing file = empty)."""
+    """Load + validate state.json under `root` (missing file = empty).
+
+    Tolerant (#3240), same contract as load_plan."""
     path = os.path.join(root, "state.json")
-    if not os.path.exists(path):
-        return {}, []
-    with open(path) as f:
-        return validate_state(json.load(f))
+    raw, problems = load_json_tolerant(path, {}, "state.json")
+    clean, shape_problems = validate_state(raw)
+    return clean, problems + shape_problems
 
 
 def clone_status_record(line):

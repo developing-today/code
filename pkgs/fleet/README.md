@@ -28,8 +28,14 @@ crates/fleet-registry/      the FULL domain registry — every domain's
                             capability ids behind them. Compiled into
                             every variant, so --help is always complete.
 crates/fleet-config/        fleet.toml: [domains] switches, [proxy],
-                            [secrets], [dispatch]; path/ports/socket
-                            constants.
+                            [secrets], [queue-broker], [secrets-broker],
+                            [dispatch]; path/ports/socket constants.
+                            Role sockets (#6215, design #5699):
+                            env > [<role>] socket > $XDG_RUNTIME_DIR/
+                            fleet/<role>.sock > the $HOME default;
+                            [<role>] transport = "socket" | "tcp" is a
+                            preference between working routes (the
+                            search_via shape), never a disable lever.
 crates/fleet-secrets/       secrets by NAME only (broker first, then
                             `bws` fallback). Values never appear in
                             code, tests, errors or logs.
@@ -171,7 +177,16 @@ while the installed 0.1.0 binaries kept answering
 backend-down shifts.
 
 Build ONE artifact from current `main` and deploy that same build to
-both installs:
+both installs. If the build fails in the cargo vendor step with
+`no matching package named '<crate>' found ... required by package
+'atlas-core'` (or another atlas crate), `pkgs/fleet/Cargo.lock` has
+drifted from the atlas-search path dependencies again — the fleet
+lock covers their external dependencies too (see `default.nix`).
+Regenerate it before building:
+
+```sh
+(cd pkgs/fleet && cargo update --workspace)
+```
 
 ```sh
 nix build .#fleet
