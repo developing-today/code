@@ -34,8 +34,14 @@ pub mod filters;
 pub mod fusion;
 pub mod local;
 pub mod search;
+pub mod shards;
+pub mod stage;
 pub mod turso;
 pub mod types;
+
+/// Maximum neighbor chunks search expansion may attach to each result.
+/// Keep this aligned with the service's get-chunk neighbors ceiling.
+pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
 pub use backend::SearchBackend;
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
@@ -50,6 +56,10 @@ pub use local::LocalBackend;
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, run_get_chunk,
     run_search, run_search_with_executor,
+};
+pub use stage::{
+    REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
+    UnitState, check_stage_schema, provision_staging_db, schema_version,
 };
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};

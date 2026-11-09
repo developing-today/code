@@ -237,6 +237,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn builder_installed_requires_v2_and_a_v1_reader_refuses_that_header() {
+        let entry = JournalEntry::BuilderInstalled {
+            by: 7,
+            module_hash: "module".to_owned(),
+            seed: 9,
+        };
+        assert_eq!(
+            journal_version_required_by(&entry),
+            JOURNAL_VERSION_EXECUTION_PROFILE
+        );
+        // This exercises the same header check as restore, with the maximum
+        // version supported by a version-1 binary. It rejects before replaying
+        // any entries from the journal.
+        let error = crate::world::core::check_journal_version(
+            JOURNAL_VERSION_EXECUTION_PROFILE,
+            JOURNAL_VERSION,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported world journal version")
+        );
+    }
+
     fn handoff_event() -> WorldEvent {
         WorldEvent {
             sequence: 0,
@@ -2079,13 +2105,13 @@ mod tests {
         );
     }
 
-    fn issued_entry(scopes: u8) -> JournalEntry {
+    fn issued_entry_for(participant_id: u64, scopes: u8) -> JournalEntry {
         let secret = "ef".repeat(32);
-        let digest = hex_encode(&token_digest(&format!("1.{secret}")));
+        let digest = hex_encode(&token_digest(&format!("{participant_id}.{secret}")));
         JournalEntry::Issued {
             participant: Participant {
-                id: 1,
-                display_name: "ann".to_owned(),
+                id: participant_id,
+                display_name: format!("ann-{participant_id}"),
             },
             digest,
             scopes,
@@ -2095,6 +2121,251 @@ mod tests {
             used: 0,
             subject: None,
         }
+    }
+
+    fn issued_entry(scopes: u8) -> JournalEntry {
+        issued_entry_for(1, scopes)
+    }
+
+    fn restore_author_entries(entries: Vec<JournalEntry>) -> anyhow::Result<RestoredWorld> {
+        WorldCore::restore(
+            "restore-authors",
+            WorldLimits::default(),
+            std::iter::once(JournalEntry::Created {
+                world_id: "restore-authors".to_owned(),
+                version: JOURNAL_VERSION,
+            })
+            .chain(entries),
+        )
+    }
+
+    fn committed_event(sequence: u64, participant_id: u64, kind: WorldEventKind) -> JournalEntry {
+        JournalEntry::Committed {
+            event: WorldEvent {
+                sequence,
+                participant_id,
+                kind,
+            },
+        }
+    }
+
+    fn checkpoint_event(sequence: u64, events: Vec<WorldEvent>) -> JournalEntry {
+        JournalEntry::Checkpoint {
+            sequence,
+            module_hash: "module".to_owned(),
+            seed: 0,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "snapshot".to_owned(),
+            events,
+            admin_history: None,
+            lease: None,
+            open_presence: None,
+        }
+    }
+
+    #[test]
+    fn restore_refuses_committed_events_from_never_issued_participants() {
+        for kind in [
+            WorldEventKind::Input(b"ghost".to_vec()),
+            WorldEventKind::Chat("ghost".to_owned()),
+        ] {
+            let error = restore_author_entries(vec![committed_event(1, 99, kind)]).unwrap_err();
+            assert!(
+                error.to_string().contains("before it was issued"),
+                "error explains the missing prior issuance: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_refuses_checkpoint_events_from_never_issued_participants() {
+        let error = restore_author_entries(vec![checkpoint_event(
+            1,
+            vec![WorldEvent {
+                sequence: 1,
+                participant_id: 99,
+                kind: WorldEventKind::Input(b"ghost".to_vec()),
+            }],
+        )])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("before it was issued"),
+            "error explains the missing prior issuance: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_events_from_participants_issued_later() {
+        let error = restore_author_entries(vec![
+            committed_event(1, 2, WorldEventKind::Input(b"late".to_vec())),
+            issued_entry_for(2, WorldScopes::GUEST.bits()),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("before it was issued"),
+            "error explains the missing prior issuance: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_committed_events_after_author_revocation() {
+        let error = restore_author_entries(vec![
+            issued_entry(WorldScopes::GUEST.bits()),
+            JournalEntry::Revoked {
+                participant_id: 1,
+                by: None,
+            },
+            committed_event(1, 1, WorldEventKind::Chat("after revoke".to_owned())),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("after revocation"),
+            "error explains the earlier revocation: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_input_and_chat_without_the_matching_scope() {
+        for (kind, scope_name) in [
+            (WorldEventKind::Input(b"move".to_vec()), "INPUT"),
+            (WorldEventKind::Chat("hello".to_owned()), "CHAT"),
+        ] {
+            let error = restore_author_entries(vec![
+                issued_entry(WorldScopes::JOIN.bits()),
+                committed_event(1, 1, kind),
+            ])
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("without {scope_name} scope")),
+                "error explains the missing scope: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_refuses_checkpoint_events_without_the_matching_scope() {
+        let error = restore_author_entries(vec![
+            issued_entry(WorldScopes::JOIN.bits()),
+            checkpoint_event(
+                1,
+                vec![WorldEvent {
+                    sequence: 1,
+                    participant_id: 1,
+                    kind: WorldEventKind::Chat("unauthorized".to_owned()),
+                }],
+            ),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("without CHAT scope"),
+            "error explains the missing scope: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_accepts_host_chat_and_committed_content_before_later_revocation() {
+        let host_chat = restore_author_entries(vec![committed_event(
+            1,
+            0,
+            WorldEventKind::Chat("host".to_owned()),
+        )])
+        .unwrap();
+        assert!(matches!(
+            host_chat.core.events.back().map(|event| &event.kind),
+            Some(WorldEventKind::Chat(text)) if text == "host"
+        ));
+
+        let restored = restore_author_entries(vec![
+            issued_entry(WorldScopes::GUEST.bits()),
+            committed_event(1, 1, WorldEventKind::Chat("before revoke".to_owned())),
+            JournalEntry::Revoked {
+                participant_id: 1,
+                by: None,
+            },
+        ])
+        .unwrap();
+        assert!(matches!(
+            restored.core.events.back().map(|event| &event.kind),
+            Some(WorldEventKind::Chat(text)) if text == "before revoke"
+        ));
+    }
+
+    #[test]
+    fn checkpoint_restore_keeps_valid_history_from_later_revoked_participant() {
+        let mut core = world(8);
+        let (participant, token) = core
+            .issue_capability("Ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        core.input(&token, b"before revoke").unwrap();
+        assert_eq!(core.revoke_tree(participant.id), vec![participant.id]);
+        core.active_module_hash = Some("module".to_owned());
+
+        let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert!(matches!(
+            restored.core.events.back(),
+            Some(WorldEvent {
+                participant_id,
+                kind: WorldEventKind::Input(input),
+                ..
+            }) if *participant_id == participant.id && input.as_slice() == b"before revoke"
+        ));
+    }
+
+    #[test]
+    fn restore_accepts_friend_delegated_history_without_directory_state() {
+        // Codex P1 on PR #4518: restore runs before the directory loads,
+        // so scope validation must use the recorded capability chain.
+        // A participant delegated by a parent with a different subject
+        // (the friend-delegation shape) has zero effective scopes under
+        // an empty directory; its valid history must still restore.
+        let secret = "ef".repeat(32);
+        let issued_with =
+            |id: u64, scopes: u8, parent: Option<u64>, subject: &str| JournalEntry::Issued {
+                participant: Participant {
+                    id,
+                    display_name: format!("delegate-{id}"),
+                },
+                digest: hex_encode(&token_digest(&format!("{id}.{secret}"))),
+                scopes,
+                parent,
+                expires_at: None,
+                uses: None,
+                used: 0,
+                subject: Some(subject.to_owned()),
+            };
+        let delegated_scopes = WorldScopes::JOIN.0 | WorldScopes::INPUT.0 | WorldScopes::CHAT.0;
+        let entries = vec![
+            issued_with(1, WorldScopes::ALL.bits(), None, "subject-a"),
+            issued_with(2, delegated_scopes, Some(1), "subject-b"),
+            committed_event(1, 2, WorldEventKind::Input(b"hello".to_vec())),
+            committed_event(2, 2, WorldEventKind::Chat("hi".to_owned())),
+        ];
+        let restored = restore_author_entries(entries).unwrap();
+        assert!(
+            restored.core.capabilities.get(&2).is_some(),
+            "delegated participant restores"
+        );
+
+        let checkpoint = vec![
+            issued_with(1, WorldScopes::ALL.bits(), None, "subject-a"),
+            issued_with(2, delegated_scopes, Some(1), "subject-b"),
+            checkpoint_event(
+                1,
+                vec![WorldEvent {
+                    sequence: 1,
+                    participant_id: 2,
+                    kind: WorldEventKind::Input(b"kept".to_vec()),
+                }],
+            ),
+        ];
+        restore_author_entries(checkpoint).unwrap();
     }
 
     fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
@@ -5120,6 +5391,42 @@ mod tests {
     }
 
     #[test]
+    fn records_refuse_duplicate_keys() {
+        // Oracle: the written document. Any repeated object key, at any
+        // depth, is a parse error naming the repeated key (#6473, #6520).
+        for text in [
+            r#"{"a":1,"a":2}"#,
+            r#"{"a":{"b":1,"b":2}}"#,
+            r#"{"a":[{"b":1,"b":2}]}"#,
+        ] {
+            let err = parse_records(text).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("duplicate JSON object key"),
+                "{err:#}"
+            );
+        }
+        // An oversized value hidden behind a small duplicate never reaches
+        // the size check as a collapsed survivor: the duplicate refuses it.
+        let hidden = format!(r#"{{"k":"{}","k":1}}"#, "v".repeat(MAX_RECORD_VALUE_BYTES));
+        assert!(parse_records(&hidden).is_err());
+        // 4097 raw entries collapsing to 4096 distinct keys are refused as
+        // duplicates, so the count cap can no longer be evaded by collapse.
+        let mut raw = String::from("{");
+        for i in 0..=MAX_RECORDS {
+            if i > 0 {
+                raw.push(',');
+            }
+            raw.push_str(&format!("\"{i}\":0"));
+        }
+        raw.push_str(",\"0\":0}");
+        assert!(parse_records(&raw).is_err());
+        // Distinct-key inputs parse identically to before.
+        let ok = parse_records(r#"{"a":1,"b":{"c":[true]}}"#).unwrap();
+        assert_eq!(ok.len(), 2);
+        assert_eq!(ok["b"]["c"][0], serde_json::Value::Bool(true));
+    }
+
+    #[test]
     fn snapshots_carry_the_newest_events_that_fit_their_budget() {
         let mut core = WorldCore::new(
             "budget",
@@ -7134,6 +7441,568 @@ mod schedule_tests {
             reason.contains("already pending"),
             "unexpected reason: {reason}"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod audit_tests {
+    use super::*;
+    use std::fmt::Debug;
+    use std::sync::Mutex;
+
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::{Layer, prelude::*};
+
+    #[derive(Clone)]
+    struct AuditCapture(Arc<Mutex<Vec<serde_json::Value>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for AuditCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _context: Context<'_, S>) {
+            if event.metadata().target() != "id::audit" {
+                return;
+            }
+            let mut visitor = AuditFieldVisitor::default();
+            event.record(&mut visitor);
+            let Some(json) = visitor.record else {
+                return;
+            };
+            if let Ok(record) = serde_json::from_str(&json) {
+                self.0.lock().unwrap().push(record);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct AuditFieldVisitor {
+        record: Option<String>,
+    }
+
+    impl Visit for AuditFieldVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "audit_record" {
+                self.record = Some(value.to_owned());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+            if field.name() == "audit_record" {
+                let formatted = format!("{value:?}");
+                self.record = Some(serde_json::from_str::<String>(&formatted).unwrap_or(formatted));
+            }
+        }
+    }
+
+    struct FirstUseProgram;
+
+    impl WorldProgram for FirstUseProgram {
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{"id": "first-use", "cap": "time.now"}]
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn admin_audit_replays_grants_and_ceiling_and_records_refusal_once() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new(
+            "audit-test",
+            WorldLimits {
+                grant_on_use: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec!["time.now".to_owned()],
+                    revoke: vec![],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::SetCapsCeiling {
+                    ceiling: vec!["time.now".to_owned(), "random.u64".to_owned()],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec![],
+                    revoke: vec!["time.now".to_owned()],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::SetCapsCeiling {
+                    ceiling: vec!["not-a-capability".to_owned()],
+                    reply,
+                })
+                .await;
+            assert!(response.await.unwrap().is_err());
+
+            actor.after_change().await;
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let refusal_count = captured
+            .iter()
+            .filter(|record| record["action"] == "SetCapsCeiling" && record["outcome"] == "refused")
+            .count();
+        assert_eq!(refusal_count, 1, "one refused command must emit one record");
+        assert_eq!(captured.len(), 5);
+
+        let mut replayed_grants = BTreeSet::new();
+        let mut replayed_ceiling = BTreeSet::new();
+        for record in &captured {
+            if record["outcome"] != "accepted" {
+                if record["action"] == "provider_use" && record["outcome"] == "first_use_grant" {
+                    replayed_grants.insert(
+                        record["parameters"]["capability"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                    );
+                }
+                continue;
+            }
+            match record["action"].as_str().unwrap() {
+                "UpdateCaps" => {
+                    for name in record["parameters"]["revoke"].as_array().unwrap() {
+                        replayed_grants.remove(name.as_str().unwrap());
+                    }
+                    for name in record["parameters"]["grant"].as_array().unwrap() {
+                        replayed_grants.insert(name.as_str().unwrap().to_owned());
+                    }
+                }
+                "SetCapsCeiling" => {
+                    replayed_ceiling = record["parameters"]["ceiling"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|name| name.as_str().unwrap().to_owned())
+                        .collect();
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(replayed_grants, *actor.core.ledger.granted());
+        assert_eq!(replayed_ceiling, actor.core.caps_ceiling);
+        assert!(captured.iter().any(|record| {
+            record["action"] == "provider_use"
+                && record["outcome"] == "first_use_grant"
+                && record["parameters"]["capability"] == "time.now"
+                && record["actor"] == "program"
+        }));
+        assert!(captured.iter().all(|record| {
+            record["schema_version"] == 1
+                && record["world_id"] == "audit-test"
+                && record.get("admin_token").is_none()
+        }));
+    }
+
+    #[test]
+    fn issuance_is_audited_alongside_revocation_without_the_token() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Issue {
+                    name: "Ann".to_owned(),
+                    scopes: WorldScopes::JOIN,
+                    bounds: CapabilityBounds::default(),
+                    reply,
+                })
+                .await;
+            let (participant, _token) = response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Revoke {
+                    participant_id: participant.id,
+                    by: None,
+                    reply,
+                })
+                .await;
+            assert!(response.await.unwrap());
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let issue_records: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "Issue")
+            .collect();
+        assert_eq!(
+            issue_records.len(),
+            1,
+            "one issuance must emit one audit record: {captured:?}"
+        );
+        let record = issue_records[0];
+        assert_eq!(record["outcome"], "accepted");
+        assert_eq!(record["parameters"]["name"], "Ann");
+        assert!(record["parameters"]["participant_id"].is_number());
+        assert!(
+            record.get("token").is_none() && record["parameters"].get("token").is_none(),
+            "the capability token is a secret and must never be audited"
+        );
+        assert!(
+            captured
+                .iter()
+                .any(|record| record["action"] == "Revoke" && record["outcome"] == "accepted"),
+            "issuance and revocation are both in the trail: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn install_program_writability_refusal_is_audited_once() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+        actor.read_only = true;
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::InstallProgram {
+                    module_hash: "deadbeef".to_owned(),
+                    seed: 7,
+                    provenance: None,
+                    installed_by: None,
+                    trust: None,
+                    program: Box::new(FirstUseProgram),
+                    reply,
+                })
+                .await;
+            let error = response.await.unwrap().unwrap_err();
+            assert!(
+                format!("{error:#}").contains("read-only"),
+                "the refusal is the writability check: {error:#}"
+            );
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let install_records: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "InstallProgram")
+            .collect();
+        assert_eq!(
+            install_records.len(),
+            1,
+            "one writability refusal must emit exactly one audit record: {captured:?}"
+        );
+        assert_eq!(install_records[0]["outcome"], "refused");
+        assert_eq!(install_records[0]["parameters"]["module_hash"], "deadbeef");
+    }
+
+    #[test]
+    fn participant_readable_queries_emit_no_admin_audit_record() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::Metrics { reply }).await;
+            let _snapshot = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::CapsInfo { reply }).await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::ExecutionProfileInfo { reply })
+                .await;
+            let _profile = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::ManifestState { reply }).await;
+            let _state = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::IsolationInfo { reply }).await;
+            let _isolation = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::PolicyInfo { reply }).await;
+            let _policy = response.await.unwrap();
+        });
+
+        let captured = records.lock().unwrap().clone();
+        assert!(
+            captured.is_empty(),
+            "participant-readable queries must not be audited as admin: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn revocation_on_a_read_only_replica_is_audited_once_as_refused() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+        actor.read_only = true;
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Revoke {
+                    participant_id: 41,
+                    by: None,
+                    reply,
+                })
+                .await;
+            assert!(
+                !response.await.unwrap(),
+                "a replica revocation reports nothing revoked"
+            );
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let revoke_records: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "Revoke")
+            .collect();
+        assert_eq!(
+            revoke_records.len(),
+            1,
+            "one replica revocation refusal must emit exactly one audit record: {captured:?}"
+        );
+        assert_eq!(revoke_records[0]["outcome"], "refused");
+        assert_eq!(revoke_records[0]["parameters"]["participant_id"], 41);
+        assert_eq!(revoke_records[0]["parameters"]["changed"], false);
+    }
+
+    /// Deterministic command generator (xorshift64*) for the replay
+    /// invariant below: a failure names its seed and replays exactly.
+    struct Gen(u64);
+
+    impl Gen {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+
+        fn subset(&mut self, caps: &[&str]) -> Vec<String> {
+            caps.iter()
+                .filter(|_| self.below(2) == 0)
+                .map(|cap| (*cap).to_owned())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn admin_audit_replay_matches_live_state_for_generated_sequences() {
+        // Oracle: the audit records themselves (model-based replay).
+        // Folding the accepted records — plus first-use grants — over
+        // the initial state must reproduce the live ledger grants and
+        // the live ceiling after every generated sequence, and every
+        // generated admin command must leave exactly one record. The
+        // fixed example above samples this state-machine invariant;
+        // this test hammers it with generated sequences covering
+        // grants, revocations (capability and participant), ceiling
+        // changes, refusals, and first-use grants (Codex P1 finding
+        // on PR #4017; testing doctrine: PBT/MBT where invariants fit).
+        const CAPS: [&str; 4] = ["time.now", "random.u64", "schedule.at", "chat.say"];
+        for seed in 1..=16_u64 {
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+            let _guard = tracing::subscriber::set_default(subscriber);
+
+            let core = WorldCore::new(
+                "audit-test",
+                WorldLimits {
+                    grant_on_use: true,
+                    ..WorldLimits::default()
+                },
+            )
+            .unwrap();
+            let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+            let initial_grants: BTreeSet<String> = actor.core.ledger.granted().clone();
+            let initial_ceiling: BTreeSet<String> = actor.core.caps_ceiling.clone();
+            let mut rng = Gen(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let mut issued: Vec<u64> = Vec::new();
+            let mut admin_commands = 0_usize;
+
+            futures_lite::future::block_on(async {
+                for step in 0..24 {
+                    match rng.below(10) {
+                        0..=3 => {
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::UpdateCaps {
+                                    grant: rng.subset(&CAPS),
+                                    revoke: rng.subset(&CAPS),
+                                    reply,
+                                })
+                                .await;
+                            let _ = response.await.unwrap();
+                        }
+                        4..=5 => {
+                            let mut ceiling = rng.subset(&CAPS);
+                            if rng.below(4) == 0 {
+                                ceiling.push("not-a-capability".to_owned());
+                            }
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::SetCapsCeiling { ceiling, reply })
+                                .await;
+                            let _ = response.await.unwrap();
+                        }
+                        6 => {
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::Issue {
+                                    name: format!("P{step}"),
+                                    scopes: WorldScopes::JOIN,
+                                    bounds: CapabilityBounds::default(),
+                                    reply,
+                                })
+                                .await;
+                            let (participant, _token) = response.await.unwrap().unwrap();
+                            issued.push(participant.id);
+                        }
+                        7 => {
+                            let participant_id = if issued.is_empty() || rng.below(3) == 0 {
+                                999_999
+                            } else {
+                                issued[rng.below(issued.len() as u64) as usize]
+                            };
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::Revoke {
+                                    participant_id,
+                                    by: None,
+                                    reply,
+                                })
+                                .await;
+                            let _ = response.await.unwrap();
+                        }
+                        _ => {
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::UpdateCaps {
+                                    grant: vec!["not-a-capability".to_owned()],
+                                    revoke: vec![],
+                                    reply,
+                                })
+                                .await;
+                            assert!(
+                                response.await.unwrap().is_err(),
+                                "an unknown capability must be refused"
+                            );
+                        }
+                    }
+                    admin_commands += 1;
+                }
+                actor.after_change().await;
+            });
+
+            let captured = records.lock().unwrap().clone();
+            let admin_records = captured
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record["action"].as_str().unwrap(),
+                        "UpdateCaps" | "SetCapsCeiling" | "Issue" | "Revoke"
+                    )
+                })
+                .count();
+            assert_eq!(
+                admin_records, admin_commands,
+                "seed {seed}: exactly one audit record per admin command"
+            );
+
+            let mut replayed_grants = initial_grants;
+            let mut replayed_ceiling = initial_ceiling;
+            for record in &captured {
+                if record["outcome"] != "accepted" {
+                    if record["action"] == "provider_use" && record["outcome"] == "first_use_grant"
+                    {
+                        replayed_grants.insert(
+                            record["parameters"]["capability"]
+                                .as_str()
+                                .unwrap()
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+                match record["action"].as_str().unwrap() {
+                    "UpdateCaps" => {
+                        for name in record["parameters"]["revoke"].as_array().unwrap() {
+                            replayed_grants.remove(name.as_str().unwrap());
+                        }
+                        for name in record["parameters"]["grant"].as_array().unwrap() {
+                            replayed_grants.insert(name.as_str().unwrap().to_owned());
+                        }
+                    }
+                    "SetCapsCeiling" => {
+                        replayed_ceiling = record["parameters"]["ceiling"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|name| name.as_str().unwrap().to_owned())
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(
+                replayed_grants,
+                *actor.core.ledger.granted(),
+                "seed {seed}: replayed grants must equal the live ledger"
+            );
+            assert_eq!(
+                replayed_ceiling, actor.core.caps_ceiling,
+                "seed {seed}: replayed ceiling must equal the live ceiling"
+            );
+        }
     }
 }
 

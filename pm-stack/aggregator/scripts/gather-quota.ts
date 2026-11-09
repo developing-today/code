@@ -64,13 +64,15 @@
 //     snapshot store (SnapshotStore.append dedupes). Setting
 //     USAGE_SNAPSHOT_OUTBOX_PATH switches the sink to the writers'
 //     outbox JSONL instead (the sandbox collector's drain path).
-//   - Supabase agent.quota_records rows (muse-dev2), one per pool
+//   - Turso agent_quota_records rows (fleet-platform), one per pool
 //     entry per tick, source "opencode-quota" — Drew's rule that all
-//     quota info lands in Supabase on a regular basis in addition to
-//     the dashboard. (The previous writer of pool rows, source
-//     "pm-pool", died 2026-10-29; this sink replaces it.) Fail-soft:
-//     a sink failure is logged and never fails the tick —
-//     quota-current.json is already written by then.
+//     quota info lands in the quota ledger on a regular basis in
+//     addition to the dashboard. (The previous writer of pool rows,
+//     source "pm-pool", died 2026-10-29; this sink replaces it. The
+//     sink targeted Supabase agent.quota_records until the 2026-11-06
+//     Wave 3 cutover, code#5690.) Fail-soft: a sink failure is logged
+//     and never fails the tick — quota-current.json is already written
+//     by then.
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -95,10 +97,10 @@
 //      the subcommand owns fetch concurrency now),
 //      OPENCHAMBER_LIB_DIR (ONLY the OpenDesign keeper's credential
 //      store accessors resolve from here; no quota reading does),
-//      SUPABASE_QUOTA_SINK=0 disables the Supabase sink (default on;
-//      token + project ref resolved by name via the resolveBwsSecret
-//      plumbing: supabase.muse-dev2.access-token-muse-cli /
-//      supabase.muse-dev2.project-ref).
+//      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
+//      disables the Turso sink (default on; token resolved by name
+//      via the resolveBwsSecret plumbing:
+//      turso.fleet-platform-rw-token).
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -119,6 +121,7 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -163,7 +166,7 @@ const OBSERVED_BY = "quota-gatherer";
  * concurrency (opencode#1729); the small explicit ask gives it
  * room, and its result replaces the listing's timed-out one.
  * Remove it here when the cap is raised.) */
-const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code", "deepseek", "mistral"];
+const EXPLICIT_ASK_PROVIDERS = ["meta", "_commandcode", "deepseek", "mistral"];
 
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -567,40 +570,44 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     const t0 = Date.now() - group.ms;
     const entries = group.results.map((r) => entryFromResult(r, tickAt));
     let run = finalizeRun(id, entries, t0);
-    if (id === "command-code") run = keepCommandCodePlanWindows(run);
+    if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
   return runs;
 }
 
-const SUPABASE_TOKEN_NAME = "supabase.muse-dev2.access-token-muse-cli";
-const SUPABASE_REF_NAME = "supabase.muse-dev2.project-ref";
+const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
+const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
 }
 
 /**
- * The Supabase sink: one agent.quota_records row per pool entry that
+ * The Turso sink: one agent_quota_records row per pool entry that
  * carries a reading (at least one window), in the shape the retired
  * "pm-pool" writer used (payload = {id, ts, plan, state, source,
  * windows[{name, percent, resetsAt}], provider}), with source =
  * GATHERER_SOURCE naming the single source. Runs AFTER
  * quota-current.json is written; fail-soft by contract (a sink
  * failure is logged, never fails the tick, never zeroes a row).
+ * Until the 2026-11-06 Wave 3 cutover (code#5690) this wrote to
+ * Supabase agent.quota_records (muse-dev2) via the Management API;
+ * the table now lives in Turso fleet-platform and is written through
+ * the libsql HTTP pipeline with INSERT OR IGNORE on the
+ * (source, id, ts) PK.
  */
-async function writeSupabaseRecords(entries: QuotaCurrentEntry[], tickAt: string): Promise<void> {
-  if (process.env.SUPABASE_QUOTA_SINK === "0") return;
+async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): Promise<void> {
+  if (process.env.TURSO_QUOTA_SINK === "0" || process.env.SUPABASE_QUOTA_SINK === "0") return;
   try {
-    const token = await resolveBwsSecret(SUPABASE_TOKEN_NAME);
-    const ref = await resolveBwsSecret(SUPABASE_REF_NAME);
-    if (!token || !ref) {
-      console.log("quota-gatherer: supabase sink skipped — token/ref unresolved by name");
+    const token = await resolveBwsSecret(TURSO_TOKEN_NAME);
+    if (!token) {
+      console.log("quota-gatherer: turso sink skipped \u2014 token unresolved by name");
       return;
     }
     const readable = entries.filter((e) => e.windows.length > 0);
     if (!readable.length) {
-      console.log("quota-gatherer: supabase sink — no entries with windows this tick");
+      console.log("quota-gatherer: turso sink \u2014 no entries with windows this tick");
       return;
     }
     const values = readable.map((e) => {
@@ -619,25 +626,36 @@ async function writeSupabaseRecords(entries: QuotaCurrentEntry[], tickAt: string
         e.planLabel ? sqlString(e.planLabel) : "NULL"
       }, ${weekly?.pctOfLimit ?? "NULL"}, ${weekly?.resetsAt ? sqlString(weekly.resetsAt) : "NULL"}, ${sqlString(
         JSON.stringify(payload),
-      )}::jsonb)`;
+      )}, ${sqlString(tickAt)})`;
     });
     const query =
-      "insert into agent.quota_records (id, source, ts, plan, weekly_percent, resets, payload) values " +
+      "insert or ignore into agent_quota_records (id, source, ts, plan, weekly_percent, resets, payload, inserted_at) values " +
       values.join(", ") +
-      " on conflict (source, id, ts) do nothing;";
-    const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
+      ";";
+    const res = await fetch(`${TURSO_URL}/v2/pipeline`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({
+        requests: [
+          { type: "execute", stmt: { sql: query } },
+          { type: "close" },
+        ],
+      }),
     });
     if (!res.ok) {
-      console.log(`quota-gatherer: supabase sink failed-soft: HTTP ${res.status}`);
+      console.log(`quota-gatherer: turso sink failed-soft: HTTP ${res.status}`);
       return;
     }
-    console.log(`quota-gatherer: supabase sink wrote ${readable.length} quota_records rows (source=${GATHERER_SOURCE})`);
+    const out = (await res.json()) as { results?: { type: string; error?: { message?: string } }[] };
+    const failed = (out.results ?? []).find((r) => r.type === "error");
+    if (failed) {
+      console.log(`quota-gatherer: turso sink failed-soft: ${failed.error?.message ?? "pipeline error"}`);
+      return;
+    }
+    console.log(`quota-gatherer: turso sink wrote ${readable.length} quota_records rows (source=${GATHERER_SOURCE})`);
   } catch (err) {
     console.log(
-      `quota-gatherer: supabase sink failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      `quota-gatherer: turso sink failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
 }
@@ -710,12 +728,24 @@ async function main(): Promise<number> {
     durationMs: Date.now() - started,
     perProvider,
   };
+  // #6671: embed the keeper alert projection so the board/readout
+  // surfaces a dying provider session within one gather cycle. The
+  // keepers ran earlier this tick; reading their state files back
+  // also covers a keeper that failed before writing (missing/stale
+  // project as "keeper not reporting", never silence). Fail-soft:
+  // the reader never throws.
+  const providerAuth = await readProviderAuthAlerts({
+    opendesign:
+      process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+    meta: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
+  });
   const file: QuotaCurrentFile = {
     version: 1,
     generatedAt: tickAt,
     source: GATHERER_SOURCE,
     heartbeat,
     providers: entries,
+    providerAuth,
   };
   await writeAtomic(currentPath, JSON.stringify(file, null, 2) + "\n");
   await writeHeartbeat(heartbeat);
@@ -745,9 +775,9 @@ async function main(): Promise<number> {
     );
   }
 
-  // Supabase: the same readings land in agent.quota_records on the
+  // Turso: the same readings land in agent_quota_records on the
   // same tick (Drew's regular-basis rule). Fail-soft, after the file.
-  await writeSupabaseRecords(entries, tickAt);
+  await writeTursoRecords(entries, tickAt);
 
   const okCount = runs.filter((r) => r.state === "ok").length;
   console.log(

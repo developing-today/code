@@ -31,6 +31,10 @@
 //! - `many_worlds` — 1,000 durable idle worlds plus 100 leased worlds at
 //!   20 counter inputs/s each; report command latency percentiles and verify
 //!   recent checkpoints plus records/sequence across idle eviction and reopen.
+//! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
+//!   strategy territory workload for N=2/4/8 users is specified in
+//!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
+//!   stack proxy must not be reported as a per-user DLL benchmark.
 //!
 //! Numbers are only comparable on the same machine class; baselines must
 //! record where they were taken (slice 2).

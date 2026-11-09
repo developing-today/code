@@ -1964,6 +1964,7 @@ mod tests {
         assert_eq!(args.output_file, Some("out.txt"));
     }
 
+    #[test]
     fn test_parse_find_args_basic() {
         let rest = vec!["query1", "query2"];
         let args = parse_find_args(&rest, "union").unwrap();

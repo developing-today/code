@@ -109,10 +109,14 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
             match policy {
                 RecoveryPolicy::Resubmit => {
                     let results = backend.create_transfers(&record.legs);
-                    let failed = results
-                        .iter()
-                        .find(|result| !matches!(result, Ok(()) | Err(TransferError::Exists)));
-                    if failed.is_some() {
+                    // #4669: a short result vector is a failed
+                    // resubmission, not a vacuous success — require
+                    // one result per leg before scanning for failures.
+                    let failed = results.len() != record.legs.len()
+                        || results
+                            .iter()
+                            .any(|result| !matches!(result, Ok(()) | Err(TransferError::Exists)));
+                    if failed {
                         // One rejected resubmission must not abort
                         // recovery of every later record: leave this
                         // record unresolved, report it, and continue.

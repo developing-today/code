@@ -89,6 +89,7 @@ export function normalizeResetAt(v: unknown): string | null {
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
     case "claude":
+    case "_claude":
       return "anthropic:claude-pro";
     case "codex":
       return "openai.main";
@@ -96,15 +97,45 @@ export function serviceIdFor(providerId: string): string {
       return "cline-pass";
     case "command-code":
       return "commandcode";
+    case "_commandcode":
+      return "_commandcode";
     case "deepseek":
       return "deepseek";
     case "meta":
+    case "_muse":
       return "meta";
     case "opendesign":
       return "opendesign";
     default:
       return providerId;
   }
+}
+
+/**
+ * Canonical provider ids for snapshot entries. The quota module answers
+ * in its own spellings; the snapshot contract speaks the OpenCode config
+ * provider ids — the router matches quota readings by exact provider id
+ * (quota-driven skip re-admission), so an entry published under a module
+ * spelling never reaches the provider it describes. The fleet-built
+ * providers were renamed to leading-underscore config ids in the fork
+ * (#1823, 2026-11-07): antigravity -> _antigravity, the claude-code door
+ * (module: "claude") -> _claude, commandcode (module: "command-code")
+ * -> _commandcode, and the muse-direct door (module: "meta", the Muse
+ * Code High Usage reading) -> _muse. Normalize here, at the one mapping
+ * point every gathered result passes through. Pool/service ids are a
+ * separate contract and stay put: serviceIdFor carries the dual-spelling
+ * cases (both "claude" and "_claude" land on anthropic:claude-pro, and
+ * "_muse" keeps the "meta" pool).
+ */
+const CANONICAL_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  antigravity: "_antigravity",
+  claude: "_claude",
+  "command-code": "_commandcode",
+  meta: "_muse",
+};
+
+export function canonicalProviderId(providerId: string): string {
+  return CANONICAL_PROVIDER_IDS[providerId] ?? providerId;
 }
 
 export const GATHERER_SOURCE = "opencode-quota";
@@ -122,13 +153,20 @@ export const GATHERER_SOURCE = "opencode-quota";
  */
 export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
 export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
-export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
-export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
+export const GO_DEVELOPING_TODAY_0_SERVICE_ID = "opencode-go.developing-today-0";
+export const ANTIGRAVITY_GEMINI_SERVICE_ID = "_antigravity.gemini";
+export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
+// Pre-rename (#1823) split ids: a gatherer still paired with the old
+// fork binary reports providerId "antigravity" and its rows keep the
+// historical series; the renamed provider starts the new series.
+export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
+export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
  * credential's human label. OpenCode credential labels are user-set; on
- * the fleet laptop the Go accounts are labeled "drewrypope" and "popesdrew"
+ * the fleet laptop the Go accounts are labeled "drewrypope", "popesdrew"
+ * and "developing-today-0" (third account, added 2026-11-08)
  * (the "Home" workspace was removed 2026-11-03 and has no hub pool). Org ids are opaque per-machine strings, so they
  * cannot name pools — the label is the only stable gatherer-side
  * signal. Unmatched entries yield null: no fabricated pool row, the
@@ -138,6 +176,7 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
   const label = entry.credentialLabel?.trim().toLowerCase();
   if (label === "drewrypope") return GO_DREWRYPOPE_SERVICE_ID;
   if (label === "popesdrew") return GO_POPESDREW_SERVICE_ID;
+  if (label === "developing-today-0") return GO_DEVELOPING_TODAY_0_SERVICE_ID;
   return null;
 }
 
@@ -148,7 +187,8 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string): string {
+function antigravityPoolForModel(model: string, legacy = false): string {
+  if (legacy) return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
 }
 
@@ -169,7 +209,11 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     // A failed provider read lapses both pools loudly — history
     // retained, no stale % presented as current — instead of leaving
     // the pools on their dated reads with no signal the source died.
-    return [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID].map((serviceId) => ({
+    const ids =
+      entry.providerId === "antigravity"
+        ? [ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID, ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID]
+        : [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID];
+    return ids.map((serviceId) => ({
       ...entry,
       serviceId,
     }));
@@ -181,7 +225,7 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     const sep = w.name.lastIndexOf(":");
     if (sep <= 0 || sep === w.name.length - 1) continue;
     if (w.pctOfLimit == null) continue;
-    const pool = antigravityPoolForModel(w.name.slice(0, sep));
+    const pool = antigravityPoolForModel(w.name.slice(0, sep), entry.providerId === "antigravity");
     const winName = w.name.slice(sep + 1);
     let group = best.get(pool);
     if (!group) {
@@ -224,7 +268,7 @@ export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): Qu
       // their dated reads until a real read (ok or error) arrives.
       const serviceId = goPoolServiceId(entry);
       if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
-    } else if (entry.providerId === "antigravity") {
+    } else if (entry.providerId === "antigravity" || entry.providerId === "_antigravity") {
       out.push(...antigravityPoolRows(entry));
     }
   }
@@ -269,7 +313,7 @@ export function entryFromFileExport(
   opts: { fileMtimeIso: string | null; stale: boolean },
 ): QuotaCurrentEntry {
   const entry: QuotaCurrentEntry = {
-    providerId: "meta",
+    providerId: canonicalProviderId("meta"),
     providerName: "Meta",
     serviceId: "meta",
     state: "error",
@@ -359,10 +403,11 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  const providerId = canonicalProviderId(result.providerId);
   const entry: QuotaCurrentEntry = {
-    providerId: result.providerId,
-    providerName: result.providerName ?? result.providerId,
-    serviceId: serviceIdFor(result.providerId),
+    providerId,
+    providerName: result.providerName ?? providerId,
+    serviceId: serviceIdFor(providerId),
     state,
     measuredAt,
     source: GATHERER_SOURCE,
@@ -493,12 +538,22 @@ export function entryHasMeasuredWindow(entry: QuotaCurrentEntry): boolean {
  * in count/GB): the gatherer's records for those windows carry the
  * native value + unit so both writers land on ONE axis. Rows windows
  * have no native series (the store has no "rows" unit) and keep pct.
- * Limits mirror TURSO_LIMITS below (storage/sync in GB).
+ * Limits are plan-aware (storage/sync in GB): they resolve from the
+ * entry's planLabel via resolveTursoLimits below, whose source of
+ * truth is the Turso /plans document and whose fallback is the static
+ * per-plan table — a Scaler entry's native records carry the Scaler
+ * limits (1e9 databases, 24 GB storage, 24 GB sync), never the
+ * Starter ones (code#5468).
  */
-const TURSO_NATIVE_RECORDS: Record<string, { unit: SnapshotRecord["unit"]; limit: number }> = {
-  databases: { unit: "count", limit: 100 },
-  storage: { unit: "gb", limit: 5 },
-  sync: { unit: "gb", limit: 3 },
+const tursoNativeRecords = (
+  planLabel: string | null | undefined,
+): Record<string, { unit: SnapshotRecord["unit"]; limit: number }> => {
+  const limits = resolveTursoLimits(planLabel ?? undefined, null);
+  return {
+    databases: { unit: "count", limit: limits.databases },
+    storage: { unit: "gb", limit: limits.storageBytes / 1e9 },
+    sync: { unit: "gb", limit: limits.bytesSynced / 1e9 },
+  };
 };
 
 export function recordsFromEntries(
@@ -518,10 +573,9 @@ export function recordsFromEntries(
       // Own-key rule (#2781, design #2792): only an own key takes the
       // native-record branch; a prototype spelling falls through to the
       // normal pct path like any unknown window name.
+      const nativeRecords = entry.serviceId === "turso" ? tursoNativeRecords(entry.planLabel) : undefined;
       const native =
-        entry.serviceId === "turso" && Object.hasOwn(TURSO_NATIVE_RECORDS, w.name)
-          ? TURSO_NATIVE_RECORDS[w.name]
-          : undefined;
+        nativeRecords && Object.hasOwn(nativeRecords, w.name) ? nativeRecords[w.name] : undefined;
       if (native) {
         if (w.value == null) continue;
         const key = `${entry.serviceId}|${w.name}`;
@@ -643,7 +697,16 @@ export interface TursoSubscriptionDoc {
   period_end?: unknown;
 }
 
-/** Starter Free limits from #1049 (bytes are decimal, as billed). */
+export interface TursoLimits {
+  databases: number;
+  storageBytes: number;
+  rowsRead: number;
+  rowsWritten: number;
+  bytesSynced: number;
+}
+
+/** Starter Free limits from #1049 (bytes are decimal, as billed) —
+ * now only the fallback for an unknown/unreadable plan. */
 export const TURSO_LIMITS = {
   databases: 100,
   storageBytes: 5_000_000_000,
@@ -651,6 +714,85 @@ export const TURSO_LIMITS = {
   rowsWritten: 10_000_000,
   bytesSynced: 3_000_000_000,
 } as const;
+
+/**
+ * FALLBACK ONLY — static per-plan limits, keyed by plan name, with the
+ * values the /plans endpoint published on 2026-11-08. The source of
+ * truth is the live /plans document (resolveTursoLimits prefers it,
+ * exactly as the opencode turso provider does); this table exists so
+ * that when no plans doc is at hand, a Scaler (or Developer/Pro)
+ * entry still divides by its own plan's limits instead of silently
+ * regressing to Starter denominators — the stale-denominator artifact
+ * behind the false over-limit alarms on #5468 (org on Scaler since
+ * 2026-11-04; Starter caps made rows-read read ~235%). The /plans
+ * document carries no `databases` quota for pro; the fallback uses
+ * the same 1e9 ceiling the other paid plans publish.
+ */
+export const TURSO_PLAN_LIMITS: Record<string, TursoLimits> = {
+  starter: { ...TURSO_LIMITS },
+  developer: {
+    databases: 1_000_000_000,
+    storageBytes: 9_000_000_000,
+    rowsRead: 2_500_000_000,
+    rowsWritten: 25_000_000,
+    bytesSynced: 10_000_000_000,
+  },
+  scaler: {
+    databases: 1_000_000_000,
+    storageBytes: 24_000_000_000,
+    rowsRead: 100_000_000_000,
+    rowsWritten: 100_000_000,
+    bytesSynced: 24_000_000_000,
+  },
+  pro: {
+    databases: 1_000_000_000,
+    storageBytes: 50_000_000_000,
+    rowsRead: 250_000_000_000,
+    rowsWritten: 250_000_000,
+    bytesSynced: 100_000_000_000,
+  },
+};
+
+/** The /plans document: GET /v1/organizations/{slug}/plans answers
+ * { plans: [{ name, quotas: { rowsRead, rowsWritten, databases,
+ * locations, storage, groups, bytesSynced } }] } — quotas are the
+ * plan's limits in native units (storage/bytesSynced in bytes). */
+export interface TursoPlansDoc {
+  plans?: unknown;
+}
+
+const positiveQuota = (v: unknown): number | null => (isFiniteNumber(v) && v > 0 ? v : null);
+
+/**
+ * Resolve the limits a Turso org's usage divides by. Dynamic first:
+ * the /plans entry whose name matches the plan label
+ * (case-insensitive) supplies the quotas; any quota the matched plan
+ * omits falls back per-field to the static plan table. Without a
+ * plans doc (or a match), the static table keyed by plan name
+ * applies; an unknown plan gets Starter (TURSO_LIMITS, the previous
+ * behaviour).
+ */
+export function resolveTursoLimits(planLabel?: string, plansDoc?: TursoPlansDoc | null): TursoLimits {
+  const fallback: TursoLimits =
+    (planLabel ? TURSO_PLAN_LIMITS[planLabel.toLowerCase()] : undefined) ?? { ...TURSO_LIMITS };
+  if (!plansDoc || typeof planLabel !== "string" || planLabel === "" || !Array.isArray(plansDoc.plans)) {
+    return fallback;
+  }
+  const wanted = planLabel.toLowerCase();
+  for (const entry of plansDoc.plans) {
+    if (!isRecord(entry) || typeof entry.name !== "string" || entry.name.toLowerCase() !== wanted) continue;
+    if (!isRecord(entry.quotas)) return fallback;
+    const q = entry.quotas;
+    return {
+      databases: positiveQuota(q.databases) ?? fallback.databases,
+      storageBytes: positiveQuota(q.storage) ?? fallback.storageBytes,
+      rowsRead: positiveQuota(q.rowsRead) ?? fallback.rowsRead,
+      rowsWritten: positiveQuota(q.rowsWritten) ?? fallback.rowsWritten,
+      bytesSynced: positiveQuota(q.bytesSynced) ?? fallback.bytesSynced,
+    };
+  }
+  return fallback;
+}
 
 export const TURSO_SOURCE = "turso-api";
 
@@ -669,8 +811,9 @@ const numNonNegative = (v: unknown): number | null => (isNonNegative(v) ? v : nu
  * gatherer's pct records continue the series recordsFromSaasServices
  * and the backfill started). Windows carry the used value in the
  * metric's own unit (counts/rows raw, storage + sync in GB), the
- * percent of the Starter limit, and the subscription period end as
- * resetsAt. A metric the response does not carry is omitted — never
+ * percent of the org's plan limit (dynamic via opts.plansDoc, with
+ * the per-plan fallback — see resolveTursoLimits), and the
+ * subscription period end as resetsAt. A metric the response does not carry is omitted — never
  * zeroed; a read with no usable metrics (or an explicit error) is an
  * error entry, so the hub keeps the previous dated value flagged
  * stale instead of showing a fresh-looking zero.
@@ -678,7 +821,7 @@ const numNonNegative = (v: unknown): number | null => (isNonNegative(v) ? v : nu
 export function entryFromTurso(
   usageDoc: TursoUsageDoc | null,
   subscriptionDoc: TursoSubscriptionDoc | null,
-  opts: { measuredAt: string; error?: string },
+  opts: { measuredAt: string; error?: string; plansDoc?: TursoPlansDoc | null },
 ): QuotaCurrentEntry {
   const entry: QuotaCurrentEntry = {
     providerId: "turso",
@@ -692,6 +835,7 @@ export function entryFromTurso(
   const sub = (subscriptionDoc?.subscription ?? subscriptionDoc) as Record<string, unknown> | null | undefined;
   const plan = sub?.plan ?? sub?.name;
   if (typeof plan === "string" && plan !== "") entry.planLabel = plan;
+  const limits = resolveTursoLimits(entry.planLabel, opts.plansDoc ?? null);
   if (opts.error) {
     entry.error = opts.error;
     return entry;
@@ -739,38 +883,38 @@ export function entryFromTurso(
     });
   };
   const databases = numNonNegative(usage.databases);
-  push("databases", databases, TURSO_LIMITS.databases, databases ?? 0, `${databases} / ${TURSO_LIMITS.databases}`);
+  push("databases", databases, limits.databases, databases ?? 0, `${databases} / ${limits.databases}`);
   const storageBytes = numNonNegative(usage.storage_bytes);
   push(
     "storage",
     storageBytes,
-    TURSO_LIMITS.storageBytes,
+    limits.storageBytes,
     storageBytes == null ? 0 : gb(storageBytes),
-    `${storageBytes == null ? "?" : gb(storageBytes)} GB / 5 GB`,
+    `${storageBytes == null ? "?" : gb(storageBytes)} GB / ${gb(limits.storageBytes)} GB`,
   );
   const rowsRead = numNonNegative(usage.rows_read);
   push(
     "rows-read",
     rowsRead,
-    TURSO_LIMITS.rowsRead,
+    limits.rowsRead,
     rowsRead ?? 0,
-    `${rowsRead?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsRead.toLocaleString("en-US")}`,
+    `${rowsRead?.toLocaleString("en-US")} / ${limits.rowsRead.toLocaleString("en-US")}`,
   );
   const rowsWritten = numNonNegative(usage.rows_written);
   push(
     "rows-written",
     rowsWritten,
-    TURSO_LIMITS.rowsWritten,
+    limits.rowsWritten,
     rowsWritten ?? 0,
-    `${rowsWritten?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsWritten.toLocaleString("en-US")}`,
+    `${rowsWritten?.toLocaleString("en-US")} / ${limits.rowsWritten.toLocaleString("en-US")}`,
   );
   const bytesSynced = numNonNegative(usage.bytes_synced);
   push(
     "sync",
     bytesSynced,
-    TURSO_LIMITS.bytesSynced,
+    limits.bytesSynced,
     bytesSynced == null ? 0 : gb(bytesSynced),
-    `${bytesSynced == null ? "?" : gb(bytesSynced)} GB / 3 GB`,
+    `${bytesSynced == null ? "?" : gb(bytesSynced)} GB / ${gb(limits.bytesSynced)} GB`,
   );
   if (entry.windows.length === 0) {
     entry.error = "turso usage response carried no known metrics";
@@ -821,7 +965,8 @@ export async function mapWithConcurrency<T, R>(
  * never retained.
  */
 export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId: string): QuotaCurrentEntry[] {
-  return prev.filter((e) => e.providerId === providerId && e.state === "ok");
+  const wanted = canonicalProviderId(providerId);
+  return prev.filter((e) => canonicalProviderId(e.providerId) === wanted && e.state === "ok");
 }
 
 /**
@@ -832,5 +977,9 @@ export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId:
  * instead of it reading as fresh until the freshness bound lapses.
  */
 export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
-  return entries.map((e) => ({ ...e, retainedFromFailedTick: failedTickIso }));
+  return entries.map((e) => ({
+    ...e,
+    providerId: canonicalProviderId(e.providerId),
+    retainedFromFailedTick: failedTickIso,
+  }));
 }

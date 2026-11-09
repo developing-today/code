@@ -264,12 +264,6 @@ func (r *Runner) recordFailure(h Hook, e events.Event, dur time.Duration, err er
 	}
 }
 
-// argvFor resolves a hook's action to a command line. It is kept for
-// external callers that already name it; new code prefers ArgvFor.
-func argvFor(h Hook) ([]string, error) {
-	return ArgvFor(h)
-}
-
 // cappedWriter keeps a bounded head of hook output: enough to say why
 // it failed, bounded so a chatty hook cannot exhaust daemon memory.
 // Excess bytes are drained and discarded, never retained.

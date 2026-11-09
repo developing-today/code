@@ -23,7 +23,7 @@ func TestPutSettingsNormalisesAProtocolAlias(t *testing.T) {
 			t.Fatal(err)
 		}
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode, string(b)
 	}
 	code, body := put("force-legacy")
@@ -35,7 +35,7 @@ func TestPutSettingsNormalisesAProtocolAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	// upstream.protocol is not hot, so the PUT does not change the running
 	// value; GET still has to say which spellings it would accept.
 	if !strings.Contains(string(b), `"prefer-initialize":["legacy",`) {
