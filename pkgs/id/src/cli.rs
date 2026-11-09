@@ -1469,6 +1469,17 @@ pub enum Command {
         /// local serve instance.
         #[arg(required = false)]
         node: Option<String>,
+        /// Show the local serve instance's per-peer abuse counters instead of
+        /// listing peers.
+        ///
+        /// Read-only: frames and bytes admitted by the abuse evaluator, split
+        /// by direction, with the policy rates shown alongside. Local serve
+        /// only; cannot be combined with `--gossip` or a remote node ID.
+        ///
+        /// The counters cover world-protocol traffic only: a serve running
+        /// without `--world` records none and the report is empty.
+        #[arg(long)]
+        abuse: bool,
     },
 }
 
@@ -3486,6 +3497,7 @@ mod tests {
                 no_relay,
                 no_mdns,
                 node,
+                abuse,
             }) => {
                 assert!(!gossip);
                 assert!(!rpc);
@@ -3501,6 +3513,7 @@ mod tests {
                 assert!(!no_relay);
                 assert!(!no_mdns);
                 assert!(node.is_none());
+                assert!(!abuse);
             }
             _ => panic!("Expected Peers command"),
         }
@@ -3530,6 +3543,15 @@ mod tests {
                 assert_eq!(topic, Some("my-net".to_owned()));
                 assert_eq!(topic_secret, Some("s3cret".to_owned()));
             }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_abuse_flag() {
+        let cli = Cli::parse_from(["id", "peers", "--abuse"]);
+        match cli.command {
+            Some(Command::Peers { abuse, .. }) => assert!(abuse),
             _ => panic!("Expected Peers command"),
         }
     }
