@@ -299,6 +299,72 @@ class TestResponseShapes(unittest.TestCase):
         inst = client.installation_for("developing-today")
         self.assertEqual(inst["id"], 2)
 
+    def test_installations_pages_through_all_pages(self):
+        # #7930: installations past page 1 (per_page=100) must be
+        # found - the developing-today org sits on page 2 live.
+        client = object.__new__(fp.AppClient)
+        client.jwt = "jwt"
+        client._installations = None
+        page1 = [
+            {"id": i, "account": {"login": f"owner-{i}"}} for i in range(100)
+        ]
+        page2 = [
+            {"id": 100, "account": {"login": "developing-today"}},
+            {"id": 101, "account": {"login": "developing-today-forks"}},
+            {"id": 102, "account": {"login": "owner-102"}},
+        ]
+        calls = []
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            calls.append(path)
+            if "page=2" in path:
+                return 200, page2
+            return 200, page1
+
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            insts = client.installations()
+        self.assertEqual(len(insts), 103)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("page=1", calls[0])
+        self.assertIn("page=2", calls[1])
+        inst = client.installation_for("developing-today")
+        self.assertEqual(inst["id"], 100)
+        inst = client.installation_for("developing-today-forks")
+        self.assertEqual(inst["id"], 101)
+
+    def test_installations_short_first_page_makes_one_call(self):
+        client = object.__new__(fp.AppClient)
+        client.jwt = "jwt"
+        client._installations = None
+        calls = []
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            calls.append(path)
+            return 200, [{"id": 1, "account": {"login": "only-owner"}}]
+
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            insts = client.installations()
+        self.assertEqual(len(insts), 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_installations_exact_multiple_fetches_one_empty_page(self):
+        client = object.__new__(fp.AppClient)
+        client.jwt = "jwt"
+        client._installations = None
+        page1 = [{"id": i, "account": {"login": f"o-{i}"}} for i in range(100)]
+        calls = []
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            calls.append(path)
+            if "page=2" in path:
+                return 200, []
+            return 200, page1
+
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            insts = client.installations()
+        self.assertEqual(len(insts), 100)
+        self.assertEqual(len(calls), 2)
+
     def test_assert_repo_in_scope_dies_on_entry_without_full_name(self):
         client = object.__new__(fp.AppClient)
         with unittest.mock.patch.object(
