@@ -240,11 +240,11 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, connect or init through it, or run recovery SSH.",
+        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, or transfer files (get/put).",
         capabilities: &[Capability::ProxyServe, Capability::ProxyConnect],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init", "ssh"],
+        subcommands: &["serve", "connect", "init", "ssh", "get", "put"],
     },
     Domain {
         name: "dispatch",
