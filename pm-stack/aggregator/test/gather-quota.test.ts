@@ -262,3 +262,141 @@ test("a lapsed Go workspace survives ingest instead of being replaced by last-kn
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a lapsed Go workspace survives retention when a sibling workspace fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-mixed-lapse-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const outboxPath = join(dir, "snapshots.outbox.jsonl");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const previousAt = "2026-11-06T04:00:00.000Z";
+    const windowFor = (credentialLabel: string, credentialId: string) => ({
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      serviceId: "opencode-go",
+      credentialId,
+      credentialLabel,
+      state: "ok",
+      measuredAt: previousAt,
+      source: "opencode-quota",
+      windows: [
+        {
+          name: "monthly",
+          value: credentialLabel === "drewrypope" ? 62 : 35,
+          pctOfLimit: credentialLabel === "drewrypope" ? 62 : 35,
+          valueLabel: null,
+          windowSeconds: null,
+          resetsAt: "2026-12-03T03:02:00.000Z",
+          measuredAt: previousAt,
+          source: "opencode-quota",
+          state: "ok",
+        },
+      ],
+    });
+    const lapsed = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: true,
+      fetchedAt: Date.parse("2026-11-06T04:30:00.000Z"),
+      credentialId: "cred_personal",
+      credentialLabel: "drewrypope",
+      error: "No active OpenCode Go subscription on the selected Console account",
+      usage: null,
+    };
+    const failedSibling = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: true,
+      fetchedAt: Date.parse("2026-11-06T04:30:01.000Z"),
+      credentialId: "cred_lab",
+      credentialLabel: "popesdrew",
+      error: "OpenCode Go request timed out",
+      usage: null,
+    };
+
+    await writeFile(
+      currentPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: previousAt,
+          source: "opencode-quota",
+          heartbeat: {
+            tickAt: previousAt,
+            ok: true,
+            durationMs: 1,
+            perProvider: { "opencode-go": { state: "ok", ms: 1, rows: 2 } },
+          },
+          providers: [windowFor("drewrypope", "cred_personal"), windowFor("popesdrew", "cred_lab")],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      subcommandPath,
+      `console.log(${JSON.stringify(JSON.stringify([lapsed, failedSibling]))});\n`,
+      "utf8",
+    );
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        USAGE_SNAPSHOT_OUTBOX_PATH: outboxPath,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+
+    const output = JSON.parse(await readFile(currentPath, "utf8"));
+    const personal = output.providers.filter(
+      (entry: { serviceId: string }) => entry.serviceId === "opencode-go.drewrypope",
+    );
+    expect(personal).toHaveLength(1);
+    expect(personal[0]).toMatchObject({ state: "lapsed", windows: [] });
+    expect(personal[0].error).toContain("No active OpenCode Go subscription");
+
+    const sibling = output.providers.find(
+      (entry: { serviceId: string; retainedFromFailedTick?: string }) =>
+        entry.serviceId === "opencode-go.popesdrew" && entry.retainedFromFailedTick,
+    );
+    expect(sibling).toMatchObject({ state: "ok", retainedFromFailedTick: output.generatedAt });
+    expect(output.heartbeat.perProvider["opencode-go"]).toMatchObject({
+      state: "error",
+      error: "OpenCode Go request timed out",
+    });
+    // The lapsed credential contributes no newly measured percentage.
+    const records = (await readFile(outboxPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line: string) => JSON.parse(line));
+    expect(records.some((record: { serviceId: string }) => record.serviceId === "opencode-go.drewrypope")).toBe(
+      false,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

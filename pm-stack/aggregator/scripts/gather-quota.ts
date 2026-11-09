@@ -692,16 +692,29 @@ async function main(): Promise<number> {
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
-  // whole-fetch timeout). The heartbeat below still reports the run
-  // as an error, with its reason and the retained row count.
+  // whole-fetch timeout). Preserve confirmed lapse rows alongside
+  // retained siblings: retention must never erase a terminal state
+  // reported by this tick.
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
       if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
-        run.entries = markRetained(retained, tickAt);
-        run.retained = true;
+        const lapsed = run.entries.filter((e) => e.state === "lapsed");
+        // Do not retain the previous ok reading for the same credential
+        // that has just reported a lapse. Other credentials in the same
+        // provider run may still retain their last-known readings.
+        const retainedSiblings = retained.filter(
+          (previous) =>
+            !lapsed.some((current) =>
+              (current.credentialId && previous.credentialId === current.credentialId) ||
+              (current.credentialLabel &&
+                previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+            ),
+        );
+        run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
+        run.retained = retainedSiblings.length > 0;
       }
     }
   }
