@@ -175,6 +175,73 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                                        | —                                                                |
 | mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                                             | — (main covers it)                                               |
 | mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                                            | —                                                                |
+| production-line guard (#1411)                                  | `basic: production line limit (2500)` on `pull_request`                                             | —                                                                                                   | —                                                                |
+
+## CI-policy agreement contract (#7089, Phase 1)
+
+For every workflow in this contract's scope, three records must
+agree: the tier this policy assigns, the triggers the workflow
+declares, and the Actions enablement state. A disagreement in any
+leg is a defect with exactly one recorded disposition — **re-arm**
+(triggers restored to the mapping + venue enabled + a completed run
+on main as proof), **fold** (the check moves into a named venue that
+satisfies the contract), or **retire** (workflow, policy row, and
+header promises removed in the same change) — never a state that
+persists by default. "Dispatch-only and nobody dispatches" is not a
+disposition.
+
+**Tier → trigger mapping** (the checker below enforces exactly
+this):
+
+| tier             | satisfied by                                                                 |
+| ---------------- | ---------------------------------------------------------------------------- |
+| PR (basic) tier  | a `pull_request` trigger (with the workflow's path gate where one exists)    |
+| main tier        | a `push` trigger on `branches: [main]` (path gates as before), or a named equivalent main-tier venue running the same check |
+| nightly tier     | a `schedule` trigger                                                         |
+
+A `workflow_dispatch:`-only block satisfies **no** tier, and
+`merge_group` satisfies no tier either: there is no merge queue
+(Drew ruling, 2026-11-08, above), which supersedes the #7089
+design's original merge_group pin for basic-tier guards — the
+guards that ran only on `merge_group` now run on `pull_request`,
+and this contract's mapping follows that ruling.
+
+**Scope.** The guard/build workflows this policy names outside the
+test-suite estate (#6185's registry owns suite venues):
+`workflow-lint`, `proxy-port-fallbacks`, and
+`fleet-search-parity-guard` (the conforming basic-tier guards),
+`opencode-config-guard`, `mcpx-fix-test-guard`,
+`production-line-guard`, and the build set `go-modules-build`,
+`identity-build`, `map-build`, `mcpx-nixbuild`. Phase 4 of #7089
+inventories widening this scope to every workflow this policy
+names.
+
+**Checking.** `.github/scripts/check-ci-policy-agreement.sh`
+compares each in-scope workflow's tier assignment against its
+declared triggers in the tree and runs in `workflow-lint`; shell
+contract tests live in
+`.github/scripts/check-ci-policy-agreement.test.sh` (oracle: for
+every in-scope workflow, tier, declared triggers, and the recorded
+waiver set must agree). Enablement is not visible from the tree:
+it is audited from the Actions API on the #6187 recurring cadence,
+and a disabled in-scope venue is reported with its disposition.
+At Phase 1 landing, the disabled in-scope venues are exactly the
+waiver set below (opencode-config-guard and the #6981 build set
+are `disabled_manually`).
+
+**Waivers — the recorded Phase 2–3 disagreement set.** Each waiver
+names its phase issue and awaits Drew's re-arm-vs-dispatch-only
+ruling on #7089; a waiver is a record, not a disposition. When a
+phase lands or is ruled, the waiver is deleted in the same PR that
+changes the triggers or strikes the tier — the checker fails on a
+stale waiver whose leg now agrees.
+
+| workflow                                          | missing leg(s)                                          | phase issue |
+| ------------------------------------------------- | ------------------------------------------------------- | ----------- |
+| opencode-config-guard                             | main tier (`push`); venue `disabled_manually`           | Phase 2 — #6953 |
+| mcpx-fix-test-guard                               | PR tier (`pull_request`) and main tier (`push`)         | Phase 2 — #6929 |
+| production-line-guard                             | PR tier (`pull_request`)                                | Phase 3 — #6959 |
+| go-modules-build, identity-build, map-build, mcpx-nixbuild | PR tier (`pull_request`) and main tier (`push`); venues `disabled_manually` | Phase 3 — #6981 |
 
 ## Coverage rule
 
