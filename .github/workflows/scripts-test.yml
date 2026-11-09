@@ -1,5 +1,6 @@
 name: scripts-test
 
+# CI tier policy: see .github/ci-policy.md
 on:
   workflow_dispatch:
   push:
@@ -44,3 +45,18 @@ jobs:
         run: python3 -m unittest discover -s nixos/services/power-guard -p 'test_*.py' -v
       - name: Run sops atomic writers regression tests (#6555)
         run: bash lib/sops-atomic-writers.test.sh
+
+  mcpx-affected-embed-regressions:
+    name: "basic: mcpx affected-embed regressions"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run mcpx embed-selector regression tests (#6866)
+        run: |
+          test -f pkgs/mcpx/scripts/tests/test_affected_embeds.py
+          command -v git >/dev/null
+          python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v

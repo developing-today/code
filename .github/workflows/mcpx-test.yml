@@ -91,6 +91,11 @@ jobs:
           cache-dependency-path: pkgs/mcpx/go.sum
       - name: Affected-test selector regressions
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v
+      - name: Affected embed-selector regressions (#6866)
+        run: |
+          test -f pkgs/mcpx/scripts/tests/test_affected_embeds.py
+          command -v git >/dev/null
+          python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v
       - name: Run-seed wrapper regressions (#1949)
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v
       # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
