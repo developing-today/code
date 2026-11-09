@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Completion renders a shell completion script.

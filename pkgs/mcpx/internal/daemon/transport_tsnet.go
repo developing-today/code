@@ -14,7 +14,7 @@ import (
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/tsnet"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Identity transport (#1967): a daemon reachable by its tailnet identity
@@ -127,7 +127,7 @@ type tsnetListener struct {
 // CloseNode closes the listener and shuts the node down, releasing the
 // tailnet identity so another process can take it over.
 func (l *tsnetListener) CloseNode() error {
-	_ = l.Listener.Close()
+	_ = l.Close()
 	return l.node.Close()
 }
 

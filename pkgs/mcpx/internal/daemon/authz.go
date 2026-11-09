@@ -5,7 +5,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // The authorisation funnel (#1968): every surface constructs a principal,

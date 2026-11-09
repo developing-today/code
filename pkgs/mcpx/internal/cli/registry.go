@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
 )
 
 // CmdRegistry searches a registry and adds servers from it.

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // seen is one POST as the server received it.
@@ -114,7 +114,7 @@ func dialURL(t *testing.T, url string, pref mcpclient.Preference, o mcpclient.Op
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 
@@ -327,7 +327,7 @@ func sse(w http.ResponseWriter) func(format string, a ...any) {
 	f := w.(http.Flusher)
 	f.Flush()
 	return func(format string, a ...any) {
-		fmt.Fprintf(w, format, a...)
+		_, _ = fmt.Fprintf(w, format, a...)
 		f.Flush()
 	}
 }
@@ -531,7 +531,7 @@ func TestHTTPSSETransport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		tools, err := c.ListTools(ctx5())
 		if err != nil || len(tools) != 1 || tools[0].Name != "old" {
 			t.Fatalf("tools %v err %v", tools, err)

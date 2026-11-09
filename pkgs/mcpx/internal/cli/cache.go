@@ -7,8 +7,8 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"github.com/dezren39/mcpx/internal/cache"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cache"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // CmdCache is the listing and pruning surface for the one cache
@@ -104,13 +104,13 @@ func (a *App) cacheList(c *cache.Cache, lim cache.Limits) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "KIND\tKEY\tBYTES\tLEASED\tPATH")
+	_, _ = fmt.Fprintln(tw, "KIND\tKEY\tBYTES\tLEASED\tPATH")
 	for _, r := range rows {
 		leased := ""
 		if r.Leased {
 			leased = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", r.Kind, r.Key, r.Size, leased, r.Path)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", r.Kind, r.Key, r.Size, leased, r.Path)
 	}
 	return tw.Flush()
 }

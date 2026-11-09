@@ -149,11 +149,23 @@ impl DirectoryAuth {
     /// Make a six-digit code for an address and remember its digest. Returns
     /// the code, which is sent by mail and never stored.
     ///
+    /// Issuing first sweeps every expired pending code, for any address, so
+    /// a code whose address never comes back does not sit in the map forever
+    /// (#1732). The sweep is opportunistic: it runs only when a code is
+    /// issued, so nothing is reclaimed while the world is idle and the map
+    /// has no hard size bound. `HashMap::retain` scans the whole map, so an
+    /// issuance costs O(pending codes) on top of its own work — accepted
+    /// here because issuance is already rate-limited per address and the
+    /// scan is the same shape as the session sweep in `open_session`.
+    /// Unexpired codes are all kept, including ones that have run out of
+    /// attempts, so resend throttling and the attempt limit are unchanged.
+    ///
     /// # Errors
     ///
     /// Fails with [`Refusal::RateLimited`] if a code for this address was sent
     /// less than a minute ago.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
+        self.codes.retain(|_, pending| pending.expires_at > now);
         if let Some(pending) = self.codes.get(address)
             && pending.sent_at + CODE_RESEND_MS > now
         {
@@ -247,7 +259,8 @@ impl ReplayGuard {
             .into());
         }
         self.seen
-            .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS > now);
+            // Keep nonces through the same inclusive boundary as `verify_signed`'s `window_ok` below.
+            .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS >= now);
         let id = format!("{key}:{nonce}");
         if self.seen.contains_key(&id) {
             return Err(Refusal::Unauthenticated("request was already used".to_owned()).into());
@@ -286,8 +299,21 @@ pub fn signed_message(method: &str, target: &str, at: u64, nonce: &str, body: &[
     )
 }
 
+/// Whether `nonce` is one `verify_signed` can accept: 1-64 ASCII
+/// alphanumeric characters or '-'.
+fn nonce_in_domain(nonce: &str) -> bool {
+    !nonce.is_empty()
+        && nonce.len() <= 64
+        && nonce.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// Sign a request as a client holding `key` would.
-#[must_use]
+///
+/// # Errors
+///
+/// Fails if `nonce` is empty, longer than 64 characters, or has a character
+/// other than an ASCII letter, digit or '-': `verify_signed` refuses every
+/// such nonce, so no signature is produced for one.
 pub fn sign_request(
     key: &SigningKey,
     method: &str,
@@ -295,14 +321,18 @@ pub fn sign_request(
     body: &[u8],
     at: u64,
     nonce: &str,
-) -> Signed {
+) -> Result<Signed> {
+    anyhow::ensure!(
+        nonce_in_domain(nonce),
+        "nonce must be 1-64 ASCII letters, digits or '-'"
+    );
     let message = signed_message(method, target, at, nonce, body);
-    Signed {
+    Ok(Signed {
         key: hex_encode(&key.verifying_key().to_bytes()),
         at,
         nonce: nonce.to_owned(),
         signature: hex_encode(&key.sign(message.as_bytes()).to_bytes()),
-    }
+    })
 }
 
 /// Check a signed request and return the key that made it.
@@ -324,6 +354,7 @@ pub fn verify_signed(
             "signature does not verify".to_owned(),
         ))
     };
+    // This inclusive window shares its boundary with `ReplayGuard::accept`'s retention above.
     let window_ok = signed.at.abs_diff(now) <= SIGNED_WINDOW_MS;
     if !window_ok {
         return Err(Refusal::Unauthenticated(
@@ -331,13 +362,7 @@ pub fn verify_signed(
         )
         .into());
     }
-    if signed.nonce.is_empty()
-        || signed.nonce.len() > 64
-        || !signed
-            .nonce
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !nonce_in_domain(&signed.nonce) {
         return Err(refused());
     }
     let key = normalize_key(&signed.key).ok().ok_or_else(refused)?;
@@ -354,7 +379,12 @@ pub fn verify_signed(
 }
 
 fn hex_bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.is_ascii() {
+    // Every byte must be an ASCII hex digit (#2517): u8::from_str_radix
+    // also accepts a leading '+', so without this gate a byte 0x00-0x0f
+    // has two accepted spellings ('0x' and '+x') — and the replay guard,
+    // keyed on the key string, would treat the '+' spelling of a
+    // captured request as a fresh id.
+    if text.len() != N * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0_u8; N];
@@ -446,6 +476,57 @@ mod tests {
     }
 
     #[test]
+    fn issuing_for_another_address_evicts_expired_codes_at_the_ttl_boundary() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::SignIn {
+            account: "ab".repeat(32),
+        };
+        auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        // One millisecond before expiry the first code is still pending:
+        // issuing for a second address must keep it.
+        auth.issue_code(purpose.clone(), "c@d.co", now() + CODE_TTL_MS - 1)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        // At exactly expires_at the code is expired (check_code refuses at
+        // expires_at <= now), so the same issuance sweep evicts it without
+        // the first address ever checking.
+        auth.issue_code(purpose, "e@f.co", now() + CODE_TTL_MS)
+            .unwrap();
+        assert!(!auth.codes.contains_key("a@b.co"));
+        assert!(auth.codes.contains_key("c@d.co"));
+        assert!(auth.codes.contains_key("e@f.co"));
+    }
+
+    #[test]
+    fn the_sweep_keeps_unexpired_codes_even_after_their_attempts_run_out() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        let wrong = if code == "999999" { "000000" } else { "999999" };
+        for _ in 0..CODE_ATTEMPTS {
+            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+        }
+        // Issuing for another address inside the TTL sweeps expired codes
+        // only: the exhausted code stays, so the attempt limit still refuses
+        // even the right answer, and the new code verifies normally.
+        let other = auth
+            .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        assert!(
+            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS)
+                .is_err()
+        );
+        assert_eq!(
+            auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
+                .unwrap(),
+            purpose
+        );
+    }
+
+    #[test]
     fn a_signed_request_verifies_once_inside_its_window() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let signed = sign_request(
@@ -455,7 +536,8 @@ mod tests {
             b"",
             now(),
             "n1",
-        );
+        )
+        .unwrap();
         let mut replays = ReplayGuard::default();
         let who = verify_signed(
             &mut replays,
@@ -481,9 +563,44 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_request_replay_is_refused_through_the_inclusive_window_edge() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let at = now();
+        let target = "/api/world/directory?world=x";
+        let signed = sign_request(&key, "GET", target, b"", at, "edge").unwrap();
+        let mut replays = ReplayGuard::default();
+
+        assert!(verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok());
+        for instant in [
+            at + SIGNED_WINDOW_MS - 1,
+            at + SIGNED_WINDOW_MS,
+            at + SIGNED_WINDOW_MS + 1,
+        ] {
+            assert!(
+                verify_signed(&mut replays, &signed, "GET", target, b"", instant).is_err(),
+                "replay accepted at {instant}"
+            );
+        }
+
+        let mut boundary_replays = ReplayGuard::default();
+        assert!(
+            verify_signed(
+                &mut boundary_replays,
+                &signed,
+                "GET",
+                target,
+                b"",
+                at + SIGNED_WINDOW_MS,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn a_signed_request_is_bound_to_its_method_target_body_and_time() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let signed = sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2");
+        let signed =
+            sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2").unwrap();
         for (method, target, body, at) in [
             ("GET", "/api/world/directory", b"{}".as_slice(), now()),
             ("POST", "/api/world/other", b"{}".as_slice(), now()),
@@ -517,12 +634,12 @@ mod tests {
         let mut replays = ReplayGuard::after_boot(boot, window);
         let target = "/api/world/directory";
 
-        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1");
+        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1").unwrap();
         let error =
             verify_signed(&mut replays, &early, "GET", target, b"", boot + 599_000).unwrap_err();
         assert!(boot_refused(&error), "{error:#}");
 
-        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2");
+        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2").unwrap();
         assert!(verify_signed(&mut replays, &late, "GET", target, b"", boot + 600_000).is_ok());
     }
 
@@ -530,7 +647,7 @@ mod tests {
     fn a_request_captured_before_a_restart_is_refused_during_the_boot_window() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let boot = now();
-        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old");
+        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old").unwrap();
         let mut replays = ReplayGuard::after_boot(boot, Duration::from_mins(10));
         let error =
             verify_signed(&mut replays, &captured, "GET", "/x", b"", boot + 60_000).unwrap_err();
@@ -541,14 +658,123 @@ mod tests {
     fn a_zero_boot_window_refuses_nothing() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
-        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
+        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1").unwrap();
         assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+    }
+
+    #[test]
+    fn sign_request_refuses_nonces_verify_signed_would_reject() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let long = "a".repeat(65);
+        for bad in [
+            "",
+            long.as_str(),
+            "has space",
+            "under_score",
+            "plus+sign",
+            "dot.name",
+            "n\u{e9}",
+        ] {
+            let error = sign_request(&key, "GET", "/x", b"", now(), bad).unwrap_err();
+            assert!(format!("{error:#}").contains("nonce"), "{bad:?}: {error:#}");
+        }
+        let max = "a".repeat(64);
+        for good in ["n1", "abc-DEF-123", max.as_str()] {
+            let signed = sign_request(&key, "GET", "/x", b"", now(), good).unwrap();
+            let mut replays = ReplayGuard::default();
+            assert!(
+                verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                "{good:?}"
+            );
+        }
+    }
+
+    // Property coverage for the nonce-domain invariant (Codex finding on
+    // PR #6539): for every generated nonce, `sign_request` succeeds exactly
+    // when an independent oracle — written from the `verify_signed` contract,
+    // not from `nonce_in_domain` — accepts the nonce, and every accepted
+    // nonce round-trips through `verify_signed`.
+    proptest::proptest! {
+        #[test]
+        fn sign_request_accepts_exactly_the_verify_signed_nonce_domain(
+            nonce in proptest::string::string_regex(".{0,70}").unwrap()
+        ) {
+            // Independent oracle: 1-64 chars, each an ASCII letter, digit
+            // or '-', measured in bytes to mirror the wire contract.
+            let oracle = !nonce.is_empty()
+                && nonce.len() <= 64
+                && nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let result = sign_request(&key, "GET", "/x", b"", now(), &nonce);
+            proptest::prop_assert_eq!(result.is_ok(), oracle, "nonce {:?}", nonce);
+            if let Ok(signed) = result {
+                let mut replays = ReplayGuard::default();
+                proptest::prop_assert!(
+                    verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                    "oracle-accepted nonce {:?} must verify", nonce
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hex_bytes_refuses_plus_encoded_pairs() {
+        // #2517: '+' pairs must not decode at either auth shape.
+        assert!(hex_bytes::<32>(&"+a".repeat(32)).is_none());
+        assert!(hex_bytes::<64>(&"+a".repeat(64)).is_none());
+        let mut mixed = "0a".repeat(64);
+        mixed.replace_range(0..2, "+a");
+        assert!(hex_bytes::<64>(&mixed).is_none());
+        // Canonical hex in either case still decodes, identically.
+        assert_eq!(
+            hex_bytes::<64>(&"0a".repeat(64)),
+            hex_bytes::<64>(&"0A".repeat(64))
+        );
+    }
+
+    #[test]
+    fn a_signed_request_replayed_in_plus_encoding_is_refused() {
+        // #2517: a byte below 0x10 has a canonical pair with a leading
+        // '0' ("07") and a '+' spelling ("+7") that decodes identically.
+        // Before the hexdigit gate, re-encoding a captured request's
+        // key that way verified again under a fresh replay-guard id
+        // (the guard keys on the key string); now it is refused.
+        // Find a signing key whose verifying-key hex has at least one
+        // pair with a leading '0' — each such pair has a '+' spelling.
+        let plus_encode = |hex: &str| -> String {
+            hex.as_bytes()
+                .chunks(2)
+                .map(|pair| {
+                    if pair[0] == b'0' {
+                        format!("+{}", pair[1] as char)
+                    } else {
+                        String::from_utf8(pair.to_vec()).unwrap()
+                    }
+                })
+                .collect()
+        };
+        let mut signed = None;
+        for seed in 0_u8..=255 {
+            let key = SigningKey::from_bytes(&[seed; 32]);
+            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1").unwrap();
+            if plus_encode(&candidate.key) != candidate.key {
+                signed = Some(candidate);
+                break;
+            }
+        }
+        let signed = signed.expect("some seed's key has a '+'-spellable pair");
+        let mut replays = ReplayGuard::default();
+        assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+        let mut replayed = signed.clone();
+        replayed.key = plus_encode(&signed.key);
+        assert_ne!(replayed.key, signed.key);
+        assert!(verify_signed(&mut replays, &replayed, "GET", "/x", b"", now()).is_err());
     }
 
     #[test]
     fn a_signed_request_with_a_non_canonical_s_is_refused() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2");
+        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2").unwrap();
         let raw = hex_bytes::<64>(&signed.signature).unwrap();
         signed.signature = hex_encode(&with_non_canonical_s(raw));
         let mut replays = ReplayGuard::default();

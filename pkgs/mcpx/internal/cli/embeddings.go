@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
 )
 
 // CmdEmbeddings implements the `mcpx embeddings` CLI commands.
@@ -42,7 +42,7 @@ func (a *App) CmdEmbeddings(ctx context.Context, args []string) error {
 					c.authorize(httpReq)
 					resp, err := http.DefaultClient.Do(httpReq)
 					if err == nil && resp.StatusCode == http.StatusOK {
-						defer resp.Body.Close()
+						defer func() { _ = resp.Body.Close() }()
 						var out struct {
 							Model string `json:"model"`
 							Data  []struct {
@@ -97,7 +97,7 @@ func (a *App) CmdEmbeddings(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("export failed (status %d): %s", resp.StatusCode, string(body))
@@ -108,7 +108,7 @@ func (a *App) CmdEmbeddings(ctx context.Context, args []string) error {
 			if err != nil {
 				return err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			_, err = io.Copy(f, resp.Body)
 			if err == nil {
 				fmt.Printf("Exported embeddings saved to %s\n", *outPath)
@@ -148,7 +148,7 @@ func (a *App) CmdEmbeddings(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)

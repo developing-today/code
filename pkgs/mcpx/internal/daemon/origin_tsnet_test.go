@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // The tailnet listener's clients name the daemon by its MagicDNS name;
@@ -98,7 +98,7 @@ func TestTailnetHost(t *testing.T) {
 func TestSendConnsDrainsDescriptorless(t *testing.T) {
 	srv := &Server{logger: log.New(io.Discard, "", 0)}
 	mine, peer := net.Pipe()
-	defer peer.Close()
+	defer func() { _ = peer.Close() }()
 	hc := newHandoffConn(mine, false)
 	if err := srv.sendConns(nil, []*handoffConn{hc}); err != nil {
 		t.Fatalf("sendConns with a descriptorless connection = %v; want nil (drained)", err)

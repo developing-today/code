@@ -10,21 +10,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/model"
-	"github.com/dezren39/mcpx/internal/policy"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/recipes"
-	"github.com/dezren39/mcpx/internal/runner"
-	"github.com/dezren39/mcpx/internal/scripting"
-	"github.com/dezren39/mcpx/internal/searchpath"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
+	"github.com/developing-today/code/pkgs/mcpx/internal/policy"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // ConsumerPolicy is the resolved policy for everything mcpx asks for on its
@@ -53,9 +53,15 @@ type ConsumerPolicy struct {
 	ModelProvider       string
 	ModelBaseURL        string
 	ModelAPIKeyEnv      string
+	ModelProviders      string
+	ModelProfiles       string
 	ModelDefault        string
 	ModelBudget         int
 	ModelTimeout        time.Duration
+
+	// SamplingAnswerLocally is sampling.answerLocally: answer upstream
+	// sampling requests from the configured model layer (#1925 slice 3).
+	SamplingAnswerLocally bool
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -156,9 +162,12 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.ModelProvider = set.String("model.provider")
 	p.ModelBaseURL = set.String("model.baseURL")
 	p.ModelAPIKeyEnv = set.String("model.apiKeyEnv")
+	p.ModelProviders = set.String("model.providers")
+	p.ModelProfiles = set.String("model.profiles")
 	p.ModelDefault = set.String("model.default")
 	p.ModelBudget = set.Int("model.budget")
 	p.ModelTimeout = set.Duration("model.timeout")
+	p.SamplingAnswerLocally = set.Bool("sampling.answerLocally")
 	return p
 }
 
@@ -300,41 +309,41 @@ func (r *Registry) DiagnoseCatalog() diagnose.Catalog {
 // caller already has an instance, the scope key is the answer and a question
 // would be theatre.
 //
-// The returned key is the one to lease. Every path returns something: an
+// The returned scope is the one to lease. Every path returns something: an
 // unanswered question falls back to the configured default, because the
 // caller is frequently headless and a call that waits forever is worse than
 // one that takes the conservative option.
-func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.CallContext, key string) string {
+func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.CallContext, rs config.ResolvedScope) config.ResolvedScope {
 	if r.consumer.Disambiguate != "ask" || r.broker == nil {
-		return key
+		return rs
 	}
 	st := p.Status()
 	if st.Sharing != string(config.SharingExclusive) || len(st.Instances) < 2 {
-		return key
+		return rs
 	}
 	choices := []elicit.Choice{{
-		Value: key, Title: "new",
+		Value: rs.Key, Title: "new",
 		Detail: "start an instance for this caller, which is what happens today",
 	}}
-	recent := key
+	recent := rs
 	bestIdle := -1
 	for _, in := range st.Instances {
-		if in.Key == key {
+		if in.Key == rs.Key {
 			// The caller already has one. That is the answer.
-			return key
+			return rs
 		}
 		choices = append(choices, elicit.Choice{
 			Value: in.Key, Title: in.Key, Detail: describeInstance(in),
 		})
 		if bestIdle < 0 || in.IdleSec < bestIdle {
-			bestIdle, recent = in.IdleSec, in.Key
+			bestIdle, recent = in.IdleSec, resolvedInstanceScope(in)
 		}
 	}
 	sort.SliceStable(choices[1:], func(i, j int) bool {
 		return choices[1+i].Title < choices[1+j].Title
 	})
 
-	fallback := key
+	fallback := rs
 	if r.consumer.DisambiguateDefault == "recent" {
 		fallback = recent
 	}
@@ -344,7 +353,7 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 		Message: fmt.Sprintf("%s has %d live instances and this call named none of them. Which should it use?",
 			p.Namespace(), len(st.Instances)),
 		Choices: choices,
-		Default: fallback,
+		Default: fallback.Key,
 		TTL:     r.consumer.AskTimeout,
 	})
 	opened, err := r.broker.OpenRequest(req)
@@ -358,10 +367,10 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 	defer cancel()
 	ans, aerr := r.broker.Await(actx, opened.ID)
 	if aerr != nil {
-		r.logf("disambiguate %s: nobody answered, using %s", p.Name(), fallback)
+		r.logf("disambiguate %s: nobody answered, using %s", p.Name(), fallback.Key)
 		return fallback
 	}
-	chosen, answered := elicit.Resolve(ans, elicit.FieldInstance, fallback)
+	chosen, answered := elicit.Resolve(ans, elicit.FieldInstance, fallback.Key)
 	if !answered {
 		return fallback
 	}
@@ -370,11 +379,27 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 	// text somebody typed.
 	for _, c := range choices {
 		if c.Value == chosen {
-			return chosen
+			if chosen == rs.Key {
+				return rs
+			}
+			for _, in := range st.Instances {
+				if in.Key == chosen {
+					return resolvedInstanceScope(in)
+				}
+			}
+			return config.ResolvedScope{Key: chosen}
 		}
 	}
-	r.logf("disambiguate %s: %q is not one of the choices, using %s", p.Name(), chosen, fallback)
+	r.logf("disambiguate %s: %q is not one of the choices, using %s", p.Name(), chosen, fallback.Key)
 	return fallback
+}
+
+// resolvedInstanceScope carries the root chosen with a live instance into
+// Acquire. The instance may need a new protocol lane or may exit while the
+// disambiguation answer is pending, so the selected root cannot be recovered
+// by assuming Acquire will reuse the exact process shown in the choices.
+func resolvedInstanceScope(in pool.InstanceStatus) config.ResolvedScope {
+	return config.ResolvedScope{Key: in.Key, Root: in.Root}
 }
 
 func describeInstance(in pool.InstanceStatus) string {
@@ -389,6 +414,13 @@ func describeInstance(in pool.InstanceStatus) string {
 // ---- confirm a destructive call ----
 
 // ErrNotConfirmed is returned when a destructive call was not approved.
+//
+// It is a typed refusal, not a tool failure (#6116): failureStatus
+// answers it 403 and callErrorBody carries code
+// "confirmation_required", so a caller -- above all a headless one,
+// which can never answer the question -- can tell "the gate refused
+// this call" apart from "the tool ran and failed" (a 502 with an
+// upstream error) instead of quoting the gate text as a result.
 type ErrNotConfirmed struct {
 	Tool   string
 	Reason string
@@ -409,7 +441,27 @@ func (e ErrNotConfirmed) Error() string {
 // An unanswered question refuses the call. That is the opposite of the
 // disambiguation default, and for the opposite reason: there, doing nothing
 // is safe; here, doing nothing is the destructive thing.
-func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool string, cc config.CallContext) error {
+// declaredReadOnly reports whether the operator declared this tool
+// read-only for this server in local configuration (#6116): the
+// per-server readOnlyTools list, read from the requested server's
+// view for the same reason the write policy override is -- pools are
+// shared between aliases, and the declaration belongs to the name
+// the caller asked for. The operator's own declaration is trusted
+// outright, as the locally declared stdio server's annotations are
+// (#2191); a server cannot declare its own tools read-only this way.
+func (r *Registry) declaredReadOnly(server, tool string) bool {
+	view, ok := r.View(server)
+	return ok && view.DeclaresReadOnly(tool)
+}
+
+func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext) error {
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only (#6116): a
+		// pre-authorized call, not a destructive one, so there is
+		// nothing to confirm -- in any session mode, including a
+		// headless one with nobody to answer.
+		return nil
+	}
 	if !r.consumer.ConfirmDestructive || r.broker == nil {
 		return nil
 	}
@@ -420,7 +472,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		// is what happened on every call that arrived while a new daemon
 		// was still reading schemas -- so read them now, and refuse if
 		// they cannot be read: failing open is the one wrong answer here.
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "its annotations could not be read: " + err.Error()}
@@ -500,7 +552,8 @@ func (e ErrArgumentRuleDenied) Error() string {
 
 // applyWritePolicy is the write policy gate (#1979, Phase 1): before a
 // call, decide from its tool's annotations and the effective mode
-// whether it proceeds, asks, or is refused.
+// whether it proceeds, asks, or is refused. The ledger and argument-rule
+// hooks run first, in the order fixed by #2126.
 //
 // The effective mode is the server's own writePolicy when it sets one,
 // else the daemon's policy.write. An empty effective mode -- a zero
@@ -516,30 +569,55 @@ func (e ErrArgumentRuleDenied) Error() string {
 // under allow confirmDestructive still runs, which is how the floor
 // reaches a destructive call the policy let through.
 func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
-	// Argument rules (#1986) sit in the evaluator's fixed order
-	// (#2126) after the hidden-tool check -- which resolveAndGuard has
-	// already applied -- and the Phase 3 ledger hook (still a no-op),
-	// and BEFORE the write mode below: a call whose arguments break a
-	// rule is refused whatever the mode says, and a call that
-	// satisfies every rule has no opinion from this step and falls
-	// through to the mode. Rules are read from the requested server's
-	// VIEW for the same reason writePolicy is: aliases share a pool
-	// but not a configuration. The check runs even when no write
-	// policy is configured -- rules are their own opt-in -- and before
-	// the pool is touched, so a refused call starts nothing.
-	if view, ok := r.View(server); ok && !view.ArgumentRules.Empty() {
-		rules := view.ArgumentRules
-		var violation *config.ArgumentRuleViolation
-		evaluator := policy.Evaluator{ArgumentRules: func() (policy.Decision, bool) {
-			if v := rules.Check(tool, args); v != nil {
+	// A record only affects a server with an unknown write. Consult it
+	// before argument rules, the write mode, or the destructive floor.
+	// A read-only hint is exempt; if it cannot be refreshed, fail closed
+	// and keep the operator's clear path visible in the error.
+	var ledgerRefusal ErrUnknownOutcome
+	ledgerCheck := func() (policy.Decision, bool) {
+		if r.writeLedger == nil {
+			return policy.Decision{}, false
+		}
+		record, blocked := r.ledgerLookupFor(server, p)
+		if !blocked {
+			return policy.Decision{}, false
+		}
+		tools, _, at := p.CachedSchemas()
+		if at.IsZero() || p.SchemaExpired() {
+			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
+			if err != nil {
+				ledgerRefusal = ErrUnknownOutcome{Record: record,
+					Reason: "could not verify whether this tool is read-only: " + err.Error()}
+				return policy.Decision{Kind: policy.DecideDeny, Reason: ledgerRefusal.Error()}, true
+			}
+			tools = fresh
+		}
+		for _, candidate := range tools {
+			if candidate.Name == tool && (policy.Classify(candidate.Annotations).ReadOnly ||
+				r.declaredReadOnly(server, tool)) {
+				return policy.Decision{}, false
+			}
+		}
+		ledgerRefusal = ErrUnknownOutcome{Record: record}
+		return policy.Decision{Kind: policy.DecideDeny, Reason: ledgerRefusal.Error()}, true
+	}
+
+	var violation *config.ArgumentRuleViolation
+	argumentRules := func() (policy.Decision, bool) {
+		if view, ok := r.View(server); ok && !view.ArgumentRules.Empty() {
+			if v := view.ArgumentRules.Check(tool, args); v != nil {
 				violation = v
 				return policy.Decision{Kind: policy.DecideDeny, Reason: v.Error()}, true
 			}
-			return policy.Decision{}, false
-		}}
-		if d := evaluator.Evaluate(policy.Input{Mode: policy.ModeAllow}); d.Kind == policy.DecideDeny {
-			return false, ErrArgumentRuleDenied{Tool: p.Namespace() + "." + tool, Violation: violation}
 		}
+		return policy.Decision{}, false
+	}
+	preflight := policy.Evaluator{LedgerCheck: ledgerCheck, ArgumentRules: argumentRules}
+	if d := preflight.Evaluate(policy.Input{Mode: policy.ModeAllow}); d.Kind == policy.DecideDeny {
+		if ledgerRefusal.Record.Server != "" {
+			return false, ledgerRefusal
+		}
+		return false, ErrArgumentRuleDenied{Tool: p.Namespace() + "." + tool, Violation: violation}
 	}
 
 	mode := r.consumer.WritePolicy
@@ -585,7 +663,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 	// fail-open this gate exists to prevent.
 	all, _, at := p.CachedSchemas()
 	if at.IsZero() || p.SchemaExpired() {
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "write policy: its annotations could not be read: " + err.Error()}
@@ -604,6 +682,16 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 			class = policy.Classify(all[i].Annotations)
 			break
 		}
+	}
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only in local
+		// configuration (#6116). That declaration outranks the
+		// server's annotations -- including their absence, which
+		// the specification's defaults read as a possibly
+		// destructive write and which is what gated manifestly
+		// read-only search tools (fff.find_files) in headless
+		// sessions, where the gate's question has no answerer.
+		class = policy.Classification{ReadOnly: true}
 	}
 
 	decision := policy.Evaluator{}.Evaluate(policy.Input{
@@ -818,10 +906,19 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		Prelude:       prelude(nss),
 		ClientSource:  codegen.Module(nss, s.endpoint, session),
 		GlobalsSource: codegen.GlobalDeclarations(nss),
-		Timeout:       timeout,
-		Stdout:        &out,
-		Stderr:        &errOut,
-		Env:           env,
+		// A Python one-shot lands here with a Python prelude when the
+		// source chose it (#1917 Phase 2); the same options the runner
+		// itself would derive reach one from daemon callers.
+		Clients: map[string]runner.Client{
+			codegen.Python.Name: {
+				Module:  codegen.PythonModule(nss, s.endpoint, session),
+				Globals: codegen.PythonGlobals(nss),
+			},
+		},
+		Timeout: timeout,
+		Stdout:  &out,
+		Stderr:  &errOut,
+		Env:     env,
 	})
 	result := &ExecResult{Stdout: out.String(), Stderr: errOut.String()}
 	if rerr != nil {
@@ -1015,17 +1112,35 @@ func (s *Server) modelLayerWanted(ctx context.Context, session string, wanted bo
 
 func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider, error) {
 	pol := s.policyFor(ctx)
-	if pol.ModelProvider == "" || pol.ModelProvider == "none" {
+	if !modelLayerConfigured(pol) {
 		return nil, nil
 	}
 	return model.Resolve(model.Config{
-		Provider:     pol.ModelProvider,
-		BaseURL:      pol.ModelBaseURL,
-		APIKeyEnv:    pol.ModelAPIKeyEnv,
-		DefaultModel: pol.ModelDefault,
-		Timeout:      pol.ModelTimeout,
-		Sampler:      s.brokerSampler(session),
+		Provider:             pol.ModelProvider,
+		BaseURL:              pol.ModelBaseURL,
+		APIKeyEnv:            pol.ModelAPIKeyEnv,
+		ProviderSettingsJSON: pol.ModelProviders,
+		ProfilesJSON:         pol.ModelProfiles,
+		DefaultModel:         pol.ModelDefault,
+		Timeout:              pol.ModelTimeout,
+		Sampler:              s.brokerSampler(session),
 	})
+}
+
+func modelLayerConfigured(pol ConsumerPolicy) bool {
+	if pol.ModelProvider != "" && pol.ModelProvider != "none" {
+		return true
+	}
+	if strings.TrimSpace(pol.ModelDefault) != "" {
+		return true
+	}
+	for _, raw := range []string{pol.ModelProviders, pol.ModelProfiles} {
+		raw = strings.TrimSpace(raw)
+		if raw != "" && raw != "{}" && raw != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // generateViaModel is generate's model-layer path: the same system prompt
@@ -1046,7 +1161,11 @@ func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, syst
 	if err != nil || strings.TrimSpace(resp.Text) == "" {
 		return "", "", errNoModel
 	}
-	used := "provider:" + prov.Name()
+	providerName := resp.Provider
+	if providerName == "" {
+		providerName = prov.Name()
+	}
+	used := "provider:" + providerName
 	answered := resp.Model
 	if answered == "" {
 		answered = model.ModelID(modelID)

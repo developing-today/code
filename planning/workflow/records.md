@@ -298,7 +298,7 @@ What `scripts/research_workflow.py` and `scripts/research_workflow_items.py` on 
 - Coverage: by non-blank line, not by segment. There is no `G` bucket, no `G.1` items and no `hint` type; every concept needs source lines.
 - Single concept: the concept is written into `main.md` with an inline change log, instead of a concept file and `changes.md`.
 - Notes: the marker is `<!-- workflow:note -->`, the body is hashed without a formatter pass, and `note` runs a full package check first.
-- Receipts: `resolve-note` appends a `## Note disposition` section to the receiver's concept file (a second writer) and guards with an `O_EXCL` lock file `notes/.<id>.resolved`. `deferred` is not accepted and nothing records `scanned`.
+- Receipts: `resolve-note` appends a `## Note disposition` section to the receiver's concept file (a second writer) and guards with an `O_EXCL` lock file `notes/.<id>.resolved`. `deferred` is accepted with a mandatory `Revisit when:` trigger in the reason (#492), and nothing records `scanned` in a concept-file resolution block.
 - Vocabulary: item statuses and stages are validated. Concept `status`, `priority`, `criticality` and `horizon` are free text, and completion uses a synonym set (`done`, `completed`, `researched`, ...). The relation kinds `supersedes`, `contradicts` and `part-of` are rejected.
 - Scheduling: `ready` and `status` read the working tree, not `origin/<trunk>`. The `waves` view honours `requires` and `shares-files-with`; there are no leases and no live join.
 - IDs: `ids` lists concept, item, segment, note and decision IDs but does not allocate decision IDs.

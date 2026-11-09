@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // PG-07 (#1924): ListResourceTemplates pages like every other list call.
@@ -123,7 +123,7 @@ func dialHang(t *testing.T, h *hangTransport) *mcpclient.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 

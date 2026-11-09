@@ -7,8 +7,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // CmdStdioProxy serves the daemon's API on stdin/stdout: it dials the
@@ -57,7 +57,7 @@ func (a *App) CmdStdioProxy(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("stdio-proxy: no mcpx daemon at %s on this host: %w (start one with `mcpx daemon`, or point ?sock= at its socket)", path, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	return proxyPipe(ctx, conn, os.Stdin, os.Stdout)
 }

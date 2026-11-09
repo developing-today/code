@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/cache"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cache"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"path/filepath"
 	"strings"
 	"testing"

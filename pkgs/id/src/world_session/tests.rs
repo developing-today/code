@@ -1,8 +1,9 @@
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use proptest::prelude::*;
     use tokio::sync::mpsc;
 
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
 
     use super::*;
     use crate::directory::{Actor, Level, Member};
@@ -70,13 +71,18 @@ mod tests {
                 .unwrap();
         }
 
-        async fn next(&mut self) -> Option<serde_json::Value> {
+        async fn next_text(&mut self) -> Option<String> {
             // An upload takes several seconds in a debug build, so 5 s was too
             // tight. The deadline still bounds a real hang.
-            let frame = tokio::time::timeout(Duration::from_mins(1), self.from_server.recv())
+            tokio::time::timeout(Duration::from_mins(1), self.from_server.recv())
                 .await
-                .expect("timed out waiting for a server frame")?;
-            Some(serde_json::from_str(&frame).unwrap())
+                .expect("timed out waiting for a server frame")
+        }
+
+        async fn next(&mut self) -> Option<serde_json::Value> {
+            self.next_text()
+                .await
+                .map(|frame| serde_json::from_str(&frame).unwrap())
         }
     }
 
@@ -119,6 +125,164 @@ mod tests {
             WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
             admin.map(str::to_owned),
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn committed_event_burst_coalesces_views_but_keeps_event_frames_immediate() {
+        // Match the 383-byte roc-grid 80x24 guest frame in the F11.9 baseline
+        // table; this test compares the full JSON frames sent on the wire.
+        const F11_9_ROC_GRID_FRAME_BYTES: usize = 383;
+        struct ViewProgram;
+        impl crate::world::WorldProgram for ViewProgram {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some("x".repeat(F11_9_ROC_GRID_FRAME_BYTES)))
+            }
+        }
+
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(ViewProgram),
+        );
+        let service = WorldService::new(world.clone(), None);
+        let (_, viewer) = world.issue("viewer", WorldScopes::GUEST).await.unwrap();
+        let (_, writer) = world.issue("writer", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(service, SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":viewer.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        assert_eq!(peer.next().await.unwrap()["type"], "view");
+
+        for text in ["one", "two", "three"] {
+            world.chat(writer.clone(), text).await.unwrap();
+        }
+        let mut latest_sequence = 0;
+        let mut event_frame_bytes = 0;
+        for _ in 0..3 {
+            let frame = peer.next_text().await.unwrap();
+            event_frame_bytes += frame.len();
+            let event: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            assert_eq!(event["type"], "event");
+            latest_sequence = event["event"]["sequence"].as_u64().unwrap();
+        }
+        assert!(
+            peer.from_server.try_recv().is_err(),
+            "no view before the window"
+        );
+
+        tokio::time::advance(VIEW_COALESCE_WINDOW).await;
+        let view_frame = peer.next_text().await.unwrap();
+        let view_frame_bytes = view_frame.len();
+        let view: serde_json::Value = serde_json::from_str(&view_frame).unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(
+            view["data"].as_str().unwrap().len(),
+            F11_9_ROC_GRID_FRAME_BYTES
+        );
+        assert_eq!(view["sequence"].as_u64(), Some(latest_sequence));
+        let batched_bytes = event_frame_bytes + view_frame_bytes;
+        let unbatched_bytes = event_frame_bytes + 3 * view_frame_bytes;
+        assert_eq!(unbatched_bytes - batched_bytes, 2 * view_frame_bytes);
+
+        world.chat(writer, "after window").await.unwrap();
+        let event = peer.next().await.unwrap();
+        assert_eq!(event["type"], "event");
+        let latest_sequence = event["event"]["sequence"].as_u64().unwrap();
+        assert!(peer.from_server.try_recv().is_err());
+        tokio::time::advance(VIEW_COALESCE_WINDOW).await;
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(view["sequence"].as_u64(), Some(latest_sequence));
+    }
+
+    #[tokio::test]
+    async fn admin_history_is_admin_only_and_system_events_stay_off_join_streams() {
+        struct Players;
+        impl crate::world::WorldProgram for Players {
+            fn wants(&mut self) -> anyhow::Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({"v": 1, "subscribe": ["players"]}).to_string(),
+                ))
+            }
+        }
+
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(std::collections::BTreeSet::from(["players".to_owned()]));
+        let world = WorldHandle::spawn_with_program(core, Box::new(Players));
+        let (_, capability) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+
+        let mut joiner = Peer::connect(service.clone(), SessionConfig::default());
+        joiner
+            .say(serde_json::json!({
+                "type": "join",
+                "capability": capability.expose(),
+            }))
+            .await;
+        assert_eq!(joiner.next().await.unwrap()["type"], "snapshot");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(75), joiner.from_server.recv())
+                .await
+                .is_err(),
+            "the join event must not enter the participant stream"
+        );
+
+        let mut missing = Peer::connect(service.clone(), SessionConfig::default());
+        missing
+            .say(serde_json::json!({"type": "event_history_admin"}))
+            .await;
+        assert_eq!(missing.next().await.unwrap()["type"], "error");
+
+        let mut denied = Peer::connect(service.clone(), SessionConfig::default());
+        denied
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": capability.expose(),
+            }))
+            .await;
+        assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+
+        world
+            .input(capability.clone(), b"move".to_vec())
+            .await
+            .unwrap();
+        let input = joiner.next().await.unwrap();
+        assert_eq!(input["type"], "event");
+        assert_eq!(input["event"]["kind"]["kind"], "input");
+
+        let mut admin = Peer::connect(service, SessionConfig::default());
+        admin
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+            }))
+            .await;
+        let begin = admin.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        assert_eq!(begin["event_count"], 2);
+        let joined = admin.next().await.unwrap();
+        assert_eq!(joined["type"], "event_history_event");
+        assert_eq!(joined["event"]["kind"]["kind"], "system");
+        assert!(
+            joined["event"]["kind"]["data"]["event"]
+                .as_str()
+                .unwrap()
+                .contains("joined")
+        );
+        let input = admin.next().await.unwrap();
+        assert_eq!(input["type"], "event_history_event");
+        assert_eq!(input["event"]["kind"]["kind"], "input");
+        let records = admin.next().await.unwrap();
+        assert_eq!(records["type"], "records");
+        assert_eq!(records["sequence"], 1);
+    }
+
+    #[tokio::test]
+    async fn cloned_service_allocates_distinct_ids_for_connections() {
+        let service = service(None);
+        let another_connection = service.clone();
+
+        assert!(service.next_session_id() != another_connection.next_session_id());
     }
 
     #[tokio::test]
@@ -490,6 +654,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// PR #4708 Codex P2: a read-only replica clears its blob store so
+    /// uploads stay refused, which also removed the only source
+    /// `module_bytes` would serve from, so an authorized `DownloadModule`
+    /// always returned "module bytes are unavailable". The restored
+    /// module lives in the module directory; `module_bytes` falls back
+    /// to it while uploads stay refused (no blob store to pin into).
+    #[tokio::test]
+    async fn module_bytes_fall_back_to_the_module_directory_without_blobs() {
+        let dir = std::env::temp_dir().join(format!("id-module-bytes-test-{}", std::process::id()));
+        let modules = crate::world_store::ModuleDir::new(dir.clone());
+        let bytes: &[u8] = b"restored-module-bytes";
+        let hash = modules.save(bytes).unwrap();
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        // No blob store attached, as on a replica; `adopt_module` then
+        // only advertises the hash, exactly like the replica restore path.
+        let service = WorldService::new(world, Some("admin".to_owned())).with_module_dir(modules);
+        service.adopt_module(bytes.to_vec()).await.unwrap();
+        assert_eq!(
+            service.active_module_hash().await.as_deref(),
+            Some(hash.as_str())
+        );
+        assert_eq!(service.module_bytes(&hash).await.unwrap(), bytes);
+        assert!(service.module_bytes(&"0".repeat(64)).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn schedule_and_world_state_frames_round_trip_and_hide_the_seed() {
         let svc = service(Some("admin"));
@@ -767,10 +958,11 @@ mod tests {
         let target = format!("/world/{}/isolation", lease.name());
         let now = unix_ms();
 
-        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged");
+        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged").unwrap();
         let last = forged.signature.pop().unwrap();
         forged.signature.push(if last == '0' { '1' } else { '0' });
-        let other_body = sign_request(&key, "PUT", &target, b"isolated", now, "other-body");
+        let other_body =
+            sign_request(&key, "PUT", &target, b"isolated", now, "other-body").unwrap();
         for signed in [&forged, &other_body] {
             assert!(
                 set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(signed))
@@ -783,7 +975,7 @@ mod tests {
             Isolation::Isolated
         );
 
-        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good");
+        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good").unwrap();
         assert_eq!(
             set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(&signed))
                 .await
@@ -881,6 +1073,9 @@ mod tests {
             sequence: 3,
             data: "count=1",
             surface: None,
+            view_revision: 0,
+            base_view_revision: None,
+            patch: None,
         })
         .unwrap();
         assert!(view.contains("\"type\":\"view\""));
@@ -898,6 +1093,9 @@ mod tests {
             sequence: 8,
             data,
             surface: Some(&surface),
+            view_revision: 1,
+            base_view_revision: None,
+            patch: None,
         })
         .unwrap();
         assert!(encoded.contains("\"data\":\"{\\\"kind\\\":\\\"screen\\\""));
@@ -949,6 +1147,169 @@ mod tests {
         let mut bin = Peer::connect(service(None), SessionConfig::default());
         bin.to_server.send(Inbound::Unsupported).await.unwrap();
         assert_eq!(bin.next().await.unwrap()["type"], "error");
+    }
+
+    #[tokio::test]
+    async fn first_frame_rejects_duplicate_json_keys_at_every_depth() {
+        const FRAMES: [(&str, &str); 7] = [
+            (
+                "identical type",
+                r#"{"type":"join","type":"join","capability":"x"}"#,
+            ),
+            (
+                "conflicting type",
+                r#"{"type":"join","type":"chat","capability":"x"}"#,
+            ),
+            (
+                "world duplicate with last value",
+                r#"{"type":"join","capability":"x","world":"lobby","world":"other"}"#,
+            ),
+            (
+                "world duplicate with first value",
+                r#"{"world":"other","world":"lobby","type":"join","capability":"x"}"#,
+            ),
+            (
+                "capability",
+                r#"{"type":"join","capability":"x","capability":"y"}"#,
+            ),
+            (
+                "admin token",
+                r#"{"type":"invite","admin_token":"x","admin_token":"y","display_name":"ann"}"#,
+            ),
+            (
+                "nested signed nonce",
+                r#"{"type":"join","capability":"x","signed":{"key":"k","at":1,"nonce":"one","nonce":"two","signature":"s"}}"#,
+            ),
+        ];
+
+        for (case, text) in FRAMES {
+            let mut peer = Peer::connect(service(None), SessionConfig::default());
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(
+                reply["message"], "first frame must be a valid join or invite request",
+                "{case}: {reply}"
+            );
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn joined_frame_rejects_duplicate_json_keys_at_every_depth() {
+        const FRAMES: [(&str, &str); 7] = [
+            (
+                "identical type",
+                r#"{"type":"chat","type":"chat","text":"hi"}"#,
+            ),
+            (
+                "conflicting type",
+                r#"{"type":"chat","type":"input","text":"hi","data_hex":""}"#,
+            ),
+            (
+                "world duplicate with last value",
+                r#"{"type":"chat","text":"hi","world":"lobby","world":"other"}"#,
+            ),
+            (
+                "world duplicate with first value",
+                r#"{"world":"other","world":"lobby","type":"chat","text":"hi"}"#,
+            ),
+            (
+                "capability",
+                r#"{"type":"chat","text":"hi","capability":"x","capability":"y"}"#,
+            ),
+            (
+                "admin token",
+                r#"{"type":"set_isolation","isolation":"isolated","admin_token":"x","admin_token":"y"}"#,
+            ),
+            (
+                "nested signed nonce",
+                r#"{"type":"set_isolation","isolation":"isolated","signed":{"key":"k","at":1,"nonce":"one","nonce":"two","signature":"s"}}"#,
+            ),
+        ];
+
+        let svc = service(None);
+        let (_, capability) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({"type": "join", "capability": capability.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        for (case, text) in FRAMES {
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(reply["message"], "invalid world frame", "{case}: {reply}");
+        }
+
+        peer.to_server.send(Inbound::Closed).await.unwrap();
+        peer.task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn query_frame_rejects_duplicate_json_keys_before_join() {
+        // Regression test for the PR #6508 review finding: frames received
+        // after a valid query/info first frame were parsed straight into
+        // ClientFrame, so duplicate keys in fields the frame type ignores
+        // collapsed silently and a join carrying them still entered the
+        // joined phase. Oracle: the strict duplicate-key parser — any
+        // repeated key at any depth refuses the frame before conversion.
+        let svc = service(None);
+        let (_, capability) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let cap = capability.expose().to_owned();
+
+        let frames: [(&str, String); 3] = [
+            (
+                "duplicate ignored world field",
+                format!(
+                    r#"{{"type":"join","capability":"{cap}","world":"lobby","world":"other"}}"#
+                ),
+            ),
+            (
+                "duplicate unknown field",
+                format!(r#"{{"type":"join","capability":"{cap}","bogus":1,"bogus":2}}"#),
+            ),
+            (
+                "duplicate inside ignored nested object",
+                format!(r#"{{"type":"join","capability":"{cap}","extra":{{"a":1,"a":2}}}}"#),
+            ),
+        ];
+
+        for (case, text) in frames {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({"type": "info", "capability": cap}))
+                .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "module_info", "{case}");
+            peer.say_text(&text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(reply["message"], "invalid world frame", "{case}: {reply}");
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn duplicate_json_keys_are_rejected_at_any_nesting_depth(
+            key in "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            depth in 0usize..8,
+        ) {
+            let duplicate = format!(r#"{{"{key}":0,"{key}":1}}"#);
+            let nested = (0..depth).fold(duplicate, |value, _| {
+                format!(r#"{{"nested":{value}}}"#)
+            });
+            prop_assert!(parse_json_without_duplicate_keys(&nested).is_err());
+        }
     }
 
     #[test]
@@ -1401,6 +1762,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn directory_frame_lists_worlds_without_an_admin_token() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"arena"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["type"], "world_created");
+
+        // No token at all: the directory is public metadata (#812).
+        let mut guest = Peer::connect_hub(hub, SessionConfig::default());
+        guest.say(serde_json::json!({"type":"directory"})).await;
+        let listed = guest.next().await.unwrap();
+        assert_eq!(listed["type"], "worlds");
+        assert_eq!(listed["default"], "lobby");
+        assert_eq!(listed["worlds"][0]["name"], "arena");
+        assert_eq!(listed["worlds"][0]["presence"], 0);
+    }
+
+    #[tokio::test]
     async fn unauthenticated_frames_cannot_create_or_probe_worlds() {
         let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());
         for frame in [
@@ -1417,6 +1797,63 @@ mod tests {
             0,
             "nothing was opened or created by outsiders"
         );
+    }
+
+    #[tokio::test]
+    async fn routed_admin_history_authenticates_before_lookup_and_never_creates() {
+        let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());
+        invite_into(&hub, "arena", "ann").await;
+        let opens = opener.opens.load(std::sync::atomic::Ordering::SeqCst);
+
+        for world in ["arena", "missing"] {
+            let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());
+            denied
+                .say(serde_json::json!({
+                    "type": "event_history_admin",
+                    "admin_token": "wrong",
+                    "world": world,
+                }))
+                .await;
+            assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+        }
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            opens,
+            "invalid admin tokens are rejected without resolving either route"
+        );
+
+        let mut missing = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        missing
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+                "world": "missing",
+            }))
+            .await;
+        assert_eq!(missing.next().await.unwrap()["message"], "unknown world");
+        assert_eq!(
+            opener.known.lock().unwrap().clone(),
+            vec!["arena".to_owned()],
+            "an authenticated history read does not create a missing world"
+        );
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            opens,
+            "a non-creating history read does not open the world"
+        );
+
+        let mut existing = Peer::connect_hub(hub, SessionConfig::default());
+        existing
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+                "world": "arena",
+            }))
+            .await;
+        let begin = existing.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        assert_eq!(begin["world_id"], "arena");
+        assert_eq!(existing.next().await.unwrap()["type"], "records");
     }
 
     #[tokio::test]
@@ -1574,6 +2011,84 @@ mod tests {
 
     #[cfg(feature = "sandbox")]
     #[tokio::test]
+    async fn admin_upload_rejects_duplicate_json_keys_in_chunk_and_install_end() {
+        // Regression test for issue #6523: install_module_session parsed
+        // chunk and install_end frames with plain serde_json::from_str, so
+        // duplicate keys in fields ClientFrame ignores (unknown fields, or
+        // nested inside an ignored object) collapsed silently — unlike
+        // every other ClientFrame path, which routes through
+        // parse_json_without_duplicate_keys (PR #6508, issue #6501).
+        // Oracle: the strict duplicate-key parser refuses the frame before
+        // any chunk bytes are appended or the upload counts as complete,
+        // ending the install with the existing parse-failure errors.
+        use iroh_blobs::store::mem::MemStore;
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: Store = MemStore::new().into();
+        let svc = WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs);
+
+        let chunk_frames: [(&str, &str); 2] = [
+            (
+                "duplicate unknown key in chunk",
+                r#"{"type":"install_chunk","offset":0,"data_hex":"00","bogus":1,"bogus":2}"#,
+            ),
+            (
+                "duplicate key nested in ignored chunk object",
+                r#"{"type":"install_chunk","offset":0,"data_hex":"00","extra":{"a":1,"a":2}}"#,
+            ),
+        ];
+        for (case, text) in chunk_frames {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({
+                "type": "install_begin",
+                "admin_token": "admin",
+                "total_bytes": 1,
+                "module_hash": null,
+                "seed": 12,
+            }))
+            .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "upload_ready", "{case}");
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(
+                reply["message"], "expected module chunk frame",
+                "{case}: {reply}"
+            );
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "admin_token": "admin",
+            "total_bytes": 1,
+            "module_hash": null,
+            "seed": 12,
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "upload_ready");
+        peer.say(serde_json::json!({
+            "type": "install_chunk",
+            "offset": 0,
+            "data_hex": "00",
+        }))
+        .await;
+        peer.say_text(r#"{"type":"install_end","bogus":1,"bogus":2}"#)
+            .await;
+        let reply = peer.next().await.unwrap();
+        assert_eq!(reply["type"], "error", "install_end: {reply}");
+        assert_eq!(
+            reply["message"], "expected install_end frame",
+            "install_end: {reply}"
+        );
+        assert!(peer.next().await.is_none(), "install_end");
+        peer.task.await.unwrap();
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
     async fn admin_fuel_limit_applies_to_installed_programs() {
         use iroh_blobs::store::mem::MemStore;
 
@@ -1658,6 +2173,51 @@ mod tests {
             .install_wasm(Some("admin"), wasm, 1, &hash)
             .await
             .expect("raw modules stay supported by default");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn module_trust_list_allows_empty_refuses_unsigned_and_accepts_trusted_signer() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+
+        let empty = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("empty-trust", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into());
+        empty
+            .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+            .await
+            .expect("empty trust list keeps legacy installs working");
+
+        let signer = SigningKey::from_bytes(&[42; 32]);
+        let trusted = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("trusted", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into())
+        .with_module_trust_keys(vec![signer.verifying_key().to_bytes()]);
+        assert_eq!(
+            trusted
+                .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+                .await,
+            Err(InstallError::UntrustedModule),
+            "a non-empty trust list refuses unsigned uploads"
+        );
+
+        let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+        message.extend_from_slice(blake3::hash(&wasm).as_bytes());
+        let signature = ModuleSignature {
+            public_key: hex_encode(&signer.verifying_key().to_bytes()),
+            signature: hex_encode(&signer.sign(&message).to_bytes()),
+        };
+        trusted
+            .install_wasm_with_signature(Some("admin"), wasm, 2, &hash, Some(&signature))
+            .await
+            .expect("a trust-listed signer may install the module");
     }
 
     #[cfg(feature = "sandbox")]

@@ -10,15 +10,15 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/recipes"
-	"github.com/dezren39/mcpx/internal/scripting"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // routesConsumer registers the operations behind the things mcpx asks for
@@ -42,7 +42,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		Session string `json:"session"`
 		Repair  bool   `json:"repair"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -153,7 +153,10 @@ func (s *Server) handleRecipesList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"recipes": out, "dirs": s.consumer.dirs})
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, r.URL.Query(), "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		limit = consumerPolicyFrom(s.callSettings(r)).RecipeLimit
 	}
@@ -200,7 +203,7 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 		Source    string `json:"source"`
 		Overwrite bool   `json:"overwrite"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -275,7 +278,7 @@ func (s *Server) handleRecipeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every field here is optional, so an empty body is a legal request for
 	// a recipe that takes no placeholders.
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -366,7 +369,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		Provider     string         `json:"provider"`
 		Model        string         `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -422,7 +425,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	// call on every unmatched prompt. A caller naming a provider or model
 	// on this request has asked, for this request.
 	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != "" ||
-		(pol.ModelProvider != "" && pol.ModelProvider != "none")
+		modelLayerConfigured(pol)
 	// The legacy guard must not gate the model layer: a request whose
 	// only provider is model.provider (#1925) has prov == nil here
 	// whenever no legacy repair provider, recognised env credential, or
@@ -430,7 +433,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	// model-layer backend is never called (Codex P1, PR #2592). The
 	// layer's availability is judged by its own settings; if it was
 	// configured but cannot resolve, generate answers errNoModel.
-	layerSet := pol.ModelProvider != "" && pol.ModelProvider != "none"
+	layerSet := modelLayerConfigured(pol)
 	if !asked || (prov == nil && !layerSet) {
 		out.Model = "none"
 		if !asked {

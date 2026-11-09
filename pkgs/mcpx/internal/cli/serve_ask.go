@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // daemonAsker runs a request the upstream server may interrupt.
@@ -117,7 +117,7 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			}
 			body["kind"] = "exec"
 			body["source"] = e.Source
-			body["options"] = mcpBackend{app: d.app}.execOptions(ctx, e.TimeoutSec)
+			body["options"] = mcpBackend(d).execOptions(ctx, e.TimeoutSec)
 			break
 		}
 		if p.Name != "mcpx_call" {
@@ -388,9 +388,9 @@ func (l *lazyMCP) fingerprint() string {
 	for _, key := range []string{"paths.adapters", "paths.apis"} {
 		for _, p := range splitPathList(l.app.Settings().String(key)) {
 			b, err := os.ReadFile(p)
-			fmt.Fprintf(h, "%s\x00", p)
+			_, _ = fmt.Fprintf(h, "%s\x00", p)
 			if err != nil {
-				fmt.Fprintf(h, "err:%v\x00", err)
+				_, _ = fmt.Fprintf(h, "err:%v\x00", err)
 				continue
 			}
 			h.Write(b)
@@ -466,7 +466,7 @@ func (d daemonAsker) passTool(ctx context.Context, name string) string {
 		return ns
 	}
 	for _, ns := range d.app.passNS() {
-		tools, err := mcpBackend{app: d.app}.UpstreamTools(ctx, ns)
+		tools, err := mcpBackend(d).UpstreamTools(ctx, ns)
 		if err != nil {
 			continue
 		}

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
 )
 
 // #2327: a per-request ttl on POST /v1/artifacts may shorten retention
@@ -20,7 +20,7 @@ func TestHandleArtifactPutTTLCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	s := &Server{}
 	s.artifactStore = store
 	s.artifactsOnce.Do(func() {})

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
 	_ "modernc.org/sqlite"
 )
 
@@ -24,7 +24,7 @@ func open(t *testing.T, opts artifacts.Options) *artifacts.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 

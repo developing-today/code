@@ -11,7 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/dezren39/mcpx/internal/secrets"
+	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
 )
 
 // CmdSecrets gives servers the secrets they need, in memory only.
@@ -69,13 +69,13 @@ func (a *App) secretsList(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSET\tSOURCE")
+	_, _ = fmt.Fprintln(tw, "NAME\tSET\tSOURCE")
 	for _, s := range out.Secrets {
 		source := "-"
 		if s.Source != nil {
 			source = *s.Source
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, yesNo(s.Set), source)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, yesNo(s.Set), source)
 	}
 	return tw.Flush()
 }
@@ -212,9 +212,9 @@ func (a *App) secretsRequests(ctx context.Context) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tSTATUS\tSERVER\tSECRETS")
+	_, _ = fmt.Fprintln(tw, "ID\tSTATUS\tSERVER\tSECRETS")
 	for _, r := range out.Requests {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ID, r.Status, r.Server, strings.Join(r.Secrets, ", "))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ID, r.Status, r.Server, strings.Join(r.Secrets, ", "))
 	}
 	return tw.Flush()
 }

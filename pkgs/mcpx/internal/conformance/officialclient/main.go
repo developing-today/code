@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // Knobs are flags rather than constants: this is test support run by a script, and each has a reason to be
@@ -94,7 +94,7 @@ func run(url, scenario string) error {
 	if *keep {
 		fmt.Fprintf(os.Stderr, "scratch: %s\n", dir)
 	} else {
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 	}
 
 	version := os.Getenv(envVersion)
@@ -390,7 +390,7 @@ func (m *mcpx) answerElicitations(ctx context.Context) func() {
 			fmt.Fprintf(os.Stderr, "elicit store: %v\n", err)
 			return
 		}
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 		t := time.NewTicker(every)
 		defer t.Stop()
 		answered := map[string]bool{}

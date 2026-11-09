@@ -37,7 +37,7 @@ use p2panda_store::topics::TopicStore;
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Event;
-use crate::event_store::{EventStore, Ingest, StoreError};
+use crate::event_store::{BlockKind, BlockList, EventStore, Ingest, StoreError};
 use crate::waiting::AuthorKey;
 
 /// Entries read per page. A page takes the read lock once, so a stream never holds the lock
@@ -301,6 +301,19 @@ impl SharedEventStore {
             resolved.insert(VerifyingKey::from_bytes(&author)?, vec![ChainLog]);
         }
         Ok(resolved)
+    }
+}
+
+impl BlockList for SharedEventStore {
+    /// Whether (`kind`, `value`) is on the store's operator block list
+    /// and still enforced, under the read lock, taken for this one call.
+    /// The wall clock judges expiry, and a read error or a poisoned lock
+    /// invents no block.
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        self.read(|store| {
+            Ok(EventStore::is_blocked(store, kind, value, crate::time::unix_ms()).unwrap_or(false))
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -661,17 +674,16 @@ mod tests {
         None
     }
 
-    /// The shipped build has no SQLite, with `LogSync` wired in. p2panda-sync's store dependency
-    /// defaults to SQLite, so the vendored copy turns that default off (`vendor/README.md`).
+    /// The shipped default build has no SQLite, with `LogSync` wired in. p2panda-sync's store
+    /// dependency defaults to SQLite, so the vendored copy turns that default off
+    /// (`vendor/README.md`).
     ///
-    /// The raw lock cannot carry this check on its own: it resolves dev-dependencies too, and
-    /// #2276 dev-depends on `rusqlite` for the bridge PoC's hosted store, which never ships.
-    /// So this reads the resolved graph instead. A SQLite-family package may appear only when
-    /// every package that depends on it is SQLite-family itself or this package — and this
-    /// package's manifest, checked section by section, must declare SQLite names as
-    /// dev-dependencies only. It fails if a shipped dependency pulls SQLite in, if the
-    /// manifest moves it out of dev-dependencies, if p2panda-sync is missing, or if the
-    /// vendored line loses the change.
+    /// Cargo.lock records optional dependencies even when they are inactive, so its raw package
+    /// edges cannot prove what ships. Keep checking for unexpected SQLite-family edges (allowing
+    /// p2panda-store's optional `sqlx` edge), then ask Cargo for the shipped default-feature graph.
+    /// The root manifest must still declare SQLite names only as dev-dependencies. This catches
+    /// a shipped SQLite path, a root manifest regression, a missing p2panda-sync package, or the
+    /// vendored line losing its `default-features = false`.
     #[test]
     fn test_the_lock_has_no_sqlite_with_logsync_wired() {
         const SQLITE: [&str; 4] = ["sqlx", "sqlite", "rusqlite", "libsqlite3-sys"];
@@ -694,18 +706,59 @@ mod tests {
                  shipped build (see vendor/README.md)"
             );
         }
-        // Nothing outside the family itself and this package (dev-only,
-        // checked above) may depend on a SQLite-family package.
+        // Cargo.lock includes optional dependency edges. p2panda-store declares optional `sqlx`,
+        // which is inactive in the shipped default-feature graph checked below.
         for (name, deps) in &packages {
             for dep in deps {
                 if SQLITE.contains(&dep.as_str()) {
                     assert!(
-                        SQLITE.contains(&name.as_str()) || name == &root,
+                        SQLITE.contains(&name.as_str())
+                            || name == &root
+                            || (name == "p2panda-store" && dep == "sqlx")
+                            // Cargo.lock records sqlx-sqlite's optional backend edge even
+                            // when it is inactive; cargo tree below checks the shipped graph.
+                            || (name == "sqlx-sqlite" && dep == "libsqlite3-sys"),
                         "{name} depends on {dep}: SQLite is back in the shipped build (see \
                          vendor/README.md)"
                     );
                 }
             }
+        }
+
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let tree = std::process::Command::new(cargo)
+            .current_dir(manifest_dir)
+            .args([
+                "tree",
+                "--locked",
+                "--package",
+                "id",
+                "--edges",
+                "normal",
+                "--no-default-features",
+                "--features",
+                "sandbox,world",
+                "--prefix",
+                "none",
+                "--format",
+                "{p}",
+            ])
+            .output()
+            .expect("run cargo tree for the shipped default feature set");
+        assert!(
+            tree.status.success(),
+            "cargo tree failed: {}",
+            String::from_utf8_lossy(&tree.stderr)
+        );
+        let active_packages = String::from_utf8(tree.stdout).unwrap();
+        for package in active_packages
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+        {
+            assert!(
+                !SQLITE.contains(&package),
+                "{package} is active in the shipped default-feature graph (see vendor/README.md)"
+            );
         }
 
         let vendored =
@@ -749,6 +802,11 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

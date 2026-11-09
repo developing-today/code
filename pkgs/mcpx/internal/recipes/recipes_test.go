@@ -2,10 +2,12 @@ package recipes_test
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 const stale = `// Close stale issues in a repository.
@@ -156,6 +158,61 @@ func TestMentionsInCommentsAndStringsAreNotPlaceholders(t *testing.T) {
 			}
 			if out != src+"\n" {
 				t.Fatalf("render changed a comment/string mention:\n got %q\nwant %q", out, src+"\n")
+			}
+		})
+	}
+}
+
+func TestRenderValidatesTypedPlaceholderValues(t *testing.T) {
+	tests := []struct {
+		name        string
+		typeOf      recipes.Type
+		value       any
+		want        string
+		wantErrType string
+	}{
+		{name: "number rejects boolean", typeOf: recipes.TypeNumber, value: true, wantErrType: "number"},
+		{name: "number rejects Inf string", typeOf: recipes.TypeNumber, value: "Inf", wantErrType: "number"},
+		{name: "number rejects NaN string", typeOf: recipes.TypeNumber, value: "NaN", wantErrType: "number"},
+		{name: "number rejects hexadecimal float", typeOf: recipes.TypeNumber, value: "0x10p0", wantErrType: "number"},
+		{name: "number rejects separators", typeOf: recipes.TypeNumber, value: "1_000", wantErrType: "number"},
+		{name: "number rejects leading plus", typeOf: recipes.TypeNumber, value: "+3", wantErrType: "number"},
+		{name: "number rejects missing integer", typeOf: recipes.TypeNumber, value: ".5", wantErrType: "number"},
+		{name: "number rejects positive infinity", typeOf: recipes.TypeNumber, value: math.Inf(1), wantErrType: "number"},
+		{name: "number rejects negative infinity", typeOf: recipes.TypeNumber, value: math.Inf(-1), wantErrType: "number"},
+		{name: "number rejects NaN", typeOf: recipes.TypeNumber, value: math.NaN(), wantErrType: "number"},
+		{name: "string rejects number", typeOf: recipes.TypeString, value: 42, wantErrType: "string"},
+		{name: "string rejects boolean", typeOf: recipes.TypeString, value: true, wantErrType: "string"},
+		{name: "string rejects array", typeOf: recipes.TypeString, value: []any{"a"}, wantErrType: "string"},
+		{name: "boolean rejects number", typeOf: recipes.TypeBoolean, value: 1, wantErrType: "boolean"},
+		{name: "integer number control", typeOf: recipes.TypeNumber, value: 3, want: "3"},
+		{name: "float number control", typeOf: recipes.TypeNumber, value: 3.5, want: "3.5"},
+		{name: "JSON integer string control", typeOf: recipes.TypeNumber, value: "3", want: "3"},
+		{name: "JSON decimal string control", typeOf: recipes.TypeNumber, value: "-3.5", want: "-3.5"},
+		{name: "JSON exponent string control", typeOf: recipes.TypeNumber, value: "1e2", want: "1e2"},
+		{name: "string control is quoted", typeOf: recipes.TypeString, value: "hello", want: `"hello"`},
+		{name: "boolean control", typeOf: recipes.TypeBoolean, value: true, want: "true"},
+		{name: "boolean string path stays canonical", typeOf: recipes.TypeBoolean, value: "TRUE", want: "true"},
+		{name: "JSON object control", typeOf: recipes.TypeJSON, value: map[string]any{"ok": true}, want: `{"ok":true}`},
+		{name: "JSON string control stays raw", typeOf: recipes.TypeJSON, value: `{"ok":true}`, want: `{"ok":true}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := "// @param value:" + string(tt.typeOf) + "\nconst result = @value;"
+			r := recipes.Parse("literal", "/tmp/literal.ts", source)
+			out, err := r.Render(map[string]any{"value": tt.value})
+			if tt.wantErrType != "" {
+				if err == nil || !strings.Contains(err.Error(), "value is a "+tt.wantErrType) {
+					t.Fatalf("Render error = %v, want error for %s", err, tt.wantErrType)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if !strings.Contains(out, "const result = "+tt.want+";") {
+				t.Fatalf("Render output does not contain expected literal %q:\n%s", tt.want, out)
 			}
 		})
 	}
@@ -339,5 +396,74 @@ func TestJSONDefaultsWithBracketsInsideStrings(t *testing.T) {
 		if _, ok := doc.Properties[c.name]["default"]; !ok {
 			t.Errorf("%s default missing from form schema: %v", c.name, doc.Properties[c.name])
 		}
+	}
+}
+
+func TestRenderValidatesAndEncodesDeclaredDefaults(t *testing.T) {
+	cases := []struct {
+		name, typ, def, want string
+		wantErr              bool
+	}{
+		{"invalid number identifier", "number", "banana", "", true},
+		{"unquoted string", "string", "hello", `value: "hello"`, false},
+		{"invalid boolean identifier", "boolean", "yes", "", true},
+		{"number expression", "number", "1+1", "", true},
+		{"number control", "number", "30", "value: 30", false},
+		{"quoted string control", "string", `"hi"`, `value: "hi"`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "// @param value:" + tc.typ + " = " + tc.def + "\nawait demo.run({ value: @value });"
+			r := recipes.Parse("demo", "/tmp/demo.ts", src)
+			out, err := r.Render(nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Render accepted invalid %s default %q; output:\n%s", tc.typ, tc.def, out)
+				}
+				if !strings.Contains(err.Error(), "value") || !strings.Contains(err.Error(), tc.typ) {
+					t.Errorf("error %q should name the placeholder and expected type %q", err, tc.typ)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("Render output =\n%s\nwant it to contain %q", out, tc.want)
+			}
+		})
+	}
+}
+
+// Codex review on #2646 (4422039950): a TypeJSON placeholder accepts
+// any JSON value (arrays included), so FormSchema must not declare
+// "object" for it -- with broker-side schema validation (#1954) that
+// declaration refused answers the recipe renders fine.
+func TestFormSchemaJSONPlaceholderAcceptsAnyJSONValue(t *testing.T) {
+	schema := recipes.FormSchema([]recipes.Placeholder{
+		{Name: "items", Type: recipes.TypeJSON, Required: true},
+		{Name: "label", Type: recipes.TypeString, Required: true},
+	})
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		t.Fatalf("FormSchema output does not parse: %v", err)
+	}
+	if _, constrained := doc.Properties["items"]["type"]; constrained {
+		t.Errorf("TypeJSON property carries a type constraint: %v", doc.Properties["items"])
+	}
+	if got := doc.Properties["label"]["type"]; got != "string" {
+		t.Errorf("TypeString property type = %v, want string", got)
+	}
+	compiled, err := schemaval.Compile(schema)
+	if err != nil {
+		t.Fatalf("FormSchema output does not compile: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": [1, 2], "label": "x"}`)); err != nil {
+		t.Errorf("array answer for a TypeJSON placeholder refused: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": {"a": 1}, "label": "x"}`)); err != nil {
+		t.Errorf("object answer for a TypeJSON placeholder refused: %v", err)
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 // setupInteractionsListServer builds a Server backed by a real feedback

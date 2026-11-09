@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // InputHeader is how a caller of /v1/call says it cannot answer a question
@@ -72,13 +72,17 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
-	r.beginAsk(id, server, key, cc.SessionID)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	res, err := p.Call(ctx, key, tool, args)
+
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "reporting")
+
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
@@ -122,8 +126,14 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	t, terr := s.taskStore().StartWithDeadline(reportingRequestor, askTTL.Milliseconds(), askTTL,
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
-			callCtx := withRun(ctx, run)
-			res, err := s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
+			callCtx := withCallSettings(withRun(ctx, run), s.callSettings(r))
+			var res json.RawMessage
+			var err error
+			if syn, ok := s.dryRunResult(callCtx, req.Server, req.Tool); ok {
+				res = syn
+			} else {
+				res, err = s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
+			}
 			// This path returns before handleCall's own reporting, so
 			// report the completed call here: an exec run whose calls
 			// ask questions is still a run whose calls belong in its

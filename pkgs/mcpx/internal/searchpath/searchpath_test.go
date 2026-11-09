@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
 )
 
 const null = "\x00null"

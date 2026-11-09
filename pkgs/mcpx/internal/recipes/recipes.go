@@ -26,12 +26,13 @@ package recipes
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 )
 
 // Type is the type of a placeholder value.
@@ -51,8 +52,8 @@ type Placeholder struct {
 	Name        string `json:"name"`
 	Type        Type   `json:"type"`
 	Description string `json:"description,omitempty"`
-	// Default is the literal as written in the declaration, already valid
-	// for the type. Absent means there is none.
+	// Default is the literal as written in the declaration. It is validated
+	// against the type when the recipe is rendered. Absent means there is none.
 	Default *string `json:"default,omitempty"`
 	// Required is false when a default was given or the name was marked
 	// optional with a trailing question mark.
@@ -93,6 +94,11 @@ var paramDecl = regexp.MustCompile(
 // scanner can skip one. Without it the `@param` of the declaration itself
 // reads as a placeholder called "param".
 var declLine = regexp.MustCompile(`^\s*(?://|#|\*)\s*@param\b`)
+
+// jsonNumberLiteral recognizes the complete JSON number grammar. ParseFloat
+// accepts additional Go spellings (such as Inf and hexadecimal floats) that
+// are not valid JavaScript/JSON numeric literals.
+var jsonNumberLiteral = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
 
 // toolDecl matches the MCP exposure marker, `@tool` on its own (on, the
 // default) or `@tool false` (off). A recipe is a tool unless its author says
@@ -356,8 +362,8 @@ func scanCode(src string) []bool {
 			if state == stSingle {
 				quote = '\''
 			}
-			switch {
-			case c == '\\':
+			switch c {
+			case '\\':
 				i++ // the escaped byte is string text, whatever it is
 				if i < len(src) && src[i] == '\r' && i+1 < len(src) && src[i+1] == '\n' {
 					// A CRLF continuation is one escaped newline:
@@ -365,19 +371,19 @@ func scanCode(src string) []bool {
 					// end the string below and desync the scan.
 					i++
 				}
-			case c == quote:
+			case quote:
 				state = stCode
-			case c == '\n':
+			case '\n':
 				// An unterminated literal ends at the line, so one bad
 				// string cannot swallow the rest of the script.
 				state = stCode
 				code[i] = true
 			}
 		case stTemplate:
-			switch {
-			case c == '\\':
+			switch c {
+			case '\\':
 				i++
-			case c == '`':
+			case '`':
 				state = stCode
 			}
 		}
@@ -473,7 +479,15 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 			}
 			lits[p.Name] = lit
 		case p.Default != nil:
-			lits[p.Name] = *p.Default
+			v, ok := decodeLiteral(p, *p.Default)
+			if !ok {
+				return "", fmt.Errorf("%s default must be a valid %s: %q", p.Name, p.Type, *p.Default)
+			}
+			lit, err := literal(p, v)
+			if err != nil {
+				return "", fmt.Errorf("%s default must be a valid %s: %w", p.Name, p.Type, err)
+			}
+			lits[p.Name] = lit
 		case !p.Required:
 			lits[p.Name] = "undefined"
 		default:
@@ -531,15 +545,44 @@ func literal(p Placeholder, v any) (string, error) {
 	switch p.Type {
 	case TypeNumber:
 		switch n := v.(type) {
-		case float64:
-			return strconv.FormatFloat(n, 'g', -1, 64), nil
 		case int:
 			return strconv.Itoa(n), nil
-		case string:
-			if _, err := strconv.ParseFloat(n, 64); err != nil {
-				return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+		case int8:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int16:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int32:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int64:
+			return strconv.FormatInt(n, 10), nil
+		case uint:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint8:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint16:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint32:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint64:
+			return strconv.FormatUint(n, 10), nil
+		case uintptr:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case float32:
+			if math.IsNaN(float64(n)) || math.IsInf(float64(n), 0) {
+				return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
 			}
-			return n, nil
+			return strconv.FormatFloat(float64(n), 'g', -1, 32), nil
+		case float64:
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
+			}
+			return strconv.FormatFloat(n, 'g', -1, 64), nil
+		case string:
+			return numberStringLiteral(p, n)
+		case json.Number:
+			return numberStringLiteral(p, n.String())
+		default:
+			return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
 		}
 	case TypeBoolean:
 		switch t := v.(type) {
@@ -551,6 +594,12 @@ func literal(p Placeholder, v any) (string, error) {
 				return "", fmt.Errorf("%s is a boolean, got %q", p.Name, t)
 			}
 			return strconv.FormatBool(b), nil
+		default:
+			return "", fmt.Errorf("%s is a boolean, got %q", p.Name, v)
+		}
+	case TypeString:
+		if _, ok := v.(string); !ok {
+			return "", fmt.Errorf("%s is a string, got %q", p.Name, v)
 		}
 	case TypeJSON:
 		if s, ok := v.(string); ok && json.Valid([]byte(s)) {
@@ -564,6 +613,16 @@ func literal(p Placeholder, v any) (string, error) {
 	return string(b), nil
 }
 
+func numberStringLiteral(p Placeholder, n string) (string, error) {
+	if !jsonNumberLiteral.MatchString(n) {
+		return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+	}
+	if _, err := strconv.ParseFloat(n, 64); err != nil {
+		return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+	}
+	return n, nil
+}
+
 // FormSchema is the elicitation schema that asks for the missing values.
 //
 // Every field carries its description and, where there is one, its default,
@@ -573,7 +632,10 @@ func FormSchema(ps []Placeholder) json.RawMessage {
 	props := map[string]any{}
 	var required []string
 	for _, p := range ps {
-		f := map[string]any{"type": jsonType(p.Type)}
+		f := map[string]any{}
+		if jt := jsonType(p.Type); jt != "" {
+			f["type"] = jt
+		}
 		if p.Description != "" {
 			f["description"] = p.Description
 		}
@@ -603,7 +665,12 @@ func jsonType(t Type) string {
 	case TypeBoolean:
 		return "boolean"
 	case TypeJSON:
-		return "object"
+		// No type constraint: TypeJSON accepts any JSON value --
+		// an object, an array, a scalar -- and the renderer passes
+		// it through untouched. Declaring "object" here made the
+		// broker's schema validation refuse array answers the
+		// recipe would have rendered fine (code review on #2646).
+		return ""
 	}
 	return "string"
 }

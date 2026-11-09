@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dezren39/mcpx/internal/schemaval"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 // This file wires internal/schemaval into elicitation answers (Phase 3

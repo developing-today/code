@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 // TestStarterConfigMeansWhatItSays loads what `mcpx init` writes and checks

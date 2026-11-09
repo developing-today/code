@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // PM-13 (#1942): a failed first build must not be cached for the

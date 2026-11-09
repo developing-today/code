@@ -18,9 +18,9 @@ import (
 	"text/tabwriter"
 	"unicode/utf8"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // opGroup is one generated command: every /v1 operation, not covered by a
@@ -375,7 +375,7 @@ func (a *App) runOp(ctx context.Context, cmd string, op api.Op, args []string) e
 			if ferr != nil {
 				return ferr
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			w = f
 		}
 		return c.streamOp(ctx, op.Method, path, body, w)
@@ -547,7 +547,7 @@ func (c *Client) streamOp(ctx context.Context, method, path string, body []byte,
 		}
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		return &HTTPError{Status: resp.StatusCode, Body: b,
@@ -635,11 +635,11 @@ func renderHuman(w io.Writer, doc any) {
 		if key, rows, ok := listing(v); ok {
 			for _, k := range sortedFieldNames(v) {
 				if k != key && isScalar(v[k]) {
-					fmt.Fprintf(w, "%s: %s\n", k, scalarText(v[k]))
+					_, _ = fmt.Fprintf(w, "%s: %s\n", k, scalarText(v[k]))
 				}
 			}
 			if len(rows) == 0 {
-				fmt.Fprintf(w, "No %s.\n", key)
+				_, _ = fmt.Fprintf(w, "No %s.\n", key)
 				return
 			}
 			renderTable(w, rows)
@@ -652,10 +652,10 @@ func renderHuman(w io.Writer, doc any) {
 			return
 		}
 		for _, e := range v {
-			fmt.Fprintln(w, scalarText(e))
+			_, _ = fmt.Fprintln(w, scalarText(e))
 		}
 	default:
-		fmt.Fprintln(w, scalarText(v))
+		_, _ = fmt.Fprintln(w, scalarText(v))
 	}
 }
 
@@ -715,7 +715,7 @@ func renderTable(w io.Writer, rows []map[string]any) {
 	for i, n := range names {
 		head[i] = strings.ToUpper(n)
 	}
-	fmt.Fprintln(tw, strings.Join(head, "\t"))
+	_, _ = fmt.Fprintln(tw, strings.Join(head, "\t"))
 	width := defaults.OpCellWidth
 	for _, r := range rows {
 		cells := make([]string, len(names))
@@ -724,7 +724,7 @@ func renderTable(w io.Writer, rows []map[string]any) {
 				cells[i] = truncate(oneLine(scalarText(v)), width)
 			}
 		}
-		fmt.Fprintln(tw, strings.Join(cells, "\t"))
+		_, _ = fmt.Fprintln(tw, strings.Join(cells, "\t"))
 	}
 	_ = tw.Flush()
 }
@@ -733,16 +733,16 @@ func renderFields(w io.Writer, m map[string]any, indent string) {
 	for _, k := range sortedFieldNames(m) {
 		v := m[k]
 		if isScalar(v) {
-			fmt.Fprintf(w, "%s%s: %s\n", indent, k, scalarText(v))
+			_, _ = fmt.Fprintf(w, "%s%s: %s\n", indent, k, scalarText(v))
 			continue
 		}
 		if sub, ok := v.(map[string]any); ok && len(sub) > 0 {
-			fmt.Fprintf(w, "%s%s:\n", indent, k)
+			_, _ = fmt.Fprintf(w, "%s%s:\n", indent, k)
 			renderFields(w, sub, indent+"  ")
 			continue
 		}
 		b, _ := json.Marshal(v)
-		fmt.Fprintf(w, "%s%s: %s\n", indent, k, b)
+		_, _ = fmt.Fprintf(w, "%s%s: %s\n", indent, k, b)
 	}
 }
 

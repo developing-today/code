@@ -6,22 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // routesExec registers running a script on the daemon and fetching what it
@@ -160,6 +159,22 @@ func (r registrySource) Globals(_ context.Context, ns []string) (string, error) 
 	return codegen.GlobalDeclarations(nss), nil
 }
 
+// ClientModuleFor renders the generated client for one named script
+// language (#1917 Phase 2): the module installed beside a script of that
+// language and its ambient declarations. Today "python" is the only name a
+// caller asks for; any unknown name is an error, never the default target.
+func (r registrySource) ClientModuleFor(_ context.Context, language string, ns []string) (module, globals string, err error) {
+	lang, ok := codegen.Lookup(language)
+	if !ok {
+		return "", "", fmt.Errorf("unknown script language %q", language)
+	}
+	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
+	if err != nil {
+		return "", "", err
+	}
+	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
+}
+
 func (r registrySource) Namespaces(_ context.Context, ns []string) ([]string, error) {
 	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
 	if err != nil {
@@ -187,9 +202,14 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
-	lim.Typecheck = set.String("script.typecheck")
+	lim.Typecheck = set.String("script.check")
+	lim.TypeCheckOnError = set.String("script.checkOnError")
+	lim.TypeCheckOnUnsupported = set.String("script.checkOnUnsupported")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
+	lim.ImportsOnMissing = set.String("script.importsOnMissing")
+	lim.ImportsCrossProject = set.String("script.importsCrossProject")
+	lim.ImportsNetwork = set.String("script.importsNetwork")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -260,7 +280,7 @@ type execReq struct {
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	var req execReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -300,7 +320,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// requestor, which Start maps there), capped like any other.
 		requestor := tasks.Caller(firstNonEmpty(req.Options.Session, r.Header.Get("X-Mcpx-Session"), r.Header.Get("X-Mcpx-Run")))
 		t, terr := store.Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
-			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 			if err != nil && res == nil {
 				return nil, &tasks.Fault{Code: -32603, Message: err.Error()}
 			}
@@ -321,7 +341,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	case execsvc.OutputStream:
 		s.execStream(w, r, svc, req)
 	case "", execsvc.OutputStructured, execsvc.OutputText:
-		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 		if err != nil && res == nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -400,7 +420,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 		}
 		return nil
 	}
-	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, enc)
+	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, enc)
 }
 
 // ---- artifacts ----
@@ -408,10 +428,10 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 // handleArtifactPut is how artifact() in a script registers a file.
 //
 // The body is the bytes, or -- when the script is on this machine and said so
-// with X-Mcpx-Path -- nothing, and the named file is hardlinked instead.
-// Reading, hashing into memory and writing again to hand somebody a file they
-// can already see would be the wrong shape for the local case, which is most
-// cases.
+// with X-Mcpx-Path -- the daemon reads and copies the named file into the
+// content-addressed store. The path hint avoids uploading the body over the
+// client transport, but the source is still read and hashed so the stored blob
+// is independent of the file outside the store (#1660).
 func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 	store, err := s.Artifacts()
 	if err != nil {
@@ -479,10 +499,15 @@ func (s *Server) handleArtifactList(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	limit := defaults.ArtifactListLimit
-	if v := q.Get("limit"); v != "" {
-		if n, cerr := strconv.Atoi(v); cerr == nil {
-			limit = n
+	// A present-but-unparseable limit is a 400, not the default (#3485 —
+	// this handler was the seventh member of the class, found by the
+	// registry guard in numeric_params_test.go).
+	if _, present := q["limit"]; present {
+		n, ok := parseOptionalIntQuery(w, q, "limit")
+		if !ok {
+			return
 		}
+		limit = n
 	}
 	list, err := store.List(artifacts.Filter{
 		Run: q.Get("run"), Session: q.Get("session"), Limit: limit,
@@ -511,7 +536,7 @@ func (s *Server) handleArtifactGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", meta.Mime)
 	// Attachment, and the name quoted: the name came from a script, and a
 	// browser deciding to render somebody else's bytes inline is how a store

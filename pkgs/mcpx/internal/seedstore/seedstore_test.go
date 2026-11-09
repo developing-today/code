@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/seedstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/seedstore"
 )
 
 // storeRoot is the seed store this guard keeps honest, relative to

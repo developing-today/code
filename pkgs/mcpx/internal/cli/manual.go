@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Command is one subcommand, described once so that help, the man page and

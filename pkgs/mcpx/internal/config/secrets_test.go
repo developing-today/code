@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 func TestSecretNamesAreTheUnionOfServerAndToolRequirements(t *testing.T) {
@@ -42,7 +42,7 @@ func TestSecretValuePrecedenceIsRuntimeThenServerThenDaemon(t *testing.T) {
 		t.Fatalf("a runtime value wins over both: %q", v)
 	}
 	delete(runtime, "PREC_TOKEN")
-	r.Server.Env = nil
+	r.Env = nil
 	if v, _ := r.SecretValue("PREC_TOKEN"); v != "from-daemon" {
 		t.Fatalf("with neither, the daemon's environment: %q", v)
 	}

@@ -36,7 +36,7 @@ func (s *Store) CallStats() ([]CallStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type key struct{ server, tool string }
 	durations := map[key][]float64{}
@@ -93,7 +93,10 @@ func (s *Store) CallStats() ([]CallStat, error) {
 		if out[i].TotalMs != out[j].TotalMs {
 			return out[i].TotalMs > out[j].TotalMs
 		}
-		return out[i].Server+out[i].Tool < out[j].Server+out[j].Tool
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].Tool < out[j].Tool
 	})
 	return out, nil
 }

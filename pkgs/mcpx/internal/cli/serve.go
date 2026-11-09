@@ -14,17 +14,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/adapter"
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/catalog"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // mcpBackend answers the MCP server's requests using the daemon.
@@ -360,7 +360,7 @@ func (b mcpBackend) Log(ctx context.Context, since, level, event string, limit i
 	if err != nil {
 		return "", err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if limit <= 0 {
 		limit = 50
 	}
@@ -387,10 +387,10 @@ func (b mcpBackend) Stats(ctx context.Context, dimension string) (string, error)
 	if dimension == "" {
 		dimension = "calls"
 	}
-	t, err := tuiSource{app: b.app}.Stats(ctx, dimension)
+	t, err := tuiSource(b).Stats(ctx, dimension)
 	if err != nil {
 		if dimension == "instances" {
-			t, err = tuiSource{app: b.app}.Instances(ctx)
+			t, err = tuiSource(b).Instances(ctx)
 		}
 		if err != nil {
 			return "", err
@@ -522,6 +522,18 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// below reads -- so neither surface's cadence changes.
 	if a.daemonStore != nil {
 		srv.TaskStore = a.daemonStore
+		// Retention follows the same settings the daemon's taskStore()
+		// reads on /v1 access (#6247): without this, a tasks.ttl /
+		// tasks.maxAge change made through /v1/settings never reached
+		// the MCP surface's cached store pointer.
+		srv.TaskRetention = func() (time.Duration, time.Duration) {
+			return a.Settings().Duration("tasks.ttl"), a.Settings().Duration("tasks.maxAge")
+		}
+	} else {
+		// A standalone server (mcpx serve) keeps a private store;
+		// wire its audit seam to the durable log or its task
+		// lifecycle records are silently dropped (#2500).
+		srv.TaskAudit = a.standaloneTaskAudit()
 	}
 	srv.PageSize = a.Settings().Int("mcp.pageSize")
 	srv.Passthrough = a.passNS()
@@ -552,6 +564,7 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 		TaskMaxTTL:          a.Settings().Duration("protoTasks.maxTTL"),
 		TaskMaxPerRequestor: a.Settings().Int("protoTasks.maxPerRequestor"),
 		TaskWindowPerMinute: perMinuteSetting(a.Settings().Int("protoTasks.perMinute")),
+		TaskCancelGrace:     a.Settings().Duration("protoTasks.cancelGrace"),
 	}
 	srv.Cache = mcpserver.Cache{
 		List: a.Settings().Duration("protoMessages.listMaxAge"),
@@ -676,11 +689,6 @@ func unspecifiedHost(h string) bool {
 	return ip != nil && ip.IsUnspecified()
 }
 
-func writeJSONResponse(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
-}
-
 // adapterTools turns declarations into MCP tools.
 //
 // prefixed names each tool <adapter>_<tool>, as mcpx's own tools/list must
@@ -747,24 +755,6 @@ func renderAdapterResult(r *adapter.Result) string {
 		return "(no output)"
 	}
 	return b.String()
-}
-
-// runInline runs a snippet and collects what it printed.
-//
-// It goes through the same runScript the exec command uses rather than a
-// parallel path, because two ways to run a script is two sets of bugs, and
-// the one nobody runs by hand is the one that rots.
-func (a *App) runInline(ctx context.Context, source string, out interface {
-	Write([]byte) (int, error)
-}) error {
-	// The redirection is set and restored rather than done on a copy. An App
-	// holds a sync.Once, and copying one copies the Once -- which vet catches
-	// and which would otherwise mean the clone silently re-resolved every
-	// setting from scratch.
-	prevOut, prevMachine := a.stdoutOverride, a.machineOutput
-	a.stdoutOverride, a.machineOutput = out, true
-	defer func() { a.stdoutOverride, a.machineOutput = prevOut, prevMachine }()
-	return a.runScript(ctx, []string{source}, true)
 }
 
 func firstLine(s string) string {
@@ -1081,7 +1071,7 @@ func upstreamInvalid(err error) bool {
 // Complete forwards completion/complete to the server that owns the ref,
 // through /v1/complete, so the two surfaces give the same answer to the same
 // question (conflict #9).
-func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]string, error) {
+func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) (mcpserver.Completion, error) {
 	var p struct {
 		Ref struct {
 			Type string `json:"type"`
@@ -1094,11 +1084,11 @@ func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]str
 		} `json:"context"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, fmt.Errorf("%w: %v", mcpserver.ErrInvalidParams, err)
+		return mcpserver.Completion{}, fmt.Errorf("%w: %v", mcpserver.ErrInvalidParams, err)
 	}
 	c, err := b.app.ensure(ctx)
 	if err != nil {
-		return nil, err
+		return mcpserver.Completion{}, err
 	}
 	ref := map[string]any{"type": p.Ref.Type}
 	var server string
@@ -1106,22 +1096,22 @@ func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]str
 	case "ref/prompt":
 		ns, inner, err := b.app.resolvePrompt(ctx, c, p.Ref.Name)
 		if err != nil {
-			return nil, err
+			return mcpserver.Completion{}, err
 		}
 		server, ref["name"] = ns, inner
 	case "ref/resource":
 		if _, ok := artifacts.IDFromURI(p.Ref.URI); ok || p.Ref.URI == artifactTemplate {
 			// mcpx's own template. Its ids are unguessable by design, so
 			// there is nothing to offer.
-			return nil, nil
+			return mcpserver.Completion{}, nil
 		}
 		ns, inner, ok := b.app.resolveURI(ctx, p.Ref.URI)
 		visible, err := b.app.visibleNamespaces(ctx, c)
 		if err != nil {
-			return nil, err
+			return mcpserver.Completion{}, err
 		}
 		if !ok || !visible(ns) {
-			return nil, fmt.Errorf("%w: no resource template %q", mcpserver.ErrInvalidParams, p.Ref.URI)
+			return mcpserver.Completion{}, fmt.Errorf("%w: no resource template %q", mcpserver.ErrInvalidParams, p.Ref.URI)
 		}
 		server, ref["uri"] = ns, inner
 	}
@@ -1135,17 +1125,26 @@ func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]str
 	}
 	raw, err := c.do(ctx, http.MethodPost, "/v1/complete", body)
 	if err != nil {
-		return nil, err
+		return mcpserver.Completion{}, err
 	}
+	// The daemon's reply carries total alongside values; keep it, or
+	// the MCP surface recomputes the count from values the daemon may
+	// already have capped (#2878).
 	var out struct {
 		Completion struct {
 			Values []string `json:"values"`
+			Total  *int     `json:"total"`
 		} `json:"completion"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
+		return mcpserver.Completion{}, err
 	}
-	return out.Completion.Values, nil
+	res := mcpserver.Completion{Values: out.Completion.Values}
+	if out.Completion.Total != nil {
+		res.Total = *out.Completion.Total
+		res.TotalKnown = true
+	}
+	return res, nil
 }
 
 // visibleNamespaces is the profile applied as a boundary, not only a view.

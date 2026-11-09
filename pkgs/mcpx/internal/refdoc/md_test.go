@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/refdoc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/refdoc"
 )
 
 func TestTableEscapesPipesAndNewlines(t *testing.T) {
@@ -55,7 +55,8 @@ func TestRenderingIsDeterministic(t *testing.T) {
 		return refdoc.Region("x", refdoc.Table([]string{"a"}, [][]string{{"1"}, {"2"}})) +
 			refdoc.Code("tick ` here")
 	}
-	if render() != render() {
+	first, second := render(), render()
+	if first != second {
 		t.Error("same input rendered different bytes across runs")
 	}
 }

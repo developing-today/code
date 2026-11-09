@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 func TestHandleDashboard(t *testing.T) {
@@ -142,7 +142,7 @@ func TestHandleMetricsTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ts.Close()
+	defer func() { _ = ts.Close() }()
 
 	_ = ts.RecordTurn(logstore.TokenRecord{
 		ID:             "turn-1",

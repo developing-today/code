@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // oldSSEServer speaks only the 2024-11-05 HTTP+SSE transport, and counts the
@@ -60,12 +60,12 @@ func newOldSSEServer(t *testing.T) *oldSSEServer {
 		}()
 		w.Header().Set("Content-Type", "text/event-stream")
 		f := w.(http.Flusher)
-		fmt.Fprintf(w, "event: endpoint\ndata: /message?session=%s\n\n", id)
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: /message?session=%s\n\n", id)
 		f.Flush()
 		for {
 			select {
 			case b := <-out:
-				fmt.Fprintf(w, "event: message\ndata: %s\n\n", b)
+				_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", b)
 				f.Flush()
 			case <-r.Context().Done():
 				return

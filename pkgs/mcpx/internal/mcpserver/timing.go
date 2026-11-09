@@ -3,8 +3,8 @@ package mcpserver
 import (
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Timing is how long mcpx's own MCP server waits, and how many times it
@@ -58,6 +58,9 @@ type Timing struct {
 	// 0 (disabled) arrives here as -1, because a zero Timing in tests must
 	// still mean "the store's default", not "disabled".
 	TaskWindowPerMinute int
+	// TaskCancelGrace is the cooperative-cancellation window
+	// (protoTasks.cancelGrace).
+	TaskCancelGrace time.Duration
 }
 
 func (t Timing) resolved() Timing {
@@ -96,6 +99,9 @@ func (t Timing) resolved() Timing {
 	}
 	if t.TaskMaxPerRequestor <= 0 {
 		t.TaskMaxPerRequestor = tasks.DefaultMaxPerRequestor
+	}
+	if t.TaskCancelGrace <= 0 {
+		t.TaskCancelGrace = tasks.DefaultCancelGrace
 	}
 	return t
 }

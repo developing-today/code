@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The promise under test: a call issued while a takeover is under way either
@@ -36,7 +36,7 @@ func handoffPaths(t *testing.T) Paths {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return Paths{State: dir, Cache: dir, Socket: filepath.Join(dir, "d.sock"), Info: filepath.Join(dir, "d.json")}
 }
 
@@ -116,7 +116,7 @@ func hammer(client *http.Client, workers int, stop <-chan struct{}, res *hammerR
 					continue
 				}
 				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				res.ok.Add(1)
 			}
 		}(i)
@@ -219,7 +219,7 @@ func TestAClientLeaseSurvivesADaemonTakeover(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the call that makes the lease: %s", resp.Status)
 	}

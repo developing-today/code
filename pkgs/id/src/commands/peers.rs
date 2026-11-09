@@ -58,7 +58,8 @@ use anyhow::{Result, bail};
 use iroh_base::EndpointId;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
-use crate::discovery::{PeerAnnouncement, resolve_config};
+use crate::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
+use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
@@ -120,6 +121,13 @@ pub struct PeersOptions {
 /// tab, CR, LF or other structure-breaking character is quoted and escaped by
 /// [`plain_field`] instead of shifting a column or forging a row (#1613).
 pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()> {
+    if options.depth < 0 {
+        bail!(
+            "peer crawl depth must be non-negative, got {}",
+            options.depth
+        );
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
     // Determine mode
@@ -160,7 +168,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
                 options.no_relay,
                 options.no_mdns,
             )
-            .await;
+            .await?;
             for peer in crawled {
                 all_peers.insert(peer.node_id, peer);
             }
@@ -172,9 +180,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         let gossip_peers = discover_via_gossip(&options).await;
         match gossip_peers {
             Ok(peers) => {
-                for peer in peers {
-                    all_peers.insert(peer.node_id, peer);
-                }
+                merge_gossip_peers(&mut all_peers, peers);
             }
             Err(e) => {
                 if options.gossip {
@@ -199,6 +205,23 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
     }
 
     Ok(())
+}
+
+/// Merge gossip results without letting an older announcement replace a
+/// fresher result already collected from RPC. Equal timestamps keep the
+/// existing arrival-order behavior: gossip, collected later, wins the tie.
+fn merge_gossip_peers(
+    all_peers: &mut HashMap<EndpointId, PeerAnnouncement>,
+    gossip_peers: impl IntoIterator<Item = PeerAnnouncement>,
+) {
+    for peer in gossip_peers {
+        if all_peers
+            .get(&peer.node_id)
+            .is_none_or(|existing| peer.timestamp_secs >= existing.timestamp_secs)
+        {
+            all_peers.insert(peer.node_id, peer);
+        }
+    }
 }
 
 /// One peer as the four tab-separated fields of the `id peers` row:
@@ -232,8 +255,8 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -272,8 +295,8 @@ async fn query_remote_peers(
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -297,7 +320,11 @@ async fn crawl_peers(
     timeout_secs: u64,
     no_relay: bool,
     no_mdns: bool,
-) -> Vec<PeerAnnouncement> {
+) -> Result<Vec<PeerAnnouncement>> {
+    if depth < 0 {
+        bail!("peer crawl depth must be non-negative, got {depth}");
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
     let mut visited: HashSet<EndpointId> = HashSet::new();
     let mut frontier: Vec<EndpointId> = Vec::new();
@@ -309,10 +336,9 @@ async fn crawl_peers(
     }
 
     let mut current_depth = 0;
-    let max_depth = if depth < 0 { i32::MAX } else { depth };
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
 
-    while current_depth < max_depth && !frontier.is_empty() {
+    while current_depth < depth && !frontier.is_empty() {
         if all_peers.len() >= max_peers {
             tracing::warn!(
                 "peers: max-peers cap ({}) reached at depth {}",
@@ -362,7 +388,7 @@ async fn crawl_peers(
         current_depth += 1;
     }
 
-    all_peers.into_values().collect()
+    Ok(all_peers.into_values().collect())
 }
 
 /// Discovers peers via gossip by joining the discovery topic.
@@ -431,25 +457,22 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     let (sender, mut receiver) = gossip_topic.split().await?;
 
     // Join bootstrap peers (defaults + CLI, already merged by resolve_config)
-    let bootstrap_ids: Vec<EndpointId> = config
-        .bootstrap
-        .iter()
-        .filter_map(|s| s.parse::<EndpointId>().ok())
-        .collect();
+    let bootstrap_ids: Vec<EndpointId> = parse_bootstrap_ids(&config.bootstrap);
     if !bootstrap_ids.is_empty() {
+        tracing::info!("joining {} bootstrap peer(s)", bootstrap_ids.len());
         sender.join_peers(bootstrap_ids, None).await?;
     }
 
     // Collect announcements for a limited time
     let collect_timeout = tokio::time::Duration::from_secs(options.timeout_secs);
-    let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+    let peers = PeerDiscovery::new();
 
     let _ = tokio::time::timeout(collect_timeout, async {
         while let Ok(event) = receiver.next().await {
             if let iroh_gossip::api::Event::Received(msg) = event
-                && let Ok(announcement) = postcard::from_bytes::<PeerAnnouncement>(&msg.content)
+                && let Some(announcement) = SignedPeerAnnouncement::decode_frame(&msg.content)
             {
-                peers.insert(announcement.node_id, announcement);
+                admit_gossip_announcement(&peers, announcement);
             }
         }
     })
@@ -459,7 +482,37 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     accept_handle.abort();
     endpoint.close().await;
 
-    Ok(peers.into_values().collect())
+    Ok(peers
+        .peers()
+        .into_iter()
+        .map(|peer| peer.announcement)
+        .collect())
+}
+
+/// Admit a decoded gossip announcement through the shared freshness and
+/// ordering checks used by the serve-side peer table.
+fn admit_gossip_announcement(peers: &PeerDiscovery, announcement: PeerAnnouncement) {
+    peers.update(announcement);
+}
+
+/// Parse bootstrap node IDs with serve parity (#2016): warn per invalid
+/// entry, naming the value, and keep the valid IDs. The previous
+/// `filter_map(... .ok())` silently dropped typos - and when no entry
+/// survived, join_peers was skipped entirely, so a bad bootstrap ID
+/// surfaced only as a full-timeout "no peers" result that looked like a
+/// network problem. Serve (serve.rs) and access.rs both warn-and-continue
+/// on the same input; a hard error would break otherwise-working joins
+/// over one stale entry in the merged defaults + config + CLI list.
+fn parse_bootstrap_ids(entries: &[String]) -> Vec<EndpointId> {
+    entries
+        .iter()
+        .filter_map(|id_str| {
+            id_str.parse::<EndpointId>().ok().or_else(|| {
+                tracing::warn!("invalid bootstrap node ID: {}", id_str);
+                None
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -468,6 +521,14 @@ mod tests {
     use super::*;
     use crate::discovery::PeerDiscovery;
     use iroh_base::SecretKey;
+
+    #[tokio::test]
+    async fn crawl_peers_refuses_negative_depth_before_networking() {
+        let err = crawl_peers(&[], -1, 1000, 30, false, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("depth must be non-negative"));
+    }
 
     fn now_secs() -> u64 {
         std::time::SystemTime::now()
@@ -487,6 +548,117 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gossip_collection_uses_freshness_and_monotonic_ordering() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+
+        let mut ancient = announcement(30, Some("ancient"));
+        ancient.timestamp_secs = 1;
+        admit_gossip_announcement(&discovery, ancient);
+
+        let mut far_future = announcement(31, Some("far-future"));
+        far_future.timestamp_secs = u64::MAX;
+        admit_gossip_announcement(&discovery, far_future);
+
+        let mut newer = announcement(32, Some("newer"));
+        newer.timestamp_secs = now.saturating_sub(1);
+        admit_gossip_announcement(&discovery, newer);
+
+        let mut older_replay = announcement(32, Some("older replay"));
+        older_replay.timestamp_secs = now.saturating_sub(2);
+        admit_gossip_announcement(&discovery, older_replay);
+
+        // A fresh, in-order control remains collectable.
+        let mut fresh_control = announcement(33, Some("fresh control"));
+        fresh_control.timestamp_secs = now;
+        admit_gossip_announcement(&discovery, fresh_control);
+
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 2);
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(30, None).node_id)
+        );
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(31, None).node_id)
+        );
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(32, None).node_id
+                && peer.announcement.name.as_deref() == Some("newer")
+        }));
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(33, None).node_id
+                && peer.announcement.name.as_deref() == Some("fresh control")
+        }));
+    }
+
+    #[test]
+    fn gossip_merge_does_not_replace_fresher_rpc_results() {
+        let now = now_secs();
+
+        let mut rpc_fresher = announcement(34, Some("rpc fresher"));
+        rpc_fresher.timestamp_secs = now.saturating_sub(1);
+        let mut gossip_older = announcement(34, Some("gossip older"));
+        gossip_older.timestamp_secs = now.saturating_sub(2);
+
+        let mut rpc_older = announcement(35, Some("rpc older"));
+        rpc_older.timestamp_secs = now.saturating_sub(2);
+        let mut gossip_fresher = announcement(35, Some("gossip fresher"));
+        gossip_fresher.timestamp_secs = now.saturating_sub(1);
+
+        let mut all_peers = HashMap::from([
+            (rpc_fresher.node_id, rpc_fresher),
+            (rpc_older.node_id, rpc_older),
+        ]);
+        merge_gossip_peers(&mut all_peers, [gossip_older, gossip_fresher]);
+
+        assert_eq!(
+            all_peers[&announcement(34, None).node_id].name.as_deref(),
+            Some("rpc fresher")
+        );
+        assert_eq!(
+            all_peers[&announcement(35, None).node_id].name.as_deref(),
+            Some("gossip fresher")
+        );
+    }
+
+    fn valid_id_string(byte: u8) -> String {
+        SecretKey::from_bytes(&[byte; 32]).public().to_string()
+    }
+
+    #[test]
+    fn test_parse_bootstrap_ids_keeps_valid_and_drops_invalid() {
+        // Mixed input (#2016): the one real 64-hex EndpointId survives;
+        // invalid entries take the warning path and are dropped.
+        let valid = valid_id_string(7);
+        let entries = vec![
+            "not-a-node-id".to_string(),
+            valid.clone(),
+            "zzzz".to_string(),
+        ];
+        let parsed = parse_bootstrap_ids(&entries);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].to_string(), valid);
+    }
+
+    #[test]
+    fn test_parse_bootstrap_ids_all_invalid_yields_empty() {
+        let entries = vec!["nope".to_string(), "123".to_string(), String::new()];
+        assert!(parse_bootstrap_ids(&entries).is_empty());
+    }
+
+    #[test]
+    fn test_parse_bootstrap_ids_valid_parses_unchanged() {
+        let valid = valid_id_string(9);
+        let parsed = parse_bootstrap_ids(std::slice::from_ref(&valid));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].to_string(), valid);
+    }
+
     fn fields(row: &str) -> Vec<&str> {
         row.split('\t').collect()
     }
@@ -499,7 +671,15 @@ mod tests {
 
     #[test]
     fn test_peer_row_control_character_names_stay_one_row() {
-        for name in ["a\nb", "a\rb", "a\tb", "a\r\nb", "\n", "\u{0}", "x\nforged\trow\t0"] {
+        for name in [
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\r\nb",
+            "\n",
+            "\u{0}",
+            "x\nforged\trow\t0",
+        ] {
             let row = format_peer_row(&announcement(1, Some(name)));
             assert_one_row_four_fields(&row);
             assert!(

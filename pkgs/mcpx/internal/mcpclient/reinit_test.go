@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // reinitUpstream is a fake legacy Streamable HTTP upstream whose sessions
@@ -18,14 +18,16 @@ import (
 type reinitUpstream struct {
 	version string
 
-	mu        sync.Mutex
-	seq       int
-	live      map[string]bool
-	stateless bool // never issue a session id
-	call404   bool // answer every tools/call 404, session or not
-	inits     int
-	initSids  []string // session header each initialize carried
-	callSids  []string // session header each tools/call carried
+	mu           sync.Mutex
+	seq          int
+	live         map[string]bool
+	stateless    bool // never issue a session id
+	call404      bool // answer every tools/call 404, session or not
+	rejectStatus int  // reject one tools/call with this status before accepting it
+	rejected     bool
+	inits        int
+	initSids     []string // session header each initialize carried
+	callSids     []string // session header each tools/call carried
 }
 
 func (u *reinitUpstream) dropSessions() {
@@ -77,8 +79,17 @@ func (u *reinitUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, result(s.id, initResult(u.version, map[string]any{"tools": map[string]any{}})))
 	case "tools/call":
 		u.callSids = append(u.callSids, sid)
+		rejectStatus := 0
+		if u.rejectStatus != 0 && !u.rejected {
+			u.rejected = true
+			rejectStatus = u.rejectStatus
+		}
 		dead := u.call404 || (!u.stateless && !u.live[sid])
 		u.mu.Unlock()
+		if rejectStatus != 0 {
+			w.WriteHeader(rejectStatus)
+			return
+		}
 		if dead {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -87,6 +98,69 @@ func (u *reinitUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		u.mu.Unlock()
 		writeJSON(w, result(s.id, map[string]any{"tools": []any{}}))
+	}
+}
+
+func resumedClient(t *testing.T, srvURL string) *mcpclient.Client {
+	t.Helper()
+	old := dialURL(t, srvURL, mcpclient.ForceLegacy, mcpclient.Options{})
+	h, ok := old.HTTPSession()
+	if !ok || h.SessionID == "" {
+		t.Fatal("initial client has no HTTP session")
+	}
+	session := old.SessionState()
+	old.Abandon()
+	tr, err := mcpclient.NewHTTP(mcpclient.HTTPOptions{URL: srvURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.Resume(h)
+	c := mcpclient.Resume(tr, session, mcpclient.Options{ClientName: "mcpx", ClientVersion: "test"})
+	c.Activate()
+	if err := c.Ping(ctx5()); err != nil {
+		t.Fatalf("resume probe: %v", err)
+	}
+	c.MarkResumedSession()
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+func TestResumedLegacySessionFirstRequestRecoversOnce(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			u := &reinitUpstream{version: "2025-11-25", rejectStatus: status}
+			srv := httptest.NewServer(u)
+			t.Cleanup(srv.Close)
+			c := resumedClient(t, srv.URL)
+			if status == http.StatusNotFound {
+				u.dropSessions()
+			}
+			if _, err := c.CallTool(ctx5(), "x", nil); err != nil {
+				t.Fatalf("first request on resumed session: %v", err)
+			}
+			if inits, initSids, _ := u.counts(); inits != 2 || initSids[1] != "" {
+				t.Fatalf("initialize state = %d, %v; want one fresh initialize without a session id", inits, initSids)
+			}
+		})
+	}
+}
+
+func TestResumedLegacySessionDoesNotRecoverMidSession404(t *testing.T) {
+	u := &reinitUpstream{version: "2025-11-25"}
+	srv := httptest.NewServer(u)
+	t.Cleanup(srv.Close)
+	c := resumedClient(t, srv.URL)
+	if _, err := c.CallTool(ctx5(), "x", nil); err != nil {
+		t.Fatalf("first resumed request: %v", err)
+	}
+	u.dropSessions()
+	_, err := c.CallTool(ctx5(), "x", nil)
+	var he *mcpclient.HTTPStatusError
+	if !errors.As(err, &he) || he.Status != http.StatusNotFound {
+		t.Fatalf("mid-session err = %v, want HTTP 404 without recovery", err)
+	}
+	if inits, _, _ := u.counts(); inits != 1 {
+		t.Fatalf("initializes = %d, want no recovery initialize", inits)
 	}
 }
 

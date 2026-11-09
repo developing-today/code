@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // subscribing builds a pool over a fake that declares resources.subscribe
@@ -69,11 +69,11 @@ func eventually(t *testing.T, what string, ok func() bool) {
 func TestWatchCountsSubscribersPerURI(t *testing.T) {
 	p, log := subscribing(t)
 	ctx := context.Background()
-	a, err := p.Watch(ctx, "global", "/abs/doc")
+	a, err := p.Watch(ctx, config.ResolvedScope{Key: "global"}, "/abs/doc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := p.Watch(ctx, "global", "/abs/doc")
+	b, err := p.Watch(ctx, config.ResolvedScope{Key: "global"}, "/abs/doc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestWatchRefusesAServerWithoutSubscribe(t *testing.T) {
 	bin := testsupport.FakeMCPBinary(t)
 	p := pool.New(resolved(t, bin, &config.Extras{Sharing: config.SharingShared, Scope: config.ScopeGlobal}))
 	defer p.Close()
-	if _, err := p.Watch(context.Background(), "global", "demo://greeting"); !errors.Is(err, pool.ErrNotSubscribable) {
+	if _, err := p.Watch(context.Background(), config.ResolvedScope{Key: "global"}, "demo://greeting"); !errors.Is(err, pool.ErrNotSubscribable) {
 		t.Fatalf("got %v", err)
 	}
 	if len(p.Watching()) != 0 {
@@ -108,7 +108,7 @@ func TestWatchRefusesAServerWithoutSubscribe(t *testing.T) {
 
 func TestWatchResubscribesAReplacementInstance(t *testing.T) {
 	p, log := subscribing(t)
-	release, err := p.Watch(context.Background(), "global", "demo://greeting")
+	release, err := p.Watch(context.Background(), config.ResolvedScope{Key: "global"}, "demo://greeting")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestWatchResubscribesAReplacementInstance(t *testing.T) {
 
 func TestAWatchedInstanceIsNotIdle(t *testing.T) {
 	p, _ := subscribing(t)
-	release, err := p.Watch(context.Background(), "global", "demo://greeting")
+	release, err := p.Watch(context.Background(), config.ResolvedScope{Key: "global"}, "demo://greeting")
 	if err != nil {
 		t.Fatal(err)
 	}

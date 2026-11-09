@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // OpenAIProvider is the one configured-provider backend of this slice: an
@@ -119,14 +119,19 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req Request) (Response, e
 	if err != nil {
 		return Response{}, fmt.Errorf("model: provider %s request failed: %w", p.name, err)
 	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
+		return Response{}, fmt.Errorf("model: provider %s returned HTTP %d: %s",
+			p.name, resp.StatusCode, strings.TrimSpace(string(errBody)))
+	}
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, defaults.ProviderResponseBodyLimit+1))
 	if err != nil {
 		return Response{}, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, fmt.Errorf("model: provider %s returned HTTP %d: %s",
-			p.name, resp.StatusCode, strings.TrimSpace(string(respBody)))
+	if int64(len(respBody)) > defaults.ProviderResponseBodyLimit {
+		return Response{}, fmt.Errorf("model: provider %s response body exceeds the %d-byte limit",
+			p.name, defaults.ProviderResponseBodyLimit)
 	}
 	var parsed struct {
 		Model   string `json:"model"`

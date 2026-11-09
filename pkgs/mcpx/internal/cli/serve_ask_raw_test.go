@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // rawAskBackend is an mcpserver.Backend that can list every upstream's
@@ -58,8 +58,8 @@ func (b *rawAskBackend) ReadResource(context.Context, string) ([]mcpserver.Resou
 func (b *rawAskBackend) GetPrompt(context.Context, string, map[string]string) (string, error) {
 	return "", nil
 }
-func (b *rawAskBackend) Complete(context.Context, json.RawMessage) ([]string, error) {
-	return nil, nil
+func (b *rawAskBackend) Complete(context.Context, json.RawMessage) (mcpserver.Completion, error) {
+	return mcpserver.Completion{}, nil
 }
 func (b *rawAskBackend) ResourceTemplates(context.Context) ([]mcpserver.ResourceRef, error) {
 	return nil, nil

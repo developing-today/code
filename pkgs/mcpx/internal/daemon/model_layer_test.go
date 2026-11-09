@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/model"
-	"github.com/dezren39/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
 )
 
 // Codex P2 (PR #2592): a model layer that was configured but cannot
@@ -64,6 +64,31 @@ func TestGenerateModelLayerAloneAnswers(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	if !strings.Contains(source, "tools.weather.forecast") {
+		t.Errorf("source = %q", source)
+	}
+	if used != "provider:openai/test-model" {
+		t.Errorf("used = %q, want provider:openai/test-model", used)
+	}
+}
+
+func TestGenerateUsesNamedProfileWithProviderNone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"test-model","choices":[{"message":{"content":"return 'profile';"}}]}`)
+	}))
+	defer srv.Close()
+	s := intentTestServer()
+	pol := defaultConsumerPolicy()
+	pol.ModelProvider = "none"
+	pol.ModelDefault = "fast"
+	pol.ModelProviders = `{"openai":{"baseURL":"` + srv.URL + `"}}`
+	pol.ModelProfiles = `{"fast":{"models":["openai/test-model"]}}`
+	ctx := withPolicy(context.Background(), pol)
+	source, used, err := s.generate(ctx, "write a tiny script", nil, "", "", "")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !strings.Contains(source, "return 'profile'") {
 		t.Errorf("source = %q", source)
 	}
 	if used != "provider:openai/test-model" {

@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"errors"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 	"os/exec"
 	"strings"
 	"testing"
@@ -15,9 +16,7 @@ func TestGeneratedClientWorksOnEveryRuntime(t *testing.T) {
 	for _, rt := range []string{"deno", "bun", "node"} {
 		rt := rt
 		t.Run(rt, func(t *testing.T) {
-			if _, err := exec.LookPath(rt); err != nil {
-				t.Skipf("%s not installed", rt)
-			}
+			testsupport.RequireBinary(t, rt)
 			e := newEnv(t, oneServer)
 			// MCPX_RUNTIME is what the runner actually sets; read it the way
 			// a script would, from the process environment rather than from a
@@ -47,9 +46,7 @@ func TestSessionIsolationHoldsOnEveryRuntime(t *testing.T) {
 	for _, rt := range []string{"deno", "bun", "node"} {
 		rt := rt
 		t.Run(rt, func(t *testing.T) {
-			if _, err := exec.LookPath(rt); err != nil {
-				t.Skipf("%s not installed", rt)
-			}
+			testsupport.RequireBinary(t, rt)
 			e := newEnv(t, statefulServer)
 			// Two sequential runs with explicit, distinct sessions must not
 			// see each other's writes.
@@ -80,9 +77,7 @@ func TestSessionIsolationHoldsOnEveryRuntime(t *testing.T) {
 func TestDenoExitWorksOnEveryRuntime(t *testing.T) {
 	for _, rt := range []string{"deno", "bun", "node"} {
 		t.Run(rt, func(t *testing.T) {
-			if _, err := exec.LookPath(rt); err != nil {
-				t.Skipf("%s not installed", rt)
-			}
+			testsupport.RequireBinary(t, rt)
 			e := newEnv(t, oneServer)
 			out, err := e.try("exec", "--runtime", rt,
 				`console.log("before"); (globalThis as any).Deno.exit(3); console.log("after");`)

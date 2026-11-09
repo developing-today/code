@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // hookOutputLimit bounds how much of a hook's combined stdout+stderr is
@@ -191,9 +191,10 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 		"MCPX_HOOK_EVENT_SESSION="+e.Session,
 		"MCPX_HOOK_EVENT_URI="+e.URI,
 	)
-	var out = limitedHookOutput()
-	cmd.Stdout = out
-	cmd.Stderr = out
+	var stdout = limitedHookOutput()
+	var stderr = limitedHookOutput()
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		r.recordFailure(h, e, 0, err)
@@ -229,7 +230,7 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 		return
 	}
 	if runErr != nil {
-		r.recordFailure(h, e, dur, fmt.Errorf("%v: %s", runErr, firstLine(out.String())))
+		r.recordFailure(h, e, dur, fmt.Errorf("%v: %s", runErr, failureText(stderr.String(), stdout.String())))
 		return
 	}
 	if st := r.statsFor(h.Name); st.Slow > 0 && dur >= h.Timeout*4/5 {
@@ -261,12 +262,6 @@ func (r *Runner) recordFailure(h Hook, e events.Event, dur time.Duration, err er
 	if merr == nil && r.bus != nil {
 		r.bus.Publish(events.Event{Kind: events.HookFailed, Server: e.Server, Session: e.Session, Data: data})
 	}
-}
-
-// argvFor resolves a hook's action to a command line. It is kept for
-// external callers that already name it; new code prefers ArgvFor.
-func argvFor(h Hook) ([]string, error) {
-	return ArgvFor(h)
 }
 
 // cappedWriter keeps a bounded head of hook output: enough to say why
@@ -303,4 +298,17 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// failureText names why a hook failed. The hook's own stderr diagnostic wins:
+// stdout and stderr share a size bound but not a meaning, and a hook that
+// fills the bound with stdout (say, a progress dump with no newline) before
+// writing its one-line error to stderr would otherwise have that stdout
+// recorded as the failure. A hook that exits nonzero without a stderr
+// diagnostic still reports its first stdout line.
+func failureText(stderr, stdout string) string {
+	if line := firstLine(stderr); line != "" {
+		return line
+	}
+	return firstLine(stdout)
 }

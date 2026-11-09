@@ -1,3 +1,4 @@
+// Package scripting implements mcpx's LLM-assisted script synthesis, validation and repair.
 package scripting
 
 import (
@@ -12,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // CompletionRequest represents an inference request sent to an LLM provider.
@@ -116,15 +117,20 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req CompletionR
 	if err != nil {
 		return "", fmt.Errorf("provider %s request failed: %w", p.name, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
+		return "", fmt.Errorf("provider %s returned HTTP %d: %s", p.name, resp.StatusCode, string(errBody))
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, defaults.ProviderResponseBodyLimit+1))
 	if err != nil {
 		return "", err
 	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("provider %s returned HTTP %d: %s", p.name, resp.StatusCode, string(respBody))
+	if int64(len(respBody)) > defaults.ProviderResponseBodyLimit {
+		return "", fmt.Errorf("provider %s response body exceeds the %d-byte limit",
+			p.name, defaults.ProviderResponseBodyLimit)
 	}
 
 	var parsed struct {

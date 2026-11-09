@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 func TestAFloorRefusesAWholeNumberBelowIt(t *testing.T) {

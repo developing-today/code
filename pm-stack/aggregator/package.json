@@ -5,13 +5,21 @@
   "type": "module",
   "description": "The PM-stack aggregator UI: cross-repo WIP board, roadmap timeline, quota + throughput, and needs-you views. Read-mostly projection over the projector/link registry, Kaneo, Pad, and Grist.",
   "scripts": {
-    "dev": "bun run src/server.ts",
+    "dev": "PM_AGG_DEV=1 bun run src/server.ts",
     "start": "bun run src/server.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "contract:check": "bun run scripts/check-contract-corpus.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "build:css": "tailwindcss -i src/ui.css -o src/assets/app.css"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.4",
     "@types/bun": "latest",
+    "daisyui": "^5.7.50",
+    "tailwindcss": "^4.3.4",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
   }
 }

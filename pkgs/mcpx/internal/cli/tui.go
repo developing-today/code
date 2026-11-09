@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/tui"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tui"
 )
 
 // tuiSource adapts the daemon client to what the view needs.
@@ -63,7 +63,7 @@ func (s tuiSource) Records(ctx context.Context, limit int) ([]tui.Record, error)
 	if err != nil {
 		return nil, err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	recs, err := st.Records(logstore.Query{Limit: limit})
 	if err != nil {
 		return nil, err
@@ -125,11 +125,11 @@ func (a *App) dumpViews(ctx context.Context) error {
 func applyColour(mode string) {
 	switch mode {
 	case "never":
-		os.Setenv("NO_COLOR", "1")
-		os.Unsetenv("CLICOLOR_FORCE")
+		_ = os.Setenv("NO_COLOR", "1")
+		_ = os.Unsetenv("CLICOLOR_FORCE")
 	case "always":
-		os.Setenv("CLICOLOR_FORCE", "1")
-		os.Unsetenv("NO_COLOR")
+		_ = os.Setenv("CLICOLOR_FORCE", "1")
+		_ = os.Unsetenv("NO_COLOR")
 	}
 }
 

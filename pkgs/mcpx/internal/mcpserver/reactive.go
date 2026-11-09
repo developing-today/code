@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
 )
 
 // reactiveSurface builds the dynamic tool surface for Mode 2 reactive discovery.
@@ -56,9 +56,19 @@ func (s *Server) reactiveSurface(ctx context.Context) ([]Tool, error) {
 		allMap[t.Name] = t
 	}
 
+	// A tool is advertised at most once (#3182): the working set is
+	// seeded with the pinned tools (OriginPinned), so without dedupe
+	// every pinned tool would be listed twice — once in the pinned
+	// pass and once in the working-set pass below.
+	seen := make(map[string]bool, len(out))
+	for _, t := range out {
+		seen[t.Name] = true
+	}
+
 	// 2. Pinned tools
 	for _, p := range s.PinnedTools {
-		if t, ok := allMap[p]; ok {
+		if t, ok := allMap[p]; ok && !seen[t.Name] {
+			seen[t.Name] = true
 			out = append(out, t)
 		}
 	}
@@ -66,7 +76,8 @@ func (s *Server) reactiveSurface(ctx context.Context) ([]Tool, error) {
 	// 3. Retained working-set tools
 	if s.ReactiveWorkingSet != nil {
 		for _, r := range s.ReactiveWorkingSet.List() {
-			if t, ok := allMap[r.Tool]; ok {
+			if t, ok := allMap[r.Tool]; ok && !seen[t.Name] {
+				seen[t.Name] = true
 				out = append(out, t)
 			}
 		}

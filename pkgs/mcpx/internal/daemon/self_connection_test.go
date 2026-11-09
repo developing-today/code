@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // growingSelf is an HTTP MCP endpoint identifying as mcpx whose

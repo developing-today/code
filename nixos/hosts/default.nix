@@ -24,8 +24,11 @@ in
       "services/flatpak"
       "services/id-mail"
       "services/pm-stack"
+      "services/lab-tunnel"
       "services/pm-apps"
       "services/power-guard"
+      "services/openai-cred-watchdog"
+      "services/opencode-go-seating-guard"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -63,6 +66,11 @@ in
         services.pm-stack.enable = true;
       }
       {
+        # Lab cluster Cloudflare Tunnel (code#6455): connector +
+        # edge status service for lab.security.cab.
+        services.lab-tunnel.enable = true;
+      }
+      {
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
         # Pad as oci-containers, ready-for-agent as a user service —
         # the last hand-run servers, now flake-declared.
@@ -70,6 +78,18 @@ in
         # Power guard (code#1687): confirm critical battery readings
         # before UPower can hybrid-sleep the machine.
         services.power-guard.enable = true;
+      }
+      {
+        # OpenAI credential watchdog (code#3216): hourly user timer
+        # asserting the OpenCode credential store never regains an
+        # active token-sharing credential for the GPT providers.
+        services.openai-cred-watchdog.enable = true;
+      }
+      {
+        # OpenCode Go seating guard (code#5611): hourly user timer
+        # asserting every Go leaf seated in a pool has an exact-id active
+        # credential and has recorded a successful route attempt recently.
+        services.opencode-go-seating-guard.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
@@ -113,9 +133,114 @@ in
           services.laptop-autocommit.enable = true;
         };
       }
+      {
+        # GitHub backup mirror timers (code#3215): webhook-queue
+        # drain every 5 min, daily mirror fetch, weekly reconcile.
+        # Folded into the flake 2026-11-01 (code#3720); the scripts
+        # run from the primary checkout (infra/github-backup).
+        home-manager.users.user = {
+          imports = [ ../home/github-backup.nix ];
+          services.github-backup.enable = true;
+        };
+      }
+      {
+        # Worktree reaper (code#3698): hourly retirement of dead
+        # fleet worktrees under the 6-hour quiet rule. Folded into
+        # the flake 2026-11-01 (code#3720); ExecStart points at the
+        # primary checkout, retiring the bootstrap-worktree install.
+        home-manager.users.user = {
+          imports = [ ../home/worktree-reaper.nix ];
+          services.worktree-reaper.enable = true;
+        };
+      }
+      {
+        # Quota exporter (code#1048): Cloudflare quota snapshots
+        # every 15 min for the quota gatherer. Folded into the
+        # flake 2026-11-01 (code#3720). (The Meta exporter was
+        # retired 2026-11-03: quota is gathered by asking OpenCode,
+        # PR #5040.)
+        home-manager.users.user = {
+          imports = [
+            ../home/cloudflare-quota-export.nix
+          ];
+          services.cloudflare-quota-export.enable = true;
+        };
+      }
+      {
+        # Dashboard backup, laptop leg (code#1459) — the older
+        # ~/tools job, distinct from pm-dashboard-backup above.
+        # Folded into the flake 2026-11-01 (code#3720).
+        home-manager.users.user = {
+          imports = [ ../home/dashboard-backup.nix ];
+          services.dashboard-backup.enable = true;
+        };
+      }
+      {
+        # OpenChamber password sync (openchamber#894): a .path unit
+        # watches the prod OpenCode service file and triggers the
+        # sync oneshot when the password rotates.
+        # Folded into the flake 2026-11-01 (code#3720).
+        home-manager.users.user = {
+          imports = [ ../home/oc-password-sync.nix ];
+          services.oc-password-sync.enable = true;
+        };
+      }
+      (
+        { config, ... }:
+        let
+          loginKeyringRules = config.security.pam.services.login.rules;
+        in
+        {
+          # GNOME Keyring unlock at graphical login (code#5477):
+          # the login password must reach pam_gnome_keyring in
+          # SDDM's own PAM stack, or the login keyring collection
+          # stays locked for the whole session and non-desktop
+          # contexts (SSH, agents, user services) stall reading
+          # keyring-held secrets (the gh token) on a prompter they
+          # can never answer. enableGnomeKeyring states the intent,
+          # but in this tree sddm's rule set is a custom delegation
+          # set (every phase includes/substacks login), into which
+          # the flag injects nothing - verified at eval: the
+          # generated pam.d/sddm is byte-identical with the flag on
+          # or off. So the keyring rules are added to sddm's stack
+          # explicitly, mirroring the login service's own keyring
+          # rules; module path and order are referenced from the
+          # login service, not copied, so they track nixpkgs.
+          security.pam.services.sddm.enableGnomeKeyring = true;
+          security.pam.services.sddm.rules = {
+            auth.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.auth.gnome_keyring.modulePath;
+              order = loginKeyringRules.auth.gnome_keyring.order;
+            };
+            password.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.password.gnome_keyring.modulePath;
+              order = loginKeyringRules.password.gnome_keyring.order;
+              settings.use_authtok = true;
+            };
+            session.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.session.gnome_keyring.modulePath;
+              order = loginKeyringRules.session.gnome_keyring.order;
+              settings.auto_start = true;
+            };
+          };
+        }
+      )
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix
+      # Sunshine + Moonlight primary remote desktop (code#5924):
+      # VAAPI-pinned streaming host, Moonlight client, encoder
+      # watchdog. KRdp above remains the Plasma-side option.
+      ./amd-sunshine.nix
+      # RustDesk permanent-password re-assertion from the vault
+      # (code#5694); RustDesk itself stays imperative, see the file.
+      ./amd-rustdesk.nix
       ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
     ];

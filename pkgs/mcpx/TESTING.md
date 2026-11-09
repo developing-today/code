@@ -12,15 +12,16 @@ must read the PR's check result before declaring done or merging.
 
 ## The tiers
 
-| Tier            | When                                                                                                                 | Command                                                      | Typical cost                                       |
-| --------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------- |
-| T0 format/vet   | always, touched packages                                                                                             | `gofmt -l <files>`; `go vet ./internal/<pkg>/`               | < 2 s                                              |
-| T1 unit         | always, each package with an edited `.go` file                                                                       | `go test -count=1 ./internal/<pkg>/`                         | < 2 s each (tui ~9 s)                              |
-| T1b dependents  | only when an _exported_ identifier changed                                                                           | T1 for the packages that import it                           | seconds                                            |
-| T2 targeted e2e | when behaviour visible through the binary changed                                                                    | `go test -count=1 ./internal/e2e -run '^(TestA\|TestB)$'`    | budget below                                       |
-| T3 guards       | when a registry was touched (flag, `/v1` op, setting, default)                                                       | the guard tests for that registry (the selector's guard map) | seconds                                            |
-| T4 build        | only when `package.nix`, `go.mod`/`go.sum` or the vendor hash changed                                                | `nix build .#mcpx`                                           | ~70 s                                              |
-| Full suite      | **never locally for a routine change**; CI on push and on PRs. The integrator merging a PR is the exception (rule 7) | —                                                            | ~110 s of serial e2e plus compilation, and growing |
+| Tier                    | When                                                                                                                 | Command                                                                                    | Typical cost                                              |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------- |
+| T0 format/vet           | always, touched packages                                                                                             | `gofmt -l <files>`; `go vet ./internal/<pkg>/`                                             | < 2 s                                                     |
+| T1 unit                 | always, each package with an edited `.go` file                                                                       | `go test -count=1 ./internal/<pkg>/`                                                       | < 2 s each (tui ~9 s)                                     |
+| T1b dependents          | only when an _exported_ identifier changed                                                                           | T1 for the packages that import it                                                         | seconds                                                   |
+| T2 targeted e2e         | when behaviour visible through the binary changed                                                                    | `go test -count=1 ./internal/e2e -run '^(TestA\|TestB)$'`                                  | budget below                                              |
+| T3 guards               | when a registry was touched (flag, `/v1` op, setting, default)                                                       | the guard tests for that registry (the selector's guard map)                               | seconds                                                   |
+| T4 build                | only when `package.nix`, `go.mod`/`go.sum` or the vendor hash changed                                                | `nix build .#mcpx`                                                                         | ~70 s                                                     |
+| T5 real-software subset | nightly (`mcpx realsoftware nightly`, `.github/workflows/mcpx-realsoftware-nightly.yml`), or by hand with the pinned servers built | `nix build .#mcpx-real-servers` (from the repo root), then `MCPX_REAL_SERVERS_DIR=$PWD/result go test -tags realsoftware -run '^TestReal' ./internal/e2e` (from `pkgs/mcpx`) | the build tag keeps these out of every other tier (#1990) |
+| Full suite              | **never locally for a routine change**; CI on push and on PRs. The integrator merging a PR is the exception (rule 7) | —                                                                                          | ~110 s of serial e2e plus compilation, and growing        |
 
 **T2 budget (decided #1966):** both numbers, serving different readers —
 a **count cap of 15 tests**, which is what an agent can see before
@@ -61,6 +62,41 @@ truncates at the cap and says so; CI runs the rest.
    than once (current practice: 2–3 times). Until repeat/`-race` runs
    move into CI (#1973's territory), that is the only place mcpx looks
    for order- and timing-dependent flakes.
+
+## The run seed (#1949)
+
+Every randomized input in every test derives from one seed per run,
+carried by the `MCPX_TEST_SEED` env var — the only channel. The
+derivation (root, per-test streams, shuffle) is #1949 section 2,
+implemented in `internal/testsupport/gen` (streams) and
+`internal/testsupport/seed` (this transport: the lazy helper a test
+calls as `seed.Source(t, "name", version)`; it reads the env var
+only when a test actually asks, so unrelated packages stay
+cacheable, and on failure it logs the exact replay command).
+
+- **Locally**, run tests through the wrapper:
+  `pkgs/mcpx/scripts/test.sh [go test args...]`. It mints one
+  UUIDv7 seed if unset, exports it to every test process, derives
+  `-shuffle` from the same seed, prints the seed, and records it in
+  the gitignored `.cache/test-seed/` (`last` + `history`). Replay a
+  failure with one command:
+  `MCPX_TEST_SEED=<id> pkgs/mcpx/scripts/test.sh -run '^TestX$' ./internal/<pkg>`.
+- **Bare `go test`** still works, with a limitation: with no seed
+  set, the helper mints one *per package process* and warns — a
+  bare run is reproducible from the printed id, but it is not one
+  seed per run. Use the wrapper when the run is the unit of
+  reproduction.
+- **In CI** the workflows mint once per run (the `seed` job in
+  `mcpx.yml`, the `init` job in `mcpx-test.yml`) and pass the id to
+  every `go test` job; a `workflow_dispatch` `seed` input replays a
+  previous run exactly, and re-running failed jobs reuses the
+  original seed because the successful seed job is not re-run. CI
+  never mints inside a test process: unset in CI, the helper and
+  the wrapper both fail closed. `mcpx.yml` uploads the run's
+  `seed.json` as the `test-seed` artifact, which the seed collector
+  (#1953) files into `testdata/seeds/v1`.
+- The seed reproduces inputs and test order, not timing (#1949
+  section 6 caveat).
 
 ## Finding the tests that touch a change (Approach C, decided #1966)
 

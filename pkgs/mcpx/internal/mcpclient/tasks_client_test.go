@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // Defining tests for #1556 (Phase 2 of #1554): CallTool drives a
@@ -64,7 +64,7 @@ func dialLegacy(t *testing.T, s *scriptedServer) *mcpclient.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 

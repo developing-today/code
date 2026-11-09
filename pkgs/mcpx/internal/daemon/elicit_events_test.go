@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // #1677: elicit.opened / elicit.answered carry a summary only -- id,
@@ -23,7 +23,7 @@ func TestElicitEventsAreSummaryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer broker.Close()
+	defer func() { _ = broker.Close() }()
 	r := &Registry{asks: newAskTable()}
 	r.InstallHooks(bus, broker, nil)
 	sub, _ := bus.Subscribe(events.Filter{Kinds: []string{"elicit"}}, 0)

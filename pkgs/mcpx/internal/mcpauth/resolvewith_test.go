@@ -3,7 +3,7 @@ package mcpauth_test
 import (
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpauth"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
 )
 
 // A credential that names a variable is read through the lookup it is given,

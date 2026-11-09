@@ -19,7 +19,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/dezren39/mcpx/plugin/opencode/skills"
+	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 )
 
 // The skills extension (SEP-2640): mcpx serves its own skills.

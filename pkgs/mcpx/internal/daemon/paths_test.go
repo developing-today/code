@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 func TestSocketStaysBesideStateWhenShort(t *testing.T) {
@@ -54,7 +54,7 @@ func TestTheFallbackSocketUsesXDGRuntimeDirWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	long := "/tmp/" + strings.Repeat("abcdefghij/", 12) + "state"
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("MCPX_SOCKET", "")

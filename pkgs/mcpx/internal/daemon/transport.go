@@ -5,7 +5,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Transport produces one of the daemon's listeners. The daemon's accept
@@ -39,7 +39,7 @@ func (t unixTransport) Listen() (net.Listener, error) {
 		return nil, fmt.Errorf("listen %s: %w", t.socket, err)
 	}
 	if err := os.Chmod(t.socket, defaults.PrivateMode); err != nil {
-		ln.Close()
+		_ = ln.Close()
 		return nil, err
 	}
 	return ln, nil

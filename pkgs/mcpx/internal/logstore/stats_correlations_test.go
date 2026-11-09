@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 // corrFixture is the #1695 probe fixture, extended with a third session on

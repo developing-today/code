@@ -11,7 +11,16 @@ import (
 // from the JSONL at any time, so nothing here is protecting data; it is
 // protecting someone who typed DELETE meaning SELECT from a confusing
 // afternoon. PRAGMA is allowed because that is how you ask SQLite about
-// itself, and the mutating pragmas need a value that this refuses anyway.
+// itself. A PRAGMA that carries a value is not a question, it is an
+// assignment, so CheckReadOnly refuses value-carrying PRAGMAs in both
+// forms (name = value and name(value)); the only parenthesised forms
+// allowed are the established function-form reads in
+// functionFormReadPragmas, whose argument names the object to inspect
+// rather than a value to assign. A bare PRAGMA (no value at all) is
+// not automatically a question either — PRAGMA optimize and
+// PRAGMA wal_checkpoint take no value and still change the database
+// — so bare forms pass only when the name is in bareReadPragmas,
+// the known reads.
 var readOnlyVerbs = map[string]bool{
 	"select": true, "explain": true, "pragma": true, "with": true, "values": true,
 }
@@ -32,6 +41,11 @@ func CheckReadOnly(query string) error {
 	if !readOnlyVerbs[verb] {
 		return fmt.Errorf("%q is not a read-only statement; use SELECT, WITH, VALUES, EXPLAIN or PRAGMA", verb)
 	}
+	if verb == "pragma" {
+		if err := checkReadOnlyPragma(trimmed); err != nil {
+			return err
+		}
+	}
 	// A CTE can hide a writer: WITH x AS (...) DELETE FROM records is valid
 	// SQLite, and checking only the first word would wave it through.
 	if verb == "with" {
@@ -41,6 +55,101 @@ func CheckReadOnly(query string) error {
 				return fmt.Errorf("%q appears in the query; only reads are allowed here", bad)
 			}
 		}
+	}
+	return nil
+}
+
+// functionFormReadPragmas are the PRAGMAs whose parenthesised form is a
+// read: the argument names a table, index, or check to inspect, it is not
+// a value being assigned to the pragma. Any other parenthesised PRAGMA
+// (e.g. user_version(42), journal_mode(DELETE)) is an assignment in call
+// form and is refused.
+// bareReadPragmas are the PRAGMAs whose bare form — no value, no
+// argument list — is a read: the name alone asks SQLite about the
+// database, a setting, or a check result, and changes nothing. Any
+// other bare PRAGMA is refused, because several bare PRAGMAs are
+// actions, not questions: PRAGMA optimize rewrites sqlite_stat1,
+// PRAGMA wal_checkpoint forces WAL frames into the main database
+// file, PRAGMA incremental_vacuum performs vacuum work (its bare
+// form shrank the freelist in rollback-journal mode), and
+// PRAGMA shrink_memory releases memory back to the OS. Those four
+// are deliberately absent here; refusing unknown names by default
+// keeps the next action PRAGMA out as well.
+var bareReadPragmas = map[string]bool{
+	"analysis_limit": true, "application_id": true, "auto_vacuum": true,
+	"automatic_index": true, "busy_timeout": true, "cache_size": true,
+	"cache_spill": true, "cell_size_check": true,
+	"checkpoint_fullfsync": true, "collation_list": true,
+	"compile_options": true, "data_version": true, "database_list": true,
+	"defer_foreign_keys": true, "encoding": true,
+	"foreign_key_check": true, "foreign_keys": true, "freelist_count": true,
+	"full_column_names": true, "fullfsync": true, "function_list": true,
+	"hard_heap_limit": true, "ignore_check_constraints": true,
+	"integrity_check": true, "journal_mode": true,
+	"journal_size_limit": true, "legacy_alter_table": true,
+	"legacy_file_format": true, "locking_mode": true,
+	"max_page_count": true, "max_recursive": true, "mmap_size": true,
+	"module_list": true, "page_count": true, "page_size": true,
+	"pragma_list": true, "query_only": true, "quick_check": true,
+	"read_uncommitted":   true,
+	"recursive_triggers": true, "reverse_unordered_selects": true,
+	"schema_version": true, "secure_delete": true,
+	"short_column_names": true, "soft_heap_limit": true,
+	"synchronous": true, "table_list": true, "temp_store": true,
+	"threads": true, "trusted_schema": true, "user_version": true,
+	"wal_autocheckpoint": true, "wal_index": true,
+	"writable_schema": true,
+}
+
+var functionFormReadPragmas = map[string]bool{
+	"table_info": true, "table_xinfo": true, "table_list": true,
+	"index_list": true, "index_info": true, "index_xinfo": true,
+	"foreign_key_list": true, "foreign_key_check": true,
+	"integrity_check": true, "quick_check": true,
+}
+
+// checkReadOnlyPragma refuses a PRAGMA that carries a value, and any
+// bare PRAGMA whose name is not a known read. Bare reads (PRAGMA
+// journal_mode, PRAGMA user_version) pass via bareReadPragmas; a value
+// in either assignment form (= value or (value)) does not, except for
+// the function-form reads above.
+func checkReadOnlyPragma(trimmed string) error {
+	rest := strings.TrimSpace(trimmed[len("pragma"):])
+	rest = strings.TrimSpace(strings.TrimSuffix(rest, ";"))
+	if rest == "" {
+		return fmt.Errorf("PRAGMA with no name is not a read-only statement")
+	}
+	if strings.Contains(rest, "=") {
+		return fmt.Errorf("PRAGMA %q carries a value; only read PRAGMAs with no assigned value are allowed here", rest)
+	}
+	if i := strings.Index(rest, "("); i >= 0 {
+		if !strings.HasSuffix(rest, ")") {
+			return fmt.Errorf("PRAGMA %q is not a well-formed read PRAGMA", rest)
+		}
+		name := rest[:i]
+		if j := strings.LastIndex(name, "."); j >= 0 {
+			name = name[j+1:]
+		}
+		if !functionFormReadPragmas[strings.ToLower(strings.TrimSpace(name))] {
+			return fmt.Errorf("PRAGMA %q carries a value; only read PRAGMAs with no assigned value are allowed here", rest)
+		}
+		return nil
+	}
+	// Bare form: no value and no argument list. The name alone must be
+	// a known read — see bareReadPragmas. A schema qualifier
+	// (main.wal_checkpoint) is stripped the same way as in the
+	// function-form branch, so it cannot smuggle an action name past
+	// the allowlist.
+	fields := strings.Fields(rest)
+	if len(fields) != 1 {
+		return fmt.Errorf("PRAGMA %q is not a well-formed read PRAGMA", rest)
+	}
+	name := fields[0]
+	if j := strings.LastIndex(name, "."); j >= 0 {
+		name = name[j+1:]
+	}
+	if !bareReadPragmas[strings.ToLower(name)] {
+		return fmt.Errorf("PRAGMA %q is not a known read PRAGMA; only the bare reads in the allowlist are allowed here", rest)
 	}
 	return nil
 }
@@ -106,7 +215,7 @@ func (s *Store) RunSQL(query string) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err

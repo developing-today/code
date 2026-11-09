@@ -10,7 +10,9 @@ const jwk = publicKey.export({ format: "jwk" }) as unknown as Record<string, unk
 jwk.kid = "test-kid-1";
 jwk.alg = "RS256";
 
-const JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks.json";
+// Use the production constant, never a copy: a hard-coded copy of the
+// old bogus .json URL is exactly how code#4886 stayed hidden by tests.
+import { GITHUB_JWKS_URL as JWKS_URL } from "../src/auth.ts";
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: unknown) => {
   if (String(input) === JWKS_URL) {
@@ -46,6 +48,10 @@ function signOidc(repository: string): string {
   return `${header}.${payload}.${b64url(signer.sign(privateKey))}`;
 }
 
+// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// (#5120), so the suite pins a fixture project (no service-role key: the
+// queue stays disabled, as these tests intend).
+process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
 const { handler } = await import("../src/server.ts");
 
 function sessionsRequest(token: string, body: Record<string, unknown>): Request {
@@ -56,7 +62,14 @@ function sessionsRequest(token: string, body: Record<string, unknown>): Request 
   });
 }
 
-const base = { repo: "developing-today/code", prompt: "do the thing" };
+// issue:false keeps these tests hermetic (#4917): session requests
+// default issue creation ON, and the GitHub client's gh-CLI fallback is
+// a subprocess the fetch stub above cannot intercept — with issue left
+// on, these tests file REAL tracking issues in developing-today/code
+// (the exact orphan class #4917 tracks; baseline runs of this file
+// filed #4937/#4938). Issue-creation and failure-compensation behaviour
+// is covered hermetically by launch_failure.test.ts stubs.
+const base = { repo: "developing-today/code", prompt: "fix the pm-dispatch session request minimum spec gate", issue: false };
 
 describe("POST /v1/sessions directory scoping (issue #2903)", () => {
   test("OIDC + foreign directory is rejected with 400 before any side effect", async () => {
@@ -79,6 +92,41 @@ describe("POST /v1/sessions directory scoping (issue #2903)", () => {
   test("OIDC + own clone directory passes validation the same way", async () => {
     const token = signOidc("developing-today/code");
     const res = await handler(sessionsRequest(token, { ...base, directory: "/home/user/git/code" }));
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /v1/sessions body cap is measured in UTF-8 bytes (issue #3010)", () => {
+  test("multibyte body under the cap in code units but over in bytes is rejected as too large", async () => {
+    const token = signOidc("developing-today/code");
+    // 100,000 CJK chars = 100,000 UTF-16 code units (under the 262,144 cap)
+    // but 300,000 UTF-8 bytes (over it).
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "界".repeat(100_000) }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/too large/);
+  });
+
+  test("multibyte body just under the cap in bytes passes the size gate", async () => {
+    const token = signOidc("developing-today/code");
+    // 87,000 CJK chars = 261,000 UTF-8 bytes plus JSON overhead: under the
+    // 262,144-byte cap, so the request clears the size gate and validation
+    // and reaches the unconfigured queue (502), like the small-body tests.
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "界".repeat(87_000) }));
+    expect(res.status).toBe(502);
+  });
+
+  test("ASCII body over the cap is rejected as too large, as before", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "a".repeat(262_144) }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/too large/);
+  });
+
+  test("ASCII body under the cap passes the size gate, as before", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "a".repeat(260_000) }));
     expect(res.status).toBe(502);
   });
 });

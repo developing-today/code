@@ -18,7 +18,7 @@ import (
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // ExitInputRequired is returned when a call stopped to ask something.
@@ -74,7 +74,7 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	switch sub {
 	case "", "list":
@@ -92,9 +92,9 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tFOR\tLEFT\tSERVER\tASKS")
+		_, _ = fmt.Fprintln(w, "ID\tFOR\tLEFT\tSERVER\tASKS")
 		for _, r := range pending {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Audience,
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Audience,
 				short(r.TTLRemaining()), orDash(r.Server), trunc(r.Message, 48))
 		}
 		_ = w.Flush()

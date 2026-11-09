@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // rawBackend is fakeBackend plus every upstream's tools: two namespaces,
@@ -291,7 +291,7 @@ func TestRawToolsListChangedReachesTheLegacyGETStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	resp, _ := openGET(t, ts.URL+"?codemode=false", id, ctx)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET stream status %d", resp.StatusCode)
 	}

@@ -8,13 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { appendContextOnce, CONTEXT_MARKER } from "./context.ts";
-import {
-  forgetDaemon,
-  readRememberedDaemon,
-  recallDaemon,
-  rememberDaemon,
-  type StorageLike,
-} from "./remember.ts";
+import { forgetDaemon, readRememberedDaemon, recallDaemon, rememberDaemon, type StorageLike } from "./remember.ts";
 import { createSessionEnv, type FetchLike } from "./session-env.ts";
 import { createTimingLog, type ToolTimingRecord } from "./timing.ts";
 
@@ -51,6 +45,35 @@ describe("remember (ctx.storage)", () => {
     const storage = stubStorage();
     await storage.set("daemon:/work", "not-a-record");
     expect(await readRememberedDaemon(storage, "/work")).toBeUndefined();
+  });
+
+  test("records with malformed targets read as absent", async () => {
+    // The target comes from host-provided storage, so every non-Target
+    // shape must be rejected, not just a non-object record (#2558).
+    const malformed: unknown[] = [
+      { target: { kind: "socket" }, seenAt: 5 },
+      { target: { kind: "socket", path: "" }, seenAt: 5 },
+      { target: { kind: "socket", path: 7 }, seenAt: 5 },
+      { target: { kind: "url" }, seenAt: 5 },
+      { target: { kind: "url", base: "" }, seenAt: 5 },
+      { target: "unix:///tmp/m.sock", seenAt: 5 },
+      { target: 42, seenAt: 5 },
+      { target: { kind: "carrier-pigeon", path: "/tmp/m.sock" }, seenAt: 5 },
+      { target: null, seenAt: 5 },
+    ];
+    for (const record of malformed) {
+      const storage = stubStorage();
+      await storage.set("daemon:/work", record);
+      expect(await readRememberedDaemon(storage, "/work")).toBeUndefined();
+    }
+  });
+
+  test("round-trips a url target", async () => {
+    const storage = stubStorage();
+    await rememberDaemon(storage, "/work", { kind: "url", base: "http://127.0.0.1:9" }, 7);
+    const read = await readRememberedDaemon(storage, "/work");
+    expect(read?.target).toEqual({ kind: "url", base: "http://127.0.0.1:9" });
+    expect(read?.seenAt).toBe(7);
   });
 });
 

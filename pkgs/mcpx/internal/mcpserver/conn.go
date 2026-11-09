@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Conn is one client's connection.
@@ -235,14 +235,24 @@ func (p Peer) DeclaredExtension(name string) bool {
 	if json.Unmarshal(p.Caps["extensions"], &ext) != nil {
 		return false
 	}
-	_, ok := ext[name]
-	return ok
+	raw, ok := ext[name]
+	return ok && declaredValue(raw)
 }
 
 // Declared reports whether the client declared a capability.
 func (p Peer) Declared(name string) bool {
 	_, ok := p.Caps[name]
 	return ok
+}
+
+// declaredValue reports whether a raw capability value is a usable
+// declaration: present and not JSON null. A client that serializes an
+// unset capability as null has declared nothing, but Go reads the
+// literal null into a struct as a no-op and stores it in a
+// json.RawMessage as four non-empty bytes, so a bare presence or
+// length check counts it as declared (#2474).
+func declaredValue(raw json.RawMessage) bool {
+	return len(raw) > 0 && strings.TrimSpace(string(raw)) != "null"
 }
 
 // CanElicit reports whether mcpx may send this client an elicitation in the
@@ -260,18 +270,22 @@ func (p Peer) CanElicit(mode string) bool {
 	if !AtLeast(p.Version, "2025-06-18") || !p.Declared("elicitation") {
 		return false
 	}
+	if !declaredValue(p.Caps["elicitation"]) {
+		return false
+	}
 	if mode != "url" {
 		if !AtLeast(p.Version, "2025-11-25") {
 			return true
 		}
-		var e struct {
-			Form json.RawMessage `json:"form"`
-			URL  json.RawMessage `json:"url"`
-		}
+		var e map[string]json.RawMessage
 		if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
 			return false
 		}
-		return len(e.Form) > 0 || len(e.URL) == 0
+		if raw, ok := e["form"]; ok {
+			return declaredValue(raw)
+		}
+		_, hasURL := e["url"]
+		return !hasURL
 	}
 	if !AtLeast(p.Version, "2025-11-25") {
 		return false
@@ -282,7 +296,7 @@ func (p Peer) CanElicit(mode string) bool {
 	if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
 		return false
 	}
-	return len(e.URL) > 0
+	return declaredValue(e.URL)
 }
 
 // CanSample reports whether mcpx may ask this client for a model completion.
@@ -303,9 +317,9 @@ func (p Peer) samplingSub(name string) bool {
 	}
 	switch name {
 	case "tools":
-		return len(s.Tools) > 0
+		return declaredValue(s.Tools)
 	case "context":
-		return len(s.Context) > 0
+		return declaredValue(s.Context)
 	}
 	return false
 }
@@ -343,22 +357,38 @@ func (q Question) carriesMultiSelect() bool {
 		return false
 	}
 	var schema struct {
-		Properties map[string]struct {
-			Type  string                     `json:"type"`
-			Items map[string]json.RawMessage `json:"items"`
-		} `json:"properties"`
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
 	if json.Unmarshal(m["requestedSchema"], &schema) != nil {
 		return false
 	}
-	for _, prop := range schema.Properties {
-		if prop.Type != "array" {
+	for _, raw := range schema.Properties {
+		var prop map[string]json.RawMessage
+		if json.Unmarshal(raw, &prop) != nil {
 			continue
 		}
-		if _, ok := prop.Items["enum"]; ok {
+		var typ string
+		var types []string
+		array := json.Unmarshal(prop["type"], &typ) == nil && typ == "array"
+		if !array && json.Unmarshal(prop["type"], &types) == nil {
+			for _, t := range types {
+				if t == "array" {
+					array = true
+					break
+				}
+			}
+		}
+		if !array {
+			continue
+		}
+		var items map[string]json.RawMessage
+		if json.Unmarshal(prop["items"], &items) != nil {
+			continue
+		}
+		if _, ok := items["enum"]; ok {
 			return true
 		}
-		if _, ok := prop.Items["anyOf"]; ok {
+		if _, ok := items["anyOf"]; ok {
 			return true
 		}
 	}
@@ -448,13 +478,6 @@ func (c *Conn) deliver(id int64, result json.RawMessage, rerr *rpcError) bool {
 	}
 	ch <- &clientReply{Result: result, Error: rerr}
 	return true
-}
-
-// isReply reports whether a frame is a response rather than a request: an id
-// and no method. The client's own recvLoop had this bug in reverse, and it
-// cost a release of silent elicitation failures.
-func isReply(req request) bool {
-	return len(req.ID) > 0 && req.Method == ""
 }
 
 // replyOf reads the result or error from a response frame.
@@ -568,14 +591,14 @@ func (q Question) Sendable(p Peer) bool {
 		// (string[] to string) and the upstream would reject the
 		// elicited answer. Unsendable questions stay with the broker
 		// via sendableTo (#2078).
-		return p.CanElicit(q.Mode) && !(q.carriesMultiSelect() && !AtLeast(p.Version, "2025-11-25"))
+		return p.CanElicit(q.Mode) && (!q.carriesMultiSelect() || AtLeast(p.Version, "2025-11-25"))
 	case "sampling/createMessage":
 		// A tools-carrying question goes only to a client that declared
 		// sampling.tools. It is refused whole, never stripped and
 		// degraded: the upstream asked for a tool loop, and a plain
 		// completion is not the answer to that question. Unsendable
 		// questions stay with the broker via sendableTo.
-		return p.CanSample() && !(q.carriesSamplingTools() && !p.CanSampleTools())
+		return p.CanSample() && (!q.carriesSamplingTools() || p.CanSampleTools())
 	case "roots/list":
 		return p.Declared("roots")
 	}

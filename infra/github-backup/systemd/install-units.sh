@@ -8,9 +8,9 @@ GB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
 for u in github-backup-fetch.service github-backup-fetch.timer \
-         github-backup-reconcile.service github-backup-reconcile.timer \
-         github-backup-drain.service github-backup-drain.timer; do
-  sed "s#__GB_DIR__#$GB_DIR#g" "$GB_DIR/systemd/$u" > "$UNIT_DIR/$u"
+  github-backup-reconcile.service github-backup-reconcile.timer \
+  github-backup-drain.service github-backup-drain.timer; do
+  sed "s#__GB_DIR__#$GB_DIR#g" "$GB_DIR/systemd/$u" >"$UNIT_DIR/$u"
 done
 systemctl --user daemon-reload
 systemctl --user enable --now github-backup-fetch.timer \

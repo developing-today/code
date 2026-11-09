@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // #1679: handleEvents discarded the strconv.ParseUint error for its

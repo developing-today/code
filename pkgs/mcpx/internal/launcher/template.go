@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/nearmiss"
+	"github.com/developing-today/code/pkgs/mcpx/internal/nearmiss"
 )
 
 // Placeholder is a name that may appear in a launcher template as @name.
@@ -251,21 +251,6 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 		inner["args"] = strings.Join(joined, "\n")
 	}
 	return inner
-}
-
-// readName reads @name, returning the name and how many bytes it occupied.
-func readName(s string) (string, int) {
-	if len(s) < 2 || s[0] != '@' {
-		return "", 0
-	}
-	i := 1
-	for i < len(s) && (isLetter(s[i]) || (i > 1 && isDigit(s[i]))) {
-		i++
-	}
-	if i == 1 {
-		return "", 0
-	}
-	return s[1:i], i
 }
 
 func isLetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }

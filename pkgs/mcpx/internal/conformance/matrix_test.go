@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/conformance"
+	"github.com/developing-today/code/pkgs/mcpx/internal/conformance"
 )
 
 // update rewrites the generated files instead of comparing them.

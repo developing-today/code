@@ -48,6 +48,9 @@ it becomes an issue:
 
 - Per real, verified finding, file ONE issue in this repo with
   `gh issue create` from the laptop checkout. Each issue must include:
+  - the canonical component label for its area; use `app/pm-stack` for
+    PM-stack / aggregator issues in this repo. `app/aggregator` is a legacy
+    alias and must not be used for new filings.
   - a clear title naming the problem;
   - file/line evidence (the exact paths and lines you verified);
   - why it matters (impact, risk, or cost);

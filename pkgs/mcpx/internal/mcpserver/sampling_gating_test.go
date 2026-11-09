@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // Phase 1 of #1753 (#1755): the sampling relay checks the sub-capabilities
@@ -43,6 +43,14 @@ func TestSamplingToolsQuestionsGoOnlyToAClientThatDeclaredSamplingTools(t *testi
 	if withTools.Sendable(malformed) {
 		t.Error("a tools-carrying question must not be offered on a malformed declaration")
 	}
+
+	nullSubs := peer("2025-11-25", `{"sampling":{"tools":null,"context":null}}`)
+	if nullSubs.CanSampleTools() || nullSubs.CanSampleContext() {
+		t.Error("a null sampling sub-capability must behave as undeclared")
+	}
+	if withTools.Sendable(nullSubs) || withChoice.Sendable(nullSubs) {
+		t.Error("a tools-carrying question must not be offered on a null tools declaration")
+	}
 }
 
 func TestSamplingIncludeContextReachesOnlyAClientThatDeclaredSamplingContext(t *testing.T) {
@@ -64,6 +72,18 @@ func TestSamplingIncludeContextReachesOnlyAClientThatDeclaredSamplingContext(t *
 	}
 	if got["maxTokens"] != float64(5) {
 		t.Errorf("the rest of the question must pass unchanged: %s", out)
+	}
+
+	out, err = q.ParamsFor(peer("2025-11-25", `{"sampling":{"context":null}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["includeContext"]; ok {
+		t.Errorf("includeContext relayed to a host whose context declaration is null: %s", out)
 	}
 
 	out, err = q.ParamsFor(full)

@@ -12,7 +12,9 @@
 // OpenCode server uses (.opencode/opencode.jsonc: model_routes +
 // provider blocks), picks the actual pool member (ordered / round-robin
 // / weighted selection, variant remaps, disabled providers skipped,
-// quota demotion from the route_attempt ledger), and makes ONE plain
+// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295), expands provider
+// routes (experimental.provider_routes, #3256) into their member
+// providers, and makes ONE plain
 // chat-completions call to that member's endpoint with the member's
 // credential from the OpenCode credential store (opencode.db). The
 // caller's messages are forwarded as-is — never flattened into a
@@ -31,10 +33,19 @@
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
+//   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
+//                                         (default 3000 ms; below the client
+//                                         no-output window)
 //   OPENCODE_ROUTE_PROXY_CONFIG      opencode.jsonc path (default:
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
 //                                    relative to this file)
+//   OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG
+//                                    runtime overlay jsonc whose provider
+//                                    catalogs are deep-merged over the
+//                                    config's (default:
+//                                    ~/.local/state/opencode/opencode-runtime.jsonc;
+//                                    absent = no overlay) (#4544)
 //   OPENCODE_ROUTE_PROXY_DB          opencode.db path (default:
 //                                    ~/.local/share/opencode/opencode.db)
 //   OPENCODE_ROUTE_PROXY_NOW_MS      pin the clock (epoch ms) used for
@@ -47,24 +58,50 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
-import { parseProxyPort } from "./proxy-port.mjs";
+import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
-const TIMEOUT_MS = Number(process.env.OPENCODE_ROUTE_PROXY_TIMEOUT_MS || 1_200_000);
+const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
+const LEAF_TIMEOUT_MS = parseProxyMillis(
+  "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
+  3_000,
+);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
   join(homedir(), ".local/share/opencode/opencode.jsonc");
 const CONFIG_FALLBACK = join(HERE, "..", ".opencode", "opencode.jsonc");
+const RUNTIME_CONFIG_PATH =
+  process.env.OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG ||
+  join(homedir(), ".local/state/opencode/opencode-runtime.jsonc");
 const DB_PATH =
   process.env.OPENCODE_ROUTE_PROXY_DB ||
   join(homedir(), ".local/share/opencode/opencode.db");
 
 // Providers built into OpenCode itself (no block in opencode.jsonc):
 // instanceOf targets resolve here when the config has no block either.
+// These entries are DEFAULTS, merged UNDER any config block: a block
+// that sets its own baseURL/npm/models always wins, but an empty-shell
+// block (models only, or instanceOf only) no longer dead-ends a leaf
+// the way it did for openai / openai.alternate in #3256 — OpenCode
+// tolerates those blocks via its built-in catalog, so the proxy must
+// resolve the same endpoints. Endpoint sources (fork
+// developing-today/opencode, packages/ai): openai —
+// src/protocols/openai-chat.ts DEFAULT_BASE_URL (the models.dev
+// catalog entry for @ai-sdk/openai carries no api URL; the SDK's own
+// default applies); deepseek / groq / openrouter / meta — the
+// baseURL constant in src/providers/<id>.ts of the same package.
+// openai.alternate needs no entry of its own: it is instanceOf
+// openai, and the chain below inherits this default through the
+// base block.
 const BUILTIN_PROVIDERS = {
   "opencode-go": { options: { baseURL: "https://opencode.ai/zen/go/v1" } },
+  openai: { options: { baseURL: "https://api.openai.com/v1" } },
+  deepseek: { options: { baseURL: "https://api.deepseek.com/v1" } },
+  groq: { options: { baseURL: "https://api.groq.com/openai/v1" } },
+  openrouter: { options: { baseURL: "https://openrouter.ai/api/v1" } },
+  meta: { options: { baseURL: "https://api.meta.ai/v1" } },
 };
 
 // Cloudflare-fronted endpoints (opencode.ai among them) reject default
@@ -131,6 +168,18 @@ const parseJsonc = (text) => {
   }
 };
 
+const isPlainObj = (v) =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+// Deep-merge plain objects (overlay wins on scalars): mirrors the fork
+// server's config layering for the runtime overlay (#4544), so the proxy
+// resolves the same effective provider catalog the server does.
+const deepMergePlain = (base, over) => {
+  if (!isPlainObj(base) || !isPlainObj(over)) return over;
+  const out = { ...base };
+  for (const k of Object.keys(over)) out[k] = deepMergePlain(base[k], over[k]);
+  return out;
+};
+
 let cfgCache = null;
 const loadConfig = () => {
   let path = CONFIG_PATH;
@@ -141,15 +190,42 @@ const loadConfig = () => {
     path = CONFIG_FALLBACK;
     st = statSync(path);
   }
-  if (cfgCache && cfgCache.path === path && cfgCache.mtimeMs === st.mtimeMs)
+  let rtSt = null;
+  try {
+    rtSt = statSync(RUNTIME_CONFIG_PATH);
+  } catch {
+    rtSt = null;
+  }
+  const rtMtimeMs = rtSt ? rtSt.mtimeMs : null;
+  if (
+    cfgCache &&
+    cfgCache.path === path &&
+    cfgCache.mtimeMs === st.mtimeMs &&
+    cfgCache.rtMtimeMs === rtMtimeMs
+  )
     return cfgCache;
   const raw = parseJsonc(readFileSync(path, "utf8"));
+  if (rtSt) {
+    try {
+      const rt = parseJsonc(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+      if (rt && typeof rt === "object" && rt.provider)
+        raw.provider = deepMergePlain(raw.provider || {}, rt.provider);
+    } catch {
+      // Overlay unreadable: serve the tracked default alone rather than fail.
+    }
+  }
+  const windows =
+    raw.experimental?.model_route_windows || raw.model_route_windows || {};
+  warnInvalidWindows(windows);
   cfgCache = {
     path,
     mtimeMs: st.mtimeMs,
+    rtMtimeMs,
     providers: raw.provider || {},
+    providerRoutes:
+      raw.experimental?.provider_routes || raw.provider_routes || {},
     routes: raw.experimental?.model_routes || raw.model_routes || {},
-    windows: raw.experimental?.model_route_windows || raw.model_route_windows || {},
+    windows,
     disabled: new Set(raw.disabled_providers || []),
   };
   return cfgCache;
@@ -163,14 +239,30 @@ const expandEnv = (s) =>
       )
     : s;
 
+// One provider block with the built-in defaults merged under it:
+// config fields (options included) win key by key; the built-in
+// table only fills what the block omits.
+const mergedDef = (cfg, id) => {
+  const raw = cfg.providers[id];
+  const builtin = BUILTIN_PROVIDERS[id];
+  if (!raw) return builtin || null;
+  if (!builtin) return raw;
+  return {
+    ...builtin,
+    ...raw,
+    options: { ...(builtin.options || {}), ...(raw.options || {}) },
+    models: raw.models || builtin.models,
+  };
+};
+
 // Effective provider definition, following instanceOf chains into the
 // config's base block or the built-in table.
 const providerDef = (cfg, id) => {
-  let def = cfg.providers[id];
+  let def = mergedDef(cfg, id);
   const seen = new Set([id]);
   while (def && def.instanceOf && !seen.has(def.instanceOf)) {
     seen.add(def.instanceOf);
-    const base = cfg.providers[def.instanceOf] || BUILTIN_PROVIDERS[def.instanceOf];
+    const base = mergedDef(cfg, def.instanceOf);
     if (!base) break;
     def = {
       ...base,
@@ -179,8 +271,7 @@ const providerDef = (cfg, id) => {
       models: def.models || base.models,
     };
   }
-  if (!def) def = BUILTIN_PROVIDERS[id] || null;
-  return def;
+  return def || null;
 };
 
 const providerBaseURL = (cfg, id) => {
@@ -213,7 +304,12 @@ const credentialKey = (providerId) => {
     if (row?.value) {
       try {
         const parsed = JSON.parse(row.value);
+        // API credentials store { key }; OAuth credentials (the plan
+        // providers, e.g. openai) store { access } instead — that
+        // access token is the member's bearer credential (#3256).
         if (typeof parsed?.key === "string" && parsed.key) key = parsed.key;
+        else if (typeof parsed?.access === "string" && parsed.access)
+          key = parsed.access;
       } catch {
         key = String(row.value);
       }
@@ -228,6 +324,15 @@ const credentialKey = (providerId) => {
   credCache.set(providerId, { key, at: Date.now() });
   return key;
 };
+
+// The credential a leaf would call with: a static apiKey in its
+// provider config, else its active credential-store row (#3228).
+const leafCredential = (cfg, providerId) => {
+  const def = providerDef(cfg, providerId);
+  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
+  return staticKey || credentialKey(providerId);
+};
+const hasCredential = (cfg, providerId) => Boolean(leafCredential(cfg, providerId));
 
 // (provider,model) pairs demoted by the doctrine: >=3 quota failures
 // (quota detail recorded, or a RateLimit tag) inside the last 4 hours.
@@ -251,6 +356,131 @@ const demotedPairs = () => {
       db?.close();
     } catch {}
   }
+};
+
+// The reset instant a quota detail promises, if it carries one
+// (#5295): a Retry-After-derived relative wait (the shape
+// classifyHttp records for 429s), or an absolute reset recorded under
+// any of the equivalent field names. A quota record with no reset
+// (e.g. a bare paymentRequired) cannot gate: how long it lasts is
+// unknown, and demotion remains its only handling.
+const quotaResetMs = (timeEnded, quotaText) => {
+  let q;
+  try {
+    q = JSON.parse(quotaText);
+  } catch {
+    return null;
+  }
+  if (!q || typeof q !== "object") return null;
+  // A relative retry delay runs from when the quota response was
+  // RECEIVED (the attempt's time_ended), not from when the request
+  // started: anchoring to the start would let a slow 429 response
+  // consume its own backoff.
+  if (Number.isFinite(q.retryAfterMs) && q.retryAfterMs > 0)
+    return timeEnded + q.retryAfterMs;
+  for (const k of ["resetsAtMs", "resetAtMs", "retryAtMs"])
+    if (Number.isFinite(q[k]) && q[k] > 0) return q[k];
+  for (const k of ["resetsAt", "resetAt", "retryAt"]) {
+    const ms = Date.parse(q[k]);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+};
+
+// (provider,model) pairs whose binding quota window is KNOWN
+// exhausted (#5295, #4370 acceptance (c)): the pair's latest
+// quota-bearing failure in the ledger carries a reset still in the
+// future, and no success has been recorded for the pair since that
+// failure. Unlike demotion — reactive (>=3 failures in 4h) and
+// reorder-only — this is a seating-time exclusion known BEFORE the
+// next failure: a monthly-walled leg at a known 100% must not be a
+// first-choice candidate while any live candidate exists. The ledger
+// is the only source (no new network dependency in the hot path);
+// the lookback bounds the scan while covering monthly resets.
+const EXHAUSTED_LOOKBACK_MS = 40 * 24 * 60 * 60 * 1000;
+const knownExhaustedPairs = (now) => {
+  let db = null;
+  try {
+    db = openDb();
+    const since = now - EXHAUSTED_LOOKBACK_MS;
+    // All ordering is by COMPLETION time (time_ended): with
+    // overlapping requests, start-time ordering can mistake a
+    // success that finished before a quota response arrived for a
+    // recovery after it.
+    const quotaRows = db
+      .prepare(
+        `SELECT provider_id, model_id, time_started, time_ended, quota FROM route_attempt
+         WHERE quota IS NOT NULL AND outcome != 'success' AND time_ended > ?
+           AND time_ended = (
+             SELECT MAX(time_ended) FROM route_attempt r2
+             WHERE r2.provider_id = route_attempt.provider_id
+               AND r2.model_id = route_attempt.model_id
+               AND r2.quota IS NOT NULL AND r2.outcome != 'success'
+               AND r2.time_ended > ?
+           )`,
+      )
+      .all(since, since);
+    const successRows = db
+      .prepare(
+        `SELECT provider_id, model_id, MAX(time_ended) AS latest
+         FROM route_attempt
+         WHERE outcome = 'success' AND time_ended > ?
+         GROUP BY provider_id, model_id`,
+      )
+      .all(since);
+    const latestSuccess = new Map(
+      successRows.map((r) => [`${r.provider_id}/${r.model_id}`, r.latest]),
+    );
+    const out = new Map();
+    for (const r of quotaRows) {
+      const reset = quotaResetMs(r.time_ended, r.quota);
+      if (reset === null || reset <= now) continue;
+      const key = `${r.provider_id}/${r.model_id}`;
+      const successAt = latestSuccess.get(key);
+      if (successAt !== undefined && successAt > r.time_ended) continue;
+      out.set(key, reset);
+    }
+    return out;
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// Exclude known-exhausted candidates (#5295), following the
+// credential-less exclusion pattern (#3228) — but fail-safe: if the
+// gate would empty the candidate list, the demoted order is kept as
+// it was, because a known-exhausted leg as last resort beats no
+// route at all. Gate decisions are recorded on stderr, the proxy's
+// diagnostics stream.
+const applyKnownExhaustedGate = (cfg, candidates) => {
+  if (!candidates.length) return candidates;
+  const exhausted = knownExhaustedPairs(nowMs());
+  if (!exhausted.size) return candidates;
+  const key = (c) => `${c.providerId}/${c.modelKey}`;
+  const kept = candidates.filter((c) => !exhausted.has(key(c)));
+  // The fail-safe is evaluated against CREDENTIALED survivors: the
+  // credential-less filter (#3228) runs after this gate, so a kept
+  // list whose only members have no credential would still empty the
+  // route — and the exhausted leaf must then stay as the last resort
+  // instead of the request failing with "no credentialed members".
+  if (!kept.some((c) => hasCredential(cfg, c.providerId))) {
+    console.error(
+      "opencode-route-proxy: known-exhausted gate bypassed — no credentialed " +
+        "candidate survives it; keeping the demoted order (#5295)",
+    );
+    return candidates;
+  }
+  for (const c of candidates)
+    if (exhausted.has(key(c)))
+      console.error(
+        `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
+          `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
+      );
+  return kept;
 };
 
 const recordAttempt = (a) => {
@@ -354,12 +584,40 @@ const nowMs = () => {
 
 const parseHHMM = (s) => {
   const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(typeof s === "string" ? s.trim() : "");
-  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+};
+
+// At config load, name any model_route_windows entry whose start/end
+// is not a valid HH:MM (hour 00-23, minute 00-59) instead of silently
+// evaluating it (#4259). windowActive fails closed (never active) for
+// these entries, so a typo'd window surfaces as a loud no-match rather
+// than flipping a route gate to always-on/always-off/end-less.
+const warnInvalidWindows = (windows) => {
+  if (!windows || typeof windows !== "object") return;
+  for (const [name, win] of Object.entries(windows)) {
+    const start = parseHHMM(win?.start);
+    const end = parseHHMM(win?.end);
+    if (start === null || end === null) {
+      console.error(
+        `opencode-route-proxy: invalid model_route_windows["${name}"]: ` +
+          `start=${JSON.stringify(win?.start)} end=${JSON.stringify(win?.end)} ` +
+          `(expected HH:MM with hour 00-23, minute 00-59); window will never match`,
+      );
+    }
+  }
 };
 
 // Is window `win` active at `now` (epoch ms)? Day and wall time are
 // read in the window's own timezone; start inclusive, end exclusive;
-// an end at or before start wraps past midnight.
+// an end at or before start wraps past midnight. A wrapping window's
+// after-midnight leg belongs to the day the window opened, so its
+// daysOfWeek check uses the previous day (#3874): a Fri 22:00-02:00
+// window is active Sat 01:00 and inactive Fri 01:00.
+const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const windowActive = (win, now) => {
   if (!win || typeof win !== "object") return false;
   const start = parseHHMM(win.start);
@@ -379,12 +637,21 @@ const windowActive = (win, now) => {
   }
   const get = (type) => parts.find((part) => part.type === type)?.value;
   const day = String(get("weekday") || "").slice(0, 3).toLowerCase();
-  if (Array.isArray(win.daysOfWeek) && win.daysOfWeek.length) {
-    const days = win.daysOfWeek.map((d) => String(d).slice(0, 3).toLowerCase());
-    if (!days.includes(day)) return false;
-  }
+  const days =
+    Array.isArray(win.daysOfWeek) && win.daysOfWeek.length
+      ? win.daysOfWeek.map((d) => String(d).slice(0, 3).toLowerCase())
+      : null;
+  const dayListed = (d) => !days || days.includes(d);
   const mins = Number(get("hour")) * 60 + Number(get("minute"));
-  return start <= end ? mins >= start && mins < end : mins >= start || mins < end;
+  if (start <= end)
+    return dayListed(day) && mins >= start && mins < end;
+  if (mins >= start) return dayListed(day);
+  if (mins < end) {
+    if (!days) return true;
+    const idx = WEEKDAY_NAMES.indexOf(day);
+    return idx >= 0 && days.includes(WEEKDAY_NAMES[(idx + 6) % 7]);
+  }
+  return false;
 };
 
 const targetEligible = (cfg, t, now) => {
@@ -422,9 +689,75 @@ const weightedOrder = (targets, weights) => {
   return out;
 };
 
+// Provider routes (#3256; fork grammar from developing-today/opencode
+// PR #1134, experimental.provider_routes): a named group of concrete
+// providers — { providers: [...], selection, weights } — that a route
+// targets as an ordinary leaf, `<group>/<model>`. Resolution expands
+// the group, per model, into its members' concrete leaves for that
+// model, honoring the group's own selection: ordered = member order,
+// round-robin = rotation per group+model, weighted = weighted draw
+// with weights keyed by member provider id (re-keyed to
+// `<member>/<model>` for weightedOrder). The consuming route's
+// selection/weights apply to the group target as written, exactly as
+// for a nested route: this expansion runs inline at the target's
+// position in the route's ordered target list.
+// A concrete provider always wins a reference: an id that names a
+// config provider block (or a built-in) is never treated as a group.
+const providerRouteDef = (cfg, id) => {
+  if (cfg.providers[id] || BUILTIN_PROVIDERS[id]) return null;
+  const g = cfg.providerRoutes?.[id];
+  if (!g || !Array.isArray(g.providers)) return null;
+  return g;
+};
+
+// Expand one provider-route target into `out` (same leaf shape as
+// resolveRoute pushes). Member rules, mirroring the fork's v1:
+// duplicates drop; a member naming another provider route or
+// opencode-route drops (no nesting); an unknown member contributes
+// no leaves; disabled members are skipped; a member whose catalog
+// (its effective models map, instanceOf chains included) does not
+// offer the target model is skipped for this dispatch.
+const expandProviderRoute = (cfg, t, variant, out) => {
+  const group = providerRouteDef(cfg, t.providerId);
+  if (!group || cfg.disabled.has(t.providerId)) return;
+  const members = [...new Set(group.providers)].filter(
+    (m) =>
+      typeof m === "string" &&
+      m !== "opencode-route" &&
+      (cfg.providers[m] || BUILTIN_PROVIDERS[m]) &&
+      !cfg.disabled.has(m),
+  );
+  let leaves = [];
+  for (const m of members) {
+    const models = providerDef(cfg, m)?.models;
+    if (models && !Object.hasOwn(models, t.modelKey)) continue;
+    leaves.push({
+      providerId: m,
+      modelKey: t.modelKey,
+      variant,
+      refBase: `${m}/${t.modelKey}`,
+    });
+  }
+  if (group.selection === "round-robin")
+    leaves = rotate(leaves, `provider-route:${t.providerId}/${t.modelKey}`);
+  else if (group.selection === "weighted") {
+    const weights = {};
+    for (const [member, w] of Object.entries(group.weights || {}))
+      weights[`${member}/${t.modelKey}`] = w;
+    leaves = weightedOrder(leaves, weights);
+  }
+  for (const leaf of leaves)
+    out.push({
+      providerId: leaf.providerId,
+      modelKey: leaf.modelKey,
+      variant: leaf.variant,
+    });
+};
+
 // Resolve a route to its ordered leaf candidates:
-// [{ providerId, modelKey, variant }]. Nested routes recurse; disabled
-// providers are skipped; cycles are cut.
+// [{ providerId, modelKey, variant }]. Nested routes recurse; provider
+// routes expand to their member providers; disabled providers are
+// skipped; cycles are cut.
 const resolveRoute = (cfg, routeId, variantIn = null) => {
   const now = nowMs();
   const out = [];
@@ -446,6 +779,8 @@ const resolveRoute = (cfg, routeId, variantIn = null) => {
       if (t.variantMap && v && t.variantMap[v]) v = t.variantMap[v];
       if (t.variant) v = t.variant;
       if (t.providerId === "opencode-route") expand(t.modelKey, v, seen);
+      else if (providerRouteDef(cfg, t.providerId))
+        expandProviderRoute(cfg, t, v, out);
       else if (!cfg.disabled.has(t.providerId))
         out.push({ providerId: t.providerId, modelKey: t.modelKey, variant: v });
     }
@@ -522,8 +857,7 @@ const callLeaf = async (cfg, leaf, body, wantStream, signal, sessionLabel) => {
       retryable: 0,
     });
   const def = providerDef(cfg, leaf.providerId);
-  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
-  const apiKey = staticKey || credentialKey(leaf.providerId);
+  const apiKey = leafCredential(cfg, leaf.providerId);
   if (!apiKey)
     throw new LeafError(`no credential for provider ${leaf.providerId}`, {
       tag: "Authentication",
@@ -600,8 +934,20 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
   const wantStream = Boolean(body.stream);
   let candidates = resolveRoute(cfg, routeId, hooks.variantIn ?? null);
   candidates = applyDemotion(candidates, demotedPairs());
+  candidates = applyKnownExhaustedGate(cfg, candidates);
   if (!candidates.length)
     throw new LeafError(`route ${routeId} has no available members`, {
+      tag: "UnknownProvider",
+      retryable: 0,
+    });
+  // Credential-less leaves are skipped like disabled providers (#3228):
+  // a walk never spends one of its MAX_ATTEMPTS on a provider whose
+  // credential lookup comes back empty (inactive or missing row), and
+  // such a leaf never surfaces its misleading Authentication error as
+  // the run's terminal failure.
+  candidates = candidates.filter((c) => hasCredential(cfg, c.providerId));
+  if (!candidates.length)
+    throw new LeafError(`route ${routeId} has no credentialed members`, {
       tag: "UnknownProvider",
       retryable: 0,
     });
@@ -623,10 +969,27 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       const next = attempts[i + 1];
       const failedOverTo = next ? `${next.providerId}/${next.modelKey}` : null;
       let res;
+      const leafDeadlineCtl = new AbortController();
+      const leafTimer = setTimeout(
+        () =>
+          leafDeadlineCtl.abort(
+            new Error("opencode-route-proxy leaf first-response timeout"),
+          ),
+        LEAF_TIMEOUT_MS,
+      );
+      const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
       try {
-        res = await callLeaf(cfg, leaf, body, wantStream, signal, sessionLabel);
+        res = await callLeaf(
+          cfg,
+          leaf,
+          body,
+          wantStream,
+          leafSignal,
+          sessionLabel,
+        );
       } catch (err) {
         const ended = Date.now();
+        const leafTimedOut = !signal.aborted && leafDeadlineCtl.signal.aborted;
         recordAttempt({
           started,
           ended,
@@ -634,7 +997,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
           providerId: leaf.providerId,
           modelId: leaf.modelKey,
           variant: leaf.variant,
-          outcome: signal.aborted ? "timeout" : "failure",
+          outcome: signal.aborted || leafTimedOut ? "timeout" : "failure",
           errorTag: err.tag || "Transport",
           errorCode: err.code ?? null,
           errorMessage: String(err.message || err).slice(0, 500),
@@ -647,6 +1010,8 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
         lastErr = err;
         if (signal.aborted) throw err;
         continue;
+      } finally {
+        clearTimeout(leafTimer);
       }
       if (!res.ok) {
         const ended = Date.now();

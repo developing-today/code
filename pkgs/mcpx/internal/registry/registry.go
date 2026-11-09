@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/progspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // DefaultURL is the official registry.
@@ -298,7 +298,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	if err != nil {
 		return fmt.Errorf("reaching %s: %w", c.BaseURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s returned %s for %s", c.BaseURL, resp.Status, path)
 	}

@@ -11,9 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/adapter"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // CallSettingsHeader carries a client's call-scoped settings with a request.
@@ -70,7 +70,11 @@ func (s *Server) callSettings(r *http.Request) *settings.Set {
 	ov := map[string]string{}
 	for path, v := range given {
 		decl, ok := sch.Lookup(path)
-		if !ok || decl.Scope != settings.ScopeCall {
+		// CallRequest settings are admitted as requests, not orders:
+		// pool.callTimeout's only reader from a call set clamps it to the
+		// pool's configured value before use (#1864 item 4), so admitting
+		// it here cannot raise the daemon's bound.
+		if !ok || (decl.Scope != settings.ScopeCall && !decl.CallRequest) {
 			continue
 		}
 		nv, err := settings.Normalize(*decl, v)
@@ -874,7 +878,7 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := req.Spec.Validate(); err != nil {
+	if err := req.Validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -909,14 +913,14 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 	// (Codex review, PR #2565). A replacement edits the file that
 	// defines the adapter, like remove does.
 	path := files[0]
-	if existing, found, err := config.AdapterDefinedIn(files, req.Spec.Name); err != nil {
+	if existing, found, err := config.AdapterDefinedIn(files, req.Name); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	} else if found {
 		if !req.Replace {
 			writeErr(w, http.StatusConflict, fmt.Errorf(
 				"%s already declares adapter %q; remove it first or pick another name",
-				existing, req.Spec.Name))
+				existing, req.Name))
 			return
 		}
 		path = existing
@@ -937,19 +941,19 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		// PR #2565). The adapter-generated exemption applies only to
 		// this adapter's own exact name, which a replace legitimately
 		// redefines.
-		want := config.SanitizeNamespace(req.Spec.Name)
+		want := config.SanitizeNamespace(req.Name)
 		for name, srv := range cfg.MCPServers {
 			if srv == nil || config.SanitizeNamespace(name) != want {
 				continue
 			}
-			if name == req.Spec.Name {
+			if name == req.Name {
 				if _, isAdapter := srv.Env["MCPX_ADAPTER_DECLARATION_SHA256"]; isAdapter {
 					continue
 				}
 			}
 			writeErr(w, http.StatusConflict, fmt.Errorf(
 				"%q resolves to namespace %q, already used by configured server %q; pick another adapter name",
-				req.Spec.Name, want, name))
+				req.Name, want, name))
 			return
 		}
 	}
@@ -963,7 +967,7 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": req.Spec.Name, "written": path, "added": added, "removed": removed,
+		"name": req.Name, "written": path, "added": added, "removed": removed,
 	})
 }
 

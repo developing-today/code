@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // inlineDaemonApp builds an App whose configuration declares no servers,
@@ -241,7 +241,7 @@ func TestInProcessTransportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusTeapot {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTeapot)
 	}

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/catalog"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 type embeddingRequest struct {
@@ -37,7 +37,7 @@ type embeddingResponse struct {
 // handleEmbeddings implements OpenAI-compatible POST /v1/embeddings.
 func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	var req embeddingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json request: %w", err))
 		return
 	}
@@ -115,7 +115,7 @@ func (s *Server) handleEmbeddingsImport(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusNotFound, fmt.Errorf("vector index not initialized"))
 		return
 	}
-	count, err := vIdx.Import(r.Body)
+	count, err := vIdx.Import(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit)))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("failed to import embeddings: %w", err))
 		return

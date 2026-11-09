@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // The remote half of an ssh:// endpoint: stdin really does reach the
@@ -21,7 +21,7 @@ func TestPipeConnCopiesBothWays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	got := make(chan string, 1)
 	go func() {
@@ -29,7 +29,7 @@ func TestPipeConnCopiesBothWays(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		b, _ := io.ReadAll(io.LimitReader(conn, 4))
 		got <- string(b)
 		_, _ = conn.Write([]byte("pong"))
@@ -78,7 +78,7 @@ func TestStdioProxyNamesTheSocket(t *testing.T) {
 // thing that can interrupt the copy.
 func TestProxyPipeStopsOnContextCancel(t *testing.T) {
 	client, server := net.Pipe()
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -89,7 +89,8 @@ func TestProxyPipeStopsOnContextCancel(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	select {
-	case <-done:
+	case recvErr := <-done:
+		_ = recvErr
 	case <-time.After(5 * time.Second):
 		t.Fatal("proxyPipe kept piping after its context was cancelled")
 	}

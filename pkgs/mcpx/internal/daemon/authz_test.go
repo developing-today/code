@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // A unix-socket connection's principal carries the peer uid the kernel
@@ -21,18 +21,18 @@ func TestPrincipalForUnixConnReadsPeerUID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		c, err := net.Dial("unix", socket)
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 	conn, err := ln.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	p := principalForConn(conn)
 	if p.Surface != "unix" {
 		t.Fatalf("principal surface = %q, want unix", p.Surface)
@@ -56,18 +56,18 @@ func TestPrincipalForTCPConnIsItsAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 	conn, err := ln.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	p := principalForConn(conn)
 	if p.Surface != "tcp" || p.ID == "" {
 		t.Errorf("principal = %+v, want surface tcp with the remote address as ID", p)
@@ -81,18 +81,18 @@ func TestConnPrincipalCarriesThePrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 	conn, err := ln.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ctx := connPrincipal(context.Background(), conn)
 	p, ok := api.PrincipalFrom(ctx)
 	if !ok {

@@ -40,7 +40,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 // ManifestFile is the name of the file that makes a directory a plugin.
@@ -139,7 +139,7 @@ func Discover(dirs []string, pathEnv string) ([]Plugin, error) {
 	var out []Plugin
 	seen := map[string]string{}
 	add := func(p Plugin) error {
-		if err := p.Manifest.Validate(); err != nil {
+		if err := p.Validate(); err != nil {
 			return fmt.Errorf("%s: %w", p.Source, err)
 		}
 		if prev, dup := seen[p.Name]; dup {

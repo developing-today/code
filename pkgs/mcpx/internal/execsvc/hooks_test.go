@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
 
 // readCtx is the portable top of a hook script in these tests: the hook
@@ -131,7 +131,7 @@ console.log(JSON.stringify({ total: 2 }));
 	for _, f := range frames {
 		kinds = append(kinds, f.Type)
 	}
-	if !(idx(kinds, execsvc.FrameResult) < idx(kinds, execsvc.FrameHook) && idx(kinds, execsvc.FrameHook) < len(kinds)-1) {
+	if idx(kinds, execsvc.FrameResult) >= idx(kinds, execsvc.FrameHook) || idx(kinds, execsvc.FrameHook) >= len(kinds)-1 {
 		t.Errorf("suffix frame placement wrong: %s", strings.Join(kinds, ","))
 	}
 

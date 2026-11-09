@@ -3,8 +3,8 @@ package settings
 import (
 	"strconv"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // protoTasksSettings govern the tasks mcpx hands out, over MCP and /v1 alike.
@@ -41,6 +41,16 @@ func protoTasksSettings() []Setting {
 				"requestor already holds this many non-terminal tasks; the " +
 				"unbound bucket (a caller with no identity) is capped the same " +
 				"way (#2498, Phase 1 of #2497).",
+		},
+		{
+			Path: "protoTasks.cancelGrace", Scope: ScopeDaemon, Kind: KindDuration,
+			Default:  tasks.DefaultCancelGrace.String(),
+			Commands: []string{"serve", "daemon"},
+			Name:     "Task cancellation grace",
+			Short:    "how long cooperative task work may finish after cancellation",
+			Long: "After cancellation is requested, work may record its own terminal " +
+				"result during this window; otherwise the store records cancelled " +
+				"with the caller's reason (#2499, Phase 2 of #2497).",
 		},
 		{
 			Path: "protoTasks.perMinute", Scope: ScopeDaemon, Kind: KindInt,

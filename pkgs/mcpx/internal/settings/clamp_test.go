@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // The ClampedBy capability of docs/decisions/0002-autonomy-dial.md: a
@@ -93,5 +93,20 @@ func TestACallerCannotRaiseAClampedSetting(t *testing.T) {
 	}
 	if _, err := set.Clamp("t.dial", "plan"); err == nil {
 		t.Errorf("an unknown level should be an error, not a silent default")
+	}
+	// Ceiling-ladder values outside the dial's own enum are rejected, and
+	// the error names the dial's values, not the ceiling's (#1641).
+	for _, bad := range []string{"off", "advise", "ask", "apply"} {
+		_, err := view.Clamp("t.dial", bad)
+		if err == nil {
+			t.Errorf("Clamp(t.dial, %q) should error: not in the dial's enum", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "[propose run]") {
+			t.Errorf("Clamp(t.dial, %q) error should name the dial's values: %v", bad, err)
+		}
+		if strings.Contains(err.Error(), "off advise ask") {
+			t.Errorf("Clamp(t.dial, %q) error should not list the ceiling ladder: %v", bad, err)
+		}
 	}
 }

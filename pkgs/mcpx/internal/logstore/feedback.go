@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	_ "modernc.org/sqlite"
 )
 
@@ -352,7 +352,7 @@ func (fs *FeedbackStore) List(filter InteractionFilter) ([]InteractionRecord, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []InteractionRecord
 	for rows.Next() {
@@ -464,7 +464,7 @@ func (fs *FeedbackStore) FindCorrelatedQueries(tool string, minScore float64) []
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var queries []string
 	for rows.Next() {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // scriptedServer is a fake whose replies are chosen per test, recording every
@@ -102,7 +102,7 @@ func dialModern(t *testing.T, s *scriptedServer, o mcpclient.Options) *mcpclient
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 
@@ -320,7 +320,7 @@ func TestSamplingIsDeclaredOnlyWhenSomethingCanAnswerIt(t *testing.T) {
 		if _, ok := caps["elicitation"]; !ok {
 			t.Errorf("handler=%v: elicitation should always be declared", withHandler)
 		}
-		c.Close()
+		_ = c.Close()
 	}
 }
 
@@ -340,7 +340,7 @@ func TestRootsAreServedEvenWithAHandlerInstalled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// The server asks; the client's reply is the frame with our id and no
 	// method.
@@ -545,7 +545,7 @@ func TestExtensionsDeclaredOnModernOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lc.Close()
+	defer func() { _ = lc.Close() }()
 	if _, ok := lcaps["extensions"]; ok {
 		t.Errorf("legacy initialize must not carry extensions: %v", lcaps)
 	}

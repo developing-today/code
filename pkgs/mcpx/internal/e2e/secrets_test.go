@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 )
 
 // secretServer is the fake server, requiring one secret. Its echo tool answers
@@ -95,7 +95,7 @@ func TestTheSecretValueNeverReachesDisk(t *testing.T) {
 	e := newEnv(t, quietSecretServer)
 	e.runStdin(e2eValue+"\n", "secrets", "set", "MCPX_E2E_TOKEN")
 	e.run("call", "demo.echo", `{"message":"x"}`)
-	e.try("call", "demo.nope", `{}`)
+	_, _ = e.try("call", "demo.nope", `{}`)
 	e.run("secrets", "list")
 	e.run("secrets", "requests")
 
@@ -168,7 +168,7 @@ func TestPreflightOverTheSocketReadsWithoutRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("preflight = %d: %s", resp.StatusCode, raw)
 	}
@@ -200,7 +200,7 @@ func TestPreflightOverTheSocketReadsWithoutRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer nsResp.Body.Close()
+	defer func() { _ = nsResp.Body.Close() }()
 	var namespaces []struct {
 		Server string `json:"server"`
 		Live   int    `json:"live"`

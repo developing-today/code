@@ -10,12 +10,12 @@
 package source
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 )
@@ -117,7 +117,7 @@ func abs(path, dir string) string {
 	if filepath.IsAbs(path) {
 		return path
 	}
-	if strings.HasPrefix(path, "~") {
+	if path == "~" || strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, strings.TrimPrefix(path, "~"))
 		}
@@ -142,24 +142,67 @@ func readDir(dir string, opt Options, explicit bool) (Resolved, error) {
 			"name a file, or set plumbing.sourceDirAllowed", dir)
 	}
 	var files []string
-	walk := func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if path == dir || opt.Recursive {
-				return nil
+	rootInfo, err := os.Stat(dir)
+	if err != nil {
+		return Resolved{}, fmt.Errorf("reading %s: %w", dir, err)
+	}
+	if rootInfo.IsDir() {
+		var walk func(string, []os.FileInfo) error
+		walk = func(path string, ancestors []os.FileInfo) error {
+			info, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
 			}
-			return fs.SkipDir
-		}
-		if !wanted(path, opt.Extensions) {
+			for _, ancestor := range ancestors {
+				if os.SameFile(info, ancestor) {
+					return nil
+				}
+			}
+			ancestors = append(ancestors, info)
+
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			for _, entry := range entries {
+				entryPath := filepath.Join(path, entry.Name())
+				entryInfo, err := entry.Info()
+				if err != nil {
+					return fmt.Errorf("reading %s: %w", entryPath, err)
+				}
+				if entryInfo.Mode()&fs.ModeSymlink != 0 {
+					entryInfo, err = os.Stat(entryPath)
+					if err != nil {
+						if errors.Is(err, fs.ErrNotExist) {
+							// A dangling link has no regular target to read.
+							continue
+						}
+						return fmt.Errorf("reading %s: %w", entryPath, err)
+					}
+				}
+
+				if entryInfo.IsDir() {
+					if opt.Recursive {
+						if err := walk(entryPath, ancestors); err != nil {
+							return err
+						}
+					}
+					continue
+				}
+				if !entryInfo.Mode().IsRegular() || !wanted(entryPath, opt.Extensions) {
+					continue
+				}
+				files = append(files, entryPath)
+			}
 			return nil
 		}
-		files = append(files, path)
-		return nil
-	}
-	if err := filepath.WalkDir(dir, walk); err != nil {
-		return Resolved{}, fmt.Errorf("reading %s: %w", dir, err)
+		if err := walk(dir, nil); err != nil {
+			return Resolved{}, err
+		}
+	} else if rootInfo.Mode().IsRegular() && wanted(dir, opt.Extensions) {
+		// Preserve the existing behavior for an explicit @dir: path that names
+		// a regular file rather than a directory.
+		files = append(files, dir)
 	}
 	if len(files) == 0 {
 		return Resolved{}, fmt.Errorf("%s holds no files to read", dir)
@@ -219,10 +262,8 @@ func naturalLess(a, b string) bool {
 			for bi < len(b) && isDigit(b[bi]) {
 				bi++
 			}
-			an, aerr := strconv.ParseInt(a[as:ai], 10, 64)
-			bn, berr := strconv.ParseInt(b[bs:bi], 10, 64)
-			if aerr == nil && berr == nil && an != bn {
-				return an < bn
+			if c := compareDigitRuns(a[as:ai], b[bs:bi]); c != 0 {
+				return c < 0
 			}
 			continue
 		}
@@ -234,6 +275,23 @@ func naturalLess(a, b string) bool {
 		bi++
 	}
 	return len(a)-ai < len(b)-bi
+}
+
+// compareDigitRuns compares two digit runs numerically at arbitrary
+// precision: strip leading zeros, then a longer run is the larger number,
+// and equal-length runs compare lexically. Parsing into an int64 instead
+// silently gave up on runs longer than 19 digits, so large-numbered
+// fragments ordered arbitrarily (#3775). Returns -1, 0, or +1.
+func compareDigitRuns(a, b string) int {
+	a = strings.TrimLeft(a, "0")
+	b = strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		if len(a) < len(b) {
+			return -1
+		}
+		return 1
+	}
+	return strings.Compare(a, b)
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }

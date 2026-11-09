@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // #1678 (Phase 3 of #1675): a URL question shows the registrable domain
@@ -169,8 +169,8 @@ func TestRenderQuestionURLUppercaseHostShowsRegistrableDomain(t *testing.T) {
 func TestConfirmSendHonoursContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pr, pw := io.Pipe()
-	defer pw.Close()
-	defer pr.Close()
+	defer func() { _ = pw.Close() }()
+	defer func() { _ = pr.Close() }()
 	done := make(chan error, 1)
 	go func() {
 		ok, err := confirmSend(ctx, pr)

@@ -1,3 +1,4 @@
+// Package catalog holds the embedding vectors used for semantic tool search, and the retention policy that bounds them.
 package catalog
 
 import (
@@ -13,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
@@ -95,7 +96,7 @@ func (r *RemoteEmbedder) Embed(ctx context.Context, text string) (Vector, error)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -184,7 +185,7 @@ func (w *WasmEmbedder) Embed(ctx context.Context, text string) (Vector, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer inst.Close(ctx)
+	defer func() { _ = inst.Close(ctx) }()
 
 	// Invoke exported embed function if present
 	embedFn := inst.ExportedFunction("embed")
@@ -353,8 +354,17 @@ func (idx *VectorIndex) Import(r io.Reader) (int, error) {
 	defer idx.mu.Unlock()
 
 	count := 0
+	var dimErr error
 	for k, v := range in.Vectors {
 		if len(v) == 0 {
+			continue
+		}
+		if err := checkDim(Vector(v)); err != nil {
+			// Reject the mismatched vector instead of counting and
+			// persisting a row loadFromDB would drop on the next open.
+			if dimErr == nil {
+				dimErr = fmt.Errorf("import vector %q: %w", k, err)
+			}
 			continue
 		}
 		vec := make(Vector, len(v))
@@ -373,5 +383,5 @@ func (idx *VectorIndex) Import(r io.Reader) (int, error) {
 			`, k, blob)
 		}
 	}
-	return count, nil
+	return count, dimErr
 }

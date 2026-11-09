@@ -85,6 +85,35 @@
               "namepath": "id::root::chown",
               "shebang": true
             },
+            "deploy-developing-today-backup": {
+              "attributes": [{ "group": "github-backup" }],
+              "body": [["nix run .#developing-today-backup-deploy -- ", [["variable", "args"]]]],
+              "dependencies": [],
+              "doc": "Deploy the developing-today-backup Worker via the nix flake app (wrangler versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+              "name": "deploy-developing-today-backup",
+              "parameters": [
+                {
+                  "default": null,
+                  "export": false,
+                  "flag": false,
+                  "help": null,
+                  "kind": "star",
+                  "long": null,
+                  "max": null,
+                  "min": null,
+                  "multiple": false,
+                  "name": "args",
+                  "pattern": null,
+                  "short": null,
+                  "value": null
+                }
+              ],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::deploy-developing-today-backup",
+              "shebang": false
+            },
             "deploy-pkarr": {
               "attributes": [{ "group": "pkarr" }],
               "body": [["nix run .#pkarr-deploy -- ", [["variable", "args"]]]],
@@ -174,6 +203,51 @@
               "private": false,
               "quiet": false,
               "namepath": "id::root::fmt",
+              "shebang": false
+            },
+            "github-backup-fetch": {
+              "attributes": [{ "group": "github-backup" }],
+              "body": [
+                ["systemctl --user start github-backup-fetch.service"],
+                ["@systemctl --user status github-backup-fetch.service --no-pager | head -5"]
+              ],
+              "dependencies": [],
+              "doc": "Run the github-backup daily fetch now (via the installed systemd unit)",
+              "name": "github-backup-fetch",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::github-backup-fetch",
+              "shebang": false
+            },
+            "github-backup-reconcile": {
+              "attributes": [{ "group": "github-backup" }],
+              "body": [
+                ["systemctl --user start github-backup-reconcile.service"],
+                ["@systemctl --user status github-backup-reconcile.service --no-pager | head -5"]
+              ],
+              "dependencies": [],
+              "doc": "Run the github-backup weekly reconciliation sweep now (via the installed systemd unit)",
+              "name": "github-backup-reconcile",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::github-backup-reconcile",
+              "shebang": false
+            },
+            "github-backup-units": {
+              "attributes": [{ "group": "github-backup" }],
+              "body": [["bash infra/github-backup/systemd/install-units.sh"]],
+              "dependencies": [],
+              "doc": "Install or refresh the github-backup laptop systemd units from this checkout",
+              "name": "github-backup-units",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::github-backup-units",
               "shebang": false
             },
             "id-mail-deploy": {
@@ -765,7 +839,7 @@
             "windows_shell": null,
             "working_directory": null
           },
-          "source": "/home/hatch/git/wt-pkarr/root.just",
+          "source": "/home/user/git/code-ghb-rename/root.just",
           "unexports": [],
           "warnings": []
         }
@@ -3211,7 +3285,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/hatch/git/wt-pkarr/pkgs/id/justfile",
+      "source": "/home/user/git/code-ghb-rename/pkgs/id/justfile",
       "unexports": [],
       "warnings": []
     }
@@ -3293,6 +3367,35 @@
       "private": false,
       "quiet": false,
       "namepath": "default",
+      "shebang": false
+    },
+    "deploy-developing-today-backup": {
+      "attributes": [{ "group": "github-backup" }],
+      "body": [["nix run .#developing-today-backup-deploy -- ", [["variable", "args"]]]],
+      "dependencies": [],
+      "doc": "Deploy the developing-today-backup Worker via the nix flake app (wrangler versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+      "name": "deploy-developing-today-backup",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "deploy-developing-today-backup",
       "shebang": false
     },
     "deploy-pkarr": {
@@ -3384,6 +3487,51 @@
       "private": false,
       "quiet": false,
       "namepath": "fmt",
+      "shebang": false
+    },
+    "github-backup-fetch": {
+      "attributes": [{ "group": "github-backup" }],
+      "body": [
+        ["systemctl --user start github-backup-fetch.service"],
+        ["@systemctl --user status github-backup-fetch.service --no-pager | head -5"]
+      ],
+      "dependencies": [],
+      "doc": "Run the github-backup daily fetch now (via the installed systemd unit)",
+      "name": "github-backup-fetch",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "github-backup-fetch",
+      "shebang": false
+    },
+    "github-backup-reconcile": {
+      "attributes": [{ "group": "github-backup" }],
+      "body": [
+        ["systemctl --user start github-backup-reconcile.service"],
+        ["@systemctl --user status github-backup-reconcile.service --no-pager | head -5"]
+      ],
+      "dependencies": [],
+      "doc": "Run the github-backup weekly reconciliation sweep now (via the installed systemd unit)",
+      "name": "github-backup-reconcile",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "github-backup-reconcile",
+      "shebang": false
+    },
+    "github-backup-units": {
+      "attributes": [{ "group": "github-backup" }],
+      "body": [["bash infra/github-backup/systemd/install-units.sh"]],
+      "dependencies": [],
+      "doc": "Install or refresh the github-backup laptop systemd units from this checkout",
+      "name": "github-backup-units",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "github-backup-units",
       "shebang": false
     },
     "id-mail-deploy": {
@@ -3967,7 +4115,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/hatch/git/wt-pkarr/justfile",
+  "source": "/home/user/git/code-ghb-rename/justfile",
   "unexports": [],
   "warnings": []
 }

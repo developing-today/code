@@ -24,6 +24,7 @@ var Python = Language{
 	ClientFile:   "mcpx_client.py",
 	GlobalsFile:  "mcpx_globals.pyi",
 	ScriptExt:    ".py",
+	ContentType:  "text/x-python",
 	module:       PythonModule,
 	globals:      PythonGlobals,
 	declarations: PythonDeclarations,
@@ -205,6 +206,7 @@ def _env_headers() -> Dict[str, str]:
         ("x-mcpx-parent-session", os.environ.get("MCPX_PARENT_SESSION_ID", "")),
         ("x-mcpx-ephemeral", os.environ.get("MCPX_EPHEMERAL", "")),
         ("x-mcpx-run", os.environ.get("MCPX_RUN", "")),
+        ("x-mcpx-settings", os.environ.get("MCPX_SETTINGS", "")),
         ("x-mcpx-input", os.environ.get("MCPX_INPUT", "")),
     )
     env = {k: v for k, v in pairs if v}

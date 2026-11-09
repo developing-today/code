@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // FileOptions configure the durable log.
@@ -54,7 +54,6 @@ type FileSink struct {
 	maxLines int64
 	maxAge   time.Duration
 	keep     int
-	min      Level
 	day      string
 	file     *os.File
 	written  int64
@@ -107,7 +106,7 @@ func (s *FileSink) path(day string) string {
 
 func (s *FileSink) reopen(now time.Time) error {
 	if s.file != nil {
-		s.file.Close()
+		_ = s.file.Close()
 	}
 	s.day = now.Format("2006-01-02")
 	path := s.path(s.day)
@@ -139,7 +138,7 @@ func surveyLog(path string) (lines int64, oldest time.Time) {
 	if err != nil {
 		return 0, time.Time{}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for sc.Scan() {
@@ -233,7 +232,7 @@ func (s *FileSink) overAge(now time.Time) bool {
 
 // rotate renames the active file aside and prunes the oldest.
 func (s *FileSink) rotate(now time.Time) error {
-	s.file.Close()
+	_ = s.file.Close()
 	if err := os.Rename(s.path(s.day), s.rotatedPath(now)); err != nil {
 		return err
 	}
@@ -277,7 +276,7 @@ func (s *FileSink) prune() {
 	}
 	sort.Strings(rotated)
 	for _, name := range rotated[:len(rotated)-s.keep] {
-		os.Remove(filepath.Join(s.dir, name))
+		_ = os.Remove(filepath.Join(s.dir, name))
 	}
 }
 

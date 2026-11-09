@@ -12,6 +12,7 @@
 //!   no separate "legacy" code path to drift out of sync.
 
 use std::future::Future;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -28,6 +29,9 @@ use crate::{CLIENT_KEY_FILE, META_ALPN, load_or_create_keypair};
 
 /// Maximum accepted size of a single response (64 MiB).
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum time allowed for one remote meta request and its response.
+pub const META_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Something that can answer a [`MetaRequest`].
 pub trait MetaRequester {
@@ -60,7 +64,8 @@ pub fn capped_response_error(err: ReadToEndError) -> anyhow::Error {
     }
 }
 
-/// Read one response stream to its end, bounded by [`MAX_RESPONSE_BYTES`].
+/// Read one response stream to its end, bounded by [`MAX_RESPONSE_BYTES`]
+/// and [`META_RESPONSE_TIMEOUT`].
 ///
 /// Hand-rolled request paths (remote find in the CLI and the REPL) use this
 /// instead of a per-call-site literal bound, so every response read shares
@@ -68,6 +73,22 @@ pub fn capped_response_error(err: ReadToEndError) -> anyhow::Error {
 /// handler returns every match unbounded, so a response past ~64 KiB is
 /// ordinary for a large store (#1617).
 pub async fn read_capped_response(recv: &mut RecvStream) -> Result<Vec<u8>> {
+    read_capped_response_with_timeout(recv, META_RESPONSE_TIMEOUT).await
+}
+
+async fn read_capped_response_with_timeout(
+    recv: &mut RecvStream,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    crate::connectivity::within(
+        timeout,
+        "reading a meta response",
+        read_capped_response_unbounded(recv),
+    )
+    .await
+}
+
+async fn read_capped_response_unbounded(recv: &mut RecvStream) -> Result<Vec<u8>> {
     recv.read_to_end(MAX_RESPONSE_BYTES)
         .await
         .map_err(capped_response_error)
@@ -75,11 +96,22 @@ pub async fn read_capped_response(recv: &mut RecvStream) -> Result<Vec<u8>> {
 
 /// Send one request over an open connection.
 pub async fn request_over(conn: &Connection, req: &MetaRequest) -> Result<MetaResponse> {
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(&postcard::to_allocvec(req)?).await?;
-    send.finish()?;
-    let buf = read_capped_response(&mut recv).await?;
-    postcard::from_bytes(&buf).context("decoding meta response")
+    request_over_with_timeout(conn, req, META_RESPONSE_TIMEOUT).await
+}
+
+async fn request_over_with_timeout(
+    conn: &Connection,
+    req: &MetaRequest,
+    timeout: Duration,
+) -> Result<MetaResponse> {
+    crate::connectivity::within(timeout, "waiting for a meta response", async {
+        let (mut send, mut recv) = conn.open_bi().await?;
+        send.write_all(&postcard::to_allocvec(req)?).await?;
+        send.finish()?;
+        let buf = read_capped_response_unbounded(&mut recv).await?;
+        crate::protocol::decode_meta_exact(&buf).context("decoding meta response")
+    })
+    .await
 }
 
 /// A meta-protocol client: remote over QUIC, or local in-process.
@@ -150,7 +182,7 @@ impl MetaRequester for MetaClient {
 mod tests {
     use super::*;
     use crate::MatchKind;
-    use crate::protocol::FindMatch;
+    use crate::protocol::{FindMatch, ListEntry};
     use iroh::{RelayMode, TransportAddr, endpoint::presets};
     use iroh_blobs::Hash;
     use std::net::Ipv4Addr;
@@ -193,6 +225,66 @@ mod tests {
             send.finish().expect("finish");
             conn.closed().await;
         })
+    }
+
+    /// Accept and read one request, then leave the response stream open.
+    fn serve_silently(server: Endpoint) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let incoming = server.accept().await.expect("incoming");
+            let conn = incoming.await.expect("connecting");
+            let (_send, mut recv) = conn.accept_bi().await.expect("accept_bi");
+            let _req = recv.read_to_end(1024).await.expect("read request");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn silent_peer_response_times_out() {
+        let server = endpoint(vec![TEST_ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let silent = serve_silently(server.clone());
+        let conn = client
+            .connect(loopback_addr(&server), TEST_ALPN)
+            .await
+            .unwrap();
+
+        let err = request_over_with_timeout(&conn, &MetaRequest::List, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out after"));
+        assert!(err.to_string().contains("waiting for a meta response"));
+
+        conn.close(0u32.into(), b"done");
+        silent.abort();
+        client.close().await;
+        server.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn silent_peer_capped_read_times_out() {
+        let server = endpoint(vec![TEST_ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let silent = serve_silently(server.clone());
+        let conn = client
+            .connect(loopback_addr(&server), TEST_ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(&postcard::to_allocvec(&MetaRequest::List).unwrap())
+            .await
+            .unwrap();
+        send.finish().unwrap();
+
+        let err = read_capped_response_with_timeout(&mut recv, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out after"));
+        assert!(err.to_string().contains("reading a meta response"));
+
+        conn.close(0u32.into(), b"done");
+        silent.abort();
+        client.close().await;
+        server.close().await;
     }
 
     /// Send one request to `server` and read the response with
@@ -238,6 +330,46 @@ mod tests {
         let resp: MetaResponse = postcard::from_bytes(&buf).unwrap();
         match resp {
             MetaResponse::Find { matches } => assert_eq!(matches.len(), 2_000),
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    /// #1761: a List response past the hand-rolled 1 MiB bound the CLI,
+    /// REPL, peers and serve-probe paths used to apply must read through
+    /// the shared cap intact — 30,000 items at ~50 wire bytes each is
+    /// ~1.5 MiB, past the old bound and under the shared one. This is
+    /// the shape of store (15–25k items) that could not be listed at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_response_larger_than_1_mib_reads_through() {
+        let items: Vec<ListEntry> = (0..30_000)
+            .map(|i| ListEntry {
+                hash: Hash::from_bytes([9u8; 32]),
+                name: format!("file-{i:05}.txt"),
+                origin: None,
+                uploaded_at: None,
+            })
+            .collect();
+        let payload = postcard::to_allocvec(&MetaResponse::List { items }).unwrap();
+        assert!(
+            payload.len() > 1024 * 1024,
+            "payload {} bytes must exceed the old 1 MiB bound",
+            payload.len()
+        );
+
+        let server = endpoint(vec![TEST_ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let served = serve_once(server.clone(), payload);
+        let buf = round_trip(&server, &client).await.unwrap();
+        served.await.unwrap();
+        client.close().await;
+        server.close().await;
+
+        let resp: MetaResponse = postcard::from_bytes(&buf).unwrap();
+        match resp {
+            MetaResponse::List { items } => {
+                assert_eq!(items.len(), 30_000);
+                assert_eq!(items[29_999].name, "file-29999.txt");
+            }
             _ => panic!("unexpected response"),
         }
     }

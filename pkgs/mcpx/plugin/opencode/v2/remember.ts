@@ -40,6 +40,25 @@ export async function rememberDaemon(
   await storage.set(keyFor(directory), record);
 }
 
+/**
+ * A remembered target is host-provided data, so its shape is not trusted:
+ * only a socket with a non-empty string path or a url with a non-empty
+ * string base is a Target. Anything else reads as absent (#2558) —
+ * without this, targetKey() fabricates values like 'unix://undefined'
+ * from malformed records and discovery chases a daemon that cannot exist.
+ */
+const isTarget = (value: unknown): value is Target => {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as { kind?: unknown; path?: unknown; base?: unknown };
+  if (candidate.kind === "socket") {
+    return typeof candidate.path === "string" && candidate.path.length > 0;
+  }
+  if (candidate.kind === "url") {
+    return typeof candidate.base === "string" && candidate.base.length > 0;
+  }
+  return false;
+};
+
 export async function readRememberedDaemon(
   storage: StorageLike,
   directory: string,
@@ -47,7 +66,7 @@ export async function readRememberedDaemon(
   const raw = await storage.get(keyFor(directory));
   if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
   const record = raw as RememberedDaemon;
-  if (typeof record.seenAt !== "number" || record.target === undefined) return undefined;
+  if (typeof record.seenAt !== "number" || !isTarget(record.target)) return undefined;
   return record;
 }
 
@@ -67,10 +86,7 @@ export async function recallDaemon(
   return undefined;
 }
 
-export async function forgetDaemon(
-  storage: StorageLike,
-  directory: string,
-): Promise<void> {
+export async function forgetDaemon(storage: StorageLike, directory: string): Promise<void> {
   await storage.remove(keyFor(directory));
 }
 

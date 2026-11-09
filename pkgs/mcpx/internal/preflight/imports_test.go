@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/preflight"
+	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
 )
 
 // The shape `deno info --json` (deno 2.9.7) actually emits for a script
@@ -54,6 +54,9 @@ func TestParseGraphFindsEveryMissingSpecifier(t *testing.T) {
 	}
 	if len(g.LocalFiles) != 2 {
 		t.Errorf("local files for the dynamic scan: %v", g.LocalFiles)
+	}
+	if len(g.Edges) != 3 || g.Edges[1].Resolved != "/work/present.ts" {
+		t.Errorf("resolved file edges must be retained for Resolve: %+v", g.Edges)
 	}
 }
 

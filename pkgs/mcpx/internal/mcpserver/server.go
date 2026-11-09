@@ -17,7 +17,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -31,10 +30,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/catalog"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // Backend is what the server exposes. Defined here rather than taken from the
@@ -63,8 +64,22 @@ type Backend interface {
 	// Complete answers completion/complete for a ref/prompt or ref/resource
 	// by asking the upstream server that owns it. params is the request as
 	// the client sent it. An unknown ref wraps ErrInvalidParams.
-	Complete(ctx context.Context, params json.RawMessage) ([]string, error)
+	Complete(ctx context.Context, params json.RawMessage) (Completion, error)
 	ResourceTemplates(ctx context.Context) ([]ResourceRef, error)
+}
+
+// Completion is a completion/complete answer: the values, plus the
+// full ranked match count they were drawn from when the backend knows
+// it. The daemon caps its /v1/complete reply before the MCP surface
+// sees it (#2878), so a backend that only handed over values would
+// make this surface report total = len(values) and hasMore = false
+// for a reply the daemon had already truncated from a larger set.
+// TotalKnown is false when the backend has no count (a direct
+// upstream answer): the caller then uses len(values) as before.
+type Completion struct {
+	Values     []string
+	Total      int
+	TotalKnown bool
 }
 
 // Notifier is where the server hears about things worth pushing.
@@ -288,6 +303,25 @@ type Server struct {
 	// means the standalone behaviour: a private in-memory store.
 	TaskStore *taskStore
 
+	// TaskRetention, when set, supplies the current tasks.ttl /
+	// tasks.maxAge retention settings and is consulted on every
+	// task-store access, so a /v1/settings change reaches MCP task
+	// traffic without an intervening /v1 task request (#6247). A
+	// function, because the settings are hot: a value copied here
+	// would never follow a change (the MaxCompletions pattern). The
+	// daemon wires it when it injects its store; nil keeps the
+	// store's construction-time configuration.
+	TaskRetention func() (ttl, maxAge time.Duration)
+
+	// TaskAudit, when set, is the audit seam a private task store
+	// (the TaskStore == nil path in tasks()) is wired with, so a
+	// standalone server's task lifecycle records reach a log instead
+	// of being silently dropped by the store's nil-Audit guard
+	// (#2500, Codex on PR #4743). An injected TaskStore is configured
+	// by its owner (the daemon wires its sink at construction), so
+	// this field is ignored then.
+	TaskAudit func(logging.Record)
+
 	// taskStore holds background requests.
 	taskStore *taskStore
 	// taskOwners is which connection started each task, by its id. Empty
@@ -355,8 +389,16 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		// Notify comes along. Dropping it silently turned off every push
 		// capability the moment a single extra tool existed, and a client
 		// cannot detect a server that declared nothing.
-		Notify:             s.Notify,
-		Ask:                s.Ask,
+		Notify: s.Notify,
+		Ask:    s.Ask,
+		// The task-store wiring comes along (#6247): dropping it here
+		// silently gave the extras server a private store and a nil
+		// retention provider, so the production MCPServer() path —
+		// which builds extras after injecting the daemon's store —
+		// lost both the shared store (#1555) and retention refresh.
+		TaskStore:          s.TaskStore,
+		TaskRetention:      s.TaskRetention,
+		TaskAudit:          s.TaskAudit,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
 		Instance:           s.Instance,
@@ -1355,7 +1397,6 @@ func malformedMeta(req request) *response {
 	return nil
 }
 
-// negotiate picks a protocol version.
 // Supported are the protocol versions mcpx actually implements, newest first.
 //
 // Both eras. The legacy revisions negotiate once through an initialize
@@ -1370,6 +1411,7 @@ func malformedMeta(req request) *response {
 // 2025-03-26 replaced it, and 2026-07-28 says new implementations SHOULD NOT
 // adopt it. A 2024-11-05 client speaking Streamable HTTP is served; one that
 // only knows HTTP+SSE is not.
+// negotiate picks a protocol version.
 var Supported = spec.Revisions
 
 // ModernLatest is the newest per-request-metadata revision mcpx serves.
@@ -2245,7 +2287,7 @@ func (s *Server) sessionFor(r *http.Request, req request) (*Conn, string) {
 		// A modern request is never bound to a legacy session: 2026-07-28
 		// has no sessions and says to ignore the header, and binding it
 		// would hand it that client's pending questions and version.
-		if c, ok := s.session(id); ok && !(modern && c.legacy) {
+		if c, ok := s.session(id); ok && (!modern || !c.legacy) {
 			return c, ""
 		}
 	}
@@ -2353,7 +2395,7 @@ func (s *Server) reapSessionsLocked() {
 
 func newSessionID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		return "sess-0"
 	}
 	return "sess-" + hex.EncodeToString(b[:])
@@ -2756,6 +2798,7 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 			Message: `ref.type is "ref/prompt" or "ref/resource", got "` + p.Ref.Type + `"`}
 	}
 	var values []string
+	total := -1 // the backend's full match count, when it reported one
 	if s.backend != nil {
 		got, err := s.backend.Complete(ctx, params)
 		if err != nil {
@@ -2765,7 +2808,10 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 			}
 			return nil, &rpcError{Code: code, Message: err.Error()}
 		}
-		values = got
+		values = got.Values
+		if got.TotalKnown {
+			total = got.Total
+		}
 	}
 	// The ceiling the specification sets. Read per request, because
 	// completion.maxValues is a hot setting: a value read once when the
@@ -2777,11 +2823,12 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 		}
 	}
 	// The setting may lower the count, not raise it past what every
-	// revision's CompleteResult allows.
-	if max > specMaxCompletions {
-		max = specMaxCompletions
+	// revision's CompleteResult allows. The cap computation is shared
+	// with the daemon surface via settings (#2878).
+	max = settings.EffectiveCompletionCap(max)
+	if total < 0 {
+		total = len(values)
 	}
-	total := len(values)
 	if len(values) > max {
 		values = values[:max]
 	}
@@ -2806,9 +2853,9 @@ func (l lockedEncoder) Encode(v any) error {
 	return l.enc.Encode(v)
 }
 
-// specMaxCompletions is CompleteResult.values' maxItems in every revision: a
-// fact of the protocol, not a default.
-const specMaxCompletions = 100
+// The completion spec cap lives in internal/settings
+// (settings.SpecCompletionCap) so the daemon and MCP surfaces share
+// one constant and one cap computation (#2878).
 
 // hasTool reports whether tools/call can reach name.
 func (s *Server) hasTool(ctx context.Context, name string) (bool, error) {

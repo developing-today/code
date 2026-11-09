@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dezren39/mcpx/internal/schemaval"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 // This file wires internal/schemaval into the client (Phase 2 of #1481,

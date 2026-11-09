@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // ExecIdentity says which program a stdio server's command runs, as of now.
@@ -63,10 +63,17 @@ func (r *Resolved) ExecIdentity() string {
 // lands in between leaves a stamp that differs from the file and the next
 // check sees it.
 func (r *Resolved) ExecState() (st ExecStamp, identity string, ok bool) {
+	return r.ExecStateAt(r.Cwd)
+}
+
+// ExecStateAt is ExecState for a child whose effective spawn cwd is cwd.
+// Scope-rooted instances use this instead of resolving a relative command
+// against the daemon's cwd (decision 0004, review of #958).
+func (r *Resolved) ExecStateAt(cwd string) (st ExecStamp, identity string, ok bool) {
 	if !r.Stdio() {
 		return ExecStamp{}, "", false
 	}
-	st, found := r.ExecStamp()
+	st, found := r.ExecStampAt(cwd)
 	if found {
 		if id, err := st.Identity(); err == nil {
 			return st, id, true
@@ -91,10 +98,15 @@ type ExecStamp struct {
 // server that is not a child process, and for a command that does not
 // resolve to a file it can stat.
 func (r *Resolved) ExecStamp() (ExecStamp, bool) {
+	return r.ExecStampAt(r.Cwd)
+}
+
+// ExecStampAt is ExecStamp for a child with effective spawn cwd cwd.
+func (r *Resolved) ExecStampAt(cwd string) (ExecStamp, bool) {
 	if !r.Stdio() {
 		return ExecStamp{}, false
 	}
-	path := r.resolveExec()
+	path := r.resolveExecAt(cwd)
 	if path == "" {
 		return ExecStamp{}, false
 	}
@@ -133,12 +145,12 @@ func (s ExecStamp) Identity() (string, error) {
 		var head [2]byte
 		n, err := io.ReadFull(f, head[:])
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			f.Close()
+			_ = f.Close()
 			return "", err
 		}
 		h.Write(head[:n])
 		_, err = io.Copy(h, f)
-		f.Close()
+		_ = f.Close()
 		if err != nil {
 			return "", err
 		}
@@ -154,7 +166,7 @@ func (s ExecStamp) Identity() (string, error) {
 		}
 		return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16], nil
 	}
-	fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", s.Inode, s.Size, s.MTime, s.Mode)
+	_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", s.Inode, s.Size, s.MTime, s.Mode)
 	return "stat:" + hex.EncodeToString(h.Sum(nil))[:16], nil
 }
 
@@ -164,14 +176,25 @@ func (r *Resolved) ProcessID() string {
 	return r.PoolID() + "/" + r.ExecIdentity()
 }
 
-// resolveExec finds the file the child will run. It searches the PATH the
-// child will see -- the server's own env if it sets one, else the daemon's --
-// rather than the daemon's PATH alone, since a server can set its own.
-func (r *Resolved) resolveExec() string {
+// ExecUsesScopeRoot reports whether resolving the configured executable can
+// depend on a scope root. A relative command containing a path separator is
+// resolved by the child relative to its effective spawn cwd when no config
+// cwd is set. A config cwd that references ${mcpx.root}/${mcpx.cwd} also
+// makes resolution instance-dependent: the substituted directory differs
+// per instance, so the pool-wide stamp (taken against the raw, literal
+// placeholder directory) can never describe the running executable.
+func (r *Resolved) ExecUsesScopeRoot() bool {
+	if strings.Contains(r.Cwd, "${mcpx.") {
+		return true
+	}
+	return r.Cwd == "" && strings.Contains(r.Command, string(filepath.Separator)) && !filepath.IsAbs(r.Command)
+}
+
+func (r *Resolved) resolveExecAt(cwd string) string {
 	if strings.Contains(r.Command, string(filepath.Separator)) {
 		p := r.Command
-		if !filepath.IsAbs(p) && r.Cwd != "" {
-			p = filepath.Join(r.Cwd, p)
+		if !filepath.IsAbs(p) && cwd != "" {
+			p = filepath.Join(cwd, p)
 		}
 		if isExecutable(p) {
 			return p

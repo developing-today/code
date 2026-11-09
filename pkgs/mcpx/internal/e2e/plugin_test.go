@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 	"os/exec"
 	"strings"
 	"testing"
@@ -16,10 +17,7 @@ import (
 // real one proves the route reads it -- the difference between the two was
 // DaemonClient.call(), which sent its arguments under a key /v1/call ignores.
 func TestThePluginSuiteRunsAgainstARealDaemon(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("bun is not installed")
-	}
+	bun := testsupport.RequireBinary(t, "bun")
 	e := newEnv(t, oneServer)
 	e.run("ls")
 	var where struct {

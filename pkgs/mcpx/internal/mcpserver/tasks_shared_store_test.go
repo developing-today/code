@@ -2,13 +2,14 @@ package mcpserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Issue #1555 (Phase 1 of #1554): when a store is injected, the MCP
@@ -77,6 +78,77 @@ func TestInjectedStoreIsTheStoreTheMCPSurfaceUses(t *testing.T) {
 	}
 }
 
+// Issue #6247: a tasks.maxAge change must reach MCP task traffic on its
+// own — no intervening /v1 task request. The MCP surface refreshes the
+// shared store's retention from TaskRetention on every access, so a task
+// that turns terminal after the change carries the new (tiny) retention
+// deadline instead of the hour the provider returned before it.
+func TestMCPOnlyTrafficPicksUpRetentionChange(t *testing.T) {
+	store := tasks.New()
+	s := sharedStoreServer(store)
+
+	maxAge := time.Hour
+	s.TaskRetention = func() (time.Duration, time.Duration) { return 0, maxAge }
+
+	// Baseline MCP task under the old retention: nothing explodes, and
+	// the store is the injected one.
+	first := startSharedTask(t, s)
+	if done := waitTask(t, s, first, terminal); done["status"] != "completed" {
+		t.Fatalf("baseline task: %v", done)
+	}
+
+	// The settings change (the /v1/settings write in production). From
+	// here the test exercises only the MCP path.
+	maxAge = 2 * time.Second
+
+	id := startSharedTask(t, s)
+	if done := waitTask(t, s, id, terminal); done["status"] != "completed" {
+		t.Fatalf("post-change task: %v", done)
+	}
+	got, ok := store.Get(id)
+	if !ok {
+		t.Fatalf("post-change task %s missing from the store", id)
+	}
+	if got.ExpiresAt == nil {
+		t.Fatalf("post-change task %s has no retention deadline", id)
+	}
+	if remaining := time.Until(*got.ExpiresAt); remaining > 10*time.Second {
+		t.Errorf("post-change task keeps the old retention: expires in %v, want the new 2s maxAge to bound it", remaining)
+	}
+}
+
+// Issue #6247, extras construction path: App.MCPServer injects the
+// store and the retention provider and *then* calls WithExtras, whose
+// reconstruction must preserve both — a provider dropped there leaves
+// the production server exactly as broken as before the fix.
+func TestRetentionSurvivesWithExtras(t *testing.T) {
+	store := tasks.New()
+	s := sharedStoreServer(store)
+
+	maxAge := time.Hour
+	s.TaskRetention = func() (time.Duration, time.Duration) { return 0, maxAge }
+	s = s.WithExtras([]mcpserver.Extra{{
+		Tool: mcpserver.Tool{Name: "extra_tool", Description: "an extra"},
+		Call: func(context.Context, json.RawMessage) (string, error) { return "ok", nil },
+	}})
+
+	maxAge = 2 * time.Second
+	id := startSharedTask(t, s)
+	if done := waitTask(t, s, id, terminal); done["status"] != "completed" {
+		t.Fatalf("task through the extras server: %v", done)
+	}
+	got, ok := store.Get(id)
+	if !ok {
+		t.Fatalf("task %s is not in the injected store after WithExtras", id)
+	}
+	if got.ExpiresAt == nil {
+		t.Fatalf("task %s has no retention deadline", id)
+	}
+	if remaining := time.Until(*got.ExpiresAt); remaining > 10*time.Second {
+		t.Errorf("extras server kept the old retention: expires in %v, want the new 2s maxAge", remaining)
+	}
+}
+
 func TestInjectedStoreKeepsMCPTasksAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks.db")
 	store, err := tasks.Open(path)
@@ -102,7 +174,7 @@ func TestInjectedStoreKeepsMCPTasksAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	got, ok := reopened.Get(id)
 	if !ok || got.Status != tasks.Completed {
 		t.Errorf("terminal MCP task after reopen: %+v, ok=%v", got, ok)

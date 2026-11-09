@@ -1,0 +1,658 @@
+{
+  "profile": "kitty-disambiguate-v1",
+  "spec": "https://sw.kovidgoyal.net/kitty/keyboard-protocol/",
+  "spec_verified": "2026-11-02",
+  "design": "doc/2026-11-01_design_id787.md",
+  "implementation": "pkgs/id/examples/roc-world/Key.roc (Key.parse_events, Key.to_legacy)",
+  "note": "Language-neutral mirror of the Key.roc expect corpus. Slices C/D must decode with the actual Roc parse_events, never a re-implemented decoder. Inputs use JSON \\u001b for ESC.",
+  "cases": [
+    {
+      "name": "escape",
+      "input": "\u001b[27u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Escape"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "alt-x",
+      "input": "\u001b[120;3u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "x"
+            },
+            "modifiers": ["Alt"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tab-byte",
+      "input": "\t",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Tab"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctrl-i",
+      "input": "\u001b[105;5u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "i"
+            },
+            "modifiers": ["Control"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "enter-byte",
+      "input": "\r",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Enter"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctrl-m",
+      "input": "\u001b[109;5u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "m"
+            },
+            "modifiers": ["Control"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctrl-right",
+      "input": "\u001b[1;5C",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Right"
+            },
+            "modifiers": ["Control"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "up-letter",
+      "input": "\u001b[A",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Up"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "up-letter-explicit-1",
+      "input": "\u001b[1A",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Up"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "shift-tab-canonical",
+      "input": "\u001b[9;2u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Tab"
+            },
+            "modifiers": ["Shift"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "shift-tab-btab",
+      "input": "\u001b[Z",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Tab"
+            },
+            "modifiers": ["Shift"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "alt-escape",
+      "input": "\u001b[27;3u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Escape"
+            },
+            "modifiers": ["Alt"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctrl-alt-delete",
+      "input": "\u001b[3;7~",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Delete"
+            },
+            "modifiers": ["Alt", "Control"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "super-c",
+      "input": "\u001b[99;9u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "c"
+            },
+            "modifiers": ["Super"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "plain-ascii",
+      "input": "hi",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "h"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        },
+        {
+          "press": {
+            "key": {
+              "scalar": "i"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "latin-e-acute",
+      "input": "é",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "é"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "emoji",
+      "input": "😀",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "😀"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "shifted-text-plain",
+      "input": "A",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "A"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "altgr-a-ogonek",
+      "input": "ą",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "ą"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "shift-a-csi",
+      "input": "\u001b[97;2u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "A"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctrl-shift-a",
+      "input": "\u001b[97;6u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "A"
+            },
+            "modifiers": ["Control"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "f5",
+      "input": "\u001b[15~",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "F5"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "shift-f5",
+      "input": "\u001b[15;2~",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "F5"
+            },
+            "modifiers": ["Shift"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "f1-letter",
+      "input": "\u001b[P",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "F1"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctrl-f1",
+      "input": "\u001b[1;5P",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "F1"
+            },
+            "modifiers": ["Control"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "insert-tilde",
+      "input": "\u001b[2~",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "named": "Insert"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mixed-text-and-escape",
+      "input": "a\u001b[27u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "a"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        },
+        {
+          "press": {
+            "key": {
+              "named": "Escape"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown-cpr-r",
+      "input": "\u001bR",
+      "expected": [
+        {
+          "unknown": "\u001bR"
+        }
+      ]
+    },
+    {
+      "name": "unknown-keypad-kp0",
+      "input": "\u001b[57399u",
+      "expected": [
+        {
+          "unknown": "\u001b[57399u"
+        }
+      ]
+    },
+    {
+      "name": "unknown-event-type",
+      "input": "\u001b[97;5:1u",
+      "expected": [
+        {
+          "unknown": "\u001b[97;5:1u"
+        }
+      ]
+    },
+    {
+      "name": "unknown-alternate-keys",
+      "input": "\u001b[97:65u",
+      "expected": [
+        {
+          "unknown": "\u001b[97:65u"
+        }
+      ]
+    },
+    {
+      "name": "unknown-lone-esc",
+      "input": "\u001b",
+      "expected": [
+        {
+          "unknown": "\u001b"
+        }
+      ]
+    },
+    {
+      "name": "unknown-truncated",
+      "input": "\u001b[1;",
+      "expected": [
+        {
+          "unknown": "\u001b[1;"
+        }
+      ]
+    },
+    {
+      "name": "unknown-raw-c0",
+      "input": "\u0003",
+      "expected": [
+        {
+          "unknown": "\u0003"
+        }
+      ]
+    },
+    {
+      "name": "unknown-newline",
+      "input": "\n",
+      "expected": [
+        {
+          "unknown": "\n"
+        }
+      ]
+    },
+    {
+      "name": "unknown-ambiguous-tilde-1",
+      "input": "\u001b[4~",
+      "expected": [
+        {
+          "unknown": "\u001b[4~"
+        }
+      ]
+    },
+    {
+      "name": "unknown-menu",
+      "input": "\u001b[29~",
+      "expected": [
+        {
+          "unknown": "\u001b[29~"
+        }
+      ]
+    },
+    {
+      "name": "shifted-ascii-punctuation",
+      "input": "\u001b[49;2u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "!"
+            },
+            "modifiers": [],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "shifted-non-ascii-retains-shift",
+      "input": "\u001b[261;2u",
+      "expected": [
+        {
+          "press": {
+            "key": {
+              "scalar": "ą"
+            },
+            "modifiers": ["Shift"],
+            "kind": "Press"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown-c0-key-number",
+      "input": "\u001b[3u",
+      "expected": [
+        {
+          "unknown": "\u001b[3u"
+        }
+      ]
+    }
+  ],
+  "projection_cases": [
+    {
+      "name": "legacy-tab",
+      "event": {
+        "press": {
+          "key": {
+            "named": "Tab"
+          },
+          "modifiers": [],
+          "kind": "Press"
+        }
+      },
+      "legacy": {
+        "tag": "Tab"
+      }
+    },
+    {
+      "name": "legacy-escape",
+      "event": {
+        "press": {
+          "key": {
+            "named": "Escape"
+          },
+          "modifiers": [],
+          "kind": "Press"
+        }
+      },
+      "legacy": {
+        "tag": "Escape"
+      }
+    },
+    {
+      "name": "ctrl-letter-projects",
+      "event": {
+        "press": {
+          "key": {
+            "scalar": "i"
+          },
+          "modifiers": ["Control"],
+          "kind": "Press"
+        }
+      },
+      "legacy": {
+        "tag": "Ctrl",
+        "value": "i"
+      }
+    },
+    {
+      "name": "plain-scalar-projects",
+      "event": {
+        "press": {
+          "key": {
+            "scalar": "i"
+          },
+          "modifiers": [],
+          "kind": "Press"
+        }
+      },
+      "legacy": {
+        "tag": "Char",
+        "value": "i"
+      }
+    },
+    {
+      "name": "modifiers-never-discarded",
+      "event": {
+        "press": {
+          "key": {
+            "named": "Tab"
+          },
+          "modifiers": ["Shift"],
+          "kind": "Press"
+        }
+      },
+      "legacy": {
+        "tag": "Unknown",
+        "value": "\u001b[Z"
+      }
+    },
+    {
+      "name": "function-keys-stay-unknown",
+      "event": {
+        "press": {
+          "key": {
+            "named": "F5"
+          },
+          "modifiers": [],
+          "kind": "Press"
+        }
+      },
+      "legacy": {
+        "tag": "Unknown",
+        "value": "\u001b[15~"
+      }
+    }
+  ]
+}

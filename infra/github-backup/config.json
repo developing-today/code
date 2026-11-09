@@ -14,6 +14,7 @@
     "developing-today",
     "developing-today-fork",
     "developing-today-forks",
+    "developing-today-vendored",
     "dezren3",
     "dezren39",
     "dezren39-dev",
@@ -23,6 +24,7 @@
   ],
   "owner_notes": {
     "vertexinc": "GAP: org enforces SAML SSO; the token cannot enumerate it. Nothing under it is mirrored.",
+    "developing-today-vendored": "Archive org (created 2026-11-04): vendored pure-clone forks moved here from developing-today, developing-today-fork and developing-today-forks; existing mirrors were ported to the new owner paths the same day so backups stay incremental. Backup App not yet installed here: sweep-only coverage for now.",
     "NixOS": "Member-only org: mirrored by the sweep (readable), but the backup GitHub App cannot be installed here \u2014 no webhook coverage.",
     "dezren39/edsebooks": "GAP: GitHub returns HTTP 451 (repository access blocked). Cannot be fetched."
   },
@@ -38,7 +40,7 @@
       "NixOS/nixpkgs"
     ],
     "force_include_reasons": {
-      "dezren39/opencode": "502 MB but the live chain parent of developing-today/opencode.",
+      "dezren39/opencode": "502 MB but the live chain parent of developing-today-forks/opencode.",
       "dezren39/Quake_4_Alpha": "1.35 GB, Drew's own recent work (not a passive mirror).",
       "dezren39/nixpkgs": "nixpkgs family member (pool).",
       "developing-today-forks/nixpkgs": "nixpkgs family member (pool).",
@@ -49,7 +51,7 @@
   },
   "exclusions": [
     {
-      "repo": "developing-today-forks/nerd-fonts",
+      "repo": "developing-today-vendored/nerd-fonts",
       "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant (21.2 GB), upstream is the backup."
     },
     {
@@ -73,7 +75,7 @@
       "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
     },
     {
-      "repo": "developing-today-forks/dgraph",
+      "repo": "developing-today-vendored/dgraph",
       "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
     }
   ],
@@ -88,16 +90,13 @@
     }
   ],
   "app": {
-    "name": "hatch-repo-backup",
+    "name": "developing-today-backup",
     "owner": "dezren39",
     "permissions": {
       "metadata": "read",
       "contents": "read"
     },
-    "events": [
-      "push",
-      "repository"
-    ],
+    "events": ["push", "repository"],
     "bitwarden_secret_names": {
       "app_id": "github-app.backup-app-id",
       "client_id": "github-app.backup-client-id",
@@ -109,7 +108,7 @@
     }
   },
   "worker": {
-    "name": "hatch-repo-backup-webhook",
+    "name": "developing-today-backup",
     "queue_poll_path": "/queue",
     "webhook_path": "/github"
   },

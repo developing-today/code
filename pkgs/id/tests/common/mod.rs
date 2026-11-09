@@ -7,12 +7,36 @@
 //! another encoding only when the values are equal. The event checker lives in
 //! [`chain`].
 
-#![allow(dead_code)] // each test crate uses a different part of this module
+#![allow(dead_code, clippy::expect_used)] // each test crate uses a different part of this module
 
 pub mod chain;
 pub mod ingest;
 
-use std::cmp::Ordering;
+/// Every network step in these tests must finish within this, so a stuck
+/// request fails the test instead of hanging the suite (issue #5218).
+pub const TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The production bounded await, `id_core::connectivity::within` reached
+/// through `id::connectivity`, re-exported for the tests that need the
+/// fallible form: a custom limit, or the timeout as an error to assert on
+/// instead of a panic.
+pub use id::connectivity::within as within_fallible;
+
+/// Waits for `fut`, panicking if it takes longer than [`TIMEOUT`]. The panic
+/// carries the timeout error, which names the operation (`what`), so a wedged
+/// await says what it was doing when the bound fired.
+pub async fn within_op<T>(what: &str, fut: impl IntoFuture<Output = T>) -> T {
+    within_fallible(TIMEOUT, what, async move { Ok(fut.into_future().await) })
+        .await
+        .expect("a bounded network step must finish within the timeout")
+}
+
+/// Waits for `fut`, panicking if it takes longer than [`TIMEOUT`].
+pub async fn within<T>(fut: impl IntoFuture<Output = T>) -> T {
+    within_op("waiting for a network request", fut).await
+}
+
+use std::{cmp::Ordering, future::IntoFuture, time::Duration};
 
 use id::tuple::{TupleEncoder, TupleValue, decode};
 

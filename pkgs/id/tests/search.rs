@@ -17,11 +17,11 @@
 
 use std::collections::BTreeMap;
 
-use id::chain::{sign, ChainExt, Event};
-use id::documents::{DocumentRef, DOCUMENT_KIND};
+use id::chain::{ChainExt, Event, sign};
+use id::documents::{DOCUMENT_KIND, DocumentRef};
 use id::event_store::{EventStore, Ingest};
-use id::search::{search, search_store, search_store_terms, search_terms, Hit, Term, ValueMatch};
-use id::tag_claims::{Claim, TagOp, CLEAR_KIND, SET_KIND};
+use id::search::{Hit, Term, ValueMatch, search, search_store, search_store_terms, search_terms};
+use id::tag_claims::{CLEAR_KIND, Claim, SET_KIND, TagOp};
 use id::waiting::WaitingLimits;
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use proptest::prelude::*;
@@ -88,6 +88,11 @@ impl Writer {
             tag: None,
             document: Some(document),
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
         })
     }
 }
@@ -100,6 +105,11 @@ fn tag_ext(kind: &str, op: TagOp, after: Vec<Hash>) -> ChainExt {
         tag: Some(op),
         document: None,
         removes: None,
+        note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -232,20 +242,23 @@ fn test_a_cleared_claim_is_not_returned() {
     let mut a = Writer::new(1);
     let seen = a.set(subject, "city", Some("Seattle"), vec![]);
     let kept = a.set(subject, "name", None, vec![seen.id]);
-    let mut b = Writer::new(2);
-    let cleared = b.clear(&[seen.id], vec![kept.id]);
+    let cleared = a.clear(&[seen.id], vec![kept.id]);
 
     let (_dir, mut store) = open();
     for event in [&seen, &kept, &cleared] {
         deliver(&mut store, event);
     }
 
-    assert!(search_store(&store, "city", ValueMatch::Any)
-        .unwrap()
-        .is_empty());
-    assert!(search_store(&store, "city", ValueMatch::Exact("Seattle"))
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store(&store, "city", ValueMatch::Any)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        search_store(&store, "city", ValueMatch::Exact("Seattle"))
+            .unwrap()
+            .is_empty()
+    );
     // The clear removes only the claim it names.
     let names = search_store(&store, "name", ValueMatch::Any).unwrap();
     assert_eq!(shape(&names), vec![(subject, vec![kept.id])]);
@@ -357,26 +370,32 @@ fn test_hits_are_ordered_by_subject_then_claim_and_do_not_depend_on_delivery_ord
         .find(|(subject, _)| *subject == subjects[0])
         .unwrap();
     assert_eq!(on_first.1.len(), 2, "both claims on the first subject");
-    assert!(on_first
-        .1
-        .windows(2)
-        .all(|pair| pair[0].as_bytes() < pair[1].as_bytes()));
+    assert!(
+        on_first
+            .1
+            .windows(2)
+            .all(|pair| pair[0].as_bytes() < pair[1].as_bytes())
+    );
 }
 
 #[test]
 fn test_a_search_matches_nothing_on_an_empty_store_or_an_unknown_name() {
     let (_dir, store) = open();
-    assert!(search_store(&store, "city", ValueMatch::Any)
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store(&store, "city", ValueMatch::Any)
+            .unwrap()
+            .is_empty()
+    );
 
     let mut a = Writer::new(1);
     let claim = a.set(Hash::digest(b"s"), "city", Some("Seattle"), vec![]);
     let (_dir2, mut store) = open();
     deliver(&mut store, &claim);
-    assert!(search_store(&store, "state", ValueMatch::Any)
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store(&store, "state", ValueMatch::Any)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// The live claims' IDs, sorted by ID bytes.
@@ -470,9 +489,11 @@ fn test_search_by_author_returns_only_that_authors_claims() {
         vec![(subject, vec![seattle.id])]
     );
     // An author with no claims matches nothing.
-    assert!(search_store_terms(&store, &[Term::Author([9; 32])])
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store_terms(&store, &[Term::Author([9; 32])])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -580,6 +601,65 @@ fn test_search_by_subject_kind_matches_only_events_of_that_kind() {
     )
     .unwrap();
     assert!(hits.is_empty());
+}
+
+#[test]
+fn test_search_terms_resolves_subject_kind_at_most_once_per_subject() {
+    use std::cell::Cell;
+    use std::collections::HashMap as Map;
+
+    // Three subjects, each with one live claim.
+    let mut author = Writer::new(1);
+    let one = Hash::digest(b"counting-one");
+    let two = Hash::digest(b"counting-two");
+    let three = Hash::digest(b"counting-three");
+    let on_one = author.set(one, "city", Some("Seattle"), vec![]);
+    let on_two = author.set(two, "city", Some("Seattle"), vec![on_one.id]);
+    let on_three = author.set(three, "city", Some("Seattle"), vec![on_two.id]);
+
+    let (_dir, mut store) = open();
+    for event in [&on_one, &on_two, &on_three] {
+        deliver(&mut store, event);
+    }
+    let live = store.tag_claims().unwrap();
+
+    // Subjects one and two resolve to a kind; three resolves to none.
+    let kinds: Map<Hash, Option<String>> = [
+        (one, Some("kind-a".to_string())),
+        (two, Some("kind-a".to_string())),
+        (three, None),
+    ]
+    .into_iter()
+    .collect();
+    let calls = Cell::new(0usize);
+    let lookup = |subject: &Hash| {
+        calls.set(calls.get() + 1);
+        kinds.get(subject).cloned().unwrap_or(None)
+    };
+
+    // Three kind terms (one duplicated) over three subjects: without the memo
+    // that is nine lookups; the documented contract is at most one per subject.
+    let hits = search_terms(
+        &live,
+        &[
+            Term::SubjectKind("kind-a"),
+            Term::SubjectKind("kind-a"),
+            Term::SubjectKind("kind-b"),
+        ],
+        &lookup,
+    );
+    assert_eq!(calls.get(), 3);
+    // AND semantics are unchanged: no subject is both kind-a and kind-b.
+    assert!(hits.is_empty());
+
+    // A single kind term gives the same subjects as before, still one call each.
+    calls.set(0);
+    let hits = search_terms(&live, &[Term::SubjectKind("kind-a")], &lookup);
+    assert_eq!(calls.get(), 3);
+    assert_eq!(
+        shape(&hits),
+        vec![(one, vec![on_one.id]), (two, vec![on_two.id])]
+    );
 }
 
 #[test]

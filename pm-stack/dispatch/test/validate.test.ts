@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  MIN_PROMPT_SPEC_CHARS,
   ValidationError,
   parseModel,
   parseSessionRequest,
@@ -103,6 +107,23 @@ describe("model parsing", () => {
     });
   });
 
+  test("string form trims whitespace around each segment like the object form", () => {
+    const clean = { providerID: "anthropic", id: "claude-sonnet" };
+    expect(parseModel("anthropic / claude-sonnet")).toEqual(clean);
+    expect(parseModel("anthropic/ claude-sonnet")).toEqual(clean);
+    expect(parseModel("anthropic /claude-sonnet")).toEqual(clean);
+    expect(parseModel("  anthropic / claude-sonnet  ")).toEqual(clean);
+    expect(parseModel({ providerID: " anthropic ", id: " claude-sonnet " })).toEqual(clean);
+    // Trimming must not eat slashes that belong to the model id.
+    expect(parseModel("meta / claude/sonnet")).toEqual({ providerID: "meta", id: "claude/sonnet" });
+  });
+
+  test("string form rejects a segment that is empty after trimming", () => {
+    expect(() => parseModel("anthropic / ")).toThrow(ValidationError);
+    expect(() => parseModel(" / claude-sonnet")).toThrow(ValidationError);
+    expect(() => parseModel("   /   ")).toThrow(ValidationError);
+  });
+
   test("malformed models are rejected", () => {
     expect(() => parseModel("noslash")).toThrow(ValidationError);
     expect(() => parseModel("/model")).toThrow(ValidationError);
@@ -114,7 +135,14 @@ describe("model parsing", () => {
 
 describe("request validation", () => {
   test("action-shaped priority strings resolve for both request types", () => {
-    for (const [priority, expected] of [["10", 10], ["45", 40], ["50", 50], ["90", 90], ["high", 20], [undefined, 40]] as const) {
+    for (const [priority, expected] of [
+      ["10", 10],
+      ["45", 40],
+      ["50", 50],
+      ["90", 90],
+      ["high", 20],
+      [undefined, 40],
+    ] as const) {
       // Both actions use jq --arg, which serializes priority as a JSON string.
       const payload = JSON.parse(JSON.stringify({ repo: "developing-today/code", title: "t", prompt: "p", priority }));
       expect(parseTaskRequest(payload).priority).toBe(expected);
@@ -122,7 +150,10 @@ describe("request validation", () => {
     }
   });
   test("sessions require repo and prompt; defaults issue+wait on", () => {
-    const r = parseSessionRequest({ repo: "developing-today/code", prompt: "do the thing" });
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "Fix the parser so trailing whitespace in a mark is rejected",
+    });
     expect(r.issue).toBe(true);
     expect(r.wait).toBe(true);
     expect(r.priority).toBe(40);
@@ -131,13 +162,28 @@ describe("request validation", () => {
     expect(() => parseSessionRequest("nope")).toThrow(ValidationError);
   });
 
+  test("minimum spec gate rejects a titleless prompt that names no work (#4925)", () => {
+    const repo = "developing-today/code";
+    // Too short and no title: refused, and the error names the missing spec.
+    expect(() => parseSessionRequest({ repo, prompt: "do the thing" })).toThrow(/too short to name any work/);
+    expect(() => parseSessionRequest({ repo, prompt: "x".repeat(MIN_PROMPT_SPEC_CHARS - 1) })).toThrow(ValidationError);
+    // An explicit title exempts the request (the caller named the work).
+    const titled = parseSessionRequest({ repo, prompt: "do the thing", title: "Fix pm-dispatch spec gate" });
+    expect(titled.title).toBe("Fix pm-dispatch spec gate");
+    // A prompt at the floor with no title passes.
+    const compliant = parseSessionRequest({ repo, prompt: "x".repeat(MIN_PROMPT_SPEC_CHARS) });
+    expect(compliant.title).toBeUndefined();
+    // The gate runs after field validation: an invalid priority still errors as priority.
+    expect(() => parseSessionRequest({ repo, prompt: "x", priority: "constructor" })).toThrow(/priority/);
+  });
+
   test("a prototype-spelling priority 400s at parse time, so no non-number reaches the packet (#2757)", () => {
-    expect(() =>
-      parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "constructor" }),
-    ).toThrow(ValidationError);
-    expect(() =>
-      parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "__proto__" }),
-    ).toThrow(ValidationError);
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "constructor" })).toThrow(
+      ValidationError,
+    );
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "__proto__" })).toThrow(
+      ValidationError,
+    );
     expect(() =>
       parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", priority: "constructor" }),
     ).toThrow(ValidationError);
@@ -145,7 +191,9 @@ describe("request validation", () => {
       parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", priority: "__proto__" }),
     ).toThrow(ValidationError);
     // A valid named priority still parses to a number.
-    expect(parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "high" }).priority).toBe(20);
+    expect(
+      parseSessionRequest({ repo: "developing-today/code", prompt: "x", title: "t", priority: "high" }).priority,
+    ).toBe(20);
   });
 
   test("tasks accept prompt or body, default kind triage and issue off", () => {
@@ -164,6 +212,13 @@ describe("request validation", () => {
   test("titleFromPrompt takes the first non-empty line, capped", () => {
     expect(titleFromPrompt("\n\n  fix the thing  \nmore")).toBe("fix the thing");
     expect(titleFromPrompt("x".repeat(200)).length).toBe(120);
+    expect(titleFromPrompt("x".repeat(200))).toBe("x".repeat(119) + "…");
+  });
+
+  test("titleFromPrompt does not split astral code points when truncating", () => {
+    expect(titleFromPrompt("x".repeat(118) + "😀" + "y".repeat(10))).toBe("x".repeat(118) + "…");
+    expect(titleFromPrompt("ab😀cde", 4)).toBe("ab…");
+    expect(titleFromPrompt("a😀bcde", 4)).toBe("a😀…");
   });
 });
 
@@ -221,7 +276,169 @@ describe("session directory scoping (issue #2903)", () => {
     expect(resolveSessionDirectory("bearer", code, undefined, repoDirs)).toBe("/home/user/git/code");
   });
 
-  test("bearer + foreign directory is the documented deliberate choice", () => {
-    expect(resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toBe("/tmp/ops-scratch");
+  test("bearer foreign directory is rejected too (issue #2664: one rule for both caller types)", () => {
+    expect(() => resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "/etc", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/opencode", repoDirs)).toThrow(ValidationError);
+  });
+
+  test("blank directory resolves to the repo clone for both caller types (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "", repoDirs)).toBe("/home/user/git/code");
+    expect(resolveSessionDirectory("bearer", code, "   ", repoDirs)).toBe("/home/user/git/code");
+  });
+
+  test("a directory inside the repo clone is accepted for both caller types (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(resolveSessionDirectory("bearer", code, "/home/user/git/code/pkgs/", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+  });
+
+  test("paths are normalized before the containment check (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/./pkgs/../pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code/../opencode", repoDirs)).toThrow(
+      ValidationError,
+    );
+    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/code/../../etc", repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("relative directories are rejected for both caller types (issue #2664)", () => {
+    expect(() => resolveSessionDirectory("oidc", code, "pkgs/id", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "./pkgs", repoDirs)).toThrow(ValidationError);
+  });
+
+  test("a sibling whose name shares the clone prefix is not inside it (issue #2664)", () => {
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code-evil", repoDirs)).toThrow(ValidationError);
+  });
+});
+
+describe("session blank title/directory parsing (issue #2664)", () => {
+  test("empty and whitespace-only title/directory parse as omitted", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "make the mark parser reject trailing whitespace",
+      title: "  ",
+      directory: "",
+    });
+    expect(r.title).toBeUndefined();
+    expect(r.directory).toBeUndefined();
+    const r2 = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "make the mark parser reject trailing whitespace",
+      title: "",
+      directory: " \t ",
+    });
+    expect(r2.title).toBeUndefined();
+    expect(r2.directory).toBeUndefined();
+  });
+
+  test("nonblank title and directory are preserved verbatim", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "My session",
+      directory: "/home/user/git/code/pkgs",
+    });
+    expect(r.title).toBe("My session");
+    expect(r.directory).toBe("/home/user/git/code/pkgs");
+  });
+});
+
+describe("session directory symlink confinement (issue #3999)", () => {
+  // Fixture layout under a fresh temp dir:
+  //   base/clone/            the repo clone (configured root)
+  //   base/clone/inner/      a real in-clone directory
+  //   base/outside/          a directory outside the clone
+  //   base/outside/sub/      a subdirectory of the outside directory
+  //   clone/worktrees   ->   base/outside        (committed-link shape)
+  //   clone/nixpkgs     ->   ../nixpkgs-missing  (dangling, points outside)
+  //   clone/local-link  ->   inner               (points inside)
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "dispatch-3999-")));
+  const clone = join(base, "clone");
+  const inner = join(clone, "inner");
+  const outside = join(base, "outside");
+  const outsideSub = join(outside, "sub");
+  mkdirSync(inner, { recursive: true });
+  mkdirSync(outsideSub, { recursive: true });
+  symlinkSync(outside, join(clone, "worktrees"), "dir");
+  symlinkSync("../nixpkgs-missing", join(clone, "nixpkgs"), "dir");
+  symlinkSync(inner, join(clone, "local-link"), "dir");
+  const repoDirs = { "developing-today/code": clone };
+  const code = "developing-today/code";
+  // realpathSync above canonicalizes base (e.g. /tmp -> /private/tmp), so
+  // expectations are built from the canonical fixture paths.
+  test("an in-clone symlink to an outside directory is rejected", () => {
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "worktrees"), repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, join(clone, "worktrees", "sub"), repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("a dangling in-clone symlink pointing outside is rejected", () => {
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "nixpkgs"), repoDirs)).toThrow(ValidationError);
+  });
+
+  test("an in-clone symlink pointing inside the clone is accepted and resolved", () => {
+    expect(resolveSessionDirectory("oidc", code, join(clone, "local-link"), repoDirs)).toBe(inner);
+  });
+
+  test("'..' after a symlinked component pops the resolved parent", () => {
+    // Lexically clone/worktrees/../inner stays inside the clone; the
+    // kernel resolves worktrees first, so the real path is
+    // base/inner, which does NOT exist inside the clone - the parent
+    // of outside is base, so ../inner lands at base/inner (outside).
+    expect(() => resolveSessionDirectory("oidc", code, `${clone}/worktrees/../inner`, repoDirs)).toThrow(
+      ValidationError,
+    );
+    // And outside/sub/../sub resolves within the outside tree, still out.
+    expect(() => resolveSessionDirectory("oidc", code, `${clone}/worktrees/sub/../sub`, repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("a nonexistent candidate inside the clone is accepted lexically", () => {
+    const candidate = join(clone, "new-dir", "deeper");
+    expect(resolveSessionDirectory("oidc", code, candidate, repoDirs)).toBe(candidate);
+  });
+
+  test("a nonexistent candidate under an escaping symlink is rejected", () => {
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "worktrees", "not-there"), repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("a cyclic symlink is rejected by the depth limit, not expanded", () => {
+    symlinkSync("loop/../loop", join(clone, "loop"), "dir");
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "loop"), repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("oidc", code, `${clone}/loop/../loop`, repoDirs)).toThrow(ValidationError);
+  });
+
+  test("a dangling-link expansion chain is bounded by the shared budget", () => {
+    // l0 dangles; each lN names l(N-1) twice, so a per-recursion
+    // depth limit alone permits exponential expansions (Codex round
+    // 2). The shared budget must reject the chain outright.
+    symlinkSync("missing-target", join(clone, "l0"), "dir");
+    for (let n = 1; n <= 17; n++) {
+      symlinkSync(`l${n - 1}/../l${n - 1}`, join(clone, `l${n}`), "dir");
+    }
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "l17"), repoDirs)).toThrow(ValidationError);
+  });
+
+  test("the clone root reached through a symlink is the same root", () => {
+    const alias = join(base, "clone-alias");
+    symlinkSync(clone, alias, "dir");
+    expect(resolveSessionDirectory("oidc", code, alias, repoDirs)).toBe(clone);
+    expect(resolveSessionDirectory("oidc", code, join(alias, "inner"), repoDirs)).toBe(inner);
+  });
+
+  test("fixture cleanup", () => {
+    rmSync(base, { recursive: true, force: true });
+    expect(true).toBe(true);
   });
 });

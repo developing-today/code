@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpauth"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
 )
 
 func TestBearerExpandsFromTheEnvironment(t *testing.T) {

@@ -4,7 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
+import {
+  derivedProjectState,
+  fetchProjectSnapshot,
+  isProjectAudit,
+  parseProjectAudit,
+  fetchProjectPool,
+  isProjectPoolItem,
+  parseProjectItems,
+  poolItemToGhItem,
+  projectDisagreement,
+  PROJECT_QUERY,
+  resolveEpicRefs,
+} from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -17,20 +29,27 @@ const GQL = {
       title: "Developing Today",
       number: 4,
       url: "https://github.com/orgs/developing-today/projects/4",
+      fields: {
+        nodes: [
+          { id: "PVTSSF_status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "todo", name: "Todo" }] },
+          { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "lab", name: "lab-cluster" }] },
+        ],
+      },
+      views: { nodes: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }] },
       items: {
         totalCount: 3,
         pageInfo: { hasNextPage: false, endCursor: null },
         nodes: [
           {
             id: "PVTI_1",
-            databaseId: 111,
+            databaseId: 111 as number | null,
             type: "ISSUE",
             content: {
               number: 508,
               title: "EPIC: Basement cluster",
               state: "OPEN",
-              url: "https://github.com/dezren39/nix/issues/508",
-              repository: { nameWithOwner: "dezren39/nix" },
+              url: "https://github.com/dezren39/darwin-nix/issues/508",
+              repository: { nameWithOwner: "dezren39/darwin-nix" },
               updatedAt: "2026-10-20T12:05:58Z",
               author: { login: "dezren39" },
             },
@@ -71,6 +90,67 @@ const GQL = {
   },
 };
 
+function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount = 25) {
+  return {
+    data: {
+      node: {
+        ...GQL.data.node,
+        items: {
+          ...GQL.data.node.items,
+          totalCount,
+          pageInfo: { hasNextPage, endCursor },
+        },
+      },
+    },
+  };
+}
+
+describe("fetchProjectPool pagination", () => {
+  test("throws rather than returning a partial pool when page ten has another page", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+      },
+      { preconnect: () => {} },
+    );
+
+    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
+    expect(calls).toBe(10);
+  });
+
+  test("returns every item from a finite multi-page pool", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(calls < 3, calls < 3 ? `cursor-${calls}` : null, 6)));
+      },
+      { preconnect: () => {} },
+    );
+
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(3);
+    expect(items).toHaveLength(6);
+  });
+
+  test("returns a single-page pool unchanged", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(false, null, 3)));
+      },
+      { preconnect: () => {} },
+    );
+
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(1);
+    expect(items).toHaveLength(2);
+  });
+});
+
 const PROV = {
   board: "x",
   roadmap: "x",
@@ -90,15 +170,26 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     const pool = parseProjectItems(GQL);
     expect(pool.length).toBe(2);
     const epic = pool[0];
-    expect(epic.ref).toBe("dezren39/nix#508");
+    expect(epic.ref).toBe("dezren39/darwin-nix#508");
     expect(epic.state).toBe("open");
     expect(epic.status).toBe("In Progress");
     expect(epic.area).toBe("lab-cluster");
     expect(epic.horizon).toBe("Quarter");
     expect(epic.kind).toBe("Epic");
-    expect(epic.issueUrl).toBe("https://github.com/dezren39/nix/issues/508");
+    expect(epic.issueUrl).toBe("https://github.com/dezren39/darwin-nix/issues/508");
     expect(epic.url).toBe("https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=111");
     expect(pool[1].state).toBe("closed");
+  });
+
+  test("a null GraphQL databaseId normalizes to absent and the item stays in the pool", () => {
+    const clone = structuredClone(GQL);
+    clone.data.node.items.nodes[0].databaseId = null;
+    const pool = parseProjectItems(clone);
+    expect(pool.length).toBe(2);
+    expect(pool[0].databaseId).toBeUndefined();
+    // projectItemUrl falls back to the bare board URL without an item id.
+    expect(pool[0].url).toBe("https://github.com/orgs/developing-today/projects/4");
+    expect(isProjectPoolItem(pool[0])).toBe(true);
   });
 
   test("derived state + disagreement", () => {
@@ -115,7 +206,7 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
       goals: [
         {
           linedUp: [
-            { title: "x", ref: "dezren39/nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
+            { title: "x", ref: "dezren39/darwin-nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
           ],
         },
       ],
@@ -124,12 +215,28 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(derivedProjectState(pool[0], section)).toBe("In Progress");
     expect(projectDisagreement(pool[0], section)).toBeNull();
   });
+
+  test("scheduled fetch keeps the full item total and publishes one-page audit metadata", async () => {
+    const mockFetch = (async () => new Response(JSON.stringify(GQL), { status: 200 })) as unknown as typeof fetch;
+    const snapshot = await fetchProjectSnapshot(
+      "test-token",
+      mockFetch,
+      "2026-11-01T21:00:00.000Z",
+    );
+    expect(snapshot.items).toHaveLength(2);
+    expect(snapshot.audit.totalItems).toBe(3);
+    expect(snapshot.audit.fields.map((field) => field.name)).toEqual(["Status", "Area"]);
+    expect(snapshot.audit.views).toEqual([{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }]);
+    expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
+    expect(snapshot.audit.counts.area).toEqual({ "(unset)": 2, "lab-cluster": 1 });
+    expect(snapshot.audit.counts.repo).toEqual({ "(unlinked)": 1, "developing-today/code": 1, "dezren39/nix": 1 });
+  });
 });
 
 describe("items-from-pool resolution", () => {
   test("pool entry builds a GhItem carrying the Project fields", () => {
     const item = poolItemToGhItem(parseProjectItems(GQL)[0]);
-    expect(item.ref).toBe("dezren39/nix#508");
+    expect(item.ref).toBe("dezren39/darwin-nix#508");
     expect(item.kind).toBe("issue");
     expect(item.state).toBe("open");
     expect(item.projectStatus).toBe("In Progress");
@@ -140,6 +247,7 @@ describe("items-from-pool resolution", () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-projects-"));
     const feedFile = join(dir, "fleet-feed.json");
     const pool = parseProjectItems(GQL);
+    const projectAudit = parseProjectAudit(GQL, GQL.data.node.items.nodes, new Date().toISOString());
     await writeFile(
       feedFile,
       JSON.stringify({
@@ -148,6 +256,7 @@ describe("items-from-pool resolution", () => {
         quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
         attention: [],
         projects: pool,
+        projectAudit,
       }),
     );
     const cfg = loadConfig({
@@ -156,12 +265,13 @@ describe("items-from-pool resolution", () => {
       PM_PROJECTOR_URL: "off",
     });
     const src = liveSource(cfg);
-    const items = await src.items(["dezren39/nix#508", "developing-today/code#910"]);
-    expect(items.get("dezren39/nix#508")?.title).toBe("EPIC: Basement cluster");
+    const items = await src.items(["dezren39/darwin-nix#508", "developing-today/code#910"]);
+    expect(items.get("dezren39/darwin-nix#508")?.title).toBe("EPIC: Basement cluster");
     expect(items.get("developing-today/code#910")?.state).toBe("closed");
     expect(src.provenance().items).toContain("live (project pool");
     const served = await src.projects();
     expect(served.length).toBe(2);
+    expect(await src.projectAudit?.()).toEqual(projectAudit);
   });
 });
 
@@ -409,12 +519,78 @@ describe("collector graph edges (#2399 contract)", () => {
   });
 });
 
+describe("Project #4 audit snapshot (#1218)", () => {
+  test("exports field definitions, views, total items, and distributions including drafts/unlinked items", () => {
+    const page = {
+      data: {
+        node: {
+          title: "Developing Today",
+          number: 4,
+          url: "https://github.com/orgs/developing-today/projects/4",
+          fields: {
+            nodes: [
+              {
+                id: "PVTSSF_status",
+                name: "Status",
+                dataType: "SINGLE_SELECT",
+                options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }],
+              },
+              { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "opt_lab", name: "lab" }] },
+            ],
+          },
+          views: { nodes: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }] },
+          items: { totalCount: 3 },
+        },
+      },
+    };
+    const audit = parseProjectAudit(
+      page,
+      [
+        {
+          content: { repository: { nameWithOwner: "developing-today/code" } },
+          fieldValues: { nodes: [{ name: "In Progress", field: { name: "Status" } }, { name: "lab", field: { name: "Area" } }] },
+        },
+        {
+          content: { repository: { nameWithOwner: "dezren39/nix" } },
+          fieldValues: { nodes: [{ name: "Done", field: { name: "Status" } }] },
+        },
+        { content: null, fieldValues: { nodes: [{ name: "ops", field: { name: "Area" } }] } },
+      ],
+      "2026-11-01T21:00:00.000Z",
+    );
+
+    expect(audit).toMatchObject({
+      totalItems: 3,
+      fields: [
+        { id: "PVTSSF_status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }] },
+        { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT" },
+      ],
+      views: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }],
+      counts: {
+        status: { Done: 1, "In Progress": 1, "(unset)": 1 },
+        area: { "(unset)": 1, lab: 1, ops: 1 },
+        repo: { "(unlinked)": 1, "developing-today/code": 1, "dezren39/nix": 1 },
+      },
+    });
+    expect(isProjectAudit(audit)).toBe(true);
+    expect(isProjectAudit({ ...audit, counts: { ...audit.counts, status: { Done: -1 } } })).toBe(false);
+    expect(isProjectAudit({ ...audit, counts: { ...audit.counts, area: { lab: 2 } } })).toBe(false);
+  });
+
+  test("query requests board schema, views, and all item field values", () => {
+    expect(PROJECT_QUERY).toContain("fields(first: 100)");
+    expect(PROJECT_QUERY).toContain("ProjectV2SingleSelectField { options { id name } }");
+    expect(PROJECT_QUERY).toContain("views(first: 100) { nodes { id name layout filter } }");
+    expect(PROJECT_QUERY).toContain("fieldValues(first: 100)");
+  });
+});
+
 describe("renderProjects", () => {
   test("renders cards, both links, filter, and the disagreement badge", () => {
     const pool = parseProjectItems(GQL);
     const html = renderProjects(pool, PROV, {});
     expect(html).toContain("EPIC: Basement cluster");
-    expect(html).toContain("dezren39/nix#508");
+    expect(html).toContain("dezren39/darwin-nix#508");
     expect(html).toContain("itemId=111");
     expect(html).toContain("⚠ project: In Progress · derived: Todo");
     expect(html).toContain("/projects?area=lab-cluster");

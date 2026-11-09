@@ -9,6 +9,7 @@ Short answers here; the long ones live in the pages each answer links to. Every
 question keeps the wording it was written in.
 
 <a id="do-you-like-mcp"></a>
+
 ## "so why'd you get rid of all the mcp and then make one, do you like mcp or not"
 
 We like MCP fine. What we got rid of is tool schemas sitting in the model's
@@ -24,6 +25,7 @@ one tool that matters.
 More: [the story](./story.md).
 
 <a id="opencode-code-mode"></a>
+
 ## "i mean, opencodemode is right there"
 
 It is, and not only in v2. opencode v1 ships code mode behind
@@ -40,6 +42,7 @@ loop, and use mcpx for stateful servers and everything outside a turn.
 More: [the opencode plugin](./opencode-plugin.md).
 
 <a id="is-it-safe"></a>
+
 ## "is it safe?", no.
 
 No. Scripts run on a real runtime with your authority — filesystem, network,
@@ -67,6 +70,7 @@ answer.
 More: [the script contract](../AGENTS.md).
 
 <a id="why"></a>
+
 ## "but why would you.."
 
 Three reasons, then the history. Context cost: tool schemas sit in every
@@ -82,6 +86,7 @@ actually need (more than one Chrome)".
 More: [the assessment](../ASSESSMENT.md).
 
 <a id="examples"></a>
+
 ## "but can i get some examples?"
 
 Yes. `examples/` holds short scripts that CI runs on every change, against a

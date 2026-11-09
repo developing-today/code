@@ -138,11 +138,10 @@ tar -cf - -C "$OC" \
   . | tar -xf - -C "$STAGE" || fail "staging copy of $OC failed"
 
 # --- transaction-consistent snapshot of the agent state DB on top ---
-if [ -f "$OC/state/openclaw.sqlite" ]; then
-  mkdir -p "$STAGE/state"
-  sqlite3 "$OC/state/openclaw.sqlite" ".backup '$STAGE/state/openclaw.sqlite'" ||
-    fail "sqlite .backup of state/openclaw.sqlite failed"
-fi
+[ -f "$OC/state/openclaw.sqlite" ] || fail "required state/openclaw.sqlite is missing"
+mkdir -p "$STAGE/state"
+sqlite3 "$OC/state/openclaw.sqlite" ".backup '$STAGE/state/openclaw.sqlite'" ||
+  fail "sqlite .backup of state/openclaw.sqlite failed"
 
 # --- journal: window start = min(last successful run, 24h ago) ---
 NOW_EPOCH="$(date +%s)"
@@ -192,6 +191,9 @@ if ! (
 import hashlib, json, os, sys
 m = json.load(open("manifest.json"))
 bad = 0
+required = "state/openclaw.sqlite"
+if required not in {f["path"] for f in m["files"]} or not os.path.isfile(required):
+    print("MISSING REQUIRED", required); bad += 1
 for f in m["files"]:
     p = f["path"]
     if not os.path.isfile(p):
