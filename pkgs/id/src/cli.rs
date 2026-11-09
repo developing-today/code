@@ -14,6 +14,7 @@
 //!   repl       Interactive REPL (alias: shell)
 //!   put        Store files (aliases: in, add, store, import)
 //!   put-hash   Store content by hash only
+//!   send       Copy a file from one server to another
 //!   get        Retrieve files by name or hash
 //!   get-hash   Retrieve by hash (shortcut)
 //!   cat        Output files to stdout (aliases: output, out)
@@ -724,6 +725,45 @@ pub enum Command {
     PutHash {
         /// File path to store, or "-" for stdin.
         source: String,
+    },
+    /// Copy a file from one running server to another (server-to-server send).
+    ///
+    /// The *source server* performs the transfer with its own identity:
+    /// it pushes the file's blob to the destination and registers the
+    /// name there. The destination's write policy must allow the source
+    /// server's node ID, and that node is recorded as the copy's origin.
+    /// No file bytes pass through this client.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Copy report.txt from server A to server B under the same name
+    /// id send A_NODE_ID report.txt --to B_NODE_ID
+    ///
+    /// # Copy under a different destination name
+    /// id send A_NODE_ID report.txt --to B_NODE_ID --as summary.txt
+    ///
+    /// # Replace an existing destination name (old file is archived first)
+    /// id send A_NODE_ID report.txt --to B_NODE_ID --replace
+    /// ```
+    Send {
+        /// Source server node ID (64 hex characters).
+        source: String,
+        /// Name of the file on the source server.
+        name: String,
+        /// Destination server node ID (64 hex characters).
+        #[arg(long)]
+        to: String,
+        /// Name to register on the destination (defaults to the source name).
+        #[arg(long = "as")]
+        dest_name: Option<String>,
+        /// Replace an existing, different destination file; the old file
+        /// is preserved under an archive name on the destination first.
+        #[arg(long)]
+        replace: bool,
+        /// Disable relay servers for the connection to the source.
+        #[arg(long)]
+        no_relay: bool,
     },
     /// Retrieve one or more files by name or hash.
     ///

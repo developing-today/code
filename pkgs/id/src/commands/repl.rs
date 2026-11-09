@@ -737,6 +737,53 @@ impl ReplContext {
         Ok(())
     }
 
+    /// Ask this context's node (the source) to copy a file to another
+    /// server (#5345).
+    ///
+    /// The source server performs the transfer with its own identity; see
+    /// [`crate::transfer`]. `dest_name` defaults to `name`; with
+    /// `replace`, an existing different destination file is archived and
+    /// replaced instead of refusing the send.
+    pub async fn send(
+        &mut self,
+        name: &str,
+        dest_str: &str,
+        dest_name: Option<&str>,
+        replace: bool,
+    ) -> Result<()> {
+        if !is_node_id(dest_str) {
+            bail!("invalid destination node ID: must be 64 hex characters");
+        }
+        let dest: EndpointId = dest_str.parse()?;
+        let req = MetaRequest::Send {
+            name: name.to_owned(),
+            dest,
+            dest_name: dest_name.map(ToOwned::to_owned),
+            replace,
+        };
+        match expect_ok(self.request(req).await?)? {
+            MetaResponse::Send {
+                hash,
+                name: registered,
+                already_present,
+                replaced,
+                ..
+            } => {
+                if already_present {
+                    println!("already present: {name} -> {dest}:{registered} ({hash})");
+                } else if replaced {
+                    println!(
+                        "sent: {name} -> {dest}:{registered} ({hash}); previous file archived"
+                    );
+                } else {
+                    println!("sent: {name} -> {dest}:{registered} ({hash})");
+                }
+                Ok(())
+            }
+            _ => bail!("unexpected response"),
+        }
+    }
+
     /// Search for blobs matching a query.
     ///
     /// Performs case-insensitive matching against tag names and blob hashes.
