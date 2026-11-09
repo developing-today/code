@@ -908,8 +908,8 @@ impl WorldClient {
     /// unit-tested without a live host.
     fn parse_policy_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         let policy = reply.get("policy").context("host sent no policy")?;
-        let _: crate::world::WorldPolicy = serde_json::from_value(policy.clone())
-            .context("host sent a malformed policy")?;
+        let _: crate::world::WorldPolicy =
+            serde_json::from_value(policy.clone()).context("host sent a malformed policy")?;
         Ok(policy.clone())
     }
 
@@ -1176,9 +1176,7 @@ impl WorldClient {
     /// [`WorldClient::set_execution_profile`] so the validation can be
     /// unit-tested without a live host sending frames no real host
     /// sends.
-    fn parse_set_execution_profile_reply(
-        reply: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    fn parse_set_execution_profile_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "execution_profile" {
             bail!(
                 "{}",
@@ -4136,7 +4134,6 @@ mod tests {
         capability
     }
 
-
     #[test]
     fn route_frame_inserts_bound_world_when_absent() {
         // Oracle: the routed frame is the input frame plus exactly one
@@ -4178,7 +4175,10 @@ mod tests {
         let plain = serde_json::json!({"type": "join"});
         assert_eq!(route_frame(&plain, None), plain.to_string());
         let non_object = serde_json::json!(["world", "beta"]);
-        assert_eq!(route_frame(&non_object, Some("alpha")), non_object.to_string());
+        assert_eq!(
+            route_frame(&non_object, Some("alpha")),
+            non_object.to_string()
+        );
     }
 
     #[tokio::test]
@@ -4240,7 +4240,6 @@ mod tests {
         router.shutdown().await.unwrap();
         host_ep.close().await;
     }
-
 
     #[tokio::test]
     async fn coordinator_session_cannot_lease_another_world_via_prekeyed_first_frame() {
