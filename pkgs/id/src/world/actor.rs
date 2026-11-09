@@ -877,17 +877,22 @@ impl WorldActor {
                 "sequence": self.core.sequence,
             })),
             "chat.say" => self.execute_chat(&request.args),
-            "chat.history" => Ok(serde_json::json!({
-                "lines": chat_history(
-                    &self.core.events,
-                    request
-                        .args
-                        .get("count")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(16)
-                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64) as usize,
-                ),
-            })),
+            "chat.history" => {
+                // A supplied `count` must be an unsigned integer; only an
+                // omitted count falls back to the default. Treating a
+                // malformed count as omitted silently turns a client error
+                // into a successful read (#7892).
+                let count = match request.args.get("count") {
+                    None => 16,
+                    Some(value) => value.as_u64().ok_or_else(CapError::bad_args)? as usize,
+                };
+                Ok(serde_json::json!({
+                    "lines": chat_history(
+                        &self.core.events,
+                        count.min(crate::world_caps::MAX_CHAT_HISTORY_LINES),
+                    ),
+                }))
+            }
             "records.read" => self.execute_records_read(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
