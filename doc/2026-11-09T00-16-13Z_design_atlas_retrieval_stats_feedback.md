@@ -132,7 +132,7 @@ Surfaces must preserve and return `query_id`, `result_id`, and `embed_version_id
 
 | Surface | One-action path |
 | --- | --- |
-| CLI / TUI | Each printed result exposes `atlas feedback <query_id> <result_id> <embed_version_id> up|down` as a one-command action; interactive clients also bind a single key to up/down. A search invocation may accept a result-scoped feedback option when the result ID is already known. |
+| CLI / TUI | Each printed result exposes `atlas feedback <query_id> <result_id> <embed_version_id> up\|down` as a one-command action; interactive clients also bind a single key to up/down. A search invocation may accept a result-scoped feedback option when the result ID is already known. |
 | Service/API | Search responses return the three join IDs. A single `POST /feedback` with `vote` and those IDs records the vote; it does not require a second confirmation round trip. |
 | Web/UI | Thumbs up/down controls are adjacent to every result on every search/results surface. A result never requires opening a detail pane to reach the controls. |
 | Agent/tool clients | The result object carries the same IDs and the feedback tool accepts one vote call. The service records the authenticated agent principal and run provenance, not a client-asserted display name. |
