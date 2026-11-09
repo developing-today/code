@@ -218,7 +218,8 @@ class TestCreateReadback(unittest.TestCase):
              unittest.mock.patch.object(
                  fp, "find_by_exact_title", lambda *_a, **_k: None
              ), \
-             unittest.mock.patch.object(fp, "http", fake_http):
+             unittest.mock.patch.object(fp, "http", fake_http), \
+             unittest.mock.patch.object(fp, "ledger_append"):
             try:
                 code = fp.main(args)
             except SystemExit as exc:
