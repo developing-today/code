@@ -4203,6 +4203,7 @@ async fn identity_update_name_handler(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
         let content: Vec<serde_json::Value> = blocks
@@ -4499,6 +4500,50 @@ mod tests {
                 {"type": "text", "text": "y"}
             ]})]);
             assert_eq!(extract_plain_text(&doc), "xy");
+        }
+    }
+
+    // Oracle for the two proptests below (#5366, Codex P1 on PR #6427):
+    // plain-text serialization concatenates inline text runs verbatim, so
+    // a footnote_reference with a non-empty label L between runs B and A
+    // must serialize to exactly B + "[^" + L + "]" + A, at any nesting
+    // depth — the implementation only ever push_str's the label between
+    // the fixed "[^" and "]" markers.
+    proptest! {
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_label_verbatim(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": before.clone()},
+                footnote_reference(&label),
+                {"type": "text", "text": after.clone()}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
+        }
+
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_in_recursive_container(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                    {"type": "text", "text": before.clone()},
+                    footnote_reference(&label),
+                    {"type": "text", "text": after.clone()}
+                ]})]}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
         }
     }
 
