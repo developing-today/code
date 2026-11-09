@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::AppState;
 use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, get_content_type};
 use super::markdown::prosemirror_to_markdown;
+use super::security::{self, WebSecurity};
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
@@ -484,23 +485,37 @@ const fn is_leap_year(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
-/// Create the main router with all web routes.
-pub fn create_router(state: AppState) -> Router {
-    create_router_for_app(state, &super::app_interface::WebInterface::world_app())
+/// Create the guarded main router with all web routes.
+///
+/// `security` is applied to every request before any route handler runs. Choose
+/// an explicit policy appropriate to the listener; `WebSecurity::default()`
+/// does not require a token or restrict hosts.
+pub fn create_router(state: AppState, security: WebSecurity) -> Router {
+    create_router_for_app(
+        state,
+        &super::app_interface::WebInterface::world_app(),
+        security,
+    )
 }
 
 /// Create the main router for one packaged app, binding the world
 /// page at the app's [interfaces.web] route and the live channel at
 /// its socket (#2325, adapter mode). With the world app's own
-/// interface the result is byte-identical to create_router: same
-/// routes, same handlers, same state.
+/// interface the result has the same routes, handlers, and state as
+/// [`create_router`]. The supplied security policy guards every route.
+///
+/// # Migration
+///
+/// Callers must now pass an explicit [`WebSecurity`] policy. The default
+/// policy does not require a token or restrict hosts.
 pub fn create_router_for_app(
     mut state: AppState,
     interface: &super::app_interface::WebInterface,
+    security: WebSecurity,
 ) -> Router {
     state.web_route = interface.route.clone();
     state.web_socket = interface.socket.clone();
-    create_router_inner(state)
+    security::protect(create_router_inner(state), security)
 }
 
 /// Create the program-only router for one hosted world (#2146
@@ -511,8 +526,18 @@ pub fn create_router_for_app(
 /// settings, peers, identity, collab, tags, save/upload) are absent
 /// from this router, so a program listener cannot serve them; the
 /// session authority is unchanged (a valid world guest capability,
-/// never the web token or the world admin token).
-pub fn create_program_router(mut state: AppState, world_name: &str) -> Router {
+/// never the world admin token). The supplied [`WebSecurity`] policy
+/// guards every request to this router as well.
+///
+/// # Migration
+///
+/// Callers must now pass an explicit [`WebSecurity`] policy. The default
+/// policy does not require a token or restrict hosts.
+pub fn create_program_router(
+    mut state: AppState,
+    world_name: &str,
+    security: WebSecurity,
+) -> Router {
     state.program_world = Some(world_name.to_owned());
     let world_socket = state
         .web_socket
@@ -526,9 +551,10 @@ pub fn create_program_router(mut state: AppState, world_name: &str) -> Router {
         .route("/", get(program_page_handler))
         .route("/assets/{*path}", get(assets_handler))
         .merge(super::world_ws::world_routes_at(&world_socket).with_state(world_state));
-    router
+    let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
-        .with_state(state)
+        .with_state(state);
+    security::protect(router, security)
 }
 
 fn create_router_inner(state: AppState) -> Router {
@@ -541,6 +567,7 @@ fn create_router_inner(state: AppState) -> Router {
         .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
+        .route("/groups", get(super::groups::groups_page_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
         .route("/hash/{hash}", get(hash_redirect_handler))
         .route("/view/{*name}", get(view_handler))
@@ -2651,10 +2678,9 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
 /// text verbatim when non-empty, otherwise its `src` verbatim when
-/// non-empty, otherwise nothing; a `front_matter` block contributes
-/// its `text` attr verbatim (#5639). Known remaining gap: `footnote_reference`
-/// atoms are not yet rendered — they contribute nothing; that is
-/// explicitly out of scope for the #1491 fix.
+/// non-empty, otherwise nothing; a `footnote_reference` contributes
+/// `[^<label>]` when its label is non-empty. A `front_matter` block
+/// contributes its `text` attr verbatim (#5639).
 fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
@@ -2731,7 +2757,9 @@ fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>
 /// as a newline, and any other inline node recursed into (its own
 /// inline content contributes its text instead of being dropped).
 /// The `image` atom has no content — its payload is `attrs`, rendered
-/// per the pinned policy on `extract_plain_text` (#1491).
+/// per the pinned policy on `extract_plain_text` (#1491). A
+/// `footnote_reference` atom similarly renders its non-empty label
+/// using the Markdown footnote-reference form.
 fn extract_inline_text(node: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -2756,6 +2784,18 @@ fn extract_inline_text(node: &serde_json::Value) -> String {
                         attrs.and_then(|a| a.get("src")).and_then(|v| v.as_str())
                     {
                         out.push_str(src);
+                    }
+                }
+                "footnote_reference" => {
+                    if let Some(label) = inline
+                        .get("attrs")
+                        .and_then(|attrs| attrs.get("label"))
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|label| !label.is_empty())
+                    {
+                        out.push_str("[^");
+                        out.push_str(label);
+                        out.push(']');
                     }
                 }
                 _ => out.push_str(&extract_inline_text(inline)),
@@ -3171,7 +3211,13 @@ mod upload_router_tests {
         )
         .await
         .unwrap();
-        (create_router(state.clone()), state, dir, endpoint, docs)
+        (
+            create_router(state.clone(), WebSecurity::default()),
+            state,
+            dir,
+            endpoint,
+            docs,
+        )
     }
 
     fn hub_with_world(name: &str, admin: Option<&str>) -> crate::world_hub::WorldHub {
@@ -3191,7 +3237,7 @@ mod upload_router_tests {
     async fn program_router_serves_only_the_program_surface() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
         state.world = Some(hub_with_world("arena", Some("s3cret")));
-        let app = create_program_router(state, "arena");
+        let app = create_program_router(state, "arena", WebSecurity::default());
 
         // Root: the program page, pinned to the bound world.
         let root = app
@@ -3247,7 +3293,7 @@ mod upload_router_tests {
     async fn program_router_404s_for_a_world_the_hub_does_not_host() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
         state.world = Some(hub_with_world("arena", None));
-        let app = create_program_router(state, "missing");
+        let app = create_program_router(state, "missing", WebSecurity::default());
         let root = app
             .clone()
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -3259,7 +3305,7 @@ mod upload_router_tests {
     #[tokio::test]
     async fn program_router_404s_without_a_hub() {
         let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
-        let app = create_program_router(state, "arena");
+        let app = create_program_router(state, "arena", WebSecurity::default());
         let root = app
             .clone()
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -3292,7 +3338,7 @@ mod upload_router_tests {
         )
         .unwrap()
         .unwrap();
-        let app = crate::web::create_router_for_app(state, &interface);
+        let app = crate::web::create_router_for_app(state, &interface, WebSecurity::default());
         let arena = app
             .clone()
             .oneshot(
@@ -4157,6 +4203,7 @@ async fn identity_update_name_handler(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
         let content: Vec<serde_json::Value> = blocks
@@ -4360,6 +4407,10 @@ mod tests {
         serde_json::json!({"type": "image", "attrs": attrs})
     }
 
+    fn footnote_reference(label: &str) -> serde_json::Value {
+        serde_json::json!({"type": "footnote_reference", "attrs": {"label": label}})
+    }
+
     #[test]
     fn test_extract_plain_text_image_only_paragraph_saves_as_alt() {
         // #1491: an image atom's only text is its alt.
@@ -4412,6 +4463,88 @@ mod tests {
             {"type": "text", "text": "y"}
         ]})]);
         assert_eq!(extract_plain_text(&doc), "xy");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_between_text_runs() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "before "},
+            footnote_reference("note:α"),
+            {"type": "text", "text": " after"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "before [^note:α] after");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_in_recursive_container() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+            {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "listed "},
+                footnote_reference("1"),
+                {"type": "text", "text": " text"}
+            ]})]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "listed [^1] text");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_missing_or_empty_label_is_nothing() {
+        for reference in [
+            serde_json::json!({"type": "footnote_reference"}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {}}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {"label": ""}}),
+        ] {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x"},
+                reference,
+                {"type": "text", "text": "y"}
+            ]})]);
+            assert_eq!(extract_plain_text(&doc), "xy");
+        }
+    }
+
+    // Oracle for the two proptests below (#5366, Codex P1 on PR #6427):
+    // plain-text serialization concatenates inline text runs verbatim, so
+    // a footnote_reference with a non-empty label L between runs B and A
+    // must serialize to exactly B + "[^" + L + "]" + A, at any nesting
+    // depth — the implementation only ever push_str's the label between
+    // the fixed "[^" and "]" markers.
+    proptest! {
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_label_verbatim(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": before.clone()},
+                footnote_reference(&label),
+                {"type": "text", "text": after.clone()}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
+        }
+
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_in_recursive_container(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                    {"type": "text", "text": before.clone()},
+                    footnote_reference(&label),
+                    {"type": "text", "text": after.clone()}
+                ]})]}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
+        }
     }
 
     #[test]

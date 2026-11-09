@@ -59,9 +59,13 @@ export interface Config {
   snapshotsDir: string;
   /** Scheduled-digest archive (#1278): one JSON file per digest. */
   digestsDir: string;
+  /** Append-only notification state/send/suppression log (#3317). */
+  notificationsFile: string;
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
+  /** Tracker of evaluated free services without automated quota cards (#1172). */
+  freeServicesTrackerFile: string;
   cloudflareExportFile: string;
   /** The Supabase usage exporter's document (#1050): the gathered live read
    * preferred over the quota view's Supabase prose when fresh. */
@@ -159,12 +163,20 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     digestsDir: s(env.PM_AGG_DIGESTS_DIR, join(process.cwd(), "digests")),
+    notificationsFile: s(
+      env.PM_AGG_NOTIFICATIONS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "notifications.jsonl"),
+    ),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
       join(
         homedir(),
         "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
       ),
+    ),
+    freeServicesTrackerFile: s(
+      env.PM_AGG_FREE_SERVICES_TRACKER,
+      join(homedir(), "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md"),
     ),
     cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
     supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),

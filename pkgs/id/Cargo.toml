@@ -171,6 +171,7 @@ tokio = { version = "1", features = ["test-util"] }
 # The root package's tests exercise dial deadlines using id-core's test-only helpers.
 id-core = { path = "crates/id-core", default-features = false, features = [
   "test-utils",
+  "test-provider",
 ] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.32", features = ["bundled"] }

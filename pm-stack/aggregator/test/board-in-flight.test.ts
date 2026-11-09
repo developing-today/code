@@ -59,8 +59,8 @@ describe("titleRefs", () => {
       "developing-today/code#985",
     ]);
     expect(titleRefs("nix #889 queued; nix #848 bump task 1127 re-queued")).toEqual([
-      "dezren39/nix#889",
-      "dezren39/nix#848",
+      "dezren39/darwin-nix#889",
+      "dezren39/darwin-nix#848",
     ]);
     expect(titleRefs("Jules PR #927 for code #811 - still OPEN draft")).toEqual([
       "developing-today/code#927",
@@ -92,7 +92,7 @@ describe("titleRefs", () => {
     ).toEqual([
       "developing-today/opencode#927",
       "developing-today-forks/kaneo#42",
-      "dezren39/nix#889",
+      "dezren39/darwin-nix#889",
       "developing-today-forks/openchamber#492",
     ]);
   });

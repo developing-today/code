@@ -14,6 +14,8 @@ import { join } from "node:path";
 
 interface AttentionEntry {
   id?: string;
+  title?: string;
+  tier?: string;
 }
 
 let proc: Subprocess | undefined;
@@ -32,7 +34,21 @@ beforeAll(async () => {
       generatedAt: twoHoursAgo,
       runId: "orch-watchdog-test",
       provenance: { sources: ["watchdog priming test"], runId: "orch-watchdog-test" },
-      tiers: { needsDrew: [], needsOrchestrator: [] },
+      tiers: {
+        needsDrew: [
+          {
+            id: "task:attention-json-extra",
+            kind: "task",
+            title: "Non-session needs-Drew fixture",
+            source: "github",
+            reason: "Waiting on a decision",
+            since: twoHoursAgo,
+            lastSeenAt: twoHoursAgo,
+            ref: "developing-today/code#3317",
+          },
+        ],
+        needsOrchestrator: [],
+      },
       dependencies: [],
       goals: [],
       actions: [],
@@ -90,5 +106,6 @@ describe("watchdog registry derivation needs no registry priming (#1148, Codex P
     expect(ids.filter((id) => id === "watchdog:registry")).toHaveLength(1);
     // The 2h-old feed breaches the 15m feed threshold too.
     expect(ids.filter((id) => id === "watchdog:fleet-feed")).toHaveLength(1);
+    expect(firstAttention?.some((entry) => entry.id === "task:attention-json-extra" && entry.tier === "needs-drew")).toBe(true);
   });
 });

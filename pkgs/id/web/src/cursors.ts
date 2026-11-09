@@ -21,17 +21,29 @@
 import { type EditorState, Plugin, PluginKey, type Transaction } from "prosemirror-state";
 import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
 import {
+  type CursorDisplayState,
   type CursorForMerge,
+  type CursorLifecycleEvent,
+  type TooltipDisplay,
+  type TooltipMode,
   clusterOverlappingGroups,
+  DEFAULT_CURSOR_DISPLAY_STATE,
   FADE_START_MS,
+  formatCursorLifecycleLog,
+  getCursorDisplayState,
   getColorForClient,
+  getEnlargeStage,
   getOpacityForAge,
   getStrobeDurationMs,
   groupCursorsByPosition,
   HIDE_MS,
   isLightColor,
+  lifecycleEventsForAge,
   LINE_THRESHOLD_PX,
+  nextTooltipMode,
+  partitionCursorsByMinimized,
   type PositionGroup,
+  resolveTooltipDisplay,
 } from "./cursor-utils";
 
 // Additional timing constants (not exported from utils)
@@ -77,6 +89,14 @@ interface CursorViewState {
   hoverRestoreTimers: Map<string | number, ReturnType<typeof setTimeout>>;
   reconnectCleanupTimer: ReturnType<typeof setTimeout> | null;
   view: EditorView;
+  /** #1790: global tooltip visibility mode for this view. */
+  tooltipMode: TooltipMode;
+  /** #1790: per-cursor pin/minimize/enlarge/hover state (mutable working copy). */
+  displayStates: Map<string | number, CursorDisplayState>;
+  /** #1790 slice 3: age-based lifecycle events already logged per cursor. */
+  lifecycleLogged: Map<string | number, Set<CursorLifecycleEvent>>;
+  /** #1790: mode-toggle + minimized-restore chrome element, if mounted. */
+  chromeElement: HTMLElement | null;
 }
 
 interface StrobeInfo {
@@ -103,6 +123,10 @@ function getViewState(view: EditorView): CursorViewState {
       hoverRestoreTimers: new Map(),
       reconnectCleanupTimer: null,
       view,
+      tooltipMode: "full",
+      displayStates: new Map(),
+      lifecycleLogged: new Map(),
+      chromeElement: null,
     };
     viewStates.set(view, state);
   }
@@ -126,8 +150,111 @@ function cleanupViewState(view: EditorView): void {
     }
     // Clear strobe tracking
     state.strobeInfos.clear();
+    // #1790: drop per-cursor UX state and the chrome element
+    state.displayStates.clear();
+    state.lifecycleLogged.clear();
+    if (state.chromeElement) {
+      state.chromeElement.remove();
+      state.chromeElement = null;
+    }
     viewStates.delete(view);
   }
+}
+
+// ============================================================================
+// #1790 Tooltip Modes, Pin/Minimize, Enlarge, Lifecycle Logging
+// ============================================================================
+
+/** Mutable per-cursor display state, created at the resting default. */
+function getDisplayStateMut(
+  viewState: CursorViewState,
+  clientID: string | number,
+): CursorDisplayState {
+  let ds = viewState.displayStates.get(clientID);
+  if (!ds) {
+    ds = { ...DEFAULT_CURSOR_DISPLAY_STATE };
+    viewState.displayStates.set(clientID, ds);
+  }
+  return ds;
+}
+
+/** Recompute decorations and refresh the mode/minimized chrome. */
+function refreshCursorUx(viewState: CursorViewState): void {
+  viewState.view.dispatch(viewState.view.state.tr);
+  updateCursorChrome(viewState);
+}
+
+/**
+ * Render the #1790 chrome: a tooltip-mode toggle button plus one restore
+ * button per minimized cursor (the minimize/restore list). Rebuilt on
+ * every call; mounted once by the plugin view.
+ */
+function updateCursorChrome(viewState: CursorViewState): void {
+  const chrome = viewState.chromeElement;
+  if (!chrome) return;
+  const pluginState = cursorPluginKey.getState(viewState.view.state);
+  chrome.textContent = "";
+
+  const modeButton = document.createElement("button");
+  modeButton.className = "collab-cursor-mode";
+  modeButton.textContent = `Cursors: ${viewState.tooltipMode}`;
+  modeButton.title = "Cycle cursor tooltip mode: full -> minimal -> hidden";
+  modeButton.addEventListener("click", () => {
+    viewState.tooltipMode = nextTooltipMode(viewState.tooltipMode);
+    refreshCursorUx(viewState);
+  });
+  chrome.appendChild(modeButton);
+
+  if (pluginState) {
+    const { minimized } = partitionCursorsByMinimized(
+      [...pluginState.cursors.values()],
+      viewState.displayStates,
+    );
+    minimized.forEach((cursor) => {
+      const restore = document.createElement("button");
+      restore.className = "collab-cursor-restore";
+      restore.textContent = `Restore ${cursor.name ?? String(cursor.clientID)}`;
+      restore.title = "Restore this minimized cursor";
+      restore.addEventListener("click", () => {
+        getDisplayStateMut(viewState, cursor.clientID).minimized = false;
+        refreshCursorUx(viewState);
+      });
+      chrome.appendChild(restore);
+    });
+  }
+}
+
+/** Click on a cursor label: start the enlarge chain, or clear a rested one. */
+function handleCursorLabelClick(clientID: string | number, viewState: CursorViewState): void {
+  const ds = getDisplayStateMut(viewState, clientID);
+  const stage = getEnlargeStage(ds.enlargedAt, Date.now());
+  ds.enlargedAt = stage === "minimal" ? null : Date.now();
+  refreshCursorUx(viewState);
+}
+
+function handleCursorPinToggle(clientID: string | number, viewState: CursorViewState): void {
+  const ds = getDisplayStateMut(viewState, clientID);
+  ds.pinned = !ds.pinned;
+  refreshCursorUx(viewState);
+}
+
+function handleCursorMinimize(clientID: string | number, viewState: CursorViewState): void {
+  const ds = getDisplayStateMut(viewState, clientID);
+  ds.minimized = true;
+  ds.enlargedAt = null;
+  refreshCursorUx(viewState);
+}
+
+/** Set the tooltip visibility mode for a view (#1790). */
+export function setCursorTooltipMode(view: EditorView, mode: TooltipMode): void {
+  const viewState = getViewState(view);
+  viewState.tooltipMode = mode;
+  refreshCursorUx(viewState);
+}
+
+/** Current tooltip visibility mode for a view (#1790). */
+export function getCursorTooltipMode(view: EditorView): TooltipMode {
+  return getViewState(view).tooltipMode;
 }
 
 // ============================================================================
@@ -139,6 +266,11 @@ function cleanupViewState(view: EditorView): void {
  * Sets hovered state immediately (100% opacity, no strobe, bolder, elevated z-index).
  */
 function handleCursorMouseEnter(clientID: string | number, viewState: CursorViewState): void {
+  // #1790: record hover start (minimal mode shows the tooltip at >= 1s of
+  // hover) and log the lifecycle event.
+  getDisplayStateMut(viewState, clientID).hoverSince = Date.now();
+  console.info(formatCursorLifecycleLog("hover", clientID));
+
   // Clear any pending restore timer
   const timer = viewState.hoverRestoreTimers.get(clientID);
   if (timer) {
@@ -182,6 +314,13 @@ function restoreCursorFromHover(
   viewState: CursorViewState,
   getConnectionState: () => "connected" | "disconnected",
 ): void {
+  // #1790: hover ended — clear the hover clock and log the lifecycle event.
+  const ds = viewState.displayStates.get(clientID);
+  if (ds && ds.hoverSince !== null) {
+    ds.hoverSince = null;
+    console.info(formatCursorLifecycleLog("unhover", clientID));
+  }
+
   const info = viewState.strobeInfos.get(clientID);
   if (!info) return;
 
@@ -341,6 +480,7 @@ function createMergedBar(
   handleMouseEnter: (clientID: string | number) => void,
   handleMouseLeave: (clientID: string | number) => void,
   connectionState: "connected" | "disconnected",
+  handleLabelClick?: (clientID: string | number) => void,
 ): HTMLElement {
   const bar = document.createElement("span");
   bar.className = "collab-cursor-bar";
@@ -359,7 +499,17 @@ function createMergedBar(
       segment.className = "collab-cursor-bar-segment";
       segment.style.backgroundColor = cursor.color;
       segment.style.color = isLightColor(cursor.color) ? "#000" : "#fff";
-      segment.textContent = cursor.name;
+      // #1790: minimal display renders a name-less segment; big marks the
+      // enlarged stage of the click-to-enlarge chain.
+      if (cursor.tooltipDisplay === "minimal") {
+        segment.classList.add("collab-cursor-bar-segment-minimal");
+        segment.textContent = "";
+      } else {
+        segment.textContent = cursor.name;
+      }
+      if (cursor.tooltipDisplay === "big") {
+        segment.classList.add("collab-cursor-bar-segment-big");
+      }
       segment.setAttribute("data-client-id", String(cursor.clientID));
       segment.setAttribute("data-position", String(cursor.head));
 
@@ -374,6 +524,9 @@ function createMergedBar(
       // Hover handlers for individual segments
       segment.addEventListener("mouseenter", () => handleMouseEnter(cursor.clientID));
       segment.addEventListener("mouseleave", () => handleMouseLeave(cursor.clientID));
+      if (handleLabelClick) {
+        segment.addEventListener("click", () => handleLabelClick(cursor.clientID));
+      }
 
       bar.appendChild(segment);
     });
@@ -434,15 +587,57 @@ function createStandaloneCursor(
     paused: false,
   });
 
+  // #1790: minimal display is the cursor line only, no label.
+  if (cursor.tooltipDisplay === "minimal") {
+    cursorWidget.classList.add("collab-cursor-minimal");
+    // Clicking the bare cursor still starts the enlarge chain.
+    cursorWidget.addEventListener("click", () => handleCursorLabelClick(cursor.clientID, viewState));
+    return cursorWidget;
+  }
+
   const label = document.createElement("span");
   label.className = "collab-cursor-label";
   label.style.backgroundColor = cursor.color;
   label.style.color = isLightColor(cursor.color) ? "#000" : "#fff";
-  label.textContent = cursor.name;
+
+  if (cursor.tooltipDisplay === "big") {
+    // #1790: the enlarged tooltip carries the pin/unpin and minimize
+    // controls; the revert chain (big -> tooltip -> minimal) is timed by
+    // getEnlargeStage against displayStates.enlargedAt.
+    label.classList.add("collab-cursor-label-big");
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = cursor.name;
+    label.appendChild(nameSpan);
+
+    const ds = getCursorDisplayState(viewState.displayStates, cursor.clientID);
+    const pinButton = document.createElement("button");
+    pinButton.className = "collab-cursor-action";
+    pinButton.textContent = ds.pinned ? "unpin" : "pin";
+    pinButton.title = ds.pinned ? "Unpin this cursor" : "Pin this cursor (exempts it from hidden mode)";
+    pinButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      handleCursorPinToggle(cursor.clientID, viewState);
+    });
+    label.appendChild(pinButton);
+
+    const minimizeButton = document.createElement("button");
+    minimizeButton.className = "collab-cursor-action";
+    minimizeButton.textContent = "minimize";
+    minimizeButton.title = "Minimize this cursor (restore it from the cursor chrome)";
+    minimizeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      handleCursorMinimize(cursor.clientID, viewState);
+    });
+    label.appendChild(minimizeButton);
+  } else {
+    label.textContent = cursor.name;
+  }
 
   // Add hover event listeners
   label.addEventListener("mouseenter", () => handleMouseEnter(cursor.clientID));
   label.addEventListener("mouseleave", () => handleMouseLeave(cursor.clientID));
+  // Click-to-enlarge (#1790): starts the chain, or clears a rested one.
+  label.addEventListener("click", () => handleCursorLabelClick(cursor.clientID, viewState));
 
   cursorWidget.appendChild(label);
   return cursorWidget;
@@ -541,6 +736,23 @@ function createCursorDecorations(
 
     const ageMs = now - cursor.lastUpdate;
 
+    // #1790 slice 3: log first-inactive / minimum-reached once per cursor
+    // per inactive stretch (the logged set resets when the cursor is
+    // active again). Age is time since the last relayed cursor frame.
+    if (!isOwnCursor && viewState) {
+      if (ageMs < FADE_START_MS) {
+        viewState.lifecycleLogged.delete(clientID);
+      } else {
+        const logged = viewState.lifecycleLogged.get(clientID) ?? new Set<CursorLifecycleEvent>();
+        const events = lifecycleEventsForAge(ageMs, logged);
+        events.forEach((event) => {
+          logged.add(event);
+          console.info(formatCursorLifecycleLog(event, clientID, cursor.name));
+        });
+        if (events.length > 0) viewState.lifecycleLogged.set(clientID, logged);
+      }
+    }
+
     // Hide completely after HIDE_MS (but not own cursor)
     if (!isOwnCursor && ageMs >= HIDE_MS) return;
 
@@ -564,6 +776,23 @@ function createCursorDecorations(
     // Remote cursor opacity is based solely on age, not affected by local cursor position
     const opacity = baseOpacity;
 
+    // #1790 slice 2: resolve the tooltip display for this cursor from the
+    // view's mode plus its pin/minimize/enlarge/hover state. "hidden"
+    // cursors stay tracked in plugin state but render nothing.
+    let tooltipDisplay: TooltipDisplay | undefined;
+    if (!isOwnCursor) {
+      const ds = viewState ? getDisplayStateMut(viewState, clientID) : DEFAULT_CURSOR_DISPLAY_STATE;
+      tooltipDisplay = resolveTooltipDisplay({
+        mode: viewState?.tooltipMode ?? "full",
+        pinned: ds.pinned,
+        minimized: ds.minimized,
+        enlargedAt: ds.enlargedAt,
+        hoverSince: ds.hoverSince,
+        now,
+      });
+      if (tooltipDisplay === "hidden") return;
+    }
+
     visibleCursors.push({
       clientID,
       head,
@@ -575,6 +804,7 @@ function createCursorDecorations(
       baseOpacity,
       onSameLine,
       isOwnCursor,
+      tooltipDisplay,
     });
   });
 
@@ -701,7 +931,8 @@ function createCursorDecorations(
         const clusterKey = groupsForBar
           .flatMap((g) =>
             g.cursors.map(
-              (c) => `${c.clientID}@${c.head}-${c.opacity}-${c.color}-${connectionState}-${encodeURIComponent(c.name)}`,
+              (c) =>
+                `${c.clientID}@${c.head}-${c.opacity}-${c.color}-${connectionState}-${encodeURIComponent(c.name)}-${c.tooltipDisplay ?? "tooltip"}`,
             ),
           )
           .sort()
@@ -727,7 +958,13 @@ function createCursorDecorations(
 
                   // Create merged tooltip bar and attach to leftmost cursor line
                   // (appending to cursor line ensures proper positioning via position: relative)
-                  const mergedBar = createMergedBar(groupsForBar, handleMouseEnter, handleMouseLeave, connectionState);
+                  const mergedBar = createMergedBar(
+                    groupsForBar,
+                    handleMouseEnter,
+                    handleMouseLeave,
+                    connectionState,
+                    viewState ? (clientID) => handleCursorLabelClick(clientID, viewState) : undefined,
+                  );
                   cursorLine.appendChild(mergedBar);
                 }
 
@@ -765,7 +1002,7 @@ function createCursorDecorations(
                 : createCursorLine(cursor, false, connectionState),
             {
               side: 1,
-              key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}-${encodeURIComponent(cursor.name)}`,
+              key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}-${encodeURIComponent(cursor.name)}-${cursor.tooltipDisplay ?? "tooltip"}`,
             },
           ),
         );
@@ -952,6 +1189,14 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
       currentView = editorView;
       const _viewState = getViewState(editorView);
 
+      // #1790: mount the cursor chrome (tooltip-mode toggle + minimized
+      // restore list) next to the editor.
+      const chrome = document.createElement("div");
+      chrome.className = "collab-cursor-chrome";
+      _viewState.chromeElement = chrome;
+      editorView.dom.parentElement?.appendChild(chrome);
+      updateCursorChrome(_viewState);
+
       // Send cursor position on selection change
       const sendSelectionUpdate = (): void => {
         const { head, anchor } = editorView.state.selection;
@@ -991,6 +1236,16 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
               }
             }
           });
+          // #1790: the enlarge revert chain and the minimal-mode hover
+          // tooltip are time-based even for fresh cursors, and the chrome
+          // (minimized list) must stay in sync.
+          const tickViewState = getViewState(editorView);
+          tickViewState.displayStates.forEach((ds) => {
+            if (ds.enlargedAt !== null) needsRefresh = true;
+            if (tickViewState.tooltipMode === "minimal" && ds.hoverSince !== null) needsRefresh = true;
+          });
+          updateCursorChrome(tickViewState);
+
           if (needsRefresh) {
             // Dispatch empty transaction to trigger decoration refresh
             editorView.dispatch(editorView.state.tr);
@@ -1065,6 +1320,12 @@ export function updateCursor(
  * Remove a remote cursor from the editor (internal use - immediate removal).
  */
 function removeCursorInternal(view: EditorView, clientID: string | number): void {
+  // #1790 slice 3: removal is a lifecycle event; drop the UX state with it.
+  const viewState = getViewState(view);
+  console.info(formatCursorLifecycleLog("removed", clientID));
+  viewState.displayStates.delete(clientID);
+  viewState.lifecycleLogged.delete(clientID);
+
   const tr = view.state.tr.setMeta(cursorPluginKey, {
     type: "remove",
     clientID,

@@ -55,7 +55,7 @@ func StreamKey(seed, testName, name string, version int) [32]byte {
 	h := sha256.New()
 	h.Write(root[:])
 	h.Write([]byte{0})
-	h.Write([]byte(fmt.Sprintf("%s@%d", name, version)))
+	_, _ = fmt.Fprintf(h, "%s@%d", name, version)
 	h.Write([]byte{0})
 	h.Write([]byte(testName))
 	var key [32]byte
