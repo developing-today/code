@@ -185,6 +185,16 @@ impl WorldScopes {
     /// capability round-trips, without widening [`Self::ALL`].
     const ALL_BITS: u8 = Self::ALL.0 | Self::BUILDER.0 | Self::MODERATOR.0;
 
+    /// Every recognized bit, including the admin authority bits. Used as
+    /// the seed for authority-aware effective-scope computation: unlike
+    /// [`Self::ALL`], this lets an admin-issued `BUILDER` / `MODERATOR`
+    /// bit survive the ancestor-chain intersection in
+    /// `WorldCore::authorize` (design #835 phase 2). It grants nothing on
+    /// its own — the chain intersection only ever removes bits.
+    pub(crate) const fn all_recognized() -> Self {
+        Self(Self::ALL_BITS)
+    }
+
     /// Whether this set includes the builder authority (install modules).
     #[must_use]
     pub const fn is_builder(self) -> bool {

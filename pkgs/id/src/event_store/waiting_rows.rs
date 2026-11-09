@@ -19,7 +19,7 @@
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
-use super::{be_u64, corrupt, hash_of, row_event, seq_num, StoreError, WAITING, WAITING_BY_DEP};
+use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num};
 use crate::chain::Event;
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 
