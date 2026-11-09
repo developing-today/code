@@ -471,6 +471,7 @@ enum Staged {
 
 impl Staged {
     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+    #[allow(dead_code)]
     fn keeps(&self) -> bool {
         matches!(
             self,
@@ -1159,6 +1160,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1573,6 +1575,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -1631,6 +1635,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1882,6 +1888,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1918,6 +1925,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)

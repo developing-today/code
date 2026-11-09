@@ -96,6 +96,7 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			"MCPX_POLICY_WRITE=allow",
 		),
 	}
+	recordSettingProbes(t)
 	t.Cleanup(func() {
 		// `stop --all` rather than `stop`: plain `stop` dials the socket
 		// path recomputed from the environment, and a long state path moves
@@ -104,7 +105,7 @@ func newEnv(t *testing.T, cfgBody string) *env {
 		// survives. `--all` reads the daemon-<key>.json info files instead,
 		// which record the path the daemon actually bound. Each env has its
 		// own MCPX_STATE_DIR, so `--all` is scoped to this test.
-		if out, err := e.try("stop", "--all"); err != nil {
+		if out, err := e.tryUnrecorded("stop", "--all"); err != nil {
 			// Logged, not fatal: a test that has already passed should not
 			// be failed by its own teardown, but a teardown that silently
 			// fails is how the leak went unnoticed for so long.
@@ -157,13 +158,25 @@ func (e *env) try(args ...string) (string, error) {
 }
 
 func (e *env) tryWith(bin string, args ...string) (string, error) {
+	return e.tryWithCoverage(bin, bin == e.mcpx, args...)
+}
+
+func (e *env) tryUnrecorded(args ...string) (string, error) {
+	return e.tryWithCoverage(e.mcpx, false, args...)
+}
+
+func (e *env) tryWithCoverage(bin string, record bool, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	out, err := cmd.CombinedOutput()
-	return string(out), harnessTimeout(ctx, err)
+	err = harnessTimeout(ctx, err)
+	if err == nil && record {
+		e.recordCLI(args)
+	}
+	return string(out), err
 }
 
 // harnessTimeout names the harness's own deadline as the killer. Without it
@@ -188,6 +201,7 @@ func (e *env) runStdin(stdin string, args ...string) string {
 	if err != nil {
 		e.t.Fatalf("mcpx %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
+	e.recordCLI(args)
 	return string(out)
 }
 
@@ -365,7 +379,7 @@ console.log("GOT:" + String(r));
 func TestRunWritesTypedClientBesideTheScript(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "s.ts")
-	os.WriteFile(script, []byte(`console.log("ok");`), 0o644)
+	_ = os.WriteFile(script, []byte(`console.log("ok");`), 0o644)
 	e.run("run", script)
 	client := filepath.Join(e.dir, "mcpx-client.ts")
 	b, err := os.ReadFile(client)
@@ -497,7 +511,7 @@ func TestSchemaCacheSurvivesDaemonRestart(t *testing.T) {
 	if err := os.Rename(e.fake, moved); err != nil {
 		t.Skipf("cannot move fake binary: %v", err)
 	}
-	defer os.Rename(moved, e.fake)
+	defer func() { _ = os.Rename(moved, e.fake) }()
 
 	// Every part of the catalogue, not only tools: the cache held tools and
 	// resources and not prompts, so a restarted daemon served none, and
@@ -971,7 +985,7 @@ func TestNamedExportReceivesSpreadArguments(t *testing.T) {
 	body := `export function join(a: string, b: string) { return a + "+" + b; }
 export default function main() { return "default-was-used"; }
 `
-	os.WriteFile(script, []byte(body), 0o644)
+	_ = os.WriteFile(script, []byte(body), 0o644)
 	out := e.run("run", "--export", "join", script, "x", "y")
 	if !strings.Contains(out, "x+y") {
 		t.Fatalf("--export should call the named function with spread args:\n%s", out)
@@ -984,7 +998,7 @@ export default function main() { return "default-was-used"; }
 func TestUnknownExportNamesWhatExists(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "named2.ts")
-	os.WriteFile(script, []byte(`export function real() { return 1; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export function real() { return 1; }`), 0o644)
 	out, err := e.try("run", "--export", "missing", script)
 	if err == nil {
 		t.Fatalf("expected failure:\n%s", out)
@@ -997,7 +1011,7 @@ func TestUnknownExportNamesWhatExists(t *testing.T) {
 func TestScriptWithoutDefaultExportStillRunsOnImport(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "toplevel.ts")
-	os.WriteFile(script, []byte(`console.log("ran at import time");`), 0o644)
+	_ = os.WriteFile(script, []byte(`console.log("ran at import time");`), 0o644)
 	out := e.run("run", script)
 	if !strings.Contains(out, "ran at import time") {
 		t.Fatalf("a script with no entry point should still run:\n%s", out)
@@ -1013,7 +1027,7 @@ export default async function main() {
   return { done: true };
 }
 `
-	os.WriteFile(script, []byte(body), 0o644)
+	_ = os.WriteFile(script, []byte(body), 0o644)
 	out := e.run("--json", "run", script)
 
 	var doc struct {
@@ -1052,7 +1066,7 @@ export default async function main() {
 func TestRunJSONReportsAFailure(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "fail.ts")
-	os.WriteFile(script, []byte(`throw new Error("deliberate");`), 0o644)
+	_ = os.WriteFile(script, []byte(`throw new Error("deliberate");`), 0o644)
 	out, err := e.try("--json", "run", script)
 	if err == nil {
 		t.Fatal("a throwing script should exit non-zero")
@@ -1090,7 +1104,7 @@ func TestEmitStreamsResultsToStdout(t *testing.T) {
 func TestEmitAndReturnCoexist(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "both.ts")
-	os.WriteFile(script, []byte(`import { emit } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { emit } from "./mcpx-client.ts";
 export default function main() {
   emit({ partial: 1 });
   emit({ partial: 2 });
@@ -1142,7 +1156,7 @@ func TestLogCapturesAnErrorStructurally(t *testing.T) {
 func TestLogSourceRecordsTheCallSite(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "src.ts")
-	os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
 export default function named() {
   log.info("hello");
 }
@@ -1185,7 +1199,7 @@ func TestLogSourceIsOffByDefault(t *testing.T) {
 func TestAFilteredLogCallNeverTouchesItsArguments(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "cost.ts")
-	os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
 export default function main() {
   let touched = 0;
   const probe = { get i() { touched++; return 1; } };
@@ -1245,7 +1259,7 @@ func TestLogWithBindsAttributes(t *testing.T) {
 			continue
 		}
 		var doc map[string]any
-		json.Unmarshal([]byte(line), &doc)
+		_ = json.Unmarshal([]byte(line), &doc)
 		if doc["msg"] == "bound" && doc["run"] == "r1" {
 			bound = true
 		}
@@ -1307,7 +1321,7 @@ func TestExecPrefixFlagReplacesUnlessInherited(t *testing.T) {
 func TestFileScriptPrefixRunsBeforeTopLevelCode(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "top.ts")
-	os.WriteFile(script, []byte(`console.log("TOP-LEVEL");
+	_ = os.WriteFile(script, []byte(`console.log("TOP-LEVEL");
 export default function main() { return "done"; }
 `), 0o644)
 	// A static import would be hoisted and run the module first whatever the
@@ -1325,7 +1339,7 @@ export default function main() { return "done"; }
 func TestFileScriptPrefixCanPatchGlobals(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "glob.ts")
-	os.WriteFile(script, []byte(`export default function main() {
+	_ = os.WriteFile(script, []byte(`export default function main() {
   return { saw: (globalThis as any).INJECTED ?? "<unset>" };
 }
 `), 0o644)
@@ -1340,7 +1354,7 @@ func TestFileScriptPrefixCannotBindModuleScope(t *testing.T) {
 	// declaration is not visible inside the script.
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "scope.ts")
-	os.WriteFile(script, []byte(`export default function main() {
+	_ = os.WriteFile(script, []byte(`export default function main() {
   return { has: typeof (globalThis as any).FROM_PREFIX_CONST };
 }
 `), 0o644)
@@ -1353,7 +1367,7 @@ func TestFileScriptPrefixCannotBindModuleScope(t *testing.T) {
 func TestFileScriptSuffixSeesTheResult(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "res.ts")
-	os.WriteFile(script, []byte(`export default function main() { return { n: 1 }; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return { n: 1 }; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--suffix", `log.info("ok={ok}", { ok: result.ok });`, script)
 	if !strings.Contains(out, "ok=true") {
@@ -1364,7 +1378,7 @@ func TestFileScriptSuffixSeesTheResult(t *testing.T) {
 func TestFileScriptSuffixRunsEvenOnFailure(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "fail2.ts")
-	os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
 	out, err := e.try("run", "--format", "bare",
 		"--suffix", `log.warn("cleanup ok={ok}", { ok: result.ok });`, script)
 	if err == nil {
@@ -1378,7 +1392,7 @@ func TestFileScriptSuffixRunsEvenOnFailure(t *testing.T) {
 func TestFileScriptPrefixSeesTheScriptContext(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "ctx.ts")
-	os.WriteFile(script, []byte(`export default function main() { return "x"; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return "x"; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--prefix", `log.info("{name} got {n}", { name: script.name, n: script.args.length });`,
 		script, "a", "b")
@@ -1432,7 +1446,7 @@ func TestScriptCanUseGlobalsWithoutImporting(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "noimp.ts")
 	// No import statement anywhere.
-	os.WriteFile(script, []byte(`export default async function main() {
+	_ = os.WriteFile(script, []byte(`export default async function main() {
   log("plain call");
   emit({ streamed: 1 });
   const r = await demo.echo({ message: "via global" });
@@ -1459,7 +1473,7 @@ func TestLogIsCallableAsInfo(t *testing.T) {
 func TestImportingStillWorksAlongsideGlobals(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "mixed.ts")
-	os.WriteFile(script, []byte(`import { log as imported } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log as imported } from "./mcpx-client.ts";
 export default function main() {
   imported.info("via import");
   log.info("via global");
@@ -1506,7 +1520,7 @@ func TestConsoleCaptureCanBeDisabled(t *testing.T) {
 func TestGlobalDeclarationsAreWrittenForEditors(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "decl.ts")
-	os.WriteFile(script, []byte(`export default function main() { return 1; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return 1; }`), 0o644)
 	e.run("run", script)
 
 	b, err := os.ReadFile(filepath.Join(e.dir, "mcpx-globals.d.ts"))
@@ -1523,7 +1537,7 @@ func TestGlobalDeclarationsAreWrittenForEditors(t *testing.T) {
 func TestLauncherPhasesRunInOrder(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "ph.ts")
-	os.WriteFile(script, []byte(`export default function main() { log("3 body"); return undefined; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { log("3 body"); return undefined; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--before", `log("1 before")`, "--prefix", `log("2 prefix")`,
 		"--on-success", `log("4 success")`, "--suffix", `log("5 suffix")`, script)
@@ -1542,7 +1556,7 @@ func TestLauncherPhasesRunInOrder(t *testing.T) {
 func TestOnErrorRunsAndTheErrorStillPropagates(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "pherr.ts")
-	os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
 	out, err := e.try("run", "--format", "bare",
 		"--on-success", `log("should not run")`,
 		"--on-error", `log.error("onError fired")`,
@@ -2466,7 +2480,7 @@ func seedElicitation(t *testing.T, e *env, id, server, mode, schema string) {
 	if err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	now := time.Now().UnixMilli()
 	if _, err := db.Exec(`INSERT OR REPLACE INTO elicitations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, "cal-x", "", "s1", server, "tool", mode, "which one?", schema, "", "", "", now, now+120000, now, "pending", 1); err != nil {
@@ -2596,7 +2610,7 @@ func TestTheEventStreamDeliversCallsAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type %q", ct)
 	}
@@ -2630,9 +2644,12 @@ func (e *env) socketClient(t *testing.T) *http.Client {
 	}
 	return &http.Client{
 		Timeout: 3 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
-		}},
+		Transport: coverageRoundTripper{
+			test: t.Name(),
+			base: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
+			}},
+		},
 	}
 }
 
@@ -2650,7 +2667,7 @@ func TestARecordPostedToTheDaemonLandsInTheSameLogAsTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -2670,7 +2687,7 @@ func TestARecordPostedToTheDaemonLandsInTheSameLogAsTheCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400", body, resp.StatusCode)
 		}
@@ -2790,7 +2807,7 @@ func TestEnvCleanupStopsTheDaemonItStarted(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if conn, err := net.Dial("unix", d.socket); err == nil {
-			conn.Close()
+			_ = conn.Close()
 			t.Errorf("daemon %d still listening on %s after cleanup", d.pid, d.socket)
 		}
 		if syscall.Kill(d.pid, 0) == nil {
@@ -2803,7 +2820,7 @@ func TestEnvCleanupStopsTheDaemonItStarted(t *testing.T) {
 // or the process.
 func daemonAlive(socket string, pid int) bool {
 	if conn, err := net.Dial("unix", socket); err == nil {
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}
 	return syscall.Kill(pid, 0) == nil
@@ -2830,7 +2847,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -2863,7 +2880,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad.Body.Close()
+	_ = bad.Body.Close()
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Errorf("relative dir: status %d, want 400", bad.StatusCode)
 	}

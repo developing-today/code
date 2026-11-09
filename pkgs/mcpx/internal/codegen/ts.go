@@ -317,10 +317,10 @@ func (r *renderer) object(s *schema, indent string) string {
 		if !req[k] {
 			opt = "?"
 		}
-		b.WriteString(fmt.Sprintf("%s%s%s: %s;\n", inner, propKey(k), opt, r.render(p, inner)))
+		fmt.Fprintf(&b, "%s%s%s: %s;\n", inner, propKey(k), opt, r.render(p, inner))
 	}
 	if extra := r.additional(s, inner); extra != "" {
-		b.WriteString(fmt.Sprintf("%s[key: string]: %s;\n", inner, extra))
+		fmt.Fprintf(&b, "%s[key: string]: %s;\n", inner, extra)
 	}
 	b.WriteString(indent + "}")
 	return b.String()

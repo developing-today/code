@@ -13,7 +13,7 @@ import json, os, subprocess, sys, time
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, load_plan, load_state, report_problems
+from ghb_common import load_config, backup_root, mirror_path, valid_mirror, load_plan, load_state, report_problems, save_json, state_lock
 import manifest as manifest_mod
 
 COALESCE_S = 12 * 3600
@@ -88,6 +88,18 @@ def _repo_state(state, repo):
 def fetch_repo(root, repo, state):
     path = mirror_path(root, repo)
     if not valid_mirror(path):
+        # #3270 / design #3282 rule 5: a missing mirror is an
+        # unavailable day, recorded exactly like a failure day. The
+        # missing path used to return before any state was touched,
+        # so a repo with NO backup at all could never trip the
+        # chronic alarm (3 consecutive days -> exit 1) that a merely
+        # failing fetch trips. Success clears the record via the
+        # same fail_days reset as the failure path.
+        st = _repo_state(state, repo)
+        today = time.strftime("%Y-%m-%d")
+        days = st.setdefault("fail_days", [])
+        record_failure_day(days, today)
+        st["last_error"] = "mirror missing or invalid on disk"
         return "missing"
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     try:
@@ -127,6 +139,14 @@ def iter_plan_repos(root):
 def main(argv):
     cfg = load_config()
     root = backup_root(cfg)
+    # #3240: the whole load -> modify -> save cycle runs under the
+    # shared state lock so the daily fetch and the 5-minute drainer
+    # cannot interleave a lost update into state.json.
+    with state_lock(root):
+        return _main_locked(argv, root)
+
+
+def _main_locked(argv, root):
     state_path = os.path.join(root, "state.json")
     state, problems = load_state(root)
     report_problems(problems)
@@ -150,8 +170,7 @@ def main(argv):
                     f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {repo} {res} "
                     f"{(state.get(repo) or {}).get('last_error', '')}\n"
                 )
-    with open(state_path, "w") as f:
-        json.dump(state, f, indent=0)
+    save_json(state_path, state)
     manifest_mod.build(root)
     chronic = [
         r

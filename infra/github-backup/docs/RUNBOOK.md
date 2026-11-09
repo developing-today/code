@@ -174,6 +174,14 @@ Config (this repo) + Bitwarden are the only inputs. §7 Option B rebuilds
 the entire tree; MANIFEST.json regenerates at the end. Exclusions and
 gaps in config.json reproduce exactly the intended non-coverage.
 
+MANIFEST.json is trustworthy as the DR record because of the system
+contract in `../README.md` ("a mirror is what it can prove", design
+#3282): a mirror is only reported `mirrored` when its HEAD resolves,
+every generated-state file is written atomically with a last-good
+copy, and a failed owner's repos stay planned rather than silently
+dropping out of the manifest. Read that section before treating any
+status surface here as coverage.
+
 ## 10. Health checks
 
 ```sh
