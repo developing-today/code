@@ -155,6 +155,9 @@ type Options struct {
 	// TypeCheck is off, syntax, types or strict; on remains an alias for types.
 	// Empty takes the daemon's default.
 	TypeCheck string `json:"typecheck,omitempty"`
+	// TypeCheckOnError and TypeCheckOnUnsupported carry the caller's preflight policies.
+	TypeCheckOnError       string `json:"checkOnError,omitempty"`
+	TypeCheckOnUnsupported string `json:"checkOnUnsupported,omitempty"`
 	// Imports is off, report or prepare; empty takes the daemon's default.
 	Imports string `json:"imports,omitempty"`
 	// ImportsOnDynamic is warn, fail or ignore; empty takes the daemon's.
@@ -536,18 +539,20 @@ type Limits struct {
 	// Setup holds declared runtimes, the auto order and user profiles.
 	Setup runner.Setup
 	// SetupErr is why Setup could not be read; every run reports it.
-	SetupErr            error
-	CaptureConsole      bool
-	Typecheck           string
-	Imports             string
-	ImportsOnDynamic    string
-	ImportsOnMissing    string
-	ImportsCrossProject string
-	ImportsNetwork      string
-	Delivery            string
-	InlineMaxBytes      int64
-	ChunkBytes          int64
-	InterceptImages     bool
+	SetupErr               error
+	CaptureConsole         bool
+	Typecheck              string
+	TypeCheckOnError       string
+	TypeCheckOnUnsupported string
+	Imports                string
+	ImportsOnDynamic       string
+	ImportsOnMissing       string
+	ImportsCrossProject    string
+	ImportsNetwork         string
+	Delivery               string
+	InlineMaxBytes         int64
+	ChunkBytes             int64
+	InterceptImages        bool
 	// StdoutLimit caps the stdout a Result returns (bytes); <= 0 is no cap.
 	StdoutLimit int64
 }
@@ -704,33 +709,35 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		capture = *opts.CaptureConsole
 	}
 	ropts := runner.Options{
-		Source:              req.Source,
-		File:                req.File,
-		ClientSource:        clientSrc,
-		GlobalsSource:       globals,
-		Clients:             clients,
-		WorkDir:             s.WorkDir,
-		WorkRoot:            s.WorkRoot,
-		Runtime:             firstNonEmpty(opts.Runtime, s.Limits.Runtime),
-		Interpreter:         firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
-		CwdPolicy:           firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
-		ConfigDir:           s.ConfigDir,
-		Setup:               s.Limits.Setup,
-		Timeout:             timeout,
-		Permissions:         firstNonEmpty(opts.Permissions, s.Limits.Permissions),
-		CaptureConsole:      capture,
-		TypeCheck:           firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
-		Imports:             firstNonEmpty(opts.Imports, s.Limits.Imports),
-		ImportsOnDynamic:    firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
-		ImportsOnMissing:    firstNonEmpty(opts.ImportsOnMissing, s.Limits.ImportsOnMissing),
-		ImportsCrossProject: firstNonEmpty(opts.ImportsCrossProject, s.Limits.ImportsCrossProject),
-		ImportsNetwork:      firstNonEmpty(opts.ImportsNetwork, s.Limits.ImportsNetwork),
-		Launcher:            opts.Launcher,
-		LauncherName:        opts.LauncherName,
-		AllowRepeat:         opts.AllowRepeat,
-		Export:              opts.Export,
-		Args:                opts.Args,
-		Dir:                 opts.Cwd,
+		Source:                 req.Source,
+		File:                   req.File,
+		ClientSource:           clientSrc,
+		GlobalsSource:          globals,
+		Clients:                clients,
+		WorkDir:                s.WorkDir,
+		WorkRoot:               s.WorkRoot,
+		Runtime:                firstNonEmpty(opts.Runtime, s.Limits.Runtime),
+		Interpreter:            firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
+		CwdPolicy:              firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
+		ConfigDir:              s.ConfigDir,
+		Setup:                  s.Limits.Setup,
+		Timeout:                timeout,
+		Permissions:            firstNonEmpty(opts.Permissions, s.Limits.Permissions),
+		CaptureConsole:         capture,
+		TypeCheck:              firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
+		TypeCheckOnError:       firstNonEmpty(opts.TypeCheckOnError, s.Limits.TypeCheckOnError),
+		TypeCheckOnUnsupported: firstNonEmpty(opts.TypeCheckOnUnsupported, s.Limits.TypeCheckOnUnsupported),
+		Imports:                firstNonEmpty(opts.Imports, s.Limits.Imports),
+		ImportsOnDynamic:       firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
+		ImportsOnMissing:       firstNonEmpty(opts.ImportsOnMissing, s.Limits.ImportsOnMissing),
+		ImportsCrossProject:    firstNonEmpty(opts.ImportsCrossProject, s.Limits.ImportsCrossProject),
+		ImportsNetwork:         firstNonEmpty(opts.ImportsNetwork, s.Limits.ImportsNetwork),
+		Launcher:               opts.Launcher,
+		LauncherName:           opts.LauncherName,
+		AllowRepeat:            opts.AllowRepeat,
+		Export:                 opts.Export,
+		Args:                   opts.Args,
+		Dir:                    opts.Cwd,
 		// Explicitly not the daemon's standard input. A script run on
 		// somebody else's behalf reading the daemon's stdin would be reading
 		// whatever started the daemon.
@@ -984,6 +991,25 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		if priorArtifact != nil {
 			priorArtifact(a)
 		}
+	}
+
+	// The runner's non-fatal preflight diagnostics -- a check warning
+	// under checkOnError=warn, an import noted rather than fatal -- are
+	// written to Stderr, and this service captures Stderr in the tail
+	// buffer it only surfaces on a non-zero exit. On a successful run
+	// the diagnostic would vanish, leaving the `warn` policy
+	// indistinguishable from `run` for a remote caller. Route each one
+	// through the result and the frame stream as well, so /v1 exec and
+	// MCP callers receive it either way (Codex review, PR #6111).
+	ropts.OnWarning = func(msg string) {
+		rec := LogRecord{
+			Time:    time.Now().Format(time.RFC3339Nano),
+			Level:   logging.LevelName(slog.LevelWarn),
+			Message: msg,
+			Attrs:   map[string]any{"stage": "preflight"},
+		}
+		res.Logs = append(res.Logs, rec)
+		emitFrame(Frame{Type: FrameLog, Level: rec.Level, Message: rec.Message, Attrs: rec.Attrs})
 	}
 
 	// Session release happens after every hook has run, not here: the
@@ -1375,7 +1401,7 @@ func (s *Service) streamBodies(res *Result, opts Options, emit func(Frame)) {
 				break
 			}
 		}
-		f.Close()
+		_ = f.Close()
 		emit(Frame{Type: FrameArtifactEnd, ID: a.ID})
 	}
 }

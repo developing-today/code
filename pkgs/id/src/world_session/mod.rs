@@ -1584,8 +1584,9 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
     }
 }
 
-/// Serve query frames (`info`, `records`, `records_ticket`,
-/// `download_module`) until the peer closes, denies, or sends a frame that
+/// Serve query frames (`info`, `caps`, `execution_profile`, `metrics`,
+/// `records`, `records_ticket`, `download_module`) until the peer closes,
+/// denies, or sends a frame that
 /// ends the session. A `join` frame switches to the joined session.
 async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: ClientFrame) {
     let mut next = Some(first);
@@ -1742,6 +1743,77 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 if let Err(message) = download_module_session(service, io, &module_hash).await {
                     let _ = send_error(service.frame_meter(), io, message).await;
                     return;
+                }
+            }
+            ClientFrame::Caps { capability } => {
+                // Read-only like `info`/`metrics` (#6802): the stats
+                // verb chains info -> caps -> profile -> metrics over
+                // one connection, so the query session serves caps
+                // with the first-frame authorization (a participant
+                // capability) instead of refusing the frame.
+                let token = JoinCapability::from_wire(capability);
+                if service.world().participant_id(token).await.is_err() {
+                    let _ = send_error(service.frame_meter(), io, "join denied").await;
+                    return;
+                }
+                io.mark_authorized();
+                match service.world().caps_report().await {
+                    Ok(report) => {
+                        if !send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
+                            .await
+                        {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ =
+                            send_error(service.frame_meter(), io, "capability report unavailable")
+                                .await;
+                        return;
+                    }
+                }
+            }
+            ClientFrame::ExecutionProfileInfo {
+                admin_token,
+                capability,
+            } => {
+                // Same authorization as the first-frame handler: an
+                // admin token, or a participant capability (the stats
+                // verb sends the latter). (#6802)
+                let auth_ok = if let Some(admin) = admin_token.as_deref() {
+                    service.authorize_admin(Some(admin)).is_ok()
+                } else if let Some(cap) = capability.as_deref() {
+                    let token = JoinCapability::from_wire(cap.to_string());
+                    service.world().participant_id(token).await.is_ok()
+                } else {
+                    false
+                };
+                if !auth_ok {
+                    let _ = send_error(service.frame_meter(), io, "access denied").await;
+                    return;
+                }
+                match service.world().execution_profile().await {
+                    Ok(profile) => {
+                        if !send_json(
+                            service.frame_meter(),
+                            io,
+                            &ServerFrame::ExecutionProfile {
+                                update: crate::world::ExecutionProfileUpdate {
+                                    requested: profile,
+                                    applies_on_next_program_install_or_process_restart: false,
+                                },
+                                message: "current persisted execution profile",
+                            },
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                        return;
+                    }
                 }
             }
             _ => {
@@ -2062,7 +2134,8 @@ async fn install_module_session<I: SessionIo>(
                 return Err("invalid module chunk frame");
             };
             let Ok(ClientFrame::InstallChunk { offset, data_hex }) =
-                serde_json::from_str::<ClientFrame>(&text)
+                parse_json_without_duplicate_keys(&text)
+                    .and_then(|value| serde_json::from_value::<ClientFrame>(value))
             else {
                 return Err("expected module chunk frame");
             };
@@ -2081,7 +2154,7 @@ async fn install_module_session<I: SessionIo>(
         let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
             .await
             .map_err(|_| "timed out waiting for install completion")?;
-        if !matches!(incoming, Inbound::Text(ref text) if matches!(serde_json::from_str::<ClientFrame>(text), Ok(ClientFrame::InstallEnd)))
+        if !matches!(incoming, Inbound::Text(ref text) if matches!(parse_json_without_duplicate_keys(text).and_then(|value| serde_json::from_value::<ClientFrame>(value)), Ok(ClientFrame::InstallEnd)))
         {
             return Err("expected install_end frame");
         }

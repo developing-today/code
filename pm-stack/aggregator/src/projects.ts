@@ -375,12 +375,41 @@ export async function fetchProjectSnapshot(
 }
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
- * the collector can fail-soft and omit the section. Never logs the token. */
-export async function fetchProjectPool(
-  token: string,
-  fetchFn: typeof fetch = fetch,
-): Promise<ProjectPoolItem[]> {
-  return (await fetchProjectSnapshot(token, fetchFn)).items;
+ * the collector can fail-soft and omit the section. Never logs the token.
+ * Pool-only path: it must NOT route through fetchProjectSnapshot — the
+ * audit parser requires board fields/views metadata that pool-only
+ * responses (e.g. the contract corpus) do not carry, and a missing audit
+ * must never cost the pool. The collector uses fetchProjectSnapshot
+ * for the audited section instead. */
+export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
+  const out: ProjectPoolItem[] = [];
+  let cursor: string | null = null;
+  let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
+  for (let page = 0; page < 10; page++) {
+    const res = await fetchFn("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "pm-fleet-feed-collector",
+      },
+      body: JSON.stringify({ query: PROJECT_QUERY, variables: { id: PROJECT_ID, cursor } }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`github GraphQL HTTP ${res.status}`);
+    const json: unknown = await res.json();
+    if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
+    out.push(...parseProjectItems(json));
+    lastPageInfo = projectPageInfo(json);
+    if (!lastPageInfo.hasNextPage || !lastPageInfo.endCursor) break;
+    cursor = lastPageInfo.endCursor;
+  }
+  if (lastPageInfo?.hasNextPage && lastPageInfo.endCursor) {
+    throw new Error(`github project pool truncated at 10-page cap (totalCount: ${lastPageInfo.totalCount})`);
+  }
+  // Epic membership needs the whole pool (parents may sit on other
+  // pages), so it resolves once over the aggregate, not per page.
+  return resolveEpicRefs(out);
 }
 
 /** Structural check for a pool entry in a feed (collector + live share

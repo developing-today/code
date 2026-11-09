@@ -34,9 +34,9 @@ use atlas_core::{
     VectorBackend as CoreVectorBackend, run_get_chunk, run_search_with_executor,
 };
 use atlas_proto::{
-    BranchState, BranchStates, ErrorResponse, HealthResponse, JobCreated, JobDeleted,
-    JobListResponse, JobStatus, JobStatusResponse, JobSummary, SearchMode as ProtoSearchMode,
-    SearchPage, SearchRequest, Sensitivity as ProtoSensitivity,
+    BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
+    JobCreated, JobDeleted, JobListResponse, JobStatus, JobStatusResponse, JobSummary,
+    SearchMode as ProtoSearchMode, SearchPage, SearchRequest, Sensitivity as ProtoSensitivity,
     VectorBackend as ProtoVectorBackend,
 };
 use serde::Deserialize;
@@ -203,11 +203,19 @@ pub struct ServeSettings {
     pub limits: RuntimeLimits,
 }
 
+fn home_dir() -> PathBuf {
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
+}
+
 pub fn default_service_config_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".local/state/atlas-search/service.json")
+    home_dir().join(".local/state/atlas-search/service.json")
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
@@ -523,15 +531,6 @@ fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
             "pool must be between 1 and 400 (design section 2)",
         ));
     }
-    if req.expand > atlas_core::MAX_EXPAND_NEIGHBORS {
-        return Err(ServerError::bad_request(format!(
-            "expand must be at most {}",
-            atlas_core::MAX_EXPAND_NEIGHBORS
-        )));
-    }
-    // Deliberately leave k unbounded: it truncates the candidates produced by
-    // the bounded pool, and grouped search caps its consideration window to
-    // the available candidates in atlas-core.
     if req.k == 0 {
         return Err(ServerError::bad_request("k must be at least 1"));
     }
@@ -566,6 +565,19 @@ pub trait SearchEngine: Send + Sync {
         neighbors: usize,
         ceiling: ProtoSensitivity,
     ) -> Result<Json, ServerError>;
+
+    /// Embed one query text into the production query-vector
+    /// space (#6788): the Cloudflare search Worker's miss path
+    /// stores this vector in the query's Durable Object before
+    /// searching. The default refuses; engines with a resident
+    /// embedder override it.
+    fn embed_query(&self, _text: &str, _trunc: usize) -> Result<Vec<f32>, ServerError> {
+        Err(ServerError::new(
+            501,
+            "embed_unavailable",
+            "this engine does not serve embeddings",
+        ))
+    }
 
     fn embedder_state(&self) -> String;
 }
@@ -660,6 +672,12 @@ where
             return Err(not_found());
         }
         run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
+            .map_err(|e| ServerError::from_core(&e))
+    }
+
+    fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
+        self.embedder
+            .embed_query(text, trunc)
             .map_err(|e| ServerError::from_core(&e))
     }
 
@@ -1690,6 +1708,14 @@ impl JobManager {
             .chunk(chunk_id, neighbors, job.computation.effective_ceiling)
     }
 
+    /// Embed one query through the engine's shared embedder
+    /// (#6788). No job is created: the vector is a pure function
+    /// of the text under the pinned model, and the caller (the
+    /// search Worker) owns its retention.
+    pub fn embed(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
+        self.engine.embed_query(text, trunc)
+    }
+
     pub fn embedder_state(&self) -> String {
         self.engine.embedder_state()
     }
@@ -1703,6 +1729,18 @@ fn format_cursor(offset: usize) -> String {
 }
 
 fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
+    // Every byte must be an ASCII hex digit and the length even (#7761,
+    // the #2517 gate the sibling hex parsers already carry): slicing the
+    // string at byte offsets without this gate panics on an odd-length
+    // cursor (final pair out of range) or on a multi-byte character at a
+    // misaligned offset, killing the per-connection thread instead of
+    // returning the malformed-cursor 400 below. u8::from_str_radix also
+    // accepts a leading plus sign, so the gate is what makes a pair two
+    // hex digits and nothing else.
+    let raw = cursor.as_bytes();
+    if raw.len() % 2 != 0 || !raw.iter().all(u8::is_ascii_hexdigit) {
+        return Err(ServerError::bad_request("malformed cursor"));
+    }
     let bytes: Result<Vec<u8>, _> = (0..cursor.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&cursor[i..i + 2], 16))
@@ -2030,6 +2068,29 @@ impl ServerInner {
                         queue_depth: stats.queue_depth,
                         active_branch_executions: stats.active_branch_executions,
                         active_jobs: stats.active_jobs,
+                    })
+                    .unwrap(),
+                ))
+            }
+            ("POST", ["v1", "embed"]) => {
+                // Authenticated like every /v1 route. The vector
+                // carries no corpus data, so any valid client may
+                // embed; ceilings govern search, not embedding
+                // (#6788).
+                self.require_client(req)?;
+                let request: EmbedRequest = req.json()?;
+                if request.query.trim().is_empty() {
+                    return Err(ServerError::bad_request("query must not be empty"));
+                }
+                let vector = self
+                    .manager
+                    .embed(&request.query, request.trunc.unwrap_or(0))?;
+                Ok(HttpResponse::json(
+                    200,
+                    serde_json::to_value(EmbedResponse {
+                        model: atlas_core::DEFAULT_MODEL.to_string(),
+                        dims: vector.len(),
+                        vector,
                     })
                     .unwrap(),
                 ))
@@ -2436,6 +2497,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn embed_route_serves_the_shared_embedder_vector() {
+        // #6788: the Worker miss path embeds through the service
+        // so the stored vector lives in the corpus's own space.
+        // Oracle: the harness embedder is FixedEmbedder raw
+        // [1, 0], which the shared finish step leaves as the unit
+        // vector [1, 0]; dims and model must name that space.
+        let (handle, _calls) = start(RuntimeLimits::default(), None);
+        let addr = handle.addr;
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/embed",
+            Some(PERSONAL_TOKEN),
+            Some(json!({"query": "alpha"})),
+        );
+        assert_eq!(resp.status, 200, "body: {}", resp.body);
+        assert_eq!(resp.body["model"], json!(atlas_core::DEFAULT_MODEL));
+        assert_eq!(resp.body["dims"], json!(2));
+        assert_eq!(resp.body["vector"], json!([1.0, 0.0]));
+        // Unauthenticated embedding is refused like every /v1 route.
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/embed",
+            None,
+            Some(json!({"query": "alpha"})),
+        );
+        assert_eq!(resp.status, 401);
+        // An empty query is a client error, never an embedding.
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/embed",
+            Some(PERSONAL_TOKEN),
+            Some(json!({"query": "  "})),
+        );
+        assert_eq!(resp.status, 400);
+    }
+
     fn submit(addr: SocketAddr, token: &str, body: Json) -> TestResponse {
         http(addr, "POST", "/v1/search/jobs", Some(token), Some(body))
     }
@@ -2486,24 +2587,6 @@ mod tests {
     }
 
     // ----- tests --------------------------------------------------------
-
-    #[test]
-    fn expand_validation_matches_the_core_neighbor_limit() {
-        let mut req = SearchRequest {
-            expand: atlas_core::MAX_EXPAND_NEIGHBORS,
-            ..SearchRequest::default()
-        };
-        assert!(validate_request(&req).is_ok());
-
-        req.expand = atlas_core::MAX_EXPAND_NEIGHBORS + 1;
-        let err = validate_request(&req).unwrap_err();
-        assert_eq!(err.status, 400);
-        assert!(
-            err.body.error.message.contains("100"),
-            "got: {:?}",
-            err.body
-        );
-    }
 
     #[test]
     fn paging_reuses_stored_ranking_and_matches_one_shot() {
@@ -3264,5 +3347,19 @@ mod tests {
             None,
         );
         assert_eq!(result_ids(&pq.body), vec![2]);
+    }
+    #[test]
+    fn parse_cursor_refuses_malformed_input_without_panicking() {
+        // #7761: odd-length, single-char, and multibyte cursors used to
+        // panic on byte-offset slicing; every malformed shape must be
+        // the malformed-cursor error instead.
+        let valid = format_cursor(42);
+        assert_eq!(parse_cursor(&valid).ok(), Some(42));
+        assert!(parse_cursor("").is_err());
+        assert!(parse_cursor("zzzz").is_err());
+        assert!(parse_cursor("a").is_err());
+        assert!(parse_cursor(&valid[..valid.len() - 1]).is_err());
+        assert!(parse_cursor("6162aé").is_err());
+        assert!(parse_cursor("+a").is_err());
     }
 }

@@ -18,6 +18,7 @@ in
     "openclaw/gateway-token" = userSecret "openclaw.gateway-token";
     "openclaw/slack-bot-token" = userSecret "openclaw.slack-bot-token";
     "openclaw/slack-app-token" = userSecret "openclaw.slack-app-token";
+    "openclaw/telegram-bot-token" = userSecret "openclaw.telegram-bot-token";
     "openclaw/tavily-api-key" = userSecret "openclaw.tavily-api-key";
   };
 }

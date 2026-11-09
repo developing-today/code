@@ -1,3 +1,4 @@
+// Package defaults defines every default value the program ships, parsed from the embedded defaults.json.
 package defaults
 
 import (
@@ -87,6 +88,11 @@ type Defaults struct {
 	Resolve struct {
 		DialTimeout string `json:"dialTimeout"`
 	} `json:"resolve"`
+	// Preflight governs the resolver's own outbound lookups while it
+	// walks an import graph.
+	Preflight struct {
+		NPMTimeout string `json:"npmTimeout"`
+	} `json:"preflight"`
 	// Elicit governs questions a server asks back.
 	Elicit struct {
 		TTL            string `json:"ttl"`
@@ -575,6 +581,12 @@ var (
 	// socket, so it either succeeds immediately or the daemon is gone;
 	// waiting longer only makes a dead daemon slower to report.
 	ResolveDialTimeout = mustDur(builtin.Resolve.DialTimeout, "resolve.dialTimeout")
+
+	// PreflightNPMTimeout bounds the npm registry lookup preflight makes
+	// for a package's latest version. Like ResolveDialTimeout it is an
+	// internal bound, so it lives in defaults.json only and is
+	// deliberately absent from the settings registry.
+	PreflightNPMTimeout = mustDur(builtin.Preflight.NPMTimeout, "preflight.npmTimeout")
 
 	ElicitTTL = mustDur(builtin.Elicit.TTL, "elicit.ttl")
 	// ElicitMaxAge is the absolute ceiling on a question's life under the

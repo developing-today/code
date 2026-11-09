@@ -58,6 +58,26 @@
 //!   part remains independently replicable without changing this envelope.
 //!   This writer-side guarantee does not repair oversized checkpoints left
 //!   by older binaries; those are handled separately from the v1 wire path.
+//!
+//! ## Admission contract (#4592)
+//!
+//! **A frame is admitted only if its header version names a chain that
+//! could exist: inside the restore range
+//! `JOURNAL_VERSION..=MAX_JOURNAL_VERSION`, and — for a snapshot, the one
+//! frame kind allowed to change the chain's version — never lower than
+//! the version of the chain the tracker already holds.**
+//!
+//! [`ReplicationTracker::accept`] enforces both clauses for every frame
+//! kind before any state changes: the envelope range check refuses an
+//! out-of-range `header_version` with
+//! [`ReplicationError::UnsupportedJournalVersion`], and the Snapshot arm
+//! refuses a lower-than-current version. Construction enforces the range
+//! clause too: [`ReplicationTracker::new`] refuses an out-of-range
+//! session version, so no live tracker can hold one. The Phase 3 closing
+//! audit (#4593) dispositioned every precondition
+//! [`super::WorldCore::restore`] demands of a journal against these
+//! checks; its one confirmed gap — per-entry version requirements are
+//! enforced at restore but not yet at accept — is filed as #7970.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -724,6 +744,10 @@ impl ReplicationTracker {
     /// Verify one encoded frame and, if it passes every check, advance
     /// the session state and return the payload to apply.
     ///
+    /// This is where the module's admission contract (see the module
+    /// doc, #4592) is enforced: a frame is admitted only if its header
+    /// version names a chain that could exist.
+    ///
     /// # Errors
     ///
     /// The [`ReplicationError`] naming the first failed check; the
@@ -768,9 +792,21 @@ impl ReplicationTracker {
         }
         match envelope.kind {
             ReplicationKind::Snapshot => {
-                // A snapshot rebases the chain: its before-cursor must be
-                // the base for its own header version, whatever the
-                // current chain is (first sync, compaction, header bump).
+                // A snapshot rebases the chain, but journal header
+                // versions only ever move forward: a snapshot carrying a
+                // LOWER header version than the chain's current one is a
+                // stale or forged stream, never a legitimate writer
+                // state. Refuse it like the Tail/Terminal arms refuse a
+                // version change, leaving verified state untouched —
+                // otherwise one snapshot frame silently rolls the
+                // replica back and re-admits old-version tails the Tail
+                // arm refused moments earlier (issue #4487).
+                if envelope.header_version < self.header_version {
+                    return Err(ReplicationError::HeaderVersionChanged);
+                }
+                // Its before-cursor must be the base for its own header
+                // version, whatever the current chain is (first sync,
+                // compaction, header bump).
                 let base = chain_base_cursor(
                     &envelope.world_id,
                     &envelope.source,
@@ -1522,6 +1558,92 @@ mod tests {
             receiver.accept(&stale_bytes),
             Err(ReplicationError::HeaderVersionChanged)
         );
+    }
+
+    #[test]
+    fn snapshot_refuses_a_header_version_downgrade() {
+        let key = signing_key(1);
+        let mut receiver = tracker(&key);
+        let first = signed_tail(
+            &key,
+            chain_base_cursor(WORLD, &source_of(&key), 1),
+            [0; 32],
+            entry_payload(),
+        );
+        receiver.accept(&first).unwrap();
+        // Header-bump rebase to v2, as in
+        // snapshot_rebases_the_chain_on_a_header_bump.
+        let bump = signed_snapshot(&key, 2, frame_digest(&first), entry_payload_with_version(2));
+        let accepted = receiver.accept(&bump).unwrap();
+        assert_eq!(accepted.kind, ReplicationKind::Snapshot);
+        assert_eq!(receiver.header_version(), 2);
+        let cursor_after_bump = receiver.cursor();
+
+        // A snapshot on the OLD header version (correct session nonce,
+        // correct frame chain, signed by the pinned source) must be
+        // refused: header versions never move backwards.
+        let downgrade = signed_snapshot(&key, 1, frame_digest(&bump), entry_payload());
+        assert_eq!(
+            receiver.accept(&downgrade),
+            Err(ReplicationError::HeaderVersionChanged)
+        );
+        // The refused frame leaves verified state untouched.
+        assert_eq!(receiver.header_version(), 2);
+        assert_eq!(receiver.cursor(), cursor_after_bump);
+
+        // A v1 tail is still refused after the downgrade attempt (the
+        // frame chain still names the accepted v2 snapshot, since the
+        // refused frame did not advance it).
+        let stale_tail = ReplicationEnvelope::tail(
+            WORLD,
+            source_of(&key),
+            1,
+            NONCE,
+            receiver.cursor(),
+            frame_digest(&bump),
+            entry_payload(),
+        )
+        .unwrap();
+        let stale_bytes = SignedReplicationEnvelope::sign(stale_tail, &key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        assert_eq!(
+            receiver.accept(&stale_bytes),
+            Err(ReplicationError::HeaderVersionChanged)
+        );
+
+        // And the chain still advances normally on v2 afterwards (a
+        // tail away from the chain base carries no Created header).
+        let v2_payload: Vec<u8> = [
+            JournalEntry::CapsGranted {
+                granted: vec!["chat".to_string()],
+            },
+            JournalEntry::CapsCeiling {
+                ceiling: vec!["chat".to_string(), "input".to_string()],
+            },
+        ]
+        .iter()
+        .flat_map(journal_entry_line)
+        .collect();
+        let v2_tail = ReplicationEnvelope::tail(
+            WORLD,
+            source_of(&key),
+            2,
+            NONCE,
+            receiver.cursor(),
+            frame_digest(&bump),
+            v2_payload,
+        )
+        .unwrap();
+        let v2_bytes = SignedReplicationEnvelope::sign(v2_tail, &key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        let accepted = receiver.accept(&v2_bytes).unwrap();
+        assert_eq!(accepted.kind, ReplicationKind::Tail);
+        assert_eq!(receiver.header_version(), 2);
+        assert_eq!(accepted.cursor_after.ordinal, 5);
     }
 
     /// A signed snapshot frame over `payload` on the version-`version`

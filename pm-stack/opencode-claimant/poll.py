@@ -34,11 +34,11 @@ Prints one JSON object:
                                               # null when count unknown
   }
 
-Read-only by construction: claimed rows come from the repo-queue
-binary (`~/fleet-brokers/bin/repo-queue list --queue <queue>
---status claimed` — the deployed binary's list verb rejects
-`--worker`, verified 2026-11-07) and session state from GETs to the
-laptop OpenCode server. The claimant treats a null cap_room as NO
+Read-only by construction: claimed rows come from the queue-broker's
+`/list` endpoint with `rich: true` (the same broker the repo-queue
+binary fronts; the binary's list verb prints a human table, so the
+JSON rows the classifiers read only exist on this route — #7325) and
+session state from GETs to the laptop OpenCode server. The claimant treats a null cap_room as NO
 launch room: an unreadable session list or active set must never
 become a launch decision.
 
@@ -78,8 +78,27 @@ CONCURRENCY_CAP = CAP
 # fires every 10 min and a working session updates far more often.
 ACTIVE_WINDOW_MS = 30 * 60 * 1000
 
-REPO_QUEUE_CMD = Path.home() / "fleet-brokers" / "bin" / "repo-queue"
+# Packaged fleet binary via its repo-queue argv0 alias
+# (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
+# ~/fleet-brokers/bin tree was retired by the code#5362 cutover
+# (task 12731).
+REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
 PRIMARY_CLONE = Path.home() / "git" / "code"
+
+# Queue-broker coordinates for the rich /list read, mirroring the
+# fleet client's own resolution (pkgs/fleet crates/fleet-queue
+# client.rs): REPO_QUEUE_BROKER_URL or ~/.config/repo-queue/broker-url
+# for the URL, REPO_QUEUE_TOKEN_FILE or ~/.config/queue-broker/token
+# for the client token. The token is read at call time, travels in the
+# X-Agent-Token header exactly as the binary sends it, and is never
+# logged.
+BROKER_URL_FILE = Path.home() / ".config" / "repo-queue" / "broker-url"
+BROKER_TOKEN_FILE = Path.home() / ".config" / "queue-broker" / "token"
+# One page at the broker's own maximum (LIST_LIMIT_MAX = 500 in
+# client.rs). A queue's claimed set is far smaller; and a short page
+# could only ever under-report candidates, never invent one.
+LIST_LIMIT = 500
+
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
@@ -285,26 +304,47 @@ def fetch_active_ids():
     return None
 
 
+def _broker_post(path, body):
+    """POST a JSON body to the queue-broker and return the decoded
+    response object. Raises on any transport, credential or protocol
+    failure — callers fail closed."""
+    url = os.environ.get("REPO_QUEUE_BROKER_URL", "").strip()
+    if not url:
+        url = BROKER_URL_FILE.read_text().strip()
+    token_file = os.environ.get("REPO_QUEUE_TOKEN_FILE", "").strip()
+    token = Path(token_file).read_text().strip() if token_file \
+        else BROKER_TOKEN_FILE.read_text().strip()
+    req = urllib.request.Request(
+        url.rstrip("/") + path,
+        data=json.dumps(body).encode(),
+        headers={"X-Agent-Token": token,
+                 "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as res:
+        data = json.loads(res.read() or "null")
+    if isinstance(data, dict) and data.get("ok") is False:
+        raise RuntimeError(
+            f"broker {path} failed: {str(data.get('error'))[:200]}")
+    return data
+
+
 def fetch_claimed_rows(queue):
-    """Claimed rows for one queue via the repo-queue binary (the route
-    prompt.md documents). Returns [] with a warning on any failure: a
-    queue that cannot be read contributes no candidates and no
-    stuck-bound rows, and the cap still fails closed via the session
-    reads, so a partial view can never cause a launch by itself."""
+    """Claimed rows for one queue from the broker's rich /list. The
+    repo-queue binary's list verb prints a human table, and
+    json-parsing it read every queue as empty — the claimant was
+    blind from the #5362 cutover until this route was restored
+    (#7325/#7375). Returns [] with a warning on any failure: a queue
+    that cannot be read contributes no candidates and no stuck-bound
+    rows, and the cap still fails closed via the session reads, so a
+    partial view can never cause a launch by itself."""
     try:
-        result = subprocess.run(
-            [str(REPO_QUEUE_CMD), "list", "--queue", queue,
-             "--status", "claimed"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=str(PRIMARY_CLONE),
-        )
-        if result.returncode != 0:
-            print(f"Warning: Could not poll queue {queue}: "
-                  f"{result.stderr.strip()[:200]}", file=sys.stderr)
-            return []
-        data = json.loads(result.stdout)
+        data = _broker_post("/list", {
+            "queue": queue,
+            "status": "claimed",
+            "rich": True,
+            "limit": LIST_LIMIT,
+        })
     except Exception as e:
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
         return []
@@ -328,15 +368,37 @@ def normalize_row(row):
     """Ensure a claimed row carries the progress dict the classifiers
     read. Broker rows already do; a flattened row (lane/stage/
     session_id at top level) gets its progress synthesized so either
-    shape classifies the same way."""
+    shape classifies the same way. Two recorded shapes are lifted to
+    where the classifiers look for them:
+
+    - the yield stage: the checkpoint verb records it under
+      progress.last_checkpoint.stage, not progress.stage (#7706);
+    - the packet: it rides the row's payload column, exposed here as
+      `packet` (a text column's string form is parsed tolerantly)."""
+    row = dict(row)
     if not isinstance(row.get("progress"), dict):
-        row = dict(row)
         row["progress"] = {
             "lane": row.get("lane"),
             "stage": row.get("stage"),
             "session_id": row.get("session_id"),
             "issue_number": row.get("issue_number") or row.get("issue"),
         }
+    else:
+        row["progress"] = dict(row["progress"])
+    prog = row["progress"]
+    if not prog.get("stage"):
+        last = prog.get("last_checkpoint")
+        if isinstance(last, dict) and last.get("stage"):
+            prog["stage"] = last["stage"]
+    if row.get("packet") is None and row.get("payload") is not None:
+        payload = row["payload"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except ValueError:
+                payload = None
+        if isinstance(payload, dict):
+            row["packet"] = payload
     return row
 
 
@@ -355,7 +417,7 @@ def _candidate_entry(row, queue):
         "session_id": None,
         "issue": issue,
         "issue_number": prog.get("issue_number"),
-        "packet": row.get("packet", {}),
+        "packet": row.get("packet") or {},
         "attempts": row.get("attempts", 0),
         "max_attempts": row.get("max_attempts", 5),
         "title": row.get("title"),

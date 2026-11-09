@@ -633,6 +633,7 @@ in
         "%h/.config/opencode/opencode.jsonc"
         "%h/.local/share/t3code/userdata/settings.json"
         "%h/.claude.json"
+        "%h/.claude/.credentials.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
         "%h/.pi/agent/auth.json"
@@ -744,7 +745,9 @@ in
   # bin programs and the agyProxyPort/antigravityLsProxyPort lets from
   # git history, drop the session-variable removals below, and
   # re-point the plan seats in opencode.jsonc back from
-  # antigravity-direct.
+  # antigravity-direct. Before retiring any future provider door, run
+  # the retirement gate (scripts/check-provider-retirement-gate.sh, #5610)
+  # to verify zero active configuration references remain.
 
   # Design Code proxy removed (2026-11-03, Drew): its unit definition
   # stood here. Drew removed the design persona routes and the whole
@@ -933,6 +936,89 @@ in
       OnCalendar = "daily";
       Persistent = true;
       RandomizedDelaySec = "1h";
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  # #6803: the Turso sweepers — the replacement for the retired
+  # pg_cron trio (agent-expire-leases every minute, agent-prune-events
+  # daily 04:17, park-revalidation-daily 05:17). Both are thin timers
+  # POSTing to the queue broker's /sweep verb; all logic lives in the
+  # broker (pkgs/fleet/crates/fleet-queue/src/turso_queue.rs).
+  systemd.user.services.fleet-queue-expire = {
+    Unit = {
+      Description = "fleet-queue sweeper: expire lapsed leases (#6803)";
+      After = [
+        "network-online.target"
+        "queue-broker.service"
+      ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = toString (
+        pkgs.writeShellScript "fleet-queue-expire" ''
+          token="$(cat "$HOME/.config/queue-broker/token")"
+          exec ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"expire":true}'
+        ''
+      );
+    };
+  };
+
+  systemd.user.timers.fleet-queue-expire = {
+    Unit = {
+      Description = "Expire fleet-queue leases every minute (#6803)";
+    };
+    Timer = {
+      OnCalendar = "*-*-* *:*:00";
+      Persistent = true;
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  systemd.user.services.fleet-queue-sweeper = {
+    Unit = {
+      Description = "fleet-queue sweeper: prune events + revalidate parked tasks (#6803)";
+      After = [
+        "network-online.target"
+        "queue-broker.service"
+      ];
+    };
+    Service = {
+      Type = "oneshot";
+      # The revalidator lands in observe-only mode (C3,
+      # doc/fleet/agent-events-turso.md): it logs would-releases
+      # without mutating tasks. Flip it live by writing "enabled" to
+      # ~/.config/queue-broker/revalidator-mode once the first daily
+      # observe cycle has been reviewed on #6803.
+      ExecStart = toString (
+        pkgs.writeShellScript "fleet-queue-sweeper" ''
+          token="$(cat "$HOME/.config/queue-broker/token")"
+          mode="observe"
+          if [ -f "$HOME/.config/queue-broker/revalidator-mode" ]; then
+            mode="$(cat "$HOME/.config/queue-broker/revalidator-mode")"
+          fi
+          if [ "$mode" = "enabled" ]; then obs=false; else obs=true; fi
+          ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"prune":true,"keep_days":30}'
+          ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"revalidate":true,"observe_only":'$obs'}'
+        ''
+      );
+    };
+  };
+
+  systemd.user.timers.fleet-queue-sweeper = {
+    Unit = {
+      Description = "Daily fleet-queue prune + park revalidation (#6803)";
+    };
+    Timer = {
+      OnCalendar = "*-*-* 05:17:00";
+      Persistent = true;
+      RandomizedDelaySec = "10m";
     };
     Install.WantedBy = [ "timers.target" ];
   };
@@ -1666,6 +1752,11 @@ in
       with pkgs;
       [
         libnotify
+        # On-screen keyboard (wvkbd-mobintl) for touch use over the
+        # Sunshine/Moonlight stream: launched only while a stream is
+        # live, by Sunshine's global_prep_cmd (nixos/hosts/amd-sunshine.nix);
+        # SUPER+SHIFT+O re-shows it (bind in config/hypr/hyprland.lua).
+        wvkbd
         # Atlas search CLI + service binary (pkgs/atlas-search);
         # step-6 cutover (#5356): the Rust binary is the resolved
         # `atlas-search` (the Python CLI is kept as atlas-search-py).

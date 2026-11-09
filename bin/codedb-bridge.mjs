@@ -30,9 +30,20 @@
 // is served from the daemon's per-result `detail` (the definition line);
 // it is not a separate fetch.
 //
-// Config: CODEDB_DAEMON_URL (default http://127.0.0.1:7719).
+// Config: CODEDB_DAEMON_URL (default http://127.0.0.1:7719),
+// CODEDB_DAEMON_TIMEOUT_MS (default 10000).
 
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:7719';
+export const DEFAULT_DAEMON_FETCH_TIMEOUT_MS = 10_000;
+
+export const parseDaemonFetchTimeoutMs = (raw) => {
+  if (raw === undefined || raw === '') return DEFAULT_DAEMON_FETCH_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`CODEDB_DAEMON_TIMEOUT_MS="${raw}" must be a positive integer`);
+  }
+  return value;
+};
 
 export const parseDaemonUrl = (raw) => {
   const value = raw === undefined || raw === '' ? DEFAULT_DAEMON_URL : raw;
@@ -205,7 +216,10 @@ const textResult = (text, isError = false) => ({
   ...(isError ? { isError: true } : {}),
 });
 
-export const createHandler = ({ fetchFn, daemonUrl }) => {
+export const createHandler = ({ fetchFn, daemonUrl, timeoutMs = DEFAULT_DAEMON_FETCH_TIMEOUT_MS }) => {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`timeoutMs must be a positive integer, got ${timeoutMs}`);
+  }
   const callTool = async (params) => {
     const name = params?.name;
     const args = params?.arguments ?? {};
@@ -216,22 +230,51 @@ export const createHandler = ({ fetchFn, daemonUrl }) => {
       return textResult(err.message, true);
     }
     let res;
+    let data;
+    let timeoutId;
+    const controller = new AbortController();
+    const requestUrl = `${daemonUrl}${mapped.route}`;
+    let rejectTimeout;
+    const timeout = new Promise((_, reject) => {
+      rejectTimeout = reject;
+    });
+    timeoutId = setTimeout(() => {
+      const err = new Error(`timed out after ${timeoutMs}ms`);
+      err.name = 'TimeoutError';
+      controller.abort(err);
+      rejectTimeout(err);
+    }, timeoutMs);
     try {
-      res = await fetchFn(`${daemonUrl}${mapped.route}`);
+      res = await Promise.race([fetchFn(requestUrl, { signal: controller.signal }), timeout]);
+      try {
+        data = await Promise.race([res.json(), timeout]);
+      } catch (err) {
+        if (err.name === 'TimeoutError') throw err;
+        return textResult(`codedb daemon at ${daemonUrl} returned a non-JSON response (HTTP ${res.status}) for ${mapped.route}`, true);
+      }
     } catch (err) {
+      if (err.name === 'TimeoutError') {
+        return textResult(`codedb daemon request timed out after ${timeoutMs}ms at ${daemonUrl}${mapped.route}`, true);
+      }
       return textResult(
         `codedb daemon unreachable at ${daemonUrl} (${err.message}). Is the codedb serve unit running for this project root? Start it with: systemctl --user start codedb-<root>.service`,
         true
       );
-    }
-    let data;
-    try {
-      data = await res.json();
-    } catch {
-      return textResult(`codedb daemon at ${daemonUrl} returned a non-JSON response (HTTP ${res.status}) for ${mapped.route}`, true);
+    } finally {
+      clearTimeout(timeoutId);
     }
     if (!res.ok || data?.error) {
       return textResult(`codedb daemon error for ${name}: ${data?.error ?? `HTTP ${res.status}`}`, true);
+    }
+    // A 200 body that is null or not a JSON object is a daemon malfunction,
+    // not a result (#6917): the tree path dereferences data.tree (a raw
+    // TypeError escapes handle() and the caller never gets a response),
+    // and the JSON paths would report the literal text "null" as success.
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return textResult(
+        `codedb daemon at ${daemonUrl} returned a ${data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data} JSON body for ${mapped.route}; expected a JSON object`,
+        true
+      );
     }
     try {
       data = sliceData(data, mapped.slice);
@@ -276,7 +319,14 @@ const main = async () => {
     console.error(err.message);
     process.exit(1);
   }
-  const handle = createHandler({ fetchFn: (url) => fetch(url), daemonUrl });
+  let timeoutMs;
+  try {
+    timeoutMs = parseDaemonFetchTimeoutMs(process.env.CODEDB_DAEMON_TIMEOUT_MS);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  const handle = createHandler({ fetchFn: (url, options) => fetch(url, options), daemonUrl, timeoutMs });
   const readline = await import('node:readline');
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // Requests are dispatched independently, never awaited inside the read

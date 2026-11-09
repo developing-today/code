@@ -8,7 +8,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CODEDB_TOOLS, createHandler, parseDaemonUrl, routeForTool } from './codedb-bridge.mjs';
+import {
+  CODEDB_TOOLS,
+  createHandler,
+  DEFAULT_DAEMON_FETCH_TIMEOUT_MS,
+  parseDaemonFetchTimeoutMs,
+  parseDaemonUrl,
+  routeForTool,
+} from './codedb-bridge.mjs';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +34,14 @@ test('daemon URL rejects query, fragment and userinfo by name instead of silentl
   assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/#frag'), /CODEDB_DAEMON_URL.*fragment/);
   assert.throws(() => parseDaemonUrl('http://user:pass@127.0.0.1:7719/'), /CODEDB_DAEMON_URL.*userinfo/);
   assert.throws(() => parseDaemonUrl('http://user@127.0.0.1:7719'), /CODEDB_DAEMON_URL.*userinfo/);
+});
+
+test('daemon fetch timeout defaults to a named deadline and accepts a positive integer override', () => {
+  assert.equal(DEFAULT_DAEMON_FETCH_TIMEOUT_MS, 10_000);
+  assert.equal(parseDaemonFetchTimeoutMs(undefined), DEFAULT_DAEMON_FETCH_TIMEOUT_MS);
+  assert.equal(parseDaemonFetchTimeoutMs('250'), 250);
+  assert.throws(() => parseDaemonFetchTimeoutMs('0'), /positive integer/);
+  assert.throws(() => parseDaemonFetchTimeoutMs('nope'), /positive integer/);
 });
 
 test('every advertised tool maps to a verified daemon route', () => {
@@ -171,6 +186,51 @@ test('a slow daemon call does not head-of-line block a later ping (PR #4171 Code
   }
 });
 
+test('a never-resolving daemon fetch returns a timeout MCP error naming URL, route and deadline', async () => {
+  const timeoutMs = 25;
+  const daemonUrl = 'http://127.0.0.1:7719';
+  const handle = createHandler({ fetchFn: () => new Promise(() => {}), daemonUrl, timeoutMs });
+  const response = await call(handle, 'codedb_tree', {});
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /timed out after 25ms/);
+  assert.match(response.result.content[0].text, /http:\/\/127\.0\.0\.1:7719\/explore\/tree/);
+});
+
+test('bridge exits after stdin closes while a hanging daemon call times out', async () => {
+  const daemon = http.createServer(() => {});
+  await new Promise((resolve) => daemon.listen(0, '127.0.0.1', resolve));
+  const daemonUrl = `http://127.0.0.1:${daemon.address().port}`;
+  const child = spawn(process.execPath, [path.join(binDir, 'codedb-bridge.mjs')], {
+    env: { ...process.env, CODEDB_DAEMON_URL: daemonUrl, CODEDB_DAEMON_TIMEOUT_MS: '50' },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  try {
+    let received = '';
+    child.stdout.on('data', (chunk) => {
+      received += chunk;
+    });
+    const exited = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('bridge did not exit after its daemon timeout')), 2_000);
+      child.once('exit', (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codedb_tree', arguments: {} } })}\n`);
+    child.stdin.end();
+    assert.equal(await exited, 0);
+    const response = JSON.parse(received.trim());
+    assert.equal(response.id, 1);
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /timed out after 50ms/);
+    assert.match(response.result.content[0].text, /\/explore\/tree/);
+  } finally {
+    child.kill();
+    daemon.closeAllConnections();
+    daemon.close();
+  }
+});
+
 test('closing stdin mid-request still delivers the complete final response (PR #4171 Codex P2)', async () => {
   const bigTree = `root/\n${'  file.rs  rust  1L  0 sym\n'.repeat(80000)}`;
   const daemon = http.createServer((req, res) => {
@@ -259,4 +319,28 @@ test('daemon errors and an unreachable daemon surface as MCP errors naming the c
   const badArg = await call(down, 'codedb_search', { query: 'x', regex: true });
   assert.equal(badArg.result.isError, true);
   assert.match(badArg.result.content[0].text, /"regex"/);
+});
+
+test('null or non-object daemon bodies are isError results, never a throw or a "null" success (#6917)', async () => {
+  const handle = createHandler({
+    fetchFn: stubFetch({
+      '/explore/tree': null,
+      '/explore/search?q=x': null,
+      '/explore/outline?path=a.ts': 'weird',
+      '/explore/hot': [1, 2],
+    }),
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const tree = await call(handle, 'codedb_tree', {});
+  assert.equal(tree.result.isError, true);
+  assert.match(tree.result.content[0].text, /null JSON body for \/explore\/tree/);
+  const search = await call(handle, 'codedb_search', { query: 'x' });
+  assert.equal(search.result.isError, true);
+  assert.match(search.result.content[0].text, /null JSON body/);
+  const outline = await call(handle, 'codedb_outline', { path: 'a.ts' });
+  assert.equal(outline.result.isError, true);
+  assert.match(outline.result.content[0].text, /string JSON body/);
+  const hot = await call(handle, 'codedb_hot', {});
+  assert.equal(hot.result.isError, true);
+  assert.match(hot.result.content[0].text, /array JSON body/);
 });

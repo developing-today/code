@@ -464,3 +464,55 @@ describe("ingestion store load validation (#5232)", () => {
     expect(readdirSync(dir).filter((name) => name.startsWith("activity.json.corrupt-"))).toEqual([]);
   });
 });
+
+describe("activity summary caps never split a surrogate pair (#7725)", () => {
+  const roundTrips = (s: string) => new TextDecoder().decode(new TextEncoder().encode(s)) === s;
+
+  test("watchdog writer drops an astral character straddling the 500 cap whole", () => {
+    const [d] = watchdogDeliveries([watchdogItem("watchdog:emoji", 60_000, "x".repeat(499) + "\u{1F600}" + "tail")]);
+    expect(d?.summary).toHaveLength(499);
+    expect(d?.summary.endsWith("x")).toBe(true);
+    expect(roundTrips(d?.summary ?? "")).toBe(true);
+  });
+
+  test("watchdog writer keeps an astral character fully inside the cap intact", () => {
+    const [d] = watchdogDeliveries([watchdogItem("watchdog:emoji-fit", 60_000, "x".repeat(498) + "\u{1F600}")]);
+    expect(d?.summary).toHaveLength(500);
+    expect(d?.summary.endsWith("\u{1F600}")).toBe(true);
+    expect(roundTrips(d?.summary ?? "")).toBe(true);
+  });
+
+  test("kaneo writer drops an astral character straddling the composed 500 cap whole", () => {
+    const prefix = "Kaneo card appeared in open: ";
+    const card: KaneoCardSnapshot = {
+      id: "kaneo:p/emoji",
+      status: "open",
+      title: "y".repeat(500 - prefix.length - 1) + "\u{1F600}" + "tail",
+      updatedAt: iso(60_000),
+    };
+    const [d] = kaneoChangeDeliveries(new Map(), [card]);
+    expect(d?.summary).toHaveLength(499);
+    expect(d?.summary.endsWith("y")).toBe(true);
+    expect(roundTrips(d?.summary ?? "")).toBe(true);
+  });
+
+  test("record-time cap drops an astral character the link suffix pushes across 500", async () => {
+    const { events, store } = tmpStores();
+    const delivery: ActivityDelivery = {
+      source: "kaneo",
+      sourceId: "kaneo:p/emoji:appeared:undated:1",
+      at: iso(0),
+      kind: "kaneo-change",
+      ref: "kaneo:p/emoji",
+      summary: "s".repeat(494),
+      link: "ab\u{1F600}cd",
+    };
+    const result = await store.ingest(events, [delivery]);
+    expect(result.ingested).toBe(1);
+    const stream = await events.list();
+    expect(stream).toHaveLength(1);
+    expect(stream[0]?.summary).toHaveLength(499);
+    expect(stream[0]?.summary.endsWith("b")).toBe(true);
+    expect(roundTrips(stream[0]?.summary ?? "")).toBe(true);
+  });
+});

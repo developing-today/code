@@ -89,7 +89,7 @@ export interface ProjectConfig {
 const CODE = "developing-today/code";
 const OPENCODE = "developing-today-forks/opencode";
 const OPENCHAMBER = "developing-today-forks/openchamber";
-const NIX = "dezren39/nix";
+const NIX = "dezren39/darwin-nix";
 const blob = (path: string): string => `https://github.com/${CODE}/blob/main/${path}`;
 const tree = (path: string): string => `https://github.com/${CODE}/tree/main/${path}`;
 const home = (path: string): ProjectHomeDoc => ({ repo: CODE, path, url: blob(path) });
