@@ -298,30 +298,32 @@ READY_INSTALL="$PM_STACK_DIR/ready-for-agent/install.sh"
 if "$BASH_BIN" -n "$AGG_INSTALL"; then pass 'aggregator/install.sh syntax check'; else fail 'aggregator/install.sh syntax check'; fi
 if "$BASH_BIN" -n "$READY_INSTALL"; then pass 'ready-for-agent/install.sh syntax check'; else fail 'ready-for-agent/install.sh syntax check'; fi
 
-# Build a minimal aggregator package copy so install.sh's hash/copy logic
-# runs entirely inside a disposable HOME. Side-effecting tools are stubbed.
-AGG_SRC="$TMP/aggregator-src"
+# Build a minimal aggregator package copy that mirrors the real checkout
+# layout: the package lives directly at ~/git/code/pm-stack/aggregator
+# with the shared unit at ../systemd/pm-aggregator.service. The fixture
+# is a real directory (no symlink) so "../systemd" resolves through the
+# kernel to the fixture unit instead of the symlink target's parent.
 AGG_HOME="$TMP/aggregator-home"
 AGG_EXPECTED_SRC="$AGG_HOME/git/code/pm-stack/aggregator"
-mkdir -p "$AGG_SRC" "$AGG_HOME/secrets" "$AGG_HOME/git/code/pm-stack/systemd"
-cp "$AGG_INSTALL" "$AGG_SRC/install.sh"
-printf '%s\n' '{"name":"smoke-aggregator","version":"1.0.0"}' >"$AGG_SRC/package.json"
-printf '%s\n' 'fake lockfile' >"$AGG_SRC/bun.lock"
-printf '%s\n' '{"compilerOptions":{}}' >"$AGG_SRC/tsconfig.json"
-printf '%s\n' '{"projects":[]}' >"$AGG_SRC/fleet-feed.json"
-mkdir -p "$AGG_SRC/src" "$AGG_SRC/test" "$AGG_SRC/scripts" "$AGG_SRC/opencode-tools" "$AGG_SRC/systemd"
-printf '%s\n' '// fixture' >"$AGG_SRC/src/smoke.ts"
-printf '%s\n' '// fixture' >"$AGG_SRC/test/smoke.test.ts"
-printf '%s\n' '# fixture' >"$AGG_SRC/scripts/smoke.sh"
-printf '%s\n' '// fixture' >"$AGG_SRC/opencode-tools/smoke.ts"
-printf '%s\n' '[Service]' >"$AGG_SRC/systemd/quota-gatherer.service"
-printf '%s\n' '[Timer]' >"$AGG_SRC/systemd/quota-gatherer.timer"
-printf '%s\n' '[Service]' >"$AGG_HOME/git/code/pm-stack/systemd/pm-aggregator.service"
+AGG_UNIT_DIR="$AGG_HOME/git/code/pm-stack/systemd"
+mkdir -p "$AGG_EXPECTED_SRC" "$AGG_HOME/secrets" "$AGG_UNIT_DIR"
+cp "$AGG_INSTALL" "$AGG_EXPECTED_SRC/install.sh"
+printf '%s\n' '{"name":"smoke-aggregator","version":"1.0.0"}' >"$AGG_EXPECTED_SRC/package.json"
+printf '%s\n' 'fake lockfile' >"$AGG_EXPECTED_SRC/bun.lock"
+printf '%s\n' '{"compilerOptions":{}}' >"$AGG_EXPECTED_SRC/tsconfig.json"
+printf '%s\n' '{"projects":[]}' >"$AGG_EXPECTED_SRC/fleet-feed.json"
+mkdir -p "$AGG_EXPECTED_SRC/src" "$AGG_EXPECTED_SRC/test" "$AGG_EXPECTED_SRC/scripts" "$AGG_EXPECTED_SRC/opencode-tools" "$AGG_EXPECTED_SRC/systemd"
+printf '%s\n' '// fixture' >"$AGG_EXPECTED_SRC/src/smoke.ts"
+printf '%s\n' '// fixture' >"$AGG_EXPECTED_SRC/test/smoke.test.ts"
+printf '%s\n' '# fixture' >"$AGG_EXPECTED_SRC/scripts/smoke.sh"
+printf '%s\n' '// fixture' >"$AGG_EXPECTED_SRC/opencode-tools/smoke.ts"
+printf '%s\n' '[Service]' >"$AGG_EXPECTED_SRC/systemd/quota-gatherer.service"
+printf '%s\n' '[Timer]' >"$AGG_EXPECTED_SRC/systemd/quota-gatherer.timer"
+cp "$PM_STACK_DIR/systemd/pm-aggregator.service" "$AGG_UNIT_DIR/pm-aggregator.service"
 printf '%s\n' 'fake encrypted aggregator fixture' >"$AGG_HOME/secrets/pm-stack.sops.yaml"
-ln -s "$AGG_SRC" "$AGG_EXPECTED_SRC"
 AGG_SOPS_LOG="$TMP/aggregator-sops.log"
 AGG_OUTPUT="$TMP/aggregator-install.out"
-if env HOME="$AGG_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
+if env HOME="$AGG_HOME" XDG_STATE_HOME="$AGG_HOME/.local/state" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_SECRETS="$AGG_HOME/secrets/pm-stack.sops.yaml" \
   PM_TEST_COMMAND_LOG="$COMMAND_LOG" PM_TEST_SOPS_LOG="$AGG_SOPS_LOG" \
   PM_TEST_BUILD_VERSION=smoke-build-v1 TAILNET_IP=100.64.20.21 \
@@ -352,19 +354,30 @@ else
 fi
 
 # Pre-seed a fake pinned executable, avoiding npm. The npm stub fails
-# closed if the installer ever attempts a package change.
+# closed if the installer ever attempts a package change. The fixture
+# mirrors the checkout next to install.sh: the systemd unit plus the
+# apply-config.sh the installer invokes after a verified start (the
+# real apply-config needs the live harness GraphQL API, so the smoke
+# fixture stands in with a no-op success; apply-config has its own
+# dedicated test-apply-config.sh).
 READY_ROOT="$TMP/ready-src"
 READY_HOME="$TMP/ready-home"
 mkdir -p "$READY_ROOT/systemd" "$READY_HOME/.local/bin"
 cp "$READY_INSTALL" "$READY_ROOT/install.sh"
 printf '%s\n' '[Service]' >"$READY_ROOT/systemd/ready-for-agent.service"
+cat >"$READY_ROOT/apply-config.sh" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+echo 'ready-for-agent config applied (smoke fixture)'
+FAKE
+chmod +x "$READY_ROOT/apply-config.sh"
 cat >"$READY_HOME/.local/bin/ready-for-agent" <<'FAKE'
 #!/usr/bin/env bash
 printf 'ready-for-agent 1.1.0\n'
 FAKE
 chmod +x "$READY_HOME/.local/bin/ready-for-agent"
 READY_OUTPUT="$TMP/ready-install.out"
-if env HOME="$READY_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
+if env HOME="$READY_HOME" XDG_STATE_HOME="$READY_HOME/.local/state" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_COMMAND_LOG="$COMMAND_LOG" \
   "$BASH_BIN" "$READY_ROOT/install.sh" >"$READY_OUTPUT" 2>&1; then
   pass 'ready-for-agent install smoke completes using temporary HOME and stubs'
