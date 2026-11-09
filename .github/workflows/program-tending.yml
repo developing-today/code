@@ -1,19 +1,22 @@
 name: program-tending
 
-# program-tending (issue #1352, slice 1/3 scaffold).
+# program-tending (issue #1352, slice 2/3: epics + roadmaps real).
 #
 # Daily scheduled care for the planning layer across the four fleet
 # repos (code, opencode, openchamber, nix): epics, roadmaps, projects,
-# stalled PRs, loose ends. This slice is the scaffold only: the
-# schedule, the runner entrypoint, per-section stubs that verify and
-# report no-actions, and the structured run log. Full section
-# implementations land in slices 2-3 (see #1352 triage decomposition,
-# 2026-11-02) after this scaffold lands.
+# stalled PRs, loose ends. Slice 1 landed the schedule, the runner
+# entrypoint, per-section stubs and the structured run log; slice 2
+# implements the epics and roadmaps sections for real (projects,
+# stalled-PRs and loose-ends stay stubs until slice 3).
 #
-# Ownership rules (from #1352, enforced in slice 1 stubs):
+# Ownership rules (from #1352, enforced by the runner):
 # - Never touch held / do-not-merge / user-owned PRs.
 # - Drew's own feature PRs: check-in comment at 7 days only, never a packet.
 # - user/review is reported, never re-decided.
+#
+# Write budget: at most ~6 actions per real section and ~12 per run
+# (enforced in scripts/program_tending.py); at most one comment per
+# epic per run; roadmap fixes never touch a Done section.
 
 on:
   schedule:
@@ -23,17 +26,22 @@ on:
 
 # One live tending run at a time: a new tick cancels a still-running
 # previous run (each run is read-mostly and idempotent; actions are
-# comments/labels, never force-pushes).
+# comments/labels/forward-only roadmap fixes, never force-pushes).
 concurrency:
   group: program-tending
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  # contents:write pushes the roadmap-drift fix branch; issues:write
+  # posts epic status comments and applies meta/roadmap-drift;
+  # pull-requests:write opens the roadmap-drift PR.
+  contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   tend:
-    name: program-tending scaffold run
+    name: program-tending run
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -45,7 +53,26 @@ jobs:
         run: |
           test -f scripts/tests/test_program_tending.py
           python3 -m unittest discover -s scripts/tests -p 'test_program_tending.py' -v
-      - name: Run program-tending scaffold (slice 1 stubs)
+      - name: Run program-tending (epics + roadmaps real)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 -I scripts/program_tending.py --run
+        run: python3 -I scripts/program_tending.py --run --apply
+      - name: Open roadmap-drift PR from the run's file fixes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The --apply run edits forward-looking roadmap rows in the
+          # checkout (Done sections are never parsed, so history is
+          # untouched). If it left a diff, ship it as a PR for review.
+          if git status --porcelain -- ROADMAP.md planning/roadmaps | grep -q .; then
+            BR="program-tending/roadmap-drift-$(date -u +%Y%m%d)"
+            git checkout -B "$BR"
+            git add ROADMAP.md planning/roadmaps
+            git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" \
+              commit -m "fix(program-tending): forward-looking roadmap drift vs landed work (#1352)"
+            git push -u origin "$BR"
+            gh pr create --fill --label meta/roadmap-drift \
+              --title "fix(program-tending): forward-looking roadmap drift vs landed work (#1352)"
+          else
+            echo "no roadmap file fixes; no PR to open"
+          fi
