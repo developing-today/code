@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -187,11 +188,41 @@ func TestConfigLayersProperty(t *testing.T) {
 	}
 }
 
-// loadStack writes a drawn stack as nested .mcpx.json layers
-// (farthest outermost) under an isolated HOME and loads it.
-func loadStack(t *testing.T, stack gen.ConfigLayers) map[string]string {
+// writeStack writes a drawn stack as nested .mcpx.json layers
+// (farthest outermost) under root. It returns the deepest
+// directory (the nearest layer, the LoadFrom working directory)
+// and the layer files nearest-first, the order a chain seed
+// wants them in.
+func writeStack(t *testing.T, root string, stack gen.ConfigLayers) (wd string, nearestFirst []string) {
 	t.Helper()
-	root := t.TempDir()
+	texts := stack.Render(true)
+	dir := filepath.Join(root, "l0")
+	files := make([]string, 0, len(texts))
+	for li, text := range texts {
+		if li > 0 {
+			dir = filepath.Join(dir, fmt.Sprintf("l%d", li))
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, ".mcpx.json")
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, p)
+	}
+	// Render is farthest-first; reverse to nearest-first.
+	for i, j := 0, len(files)-1; i < j; i, j = i+1, j-1 {
+		files[i], files[j] = files[j], files[i]
+	}
+	return dir, files
+}
+
+// isolateEnv points HOME/XDG at empty dirs under root and clears
+// the chain-seeding knobs, so no live host configuration can
+// enter the chain except through the test's own seed.
+func isolateEnv(t *testing.T, root string) {
+	t.Helper()
 	home := filepath.Join(root, "home")
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
@@ -202,21 +233,34 @@ func loadStack(t *testing.T, stack gen.ConfigLayers) map[string]string {
 	t.Setenv("MCPX_PATHS_CONFIG", "")
 	config.SetPathsConfigSeed(nil)
 	t.Cleanup(func() { config.SetPathsConfigSeed(nil) })
+}
 
-	texts := stack.Render(true)
-	dir := filepath.Join(root, "l0")
-	for li, text := range texts {
-		if li > 0 {
-			dir = filepath.Join(dir, fmt.Sprintf("l%d", li))
-		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, ".mcpx.json"), []byte(text), 0o644); err != nil {
-			t.Fatal(err)
-		}
+// seedChain replaces the default discovery walk outright — a
+// seed with no null does that by contract — so the load merges
+// exactly the fixture files. Without it, a TMPDIR nested under
+// a populated HOME lets the upward walk merge live host servers
+// into the stack (#7686). The rendered fixtures declare no
+// paths.config, so the seed survives both passes unchanged.
+func seedChain(t *testing.T, nearestFirst []string) {
+	t.Helper()
+	b, err := json.Marshal(nearestFirst)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cfg, err := config.LoadFrom("", dir)
+	t.Setenv("MCPX_PATHS_CONFIG", string(b))
+}
+
+// loadStack writes a drawn stack as nested .mcpx.json layers
+// (farthest outermost) under an isolated HOME and loads it,
+// exercising only the fixture layers — never live host
+// configuration, no matter where TMPDIR lives.
+func loadStack(t *testing.T, stack gen.ConfigLayers) map[string]string {
+	t.Helper()
+	root := t.TempDir()
+	isolateEnv(t, root)
+	wd, files := writeStack(t, root, stack)
+	seedChain(t, files)
+	cfg, err := config.LoadFrom("", wd)
 	if err != nil {
 		t.Fatalf("LoadFrom: %v (stack %s)", err, stack.Canonical())
 	}
@@ -238,6 +282,71 @@ func assertWinners(t *testing.T, i int, stack gen.ConfigLayers, got map[string]s
 		if got[name] != want {
 			t.Fatalf("case %d: server %s = %q, want nearest %q (stack %s)", i, name, got[name], want, stack.Canonical())
 		}
+	}
+}
+
+// TestConfigLayersIgnoresHostConfig is the #7686 regression
+// case: the fixture stack nests under a fake populated home —
+// the TMPDIR-inside-HOME shape that failed on dev machines —
+// with a host-style extra server in the fake home layer. The
+// hermetic load must merge exactly the fixture layers; the same
+// stack through the plain discovery walk leaks the host-style
+// server, which pins the leak path (the upward walk through
+// home) as distinct from the fix (seeding the chain).
+func TestConfigLayersIgnoresHostConfig(t *testing.T) {
+	root := t.TempDir()
+	fakeHome := filepath.Join(root, "hosthome")
+	hostCfg := `{"mcpServers":{"zzz-host-extra":{"command":"npx","args":["-y","host-only"]}}}`
+	for _, p := range []string{
+		filepath.Join(fakeHome, ".config", "mcpx", "config.json"),
+		filepath.Join(fakeHome, ".mcpx.json"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(hostCfg), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
+	t.Setenv("MCPX_CONFIG", "")
+	t.Setenv("MCPX_PATHS_CONFIG", "")
+	config.SetPathsConfigSeed(nil)
+	t.Cleanup(func() { config.SetPathsConfigSeed(nil) })
+
+	src := gen.Stream(goldenSeed, t.Name(), "config.layers", 1)
+	stack := gen.DrawConfigLayers(src, 3)
+	wd, files := writeStack(t, filepath.Join(fakeHome, "work"), stack)
+
+	// The leak path, pinned: the plain walk from a directory
+	// under a populated home merges the home's servers.
+	leaky, err := config.LoadFrom("", wd)
+	if err != nil {
+		t.Fatalf("unseeded LoadFrom: %v", err)
+	}
+	if _, ok := leaky.MCPServers["zzz-host-extra"]; !ok {
+		var names []string
+		for name := range leaky.MCPServers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		t.Fatalf("expected the unseeded walk to merge the fake-home server (leak path changed?); got %v", names)
+	}
+
+	// The hermetic load merges exactly the fixture layers.
+	seedChain(t, files)
+	cfg, err := config.LoadFrom("", wd)
+	if err != nil {
+		t.Fatalf("seeded LoadFrom: %v", err)
+	}
+	got := map[string]string{}
+	for name, s := range cfg.MCPServers {
+		got[name] = s.Command
+	}
+	assertWinners(t, 0, stack, got)
+	if _, ok := got["zzz-host-extra"]; ok {
+		t.Fatalf("host-style server leaked into hermetic load: %v", got)
 	}
 }
 
