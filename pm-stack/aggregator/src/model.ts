@@ -212,6 +212,8 @@ export interface RoadmapRow {
   area: string;
   status: string;
   horizon: string;
+  /** Validation warning; the original Grist/seed value remains available in `horizon`. */
+  horizonError?: string;
   source: string;
   notes: string;
   links: Link[];
@@ -469,6 +471,8 @@ export type AttentionTier = "needs-drew" | "needs-orchestrator" | "in-motion";
 
 export interface TieredEntry extends AttentionEntry {
   tier: AttentionTier;
+  /** When the orchestration job first observed this session in its tier. */
+  tierSince?: string;
   /** Why this needs Drew — present iff tier is "needs-drew". */
   drewReason?: string;
   /** What the fleet will do with it — present iff tier is "needs-orchestrator". */
@@ -500,6 +504,19 @@ export function parseRef(key: RefKey): GhRef {
  *  number. Boundary validators and store-load gates route through this
  *  instead of re-checking the shape with a local regex whose \d+ group
  *  admits numbers parseRef (and refUrl) then throw on. */
+/** The ref contract (design #6242, closed out by the Phase 4 inventory on
+ *  #6243): a ref is an annotation, not identity. (1) Validity is
+ *  isValidRef only - no local shape checks. (2) An invalid ref is dropped
+ *  at the consumption step beside its gate: the item survives, the drop
+ *  is traced (log or count). (3) Producers mint only valid refs: scrapes
+ *  route through refsInText / titleRefs, which filter with isValidRef,
+ *  and constructors validate before minting. (4) Rendering or deriving
+ *  reaches refUrl for stored or feed-derived refs only through a guard
+ *  (an isValidRef check, a load/read gate upstream, or a safe-link
+ *  helper); an invalid ref renders as plain text, never a throw.
+ *  Code-built refs (issue(n), fixture literals, validated config) are
+ *  exempt from (4): parseRef's throw is their test-time assertion. */
+
 export function isValidRef(value: unknown): value is RefKey {
   if (typeof value !== "string") return false;
   try {

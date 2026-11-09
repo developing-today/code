@@ -191,10 +191,6 @@ impl WorldProtocol {
         self.connection_cap_refusals.load(Ordering::Relaxed)
     }
 
-    /// Snapshot of the per-(local node, remote endpoint) frame/byte
-    /// counters recorded by the shared evaluator — the operator
-    /// visibility surface for #2244 P0-A charging.
-    #[must_use]
     /// Estimated #2247 budget usage per scope and window — the
     /// operator-visibility surface for budgets, alongside
     /// [`WorldProtocol::abuse_counters`].
@@ -212,11 +208,23 @@ impl WorldProtocol {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the per-(local node, remote endpoint) frame/byte
+    /// counters recorded by the shared evaluator — the operator
+    /// visibility surface for #2244 P0-A charging.
+    #[must_use]
     pub fn abuse_counters(&self) -> Vec<((NodeId, AbuseEndpointId), Counters)> {
         self.abuse
             .lock()
             .map(|abuse| abuse.counters().snapshot())
             .unwrap_or_default()
+    }
+
+    /// The shared abuse evaluator, for surfaces that need more than
+    /// the aggregate snapshot: the meta protocol's `AbuseCounters`
+    /// request reads the per-direction split and the policy from it.
+    #[must_use]
+    pub(crate) fn abuse_handle(&self) -> Arc<Mutex<AbuseEvaluator>> {
+        Arc::clone(&self.abuse)
     }
 
     fn prune_abuse_state(&self) {
@@ -908,8 +916,8 @@ impl WorldClient {
     /// unit-tested without a live host.
     fn parse_policy_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         let policy = reply.get("policy").context("host sent no policy")?;
-        let _: crate::world::WorldPolicy = serde_json::from_value(policy.clone())
-            .context("host sent a malformed policy")?;
+        let _: crate::world::WorldPolicy =
+            serde_json::from_value(policy.clone()).context("host sent a malformed policy")?;
         Ok(policy.clone())
     }
 
@@ -1176,9 +1184,7 @@ impl WorldClient {
     /// [`WorldClient::set_execution_profile`] so the validation can be
     /// unit-tested without a live host sending frames no real host
     /// sends.
-    fn parse_set_execution_profile_reply(
-        reply: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    fn parse_set_execution_profile_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "execution_profile" {
             bail!(
                 "{}",
@@ -4136,7 +4142,6 @@ mod tests {
         capability
     }
 
-
     #[test]
     fn route_frame_inserts_bound_world_when_absent() {
         // Oracle: the routed frame is the input frame plus exactly one
@@ -4178,7 +4183,10 @@ mod tests {
         let plain = serde_json::json!({"type": "join"});
         assert_eq!(route_frame(&plain, None), plain.to_string());
         let non_object = serde_json::json!(["world", "beta"]);
-        assert_eq!(route_frame(&non_object, Some("alpha")), non_object.to_string());
+        assert_eq!(
+            route_frame(&non_object, Some("alpha")),
+            non_object.to_string()
+        );
     }
 
     #[tokio::test]
@@ -4240,7 +4248,6 @@ mod tests {
         router.shutdown().await.unwrap();
         host_ep.close().await;
     }
-
 
     #[tokio::test]
     async fn coordinator_session_cannot_lease_another_world_via_prekeyed_first_frame() {

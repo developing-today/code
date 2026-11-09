@@ -218,8 +218,12 @@ describe("server boots from fixtures", () => {
     expect(board.board.every((item) => !("notes" in item))).toBe(true);
     const quota = (await (await fetch(`http://127.0.0.1:${port}/api/quota.json`)).json()) as { pools: unknown[] };
     expect(quota.pools.length).toBeGreaterThan(0);
-    const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as unknown[];
+    const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as {
+      id?: string;
+      tier?: string;
+    }[];
     expect(attention.length).toBeGreaterThan(0);
+    expect(attention.some((entry) => entry.tier === "needs-drew")).toBe(true);
   });
 
   test("unknown project page is a styled 404; a known project stays 200 (#1186)", async () => {

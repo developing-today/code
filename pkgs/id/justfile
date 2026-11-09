@@ -173,6 +173,12 @@ clippy-lint-fix:
 clippy-native-shell:
     cargo clippy -p id-native-shell --all-targets
 
+# Fail when any production .rs file exceeds 2,500 production lines (#1411);
+# the companion self-test proves the guard fails, not just that it passes
+[group('lint')]
+prod-lines-check:
+    bash scripts/prod-lines-check.sh && bash scripts/prod-lines-check-test.sh
+
 # [biome] Lint web code (TypeScript + CSS)
 [group('lint')]
 web-lint:

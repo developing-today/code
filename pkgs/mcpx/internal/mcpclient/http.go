@@ -10,6 +10,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +61,48 @@ type HTTPOptions struct {
 	Timeout time.Duration
 }
 
+// sameHTTPOrigin compares scheme, host and effective port. Explicit default
+// ports and host casing do not change an HTTP origin.
+func sameHTTPOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil || !strings.EqualFold(a.Scheme, b.Scheme) ||
+		!strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			if n, err := strconv.Atoi(p); err == nil {
+				return strconv.Itoa(n)
+			}
+			return p
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			return "80"
+		case "https":
+			return "443"
+		default:
+			return ""
+		}
+	}
+	return port(a) == port(b)
+}
+
+// maxRedirects mirrors the bound Go's default redirect policy applies
+// when CheckRedirect is nil. A custom policy replaces that default, so
+// it must retain the bound itself: without it a same-origin redirect
+// loop is followed forever.
+const maxRedirects = 10
+
+func refuseCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("stopped after 10 redirects")
+	}
+	if len(via) > 0 && !sameHTTPOrigin(via[0].URL, req.URL) {
+		return http.ErrUseLastResponse
+	}
+	return nil
+}
+
 // newHTTPClients builds the two clients one transport owns. Each gets its
 // own connection pool, cloned from http.DefaultTransport's settings.
 //
@@ -78,7 +121,8 @@ func newHTTPClients(timeout time.Duration) (hc, streamHC *http.Client) {
 		}
 		return http.DefaultTransport
 	}
-	return &http.Client{Timeout: timeout, Transport: clone()}, &http.Client{Transport: clone()}
+	return &http.Client{Timeout: timeout, Transport: clone(), CheckRedirect: refuseCrossOriginRedirect},
+		&http.Client{Transport: clone(), CheckRedirect: refuseCrossOriginRedirect}
 }
 
 // NewHTTP creates a Streamable HTTP transport.
@@ -484,7 +528,7 @@ func (t *HTTPTransport) get(ctx context.Context, lastID string) (io.ReadCloser, 
 	return resp.Body, nil
 }
 
-var streamClient = &http.Client{}
+var streamClient = &http.Client{CheckRedirect: refuseCrossOriginRedirect}
 
 // listen opens the standalone GET stream a legacy Streamable HTTP server
 // uses for messages that belong to no request: list changes, resource
@@ -693,6 +737,12 @@ func (t *HTTPTransport) deleteSession(ctx context.Context) error {
 		return err
 	}
 	_ = resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+		// An unfollowed redirect (a refused cross-origin redirect above
+		// all) means the DELETE was never delivered: the session is
+		// still live upstream, so report it instead of success.
+		return fmt.Errorf("delete %s: http %d: redirect not followed", t.url, resp.StatusCode)
+	}
 	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("delete %s: http %d", t.url, resp.StatusCode)
 	}
