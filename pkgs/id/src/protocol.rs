@@ -356,8 +356,10 @@ pub enum MetaRequest {
     /// Read the node's per-(local node, remote endpoint) frame/byte abuse
     /// counters, split by direction, plus the policy rates that produced them.
     ///
-    /// Read-only. A node with no abuse evaluator attached answers
-    /// [`MetaResponse::Error`].
+    /// Read-only. The counters cover world-protocol traffic admitted
+    /// by the node's abuse evaluator; a node with no evaluator attached
+    /// (a plain serve without a world, or a build without the world
+    /// feature) records none and answers with an empty report.
     AbuseCounters,
 }
 
@@ -560,7 +562,7 @@ pub struct MetaProtocol {
     /// [`FileOps::with_blob_wait`]). Zero for in-process use.
     pub blob_wait: std::time::Duration,
     /// The node's abuse evaluator, when this surface exposes it. `None`
-    /// answers [`MetaRequest::AbuseCounters`] with an error instead.
+    /// answers [`MetaRequest::AbuseCounters`] with an empty report.
     pub abuse: Option<Arc<std::sync::Mutex<crate::abuse::AbuseEvaluator>>>,
 }
 
@@ -725,20 +727,33 @@ impl MetaProtocol {
                 open_writes: self.access.is_open(),
             },
             MetaRequest::AbuseCounters => {
+                // No evaluator attached means no world traffic is recorded:
+                // answer the empty report, not an error, so
+                // `id peers --abuse` against a plain serve succeeds.
                 let Some(abuse) = &self.abuse else {
-                    return MetaResponse::Error {
-                        message: "abuse counters are not exposed by this node".to_owned(),
+                    return MetaResponse::AbuseCounters {
+                        rows: Vec::new(),
+                        policy: None,
                     };
                 };
-                let Ok(guard) = abuse.lock() else {
-                    return MetaResponse::Error {
-                        message: "abuse counters are unavailable: the evaluator lock is poisoned"
-                            .to_owned(),
+                // Copy the counters and the policy out under the lock, then
+                // release it before sorting and building rows: that work
+                // must not block world frame charges on the evaluator.
+                let (mut snapshot, authorized) = {
+                    let Ok(guard) = abuse.lock() else {
+                        return MetaResponse::Error {
+                            message:
+                                "abuse counters are unavailable: the evaluator lock is poisoned"
+                                    .to_owned(),
+                        };
                     };
+                    (
+                        guard.counters().copied_directional(),
+                        guard.policy().authorized,
+                    )
                 };
-                let rows = guard
-                    .counters()
-                    .snapshot_directional()
+                snapshot.sort_by(|a, b| a.0.cmp(&b.0));
+                let rows = snapshot
                     .into_iter()
                     .map(|((local, remote), counters)| AbuseCountersRow {
                         local,
@@ -751,14 +766,13 @@ impl MetaProtocol {
                         unattributed_bytes: counters.unattributed.bytes,
                     })
                     .collect();
-                let policy = &guard.policy().authorized;
                 MetaResponse::AbuseCounters {
                     rows,
                     policy: Some(AbusePolicyView {
-                        frames_per_sec: policy.frames_per_sec,
-                        frame_burst: policy.frame_burst,
-                        bytes_per_sec: policy.bytes_per_sec,
-                        byte_burst: policy.byte_burst,
+                        frames_per_sec: authorized.frames_per_sec,
+                        frame_burst: authorized.frame_burst,
+                        bytes_per_sec: authorized.bytes_per_sec,
+                        byte_burst: authorized.byte_burst,
                     }),
                 }
             }
@@ -1643,6 +1657,28 @@ mod tests {
         assert!(
             names(&node).await.is_empty(),
             "no dangling name may be created"
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abuse_counters_without_an_evaluator_answer_the_empty_report() {
+        // Oracle: a node with no abuse evaluator attached (LocalNode never
+        // attaches one, exactly like a plain `id serve` without `--world`)
+        // records no world traffic, so AbuseCounters is the empty report —
+        // never an error. `id peers --abuse` depends on this to succeed
+        // with no rows (#4918).
+        let node = LocalNode::open(true).await.unwrap();
+        let resp = node.request(MetaRequest::AbuseCounters).await;
+        assert!(
+            matches!(
+                resp,
+                MetaResponse::AbuseCounters {
+                    ref rows,
+                    policy: None
+                } if rows.is_empty()
+            ),
+            "expected the empty abuse report, got {resp:?}"
         );
         node.shutdown().await.unwrap();
     }

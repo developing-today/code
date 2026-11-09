@@ -644,15 +644,24 @@ impl CounterRegistry {
         rows
     }
 
+    /// All counters split by direction, copied without sorting.
+    ///
+    /// For callers holding a lock on the registry's owner who must keep
+    /// the hold short: copy under the lock, then sort the copy after
+    /// release (see [`CounterRegistry::snapshot_directional`]).
+    #[must_use]
+    pub fn copied_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
+        self.counters
+            .iter()
+            .map(|(k, e)| (*k, e.counters))
+            .collect()
+    }
+
     /// All counters split by direction, sorted by (local node, remote
     /// endpoint) so snapshots are deterministic.
     #[must_use]
     pub fn snapshot_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
-        let mut rows: Vec<_> = self
-            .counters
-            .iter()
-            .map(|(k, e)| (*k, e.counters))
-            .collect();
+        let mut rows = self.copied_directional();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows
     }

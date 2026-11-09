@@ -1443,6 +1443,9 @@ pub enum Command {
         /// Read-only: frames and bytes admitted by the abuse evaluator, split
         /// by direction, with the policy rates shown alongside. Local serve
         /// only; cannot be combined with `--gossip` or a remote node ID.
+        ///
+        /// The counters cover world-protocol traffic only: a serve running
+        /// without `--world` records none and the report is empty.
         #[arg(long)]
         abuse: bool,
     },
