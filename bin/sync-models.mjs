@@ -234,6 +234,42 @@ function allowedModelIds(policy, providerPolicy, ids) {
 }
 
 // -----------------------------------------------------------------------------
+// Section resolution for sync-owned providers (#7333). A provider rename
+// leaves its catalog under the pre-rename id: the 2026-11-07 rename
+// (opencode#1823) moved antigravity-direct -> _antigravity, and the runtime
+// overlay may still carry only the old key. Looking up the target alone then
+// silently no-ops and the run reports "up to date" while the catalog is
+// orphaned. Resolution migrates the legacy section, or reports the absence,
+// so the caller never mistakes "not there" for "in sync".
+// -----------------------------------------------------------------------------
+const PROVIDER_ALIASES = {
+  _antigravity: ['antigravity-direct', 'antigravity-agy', 'antigravity-ls'],
+  _claude: ['claude-code'],
+  _vibe: ['vibe-direct'],
+  _commandcode: ['commandcode'],
+  _muse: ['muse-direct'],
+};
+
+// Returns { status, provider, migratedFrom } with status 'present',
+// 'migrated' or 'absent'. Moving the key is an in-memory change; the caller
+// records the matching text edit (renameJsoncProvider) when it applies.
+function resolveProviderSection(config, targetProvider) {
+  config.provider = config.provider || {};
+  if (Object.hasOwn(config.provider, targetProvider)) {
+    return { status: 'present', provider: config.provider[targetProvider], migratedFrom: null };
+  }
+  for (const legacyId of PROVIDER_ALIASES[targetProvider] || []) {
+    if (!Object.hasOwn(config.provider, legacyId)) continue;
+    const legacy = config.provider[legacyId];
+    if (legacy === null || typeof legacy !== 'object') continue;
+    defineValue(config.provider, targetProvider, legacy);
+    delete config.provider[legacyId];
+    return { status: 'migrated', provider: legacy, migratedFrom: legacyId };
+  }
+  return { status: 'absent', provider: null, migratedFrom: null };
+}
+
+// -----------------------------------------------------------------------------
 // Helper: Clean JSONC parser (for reading only; it drops comments)
 // -----------------------------------------------------------------------------
 function parseJsonc(text) {
@@ -451,6 +487,37 @@ function removeJsoncPath(text, keys) {
   return text.slice(0, lineStart) + text.slice(newline < 0 ? text.length : newline + 1);
 }
 
+// Like setJsoncMember, but inserts a value's source text verbatim instead of
+// re-serializing it. renameJsoncProvider needs that: re-serializing would drop
+// the comments inside a migrated provider section.
+function setJsoncMemberRaw(text, object, key, rawValue) {
+  const objectIndent = lineIndent(text, object.start);
+  const memberIndent = `${objectIndent}  `;
+  const entry = `${JSON.stringify(key)}: ${rawValue}`;
+  if (object.members.length === 0) {
+    return `${text.slice(0, object.start + 1)}\n${memberIndent}${entry}\n${objectIndent}${text.slice(object.start + 1)}`;
+  }
+  const at = object.members.at(-1).value.end;
+  return `${text.slice(0, at)},\n${memberIndent}${entry}${text.slice(at)}`;
+}
+
+// Renames a provider member, moving its value's source text verbatim (#7333).
+// No-ops when the provider is absent or the target id already exists, so a
+// half-renamed config is never overwritten. Throws like removeJsoncPath when
+// the source member carries an inline comment the move would lose.
+function renameJsoncProvider(text, fromId, toId) {
+  const root = parseJsoncTree(text);
+  const providerObject = root.members.find(m => m.key === 'provider')?.value;
+  if (!providerObject || providerObject.type !== 'object') return text;
+  const from = providerObject.members.find(m => m.key === fromId);
+  if (!from) return text;
+  if (providerObject.members.some(m => m.key === toId)) return text;
+  const rawValue = text.slice(from.value.start, from.value.end);
+  const without = removeJsoncPath(text, ['provider', fromId]);
+  const providerAfter = parseJsoncTree(without).members.find(m => m.key === 'provider');
+  return setJsoncMemberRaw(without, providerAfter.value, toId, rawValue);
+}
+
 // Shape validation at the parse boundary (#2832, design #3068 Phase 2):
 // parseJsonc proves the config parses; this proves the shape run() is about
 // to dereference, before the first deref and before any side effect. A
@@ -503,9 +570,32 @@ async function run() {
   let totalAdded = 0;
   let totalUpdated = 0;
   let totalRemoved = 0;
+  let totalCreated = 0;
+  let totalMigrated = 0;
+  let totalSkipped = 0;
+  let totalUnverified = 0;
   // Every change is recorded here and applied to the text at the end, so the
   // file keeps its comments and formatting.
   const edits = [];
+
+  // #7333: resolve every sync-owned provider before syncing. A target section
+  // can be missing while its catalog still sits under a pre-rename id; the
+  // in-memory key move happens here, the matching text edit is applied below.
+  // Resolution is never skipped silently: an absent section is reported (and,
+  // when discovery has models, created) instead of falling through to an
+  // "up to date" summary.
+  const providerStatus = new Map();
+  for (const targetProvider of ['_antigravity']) {
+    const resolved = resolveProviderSection(config, targetProvider);
+    providerStatus.set(targetProvider, resolved);
+    if (resolved.status === 'migrated') {
+      console.log(
+        `[sync-models] ~ Renaming provider section ${resolved.migratedFrom} -> ${targetProvider} (renamed provider catalog)`,
+      );
+      edits.push({ renameProvider: [resolved.migratedFrom, targetProvider] });
+      totalMigrated++;
+    }
+  }
 
   // 1. Sync _antigravity (the CLI-wire door; antigravity-agy &
   // antigravity-ls retired 2026-10-30 — see home/common/default.nix)
@@ -556,7 +646,17 @@ async function run() {
     };
 
     for (const targetProvider of ['_antigravity']) {
-      if (!config.provider?.[targetProvider]) continue;
+      if (providerStatus.get(targetProvider).status === 'absent') {
+        // #7333 item 2: discovery returned models for a provider the config
+        // does not define yet — create the section instead of skipping it.
+        const section = { models: {} };
+        console.log(
+          `[sync-models] + Creating provider section ${targetProvider} (discovery returned ${agyModels.length} models)`,
+        );
+        defineValue(config.provider, targetProvider, section);
+        edits.push({ set: ['provider', targetProvider], value: section });
+        totalCreated++;
+      }
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};
       const modelsPath = ['provider', targetProvider, 'models'];
@@ -616,6 +716,24 @@ async function run() {
         }
       }
     }
+  } else {
+    // #7333: with no discovered models the sync block never runs, so the
+    // catalog could not be verified. Say so instead of letting the summary
+    // claim everything is up to date. An absent section is the reported
+    // defect (nothing was created); a present one is merely unverified.
+    for (const [targetProvider, resolved] of providerStatus) {
+      if (resolved.status === 'absent') {
+        console.warn(
+          `[sync-models] ! Skipped ${targetProvider}: section absent from ${OPENCODE_CONFIG_PATH} and model discovery returned nothing — the catalog was neither created nor verified (NOT up to date)`,
+        );
+        totalSkipped++;
+      } else {
+        console.warn(
+          `[sync-models] ! Skipped ${targetProvider}: model discovery returned nothing, so the catalog was left unchanged and not verified (NOT up to date)`,
+        );
+        totalUnverified++;
+      }
+    }
   }
 
   // 2. openai-codex: retired 2026-11-03 -- the provider definition was
@@ -656,10 +774,30 @@ async function run() {
     // cloudflare-gateway: retired 2026-11-03 with its provider definition.
   }
 
-  console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ${totalRemoved} models removed.`);
+  console.log(
+    `[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ` +
+    `${totalRemoved} models removed, ${totalCreated} provider sections created, ` +
+    `${totalMigrated} renamed, ${totalSkipped} skipped, ${totalUnverified} unverified.`,
+  );
 
-  if (totalAdded === 0 && totalUpdated === 0 && totalRemoved === 0) {
-    console.log('[sync-models] All providers are already up-to-date!');
+  // #7333: an absent target section means a catalog sync did not happen — the
+  // daily service must not exit green for that. Exit 3 (not 1: the run did
+  // what it could) leaves "skipped, needs attention" distinguishable from a
+  // hard error. An unverified catalog (discovery down) is warned about above
+  // but does not fail the run: that is a source-availability condition, not a
+  // config defect.
+  if (totalSkipped > 0) {
+    console.error(
+      `[sync-models] ${totalSkipped} sync target(s) skipped: this run did not maintain the model catalog (NOT up to date).`,
+    );
+    process.exitCode = 3;
+  }
+
+  const changed = totalAdded + totalUpdated + totalRemoved + totalCreated + totalMigrated;
+  if (changed === 0) {
+    if (totalSkipped === 0 && totalUnverified === 0) {
+      console.log('[sync-models] All providers are already up-to-date!');
+    }
     return;
   }
 
@@ -667,7 +805,9 @@ async function run() {
   for (const edit of edits) {
     newText = edit.remove
       ? removeJsoncPath(newText, edit.remove)
-      : setJsoncPath(newText, edit.set, edit.value);
+      : edit.renameProvider
+        ? renameJsoncProvider(newText, edit.renameProvider[0], edit.renameProvider[1])
+        : setJsoncPath(newText, edit.set, edit.value);
   }
   // Refuse to write anything that no longer parses.
   parseJsoncTree(newText);

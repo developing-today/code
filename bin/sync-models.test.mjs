@@ -25,6 +25,14 @@ function extractFunction(name) {
   return source.slice(start, end + 3);
 }
 
+function extractConst(name) {
+  const start = source.indexOf(`const ${name} = `);
+  assert.notEqual(start, -1, `${name} not found in sync-models.mjs`);
+  const end = source.indexOf('\n};\n', start);
+  assert.notEqual(end, -1, `${name} body not terminated as expected`);
+  return source.slice(start, end + 4);
+}
+
 const { parseJsonc, parseJsoncTree, removeJsoncPath } = new Function(
   `${extractFunction('parseJsonc')}\n` +
   `${extractFunction('parseJsoncTree')}\n` +
@@ -50,6 +58,23 @@ const allowedModelIdsEnd = source.indexOf('\n}\n', allowedModelIdsStart);
 assert.notEqual(allowedModelIdsEnd, -1, 'allowedModelIds body not terminated as expected');
 const allowedModelIds = new Function(
   `${source.slice(compareVersionsStart, allowedModelIdsEnd + 3)}\nreturn allowedModelIds;`,
+)();
+
+// #7333: provider-section resolution and its comment-preserving text rename.
+const { defineValue, PROVIDER_ALIASES, resolveProviderSection } = new Function(
+  `${extractConst('defineValue')}\n` +
+  `${extractConst('PROVIDER_ALIASES')}\n` +
+  `${extractFunction('resolveProviderSection')}\n` +
+  'return { defineValue, PROVIDER_ALIASES, resolveProviderSection };',
+)();
+
+const { renameJsoncProvider } = new Function(
+  `${extractFunction('parseJsoncTree')}\n` +
+  `${extractConst('lineIndent')}\n` +
+  `${extractFunction('setJsoncMemberRaw')}\n` +
+  `${extractFunction('removeJsoncPath')}\n` +
+  `${extractFunction('renameJsoncProvider')}\n` +
+  'return { renameJsoncProvider };',
 )();
 
 const loadPolicyFrom = policy => loadPolicyFactory(
@@ -255,10 +280,10 @@ test('keeps a standalone comment when removing the following member', () => {
 // temp target config — never the live config — is the only write candidate.
 const scriptPath = path.join(binDir, 'sync-models.mjs');
 
-function runWithTempConfig(args) {
+function runWithTempConfig(args, body) {
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-models-test-home-'));
   const configPath = path.join(tmpHome, 'opencode.jsonc');
-  const before = '{\n  // temp probe config\n  "provider": {}\n}\n';
+  const before = body ?? '{\n  // temp probe config\n  "provider": {\n    "_antigravity": { "models": {} }\n  }\n}\n';
   fs.writeFileSync(configPath, before);
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
     encoding: 'utf-8',
@@ -267,6 +292,9 @@ function runWithTempConfig(args) {
       ...process.env,
       HOME: tmpHome,
       OPENCODE_CONFIG_PATH: configPath,
+      // Keep discovery deterministic: no `ps`, no `agy`, no LS log under the
+      // temp HOME, so these probes never depend on a live Antigravity.
+      PATH: '',
     },
   });
   const after = fs.readFileSync(configPath, 'utf-8');
@@ -383,3 +411,121 @@ test('removeJsoncPath refuses a non-object intermediate naming the key path (#28
     /cannot remove provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
   );
 });
+
+// --- #7333: a renamed provider catalog must not be silently orphaned ---
+
+test('the alias table carries the pre-rename id from the reported defect (#7333)', () => {
+  assert.ok(PROVIDER_ALIASES._antigravity.includes('antigravity-direct'));
+  for (const [target, aliases] of Object.entries(PROVIDER_ALIASES)) {
+    assert.ok(target.startsWith('_'), `${target} is not a post-rename id`);
+    assert.ok(aliases.length > 0, `${target} has no legacy ids`);
+    assert.ok(!aliases.includes(target), `${target} aliases itself`);
+  }
+});
+
+test('resolveProviderSection leaves a present section alone (#7333)', () => {
+  const section = { models: { 'gemini-2-flash': { name: 'direct' } } };
+  const config = { provider: { _antigravity: section } };
+  const resolved = resolveProviderSection(config, '_antigravity');
+  assert.equal(resolved.status, 'present');
+  assert.equal(resolved.provider, section);
+  assert.equal(resolved.migratedFrom, null);
+  assert.deepEqual(Object.keys(config.provider), ['_antigravity']);
+});
+
+test('resolveProviderSection migrates a pre-rename catalog to the target id (#7333)', () => {
+  const legacy = { models: { 'gemini-2-flash': { name: 'direct' } } };
+  const config = { provider: { 'antigravity-direct': legacy } };
+  const resolved = resolveProviderSection(config, '_antigravity');
+  assert.equal(resolved.status, 'migrated');
+  assert.equal(resolved.migratedFrom, 'antigravity-direct');
+  assert.equal(resolved.provider, legacy);
+  assert.equal(config.provider._antigravity, legacy);
+  assert.equal(Object.hasOwn(config.provider, 'antigravity-direct'), false);
+  assert.deepEqual(config.provider._antigravity.models, {
+    'gemini-2-flash': { name: 'direct' },
+  });
+});
+
+test('resolveProviderSection reports an absent section instead of inventing one (#7333)', () => {
+  const config = { provider: { openai: {} } };
+  const resolved = resolveProviderSection(config, '_antigravity');
+  assert.equal(resolved.status, 'absent');
+  assert.equal(resolved.provider, null);
+  assert.equal(Object.hasOwn(config.provider, '_antigravity'), false);
+});
+
+test('resolveProviderSection does not follow inherited keys (#7333)', () => {
+  const config = { provider: Object.create({ 'antigravity-direct': { models: {} } }) };
+  assert.equal(resolveProviderSection(config, '_antigravity').status, 'absent');
+});
+
+test('renameJsoncProvider moves a section verbatim, keeping its comments (#7333)', () => {
+  const input = `{
+  "provider": {
+    "antigravity-direct": {
+      // catalog note
+      "models": { "gemini-2-flash": { "name": "direct" } }
+    },
+    "openai": {}
+  }
+}`;
+  const output = renameJsoncProvider(input, 'antigravity-direct', '_antigravity');
+  // Oracle: the parsed output equals the input with only the provider key
+  // renamed, and the source comment survives the move.
+  const parsed = parseJsonc(output);
+  assert.deepEqual(parsed, {
+    provider: {
+      _antigravity: { models: { 'gemini-2-flash': { name: 'direct' } } },
+      openai: {},
+    },
+  });
+  assert.match(output, /\/\/ catalog note/);
+  assert.equal(parsed.provider['antigravity-direct'], undefined);
+});
+
+test('renameJsoncProvider never overwrites an existing target section (#7333)', () => {
+  const input = '{"provider":{"antigravity-direct":{"models":{}},"_antigravity":{"models":{}}}}';
+  assert.equal(renameJsoncProvider(input, 'antigravity-direct', '_antigravity'), input);
+});
+
+test('renameJsoncProvider is a no-op for a missing source section (#7333)', () => {
+  const input = '{"provider":{"openai":{}}}';
+  assert.equal(renameJsoncProvider(input, 'antigravity-direct', '_antigravity'), input);
+});
+
+test('end to end: a legacy keyed overlay is migrated on the next run (#7333)', () => {
+  const initial = `{
+  // runtime overlay
+  "provider": {
+    "antigravity-direct": {
+      "models": { "gemini-2-flash": { "name": "direct" } }
+    }
+  }
+}
+`;
+  const { result, after, backupExists } = runWithTempConfig([], initial);
+  const parsed = parseJsonc(after);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Renaming provider section antigravity-direct -> _antigravity/);
+  assert.match(result.stdout, /1 renamed/);
+  assert.deepEqual(parsed.provider._antigravity, {
+    models: { 'gemini-2-flash': { name: 'direct' } },
+  });
+  assert.equal(parsed.provider['antigravity-direct'], undefined);
+  assert.equal(backupExists, true);
+});
+
+test('end to end: an absent section is skipped loudly, never "up to date" (#7333)', () => {
+  const initial = '{\n  // no provider catalogs yet\n  "provider": {}\n}\n';
+  const { result, after, backupExists } = runWithTempConfig([], initial);
+  assert.equal(result.status, 3);
+  assert.equal(after, initial);
+  assert.equal(backupExists, false);
+  assert.match(
+    `${result.stdout}${result.stderr}`,
+    /Skipped _antigravity: section absent .*NOT up to date/,
+  );
+  assert.doesNotMatch(result.stdout, /already up-to-date/);
+});
+
