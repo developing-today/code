@@ -58,6 +58,26 @@
 //!   part remains independently replicable without changing this envelope.
 //!   This writer-side guarantee does not repair oversized checkpoints left
 //!   by older binaries; those are handled separately from the v1 wire path.
+//!
+//! ## Admission contract (#4592)
+//!
+//! **A frame is admitted only if its header version names a chain that
+//! could exist: inside the restore range
+//! `JOURNAL_VERSION..=MAX_JOURNAL_VERSION`, and — for a snapshot, the one
+//! frame kind allowed to change the chain's version — never lower than
+//! the version of the chain the tracker already holds.**
+//!
+//! [`ReplicationTracker::accept`] enforces both clauses for every frame
+//! kind before any state changes: the envelope range check refuses an
+//! out-of-range `header_version` with
+//! [`ReplicationError::UnsupportedJournalVersion`], and the Snapshot arm
+//! refuses a lower-than-current version. Construction enforces the range
+//! clause too: [`ReplicationTracker::new`] refuses an out-of-range
+//! session version, so no live tracker can hold one. The Phase 3 closing
+//! audit (#4593) dispositioned every precondition
+//! [`super::WorldCore::restore`] demands of a journal against these
+//! checks; its one confirmed gap — per-entry version requirements are
+//! enforced at restore but not yet at accept — is filed as #7970.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -723,6 +743,10 @@ impl ReplicationTracker {
 
     /// Verify one encoded frame and, if it passes every check, advance
     /// the session state and return the payload to apply.
+    ///
+    /// This is where the module's admission contract (see the module
+    /// doc, #4592) is enforced: a frame is admitted only if its header
+    /// version names a chain that could exist.
     ///
     /// # Errors
     ///

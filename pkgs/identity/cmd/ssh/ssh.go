@@ -208,7 +208,7 @@ func StartSsh(streamClient StreamClientService, config *configuration.SshServerC
 					observability.Middleware(connections),
 				),
 				wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
-					log.Info("Accepting password", "password", password, "len", len(password))
+					log.Info("Accepting password")
 					return Connect(ctx, nil, &password, nil, connections)
 				}),
 				wish.WithKeyboardInteractiveAuth(func(ctx ssh.Context, challenge gossh.KeyboardInteractiveChallenge) bool {
@@ -587,7 +587,7 @@ func TeaHandlerWithStream(streamClient StreamClientService) func(ssh.Session) (t
 		m.layout[leftAddr] = m.choices[0]
 		m.layout[middleAddr] = m.choices[1]
 		m.layout[rightAddr] = m.choices[2]
-		log.Info("Starting tea handler", "meltedPrivateKeySeed", meltedPrivateKeySeed, "charmId", m.charmId, "publicKeyAuthorized", m.publicKeyAuthorized, "term", m.term, "width", m.width, "height", m.height, "model", m)
+		log.Info("Starting tea handler", "charmId", m.charmId, "term", m.term, "width", m.width, "height", m.height)
 		return m, []tea.ProgramOption{tea.WithAltScreen()}
 	}
 }
@@ -784,7 +784,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		interactiveStr := string(challengesJson)
 		interactive = &interactiveStr
 
-		log.Info("Accepting keyboard interactive", "response", interactiveStr, "len", len(interactiveStr))
+		log.Info("Accepting keyboard interactive")
 	}
 
 	var passwordLength *int64
@@ -794,7 +794,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 	var passwordSha256Str string
 
 	if password != nil {
-		log.Info("Accepting password", "password", *password, "len", len(*password))
+		log.Info("Accepting password")
 		passwordLength = new(int64)
 		*passwordLength = int64(len(*password))
 		hasher := sha256.New()
@@ -802,13 +802,9 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		passwordSha256 = hasher.Sum(nil)
 		passwordSha256Str = base64.StdEncoding.EncodeToString(passwordSha256)
 		passwordHash = &passwordSha256Str
-		ctx.Permissions().Extensions["password-hash"] = *passwordHash
 
 		passwordHashTypeStr := "sha256"
 		passwordHashType = &passwordHashTypeStr
-		ctx.Permissions().Extensions["password-hash-type"] = *passwordHashType
-
-		log.Info("Accepting password", "passwordHash", *passwordHash)
 	}
 
 	var publicKey *string
@@ -831,7 +827,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 	if publicKey == nil {
 		log.Info("No public key provided, gathering one")
 		if password == nil || passwordLength == nil || passwordHash == nil || passwordHashType == nil || passwordSha256 == nil {
-			log.Error("No public key or password provided", "password", *password, "passwordLength", *passwordLength, "passwordHash", *passwordHash, "passwordHashType", *passwordHashType, "passwordSha256", passwordSha256)
+			log.Error("No public key or password provided")
 			return false
 		}
 
@@ -895,7 +891,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 					return false
 				}
 			}
-			log.Info("Generated private key", "pk", ed25519PrivateKey, "pkLen", len(ed25519PrivateKey), "pkStr", base64.StdEncoding.EncodeToString(ed25519PrivateKey))
+			log.Info("Generated private key")
 
 			privateKeyIdi, err := auth.InsertPrivateKey(ed25519PrivateKey)
 			if err != nil {
@@ -970,7 +966,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 				return false
 			}
 			ctx.Permissions().Extensions["private-key-seed-melted"] = pkMelted
-			log.Info("Melted private key", "pkMelted", pkMelted)
+			log.Info("Melted private key")
 		}
 	} else {
 		log.Info("Public key provided", "publicKey", *publicKey, "key", key, "keyType", key.Type(), "keyMarshal", key.Marshal(), "keyMarshalLen", len(key.Marshal()))
@@ -1046,14 +1042,14 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		History:                    &history,
 	}
 
-	log.Info("Inserting connection", "connection", connection.ToData(), "connectionID", connection.ConnectionID)
+	log.Info("Inserting connection", "authMethod", authMethod)
 	connectionID, err := connection.Insert()
 
 	if err != nil {
 		log.Error("Failed to insert connection", "error", err, "connectionID", connection.ConnectionID)
 		return false
 	}
-	log.Info("Inserted connection", "connectionID", &connectionID, "connection", connection.String(), "connectionID", connection.ConnectionID)
+	log.Info("Inserted connection", "connectionID", connectionID, "authMethod", authMethod)
 	ctx.Permissions().Extensions["connection-id"] = *connectionID
 
 	permissionsExtensionsJson, err := json.Marshal(ctx.Permissions().Extensions)
@@ -1061,7 +1057,7 @@ func Connect(ctx ssh.Context, key ssh.PublicKey, password *string, challenge gos
 		log.Error("Failed to marshal extensions", "error", err, "connectionID", connection.ConnectionID)
 		return false
 	}
-	log.Info("Setting permissions extensions", "permissionsExtensions", string(permissionsExtensionsJson), "connectionID", connection.ConnectionID)
+	log.Info("Setting permissions extensions", "extensionCount", len(ctx.Permissions().Extensions), "connectionID", connection.ConnectionID)
 	connection.SetPermissionsExtensions(string(permissionsExtensionsJson))
 
 	log.Info("Checking public key", "publicKey", *publicKey, "connectionID", connection.ConnectionID)
