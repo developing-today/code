@@ -415,6 +415,27 @@ fn resolve_under_home(path: &str) -> PathBuf {
     resolve_under(&home_dir(), &PathBuf::from(path))
 }
 
+/// The transport a fleet client should use to reach a broker role
+/// on this host (#6218, from the #5699 design adopted 2026-11-05):
+/// the role's Unix socket, or its TCP listener. Selected by
+/// [`Config::role_transport_choice`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleTransport {
+    Socket(PathBuf),
+    Tcp,
+}
+
+/// Probe a broker role's Unix socket: the file exists AND a connect
+/// succeeds. A stale socket file (left by a dead broker) fails the
+/// connect, so callers fall back to TCP within the same connection
+/// attempt (#6218 acceptance).
+pub fn probe_socket(path: &std::path::Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
 impl Config {
     /// The config file path: `$FLEET_CONFIG`, else
     /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
@@ -590,6 +611,50 @@ impl Config {
         configured
             .map(|v| v.trim().to_ascii_lowercase())
             .filter(|v| v == "socket" || v == "tcp")
+    }
+
+    /// A broker role's Unix socket path by role name (#6218):
+    /// `queue-broker` / `secrets-broker`; `None` for an unknown role.
+    pub fn role_socket(&self, role: &str) -> Option<PathBuf> {
+        match role {
+            "queue-broker" => Some(self.queue_broker_socket()),
+            "secrets-broker" => Some(self.secrets_broker_socket()),
+            _ => None,
+        }
+    }
+
+    /// The transport a client should use to reach a broker role
+    /// (#6218): the `[<role>] transport` preference wins ("tcp"
+    /// selects TCP without probing; "socket" selects the role's
+    /// Unix socket); with no preference, probe the role socket --
+    /// a socket that answers selects UDS, an absent or stale one
+    /// selects TCP. `None` for an unknown role (the caller then
+    /// keeps whatever route it already had).
+    pub fn role_transport_choice(&self, role: &str) -> Option<RoleTransport> {
+        let socket = self.role_socket(role)?;
+        let probe_ok = probe_socket(&socket);
+        Some(Self::role_transport_choice_from(
+            self.role_transport(role).as_deref(),
+            socket,
+            probe_ok,
+        ))
+    }
+
+    /// The pure core of [`Config::role_transport_choice`], split
+    /// out so the socket-present / socket-absent / socket-stale
+    /// cases are testable without a live broker: `probe_ok` is the
+    /// probe's verdict (a stale socket file probes false).
+    fn role_transport_choice_from(
+        pref: Option<&str>,
+        socket: PathBuf,
+        probe_ok: bool,
+    ) -> RoleTransport {
+        match pref {
+            Some("tcp") => RoleTransport::Tcp,
+            Some("socket") => RoleTransport::Socket(socket),
+            _ if probe_ok => RoleTransport::Socket(socket),
+            _ => RoleTransport::Tcp,
+        }
     }
 
     /// A role socket's resolution (#6215, design #5699): explicit
@@ -1064,6 +1129,74 @@ transport = "udp"
         assert_eq!(cfg.role_transport("secrets-broker"), None);
         assert_eq!(cfg.role_transport("dispatch"), None);
         assert_eq!(Config::default().role_transport("queue-broker"), None);
+    }
+
+    #[test]
+    fn role_transport_choice_pref_wins_then_probe() {
+        // #6218: explicit preference beats the probe; with no
+        // preference the probe decides (present -> socket, absent
+        // or stale -> TCP).
+        let sock = PathBuf::from("/tmp/role.sock");
+        assert_eq!(
+            Config::role_transport_choice_from(Some("tcp"), sock.clone(), true),
+            RoleTransport::Tcp
+        );
+        assert_eq!(
+            Config::role_transport_choice_from(Some("socket"), sock.clone(), false),
+            RoleTransport::Socket(sock.clone())
+        );
+        assert_eq!(
+            Config::role_transport_choice_from(None, sock.clone(), true),
+            RoleTransport::Socket(sock.clone())
+        );
+        assert_eq!(
+            Config::role_transport_choice_from(None, sock.clone(), false),
+            RoleTransport::Tcp
+        );
+        // An unrecognized preference degrades to the probe, exactly
+        // like role_transport's None.
+        assert_eq!(
+            Config::role_transport_choice_from(Some("udp"), sock, false),
+            RoleTransport::Tcp
+        );
+    }
+
+    #[test]
+    fn probe_socket_distinguishes_live_absent_and_stale() {
+        // #6218 acceptance: socket-present, socket-absent, and
+        // socket-stale probe outcomes.
+        let dir =
+            std::env::temp_dir().join(format!("fleet-config-probe-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let live = dir.join("live.sock");
+        let stale = dir.join("stale.sock");
+        let absent = dir.join("absent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&live).expect("bind live socket");
+        assert!(probe_socket(&live), "live socket must probe true");
+        drop(listener);
+        // The socket file outlives its listener: stale.
+        assert!(live.exists(), "socket file remains after drop");
+        assert!(!probe_socket(&live), "stale socket must probe false");
+        std::fs::write(&stale, b"not a socket").expect("write stale placeholder");
+        assert!(!probe_socket(&stale), "regular file must probe false");
+        assert!(!probe_socket(&absent), "absent socket must probe false");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn role_socket_dispatches_known_roles_only() {
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.role_socket("queue-broker"),
+            Some(cfg.queue_broker_socket())
+        );
+        assert_eq!(
+            cfg.role_socket("secrets-broker"),
+            Some(cfg.secrets_broker_socket())
+        );
+        assert_eq!(cfg.role_socket("dispatch"), None);
+        assert_eq!(cfg.role_transport_choice("dispatch"), None);
     }
 
     #[test]
