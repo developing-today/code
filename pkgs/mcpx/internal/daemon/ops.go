@@ -25,6 +25,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/wantlog"
 )
 
 // routesV1Ops registers the operations that are not part of the original
@@ -305,6 +306,11 @@ func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	// The daemon is the other surface that can answer an empty registry
+	// search, and it used to return [] with no record. Same local-only
+	// append as the CLI; best-effort, because the search already
+	// succeeded and the caller asked for its result.
+	s.recordRegistrySearch(q.Get("q"), res)
 	type entry struct {
 		registry.Server
 		Namespace string `json:"namespace"`
@@ -321,6 +327,16 @@ func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out, "truncated": res.Truncated})
+}
+
+// recordRegistrySearch adds an empty search result to the local-only wants
+// log. Best-effort so an unwritable feedback file cannot fail the search.
+func (s *Server) recordRegistrySearch(query string, res registry.Results) {
+	stateDir := s.paths.State
+	if stateDir == "" {
+		stateDir = DefaultStateDir()
+	}
+	_ = wantlog.RecordSearchMiss(stateDir, query, len(res.Servers))
 }
 
 // ---- completion ----
