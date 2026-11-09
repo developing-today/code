@@ -184,3 +184,20 @@ describe("fleet feed SaaS range/order gates (#5188)", () => {
     expect(kept({ ...VALID, cadenceDays: 0 })).toBe(1);
   });
 });
+
+describe("fleet feed SaaS measuredAt ISO gate (#5281)", () => {
+  const kept = (row: unknown) => sanitizeSaasServices([row]).rows?.length ?? 0;
+
+  test("impossible and non-ISO measuredAt drop the service and are counted", () => {
+    for (const measuredAt of ["2026-02-30", "2026-04-31", "March 2, 2026", "not-a-date"]) {
+      expect(kept({ ...VALID, measuredAt })).toBe(0);
+    }
+    expect(sanitizeSaasServices([{ ...VALID, measuredAt: "2026-02-30" }, VALID]).dropped).toBe(1);
+  });
+
+  test("valid ISO measuredAt and null measuredAt keep the service", () => {
+    expect(kept({ ...VALID, measuredAt: "2026-03-01" })).toBe(1);
+    expect(kept({ ...VALID, measuredAt: null })).toBe(1);
+    expect(kept(VALID)).toBe(1);
+  });
+});

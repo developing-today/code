@@ -463,7 +463,7 @@ impl ReplContext {
             send.write_all(&req).await?;
             send.finish()?;
             let resp_buf = read_capped_response(&mut recv).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
             match resp {
                 MetaResponse::List { items } => {
@@ -614,7 +614,7 @@ impl ReplContext {
             send.write_all(&req).await?;
             send.finish()?;
             let resp_buf = read_capped_response(&mut recv).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
             match resp {
                 MetaResponse::Get { hash: Some(hash) } => {
@@ -761,7 +761,7 @@ impl ReplContext {
             send.write_all(&req).await?;
             send.finish()?;
             let resp_buf = read_capped_response(&mut recv).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
             match resp {
                 MetaResponse::Find { matches } => matches,
@@ -894,7 +894,7 @@ impl ReplContext {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::List { items } => {
@@ -1019,7 +1019,7 @@ impl ReplContext {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::Get { hash: Some(hash) } => {
@@ -1063,7 +1063,7 @@ impl ReplContext {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::Delete { success: true } => {
@@ -1102,7 +1102,7 @@ impl ReplContext {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::ListPeers { peers } => {
@@ -1143,7 +1143,7 @@ impl ReplContext {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::ListPeers { peers } => {

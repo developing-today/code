@@ -35,8 +35,18 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      # pm-dispatch-task's nested steps load pm-dispatch-start /
+      # pm-dispatch-queue from ./.pm-central in the caller's workspace,
+      # so the central checkout must exist before dispatch (issue #4742).
+      - name: Check out the pm-dispatch actions (central)
+        uses: actions/checkout@v7
+        with:
+          repository: developing-today/code
+          ref: main
+          path: .pm-central
+          persist-credentials: false
       - name: Dispatch ci-fix smoke via pm-dispatch-task
-        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        uses: ./.pm-central/.github/actions/pm-dispatch-task
         env:
           GH_TOKEN: ${{ github.token }}
         with:

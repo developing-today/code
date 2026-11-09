@@ -47,6 +47,31 @@ export type Options = {
   annotate?: boolean;
   /** Override the "is anyone looking at this" guess. */
   headless?: boolean;
+  /**
+   * Model-facing mcpx tool names (mcpx_exec, ...) hidden from every
+   * session this plugin serves (#5122): the user-facing writer for the
+   * per-session tool-filter policy — setup records it as each new
+   * session's policy in ctx.storage, unless that session already has
+   * a policy of its own. Env: MCPX_PLUGIN_DISABLED_TOOLS (comma- or
+   * space-separated). Names outside the mcpx_ namespace are dropped
+   * when the policy is read, so this can never hide a host tool.
+   */
+  disabledTools?: string[];
+};
+
+/** A tool-name list from an option array or a separated env string. */
+const nameList = (v: unknown): string[] | undefined => {
+  if (Array.isArray(v))
+    return v
+      .map(String)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  if (typeof v === "string")
+    return v
+      .split(/[\s,]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  return undefined;
 };
 
 const str = (v: unknown): string | undefined => (v === undefined || v === null || v === "" ? undefined : String(v));
@@ -114,5 +139,6 @@ export function resolveOptions(raw: Options | undefined, env: Record<string, str
     toolTiming: o.toolTiming ?? truthy(env.MCPX_PLUGIN_TOOL_TIMING) ?? false,
     answerSampling: o.answerSampling ?? true,
     discoveryRetryMs: goDurationMs(env.MCPX_PLUGIN_DISCOVERY_RETRY),
+    disabledTools: nameList(o.disabledTools) ?? nameList(env.MCPX_PLUGIN_DISABLED_TOOLS),
   };
 }

@@ -3,12 +3,18 @@
  *
  * Setup wires the whole core: the remembered-daemon read (ctx.storage),
  * the idempotent system-prompt paragraph (session context hook), the
- * once-per-session full-environment send, execute.after timing records,
+ * per-session filtering of disabled mcpx tools from the model-visible
+ * set (tool-filter.ts, #5122), the once-per-session full-environment
+ * send, execute.after timing records,
  * the permission gate (permission.ts: evaluate hook + daemon_select
  * assert), tool registration (tools.ts: tool.transform under the mcpx
  * namespace, so the model sees the v1 names — mcpx_exec and friends),
  * and the sampling watcher (sampling.ts, #1858 item (4)): broker
- * sample rows answered through ctx.generate.text.
+ * sample rows answered through ctx.generate.text. The daemon picker
+ * (picker.ts, #1858 item (3)) rides the tool surface: mcpx_daemon_pick
+ * renders the candidate menu and confirms the choice through the
+ * permission domain — the closest equivalent of a TUI select the
+ * pinned Context supports (picker.ts records the evidence).
  * The v1 tree stays beside this one, untouched, until v2 is what runs.
  */
 import { targetKey, type Target } from "../mcpx/daemon.ts";
@@ -18,6 +24,7 @@ import { wirePermissionGate, type PermissionDomainLike } from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { startSamplingWatcher, type GenerateTextLike, type SamplingDaemonLike } from "./sampling.ts";
 import { createSessionEnv } from "./session-env.ts";
+import { createToolFilter, readDisabledToolsPolicy, setDisabledTools, type ToolFilterInput } from "./tool-filter.ts";
 import { createTimingLog, type ExecuteAfterInput, type ToolTimingRecord } from "./timing.ts";
 import { createToolRuntime, registerTools, type ToolDomainLike, type ToolRuntime } from "./tools.ts";
 
@@ -28,7 +35,7 @@ export type McpxV2Context = {
   serverUrl?: string;
   directory?: string;
   session: {
-    hook(name: "context", fn: (input: ContextHookInput) => void): void;
+    hook(name: "context", fn: (input: ContextHookInput & ToolFilterInput) => void): void;
   };
   tool: ToolDomainLike & {
     hook(name: "execute.after", fn: (input: ExecuteAfterInput) => void): void;
@@ -67,6 +74,31 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   // decides where a newly started daemon binds (v1's reasoning,
   // mcpx-session.ts). Sessions are tracked so a daemon_select later in
   // the session can refresh the ones already sent.
+  // The per-session mcpx tool filter (#5122): its snapshots refresh
+  // asynchronously from ctx.storage, and the context hook below applies
+  // the latest snapshot synchronously — the hook never waits on storage
+  // and never queries the daemon.
+  const toolFilter = createToolFilter(ctx.storage);
+  // The production writer for the filter's policy (#5122): the user's
+  // disabledTools plugin option is recorded as a session's policy in
+  // ctx.storage the first time the session is seen — unless the
+  // session already has a policy of its own, which always wins. The
+  // write is async (the hook never waits) and the refresh that follows
+  // it puts the seeded policy in force from the session's next turn.
+  const seedSessionPolicy = async (sessionID: string): Promise<void> => {
+    // Seed only when the session has NO policy of its own: the
+    // presence-aware read returns undefined for absence, while an
+    // explicitly empty policy ({ disabled: [] } — the session's
+    // opt-out of global filtering) returns an empty set and wins,
+    // exactly like a nonempty one (#5122 Codex re-review, PR #5170).
+    // A failed read (null here) also leaves the session untouched:
+    // absence was not proven.
+    const existing = await readDisabledToolsPolicy(ctx.storage, sessionID).catch(() => null);
+    if (existing === undefined) {
+      await setDisabledTools(ctx.storage, sessionID, options.disabledTools ?? []).catch(() => undefined);
+    }
+    await toolFilter.refresh(sessionID).catch(() => undefined);
+  };
   const envSessions = new Set<string>();
   let activeEndpoint: string | undefined;
   const sessionVars = (sessionID: string): Record<string, string> => {
@@ -129,8 +161,21 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     if (options.instructions) appendContextOnce(input);
     // First sighting of a session is when its environment is sent — once,
     // with the full environment (session-env.ts explains why full).
+    const firstSighting = !envSessions.has(input.sessionID);
     envSessions.add(input.sessionID);
     void sessionEnv.ensure(input.sessionID, sessionVars(input.sessionID)).catch(() => false);
+    // Hide this session's disabled mcpx tools from the model-visible
+    // set (tool-filter.ts), then refresh the snapshot for the next
+    // turn: a policy recorded since the last firing applies from the
+    // following turn. On first sighting, seed the session's policy
+    // from the disabledTools option first (seedSessionPolicy above
+    // refreshes as its last step, so no second refresh is owed).
+    toolFilter.apply(input);
+    if (firstSighting && options.disabledTools && options.disabledTools.length > 0) {
+      void seedSessionPolicy(input.sessionID);
+    } else {
+      void toolFilter.refresh(input.sessionID).catch(() => undefined);
+    }
   });
 
   if (toolTiming) {

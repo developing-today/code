@@ -4,6 +4,7 @@ import {
   ANTIGRAVITY_GEMINI_SERVICE_ID,
   GO_POPESDREW_SERVICE_ID,
   GO_DREWRYPOPE_SERVICE_ID,
+  canonicalProviderId,
   entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
@@ -59,6 +60,16 @@ describe("normalizeResetAt", () => {
     expect(normalizeResetAt(null)).toBeNull();
     expect(normalizeResetAt(0)).toBeNull();
   });
+  test("impossible and non-ISO date strings are null (#4968)", () => {
+    expect(normalizeResetAt("2026-02-30")).toBeNull();
+    expect(normalizeResetAt("2026-04-31")).toBeNull();
+    expect(normalizeResetAt("2026-02-29")).toBeNull(); // 2026 is not a leap year
+    expect(normalizeResetAt("March 2, 2026")).toBeNull();
+  });
+  test("valid date-only and leap-day strings pass (#4968)", () => {
+    expect(normalizeResetAt("2026-03-02")).toBe("2026-03-02T00:00:00.000Z");
+    expect(normalizeResetAt("2024-02-29")).toBe("2024-02-29T00:00:00.000Z");
+  });
 });
 
 describe("entryFromResult", () => {
@@ -86,6 +97,27 @@ describe("entryFromResult", () => {
     const absent = entryFromResult({ ...OK_RESULT, configured: false, ok: false }, "2026-10-27T05:00:00.000Z");
     expect(absent.state).toBe("unconfigured");
     expect(absent.credentialWatch).toBe(true);
+  });
+  test.each([
+    ["impossible timestamp", "2026-02-30T00:00:00.000Z"],
+    ["impossible date-only value", "2026-04-31"],
+    ["non-ISO string", "March 2, 2026"],
+  ])("rejects %s credential expiry strings", (_kind, credentialExpiresAt) => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const entry = entryFromResult({ ...OK_RESULT, credentialExpiresAt }, tick);
+    expect(entry.credentialExpiresAt).toBeUndefined();
+  });
+
+  test("maps a valid ISO credential expiry string", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validIso = entryFromResult({ ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" }, tick);
+    expect(validIso.credentialExpiresAt).toBe("2027-01-15T00:00:00.000Z");
+  });
+
+  test("maps numeric epoch-ms credential expiry", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validEpoch = entryFromResult({ ...OK_RESULT, credentialExpiresAt: 1793438427299 }, tick);
+    expect(validEpoch.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
   });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
@@ -165,6 +197,40 @@ describe("entryFromResult", () => {
       ["full", 100],
       ["valid", 42],
       ["zero", 0],
+    ]);
+  });
+  test("turso windows keep over-limit percentages; other providers keep the [0,100] gate (#6227)", () => {
+    // The live path: the opencode quota subcommand's turso result
+    // reaches the gatherer through entryFromResult. Its storage and
+    // rows-read windows are usage-vs-limit ratios that legitimately
+    // exceed 100 over the Starter limits (see the entryFromTurso
+    // fixture above); negative and non-finite values still drop.
+    const entry = entryFromResult(
+      {
+        providerId: "turso",
+        providerName: "Turso",
+        ok: true,
+        configured: true,
+        usage: {
+          windows: {
+            databases: { usedPercent: 44 },
+            storage: { usedPercent: 147.16 },
+            "rows-read": { usedPercent: 164.287 },
+            "rows-written": { usedPercent: 16.721 },
+            sync: { usedPercent: 0 },
+            negative: { usedPercent: -1 },
+          },
+        },
+      },
+      "2026-11-05T13:00:00.000Z",
+    );
+    expect(entry.serviceId).toBe("turso");
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["databases", 44],
+      ["storage", 147.16],
+      ["rows-read", 164.287],
+      ["rows-written", 16.721],
+      ["sync", 0],
     ]);
   });
   test("error and unconfigured states stay distinct", () => {
@@ -533,6 +599,7 @@ describe("serviceIdFor", () => {
     expect(serviceIdFor("codex")).toBe("openai.main");
     expect(serviceIdFor("deepseek")).toBe("deepseek");
     expect(serviceIdFor("meta")).toBe("meta");
+    expect(serviceIdFor("_muse")).toBe("meta");
     expect(serviceIdFor("opendesign")).toBe("opendesign");
     // The module's provider id is "command-code"; the pool (and the
     // OpenCode config provider) is "commandcode". Without the mapping
@@ -618,6 +685,96 @@ describe("entryFromTurso (#1049)", () => {
     const empty = entryFromTurso({ organization: { usage: {} } }, subDoc, { measuredAt: at });
     expect(empty.state).toBe("error");
     expect(empty.windows).toEqual([]);
+  });
+  test("over-limit usage is kept with its native value and >100 pct (#6227)", () => {
+    // The 2026-11-05 live shape from issue #6227: storage and
+    // rows-read over their Starter limits — the exact windows the
+    // [0,100] percent gate used to drop, leaving a fresh-looking
+    // partial row that read as recovery.
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 44,
+            storage_bytes: 7_358_009_000,
+            rows_read: 821_437_321,
+            rows_written: 1_672_071,
+            bytes_synced: 0,
+          },
+        },
+      },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("storage")?.value).toBe(7.358009);
+    expect(byName.get("storage")?.pctOfLimit).toBe(147.16);
+    expect(byName.get("rows-read")?.value).toBe(821_437_321);
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(164.287);
+    expect(byName.get("databases")?.pctOfLimit).toBe(44);
+    expect(byName.get("sync")?.pctOfLimit).toBe(0);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 7.358009, unit: "gb", limit: 5 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 164.287, unit: "pct" });
+  });
+  test("dynamic limits: a /plans doc matched by plan name supplies the denominators (#5468)", () => {
+    // The 2026-11-08 live shape: org on Scaler since 2026-11-04, but
+    // Starter denominators made rows-read read ~235% and storage
+    // ~213%. /plans is the source of truth.
+    const plansDoc = {
+      plans: [
+        { name: "starter", quotas: { rowsRead: 500_000_000, rowsWritten: 10_000_000, databases: 100, storage: 5_000_000_000, bytesSynced: 3_000_000_000 } },
+        { name: "Scaler", quotas: { rowsRead: 100_000_000_000, rowsWritten: 100_000_000, databases: 1_000_000_000, storage: 24_000_000_000, bytesSynced: 24_000_000_000 } },
+      ],
+    };
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 40,
+            storage_bytes: 10_800_000_000,
+            rows_read: 1_180_000_000,
+            rows_written: 4_000_000,
+            bytes_synced: 1_200_000_000,
+          },
+        },
+      },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at, plansDoc },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.planLabel).toBe("scaler");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("rows-read")?.valueLabel).toBe("1,180,000,000 / 100,000,000,000");
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    expect(byName.get("rows-written")?.pctOfLimit).toBe(4);
+    expect(byName.get("sync")?.pctOfLimit).toBe(5);
+    expect(byName.get("sync")?.valueLabel).toBe("1.2 GB / 24 GB");
+    // Native-unit snapshot records carry the plan's limits too.
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 10.8, unit: "gb", limit: 24 });
+    expect(byMetric.get("sync")).toMatchObject({ value: 1.2, unit: "gb", limit: 24 });
+    expect(byMetric.get("databases")).toMatchObject({ value: 40, unit: "count", limit: 1_000_000_000 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 1.18, unit: "pct", limit: 100 });
+  });
+  test("plans doc absent: the per-plan fallback applies, so Scaler never regresses to Starter (#5468)", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { rows_read: 1_180_000_000, storage_bytes: 10_800_000_000 } } },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at },
+    );
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 24 });
   });
 });
 
@@ -801,7 +958,7 @@ describe("pool splits (#1331)", () => {
   });
 
   const antigravityResult = (models: Record<string, Record<string, number>>): QuotaProviderResult => ({
-    providerId: "antigravity",
+    providerId: "_antigravity",
     providerName: "Antigravity",
     ok: true,
     configured: true,
@@ -833,11 +990,11 @@ describe("pool splits (#1331)", () => {
       }),
       TICK,
     );
-    expect(entry.serviceId).toBe("antigravity");
+    expect(entry.serviceId).toBe("_antigravity");
     expect(entry.windows).toHaveLength(6);
     const split = entriesWithPoolSplits([entry]);
     expect(split).toHaveLength(3);
-    expect(split[0].serviceId).toBe("antigravity");
+    expect(split[0].serviceId).toBe("_antigravity");
     const gemini = split.find((e) => e.serviceId === ANTIGRAVITY_GEMINI_SERVICE_ID)!;
     expect(gemini.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
       ["5h", 70],
@@ -869,13 +1026,13 @@ describe("pool splits (#1331)", () => {
     const geminiOnly = entriesWithPoolSplits([
       entryFromResult(antigravityResult({ "gemini-flash": { weekly: 55 } }), TICK),
     ]);
-    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
+    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["_antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
   });
 
   test("Antigravity error lapses both pools; unconfigured splits nothing", () => {
     const err = entryFromResult(
       {
-        providerId: "antigravity",
+        providerId: "_antigravity",
         ok: false,
         configured: true,
         error: "Failed to refresh Antigravity token",
@@ -885,7 +1042,7 @@ describe("pool splits (#1331)", () => {
     );
     const split = entriesWithPoolSplits([err]);
     expect(split.map((e) => e.serviceId).sort()).toEqual([
-      "antigravity",
+      "_antigravity",
       ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
       ANTIGRAVITY_GEMINI_SERVICE_ID,
     ]);
@@ -895,11 +1052,11 @@ describe("pool splits (#1331)", () => {
     }
     const unconfigured = entriesWithPoolSplits([
       entryFromResult(
-        { providerId: "antigravity", ok: false, configured: false, error: "Not configured", usage: null },
+        { providerId: "_antigravity", ok: false, configured: false, error: "Not configured", usage: null },
         TICK,
       ),
     ]);
-    expect(unconfigured.map((e) => e.serviceId)).toEqual(["antigravity"]);
+    expect(unconfigured.map((e) => e.serviceId)).toEqual(["_antigravity"]);
   });
 });
 
@@ -968,5 +1125,72 @@ describe("own-key guards on quota-gather-map lookups (#2781)", () => {
       expect(typeof r.unit).toBe("string");
       expect(Number.isFinite(r.limit)).toBe(true);
     }
+  });
+});
+
+describe("canonicalProviderId (config-id alignment, #1823)", () => {
+  const TICK = "2026-10-27T05:00:00.000Z";
+
+  test("module spellings map to the config provider ids; others pass through", () => {
+    expect(canonicalProviderId("antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("claude")).toBe("_claude");
+    expect(canonicalProviderId("command-code")).toBe("_commandcode");
+    expect(canonicalProviderId("meta")).toBe("_muse");
+    expect(canonicalProviderId("_antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("opendesign")).toBe("opendesign");
+    expect(canonicalProviderId("codex")).toBe("codex");
+  });
+
+  test("entryFromResult emits the canonical id and keeps the pool service id", () => {
+    const ag = entryFromResult({ ...OK_RESULT, providerId: "antigravity" }, TICK);
+    expect(ag.providerId).toBe("_antigravity");
+    expect(ag.serviceId).toBe("_antigravity");
+    const claude = entryFromResult({ ...OK_RESULT, providerId: "claude" }, TICK);
+    expect(claude.providerId).toBe("_claude");
+    expect(claude.serviceId).toBe("anthropic:claude-pro");
+    const cc = entryFromResult({ ...OK_RESULT, providerId: "command-code" }, TICK);
+    expect(cc.providerId).toBe("_commandcode");
+    expect(cc.serviceId).toBe("_commandcode");
+    const meta = entryFromResult({ ...OK_RESULT, providerId: "meta" }, TICK);
+    expect(meta.providerId).toBe("_muse");
+    expect(meta.serviceId).toBe("meta");
+  });
+
+  test("a module-spelled Antigravity entry splits into the renamed pool rows", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "antigravity",
+        providerName: "Antigravity",
+        ok: true,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        usage: {
+          models: {
+            "gemini-2.5-pro": {
+              windows: { weekly: { usedPercent: 40, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+            "claude-sonnet": {
+              windows: { weekly: { usedPercent: 90, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+          },
+        },
+      },
+      TICK,
+    );
+    const splits = entriesWithPoolSplits([entry]);
+    expect(splits.map((e) => e.serviceId)).toEqual([
+      "_antigravity",
+      ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+      ANTIGRAVITY_GEMINI_SERVICE_ID,
+    ]);
+  });
+
+  test("retention matches across the rename boundary and re-stamps the canonical id", () => {
+    const prevEntry = { ...entryFromResult(OK_RESULT, TICK), providerId: "claude" };
+    expect(lastKnownEntries([prevEntry], "claude")).toHaveLength(1);
+    expect(lastKnownEntries([prevEntry], "_claude")).toHaveLength(1);
+    const retained = markRetained([prevEntry], "2026-10-27T06:00:00.000Z");
+    expect(retained[0].providerId).toBe("_claude");
+    expect(retained[0].retainedFromFailedTick).toBe("2026-10-27T06:00:00.000Z");
   });
 });

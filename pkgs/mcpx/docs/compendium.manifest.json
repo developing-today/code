@@ -803,6 +803,13 @@
       "note": "a five-line scratch list, not a chapter"
     },
     {
+      "path": "TESTING.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 98,
+      "note": "agent test-tier policy for the mcpx module (#1966), referenced by scripts/affected-tests.py; operational guidance, not a compendium page"
+    },
+    {
       "path": "docs/overview.md",
       "chapter": null,
       "role": "not-compendium",
@@ -857,6 +864,27 @@
       "role": "not-compendium",
       "lines": 3,
       "note": "docs-history change fragment for #2114 (proxy.timeout); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/docs-history-tool.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment describing the metadata and fragment workflow; consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/protocol-capability-claims.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #1930 (protocol capability claims); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/research-and-findings-chapter.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #1871 (research and incidental findings chapter); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
       "path": "docs/cli.md",

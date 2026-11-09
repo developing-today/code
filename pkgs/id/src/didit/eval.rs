@@ -13,8 +13,13 @@
 //! Superseding is a set operation, not an arrival-order one: an expectation
 //! named by another's `supersedes` is not evaluated, whatever order the events
 //! are passed in (design §8, "supersede ordering").
+//!
+//! A supersede chain that returns to one of its expectation IDs is invalid:
+//! cycles have no latest event, so evaluation returns [`EvalError::SupersedeCycle`]
+//! with the cycle IDs sorted by bytes. This also catches self-loops built in
+//! memory that bypass body validation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -31,6 +36,9 @@ pub enum EvalError {
     /// An instant is outside the range the calendar can represent.
     #[error("a timestamp is out of range")]
     OutOfRange,
+    /// A supersede chain returns to one of its expectation IDs.
+    #[error("supersede cycle among expectation ids: {0:?}")]
+    SupersedeCycle(Vec<Hash>),
 }
 
 /// How an expectation is doing.
@@ -82,12 +90,14 @@ pub struct Verdict {
 /// # Errors
 ///
 /// Returns [`EvalError::UnknownTimeZone`] for a zone this build does not know,
-/// and [`EvalError::OutOfRange`] for an instant outside the calendar range.
+/// [`EvalError::OutOfRange`] for an instant outside the calendar range, or
+/// [`EvalError::SupersedeCycle`] when superseding expectations form a cycle.
 pub fn evaluate(
     expectations: &[Expectation],
     records: &[Record],
     now: i64,
 ) -> Result<Vec<Verdict>, EvalError> {
+    check_supersede_cycles(expectations)?;
     let superseded: HashSet<Hash> = expectations.iter().filter_map(|e| e.supersedes).collect();
     let mut verdicts = Vec::new();
     for expectation in expectations {
@@ -116,6 +126,48 @@ pub fn evaluate(
             .then_with(|| a.window_start.cmp(&b.window_start))
     });
     Ok(verdicts)
+}
+
+fn check_supersede_cycles(expectations: &[Expectation]) -> Result<(), EvalError> {
+    let supersedes: HashMap<Hash, Hash> = expectations
+        .iter()
+        .filter_map(|expectation| {
+            expectation
+                .supersedes
+                .map(|superseded| (expectation.id, superseded))
+        })
+        .collect();
+    let mut starts: Vec<Hash> = expectations
+        .iter()
+        .map(|expectation| expectation.id)
+        .collect();
+    starts.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    starts.dedup();
+
+    let mut finished = HashSet::new();
+    for start in starts {
+        if finished.contains(&start) {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut positions = HashMap::new();
+        let mut current = start;
+        while !finished.contains(&current) {
+            if let Some(cycle_start) = positions.get(&current).copied() {
+                let mut cycle = path[cycle_start..].to_vec();
+                cycle.sort_by(|left: &Hash, right: &Hash| left.as_bytes().cmp(right.as_bytes()));
+                return Err(EvalError::SupersedeCycle(cycle));
+            }
+            let Some(next) = supersedes.get(&current).copied() else {
+                break;
+            };
+            positions.insert(current, path.len());
+            path.push(current);
+            current = next;
+        }
+        finished.extend(path);
+    }
+    Ok(())
 }
 
 fn count_verdicts(
@@ -149,9 +201,25 @@ fn count_verdicts(
             .collect();
         matching.sort_by_key(|record| record.at);
         let count = matching.len() as u64;
+        // No record can count after the period's last active span closes:
+        // records are filtered to spans clipped to this period, so the last
+        // countable instant is the latest span end inside the period (for
+        // `Always` that is the period end itself, leaving it unchanged). A
+        // period with no active span at all is unmeetable from its start.
+        // A wrapping span is clipped at the period end, matching the
+        // `record.at < end` filter above.
+        let last_countable = spans
+            .iter()
+            .filter(|(span_start, span_end)| *span_start < end && *span_end > start)
+            .map(|(_, span_end)| (*span_end).min(end))
+            .max();
+        let unmeetable = match last_countable {
+            Some(deadline) => deadline <= now,
+            None => start <= now,
+        };
         let state = if count >= required {
             VerdictState::Satisfied
-        } else if end <= now {
+        } else if end <= now || unmeetable {
             VerdictState::Violated
         } else {
             VerdictState::Due
@@ -323,10 +391,30 @@ fn count_periods(tz: Tz, window: &Window, now: i64) -> Result<((i64, i64), (i64,
         }
         Period::Week => {
             let today = local_date(now, tz)?;
-            let monday = today - Duration::days(i64::from(today.weekday().num_days_from_monday()));
+            // Checked arithmetic (#7771): the plain `-`/`+` operators on
+            // NaiveDate panic at the calendar boundary (chrono implements
+            // them via expect), where the Day branch above answers
+            // OutOfRange via succ_opt/pred_opt. A week whose Monday, end,
+            // or previous start the calendar cannot represent is
+            // OutOfRange, the same ruling as Day.
+            let monday = today
+                .checked_sub_signed(Duration::days(i64::from(
+                    today.weekday().num_days_from_monday(),
+                )))
+                .ok_or(EvalError::OutOfRange)?;
             let start = midnight(tz, monday)?;
-            let end = midnight(tz, monday + Duration::days(7))?;
-            let previous_start = midnight(tz, monday - Duration::days(7))?;
+            let end = midnight(
+                tz,
+                monday
+                    .checked_add_signed(Duration::days(7))
+                    .ok_or(EvalError::OutOfRange)?,
+            )?;
+            let previous_start = midnight(
+                tz,
+                monday
+                    .checked_sub_signed(Duration::days(7))
+                    .ok_or(EvalError::OutOfRange)?,
+            )?;
             Ok(((start, end), (previous_start, start)))
         }
         Period::Custom(custom) => {
@@ -334,10 +422,24 @@ fn count_periods(tz: Tz, window: &Window, now: i64) -> Result<((i64, i64), (i64,
             if length <= 0 {
                 return Err(EvalError::OutOfRange);
             }
-            let index = (now - custom.anchor).div_euclid(length);
-            let start = custom.anchor + index * length;
-            let end = start + length;
-            Ok(((start, end), (start - length, start)))
+            // Checked arithmetic (#7766): the anchor is any i64 a body
+            // can carry (Period::check rejects only a zero length), so
+            // the plain operators overflow — a panic in debug builds,
+            // a silently wrapped (wrong or end-before-start) window in
+            // release. An unrepresentable window is OutOfRange, the
+            // same ruling the Day branch gets from the calendar (the
+            // Week branch uses checked arithmetic since #7771).
+            let index = now
+                .checked_sub(custom.anchor)
+                .ok_or(EvalError::OutOfRange)?
+                .div_euclid(length);
+            let start = custom
+                .anchor
+                .checked_add(index.checked_mul(length).ok_or(EvalError::OutOfRange)?)
+                .ok_or(EvalError::OutOfRange)?;
+            let end = start.checked_add(length).ok_or(EvalError::OutOfRange)?;
+            let previous_start = start.checked_sub(length).ok_or(EvalError::OutOfRange)?;
+            Ok(((start, end), (previous_start, start)))
         }
     }
 }
@@ -412,8 +514,8 @@ fn day_included(span: &HoursSpan, weekday: u8) -> bool {
     }
 }
 
-/// Every active span overlapping `[start, end)`, for the local dates the range
-/// touches.
+/// Every active span overlapping `[start, end)`, including the previous local
+/// date so wrapping spans begun before the range can cover its leading edge.
 fn active_spans_between(
     tz: Tz,
     active: &ActiveWindow,
@@ -423,10 +525,14 @@ fn active_spans_between(
     if matches!(active, ActiveWindow::Always) {
         return Ok(vec![(start, end)]);
     }
-    let first = local_date(start, tz)?;
+    let first = local_date(start, tz)?
+        .pred_opt()
+        .ok_or(EvalError::OutOfRange)?;
     let last = local_date(end.saturating_sub(1), tz)?;
     let mut spans = Vec::new();
-    let mut date = first;
+    // A span that wraps past midnight began on the preceding local date, so
+    // that date is scanned too: its carry-in portion overlaps this range.
+    let mut date = first.pred_opt().unwrap_or(first);
     loop {
         spans.extend(spans_for_date(tz, active, date)?);
         if date >= last {
@@ -475,9 +581,13 @@ fn resolve_local(tz: Tz, naive: NaiveDateTime) -> i64 {
     if let Some(datetime) = tz.from_local_datetime(&naive).earliest() {
         return datetime.timestamp();
     }
-    let shifted = naive + Duration::hours(1);
-    if let Some(datetime) = tz.from_local_datetime(&shifted).earliest() {
-        return datetime.timestamp();
+    // Checked (#7771): `+` on NaiveDateTime panics at the top of the
+    // representable range; an unrepresentable shift falls through to
+    // the UTC interpretation below instead.
+    if let Some(shifted) = naive.checked_add_signed(Duration::hours(1)) {
+        if let Some(datetime) = tz.from_local_datetime(&shifted).earliest() {
+            return datetime.timestamp();
+        }
     }
     tz.from_utc_datetime(&naive).timestamp()
 }

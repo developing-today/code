@@ -74,6 +74,16 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "digest",
+    title: "Digest",
+    route: "/digest",
+    api: "/api/digest.json",
+    blurb:
+      "The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.",
+    group: "overview",
+    nav: "dropdown",
+  },
+  {
     id: "attention",
     title: "Needs you",
     route: "/attention",
@@ -151,7 +161,7 @@ export const PAGES: PageDef[] = [
     title: "Search",
     route: "/search",
     api: "/api/search.json",
-    blurb: "Search board and roadmap work by title or linked issue/PR ref.",
+    blurb: "Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.",
     group: "work",
     nav: "dropdown",
   },

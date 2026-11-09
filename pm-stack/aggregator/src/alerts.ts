@@ -23,6 +23,15 @@
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
+import {
+  buildNotificationCandidates,
+  decideNotification,
+  nextNotificationDigestAt,
+  NOTIFICATION_CLASS_DEFAULTS,
+  type NotificationHistoryEntry,
+  type NotificationSnapshot,
+} from "./notifications.ts";
+import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -127,7 +136,7 @@ export function toPublicSubscription(sub: PushSubscriptionRow): PublicPushSubscr
 // --- Pure helpers (unit-tested) ---------------------------------------------
 
 /** Design §1: the incident class defaults ON for new subscriptions. */
-export const DEFAULT_CLASSES: Record<string, boolean> = { incident: true };
+export const DEFAULT_CLASSES: Record<string, boolean> = NOTIFICATION_CLASS_DEFAULTS;
 /** Design §2: default quiet window 23:00–07:00 America/Chicago. */
 export const DEFAULT_QUIET: QuietPrefs = { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true };
 
@@ -172,24 +181,40 @@ export function mergeQuiet(input: unknown): QuietPrefs {
   return out;
 }
 
-/** A class is on unless the subscription explicitly turned it off. */
+/** Preserve existing subscription choices when new classes are added:
+ * only the original incident class defaults on for old rows; new rows
+ * receive the reviewed defaults from mergeClasses at creation. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] !== false;
+  return sub.classes?.[cls] ?? (cls === "incident");
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
  * The incident class never consults this (breakthrough class, #3676);
  * it exists for the dashboard classes of #3317. */
+// ⚡ Bolt: inQuietHours is evaluated per subscription on every digest /
+// alert pass, and Intl.DateTimeFormat construction dominates it (~29µs).
+// The formatter depends only on the timezone, so cache one per tz; the
+// map is bounded by the set of tz names users actually store (a handful).
+const QUIET_HOURS_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+function quietHoursFormatter(tz: string): Intl.DateTimeFormat {
+  let fmt = QUIET_HOURS_FORMATTERS.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    QUIET_HOURS_FORMATTERS.set(tz, fmt);
+  }
+  return fmt;
+}
+
 export function inQuietHours(quiet: QuietPrefs, now: Date): boolean {
   if (quiet.enabled === false) return false; // quiet hours off — no time-of-day limit
   let mins: number;
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: quiet.tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(now);
+    const parts = quietHoursFormatter(quiet.tz).formatToParts(now);
     const h = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
     const m = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
     mins = h * 60 + m;
@@ -217,6 +242,7 @@ export interface PushPayload {
   title: string;
   body: string;
   escalation?: boolean;
+  items?: Array<{ class: string; objectRef: string; title: string; url: string }>;
 }
 
 export function buildIncidentPayload(incident: Incident, origin: string, escalation: boolean): PushPayload {
@@ -280,6 +306,12 @@ export interface NewSubscription {
   p256dh: string;
   auth: string;
   classes: Record<string, boolean>;
+  /** The class keys the caller explicitly sent (#7193 Codex): on an
+   * upsert of an existing endpoint only these keys change; the stored
+   * choices for every other class survive (the dashboard Alerts form
+   * submits only classes.incident, and mergeClasses would otherwise
+   * silently re-enable every other class from the defaults). */
+  providedClasses?: Record<string, boolean>;
   quiet: QuietPrefs;
   userAgent?: string;
 }
@@ -296,6 +328,12 @@ export function validateNewSubscription(
   if (!endpoint || !/^https:\/\//.test(endpoint)) return { ok: false, error: "endpoint must be an https URL" };
   if (!p256dh) return { ok: false, error: "keys.p256dh required" };
   if (!auth) return { ok: false, error: "keys.auth required" };
+  const providedClasses: Record<string, boolean> = {};
+  if (b.classes && typeof b.classes === "object") {
+    for (const [k, v] of Object.entries(b.classes as Record<string, unknown>)) {
+      if (typeof v === "boolean") providedClasses[k] = v;
+    }
+  }
   return {
     ok: true,
     value: {
@@ -303,6 +341,7 @@ export function validateNewSubscription(
       p256dh,
       auth,
       classes: mergeClasses(b.classes),
+      providedClasses,
       quiet: mergeQuiet(b.quiet),
       userAgent: typeof b.userAgent === "string" ? b.userAgent : undefined,
     },
@@ -373,7 +412,8 @@ export class AlertsStore {
          sub.userAgent ? sqlStr(sub.userAgent) : "null"
        })
        on conflict (endpoint) do update set
-         p256dh = excluded.p256dh, auth = excluded.auth, classes = excluded.classes,
+         p256dh = excluded.p256dh, auth = excluded.auth,
+         classes = push_subscriptions.classes || ${sqlJson(sub.providedClasses ?? {})},
          quiet = excluded.quiet, user_agent = excluded.user_agent,
          last_seen_at = now(), gone_count = 0
        returning *`,
@@ -389,7 +429,13 @@ export class AlertsStore {
   }
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
-    return this.db.query<PushSubscriptionRow>(`select * from alerts.push_subscriptions order by created_at`);
+    const rows = await this.db.query<PushSubscriptionRow>(
+      `select * from alerts.push_subscriptions order by created_at`,
+    );
+    // #3702 decision 3: old stored prefs are not rewritten, but must not
+    // be reinterpreted on read. Apply the same per-field fallbacks used at
+    // intake so delivery and the prefs page see safe values.
+    return rows.map((row) => ({ ...row, quiet: mergeQuiet(row.quiet) }));
   }
 
   /** Design §4: a 404/410 marks the subscription gone; two consecutive
@@ -608,15 +654,35 @@ export async function sendTestPush(
   return summary;
 }
 
-let storePromise: Promise<AlertsStore | null> | null = null;
+/**
+ * Create the shared store resolver. Keep the in-flight attempt and successful
+ * store cached, but clear null/rejected attempts so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
+ */
+export function createAlertsStoreGetter(
+  getClient: typeof getSupabaseClient = getSupabaseClient,
+): () => Promise<AlertsStore | null> {
+  let storePromise: Promise<AlertsStore | null> | null = null;
+
+  return function getAlertsStore(): Promise<AlertsStore | null> {
+    if (!storePromise) {
+      const pending = getClient().then((db) => (db ? new AlertsStore(db) : null));
+      storePromise = pending;
+      void pending.then(
+        (store) => {
+          if (store === null && storePromise === pending) storePromise = null;
+        },
+        () => {
+          if (storePromise === pending) storePromise = null;
+        },
+      );
+    }
+    return storePromise;
+  }
+}
 
 /** The shared store; null when the Supabase path is unavailable. */
-export function getAlertsStore(): Promise<AlertsStore | null> {
-  if (!storePromise) {
-    storePromise = getSupabaseClient().then((db) => (db ? new AlertsStore(db) : null));
-  }
-  return storePromise;
-}
+export const getAlertsStore = createAlertsStoreGetter();
 
 // --- The engine ---------------------------------------------------------------
 
@@ -681,7 +747,268 @@ async function deliverToAll(
  * incident stays undelivered (and unescalated) until someone
  * subscribes — a later subscription still gets the push.
  */
-export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSender = sendPush): Promise<void> {
+export interface AlertTickOptions {
+  dashboardSnapshot?: () => Promise<NotificationSnapshot>;
+  notificationHistory?: NotificationHistoryStore;
+  now?: number;
+}
+
+async function runDashboardNotificationTick(
+  cfg: Config,
+  store: AlertsStore,
+  subscriptions: PushSubscriptionRow[],
+  push: PushSender,
+  options: AlertTickOptions,
+): Promise<void> {
+  if (!options.dashboardSnapshot || subscriptions.length === 0) return;
+  const now = options.now ?? Date.now();
+  const historyStore = options.notificationHistory ?? new JsonlNotificationHistory(cfg.notificationsFile);
+  const [snapshot, history] = await Promise.all([options.dashboardSnapshot(), historyStore.read()]);
+  const candidates = buildNotificationCandidates(snapshot, now);
+
+  const keyOf = (entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">) =>
+    `${entry.subscriptionId ?? ""}\u0000${entry.class}\u0000${entry.objectRef}\u0000${entry.stateFingerprint}`;
+  const pendingFor = (subId: string): Map<string, NotificationHistoryEntry> => {
+    const pending = new Map<string, NotificationHistoryEntry>();
+    for (const entry of history) {
+      if (entry.subscriptionId !== subId) continue;
+      const key = keyOf(entry);
+      if (entry.outcome === "queued") pending.set(key, entry);
+      else if (entry.outcome === "queue-cancelled" || entry.outcome === "sent" || entry.outcome === "gone") pending.delete(key);
+    }
+    return pending;
+  };
+  const append = async (entry: NotificationHistoryEntry) => {
+    await historyStore.append(entry);
+    history.push(entry);
+  };
+
+  for (const sub of subscriptions) {
+    const enabledCandidates = candidates.filter((candidate) => classEnabled(sub, candidate.class));
+    const currentKeys = new Set(enabledCandidates.map((candidate) => keyOf({ ...candidate, subscriptionId: sub.id })));
+    const pending = pendingFor(sub.id);
+    const subHistory = history.filter((entry) => entry.subscriptionId === sub.id);
+
+    // A disappeared state or a muted class cancels its pending digest entry.
+    for (const [key, queued] of pending) {
+      if (currentKeys.has(key)) continue;
+      await append({
+        at: new Date(now).toISOString(),
+        class: queued.class,
+        objectRef: queued.objectRef,
+        stateFingerprint: queued.stateFingerprint,
+        outcome: "queue-cancelled",
+        subscriptionId: sub.id,
+      });
+      pending.delete(key);
+    }
+
+    // Recovery markers: a previously recorded candidate state that is no
+    // longer among this subscription's current candidates has ended its
+    // episode. decideNotification dedupes only against sends recorded
+    // after the latest recovery, so a recurrence notifies again.
+    const latestByKey = new Map<string, NotificationHistoryEntry>();
+    for (const entry of subHistory) {
+      const key = keyOf(entry);
+      const prev = latestByKey.get(key);
+      if (!prev || Date.parse(entry.at) >= Date.parse(prev.at)) latestByKey.set(key, entry);
+    }
+    for (const [key, latest] of latestByKey) {
+      if (currentKeys.has(key) || latest.outcome === "recovered") continue;
+      const marker: NotificationHistoryEntry = {
+        at: new Date(now).toISOString(),
+        class: latest.class,
+        objectRef: latest.objectRef,
+        stateFingerprint: latest.stateFingerprint,
+        outcome: "recovered",
+        subscriptionId: sub.id,
+      };
+      await append(marker);
+      subHistory.push(marker);
+    }
+
+    for (const candidate of enabledCandidates) {
+      const key = keyOf({ ...candidate, subscriptionId: sub.id });
+      const decision = decideNotification(candidate, subHistory, now, inQuietHours(sub.quiet, new Date(now)));
+      const suppressedOutcome: NotificationHistoryEntry["outcome"] =
+        decision === "digest"
+          ? "suppressed-quiet"
+          : decision === "suppress-dedupe"
+            ? "suppressed-dedupe"
+            : decision === "suppress-cooldown"
+              ? "suppressed-cooldown"
+              : "sent";
+      if (decision === "digest") {
+        if (
+          !subHistory.some(
+            (entry) =>
+              entry.class === candidate.class &&
+              entry.objectRef === candidate.objectRef &&
+              entry.stateFingerprint === candidate.stateFingerprint &&
+              entry.outcome === suppressedOutcome,
+          )
+        ) {
+          const suppressed: NotificationHistoryEntry = {
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: "suppressed-quiet",
+            subscriptionId: sub.id,
+          };
+          await append(suppressed);
+          subHistory.push(suppressed);
+        }
+        if (!pending.has(key)) {
+          const queued: NotificationHistoryEntry = {
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: "queued",
+            subscriptionId: sub.id,
+            candidate,
+            dueAt: new Date(nextNotificationDigestAt(now, sub.quiet)).toISOString(),
+          };
+          await append(queued);
+          pending.set(key, queued);
+        }
+        continue;
+      }
+      if (decision !== "send") {
+        if (
+          !subHistory.some(
+            (entry) =>
+              entry.class === candidate.class &&
+              entry.objectRef === candidate.objectRef &&
+              entry.stateFingerprint === candidate.stateFingerprint &&
+              entry.outcome === suppressedOutcome,
+          )
+        ) {
+          const suppressed: NotificationHistoryEntry = {
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: suppressedOutcome,
+            subscriptionId: sub.id,
+          };
+          await append(suppressed);
+          subHistory.push(suppressed);
+        }
+        continue;
+      }
+      if (pending.has(key)) continue; // due entries are sent together below
+      const url = /^https?:\/\//.test(candidate.url) ? candidate.url : `${cfg.publicOrigin}${candidate.url}`;
+      const payload: PushPayload = {
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        url,
+        title: candidate.title,
+        body: candidate.body,
+        ...(candidate.escalationStep ? { escalation: true } : {}),
+      };
+      const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+      const result = await push(target, payload);
+      const outcome = result.ok ? "sent" : result.gone ? "gone" : "error";
+      const entry: NotificationHistoryEntry = {
+        at: new Date(now).toISOString(),
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        stateFingerprint: candidate.stateFingerprint,
+        outcome,
+        subscriptionId: sub.id,
+      };
+      await append(entry);
+      subHistory.push(entry);
+      await store.logSend({ class: candidate.class, objectRef: candidate.objectRef, outcome });
+      if (result.ok) await store.noteSubscriptionAlive(sub.endpoint);
+      else if (result.gone) await store.noteSubscriptionGone(sub.endpoint);
+    }
+
+    const due = [...pending.entries()].filter(([, entry]) => Date.parse(entry.dueAt ?? "") <= now);
+    const digestCandidates = due.map(([, entry]) => entry.candidate).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+    if (digestCandidates.length === 0) continue;
+    // #7193 Codex: revalidate the CURRENT quiet window before draining —
+    // the persisted dueAt was computed under an earlier window (or the
+    // server was offline past it into a new quiet period). Defer to the
+    // next allowed boundary instead of sending inside quiet hours.
+    if (inQuietHours(sub.quiet, new Date(now))) {
+      for (const [key, queued] of due) {
+        const retry: NotificationHistoryEntry = {
+          ...queued,
+          at: new Date(now).toISOString(),
+          dueAt: new Date(nextNotificationDigestAt(now + 60_000, sub.quiet)).toISOString(),
+        };
+        await append(retry);
+        pending.set(key, retry);
+      }
+      continue;
+    }
+    const refs = digestCandidates.map((candidate) => candidate.objectRef);
+    const items = digestCandidates.map((candidate) => ({
+      class: candidate.class,
+      objectRef: candidate.objectRef,
+      title: candidate.title,
+      url: /^https?:\/\//.test(candidate.url) ? candidate.url : `${cfg.publicOrigin}${candidate.url}`,
+    }));
+    const payload: PushPayload = {
+      class: "digest",
+      objectRef: `digest:${new Date(now).toISOString().slice(0, 10)}`,
+      url: `${cfg.publicOrigin}/attention?refs=${encodeURIComponent(refs.join(","))}`,
+      title: `${digestCandidates.length} dashboard update${digestCandidates.length === 1 ? "" : "s"}`,
+      body: digestCandidates.map((candidate) => candidate.title).join(" · "),
+      items,
+    };
+    const result = await push({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload);
+    const isGone = "gone" in result && result.gone;
+    const outcome = result.ok ? "sent" : isGone ? "gone" : "error";
+    for (const [key, queued] of due) {
+      const candidate = queued.candidate;
+      if (candidate) {
+        await append({
+          at: new Date(now).toISOString(),
+          class: candidate.class,
+          objectRef: candidate.objectRef,
+          stateFingerprint: candidate.stateFingerprint,
+          outcome,
+          subscriptionId: sub.id,
+        });
+      }
+      if (!result.ok && !isGone && candidate) {
+        const retry: NotificationHistoryEntry = {
+          ...queued,
+          at: new Date(now).toISOString(),
+          dueAt: new Date(nextNotificationDigestAt(now + 60_000, sub.quiet)).toISOString(),
+        };
+        await append(retry);
+        pending.set(key, retry);
+      } else {
+        if (isGone && candidate) {
+          await append({
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome: "queue-cancelled",
+            subscriptionId: sub.id,
+          });
+        }
+        pending.delete(key);
+      }
+    }
+    await store.logSend({ class: "digest", objectRef: payload.objectRef, outcome });
+    if (result.ok) await store.noteSubscriptionAlive(sub.endpoint);
+    else if (isGone) await store.noteSubscriptionGone(sub.endpoint);
+  }
+}
+
+export async function runAlertTick(
+  cfg: Config,
+  store: AlertsStore,
+  push: PushSender = sendPush,
+  options: AlertTickOptions = {},
+): Promise<void> {
   const subs = await store.listSubscriptions();
   const targets = subs.filter((s) => classEnabled(s, "incident"));
   if (targets.length > 0) {
@@ -706,12 +1033,13 @@ export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSe
       }
     }
   }
+  await runDashboardNotificationTick(cfg, store, subs, push, options);
 }
 
 let engineStarted = false;
 
 /** Start the ~60s engine loop (live mode only; fail-soft per tick). */
-export function startAlertEngine(cfg: Config): void {
+export function startAlertEngine(cfg: Config, dashboardSnapshot?: () => Promise<NotificationSnapshot>): void {
   if (engineStarted || cfg.source !== "live") return;
   engineStarted = true;
   let ticking = false;
@@ -720,7 +1048,7 @@ export function startAlertEngine(cfg: Config): void {
     ticking = true;
     try {
       const store = await getAlertsStore();
-      if (store) await runAlertTick(cfg, store);
+      if (store) await runAlertTick(cfg, store, sendPush, { dashboardSnapshot });
     } catch (err) {
       console.error(`alerts engine: tick failed (${err instanceof Error ? err.message : "error"})`);
     } finally {

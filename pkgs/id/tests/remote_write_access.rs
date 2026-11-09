@@ -9,6 +9,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
+use common::within_op;
+
 use id::{
     MetaRequest, MetaResponse,
     access::AccessPolicy,
@@ -115,11 +119,12 @@ async fn naming_a_blob_that_was_never_uploaded_is_refused_even_for_writers() {
     let c = client().await;
     let router = server.serve(AccessPolicy::restricted([server.node_id(), c.id]));
 
-    let conn = c
-        .endpoint
-        .connect(server.addr(), id::META_ALPN)
-        .await
-        .unwrap();
+    let conn = within_op(
+        "connecting to the meta endpoint",
+        c.endpoint.connect(server.addr(), id::META_ALPN),
+    )
+    .await
+    .unwrap();
     let resp = request_over(
         &conn,
         &MetaRequest::Put {
@@ -149,11 +154,12 @@ async fn reads_stay_open_to_unlisted_nodes() {
     let (hash, _guard) = add_raw(&server.blobs(), b"public".to_vec()).await.unwrap();
     server.ops().put("pub.txt", hash).await.unwrap();
 
-    let conn = c
-        .endpoint
-        .connect(server.addr(), id::META_ALPN)
-        .await
-        .unwrap();
+    let conn = within_op(
+        "connecting to the meta endpoint",
+        c.endpoint.connect(server.addr(), id::META_ALPN),
+    )
+    .await
+    .unwrap();
     match request_over(&conn, &MetaRequest::List).await.unwrap() {
         MetaResponse::List { items } => {
             assert_eq!(items.len(), 1);
@@ -175,14 +181,20 @@ async fn reads_stay_open_to_unlisted_nodes() {
         other => panic!("{other:?}"),
     }
     // A read-only blob fetch works too.
-    let blobs_conn = c
-        .endpoint
-        .connect(server.addr(), iroh_blobs::ALPN)
-        .await
-        .unwrap();
+    let blobs_conn = within_op(
+        "connecting to the blob endpoint",
+        c.endpoint.connect(server.addr(), iroh_blobs::ALPN),
+    )
+    .await
+    .unwrap();
     let store = iroh_blobs::store::mem::MemStore::new();
     let store_handle: iroh_blobs::api::Store = store.clone().into();
-    store_handle.remote().fetch(blobs_conn, hash).await.unwrap();
+    within_op(
+        "fetching the blob from the remote store",
+        store_handle.remote().fetch(blobs_conn, hash),
+    )
+    .await
+    .unwrap();
     let got = store_handle.blobs().get_bytes(hash).await.unwrap();
     assert_eq!(&*got, b"public");
 
@@ -209,4 +221,36 @@ async fn open_writes_policy_lets_anyone_write() {
     c.endpoint.close().await;
     router.shutdown().await.unwrap();
     server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_connect_to_a_dead_peer_fails_at_the_bound() {
+    use std::time::{Duration, Instant};
+
+    // An address with no listener: the dial can only hang, so the bound --
+    // not the transport's own much longer deadline -- must end it, with an
+    // error that names the operation.
+    let c = client().await;
+    let dead = id_core::connectivity::silent::unanswered_addr();
+    let limit = Duration::from_secs(5);
+    let started = Instant::now();
+    let err = common::within_fallible(limit, "connecting to a dead peer", async {
+        c.endpoint
+            .connect(dead, id::META_ALPN)
+            .await
+            .map_err(anyhow::Error::from)
+    })
+    .await
+    .expect_err("a dead peer must not answer");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < limit * 3,
+        "the bound must fire at {limit:?}, not at the transport deadline: took {elapsed:?}"
+    );
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("timed out") && msg.contains("connecting to a dead peer"),
+        "the failure must name the operation: {msg}"
+    );
+    c.endpoint.close().await;
 }

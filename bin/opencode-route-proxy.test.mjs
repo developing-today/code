@@ -126,7 +126,9 @@ const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
   cost_usd real)`;
 
 const startProxy = async (arg = {}) => {
-  const timeout = typeof arg === "string" ? arg : "15000";
+  const timeout =
+    typeof arg === "string" ? arg : String(arg.timeoutMs ?? "15000");
+  const leafTimeout = typeof arg === "object" ? arg.leafTimeoutMs : undefined;
   const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
@@ -204,6 +206,7 @@ const startProxy = async (arg = {}) => {
       "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
       "t-nocred-first": { "selection": "ordered", "targets": ["leafNoCred/m-nc", "leafB/m-b"] },
       "t-nocred-only": { "selection": "ordered", "targets": ["leafNoCred/m-nc"] },
+      "t-gate-nocred": { "selection": "ordered", "targets": ["leafA/m-a", "leafNoCred/m-b"] },
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
@@ -233,6 +236,9 @@ const startProxy = async (arg = {}) => {
     OPENCODE_ROUTE_PROXY_CONFIG: configPath,
     OPENCODE_ROUTE_PROXY_DB: dbPath,
     OPENCODE_ROUTE_PROXY_TIMEOUT_MS: timeout,
+    ...(leafTimeout !== undefined
+      ? { OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS: String(leafTimeout) }
+      : {}),
     ...(pinnedNow
       ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
       : {}),
@@ -275,7 +281,7 @@ const startProxy = async (arg = {}) => {
     leafA.server.close();
     leafB.server.close();
   };
-  return { base, post, attempts, leafA, leafB, cleanup, log: () => log };
+  return { base, post, attempts, leafA, leafB, cleanup, dbPath, log: () => log };
 };
 
 const MSGS = [
@@ -310,6 +316,38 @@ test("configured deadline aborts a slow leaf", async () => {
     await p.cleanup();
   }
 });
+
+test(
+  "per-leaf first-response timeout fails over and records the attempt",
+  async () => {
+    const p = await startProxy({ timeoutMs: "500", leafTimeoutMs: "100" });
+    try {
+      p.leafA.mode = "slow";
+      const start = Date.now();
+      const res = await p.post({
+        model: "opencode-route/t-ordered",
+        messages: MSGS,
+      });
+      assert.equal(res.status, 200);
+      const json = await res.json();
+      assert.equal(json.choices[0].message.content, "LEAF-B");
+      assert.ok(
+        Date.now() - start < 2500,
+        "per-leaf timeout did not shed promptly",
+      );
+      assert.equal(p.leafA.hits, 1);
+      assert.equal(p.leafB.hits, 1);
+      const rows = p.attempts();
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0].outcome, "timeout");
+      assert.equal(rows[0].error_tag, "Transport");
+      assert.equal(rows[0].failed_over_to, "leafB/m-b");
+      assert.equal(rows[1].outcome, "success");
+    } finally {
+      await p.cleanup();
+    }
+  },
+);
 
 test("health and model list are served locally", async () => {
   const p = await startProxy();
@@ -766,6 +804,278 @@ test("config load names invalid windows instead of silently evaluating them", as
     assert.ok(log.includes("bad-wrap-99"), `log names the window:\n${log}`);
     assert.ok(log.includes("99:99"), `log names the bad value:\n${log}`);
     assert.ok(log.includes("bad-start-2400"), `log names each bad window:\n${log}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------------------ #5295 gate
+
+// Seed one quota-bearing failure for a (provider, model) pair, as if
+// the leaf had answered 429 with a Retry-After `retryAfterMs` long at
+// `atMs`. Written straight into the fixture ledger the proxy reads.
+const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs, endedMs }) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    atMs,
+    endedMs ?? atMs + 50,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "failure",
+    "RateLimit",
+    null,
+    429,
+    "leaf HTTP 429: quota",
+    1,
+    0,
+    null,
+    JSON.stringify({ retryAfterMs }),
+  );
+  db.close();
+};
+
+// A Monday noon UTC, pinned via OPENCODE_ROUTE_PROXY_NOW_MS so the
+// gate's clock is deterministic.
+const GATE_NOW = Date.UTC(2026, 0, 5, 12, 0, 0);
+
+test("known-exhausted pair is excluded while a live pair exists (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // One minute ago the leaf said: retry after an hour. The pair is
+    // known exhausted for another ~59 minutes — one failure is
+    // enough; demotion's >=3 must not be required.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the exhausted leaf must not be attempted");
+    const rows = p.attempts().filter((r) => r.route_id === "t-ordered");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+    assert.ok(
+      p.log().includes("known-exhausted gate excluded leafA/m-a"),
+      `gate decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("known-exhausted pair returns after its reset passes (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // Two hours ago the leaf said retry after an hour: the reset is
+    // an hour in the past at the pinned now, so the gate has lifted.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 7_200_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("all candidates known-exhausted: route still walks in order (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafB",
+      model: "m-b",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    // Fail-safe: a known-exhausted leg as last resort beats no route,
+    // so the walk keeps the (demoted) order and leaf A still serves.
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("known-exhausted gate bypassed"),
+      `bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a success after the quota failure clears the gate (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      retryAfterMs: 3_600_000,
+    });
+    // The pair served successfully a minute after that failure
+    // (another door sharing the ledger): the exhaustion is stale.
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt (
+         time_started, time_ended, session_id, assistant_message_id,
+         route_id, provider_id, model_id, variant, outcome,
+         error_tag, error_code, error_status, error_message, retryable,
+         output_started, failed_over_to, quota
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      GATE_NOW - 60_000,
+      GATE_NOW - 59_000,
+      null,
+      null,
+      "seed",
+      "leafA",
+      "m-a",
+      null,
+      "success",
+      null,
+      null,
+      null,
+      null,
+      1,
+      0,
+      null,
+      null,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("gate bypassed when the only survivor has no credential (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    // leafA/m-a is known-exhausted and leafNoCred/m-b is not — but
+    // leafNoCred has no credential, so excluding leafA would still
+    // empty the route at the #3228 filter. The gate must bypass and
+    // keep leafA as the last resort instead of failing the request.
+    const res = await p.post({ model: "opencode-route/t-gate-nocred", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("known-exhausted gate bypassed"),
+      `bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("retry delay is anchored to the quota response receipt (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // The 429 took 90s to arrive (started 2 minutes ago, received 30s
+    // ago) and asked for 60 more seconds of backoff. Anchored to the
+    // request start the pair would already be eligible again
+    // (start + 60s < now); anchored to the receipt it is exhausted
+    // for another ~30s.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      endedMs: GATE_NOW - 30_000,
+      retryAfterMs: 60_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("an overlapping success completed before the quota response does not clear the gate (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // Quota failure: started 2 minutes ago, the 429 arrived 10s ago.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      endedMs: GATE_NOW - 10_000,
+      retryAfterMs: 3_600_000,
+    });
+    // Overlapping success: STARTED after the failing request (so
+    // start-time ordering would call it the latest word) but
+    // COMPLETED a minute ago — before the 429 was received. It is
+    // not a recovery; the gate must hold.
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt (
+         time_started, time_ended, session_id, assistant_message_id,
+         route_id, provider_id, model_id, variant, outcome,
+         error_tag, error_code, error_status, error_message, retryable,
+         output_started, failed_over_to, quota
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      GATE_NOW - 110_000,
+      GATE_NOW - 60_000,
+      null,
+      null,
+      "seed",
+      "leafA",
+      "m-a",
+      null,
+      "success",
+      null,
+      null,
+      null,
+      null,
+      1,
+      0,
+      null,
+      null,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
   } finally {
     await p.cleanup();
   }

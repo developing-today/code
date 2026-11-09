@@ -11,9 +11,9 @@
 # regenerated; re-running on unchanged inputs yields a zero diff.
 version: 1
 overrides:
-  developing-today/openchamber:
+  developing-today-forks/openchamber:
     class: owned
-  developing-today/opencode:
+  developing-today-forks/opencode:
     class: owned
 repos:
   - name: aluhrs13/crosspoint-readwise-plugin
@@ -106,8 +106,8 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/balanced-employee-ip-agreement
-    url: https://github.com/developing-today/balanced-employee-ip-agreement
+  - name: developing-today-vendored/balanced-employee-ip-agreement
+    url: https://github.com/developing-today-vendored/balanced-employee-ip-agreement
     class: fork
     watch: inventory-only
     sources: [github]
@@ -126,8 +126,8 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/cluster-api-provider-libvirt
-    url: https://github.com/developing-today/cluster-api-provider-libvirt
+  - name: developing-today-vendored/cluster-api-provider-libvirt
+    url: https://github.com/developing-today-vendored/cluster-api-provider-libvirt
     class: fork
     watch: inventory-only
     sources: [github]
@@ -146,8 +146,8 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/consul-dns
-    url: https://github.com/developing-today/consul-dns
+  - name: developing-today-vendored/consul-dns
+    url: https://github.com/developing-today-vendored/consul-dns
     class: fork
     watch: inventory-only
     sources: [github]
@@ -166,8 +166,8 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/dns
-    url: https://github.com/developing-today/dns
+  - name: developing-today-vendored/dns
+    url: https://github.com/developing-today-vendored/dns
     class: fork
     watch: inventory-only
     sources: [github]
@@ -211,8 +211,8 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/innovators-patent-agreement
-    url: https://github.com/developing-today/innovators-patent-agreement
+  - name: developing-today-vendored/innovators-patent-agreement
+    url: https://github.com/developing-today-vendored/innovators-patent-agreement
     class: fork
     watch: inventory-only
     sources: [github]
@@ -221,13 +221,13 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/ironic-baremetal-nodes-on-ESXi-Host
-    url: https://github.com/developing-today/ironic-baremetal-nodes-on-ESXi-Host
+  - name: developing-today-vendored/ironic-baremetal-nodes-on-ESXi-Host
+    url: https://github.com/developing-today-vendored/ironic-baremetal-nodes-on-ESXi-Host
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: developing-today/kaneo
-    url: https://github.com/developing-today/kaneo
+  - name: developing-today-forks/kaneo
+    url: https://github.com/developing-today-forks/kaneo
     class: fork
     watch: inventory-only
     sources: [github, census]
@@ -251,8 +251,8 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/nomados
-    url: https://github.com/developing-today/nomados
+  - name: developing-today-vendored/nomados
+    url: https://github.com/developing-today-vendored/nomados
     class: fork
     watch: inventory-only
     sources: [github]
@@ -261,18 +261,18 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/okd
-    url: https://github.com/developing-today/okd
+  - name: developing-today-vendored/okd
+    url: https://github.com/developing-today-vendored/okd
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: developing-today/openchamber
-    url: https://github.com/developing-today/openchamber
+  - name: developing-today-forks/openchamber
+    url: https://github.com/developing-today-forks/openchamber
     class: owned
     watch: issues
     sources: [github, census]
-  - name: developing-today/opencode
-    url: https://github.com/developing-today/opencode
+  - name: developing-today-forks/opencode
+    url: https://github.com/developing-today-forks/opencode
     class: owned
     watch: issues
     sources: [github, census]
@@ -346,13 +346,13 @@ repos:
     class: owned
     watch: issues
     sources: [github]
-  - name: developing-today/terraform-provider-libvirt
-    url: https://github.com/developing-today/terraform-provider-libvirt
+  - name: developing-today-vendored/terraform-provider-libvirt
+    url: https://github.com/developing-today-vendored/terraform-provider-libvirt
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: developing-today/webspace-sdk.github.io
-    url: https://github.com/developing-today/webspace-sdk.github.io
+  - name: developing-today-vendored/webspace-sdk.github.io
+    url: https://github.com/developing-today-vendored/webspace-sdk.github.io
     class: fork
     watch: inventory-only
     sources: [github]
@@ -1931,8 +1931,8 @@ repos:
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: dezren39/nix
-    url: https://github.com/dezren39/nix
+  - name: dezren39/darwin-nix
+    url: https://github.com/dezren39/darwin-nix
     class: owned
     watch: issues
     sources: [github, census]

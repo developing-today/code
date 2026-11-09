@@ -9,6 +9,7 @@ import {
   buildIncidentPayload,
   buildTestPayload,
   classEnabled,
+  createAlertsStoreGetter,
   duplicateWouldRepeatDelivery,
   incidentObjectRef,
   incidentUrl,
@@ -22,6 +23,7 @@ import {
   validateNewIncident,
   validateNewSubscription,
   AlertsStore,
+  type AlertTickOptions,
   type AlertsStore as AlertsStoreType,
   type Incident,
   type PushSubscriptionRow,
@@ -31,6 +33,48 @@ import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
 import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
 import type { Config } from "../src/config.ts";
+import type { NotificationHistoryEntry, NotificationSnapshot } from "../src/notifications.ts";
+
+describe("getAlertsStore retry-after-null memoization", () => {
+  test("retries a null client, shares the next in-flight attempt, and caches success", async () => {
+    let clientCalls = 0;
+    let resolveFirst!: (value: SupabaseClient | null) => void;
+    const firstResult = new Promise<SupabaseClient | null>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let resolveRetry!: (value: SupabaseClient | null) => void;
+    const retryResult = new Promise<SupabaseClient | null>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const fakeClient: SupabaseClient = {
+      ref: "test-project",
+      async query<T>() {
+        return [] as T[];
+      },
+    };
+    const getStore = createAlertsStoreGetter(async () => {
+      clientCalls += 1;
+      return clientCalls === 1 ? firstResult : retryResult;
+    });
+
+    const initial = getStore();
+    const concurrentInitial = getStore();
+    expect(clientCalls).toBe(1);
+    resolveFirst(null);
+    expect(await Promise.all([initial, concurrentInitial])).toEqual([null, null]);
+
+    const first = getStore();
+    const second = getStore();
+    expect(clientCalls).toBe(2);
+    resolveRetry(fakeClient);
+
+    const [store, concurrentStore] = await Promise.all([first, second]);
+    expect(store).not.toBeNull();
+    expect(store).toBe(concurrentStore);
+    expect(await getStore()).toBe(store);
+    expect(clientCalls).toBe(2);
+  });
+});
 
 describe("sql literals", () => {
   test("single quotes double", () => {
@@ -49,15 +93,24 @@ describe("sql literals", () => {
 
 describe("class + quiet merges (design §1/§2)", () => {
   test("incident defaults on; explicit off survives", () => {
-    expect(mergeClasses(undefined)).toEqual({ incident: true });
-    expect(mergeClasses({ incident: false })).toEqual({ incident: false });
-    expect(mergeClasses({ incident: true, "quota-wall": false })).toEqual({ incident: true, "quota-wall": false });
-    expect(mergeClasses({ incident: "yes" })).toEqual({ incident: true }); // non-boolean ignored
+    expect(mergeClasses(undefined)).toEqual({
+      incident: true,
+      "needs-drew": true,
+      "quota-wall": true,
+      "quota-near-wall": true,
+      "stack-health": true,
+      "blocked-age": true,
+    });
+    expect(mergeClasses({ incident: false }).incident).toBe(false);
+    expect(mergeClasses({ incident: true, "quota-wall": false })["quota-wall"]).toBe(false);
+    expect(mergeClasses({ incident: "yes" }).incident).toBe(true); // non-boolean ignored
   });
-  test("classEnabled: only an explicit false disables", () => {
+  test("classEnabled preserves old rows while new rows get defaults", () => {
     expect(classEnabled({ classes: {} }, "incident")).toBe(true);
     expect(classEnabled({ classes: { incident: false } }, "incident")).toBe(false);
     expect(classEnabled({ classes: { incident: true } }, "incident")).toBe(true);
+    expect(classEnabled({ classes: {} }, "needs-drew")).toBe(false);
+    expect(classEnabled({ classes: mergeClasses(undefined) }, "needs-drew")).toBe(true);
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {
     expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });
@@ -136,6 +189,57 @@ describe("class + quiet merges (design §1/§2)", () => {
   });
 });
 
+describe("stored subscription preference reads (#4978)", () => {
+  test("invalid stored quiet fields fall back per field without rewriting rows", async () => {
+    const invalidQuiet = { start: "99:99", end: "24:60", tz: "Not/AZone", enabled: true };
+    const validQuiet = { start: "22:30", end: "06:15", tz: "UTC", enabled: true };
+    const rawRows: PushSubscriptionRow[] = [
+      {
+        id: "sub-invalid",
+        endpoint: "https://push.example/invalid",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: invalidQuiet,
+        user_agent: null,
+        created_at: "2026-11-01T00:00:00Z",
+        last_seen_at: "2026-11-01T00:00:00Z",
+        gone_count: 0,
+      },
+      {
+        id: "sub-valid",
+        endpoint: "https://push.example/valid",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: validQuiet,
+        user_agent: null,
+        created_at: "2026-11-02T00:00:00Z",
+        last_seen_at: "2026-11-02T00:00:00Z",
+        gone_count: 0,
+      },
+    ];
+    const queries: string[] = [];
+    const db: SupabaseClient = {
+      ref: "test",
+      async query<T>(sql: string): Promise<T[]> {
+        queries.push(sql);
+        return rawRows as unknown as T[];
+      },
+    };
+
+    const loaded = await new AlertsStore(db).listSubscriptions();
+
+    expect(loaded.map((row) => row.quiet)).toEqual([
+      { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true },
+      validQuiet,
+    ]);
+    expect(inQuietHours(loaded[0].quiet, new Date("2026-01-15T12:00:00Z"))).toBe(true);
+    expect(rawRows.map((row) => row.quiet)).toEqual([invalidQuiet, validQuiet]);
+    expect(queries).toEqual(["select * from alerts.push_subscriptions order by created_at"]);
+  });
+});
+
 const incident: Incident = {
   id: "11111111-2222-3333-4444-555555555555",
   source: "globalping-watch",
@@ -201,7 +305,14 @@ describe("validation", () => {
     });
     expect(ok.ok).toBe(true);
     if (ok.ok) {
-      expect(ok.value.classes).toEqual({ incident: true });
+      expect(ok.value.classes).toEqual({
+        incident: true,
+        "needs-drew": true,
+        "quota-wall": true,
+        "quota-near-wall": true,
+        "stack-health": true,
+        "blocked-age": true,
+      });
       expect(ok.value.quiet.tz).toBe("America/Chicago");
     }
     expect(
@@ -376,6 +487,107 @@ describe("pending alert batch fairness", () => {
 });
 
 describe("alert tick delivery state", () => {
+  test("dashboard candidates are delivered once and their state is persisted for dedupe", async () => {
+    const now = Date.parse("2026-11-03T18:00:00Z");
+    const { store } = alertTickStore({ deliveries: [], escalations: [] });
+    const sub: PushSubscriptionRow = {
+      id: "sub-dashboard",
+      endpoint: "https://push.example/sub-dashboard",
+      p256dh: "p256dh",
+      auth: "auth",
+      classes: { incident: true, "needs-drew": true },
+      quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+      user_agent: null,
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T00:00:00Z",
+      gone_count: 0,
+    };
+    store.listSubscriptions = async () => [sub];
+    const historyRows: NotificationHistoryEntry[] = [];
+    const notificationHistory: NonNullable<AlertTickOptions["notificationHistory"]> = {
+      read: async () => [...historyRows],
+      append: async (entry) => {
+        historyRows.push(entry);
+      },
+    };
+    let dashboardPushes = 0;
+    const push: typeof successfulSend = async (_target, payload) => {
+      if ((payload as { class: string }).class === "needs-drew") dashboardPushes += 1;
+      return successfulSend(_target, payload);
+    };
+    const item = {
+      id: "task-1",
+      kind: "task",
+      title: "Needs-Drew task",
+      since: new Date(now - 60_000).toISOString(),
+      state: "open",
+    };
+    const dashboardSnapshot = async (): Promise<NotificationSnapshot> => ({
+      attention: { drew: [item], drewExtra: [] } as unknown as NotificationSnapshot["attention"],
+      quota: { pools: [] } as unknown as NotificationSnapshot["quota"],
+      health: { services: [] },
+    });
+
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now });
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: now + 60_000 });
+
+    expect(dashboardPushes).toBe(1);
+    expect(historyRows.map((row) => row.outcome)).toEqual(["sent", "suppressed-dedupe"]);
+    expect(historyRows.every((row) => row.subscriptionId === sub.id)).toBe(true);
+  });
+
+  test("quiet-hour candidates persist across ticks and drain as one digest at window end", async () => {
+    const now = Date.parse("2026-11-04T01:00:00Z");
+    const { store } = alertTickStore({ deliveries: [], escalations: [] });
+    const sub: PushSubscriptionRow = {
+      id: "sub-digest",
+      endpoint: "https://push.example/sub-digest",
+      p256dh: "p256dh",
+      auth: "auth",
+      classes: { incident: true, "needs-drew": true },
+      quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+      user_agent: null,
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T00:00:00Z",
+      gone_count: 0,
+    };
+    store.listSubscriptions = async () => [sub];
+    const historyRows: NotificationHistoryEntry[] = [];
+    const notificationHistory: NonNullable<AlertTickOptions["notificationHistory"]> = {
+      read: async () => [...historyRows],
+      append: async (entry) => {
+        historyRows.push(entry);
+      },
+    };
+    const pushed: unknown[] = [];
+    const push: typeof successfulSend = async (_target, payload) => {
+      pushed.push(payload);
+      return successfulSend(_target, payload);
+    };
+    const item = {
+      id: "quiet-task",
+      kind: "task",
+      title: "Quiet-hour task",
+      since: new Date(now - 60_000).toISOString(),
+      state: "open",
+    };
+    const dashboardSnapshot = async (): Promise<NotificationSnapshot> => ({
+      attention: { drew: [item], drewExtra: [] } as unknown as NotificationSnapshot["attention"],
+      quota: { pools: [] } as unknown as NotificationSnapshot["quota"],
+      health: { services: [] },
+    });
+
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now });
+    expect(pushed).toHaveLength(0);
+    expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued"]);
+
+    // Recreate the tick over the same durable history at quiet-window end.
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: Date.parse("2026-11-04T07:00:00Z") });
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toMatchObject({ class: "digest", items: [{ title: "Quiet-hour task" }] });
+    expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued", "sent"]);
+  });
+
   test("all-error delivery stays pending and a later successful tick marks it delivered once", async () => {
     const { store, calls } = alertTickStore();
 
@@ -415,6 +627,177 @@ describe("alert tick delivery state", () => {
     expect(calls.delivered).toEqual([]);
     expect(calls.escalated).toEqual([]);
     expect(calls.sends).toEqual([]);
+  });
+});
+
+describe("alert tick all-gone lifecycle (#6905)", () => {
+  const goneSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
+    ok: false,
+    gone: true,
+    status: 410,
+    error: "gone",
+  });
+
+  // Stateful fake store mirroring AlertsStore.noteSubscriptionGone
+  // semantics (src/alerts.ts): a gone response increments the
+  // subscription strike count, the second consecutive gone prunes it,
+  // and a successful send (noteSubscriptionAlive) resets the count.
+  function goneLifecycleStore(options: { deliveries?: Incident[]; escalations?: Incident[] } = {}) {
+    const sub: PushSubscriptionRow = {
+      id: "sub-1",
+      endpoint: "https://push.example/sub-1",
+      p256dh: "p256dh",
+      auth: "auth",
+      classes: { incident: true },
+      quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+      user_agent: null,
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T00:00:00Z",
+      gone_count: 0,
+    };
+    let subs: PushSubscriptionRow[] = [sub];
+    let strikes = 0;
+    const deliveryList: Incident[] = [...(options.deliveries ?? [incident])];
+    const deliveredIds = new Set<string>();
+    const escalatedIds = new Set<string>();
+    const calls = {
+      delivered: [] as Array<{ id: string; detail: Record<string, unknown> }>,
+      escalated: [] as Array<{ id: string; detail: Record<string, unknown> }>,
+      sends: [] as Array<{ outcome: string; incidentId?: string }>,
+      goneNotes: [] as Array<"marked" | "pruned">,
+      aliveNotes: [] as string[],
+      pushes: 0,
+    };
+    const store = {
+      listSubscriptions: async () => subs,
+      pendingDeliveries: async () => deliveryList.filter((i) => !deliveredIds.has(i.id)),
+      pendingEscalations: async () => (options.escalations ?? []).filter((i) => !escalatedIds.has(i.id)),
+      markDelivered: async (id: string, detail: Record<string, unknown>) => {
+        deliveredIds.add(id);
+        calls.delivered.push({ id, detail });
+        return true;
+      },
+      markEscalated: async (id: string, detail: Record<string, unknown>) => {
+        escalatedIds.add(id);
+        calls.escalated.push({ id, detail });
+        return true;
+      },
+      logSend: async (entry: { outcome: string; incidentId?: string }) => {
+        calls.sends.push(entry);
+      },
+      noteSubscriptionAlive: async (endpoint: string) => {
+        strikes = 0;
+        calls.aliveNotes.push(endpoint);
+      },
+      noteSubscriptionGone: async (_endpoint: string) => {
+        strikes += 1;
+        if (strikes >= 2) {
+          subs = [];
+          calls.goneNotes.push("pruned");
+          return "pruned" as const;
+        }
+        calls.goneNotes.push("marked");
+        return "marked" as const;
+      },
+    };
+    return {
+      store: store as unknown as AlertsStoreType,
+      calls,
+      subCount: () => subs.length,
+      resubscribe: () => {
+        subs = [sub];
+        strikes = 0;
+      },
+      addDelivery: (i: Incident) => {
+        deliveryList.push(i);
+      },
+    };
+  }
+
+  test("all-gone delivery: never marked delivered, pruned on the second gone, then zero-subscription silence", async () => {
+    const { store, calls, subCount, resubscribe } = goneLifecycleStore();
+    const countingGone = async (target: PushTarget, payload: unknown): Promise<PushOutcome> => {
+      calls.pushes += 1;
+      return goneSend(target, payload);
+    };
+
+    // Tick 1: the only subscription is a dead endpoint. Gone is not a
+    // send (#3690 contract), so delivery stays unmarked; one strike.
+    await runAlertTick(tickConfig, store, countingGone);
+    expect(calls.delivered).toEqual([]);
+    expect(calls.sends.map((s) => s.outcome)).toEqual(["gone"]);
+    expect(calls.goneNotes).toEqual(["marked"]);
+    expect(subCount()).toBe(1);
+
+    // Tick 2: second consecutive gone prunes the subscription; the
+    // incident is STILL not marked delivered.
+    await runAlertTick(tickConfig, store, countingGone);
+    expect(calls.delivered).toEqual([]);
+    expect(calls.sends.map((s) => s.outcome)).toEqual(["gone", "gone"]);
+    expect(calls.goneNotes).toEqual(["marked", "pruned"]);
+    expect(subCount()).toBe(0);
+
+    // Tick 3: zero subscriptions — the engine does not even attempt a
+    // send, and the incident stays pending (zero-subscription case).
+    await runAlertTick(tickConfig, store, countingGone);
+    expect(calls.pushes).toBe(2);
+    expect(calls.sends).toHaveLength(2);
+    expect(calls.delivered).toEqual([]);
+
+    // A later subscription still gets the push, exactly once.
+    resubscribe();
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.delivered).toHaveLength(1);
+    expect(calls.delivered[0]).toMatchObject({
+      id: incident.id,
+      detail: { subscriptions: 1, sent: 1, gone: 0, errors: 0 },
+    });
+  });
+
+  test("all-gone escalation: never marked escalated on gone alone, pruned on the second gone", async () => {
+    const escalation = { ...incident, delivered_at: "2026-11-01T11:00:00Z" };
+    const { store, calls, subCount } = goneLifecycleStore({ deliveries: [], escalations: [escalation] });
+
+    await runAlertTick(tickConfig, store, goneSend);
+    expect(calls.escalated).toEqual([]);
+    expect(calls.sends.map((s) => s.outcome)).toEqual(["gone"]);
+    expect(calls.goneNotes).toEqual(["marked"]);
+    expect(subCount()).toBe(1);
+
+    await runAlertTick(tickConfig, store, goneSend);
+    expect(calls.escalated).toEqual([]);
+    expect(calls.sends.map((s) => s.outcome)).toEqual(["gone", "gone"]);
+    expect(calls.goneNotes).toEqual(["marked", "pruned"]);
+    expect(subCount()).toBe(0);
+
+    // Zero subscriptions: escalation stays pending and untouched.
+    await runAlertTick(tickConfig, store, goneSend);
+    expect(calls.sends).toHaveLength(2);
+    expect(calls.escalated).toEqual([]);
+  });
+
+  test("a successful send between gones resets the strike count (no prune)", async () => {
+    const { store, calls, subCount, addDelivery } = goneLifecycleStore({ deliveries: [incident] });
+
+    await runAlertTick(tickConfig, store, goneSend);
+    expect(calls.goneNotes).toEqual(["marked"]);
+    expect(calls.delivered).toEqual([]);
+
+    // The same incident delivers on the next tick; the success notes
+    // the subscription alive, resetting its gone strikes.
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.delivered).toHaveLength(1);
+    expect(calls.aliveNotes).toEqual(["https://push.example/sub-1"]);
+    expect(subCount()).toBe(1);
+
+    // A fresh incident going gone is a first strike again — marked,
+    // not pruned — proving the reset landed.
+    const third = { ...incident, id: "00000000-0000-0000-0000-000000000100" };
+    addDelivery(third);
+    await runAlertTick(tickConfig, store, goneSend);
+    expect(calls.goneNotes).toEqual(["marked", "marked"]);
+    expect(subCount()).toBe(1);
+    expect(calls.delivered).toHaveLength(1);
   });
 });
 
@@ -622,5 +1005,28 @@ describe("push subscription redaction (#3693)", () => {
     const verbatim = JSON.stringify({ subscriptions: [row] });
     expect(verbatim).toContain(sentinelP256dh);
     expect(verbatim).toContain(sentinelAuth);
+  });
+});
+
+describe("subscription class preservation (#7193 Codex)", () => {
+  test("validateNewSubscription records only the explicitly sent class keys", () => {
+    const parsed = validateNewSubscription({
+      endpoint: "https://push.example/x",
+      keys: { p256dh: "p", auth: "a" },
+      classes: { incident: true },
+      quiet: { start: "22:00", end: "06:00" },
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value.providedClasses).toEqual({ incident: true });
+      // The expanded map is still the full default set for NEW rows.
+      expect(parsed.value.classes["quota-wall"]).toBe(true);
+    }
+  });
+
+  test("no classes sent records an empty provided set", () => {
+    const parsed = validateNewSubscription({ endpoint: "https://push.example/x", keys: { p256dh: "p", auth: "a" } });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.providedClasses).toEqual({});
   });
 });

@@ -56,6 +56,26 @@ describe("applyCloudflareExport", () => {
     expect(cf.sourceNote).toContain("invoice-only");
   });
 
+  test("a negative used value is refused, like the Supabase overlay", () => {
+    const doc = freshDoc();
+    doc.metrics = [
+      { id: "workers-requests", used: -500, unit: "count", source: "cloudflare-graphql-analytics" },
+      { id: "kv-reads", used: 1420, unit: "count", source: "cloudflare-graphql-analytics" },
+    ];
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    const byId = Object.fromEntries(cf.metrics.map((m) => [m.id, m]));
+    // The broken measurement keeps the prose/null fallback: no negative
+    // used and no negative percent derived from it.
+    expect(byId["workers-requests"].used).toBeNull();
+    expect(byId["workers-requests"].percent ?? 0).toBeGreaterThanOrEqual(0);
+    expect(byId["workers-requests"].note).not.toContain("Live via");
+    // Valid metrics in the same document still overlay.
+    expect(byId["kv-reads"].used).toBe(1420);
+    expect(byId["kv-reads"].percent).toBe(0);
+    expect(cf.sourceClass).toBe("api");
+  });
+
   test("stale export (>30 min) changes nothing", () => {
     const doc = freshDoc();
     doc.measuredAt = "2026-10-29T09:00:00.000Z";
