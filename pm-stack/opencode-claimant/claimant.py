@@ -227,35 +227,56 @@ def supervision_step(mode: str) -> List[Dict]:
                 session_id = prog.get("session_id") or task.get("session_id")
                 if lane == "opencode" and session_id:
 
-                    # Check if session exists and is progressing
+                    # Check if session exists and is progressing.
+                    # The HTTP status is the evidence (#7367 residual):
+                    # curl -s prints an error body with exit 0 for a
+                    # 401 just as for a 404, so an error body alone
+                    # cannot tell "session gone" from "we could not
+                    # look". Only a 404 is a genuinely gone session;
+                    # any other failure is UNKNOWN state and the
+                    # binding is left alone.
                     try:
                         session_response = subprocess.run(
-                            ["curl", "-s", "-m", "5", *_auth_header_args(),
+                            ["curl", "-s", "-m", "5", "-w", "\n%{http_code}",
+                             *_auth_header_args(),
                              f"{OPENCODE_URL}/api/session/{session_id}"],
                             capture_output=True,
                             text=True
                         )
 
-                        if session_response.returncode == 0:
-                            session = json.loads(session_response.stdout)
+                        if session_response.returncode != 0:
+                            # Transport failure - unknown state.
+                            continue
+                        body, _, status = session_response.stdout.rpartition("\n")
+                        status = status.strip()
+                        if not status.isdigit():
+                            # No status line: cannot verify - unknown.
+                            continue
+                        if status == "404":
+                            # Genuinely gone from the server.
+                            session = None
+                        elif status != "200":
+                            # 401/403/5xx: an error, not an absence -
+                            # leave the binding alone.
+                            continue
+                        else:
+                            session = json.loads(body)
                             if isinstance(session, dict) and "data" in session:
                                 session = session["data"]
                             if not isinstance(session, dict) or not session.get("id"):
-                                # Error body, not a session object:
-                                # the session is gone from the server.
-                                session = None
-                            else:
-                                # Check for terminal state
-                                has_terminal = any(
-                                    marker in str(session.get("outcome", "") or "") or
-                                    marker in str((session.get("time") or {}).get("idle", "") or "")
-                                    for marker in ["idle", "outcome", "completed", "failed"]
-                                )
+                                # A 200 with no session object is not
+                                # evidence of absence - unknown state.
+                                continue
+                            # Check for terminal state
+                            has_terminal = any(
+                                marker in str(session.get("outcome", "") or "") or
+                                marker in str((session.get("time") or {}).get("idle", "") or "")
+                                for marker in ["idle", "outcome", "completed", "failed"]
+                            )
 
-                                if not has_terminal:
-                                    # Session exists and is active - nothing to do
-                                    continue
-                        # else: Session gone from server or error
+                            if not has_terminal:
+                                # Session exists and is active - nothing to do
+                                continue
                     except Exception:
                         # Could not verify session - leave bound
                         continue
@@ -294,9 +315,13 @@ def supervision_step(mode: str) -> List[Dict]:
         session_id = candidate["session_id"]
         
         try:
-            # Delete the zero-message session
+            # Delete the zero-message session. -f makes curl fail
+            # on HTTP errors (#7367 residual): without it a 401 exits
+            # 0 and the recovery bind below would proceed while the
+            # session still exists - the duplicate-execution shape
+            # #7367 forbids. The bind is gated on a verified delete.
             delete_result = subprocess.run(
-                ["curl", "-s", "-m", "5", "-X", "DELETE", *_auth_header_args(),
+                ["curl", "-s", "-f", "-m", "5", "-X", "DELETE", *_auth_header_args(),
                  f"{OPENCODE_URL}/api/session/{session_id}"],
                 capture_output=True,
                 text=True
@@ -323,7 +348,8 @@ def supervision_step(mode: str) -> List[Dict]:
                 else:
                     print(f"Failed to recover task {task_id}: {bind_result.stderr}")
             else:
-                print(f"Failed to delete session {session_id} for task {task_id}")
+                print(f"Failed to delete session {session_id} for task {task_id} "
+                      f"(curl rc {delete_result.returncode}); recovery bind NOT attempted")
         except Exception as e:
             print(f"Error during recovery of task {task_id}: {e}")
     
