@@ -2,6 +2,7 @@ package mcpclient
 
 import (
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -10,6 +11,9 @@ import (
 // must exist, have a non-zero start time, agree with
 // ProcessStartTime, and not be a zombie.
 func TestProcStatSelf(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skipf("procStat has no implementation on %s (linux/darwin only, #7063)", runtime.GOOS)
+	}
 	pid := os.Getpid()
 	start, state, err := procStat(pid)
 	if err != nil {
