@@ -28,21 +28,17 @@ This decision does **not** define another application envelope, change #2036's m
 - Durable facts and checkpoints are recovered from the event graph; ephemeral live frames are not replayed after a disconnected session.
 - Framing and checked chunking stay with the shared ID frame contract. No relay-specific chunking format is introduced.
 
-The parent issue #5674 remains OPEN. This record chooses the relay-service boundary only. It does not decide the postcard envelope, adapter architecture, or any other parent-owned wire choice; any incompatible parent decision must be reconciled explicitly before implementation.
+The parent issue #5674 is still OPEN and its remainder is in progress (task 12244 was freshly handed off when this record was prepared). This record chooses the relay-service boundary only. It does not decide the postcard envelope, adapter architecture, or any other parent-owned wire choice.
 
 ### Sibling contracts
 
-Latest GitHub state checked on 2026-11-08 showed #5808 OPEN/blocked on #5674, and #5809 and #5810 OPEN/parked. Their decision records have not settled the shared schema, version negotiation, or carrier framing. Consequently:
+Fresh issue state on 2026-11-08 showed #5808 OPEN/blocked on #5674, #5809 OPEN/queued, and #5810 OPEN/queued. Their decision records have not settled the shared schema, version negotiation, or carrier framing. Consequently:
 
 1. Relay control/data messages use the canonical envelope and framing selected by #5674, #5808, and #5810; this record allocates no discriminants, byte layout, or independent framing rules.
 2. The version/capability negotiation and unknown-field behavior come from #5809. A relay must not silently discard a field that that contract marks critical.
 3. The service behavior below is the decision to carry into those records. If a parent/sibling decision makes an interface detail incompatible, record the conflict explicitly on the relevant issue and revise this record additively; do not silently override the parent.
 
-Issue #5795 owns broker authorization, allowlists/capabilities, metadata minimization, and the compromised-broker ceiling. It was OPEN/blocked at verification. This design consumes that trust contract rather than restating its authorization policy. The relay interface assumes end-to-end protected application payloads and exposes only the routing/control metadata necessary to operate; #5795 must settle the exact authorization and metadata surface. Issue #5815 is the subsequent cross-adapter security-binding review; it remains OPEN with no landed decision, and this record does not pre-empt it.
-
-### Transport broker boundary: #5671 and #5791
-
-The transport fallback contract in #5671, refined by #5791, defines its broker/relay as a dumb authenticated pipe for opaque end-to-end-encrypted traffic. That transport broker does not gain ID lookup, presence-publication, or application-routing semantics from this record. **The ID-aware lookup/home-relay service chosen here is a distinct application-level role.** It may be reached over a #5791 transport, and one operator may host both roles, but the protocol roles remain separate: the transport broker forwards opaque bytes; the #5813 service handles only the minimum routable/control metadata permitted by #5795, without terminating application payloads or holding content keys. Co-hosting must preserve this separation and remains subject to #5795 authorization and #5815's security-binding review. This decision changes neither #5671's broker shape nor #5791's fallback order.
+Issue #5795 owns broker authorization, allowlists/capabilities, metadata minimization, and the compromised-broker ceiling. It was OPEN/parked at verification. This design consumes that trust contract rather than restating its authorization policy. The relay interface assumes end-to-end protected application payloads and exposes only the routing/control metadata necessary to operate; #5795 must settle the exact authorization and metadata surface. Issue #5815 is the subsequent cross-adapter security-binding review and was already in progress; this record does not pre-empt it.
 
 ## 2. Relay roles
 
@@ -136,8 +132,7 @@ A wholly stateless proxy is rejected because live forwarding requires connection
 7. **Bounded resources:** every queue, stream, lookup, lease set, connection, and aggregate buffer has a finite cap and an explicit refusal/backpressure path.
 8. **Restart is recoverable:** after relay restart, clients can detect expired/lost leases and republish; no durable message is lost solely because it was entrusted to a relay queue, because no such queue exists.
 9. **Version and framing are shared:** unknown critical fields are handled per #5809; carrier framing and size limits follow #5674/#5810/#2036. No silent downgrade or relay-specific chunking is introduced.
-10. **Transport broker semantics stay separate:** a #5671/#5791 broker remains an authenticated opaque pipe; only the distinct #5813 application-relay role performs the permitted ID-aware routing/control work, subject to #5795 and #5815.
-11. **Security contract is reviewable:** broker authorization and metadata exposure are specified by #5795 and cross-adapter security binding by #5815 before implementation freezes those surfaces.
+10. **Security contract is reviewable:** broker authorization and metadata exposure are specified by #5795 and cross-adapter security binding by #5815 before implementation freezes those surfaces.
 
 The implementation/conformance work should test concurrent lookup with an unavailable endpoint, multi-home partial publication and lease expiry, duplicate advertisements, slow-consumer credit exhaustion, quota refusal, disconnect loss of live frames, restart/republication, and the separation between relay receipts and destination acknowledgements. #5814 owns the broader adapter conformance/interop matrix.
 
@@ -146,8 +141,7 @@ The implementation/conformance work should test concurrent lookup with an unavai
 - **No parent decision is changed.** #5674 remains the owner of the shared wire-format family, transport-adapter model, resolver defaults, and any parent-level discovery decision. This record contributes the relay service boundary and makes relay lookup configurable/self-hostable rather than selecting a global resolver.
 - **No #2036 decision is changed.** Its application envelope, member-relay validation, hop/loop rules, durable event graph, live-session behavior, and frame cap remain authoritative.
 - **No #5795 trust policy is duplicated.** Broker identity/capability rules, allowlists, metadata minimization, and compromised-broker analysis remain for #5795; this design requires those decisions to bind the relay operations above.
-- **No transport-broker decision is changed.** #5671/#5791's authenticated opaque-pipe role remains distinct from the application-level ID-aware service defined here; co-hosting does not merge their protocol semantics.
-- **No wire details are preempted.** #5808, #5809, and #5810 must map these operations onto the shared message schema, negotiation, and framing. Their currently blocked/parked state is an integration gate, not a reason to silently invent a second format here.
+- **No wire details are preempted.** #5808, #5809, and #5810 must map these operations onto the shared message schema, negotiation, and framing. Their currently blocked/queued state is an integration gate, not a reason to silently invent a second format here.
 - **Review order:** carry this contract to #5815 for the planned security-binding review and to #5814 for conformance coverage. The security review should confirm the opaque-payload and metadata assumptions against #5795 before implementation interfaces are frozen.
 
 ## Evidence map
@@ -155,6 +149,5 @@ The implementation/conformance work should test concurrent lookup with an unavai
 - #5813 body and its 2026-11-05 parent cross-link comment: distinct relay/proxy design; relay lookup vs. publish/home roles and multi-relay behavior.
 - #5813 task 10216 triage (comment `issuecomment-6662324895`) and task 12313 triage (comment `issuecomment-6717275182`): the design is additive to #2036, consumes #5795, aligns with #5808–#5810, and was re-verified as real/current and not gated on 2026-11-08.
 - #5674 comments `issuecomment-6647788157` and `issuecomment-6662707975`: original multi-relay questions and the parent-level ordering/boundary relative to #2036.
-- `doc/2026-11-05T13-38-00Z_design_id5791_transport_negotiation.md:20-39`: #5671/#5791's authenticated opaque transport-broker boundary and fallback ownership, which this application-relay decision does not change.
 - `doc/2026-11-01_design_id2036.md`: existing application relay, message lifecycle, framing, and retention contract.
-- Fresh GitHub state checked 2026-11-08: #5674 remains OPEN; #5808 OPEN/blocked; #5809 and #5810 OPEN/parked; #5795 OPEN/blocked; #5815 OPEN with no landed security-binding decision. These states are recorded to expose integration order, not to claim that the sibling decisions have landed.
+- Fresh GitHub state checked 2026-11-08: #5674 OPEN/parked with task 12244 handed off; #5808 OPEN/blocked; #5809 and #5810 OPEN/queued; #5795 OPEN/parked; #5815 OPEN/in progress. These states are recorded to expose integration order, not to claim that the sibling decisions have landed.
