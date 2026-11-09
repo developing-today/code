@@ -206,11 +206,16 @@ export function githubHotEventDelivery(event: GithubHotEvent): ActivityDelivery 
   if (!kind) throw new Error("invalid_hot_event_kind");
   const at = validGithubTimestamp(event.source_timestamp) ?? validGithubTimestamp(event.received_at);
   if (!at) throw new Error("invalid_hot_event_timestamp");
-  const ref = event.ref?.trim() || repo;
+  const sourceRef = event.ref?.trim() ?? "";
+  // EventsStore rejects refs longer than 300 characters or containing
+  // whitespace. Keep the original source ref visible in the bounded
+  // summary, but use the repository as a valid contract ref so one odd
+  // upstream branch name cannot permanently stall this hot-list page.
+  const ref = sourceRef && sourceRef.length <= 300 && !/\s/.test(sourceRef) ? sourceRef : repo;
   const action = event.action?.trim();
   const actor = event.actor?.trim();
   const description = [event.event, action].filter(Boolean).join(" ");
-  const subject = event.ref ? ` ${event.ref}` : "";
+  const subject = sourceRef ? ` ref ${capUnits(sourceRef, 300)}` : "";
   const by = actor ? ` by ${actor}` : "";
   return {
     source: "github",
@@ -665,8 +670,13 @@ export class IngestionStore {
       await this.persist();
       return open;
     }
+    const baseId = `gap:${source}:${from}`;
+    let id = baseId;
+    for (let suffix = 1; this.data.gaps.some((gap) => gap.id === id); suffix++) {
+      id = `${baseId}:${suffix}`;
+    }
     const gap: GapRecord = {
-      id: `gap:${source}:${from}`,
+      id,
       source,
       from,
       to,
@@ -688,7 +698,10 @@ export class IngestionStore {
    *  failed poll. */
   async resolveGap(id: string, status: Exclude<GapStatus, "open">, to?: string): Promise<GapRecord | null> {
     await this.load();
-    const gap = this.data.gaps.find((g) => g.id === id);
+    // Prefer an open row if older persisted data contains duplicate IDs
+    // from a previously resolved episode and a later reopened gap.
+    const gap =
+      this.data.gaps.find((g) => g.id === id && g.status === "open") ?? this.data.gaps.find((g) => g.id === id);
     if (!gap || gap.status !== "open") return gap ?? null;
     if (to && Date.parse(to) > Date.parse(gap.to)) gap.to = to;
     gap.status = status;

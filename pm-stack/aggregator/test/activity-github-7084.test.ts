@@ -16,6 +16,7 @@ interface FakeLedger {
   cursor: number;
   consumer: string;
   ackCalls: Array<{ cursor: number; highWater: number }>;
+  checkpointViolations: number[];
 }
 
 function stores(): {
@@ -56,8 +57,20 @@ function hotEvent(seq: number, id: string, repo = "developing-today/code"): Gith
 /** Minimal projector hot-list protocol; a `failAck` injection models the
  *  dangerous window where activity rows are durable but the remote
  *  checkpoint was never acknowledged. */
-function projector(rows: GithubHotEvent[], opts: { failAck?: boolean } = {}) {
-  const ledger: FakeLedger = { rows: [...rows], cursor: 0, consumer: "unset", ackCalls: [] };
+function projector(
+  rows: GithubHotEvent[],
+  opts: {
+    failAck?: boolean;
+    beforeAck?: (ack: { cursor: number; highWater: number }) => Promise<boolean>;
+  } = {},
+) {
+  const ledger: FakeLedger = {
+    rows: [...rows],
+    cursor: 0,
+    consumer: "unset",
+    ackCalls: [],
+    checkpointViolations: [],
+  };
   const fetchMock = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const highWater = Math.max(0, ...ledger.rows.map((row) => row.seq));
@@ -85,6 +98,10 @@ function projector(rows: GithubHotEvent[], opts: { failAck?: boolean } = {}) {
       if (body.cursor > body.highWater || body.highWater > highWater) {
         return Response.json({ error: "checkpoint_past_high_water" }, { status: 400 });
       }
+      if (opts.beforeAck && !(await opts.beforeAck(body))) {
+        ledger.checkpointViolations.push(body.cursor);
+        return Response.json({ error: "checkpoint_before_rows_durable" }, { status: 409 });
+      }
       ledger.ackCalls.push({ cursor: body.cursor, highWater: body.highWater });
       ledger.cursor = Math.max(ledger.cursor, body.cursor);
       ledger.consumer = body.consumer;
@@ -98,18 +115,31 @@ function projector(rows: GithubHotEvent[], opts: { failAck?: boolean } = {}) {
 function consumer(
   parts: ReturnType<typeof stores>,
   fetchMock: typeof fetch,
-  opts: { pageSize?: number; maxPages?: number } = {},
+  opts: {
+    pageSize?: number;
+    maxPages?: number;
+    events?: Pick<EventsStore, "record">;
+    now?: () => Date;
+  } = {},
 ): GithubHotListConsumer {
   return new GithubHotListConsumer({
     baseUrl: "http://projector.test",
     token: "test-token",
     store: parts.store,
-    events: parts.events,
+    events: opts.events ?? parts.events,
     fetch: fetchMock,
     pageSize: opts.pageSize ?? 2,
     maxPages: opts.maxPages ?? 20,
-    now: () => new Date("2026-11-08T12:05:00.000Z"),
+    now: opts.now ?? (() => new Date("2026-11-08T12:05:00.000Z")),
   });
+}
+
+function seededInt(seed: number): (limit: number) => number {
+  let state = seed >>> 0;
+  return (limit) => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state % limit;
+  };
 }
 
 describe("GitHub hot-list writer (#7084)", () => {
@@ -134,6 +164,19 @@ describe("GitHub hot-list writer (#7084)", () => {
     const row = { ...hotEvent(8, "delivery:issues.opened:2"), source_url: "javascript:alert(1)" };
     const delivery = githubHotEventDelivery(row);
     expect(delivery.link).toBe("https://github.com/developing-today/code");
+  });
+
+  test("maps an oversized push ref to a valid ref without losing it from the summary", () => {
+    const branch = `refs/heads/${"feature".repeat(60)}`;
+    const delivery = githubHotEventDelivery({
+      ...hotEvent(9, "delivery:push:9"),
+      event: "push",
+      action: null,
+      ref: branch,
+    });
+    expect(delivery.ref).toBe("developing-today/code");
+    expect(delivery.summary).toContain("ref refs/heads/");
+    expect(delivery.link).toBe("https://github.com/developing-today/code/issues/9");
   });
 });
 
@@ -179,6 +222,23 @@ describe("GitHub hot-list consumer (#7084)", () => {
     expect(stream.find((event) => event.id === "activity:github:delivery:1")?.summary).toContain(
       "https://github.com/developing-today/code/issues/1",
     );
+  });
+
+  test("an oversized push ref falls back to the repo ref instead of stalling the sweep", async () => {
+    const parts = stores();
+    const branch = `refs/heads/${"feature".repeat(60)}`;
+    const row = { ...hotEvent(1, "delivery:push:1"), event: "push", action: null, ref: branch };
+    const { ledger, fetchMock } = projector([row]);
+
+    const status = await consumer(parts, fetchMock).sync();
+
+    expect(status.state).toBe("current");
+    expect(ledger.cursor).toBe(1);
+    expect((await parts.events.list())[0]).toMatchObject({
+      id: "activity:github:delivery:push:1",
+      ref: "developing-today/code",
+    });
+    expect((await parts.events.list())[0]?.summary).toContain("ref refs/heads/");
   });
 
   test("a duplicate delivery replay is a no-op and the checkpoint still advances", async () => {
@@ -302,6 +362,153 @@ describe("GitHub hot-list consumer (#7084)", () => {
     expect(Number.isFinite(Date.parse(github?.to ?? ""))).toBe(true);
     // The render never presents the source as complete history.
     expect(status.state).not.toBe("current");
+  });
+
+  test("a repeated failure after an unrecoverable gap creates a distinct, recoverable gap", async () => {
+    const parts = stores();
+    const baseline = await consumer(parts, projector([]).fetchMock).sync();
+    expect(baseline.state).toBe("current");
+
+    const badCheckpoint = projector([hotEvent(1, "delivery:1")]);
+    badCheckpoint.ledger.cursor = 9;
+    const unrecoverable = await consumer(parts, badCheckpoint.fetchMock).sync();
+    expect(unrecoverable.state).toBe("unrecoverable");
+    const firstGap = (await parts.store.gaps()).find((gap) => gap.source === "github");
+    expect(firstGap?.status).toBe("unrecoverable");
+
+    const failedFetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+    expect((await consumer(parts, failedFetch).sync()).state).toBe("outage");
+    const secondGap = (await parts.store.gaps()).find((gap) => gap.status === "open");
+    expect(secondGap).toBeDefined();
+    expect(secondGap?.id).not.toBe(firstGap?.id);
+
+    const recovered = await consumer(parts, projector([hotEvent(1, "delivery:1")]).fetchMock).sync();
+    expect(recovered.state).toBe("current");
+    expect(await parts.store.gaps()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: firstGap?.id, status: "unrecoverable" }),
+        expect.objectContaining({ id: secondGap?.id, status: "backfilled" }),
+      ]),
+    );
+  });
+
+  test("gap resolution prefers an open row in legacy state with a reused id", async () => {
+    const parts = stores();
+    const id = "gap:github:2026-11-08T12:00:00.000Z";
+    writeFileSync(
+      parts.activityFile,
+      JSON.stringify({
+        version: 1,
+        checkpoints: {},
+        seen: {},
+        gaps: [
+          {
+            id,
+            source: "github",
+            from: "2026-11-08T12:00:00.000Z",
+            to: "2026-11-08T12:01:00.000Z",
+            status: "unrecoverable",
+            detectedAt: "2026-11-08T12:01:00.000Z",
+            resolvedAt: "2026-11-08T12:02:00.000Z",
+          },
+          {
+            id,
+            source: "github",
+            from: "2026-11-08T12:00:00.000Z",
+            to: "2026-11-08T12:03:00.000Z",
+            status: "open",
+            detectedAt: "2026-11-08T12:03:00.000Z",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const store = new IngestionStore(parts.activityFile);
+    await store.resolveGap(id, "backfilled", "2026-11-08T12:04:00.000Z");
+
+    expect((await store.gaps()).map((gap) => gap.status)).toEqual(["unrecoverable", "backfilled"]);
+  });
+
+  test("generated failure/restart schedules never checkpoint undurable rows or duplicate activity", async () => {
+    // Deterministic generated traces exercise sparse sequence numbers,
+    // varying page sizes, repeated append failures, and process restarts.
+    // The oracle checks each remote ack against a fresh read of the durable
+    // event log, then checks exact stable-id set equality after recovery.
+    for (let seed = 1; seed <= 48; seed++) {
+      const draw = seededInt(seed);
+      const parts = stores();
+      const count = 1 + draw(8);
+      let seq = 0;
+      const rows = Array.from({ length: count }, (_, index) => {
+        seq += 1 + draw(4);
+        const kinds = ["issues", "pull_request", "issue_comment", "pull_request_review", "push"];
+        const row = hotEvent(seq, `generated:${seed}:${index}`);
+        return {
+          ...row,
+          event: kinds[draw(kinds.length)]!,
+          action: draw(4) === 0 ? null : ["opened", "edited", "submitted"][draw(3)]!,
+          ref: draw(5) === 0 ? null : row.ref,
+        };
+      });
+      const failedEvent = rows[draw(rows.length)]!;
+      const failureAttempts = 1 + draw(3);
+      let failuresRemaining = failureAttempts;
+      const { ledger, fetchMock } = projector(rows, {
+        beforeAck: async ({ cursor }) => {
+          const durable = await new EventsStore(parts.eventsFile).list();
+          const ids = new Set(durable.map((event) => event.id));
+          return rows
+            .filter((row) => row.seq <= cursor)
+            .every((row) => ids.has(`activity:github:${row.event_id}`));
+        },
+      });
+
+      for (let attempt = 0; attempt < failureAttempts; attempt++) {
+        const restarted = {
+          ...parts,
+          store: new IngestionStore(parts.activityFile),
+          events: new EventsStore(parts.eventsFile),
+        };
+        const failOnce: Pick<EventsStore, "record"> = {
+          record: async (event) => {
+            if (event.id === `activity:github:${failedEvent.event_id}` && failuresRemaining > 0) {
+              failuresRemaining--;
+              throw new Error(`generated_append_failure:${seed}:${attempt}`);
+            }
+            return restarted.events.record(event);
+          },
+        };
+        const status = await consumer(restarted, fetchMock, {
+          events: failOnce,
+          pageSize: 1 + draw(4),
+          maxPages: 40,
+        }).sync();
+        expect(status.state).toBe("outage");
+        expect(ledger.cursor).toBe(0);
+        expect(ledger.ackCalls).toEqual([]);
+        expect(ledger.checkpointViolations).toEqual([]);
+      }
+
+      const recovered = {
+        ...parts,
+        store: new IngestionStore(parts.activityFile),
+        events: new EventsStore(parts.eventsFile),
+      };
+      const status = await consumer(recovered, fetchMock, {
+        pageSize: 1 + draw(4),
+        maxPages: 40,
+      }).sync();
+      expect(status.state).toBe("current");
+      expect(ledger.cursor).toBe(seq);
+      expect(ledger.ackCalls).toEqual([{ cursor: seq, highWater: seq }]);
+      expect(ledger.checkpointViolations).toEqual([]);
+      expect((await recovered.events.list()).map((event) => event.id).sort()).toEqual(
+        rows.map((row) => `activity:github:${row.event_id}`).sort(),
+      );
+    }
   });
 
   test("a cursor past the hot-list high-water is unrecoverable, never silently reset", async () => {
