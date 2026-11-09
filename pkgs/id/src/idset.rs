@@ -909,6 +909,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             },
         )
         .unwrap();

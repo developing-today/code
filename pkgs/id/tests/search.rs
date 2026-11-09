@@ -92,6 +92,7 @@ impl Writer {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         })
     }
 }
@@ -108,6 +109,7 @@ fn tag_ext(kind: &str, op: TagOp, after: Vec<Hash>) -> ChainExt {
         link: None,
         checkpoint: None,
         rotation: None,
+        chat: None,
     }
 }
 

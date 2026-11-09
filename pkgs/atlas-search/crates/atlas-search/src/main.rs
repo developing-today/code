@@ -250,9 +250,14 @@ fn map_get_chunk_err(e: CoreError, chunk_id: i64) -> CliError {
 // ------------------------------------------------------------ backends --
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"))
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
 }
 
 /// The Python's `default_db_path`.
