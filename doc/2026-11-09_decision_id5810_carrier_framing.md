@@ -102,6 +102,14 @@ must not quietly add another format.
    checks still apply to the fully reconstructed canonical frame; transport
    security does not replace ID identity.
 
+### Carrier-specific invariants
+
+| Class | Invariants |
+| --- | --- |
+| **Stream** | Prefix length is validated before allocation; the prefix delimits exactly one canonical frame; clean EOF is accepted only between frames; EOF inside a prefix/frame discards that partial frame. |
+| **Datagram** | Every sent datagram obeys the carrier's negotiated/safe payload limit; oversize frames use the shared checked chunks rather than IP fragmentation; chunks may arrive lost, duplicated, or out of order; the adapter emits a frame only after complete validation and does not impose cross-frame order. |
+| **Store-and-forward** | Stored records are opaque canonical frames or identified checked chunks; duplicates are idempotent and arrival order is irrelevant; no frame is exposed before full validation; carrier expiry discards incomplete assembly without partial delivery. |
+
 ## 3. Why this shape
 
 - **TCP-like streams are byte streams, not message-boundary transports.** A
