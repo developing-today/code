@@ -41,6 +41,7 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+mod upgrade;
 mod util;
 
 #[cfg(test)]
@@ -70,6 +71,10 @@ pub use replication::{
 pub use replication_receiver::{
     DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
     ReceiverProgress,
+};
+pub use upgrade::{
+    MAX_PROGRAM_STATE_BYTES, MigrateExport, ProgramSnapshot, RunningProgram,
+    SNAPSHOT_FORMAT_CURRENT, SNAPSHOT_FORMAT_V1, SNAPSHOT_MAGIC, UpgradeOutcome, upgrade_program,
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
