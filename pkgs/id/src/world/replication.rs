@@ -77,7 +77,7 @@
 //! audit (#4593) dispositioned every precondition
 //! [`super::WorldCore::restore`] demands of a journal against these
 //! checks; its one confirmed gap — per-entry version requirements are
-//! enforced at restore but not yet at accept — is filed as #7942.
+//! enforced at restore but not yet at accept — is filed as #7970.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
