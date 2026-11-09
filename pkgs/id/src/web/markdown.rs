@@ -4629,9 +4629,8 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     if kinds.is_empty() {
         return output.to_string();
     }
-    let is_separator_line = |line: &str| {
-        line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->"
-    };
+    let is_separator_line =
+        |line: &str| line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->";
     let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
     let lines: Vec<&str> = output.lines().collect();
     // Codex review, PR #3258: a separator-looking line inside a fenced
@@ -7091,7 +7090,10 @@ mod tests {
                 first.contains("<!-- end list -->"),
                 "separator preserved for restart pair {original:?}: {first:?}"
             );
-            assert_eq!(first, second, "restart shape is a fixpoint for {original:?}");
+            assert_eq!(
+                first, second,
+                "restart shape is a fixpoint for {original:?}"
+            );
             assert_eq!(
                 markdown_to_prosemirror(&first),
                 markdown_to_prosemirror(original),
@@ -7100,7 +7102,10 @@ mod tests {
             let doc = markdown_to_prosemirror(&first);
             let content = doc["content"].as_array().unwrap();
             assert_eq!(content.len(), 2, "two lists for {original:?}");
-            assert_eq!(content[1]["attrs"]["order"], 1, "second list restarts at 1 for {original:?}");
+            assert_eq!(
+                content[1]["attrs"]["order"], 1,
+                "second list restarts at 1 for {original:?}"
+            );
         }
     }
 
@@ -7128,7 +7133,10 @@ mod tests {
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content.len(), 2, "two lists");
         assert_eq!(content[0]["attrs"]["tight"], true, "first list stays tight");
-        assert_eq!(content[1]["attrs"]["tight"], false, "second list stays loose");
+        assert_eq!(
+            content[1]["attrs"]["tight"], false,
+            "second list stays loose"
+        );
     }
 
     #[test]
@@ -7166,7 +7174,11 @@ mod tests {
         let second = prosemirror_to_markdown(&reparsed).unwrap();
         assert_eq!(first, second, "coalesced-boundary shape is a fixpoint");
         let content = reparsed["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(
+            content.len(),
+            2,
+            "reparse yields bullet + task lists: {reparsed}"
+        );
         assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
     }
 
@@ -7199,7 +7211,11 @@ mod tests {
         let second = prosemirror_to_markdown(&reparsed).unwrap();
         assert_eq!(first, second, "legacy-tight pair is a fixpoint");
         let content = reparsed["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(
+            content.len(),
+            2,
+            "reparse yields bullet + task lists: {reparsed}"
+        );
         assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
     }
 
@@ -7366,10 +7382,7 @@ mod tests {
                 ]}
             ]
         });
-        let out = strip_end_list_separators(
-            &doc,
-            "- [ ] a\n\n<!-- end list -->\n\n- \n- b\n",
-        );
+        let out = strip_end_list_separators(&doc, "- [ ] a\n\n<!-- end list -->\n\n- \n- b\n");
         assert_eq!(
             out, "- [ ] a\n- \n- b\n",
             "no blank kept between same-family runs: {out:?}"
@@ -7437,7 +7450,11 @@ mod tests {
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content.len(), 2, "two lists survive reparse: {content:?}");
         assert_eq!(content[1]["type"], "ordered_list");
-        assert_eq!(content[1]["content"].as_array().unwrap().len(), 2, "both ordered items survive");
+        assert_eq!(
+            content[1]["content"].as_array().unwrap().len(),
+            2,
+            "both ordered items survive"
+        );
     }
 
     #[test]
@@ -7473,7 +7490,11 @@ mod tests {
         });
         let mut kinds = Vec::new();
         collect_boundary_kinds(&doc, &mut kinds);
-        assert_eq!(kinds.len(), 1, "only the top-level boundary is collected: {kinds:?}");
+        assert_eq!(
+            kinds.len(),
+            1,
+            "only the top-level boundary is collected: {kinds:?}"
+        );
         let out = strip_end_list_separators(&doc, "- a\n\n<!-- end list -->\n\n1. b\n");
         assert!(!out.contains("end list"), "real separator dropped: {out:?}");
     }
@@ -7502,7 +7523,10 @@ mod tests {
             let doc = markdown_to_prosemirror(&first);
             let content = doc["content"].as_array().unwrap();
             assert_eq!(content.len(), 2, "two lists for {original:?}");
-            assert_eq!(content[1]["type"], "ordered_list", "second list stays ordered for {original:?}");
+            assert_eq!(
+                content[1]["type"], "ordered_list",
+                "second list stays ordered for {original:?}"
+            );
         }
     }
 
