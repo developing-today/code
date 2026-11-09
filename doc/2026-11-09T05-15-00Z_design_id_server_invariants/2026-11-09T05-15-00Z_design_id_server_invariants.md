@@ -1,0 +1,193 @@
+# Design: server-side invariants — budgets, observability, exploit resistance, failure containment
+
+- **Date:** 2026-11-09
+- **Status:** proposed design for review; no implementation is included here.
+- **Issue:** [#5962](https://github.com/developing-today/code/issues/5962), part of the worlds design program [#5955](https://github.com/developing-today/code/issues/5955) (statements S24–S27 of the 2026-11-04 brief).
+- **Inputs:** [#5955](https://github.com/developing-today/code/issues/5955) (parent program); [#5967](https://github.com/developing-today/code/issues/5967) / [PR #7625](https://github.com/developing-today/code/pull/7625) (per-user function mapping and fuel-style fairness — **consumed, never re-decided**, §1); [#5966](https://github.com/developing-today/code/issues/5966) (per-function gas/timeout research — owns the cutoff mechanism); [#6001](https://github.com/developing-today/code/issues/6001) (burst-bucket + hard per-tick ceiling); [#6002](https://github.com/developing-today/code/issues/6002) (cooperative timeout contract); [#5965](https://github.com/developing-today/code/issues/5965) (compile economics — CLOSED; owns compile-cache cost assumptions); [#5958](https://github.com/developing-today/code/issues/5958) (capability model — owns the registry/prompt design); [#6017](https://github.com/developing-today/code/issues/6017) (capability observability — owns capability-fact surfaces); [#557](https://github.com/developing-today/code/issues/557) (logical-memory ledger — a partial baseline, not a disk or full-allocation quota); `doc/2026-11-01_design_id557.md` (the 64 MiB default's design basis).
+- **Sibling states, verified fresh 2026-11-09:** #5966 OPEN/parked; #6001 OPEN; #6002 OPEN; #5965 CLOSED; #5958 OPEN; #6017 OPEN (design record `doc/2026-11-08T10-40-00Z_design_id_capability_observability/`); #5964 OPEN/queued; #5968 OPEN/parked; #5967 CLOSED by #7625 (design record `doc/2026-11-08T10-26-00Z_design_id_per_user_function_mapping/`). Where this design spends a concept a sibling owns (rebind mechanics, intent blending, the cutoff mechanism, registry/prompt design, compile-cache economics), it names the seam and does not redefine that part.
+- **Method:** every budget below is specified as (scope, window, accounting, enforcement class). Enforcement classes are **hard refusal** (the operation is refused whole and nothing is half-applied), **hard termination** (the running unit is cut off mid-flight), **throttle** (the unit waits or is skipped this round and retries later), and **bill** (the use is metered into an account someone pays or is rate-shaped against). A budget whose numeric value is not already a landed constant is marked **TBD** with the research that must settle it — this record invents no policy numbers.
+
+## Decision in brief
+
+Keep every bound that already exists exactly where it is (§2), and close the four gaps #5962 names with design, not code: (1) a named budget set that spans per-call, per-tick, per-session, per-world-aggregate, disk, and library-cache scopes with an enforcement class per budget (§3); (2) a trip-observability surface that gives the world author, the server admin, and the affected function user each the reason, scope, accounting, and retry/remediation story for their audience (§4); (3) a provider-by-provider attack-surface checklist grounded in the constants the code already enforces, preserving the no-import/no-filesystem/no-socket default with the opt-in file/network tier off by default and first-party-only pending the capability-control testing gate (§5); (4) a containment argument showing why one world's budget exhaustion cannot degrade co-resident worlds, with the shared-fate risks named as the assumptions they are (§6).
+
+## 1. What this design takes as given (and does not redo)
+
+- **#7625 (per-user mapping/fairness).** One binding, one budget, one intent; deterministic order; per-function fuel caps with a world per-tick budget guarded by deterministic rotation; the failure table (fuel-exhausted, timeout, crash, malformed intent, oversized state, contract violation, world-budget-exhausted, suspended, impossible mid-tick unbind); strikes with a default-3 suspension; fuel — never wall-clock — as the cross-host fairness basis (C4); per-binding metering into the tick log (F10); the tick log as the F8 replay artefact. This record consumes the per-function budget and the world per-tick budget as named scopes (§3, B2–B3) and the tick log as the primary accounting surface (§4). It does not re-specify any of them.
+- **#5966 (cutoff mechanism).** How fuel exhaustion and the wall-clock backstop are detected inside a guest invocation belongs to the gas/timeout research. This record assumes a cutoff exists that reports *which* budget tripped and *how much* was spent, and specifies what each enforcement class does with that report.
+- **#6001 / #6002 (burst bucket, timeout contract).** Burst shaping and the cooperative-deadline convention are inputs: a burst bucket, if adopted, sits *beneath* the hard per-tick ceiling of B3 (it throttles; the ceiling refuses), and the cooperative deadline is the mechanism behind the timeout row this record classifies.
+- **#5965 (compile economics, CLOSED).** Compiled-world/DLL caching, compile-cost penalties, and premium gating are settled there; §3's library-cache budget (B7) references that settlement and specifies only the quota/accounting seam.
+- **#5958 / #6017 (registry, prompts, capability observability).** The capability registry schema, permission prompts, and capability-fact surfaces belong there. This record owns *budget*-trip observability only, and reuses their vocabulary where the two meet (stable wire codes, audience-scoped joins, "unknown renders as unknown").
+- **#557 (logical-memory ledger).** The per-world logical-charge ledger is a partial baseline: it covers the restore/materialization seam only. Runtime growth, program reservations, and transient persistence peaks are its later phases, and disk is outside its model entirely. This record treats it as B5 and does not re-derive it.
+
+## 2. Bounds that already exist (the reconciliation)
+
+The table below is a claim about current `origin/main`, checked against the files named. Nothing in §3 contradicts these rows; §3 only adds scopes the code does not yet account for.
+
+| # | Bound (landed value) | Where | Window / accounting | Enforcement today |
+| --- | --- | --- | --- | --- |
+| E1 | Wasm fuel per invocation, default 10,000,000 (`SandboxLimits::fuel`); admin-settable 1..u64 via `--world-fuel`, per-world lowerable-only via `WorldExecutionProfile::wasm_fuel` | `pkgs/id/crates/id-core/src/world_limits.rs` (definition, defaults, `RuntimeLimits::from_args`, `WorldExecutionProfile::resolve`); `pkgs/id/src/sandbox.rs` (`set_fuel` before every call) | Per guest call; fuel resets to the full limit before each call (`set_fuel` in every `*_inner`), so there is **no cumulative accounting** across calls | Hard termination: trap surfaces as `Err`, and `update`/`records`/`wants`/`snapshot`/`restore` poison the instance; `view`/`layout` do not poison (F11.17) |
+| E2 | Wasm linear memory, default 16 MiB (`memory_bytes`); floor one page; per-world lowerable-only | `world_limits.rs`; `sandbox.rs` (`StoreLimitsBuilder::memory_size`, `trap_on_grow_failure(true)`) | Per instance, for its lifetime | Hard termination: growth past the cap traps |
+| E3 | Module size 16 MiB (`MAX_WORLD_MODULE_BYTES`); message in/out 1 MiB (`message_bytes`); upload chunked at 6 KiB (`MAX_WORLD_MODULE_CHUNK_BYTES`) with full-module hash check at assembly | `world_limits.rs`; `sandbox.rs` (`compile` gate, `check_message_size`, `read_output` bound); `pkgs/id/src/world_session/mod.rs` | Per artifact / per message | Hard refusal at install (`compile` fails; oversize upload rejected); oversize output fails the call |
+| E4 | Guest ABI surface: **zero imports** (empty-imports gate at `compile`), export allowlist (14 `plaza_*` names + `memory`), required-export set, snapshot/restore pairing rule; `max_wasm_stack` 512 KiB; multi-memory and memory64 disabled; single memory/table/instance (`memories(1)`, `tables(1)`, `instances(1)`, `table_elements(10_000)`) | `sandbox.rs` (`Sandbox::compile`) | Per module, at install time | Hard refusal: non-conforming modules never instantiate |
+| E5 | Native worker: address space 256 MiB (`RLIMIT_AS`), CPU 10 s (`RLIMIT_CPU`), per-call wall-clock deadline 10 s, file size 8 MiB (`RLIMIT_FSIZE`), processes 8 (`RLIMIT_NPROC`), core dumps off; `no_new_privs`; compile sandbox: `RLIMIT_CPU` 120 s, `RLIMIT_AS` 8 GiB, `RLIMIT_FSIZE` 256 MiB (compile-time only) | `world_limits.rs` (`NativeLimits`); `pkgs/id/src/world_native.rs` (rlimits, `no_new_privs`); `pkgs/id/src/world_compile.rs` (`apply_rlimits`) | Per worker / per call | Hard termination (rlimit kill, deadline kill) |
+| E6 | Per-world total logical memory: default 64 MiB (`DEFAULT_WORLD_TOTAL_MEMORY_BYTES`, proposed policy value per `doc/2026-11-01_design_id557.md` Q1), base charge 4 KiB (`WORLD_MEMORY_BASE_BYTES`), per-entry charge serialized length + 64 B (`JOURNAL_ENTRY_OVERHEAD_BYTES`); effective limit = persisted profile clamped beneath the live server ceiling; enforced **at restore/open** | `world_limits.rs` (`WorldMemoryBudget`, `WorldMemoryBudgetRefusal`); `pkgs/id/src/world/core.rs` (`restore_inner` pre-charge loop) | Per world, over its materialized journal; ledger is deterministic logical charge, never RSS | Hard refusal, recoverable and atomic: refused charge bills nothing, bumps `refusal_count`, world unharmed, retry succeeds after release or a raised budget |
+| E7 | Capability planes: `wants` ≤ 64 KiB / ≤ 64 subscriptions / ≤ 64 requests; ids/specs/cap names ≤ 64 B; args ≤ 8 KiB serialized; result events ≤ 64 KiB (`MAX_EVENT_BYTES`); unknown names aggregate into one `"<unknown>"` usage bucket; sensor caps (`loc.*`) excluded from wildcard grants and grant-on-use, always per-use with consent | `pkgs/id/crates/id-core/src/world_caps.rs` (constants, `parse_wants`, `CapLedger::decide_for`, `is_sensor_cap`) | Per `wants` document / per use; usage counts are local, journaled, never replicated | Hard refusal with stable wire codes (`cap_denied`, `unknown_cap`, `bad_args`, `failed`, `actor_denied`, `outside_ceiling`, `result_too_large`) and advisory reasons |
+| E8 | Provider-specific caps: ≤ 4 tick intervals; `loc.watch` ≤ 4 concurrent watches, interval floor 5,000 ms; chat history ≤ 64 lines; schedules ≤ 64 pending, 30-day horizon, 64 fired per wakeup, 64 B printable-ASCII ids; records pages ≤ 768 KiB served / result pages ≤ 63 KiB (`MAX_EVENT_BYTES − 1 KiB` envelope) so an admitted page always fits its delivery event | `world_caps.rs` | Per provider use, as listed | Hard refusal under the E7 code vocabulary |
+| E9 | Fuel telemetry: per-call-kind `CallStats` (calls, fuel total/max/last) over 8 `GuestCall` kinds; in-memory only, never journaled or snapshotted | `sandbox.rs` (`CallMetrics`) | Per `WorldInstance` lifetime | Observability only; bounds nothing |
+| E10 | File posture: `FileScope` defaults to `Confined` (own sandbox root only); isolated worlds read-only unless the admin sets `file_write_override`; no world file capability exists yet ("the policy one must check") | `pkgs/id/src/world/mod.rs` (`FileScope`, `WorldPolicy::file_allowed`); `world/core.rs` (journaled `FileScope` / `FileWriteOverride`) | Per world policy | Hard refusal (`file_allowed` gate) |
+| E11 | Ceiling discipline: default ceiling = providers whose manifest says `Included` (everything except the `loc.*` sensor caps); explicit ceilings can only narrow within the catalog; per-world requests can only lower server ceilings, never raise them | `world_caps.rs` (`DefaultCeiling`, `default_ceiling_names`, `set_allowed`); `world_limits.rs` (`WorldExecutionProfile::resolve` clamping) | Per world / per server | Hard refusal (`outside_ceiling`) |
+| E12 | Per-world config limits (`WorldLimits`): participants 256, chat 2,048 B, input 16 KiB, retained events 1,024, presentation 8 KiB, snapshot frame 512 KiB, checkpoint cadence 1,000 events (`0` disables; the one CLI flag today is `--world-checkpoint-every`), tick floor 1,000 ms. The remaining values are code defaults applied at world open, not per-world journaled or flagged overrides. | `pkgs/id/src/world/mod.rs` (`WorldLimits`, `Default`); `pkgs/id/src/commands/serve.rs` (`WorldLimits { checkpoint_every, grant_on_use, server_caps, ..default() }` at open); `pkgs/id/src/cli.rs` (`world_checkpoint_every`); `world_caps.rs` (`WorldLimit("chat_bytes")`, `WorldLimit("min_tick_ms")`) | Per world, per event / per snapshot | Hard refusal at subscription/input/message time; snapshot trimming is silent (a snapshot carries only the most recent events that fit) |
+
+Consequences that shape §3: fuel is **per-invocation only** (E1 resets each call, E9 never leaves memory) — so per-tick, per-session, and per-world-aggregate fuel scopes are greenfield accounting, not extensions of an existing meter. Disk has **no quota at all** — the journal grows until the filesystem says no; the snapshot-frame cap and checkpoint cadence (E12) shape how fast it grows but bound nothing, and the logical ledger at open time (E6) does not bound bytes on disk. The library/module cache has a per-artifact cap (E3) but no cache-size or per-user accounting. The file/network opt-in tier is policy-shaped (E10) but has no server-side budget attached.
+
+## 3. The budget set
+
+Each budget names its scope, accounting window, enforcement class, and the research that settles its number. **Enforcement-class rule used throughout:** termination and refusal protect the server; throttle protects neighbours; billing protects the operator. A budget trips *one* primary class; where a second class applies it is named explicitly.
+
+| ID | Budget (scope) | Window / accounting | Enforcement | Numbers: landed vs TBD |
+| --- | --- | --- | --- | --- |
+| B1 | Per-call gas (one guest invocation) | Per call; fuel meter resets each call | **Hard termination.** Trap → `Err` + poison rules of E1 unchanged. Native: rlimit/deadline kill (E5). | Landed (E1, E5). Cutoff mechanics owned by #5966. |
+| B2 | Per-function per-tick fuel (one user-function invocation inside a tick) | Per tick per binding; debited as it runs; recorded per binding in the tick log (F10, #7625 §6) | **Hard termination** of the invocation → §3 failure-table row of #7625 (fuel-exhausted → default intent, strike+1), never a mid-tick retry. | TBD numbers; settlement owned by #5966 (mechanism) with the per-function cap value a world-author constant. This record adds no value. |
+| B3 | Per-world per-tick aggregate (all invocations of one world in one tick) | Per tick per world; deterministic rotating start over bindings (#7625 §6) so exhaustion spreads evenly | **Throttle-within-tick** (bindings past the cut take the world-budget-exhausted row: default intent, **no strike**) — functionally a hard refusal of *further invocations this tick*, never termination of the world. Unspent budget does not roll over. | TBD number; settlement owned by #6001 (burst bucket sits beneath this ceiling and throttles; this ceiling refuses). Upstream anchor: wasmtime fuel is deterministic across hosts (wasmtime `consume_fuel` documentation), which is why both B2 and B3 are denominated in fuel — the C4 interpretation #7625 adopts. |
+| B4 | Per-session cumulative use (one participant session: connect → disconnect) | Session lifetime; monotonic counters per (world, session): fuel consumed, provider calls made, bytes delivered | **Throttle, then bill.** Soft watermark (author-configured fraction of the session allowance) → user-visible notice (§4); hard cap → further metered actions for that session are refused with a retry-after-reconnect semantic, and the excess is a billing event. Never terminates the world or other sessions. | TBD numbers (no code exists). Research anchor: session-budget shaping follows the same token/leaky-bucket literature as #6001's burst bucket; values must come out of #6001's calibration, not this record. |
+| B5 | Per-world aggregate logical memory (all charges owned by one world) | World lifetime; `WorldMemoryBudget` ledger (E6); charges: core base + materialized journal entries now; program reservations, runtime growth, transient peaks in later #557 phases | **Hard refusal**, recoverable and atomic (E6 semantics preserved and extended to the new charge sites as they land: refuse whole, charge nothing, typed refusal, retryable). | Landed for the restore seam (64 MiB default is a *proposed policy value*, `doc/2026-11-01_design_id557.md` Q1 — not a measured result). Later charge sites inherit the class; their magnitudes are #557's numbers, not this record's. |
+| B6 | Disk/storage per world (journal bytes, snapshot bytes, module bytes on disk) | Per world on the hosting node; accounted in bytes-on-disk, not logical charge (B5 deliberately does not cover disk); growth shaped by the E12 snapshot-frame cap and checkpoint cadence | **Hard refusal at the write path** (append/snapshot/install refused with a typed disk-budget refusal naming used/allowed/requested, mirroring `WorldMemoryBudgetRefusal`); **compaction throttle**: crossing a high-water fraction triggers journal compaction before the ceiling binds. A world at its disk ceiling keeps serving reads and keeps its in-memory state; it just cannot persist more until it compacts or the admin raises the quota. | TBD numbers (no code exists). Calibration inputs, not inventions: the Atlas storage growth model method (`doc/2026-11-08T11-18-02Z_design_atlas_storage_growth_model/`, per-source churn × retention against a plan envelope) is the procedure to size these; journal/chunk constants (E3, `MAX_CHECKPOINT_PART_BYTES` 192 KiB, E12's 512 KiB snapshot frame and 1,000-event checkpoint cadence) bound the unit sizes the model multiplies. |
+| B7 | Library/module cache (compiled artifacts shared across worlds) | Three scopes: per world (module bytes installed, E3 landed), per user (bytes of user-function artifacts attributed to one uploader), server-wide cache high-water mark | Per-world: **hard refusal** (E3). Per-user / server-wide: **bill** (compile-cost penalties and premium gating per #5965) with **eviction throttle** (least-recently-used eviction under cache pressure; a world whose artifact is evicted recompiles on next load — slower, never broken). | Landed per-artifact (16 MiB). Cache-size, per-user, and eviction numbers owned by #5965; this record adds only the enforcement classes. |
+
+What is deliberately **not** a budget: wall-clock time (cooperative backstop only, per C4 — cross-host adjudication never cites it; mechanism in #6002); RSS/allocator bytes (B5 is logical charge by design; RSS is unmeasurable deterministically across hosts — upstream anchor: Linux `RLIMIT_AS` caps address space, not allocation, and allocator metadata/thread stacks sit outside any guest-meaningful model); network egress bytes (no general-egress provider exists to meter — see §5).
+
+## 4. Observability: what each audience sees when a budget trips
+
+Design rule inherited from #6017: **unknown renders as unknown, never as empty.** A surface that cannot attribute spend (e.g. pre-B4 sessions accounting, pre-B6 disk metering) says "unmetered", never "zero". Audience joins mirror #6017's discipline — one underlying trip record, three projections — and refusal codes mirror the `CapError` stable-code convention (codes never change meaning; reasons are advisory).
+
+### 4.1 The trip record (one per trip, recorded once)
+
+Every budget trip — refusal, termination, throttle, or bill — records:
+
+- `budget`: B1..B7 id; `class`: refusal / termination / throttle / bill.
+- `reason`: stable wire code (new codes reuse the E7 vocabulary first: `outside_ceiling`, `failed`, `result_too_large` patterns; genuinely new budget codes are added only if no existing code fits, since codes are a wire contract).
+- `scope`: the exact unit charged — world id, binding/session id where applicable, tick number for B2/B3.
+- `accounting`: consumed, limit, requested, window (e.g. "tick 4182: 9.4 M of 10 M tick fuel consumed, binding asked 1.2 M"). Pre-metering scopes report `metering: "unmetered"` rather than numbers.
+- `retry`: retryable now / after-tick / after-release-or-raise / never, plus the actor who can act (user, author, admin).
+
+Primary sinks (no new infrastructure): the **tick log** for B2/B3 (already the F8 artefact per #7625 §2 step 6 — trip rows join the per-binding outcome rows); the **admin history** for B5/B6/B7 quota events; the **capability usage ledger** shape (`CapUsage` allowed/denied, E7) as the pattern for B4 session counters. E9's `CallMetrics` stays in-memory and bounds nothing; any admin surface that reads it labels it "lifetime in-memory telemetry, resets on restart".
+
+### 4.2 Per audience, per budget
+
+| Budget | World author sees | Server admin sees | Affected function user sees |
+| --- | --- | --- | --- |
+| B1 per-call | Trip count by call kind (from E9 telemetry), poison state, last guest diagnostic (the 4 KiB `plaza_error_*` suffix) | Same + fuel-limit configuration in force, per-world profile overrides | "Your invocation exceeded its fuel/time allowance" + the §3 outcome row; retry = fix the function (strike/suspension rules per #7625) |
+| B2 per-function tick | Per-binding fuel consumption and outcome rows in the tick log; which bindings strike/suspend | Aggregate per-world tick fuel, suspension counts; world constants in force | Default-intent outcome + reason + "not your fault / your fault" attribution: fuel-exhausted/timeout/crash rows are the function's fault (strike); world-budget-exhausted is explicitly **not** the user's fault (no strike) — the surface must say so |
+| B3 world tick | Tick-level consumption vs ceiling; rotation position (prove starvation spreads, per #7625 §6) | Cross-world tick-budget league table; worlds chronically at ceiling (resize or split candidates) | "The world's tick budget ran out before your turn — nothing is wrong with your function; you run again next tick." No strike, no remediation asked of the user. |
+| B4 session | Per-session consumption of their world's sessions (no cross-world visibility) | Cross-session totals, watermark trips, billing events | Watermark notice at the soft fraction ("you have used X of your session allowance; heavy use may slow"); hard-cap refusal names the reconnect/retry semantic and what the charge was |
+| B5 world memory | Charged/high-water/refusal counts (`memory_budget()` accessor exists), which charge class refused, release-vs-raise remediation | Cross-world budget table, refusal counts, worlds near ceiling | Only indirect effects (an over-budget world refuses to open: "this world is over its memory budget; the author or admin must compact or raise it"). Users never see another world's numbers. |
+| B6 disk | Used/allowed/requested bytes, compaction state, compact-now action | Cross-world disk table, high-water worlds, node capacity vs sum-of-quotas (admission signal) | Same indirect-only rule as B5: reads keep working; writes that cannot persist name the world, not the bytes of others |
+| B7 cache | Own modules' cached/evicted state, recompile latency on eviction | Cache high-water, per-user attribution, penalty/premium events (per #5965) | "Your function is recompiling (cache eviction) — slower load, same behavior." |
+
+### 4.3 Retry/remediation semantics (the short version of the table above)
+
+- Retry now: throttled-this-tick actions (B3 next tick; B4 after reconnect).
+- Retry after release or raise: B5/B6 (compact, release charges, or admin raises the quota).
+- Retry after repair: B1/B2 fault rows (fix the function; suspension lifts on switch or explicit resume per #7625).
+- Bill only: B7 eviction (no user action needed), B4 excess (operator-side).
+- Never retryable into success: refused installs (E3/E4 — the artifact itself is over the cap).
+
+## 5. Attack-surface checklist (the "can't be exploited" audit surface)
+
+The default under audit is **deny everything the record does not name**: no imports, no filesystem, no sockets, no clocks, no randomness source for guests (E4). The opt-in file/network tier is **off by default and first-party-only**, pending the capability-control testing gate named in the scope guard — this record specifies its bounds so the gate has something to test, and does not open it. Each row names the bound that already holds it (E-row) or the budget that will (B-row).
+
+### 5.1 Guest execution surface
+
+- [ ] Import-free link: `imports.is_empty()` gate (E4). Audit: any new allowed import is a wire-contract change reviewed like a capability addition.
+- [ ] Export allowlist + required set + snapshot/restore pairing (E4). Audit: a guest that omits required exports never runs.
+- [ ] Fuel per call (E1/B1), memory cap with grow-failure trap (E2), stack cap, memory64/multi-memory off, single memory/table/instance with 10 k table elements (E4). Audit: resource exhaustion traps; it never spills into the host.
+- [ ] Message discipline both directions: input `check_message_size`, output `read_output` with overflow-checked range inside linear memory (E3). Audit: guest-controlled pointers never read/write outside `memory.data_size`.
+- [ ] Poison containment: a trapped state-changing call poisons only its own `WorldInstance`; views never poison (E1). Audit: §6 for why poison cannot cross worlds.
+- [ ] Snapshot fidelity: probe-instance restore + byte-identical re-snapshot + records-equality before the host journals a snapshot (E1-adjacent, `snapshot()` in `sandbox.rs`). Audit: a lying snapshot never becomes durable state.
+- [ ] Native path (opt-in tier only): `no_new_privs`, rlimits (E5), 8 MiB `RLIMIT_FSIZE`, 8 processes, no core dumps, 10 s call deadline. Audit: native code runs only where the admin enabled it; every native bound is a hard kill.
+
+### 5.2 Provider surface (all 20 registered providers, `world_caps.rs` `CATALOG_ENTRIES`)
+
+Fourteen host providers (11 requests, 3 subscriptions) and six platform modules. Every `wants` entry also passes the shared schema gate before any provider rule runs (E7).
+
+| Provider | Kind / default ceiling | Concrete bound (audit check) |
+| --- | --- | --- |
+| `time.now` | request / Included | Args ≤ 8 KiB; no args recognised (E7) |
+| `time.tick` | subscription / Included | ≤ 4 distinct intervals per program; interval floor is the world's `min_tick_ms` (E8) |
+| `random.u64` | request / Included | Args ≤ 8 KiB (E7). Note: host randomness reaches the program only as *data in an event* — the guest still has no random source of its own. |
+| `players` | subscription / Included | The only accepted spec is exactly `players`; anything else parses to `Unknown` and is refused as `unknown_cap` (E7) |
+| `players.list` | request / Included | Args ≤ 8 KiB (E7) |
+| `chat.say` | request / Included, scope `Chat` | Args ≤ 8 KiB + world `chat_bytes` limit; actor must hold chat-write scope or the use is `actor_denied` (E7/E8) |
+| `chat.history` | request / Included, scope `ChatRead` | ≤ 64 lines per call (E8) |
+| `records.read` | request / Included | Args ≤ 8 KiB; result page ≤ 63 KiB so the delivery event always fits (E8 — the construction that makes `result_too_large` unreachable for admitted pages) |
+| `schedule.at` | request / Included | Args ≤ 8 KiB; id ≤ 64 printable-ASCII bytes; ≤ 64 pending per world; horizon ≤ 30 days; ≤ 64 fires per wakeup, remainder slip to the next (E8) |
+| `schedule.cancel` | request / Included | Id shape as above (E8) |
+| `world.info` | request / Included | Args ≤ 8 KiB (E7) |
+| `device.info` | request / Included | Args ≤ 8 KiB (E7); reports device facts, grants no access |
+| `loc.position` | request / **Excluded** (sensor cap) | Explicit ceiling entry + explicit grant + per-use consent; precision ceiling refuses (`outside_ceiling`/`precision_ceiling`) rather than degrading; source (`gnss`/`network`/`ip`/`caller_supplied`) rides with the reading (E7) |
+| `loc.watch` | subscription / **Excluded** (sensor cap) | ≤ 4 concurrent watches; interval floor 5,000 ms (battery/accuracy anchor in code); consent withdrawal emits the `revoked` event (E7/E8) |
+| `Key`, `Screen`, `RocJson`, `RocGrid`, `RocCap`, `RocText` | platform modules / Included | Compile-gate checked, never host-called; the gate sees the `effective()` grant set (E11). A module outside the grant set fails the build, not a call. |
+
+Cross-cutting provider rules (audit): `wants` schema/bounds gate before any semantic check (E7); duplicate JSON keys rejected outright; duplicate request ids rejected; unknown names (including forged subscription specs) collapse into the single `"<unknown>"` bucket so a guest cannot mint unbounded ledger entries; ceilings are checked before grants so grant-on-use can never widen an exclusion; grant decisions are local, journaled, never replicated (two hosts may legitimately disagree on counts).
+
+### 5.3 File/network opt-in tier (still closed; bounds specified for the gate)
+
+- Files: `FileScope::Confined` default (E10); widening to `Unrestricted` or setting `file_write_override` is a journaled admin/moderator act with an audit record (`FileScope` / `FileWriteOverride` journal entries; `set_file_scope` requires moderation authority, override requires admin). No world file capability exists yet — when one lands it is `Excluded` from the default ceiling by the E11 rule (sensitive-by-default, like `loc.*`), and its reads/writes charge against B6.
+- Network: no general-egress provider is registered and none is designed here. Any future egress provider enters as `Excluded`, first-party-only, with per-use consent shaped like the sensor-cap rule, and its bytes charge against B4/B6. The testing gate that opens either half of this tier is a capability-control gate owned outside this record; until it passes, the tier stays off and the audit row is "verify no path enables it".
+
+## 6. Isolation and failure containment
+
+**Claim:** one world's budget exhaustion — fuel, memory, disk, or provider-abuse — cannot degrade a co-resident world on the same server, except through the three shared-fate channels named below, which have their own mitigations.
+
+Why the claim holds for execution exhaustion (B1–B3, E1/E5):
+
+- Separate fuel domains: each `WorldInstance` owns its `Store` and its fuel is reset per call (E1). Fuel is never pooled, lent, or borrowed across worlds; there is no shared fuel account to drain.
+- Separate memory domains: each instance's linear memory is its own `wasmtime::Memory` capped by its own `StoreLimits` (E2); native workers are separate processes under separate rlimits (E5). An allocation bomb traps or gets OOM-killed inside its own domain.
+- Poison is per-instance (E1): a trapped world stops itself; the actor never applies a failed update to shared state.
+- Scheduling fairness across worlds is the server's job above the tick: a world that burns its whole B3 every tick still only consumes its own scheduling share, because B3 caps what one tick *of that world* may spend — it cannot convert budget into other worlds' slots. (The within-world starvation direction is already closed by #7625's rotation; the cross-world direction is closed by per-world accounting plus the server's own fair scheduling, whose policy is an open question below.)
+
+Why the claim holds for memory/disk exhaustion (B5/B6):
+
+- Refusals are atomic and local: a refused charge bills nothing and changes no shared structure (E6); a world at its disk ceiling keeps serving reads from memory while refusing its own writes (B6). Neither condition locks, pauses, or slows another world's actor.
+- Restore-time enforcement means an over-budget journal refuses to *open* — it never half-opens and never wedges the server; the durable bytes sit untouched until the budget allows (E6).
+
+Shared-fate channels (assumptions, stated plainly):
+
+- A1. **Node disk and node RAM are finite and shared.** Per-world B6 quotas bound each world's share, and admission control (sum of quotas vs node capacity, §4.2 admin view) is the backstop — but a misconfigured node (quotas summing past capacity) can still fill a disk. Assumption: admins size quotas against real capacity; the server refuses to start a world set whose quotas exceed a configured node reserve (open question O3).
+- A2. **The event loop is shared.** A guest that traps instantly in a hot loop still costs the host the trap path per call. B1/B2/B3 bound guest work, not host-side trap handling; a pathological trap rate is a host-DoS vector mitigated by the per-session throttle (B4) and, upstream, by wasmtime's trap-cost profile (upstream anchor, not a number in this record).
+- A3. **Clocks and OS randomness are host resources.** Guests have neither (E4); providers that expose time/randomness (`time.*`, `random.u64`) are data-only events, rate-shaped by subscription/request bounds (E8/B4).
+
+Open questions:
+
+- O1. Cross-world scheduling policy: B3 caps each world's tick spend, but the *order and frequency* of worlds' ticks on a loaded server is unspecified. Options: weighted fair queueing by world class, or strict round-robin. Owned by the tick/scheduling design (#5968 family), not this record.
+- O2. B4 session identity: is a session a transport connection, an authenticated participant epoch, or either? The conservative choice is connection-lifetime counters keyed by (world, connection), promoted to participant-epoch accounting only if abuse patterns demand it.
+- O3. Node reserve and admission control: the exact reserve fraction and whether over-quota world creation is refused or merely warned. Needs the #5965 cost numbers and the Atlas growth-model calibration (§3, B6) before it can be set.
+- O4. Billing rail: B4-excess and B7-penalty events need a meter the operator actually reads. The event shapes are specified here (§4.1); the rail they feed is outside this record.
+
+## 7. Acceptance mapping (how to check this record against #5962)
+
+- Budget set with enforcement semantics: §3 table (B1–B7), each with scope, window, and one primary class out of hard refusal / hard termination / throttle / bill. Per-call/per-tick gas (B1–B3), per-session cumulative (B4), per-world aggregate (B5), disk/storage and library-cache quotas (B6/B7), accounting windows throughout.
+- Numeric discipline: every landed value cites its constant and file (§2, E-rows); every unlanded value is TBD with the owning research named (§3, last column) and upstream anchors cited where they exist (wasmtime fuel determinism for B2/B3; Linux rlimit semantics for E5/B1-native; wasmtime trap-cost profile for A2; token/leaky-bucket literature via #6001 for B4; Atlas growth-model method for B6). No policy number is invented here.
+- Observability per trip per audience: §4 — one trip record (§4.1), three audience projections for all seven budgets (§4.2), retry/remediation semantics (§4.3), with reason/scope/accounting/retry in every row.
+- Attack-surface checklist: §5 — guest execution surface (§5.1), all 20 registered providers with concrete bounds (§5.2), opt-in file/network tier (§5.3); no-import/no-filesystem/no-socket default preserved; opt-in tier off by default, first-party-only, gated.
+- Isolation/containment: §6 — per-domain argument, atomic-local refusals, three shared-fate assumptions (A1–A3) and four open questions (O1–O4) stated explicitly.
+- Reconciliation with code: §2 table cites `pkgs/id/src/sandbox.rs`, `pkgs/id/crates/id-core/src/world_limits.rs`, `pkgs/id/src/world/core.rs`, `pkgs/id/crates/id-core/src/world_caps.rs` with the exact constants and enforcement points; #7625's mapping/fairness consumed in §1, never re-decided.
+- Scope guard (from the #5962 triage note): #5966 (gas/cutoff), #6001 (burst bucket + hard per-tick accounting), #6002 (timeout contract), and #5967/#7625 (per-user mapping/fairness) are inputs, not re-specifications; compile/cache cost assumptions defer to #5965; the #557 ledger is a partial baseline; registry/prompt design stays with #5958/#6017.
+
+## 8. Sources
+
+Repo-internal (checked in this tree):
+
+- Constants and enforcement: `pkgs/id/src/sandbox.rs`, `pkgs/id/crates/id-core/src/world_limits.rs`, `pkgs/id/src/world/core.rs`, `pkgs/id/crates/id-core/src/world_caps.rs`, `pkgs/id/src/world/mod.rs`, `pkgs/id/src/world_native.rs`, `pkgs/id/src/world_compile.rs`.
+- `doc/2026-11-01_design_id557.md` (the 64 MiB logical-memory default and its Q1 open question).
+- `doc/2026-11-08T10-26-00Z_design_id_per_user_function_mapping/` (#7625: mapping, failure table, fuel fairness, tick log).
+- `doc/2026-11-08T10-40-00Z_design_id_capability_observability/` (#6017: audience-scoped capability views).
+- `doc/2026-11-08T11-18-02Z_design_atlas_storage_growth_model/` (growth-model method used for B6 calibration).
+
+Upstream (anchors for the unsettled values, all reachable at the time of writing):
+
+- wasmtime `Config::consume_fuel` — deterministic fuel metering: <https://docs.rs/wasmtime/latest/wasmtime/struct.Config.html>
+- wasmtime `StoreLimits` — memory/table/instance limits and grow-failure trapping: <https://docs.rs/wasmtime/latest/wasmtime/struct.StoreLimits.html>
+- Linux `getrlimit(2)` — `RLIMIT_AS`, `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_NPROC` semantics (address space, not allocation): <https://man7.org/linux/man-pages/man2/getrlimit.2.html>
+
