@@ -1024,6 +1024,20 @@
       "status": "uncovered",
       "phase2_issue": 6185,
       "reason": "Root-level device/connectivity probe has no venue; confirm whether it is a product test suite or a manual diagnostic in Phase 2."
+    },
+    {
+      "id": "deploy.flake-checks",
+      "paths": ["pkgs/deploy/**", "lib/default.nix"],
+      "invocation": "nix build .#checks.x86_64-linux.deploy-list .#checks.x86_64-linux.deploy-list-malformed",
+      "venue": {
+        "workflow": ".github/workflows/deploy-flake-checks.yml",
+        "job_step": "deploy-flake-checks / Build deploy-list and deploy-list-malformed flake checks",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [7322],
+      "notes": "Basic-tier PR gate for the deploy registry checks (#7322); before this workflow the two checks ran only in the full flake check on main / the nix-ci schedule."
     }
   ],
   "waivers": []
