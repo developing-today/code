@@ -405,6 +405,7 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
       item({ number: 2, epicRef: R(1) }),
       item({ number: 3, epicRef: R(1) }),
     ];
+    const proposalAt = new Date().toISOString();
     const published: TierItem = {
       id: "graph-task-2",
       kind: "task",
@@ -414,6 +415,19 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
       since: "2026-11-08T00:00:00Z",
       lastSeenAt: "2026-11-08T00:00:00Z",
       ref: R(2),
+      whyUser: "decision",
+      delegation: {
+        mode: "first-pass",
+        status: "proposal-ready",
+        updatedAt: proposalAt,
+        runId: "proposal-run",
+        proposal: {
+          summary: "Published proposal summary",
+          detail: "Published proposal detail",
+          proposedChanges: ["Published proposal change"],
+          at: proposalAt,
+        },
+      },
     };
     const orchestration: OrchestrationSection = {
       version: 1,
@@ -456,6 +470,12 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain('data-verb="acknowledge"');
     expect(html).toContain("Acknowledge sent · pending");
     expect(html).toContain("Consumer declined");
+    expect(html).toContain("Published proposal summary");
+    expect(html).toContain("Published proposal detail");
+    expect(html).toContain("Published proposal change");
+    expect(html).toContain('data-verb="approve-proposal"');
+    expect(html).toContain('data-verb="reject-proposal"');
+    expect(html.indexOf('class="propbox"')).toBeLessThan(html.indexOf('data-verb="approve-proposal"'));
     expect(html).toContain('fetch("/api/actions"');
     expect(html).toContain("No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.");
     expect(html).not.toContain('data-object="gh:developing-today/code#3"');

@@ -6717,6 +6717,7 @@ function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext)
         state,
       )
     : `<p class="muted">Inline actions unavailable: no dashboard author identity is configured.</p>`;
+  const needsUserBody = tier === "needs-drew" ? needsUserBodyHtml(item, actions) : "";
   const history = `${actionBadgesHtml(actions)}<details class="carddetail"><summary>Action history</summary>${actionHistoryHtml(actions)}</details>`;
 
   let sessionControls = "";
@@ -6735,7 +6736,7 @@ function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext)
     }
   }
 
-  return `<div class="epic-graph-actions"><span class="badge ${tier === "needs-drew" ? "drew" : "orch"}">${tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"}</span>${history}${controls}${sessionControls}</div>`;
+  return `<div class="epic-graph-actions"><span class="badge ${tier === "needs-drew" ? "drew" : "orch"}">${tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"}</span>${needsUserBody}${history}${controls}${sessionControls}</div>`;
 }
 
 function epicGraphOneHtml(
