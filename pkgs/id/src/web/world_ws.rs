@@ -1007,7 +1007,8 @@ mod tests {
             body.as_bytes(),
             at,
             nonce,
-        ).unwrap();
+        )
+        .unwrap();
         Request::builder()
             .method("POST")
             .uri("/api/world/directory")

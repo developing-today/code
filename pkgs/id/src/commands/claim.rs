@@ -125,11 +125,8 @@ pub async fn cmd_claim(path: Option<PathBuf>, json: bool, command: ClaimCommand)
             );
         }
         ClaimCommand::Review => {
-            let rows: Vec<Vec<(&str, Value)>> = events
-                .review_tags()?
-                .iter()
-                .map(claim_fields)
-                .collect();
+            let rows: Vec<Vec<(&str, Value)>> =
+                events.review_tags()?.iter().map(claim_fields).collect();
             print_rows(json, &rows);
         }
         ClaimCommand::List { subject } => {
