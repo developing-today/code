@@ -274,7 +274,12 @@ export function buildDigest(inputs: DigestInputs): Digest {
     }
     const cappedQ = cap(items);
     const degradedProviders = inputs.quota.pools
-      .filter((p) => (p.freshness?.state ?? p.state) === "error" || (p.freshness?.state ?? p.state) === "stale")
+      .filter(
+        (p) =>
+          (p.freshness?.state ?? p.state) === "error" ||
+          (p.freshness?.state ?? p.state) === "stale" ||
+          (p.freshness?.state ?? p.state) === "lapsed",
+      )
       .map((p) => p.provider);
     quotaSection = {
       id: "quota",
@@ -337,14 +342,18 @@ function quotaPoolNote(pool: QuotaPool, now: Date): string | null {
   const worst = pool.windows.reduce((m, w) => Math.max(m, windowPercent(w)), 0);
   const parts: string[] = [];
   // Provider freshness (#5279 Codex): quota-current marks a pool
-  // error/stale while retaining its historical windows, but poolState()
+  // error/stale/lapsed while retaining its historical windows, but poolState()
   // derives only utilization — without this, a failed pool with low
   // windows would vanish from the outlook and a stale high reading
   // would read as a current forecast.
-  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" ? pool.state : null);
+  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed" ? pool.state : null);
   if (degraded === "error") {
     parts.push(
       `provider read error${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — current readings unavailable; any figures below are the last successful read`,
+    );
+  } else if (degraded === "lapsed") {
+    parts.push(
+      `provider lapsed${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — plan cancelled; no current readings`,
     );
   } else if (degraded === "stale") {
     parts.push(

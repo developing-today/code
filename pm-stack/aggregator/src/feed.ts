@@ -565,7 +565,7 @@ export function isQuotaWindow(v: unknown): v is QuotaWindow {
   );
 }
 
-const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale", "lapsed"];
 
 /** One quota pool whose own shape is safe to hand to the renderers
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
@@ -583,7 +583,7 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error", "lapsed"];
 
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (

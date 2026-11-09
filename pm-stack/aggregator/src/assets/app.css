@@ -5124,6 +5124,11 @@ pre {
   border-color: #d29922;
   color: #e3b341;
 }
+.badge.lapsed {
+  background: #6e768133;
+  border-color: #6e7681;
+  color: #8b949e;
+}
 .badge.conflict {
   background: #bc8cff33;
   border-color: #bc8cff;

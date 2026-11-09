@@ -265,7 +265,9 @@ export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): Qu
   for (const entry of entries) {
     if (entry.providerId === "opencode-go") {
       // Unconfigured rows are host state, not pool state: the pools keep
-      // their dated reads until a real read (ok or error) arrives.
+      // their dated reads until a real read (ok, error, or lapsed) arrives.
+      // Lapsed rows split exactly like error rows — one terminal row per
+      // workspace pool — so the hub names the planned lapse instead of a failure.
       const serviceId = goPoolServiceId(entry);
       if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
     } else if (entry.providerId === "antigravity" || entry.providerId === "_antigravity") {
@@ -395,6 +397,21 @@ export function entryFromFileExport(
   return entry;
 }
 
+/**
+ * A configured OpenCode Go result whose Console answers "no active
+ * subscription" is a planned lapse (#1118, Drew ruled both plans stay
+ * cancelled) — a terminal state of its own, never a provider failure.
+ */
+export function isGoLapseResult(result: QuotaProviderResult): boolean {
+  return (
+    result.providerId === "opencode-go" &&
+    !result.ok &&
+    result.configured &&
+    typeof result.error === "string" &&
+    result.error.includes("No active OpenCode Go subscription")
+  );
+}
+
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
   let measuredAt = tickIso;
@@ -402,7 +419,13 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     const fetchedDate = new Date(result.fetchedAt);
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
-  const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  const state: QuotaCurrentEntry["state"] = result.ok
+    ? "ok"
+    : isGoLapseResult(result)
+      ? "lapsed"
+      : result.configured
+        ? "error"
+        : "unconfigured";
   const providerId = canonicalProviderId(result.providerId);
   const entry: QuotaCurrentEntry = {
     providerId,
@@ -453,7 +476,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
       resetsAt: normalizeResetAt(raw?.resetAt),
       measuredAt,
       source: GATHERER_SOURCE,
-      state: result.ok ? "ok" : "error",
+      state: entry.state === "lapsed" ? "lapsed" : result.ok ? "ok" : "error",
     });
   };
   const usageObj = result.usage;

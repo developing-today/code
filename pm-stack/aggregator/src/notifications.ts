@@ -294,7 +294,8 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
     // #7193 Codex: a pool whose quota read errored or went stale keeps its
     // last windows, but the measurement is marked unavailable — never
     // derive wall notifications from retained windows in that state.
-    if (pool.state === "error" || pool.state === "stale") continue;
+    // A lapsed pool clears its windows at overlay, but still never burns.
+    if (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed") continue;
     const soleDoor = snapshot.soleDoorPoolIds?.has(pool.id) ?? false;
     const windows = pool.windows.filter((w) => w.limit !== null);
     const percentOf = (w: (typeof windows)[number]) => w.percent ?? (w.used / (w.limit || 1)) * 100;

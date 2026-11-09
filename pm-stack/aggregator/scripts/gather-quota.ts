@@ -342,7 +342,7 @@ async function runMetaRenewal(tickAt: string): Promise<void> {
 
 interface ProviderRun {
   id: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
   ms: number;
   entries: QuotaCurrentEntry[];
   error?: string;
@@ -365,6 +365,8 @@ interface ProviderRun {
  */
 function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): ProviderRun {
   const anyOk = entries.some((e) => e.state === "ok");
+  const anyLapsed = entries.some((e) => e.state === "lapsed");
+  const anyError = entries.some((e) => e.state === "error");
   const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
   if (anyOk && !anyMeasured) {
     const reason =
@@ -377,12 +379,17 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     return { id, state: "error", ms: Date.now() - t0, entries, error: reason };
   }
   const firstBad = entries.find((e) => e.state !== "ok");
+  // A run whose only non-ok rows are planned lapses is terminal, not
+  // failed: reporting it as "error" would trip #1268 retention and
+  // replace the lapsed rows with last-known ok readings, hiding the
+  // lapse the hub must show.
+  const onlyLapsed = !anyOk && anyLapsed && !anyError;
   return {
     id,
-    state: anyOk ? "ok" : "error",
+    state: anyOk ? "ok" : onlyLapsed ? "lapsed" : "error",
     ms: Date.now() - t0,
     entries,
-    ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
+    ...(!anyOk && !onlyLapsed && firstBad?.error ? { error: firstBad.error } : {}),
   };
 }
 

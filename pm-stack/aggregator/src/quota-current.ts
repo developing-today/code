@@ -62,7 +62,7 @@ function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["provid
     (value.resetsAt === null || isIsoDate(value.resetsAt)) &&
     isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
-    (value.state === "ok" || value.state === "error")
+    (value.state === "ok" || value.state === "error" || value.state === "lapsed")
   );
 }
 
@@ -72,7 +72,7 @@ function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
     typeof value.providerId === "string" &&
     typeof value.providerName === "string" &&
     typeof value.serviceId === "string" &&
-    (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
+    (value.state === "ok" || value.state === "error" || value.state === "lapsed" || value.state === "unconfigured") &&
     isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
     (value.credentialWatch === undefined || typeof value.credentialWatch === "boolean") &&
@@ -138,6 +138,7 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
 type FreshState = PoolFreshness["state"];
 
 function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
+  if (entry.state === "lapsed") return "lapsed";
   if (entry.state === "ok") {
     // #1268: retained last-known entries are stale by definition —
     // the provider's latest run failed, however recent the retained
@@ -218,10 +219,19 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
     source: entry.source,
     state,
   };
-  if (state === "error") freshness.error = errorText(entry);
+  if (state === "error" || state === "lapsed") freshness.error = errorText(entry);
   pool.freshness = freshness;
   if (state === "error") {
     pool.state = "error";
+    return false;
+  }
+  if (state === "lapsed") {
+    // A known subscription lapse is not a provider failure. The dated
+    // quota has no current meaning, so clear it instead of leaving old
+    // percentages beside a terminal lapsed badge.
+    pool.state = "lapsed";
+    pool.windows = [];
+    delete pool.wallLiftsAt;
     return false;
   }
   if (state === "stale") {
@@ -297,7 +307,7 @@ function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCrede
   const rows: QuotaCredentialRow[] = [...byCred.values()].map((e) => {
     const state = entryState(e, nowMs);
     const freshness: PoolFreshness = { measuredAt: e.measuredAt, source: e.source, state };
-    if (state === "error") freshness.error = errorText(e);
+    if (state === "error" || state === "lapsed") freshness.error = errorText(e);
     return {
       label: e.credentialLabel ?? e.providerName ?? e.providerId,
       ...(e.credentialId ? { credentialId: e.credentialId } : {}),
@@ -325,7 +335,7 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
         source: e.source,
       };
       if (e.credentialLabel) s.credentialLabel = e.credentialLabel;
-      if (s.state === "error") s.error = errorText(e);
+      if (s.state === "error" || s.state === "lapsed") s.error = errorText(e);
       return s;
     }),
   };
