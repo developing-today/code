@@ -10,18 +10,27 @@ name: workflow-lint
 # workflow set plus shape validation of .github/actions/*/action.yml
 # — whenever a change touches those paths. Pure bash + one pinned
 # static binary, so this stays a seconds-long basic check.
+#
+# It also runs the ci-policy agreement checker (#7090): a trigger
+# sweep or a policy edit that breaks the tier→trigger mapping fails
+# here, in the same change.
 
 on:
   pull_request:
     paths:
       - ".github/workflows/**"
       - ".github/actions/**"
+      - ".github/ci-policy.md"
+      - ".github/ci-policy-waivers.txt"
       - ".github/scripts/check-workflows.sh"
       - ".github/scripts/check-workflows.test.sh"
+      - ".github/scripts/check-ci-policy-agreement.sh"
+      - ".github/scripts/check-ci-policy-agreement.test.sh"
   workflow_dispatch:
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: workflow-lint-${{ github.ref }}
@@ -56,3 +65,9 @@ jobs:
         run: bash .github/scripts/check-workflows.test.sh
       - name: Validate workflows and composite actions
         run: bash .github/scripts/check-workflows.sh
+      - name: Contract tests for the ci-policy agreement checker (#7090)
+        run: bash .github/scripts/check-ci-policy-agreement.test.sh
+      - name: Check ci-policy tiers against workflow triggers (#7090)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/check-ci-policy-agreement.sh

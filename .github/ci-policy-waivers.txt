@@ -1,0 +1,38 @@
+# CI policy agreement waivers (Phase 2–3 of design #7089).
+#
+# Format: <workflow-file> <leg> <phase-issue>
+#   leg is basic | main | nightly
+#
+# Each waiver names the live phase issue that owns the disagreement.
+# The checker requires every issue here to be one of the four Phase 2–3
+# issues below and to be open: closing an issue retires its waiver in
+# the same change. A waiver for a workflow no longer in disagreement
+# fails as stale.
+#
+# Phase 2:
+#   #6929  mcpx-fix-test-guard — dispatch-only; basic + main triggers gone
+#   #6953  opencode-config-guard — PR-only; main trigger gone
+# Phase 3:
+#   #6959  production-line-guard — dispatch-only; basic + main triggers gone
+#   #6981  go-modules-build, identity-build, map-build, mcpx-nixbuild —
+#          dispatch-only; basic + main triggers gone
+
+.github/workflows/mcpx-fix-test-guard.yml basic #6929
+.github/workflows/mcpx-fix-test-guard.yml main #6929
+
+.github/workflows/opencode-config-guard.yml main #6953
+
+.github/workflows/production-line-guard.yml basic #6959
+.github/workflows/production-line-guard.yml main #6959
+
+.github/workflows/go-modules-build.yml basic #6981
+.github/workflows/go-modules-build.yml main #6981
+
+.github/workflows/identity-build.yml basic #6981
+.github/workflows/identity-build.yml main #6981
+
+.github/workflows/map-build.yml basic #6981
+.github/workflows/map-build.yml main #6981
+
+.github/workflows/mcpx-nixbuild.yml basic #6981
+.github/workflows/mcpx-nixbuild.yml main #6981

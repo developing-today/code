@@ -97,6 +97,36 @@ service rehomed as `fleet serve search`) to the same rule, with its
 own pinned headers. Intentional changes land in both copies in the same PR;
 intentional header changes update the guard script in the same PR.
 
+## Policy-to-trigger agreement contract (#7090)
+
+A tier assignment in the table below is a promise about triggers, not
+just a label. The agreement checker
+(`.github/scripts/check-ci-policy-agreement.sh`, mounted in
+`workflow-lint.yml`) enforces this mapping for every workflow named in
+the `workflow` column of the guard/build rows below:
+
+- **basic (PR) tier** — satisfied by `pull_request`, with the same
+  path filter the check needs (`paths:` in the `pull_request` block).
+  A path-filtered `pull_request` trigger is the active PR venue in this
+  repo. `merge_group` is not active: the no-merge-queue ruling above
+  removed it, and this phase must not re-add it.
+- **main tier** — satisfied by `push:` with `branches:` containing
+  `main`, or by a named main-tier venue that runs the same check.
+- **nightly** — satisfied by a `schedule:` trigger.
+- `workflow_dispatch:` alone satisfies no tier. It may be present
+  alongside a tier trigger, but it never substitutes for one.
+- A workflow named in the table must exist. A row naming a workflow
+  that is not on disk is a policy defect, regardless of any waiver.
+
+Known Phase 2–3 disagreements are recorded as explicit waivers in
+`.github/ci-policy-waivers.txt`, each naming its live phase issue and
+the missing leg it covers. A waiver whose issue is no longer open fails
+the checker; a missing or unknown waiver fails it too. The four live
+phases are #6929 (`mcpx-fix-test-guard`), #6953
+(`opencode-config-guard`), #6959 (`production-line-guard`), and #6981
+(the four build workflows). This phase adds the checker only; it does
+not re-arm, retire, or re-enable any workflow.
+
 ## Workflow and composite-action validation (#5743)
 
 `.github/workflows/workflow-lint.yml` is a **basic-tier** check
@@ -175,6 +205,29 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                                        | —                                                                |
 | mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                                             | — (main covers it)                                               |
 | mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                                            | —                                                                |
+
+### Agreement-tracked guard/build rows (#7090)
+
+This table is the normative, machine-checked form for the seven
+guard/build workflows in Phase 1 of design #7089. Where the summary
+table above and this table differ for those workflows, this table
+wins. The `workflow` cell is the file ci-policy promises; the checker
+reads only this table. `basic`, `main`, and `nightly` are the promised
+tiers; `PR gate` names one representative glob that must remain in the
+workflow's `pull_request.paths` (a declared path under that glob
+satisfies it; `-` means no path gate); `waiver` names the live Phase 2–3
+issue that currently covers the disagreement. `workflow_dispatch` is
+never a tier.
+
+| workflow | basic | main | nightly | PR gate | waiver |
+| --- | --- | --- | --- | --- | --- |
+| `.github/workflows/mcpx-fix-test-guard.yml` | yes | yes | no | `pkgs/mcpx/**` | #6929 |
+| `.github/workflows/opencode-config-guard.yml` | yes | yes | no | - | #6953 |
+| `.github/workflows/production-line-guard.yml` | yes | yes | no | `pkgs/**` | #6959 |
+| `.github/workflows/go-modules-build.yml` | yes | yes | no | `pkgs/chat/**` | #6981 |
+| `.github/workflows/identity-build.yml` | yes | yes | no | `pkgs/identity/**` | #6981 |
+| `.github/workflows/map-build.yml` | yes | yes | no | `pkgs/map/**` | #6981 |
+| `.github/workflows/mcpx-nixbuild.yml` | yes | yes | no | `pkgs/mcpx/**` | #6981 |
 
 ## Coverage rule
 
