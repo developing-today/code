@@ -333,12 +333,18 @@ export interface SectionMatch {
  */
 export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): TieredEntry {
   if (match && e.state !== "in-motion") {
-    if (match.tier === "needs-drew") return { ...e, tier: "needs-drew", drewReason: match.item.reason };
+    if (match.tier === "needs-drew")
+      return { ...e, tier: "needs-drew", tierSince: match.item.since, drewReason: match.item.reason };
     const next = match.item.recommendedAction ? ` Next: ${match.item.recommendedAction}` : "";
     return { ...e, tier: "needs-orchestrator", orchestratorNote: `${match.item.reason}${next}` };
   }
   if (e.state !== "in-motion" && e.supervisionNote && ESCALATION_NOTE.test(e.supervisionNote)) {
-    return { ...e, tier: "needs-drew", drewReason: `Keeper escalated this session — ${e.supervisionNote}` };
+    return {
+      ...e,
+      tier: "needs-drew",
+      tierSince: e.lastActivityAt ?? undefined,
+      drewReason: `Keeper escalated this session — ${e.supervisionNote}`,
+    };
   }
   if (e.state !== "in-motion" && e.awaitingQuestion) {
     const q = e.awaitingQuestion;
@@ -347,6 +353,7 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
         return {
           ...e,
           tier: "needs-drew",
+          tierSince: e.lastActivityAt ?? undefined,
           drewReason: `A session is asking permission for something destructive — ${q}`,
         };
       }
@@ -355,13 +362,19 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
       // Jules questions are the keeper's to answer (it replies with the
       // standard proceed/feedback messages) — they never need Drew
       // unless the orchestration job escalates them explicitly.
-      return { ...e, tier: "needs-drew", drewReason: `Waiting on your decision — ${q}` };
+      return {
+        ...e,
+        tier: "needs-drew",
+        tierSince: e.lastActivityAt ?? undefined,
+        drewReason: `Waiting on your decision — ${q}`,
+      };
     }
   }
   if (e.state !== "in-motion" && e.lastTurnError && CREDENTIAL_ERR.test(e.lastTurnError)) {
     return {
       ...e,
       tier: "needs-drew",
+      tierSince: e.lastActivityAt ?? undefined,
       drewReason: `Blocked on a sign-in only you can complete — ${e.lastTurnError}`,
     };
   }
@@ -401,6 +414,32 @@ export interface AttentionView {
   expiredCount: number;
   /** The tier source's diagnosis (#1139); drives the banner + counts. */
   tierSource: TierSourceInfo;
+}
+
+/** Digest landing filter (#7193 Codex): the alert digest links to
+ * /attention?refs=<objectRefs>; keep only the entries those refs name.
+ * Ref forms mirror NotificationCandidate.objectRef: session:<id>,
+ * item:<id>, a bare session/item id, a GitHub ref (owner/repo#n), or
+ * gh:<ref>. Quota/health refs name no attention entries (their own
+ * pages carry them), so they simply match nothing here. */
+export function filterAttentionViewByRefs(view: AttentionView, refs: string[]): AttentionView {
+  const wanted = new Set(refs.map((ref) => ref.trim()).filter(Boolean));
+  if (wanted.size === 0) return view;
+  const matchEntry = (e: TieredEntry) => wanted.has(`session:${e.sessionId}`) || wanted.has(e.sessionId);
+  const matchItem = (item: TierItem) =>
+    wanted.has(`item:${item.id}`) ||
+    wanted.has(item.id) ||
+    (item.sessionId ? wanted.has(`session:${item.sessionId}`) || wanted.has(item.sessionId) : false) ||
+    (item.ref ? wanted.has(item.ref) || wanted.has(`gh:${item.ref}`) : false);
+  return {
+    ...view,
+    drew: view.drew.filter(matchEntry),
+    orchestrator: view.orchestrator.filter(matchEntry),
+    drewExtra: view.drewExtra.filter(matchItem),
+    orchestratorExtra: view.orchestratorExtra.filter(matchItem),
+    watchdog: view.watchdog.filter(matchItem),
+    all: view.all.filter(matchEntry),
+  };
 }
 
 /** Classify, expire, and tier a raw session feed in one pass. */

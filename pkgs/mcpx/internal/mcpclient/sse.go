@@ -55,7 +55,8 @@ func NewLegacySSE(ctx context.Context, opts HTTPOptions) (*LegacySSETransport, e
 	}
 	sctx, cancel := context.WithCancel(context.Background())
 	t := &LegacySSETransport{
-		url: opts.URL, headers: opts.Headers, hc: &http.Client{Timeout: timeout},
+		url: opts.URL, headers: opts.Headers,
+		hc:       &http.Client{Timeout: timeout, CheckRedirect: refuseCrossOriginRedirect},
 		incoming: make(chan []byte, 64), closed: make(chan struct{}), cancel: cancel,
 	}
 	req, err := http.NewRequestWithContext(sctx, http.MethodGet, opts.URL, nil)
@@ -118,7 +119,7 @@ func sameOriginEndpoint(base, ep string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("http+sse: endpoint %q: %w", ep, err)
 	}
-	if e.Scheme != b.Scheme || e.Host != b.Host {
+	if !sameHTTPOrigin(b, e) {
 		return "", fmt.Errorf("http+sse: endpoint %q is not on the origin of %s; refusing to send to it", ep, base)
 	}
 	return e.String(), nil

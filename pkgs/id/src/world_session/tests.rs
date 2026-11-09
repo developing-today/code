@@ -958,10 +958,10 @@ mod tests {
         let target = format!("/world/{}/isolation", lease.name());
         let now = unix_ms();
 
-        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged");
+        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged").unwrap();
         let last = forged.signature.pop().unwrap();
         forged.signature.push(if last == '0' { '1' } else { '0' });
-        let other_body = sign_request(&key, "PUT", &target, b"isolated", now, "other-body");
+        let other_body = sign_request(&key, "PUT", &target, b"isolated", now, "other-body").unwrap();
         for signed in [&forged, &other_body] {
             assert!(
                 set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(signed))
@@ -974,7 +974,7 @@ mod tests {
             Isolation::Isolated
         );
 
-        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good");
+        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good").unwrap();
         assert_eq!(
             set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(&signed))
                 .await
