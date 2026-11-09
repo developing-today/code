@@ -852,6 +852,55 @@ mod peers_tests {
         let output = run_cmd(&["peers", "--rpc"], tmp.path());
         assert!(!output.status.success());
     }
+
+    #[test]
+    fn test_peers_help_shows_abuse_flag() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--abuse"));
+    }
+
+    #[test]
+    fn test_peers_abuse_no_serve() {
+        // The abuse report comes from the local serve instance only; with
+        // no serve running it must fail with that reason, not print an
+        // empty report (#4918).
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--abuse"], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("no local serve running"),
+            "unexpected stderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_peers_abuse_gossip_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--abuse", "--gossip"], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--abuse cannot be combined with --gossip"),
+            "unexpected stderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_peers_abuse_remote_node_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let node = "a".repeat(64);
+        let output = run_cmd(&["peers", "--abuse", &node], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--abuse cannot be combined with a remote node ID"),
+            "unexpected stderr: {stderr}"
+        );
+    }
 }
 
 mod error_handling_tests {

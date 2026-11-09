@@ -1194,7 +1194,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     let world_protocol = world_hub
         .as_ref()
-        .map(|hub| crate::world_net::WorldProtocol::new(hub.clone()));
+        .map(|hub| crate::world_net::WorldProtocol::with_local_node(hub.clone(), *node_id.as_bytes()));
 
     #[cfg(feature = "world")]
     let abuse_handle = world_protocol
