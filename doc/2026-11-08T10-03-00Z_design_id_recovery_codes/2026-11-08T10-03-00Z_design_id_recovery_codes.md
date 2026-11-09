@@ -5,11 +5,11 @@
 **Programme:** epic [#2056](https://github.com/developing-today/code/issues/2056)
 **Siblings:** #5884 (setup ceremony), #5885 (keyless feasibility), #5886 (variant a),
 #5887 (variant b), #5889 (variant d), #5890 (identity management UX)
-**Status:** v1.1 decision record (2026-11-08). This revision fixes a key-derivation
-mismatch identified in PR review and updates the fresh #5885 coordination finding; it
-does not change the selected code format, entropy, threshold, or recovery flow. Design
-only — no implementation is authorised by this record alone, and implementation
-timing is a separate decision per the filing.
+**Status:** v1.2 decision record (2026-11-09 UTC). This revision makes the encoding,
+claim lifecycle, settlement evidence, and custody-specific promises precise in response
+to PR review. It does not change the selected code count, entropy, threshold, or recovery
+flow. Design only — no implementation is authorised by this record alone, and
+implementation timing is a separate decision per the filing.
 
 Verified at `origin/main` `a80d206752` (2026-11-08). Prior art read:
 `doc/2026-10-29T11-28-18Z_investigation_key_recovery_hosted/` (#2060),
@@ -60,9 +60,8 @@ override, and no developer backdoor, and the setup screen says so in those words
 - **Alphabet:** Crockford base32 `0123456789ABCDEFGHJKMNPQRSTVWXYZ` — no `I`, `L`, `O`,
   `U`, so the characters people confuse (`0/O`, `1/I/L`) or read as accidental
   profanity do not occur.
-- **Length:** 20 characters = **100 bits** per code, printed as five groups:
-  `XXXXX-XXXXX-XXXXX-XXXXX` (or `XXXX-XXXX-XXXX-XXXX-XXXX`; the grouping is a rendering
-  choice, the canonical serialisation has no separators).
+- **Length:** 20 characters = **100 bits** per code, printed only as five groups of
+  four: `XXXX-XXXX-XXXX-XXXX-XXXX`. The canonical serialisation has no separators.
 - **Canonical form:** uppercase, no separators, no whitespace. Input normalisation folds
   case, strips ASCII spaces and `-`, and folds `I`/`l` → `1`, `O`/`o` → `0`; any other
   character is refused rather than guessed. Codes are ASCII; under the #3455 plain-output
@@ -83,12 +82,37 @@ replaces.
 ```
 seed_bytes = CSPRNG(13 bytes); seed_bytes[0] &= 0x0f
              -> exactly 100 random bits (the four high bits are zero)
-seed_i     = OS2IP(seed_bytes)  // big-endian unsigned integer
-code_i     = encode_crockford_base32(seed_i, exactly 100 bits) -> 20 chars
-recovery_sk = HKDF-SHA256(seed_bytes, salt = identity_id,
-                          info = ASCII("id-recovery-key-v1") || uint8(slot_i))
-commitment_i = SHA-256(recovery_pk_i)
+seed_i           = OS2IP(seed_bytes)  // big-endian unsigned integer
+code_i           = encode_crockford_base32(seed_i, exactly 100 bits) -> 20 chars
+identity_id_raw  = the stable 32-byte identity identifier in RecoverySet.identity
+info             = ASCII("id-recovery-key-v1") || uint8(slot_i)
+recovery_sk_seed = HKDF-SHA256(IKM = seed_bytes, salt = identity_id_raw,
+                               info = info, L = 32 bytes)
+recovery_pk_i    = Ed25519 public key from the 32-byte RFC 8032 private seed
+commitment_i     = SHA-256(the 32 raw bytes of recovery_pk_i)
 ```
+
+`identity_id_raw` is the stable identity identifier carried by the signed setup
+artefact, encoded as its raw 32 bytes — never its hexadecimal/base32 display, a
+variable-length key encoding, or the rotating current signing key. The 32-byte HKDF
+output is passed unchanged as the Ed25519 private seed; the standard Ed25519 operation
+derives/clamps its scalar internally. No caller pre-clamps or re-encodes the seed.
+
+This deterministic vector is for interoperability tests only, not a credential:
+
+| Input / output | Hex or text |
+| --- | --- |
+| `identity_id_raw` | `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` |
+| `seed_bytes` | `000102030405060708090a0b0c` |
+| `slot_i` | `0` (`00`) |
+| printed code | `0082-0C20-A1G7-104G-M2RC` |
+| HKDF-Extract PRK | `79a16fb829d0002342d172baa194f1da47f39ab13c6ae8b5f1d3161cec835765` |
+| `recovery_sk_seed` (HKDF output) | `ff8bb0c3394081cb029d87da441dd3f444ea6e508e6d6c8d1d175a11e210f99a` |
+| `recovery_pk_i` (raw Ed25519 public key) | `bf84a3db9047871d529efc602dfef543cf0a620fd3bc0fe944f5fe447b2f513f` |
+| `commitment_i` | `1177777cf67e33ed69e0746c5569f0a8638d3e4ac661bffc225889c7f8407163` |
+
+HKDF uses RFC 5869 HMAC-SHA-256: `PRK = HMAC-SHA256(salt, IKM)` and
+`OKM = HMAC-SHA256(PRK, info || 0x01)` for this one-block, 32-byte output.
 
 **The derivation consumes exactly the bits the code carries.** Generate 13 bytes and
 clear the high four bits, leaving exactly 100 random bits. Interpret the result as a
@@ -124,11 +148,13 @@ any other signed ID-graph object. This mirrors `issuer_rotation::recovery_commit
 and never in the definition. It also follows #2060's rule that the server stores a
 digest, never a signing key.
 
-Plaintext codes exist in exactly two places: in memory during the setup ceremony, and on
-whatever the user saves. They are never sent to the service, never written to app state,
-never logged, never included in a sync payload, never included in an error report, and
-never derivable from the identity key, the account credential, a password, or the
-commitment set.
+Plaintext codes may exist only in volatile client memory while generated and displayed
+during setup, a recovery-settlement ceremony, or an on-request regeneration ceremony,
+and on whatever the user saves. They are never sent to the service, written to app state,
+logged, included in a sync payload, included in an error report, or derivable from the
+identity key, account credential, password, or commitment set. Implementations should
+zero temporary buffers before releasing them where the platform permits; no claim is
+made that managed runtimes can erase every copy.
 
 ### 3.4 Storage guidance given to the user
 
@@ -180,16 +206,28 @@ The claimant enters one code on a device that will hold the new key. The client 
 ```
 identity.recovery.claim {
   identity, set_generation, slot,
-  new_key,                 // the key this recovery would install
-  claim_id,                // hash of the signed claim
+  new_key,                 // raw 32-byte key this recovery would install
+  signature,               // recovery-key signature over claim_signing_bytes
+  claim_id,                // derived metadata; excluded from signed/hashed fields
 }
 ```
 
-The claim **must be anchored** — recorded at a monotonic position in a store that holds
-the identity's chain (the journal of record, #2819, is the natural anchor) — and the
-settle window is measured from that anchor, **never from a wall clock alone**. The claim
-is public: peers can verify the claimant holds the precommitted key for that slot, which
-is what makes it impossible for a service to fake a recovery against the user's will.
+For interoperability, `claim_fields` is the deterministic CBOR array
+`[identity_id_raw, set_generation, slot, new_key_raw]` (RFC 8949 deterministic
+encoding; byte strings for both keys, unsigned integers for generation and slot).
+`claim_signing_bytes = ASCII("id-recovery-claim/v1") || 0x00 ||
+canonical-CBOR(claim_fields)`. The derived recovery key signs those exact bytes with
+Ed25519. Then `claim_id = SHA-256(ASCII("id-recovery-claim-id/v1") || 0x00 ||
+claim_signing_bytes || signature)`. The journal stores the fields, signature, and
+derived `claim_id`; neither domain-separated byte string includes `claim_id`, so
+cancellation and settlement can refer to it without a circular hash.
+
+The claim **must be anchored** — recorded at a monotonic position in the durable store
+that holds the identity's chain — and accompanied by the trusted time certificate in
+§13. The journal position proves order; the certificate, not a client or server wall
+clock alone, proves elapsed time. The claim is public: peers can verify the claimant
+holds the precommitted key for that slot, which prevents an authentication service from
+fabricating a recovery claim.
 
 A claim does not consume the code. An abandoned or cancelled claim leaves the set intact.
 
@@ -213,22 +251,37 @@ A claim does not consume the code. An abandoned or cancelled claim leaves the se
   slot, and how to cancel. Honest limit, stated in the record and in the notice: this
   helps a user who still holds a working key. It cannot help a user who has lost the key
   and the codes — for them the notice is a record, not a rescue.
-- **Rate limits:** claims are rate-limited per identity (default: 5 accepted claims per
-  day, 3 concurrent), and failed attempts at an ingress are throttled like any other
-  unauthenticated input. Rate limits are a mitigation, not a security property: the
-  cryptographic check is the commitment.
+- **Rate limits and expiry:** claims are rate-limited per identity (default: 5 accepted
+  claims per rolling 24 hours, 3 live claims concurrently), and failed attempts at an
+  ingress are throttled like any other unauthenticated input. A claim may settle during
+  the seven days after its 72-hour wait; after that it expires and can never settle.
+  Expired, cancelled, or superseded claims stop counting toward the concurrent limit.
+  Expiry does not consume the code or slot, so the user may open a new claim with the
+  same or another unused code. Cancelled and expired claims still count toward the daily
+  limit. Rate limits are a mitigation, not a security property: the cryptographic check
+  is the commitment.
 
 ### 5.3 Settle — rotation, not rebind
 
-After the window, the claimant publishes `identity.recovery.settle`, naming the claim,
-the new key and the new key generation, **countersigned by the new key** (the successor
-proof pattern from `issuer_rotation.rs`). Settle:
+After the window, and before the claim expires, the claimant publishes
+`identity.recovery.settle`, naming the claim, the new key and the new key generation,
+**countersigned by the new key** (the successor-proof pattern from `issuer_rotation.rs`).
+Before any state changes, validators atomically require all of the following: the claim
+is anchored and not expired or cancelled; its time certificate proves the full 72-hour
+window; its `set_generation` equals the current `RecoverySet.set_generation`; and its
+slot is still unspent and matches the derived recovery-key commitment. A regeneration or
+another recovery that has advanced the set makes every old-generation claim stale.
+Settle then:
 
 1. installs the new key as the current generation;
 2. marks the used slot **consumed** in durable signed state (monotonic, replicated);
 3. increments `set_generation` and publishes a **fresh set of ten codes**, generated in
    the same ceremony on the recovering device;
 4. invalidates the previous set in its entirety.
+
+If any precondition fails, settlement is rejected with **no state change**: no key is
+installed, no slot is consumed, no generation advances, and no replacement set is
+published. A stale claim cannot win by racing a regeneration.
 
 This is the #2060 rule applied literally: **recovery rotates the identity key; it never
 rebinds an existing key**, and no authentication event (SSO, password, email link) can
@@ -278,9 +331,14 @@ replace the key, and replacing the key always replaces the set.
 
 - A set is replaced **as a whole**. No partial or mixed-generation set ever becomes
   current; a request whose `expected_set_generation` is stale is refused.
-- `set_generation` is monotonic and predecessor-linked. Two valid regenerations claiming
-  the same predecessor **conflict and neither settles** — the same rule as
-  `issuer_rotation` §3.2 rule 5, rather than picking one by arrival order or timestamp.
+- `set_generation` is monotonic and predecessor-linked. The identity journal serializes
+  competing current-key-authorized requests with compare-and-swap on the expected
+  generation: the first complete valid request durably accepted as the sole successor
+  wins and advances the generation; other requests against that predecessor are stale
+  and rejected. The owner can then use the current key to issue another whole-set
+  regeneration against the new generation, without recovery or key rotation. If the
+  journal cannot establish one canonical order, it fails closed and no candidate set
+  becomes current until ordering is restored.
 - A key-generation change (any settle) **revokes pseudo-login delegations issued under
   the previous generation**. Actions already taken under those delegations stay in the
   record, with provenance showing the pseudo-login acted under delegation from the old
@@ -293,11 +351,19 @@ replace the key, and replacing the key always replaces the set.
 
 The setup ceremony shows, before the codes are handed over:
 
-> **These ten codes are the only way back in.**
-> If you lose your device, one unused code gets you back in — even on a new device.
-> If you lose all ten, nobody can unlock this ID. Not us, not support, not the
-> developers. There is no reset and no back door. Your ID would be gone permanently.
-> Keep them somewhere you would keep a passport.
+> **Keep these ten codes: they can get you back in if you lose access to your current
+> key.**
+> If you still have your current key, you can keep using this ID and authorize a new
+> code set. If you no longer have access to that key, one unused code from the most
+> recently generated set can start recovery on a new device; recovery needs an online,
+> anchored claim and a 72-hour wait. If you have no access to the current key, no unused
+> code from the current set, and no other recovery path, nobody can unlock this ID. Not
+> us, not support, not the developers. There is no reset and no back door. Your ID is
+> unrecoverable.
+>
+> If a service holds your current key, it can keep acting as you and can cancel a code
+> recovery before it settles. These codes do not force that service to let you leave.
+> Read the service-held-key warning before choosing that custody option.
 
 Then the ceremony requires the user to **type back one randomly chosen code**, and refuses
 to make the set current until it matches. This is the informed-choice gate: it proves the
@@ -308,11 +374,14 @@ that does not exist.)
 ### 7.2 At loss — when no key and no unused code exist
 
 > **This ID can't be recovered.**
-> There is no key for it and no unused code, and there is no reset — not by us, not by
-> support, not by the developers. This is what the codes were for.
+> You have no access to its current key and no unused code from its most recently
+> generated recovery set. There is no reset — not by us, not by support, not by the
+> developers. This is what the codes were for.
 > You can create a new ID now, but it will be a different identity: your name, worlds,
 > grants and history stay attached to the old ID, and nothing can sign as it again.
-> If you find a code later, it can still recover the old ID — keep looking before you
+> If you find an unused code from the most recently generated set, it can still start
+> recovery after the online claim is anchored; the full 72-hour wait still applies.
+> Codes from an older set or a code already used will not work. Keep looking before you
 > give up on it.
 
 Rules for the surface:
@@ -328,24 +397,32 @@ Rules for the surface:
 ### 7.3 The inverse statement
 
 The same copy must state the positive case, so the user knows what *does* work: one
-unused code, on any device, after a short wait. A design that only says "you can be
-locked out forever" teaches fear, not custody.
+unused code from the current set can start recovery from any device; an anchored claim,
+trusted time evidence, and the full 72-hour wait are required, and the current key can
+cancel before settlement. A user who still has the current key can instead authorize a
+replacement set. A design that only says "you can be locked out forever" teaches fear,
+not custody. Show the unrecoverable screen only when neither a usable current key nor
+another configured recovery path remains; it is not the service-held-key outage screen.
 
 ## 8. Interaction with the custody variants
 
-- **(a) Service holds the key.** Codes are the user's exit: a settle installs a
-  user-chosen key and takes the identity out of service custody. They do **not** stop a
-  compromised service from acting as the user *while* it holds the key — nothing in
-  variant (a) can — and the honest statement for (a) must say so. This is the #2060
-  conclusion restated: SSO/account custody can be an account pointer, never a rebind
-  authority.
+- **(a) Service holds the key.** A code can propose a user-chosen key and take the
+  identity out of service custody only if the service does not cancel the public claim
+  before settlement. The service holds the current key and can veto each pending claim
+  or regenerate the set, so codes are **not an independent or guaranteed exit** from an
+  uncooperative custodian. They also do **not** stop a compromised service from acting
+  as the user while it holds that key. A guaranteed exit against a hostile custodian
+  would require a different custody design and is not adopted here; do not promise one
+  in variant-(a) setup or UX copy. This preserves #5684's service-held-key variant while
+  making its trust boundary explicit. SSO/account custody can be an account pointer,
+  never a rebind authority.
 - **(b) User holds the key.** Codes are the primary and only recovery path; ordinary
   recovery is the key file itself. A lost key file plus a surviving code is exactly the
   case this design exists for.
 - **(c) This design.** Codes recover the root identity. The key installed at settle lives
   in whichever custody the user selects at recovery time, defaulting to the identity's
-  current variant; choosing user-held at settle is the natural exit from (a). The
-  migration surface itself belongs to #5890.
+  current variant. Choosing user-held at settle is possible from (a) only if the service
+  allows the claim to settle. The migration surface itself belongs to #5890.
 - **(d) Pseudo-login identities.** Codes do not recover a pseudo-login. They recover the
   root identity, and the key change revokes the pseudo-logins issued under the old
   generation (§6.3). A user who lost only a delegated device should revoke that
@@ -353,16 +430,15 @@ locked out forever" teaches fear, not custody.
 
 ## 9. Coordination with siblings
 
-- **#5884 (setup ceremony).** Codes are generated there, after the identity key exists,
-  and the signed `RecoverySet` is part of the setup artefact. This record owns format,
-  count, KDF, threshold, and regeneration rules; #5884 owns ceremony ordering and the
-  print screen. The interface is the `RecoverySet` object above; #5884 may reorder the
-  ceremony but **must publish the recovery set before the identity is presented as
-  created**, or the identity's first moment of existence has no recovery path.
-- **#5890 (identity management UX).** Consumes §7 verbatim (no paraphrase), the "you have
-  ten unused codes" surface, and the regeneration entry point. #5890 owns where these
-  live and how migration is presented; the rules stay here.
-- **#5885 (keyless feasibility), re-checked fresh 2026-11-08.** It is OPEN and now has
+- **#5884 (setup ceremony), checked fresh 2026-11-09.** It remains OPEN with setup
+  decisions in PR #7850. Its ceremony generates ten codes, transcription-proves one,
+  and publishes the `RecoverySet` before presenting the identity as created. This record
+  owns the 20-character Crockford format (printed as five groups of four), count, KDF,
+  threshold, and regeneration rules; #5884 owns ceremony ordering and the print screen.
+  The interface is the `RecoverySet` object above; the setup PR's proposed interface is
+  consistent with this record.
+- **#5890 (identity management UX), checked fresh 2026-11-09.** It remains OPEN with no decision record yet. It consumes the qualified §7 copy, the current-set status, and the regeneration entry point; #5890 owns surface and migration presentation. That integration is follow-up work, not absorbed here.
+- **#5885 (keyless feasibility), re-checked fresh 2026-11-09.** It is OPEN and has
   a decision record in its 2026-11-08T12:23:36Z comment. It recommends a random ID
   signing key generated and held client-side; OIDC as account authentication/pointer or
   augmented PAKE (such as OPAQUE) for password login; and no server-held unwrapped key
@@ -370,24 +446,30 @@ locked out forever" teaches fear, not custody.
   authorised recovery mechanism. This result **does not obsolete this record**: these
   codes are that explicit recovery authority, work independently of everyday login, and
   let a client recover after losing the device-held key without giving the authorizer
-  key custody. Redemption and key derivation must therefore remain client-side; neither
-  OIDC nor password authentication alone substitutes for a code or surviving key. The
-  chosen 100-bit code entropy is also independent of password entropy.
+  key custody. Redemption and key derivation therefore remain client-side; neither OIDC
+  nor password authentication alone substitutes for a code or surviving key. The
+  chosen 100-bit code entropy is independent of password entropy. It also sharpens the
+  variant-(a) boundary: a client-held recovery secret does not make recovery independent
+  when the service holds the current key and can cancel the claim.
 - **#5886 / #5887 / #5889 (variants a, b, d).** Each must state what recovery and
   revocation mean in its own variant, consuming §8 rather than redesigning it.
 
 ## 10. Parent (#5684) decisions
 
 **No parent decision is changed by this record.** The parent explicitly delegates the
-threshold and use model, and rules that all-codes-lost is unrecoverable and must be
-stated plainly. Two elaborations that stay inside the parent's direction:
+threshold and use model, and says the identity is unrecoverable when all codes and every
+other recovery path are unavailable. A still-usable current key can authorize a new code
+set. Two elaborations that stay inside the parent's direction:
 
 1. A code authorises a **key rotation**, not a rebind. This follows #2060 and the parent's
    own "login UX indistinguishable from ordinary logins" requirement without letting an
    ordinary login ever rebind a key.
-2. **Custody may be chosen at settle**, so recovery doubles as an a→b migration. The
-   parent already lists a→b migration as a flow, so this is within it, and the UI for it
-   is #5890's.
+2. **Custody may be chosen at settle**, so a cooperative variant-(a) service can permit
+   recovery to double as an a→b migration. The parent already lists a→b migration as a
+   flow, so this does not change its direction. This record does not promise an
+   independent exit from a hostile service; that would change the parent-level custody
+   guarantee and must return to #5684 for a new decision. The UI for a permitted
+   migration is #5890's.
 
 If a later answer here would change a parent decision, it must go back to #5684 as a new
 comment rather than silently forking the parent — none is raised now.
@@ -404,6 +486,7 @@ comment rather than silently forking the parent — none is raised now.
 | **Social / guardian recovery (Shamir among guardians)** | Parent non-goal; also depends on stable guardian identities that do not exist yet. |
 | **Passkey / hardware key as recovery** | Parent non-goal; a plausible future *additional* slot type, not v1. |
 | **Mark one code spent and keep the other nine** | Leaves a printout in a drawer the user may no longer trust after a recovery event. Reissuing all ten at settle costs one print and removes the class. |
+| **Treat codes as a guaranteed exit from service-held custody** | The service-held current key can cancel a pending claim or authorize regeneration. Promising an exit against that custodian would exceed variant (a)'s stated trust model; a new parent-level decision is required. |
 | **Immediate recovery with no wait** | A photographed printout becomes an instant permanent takeover with no notice to the legitimate holder. The 72-hour window is the cheapest defence that costs the honest user nothing but time. |
 | **Support override / break-glass** | Destroys the honest statement and the whole point of the variant. If ever proposed, it is a new design decision and a new record, not an implementation detail. |
 
@@ -425,15 +508,17 @@ comment rather than silently forking the parent — none is raised now.
    never re-authorises a retired key and never rebinds an existing key binding.
 7. **Any one suffices.** Exactly one unused code is sufficient. No other code, secret,
    support action, or operator capability can substitute.
-8. **Anchored ordering.** A settle requires a claim older than the window at a monotonic
-   anchored position; wall-clock time alone never authorises a settle.
+8. **Anchored ordering and trusted elapsed time.** A settle requires a claim at a
+   monotonic anchored position plus valid quorum time certificates proving the complete
+   72-hour interval; caller-supplied or lone-server wall-clock time never authorises it.
 9. **Cancel wins.** The current-generation key's cancellation beats any pending claim;
    nothing cancels a settled rotation.
 10. **No backdoor.** No operator, developer, support, or break-glass path reconstructs a
     code or key, decrypts the codes, or forces a recovery. A future path of that kind is
     a design change, because it changes the plain-language statement.
 11. **Atomic regeneration.** A new set replaces the whole set or nothing; no
-    mixed-generation set is current; conflicting regenerations do not settle.
+    mixed-generation set is current; journal compare-and-swap selects one successor, and
+    stale requests are rejected.
 12. **Printable and canonical.** Codes are uppercase Crockford base32 in five groups of
     four, ASCII, free of `Cc`/`Cf` characters (#3455); input normalisation folds case and
     separators only and refuses anything else.
@@ -444,22 +529,31 @@ comment rather than silently forking the parent — none is raised now.
     are rate-limited per identity.
 15. **Transcription is proven.** The set does not become current until the user has typed
     back a randomly chosen code correctly.
+16. **Bounded claims.** A claim expires seven days after its 72-hour wait elapses;
+    expired/cancelled/superseded claims cannot settle, do not consume codes, and release
+    concurrent-claim capacity.
+17. **No stale-set settlement.** Settlement atomically checks the claim's generation and
+    unspent slot against the current set before any mutation; mismatch leaves all state
+    unchanged.
+18. **Canonical claim identity.** Claim signing bytes exclude `claim_id`; the id is
+    derived only after signing from the specified domain-separated bytes.
 
 ## 13. Open questions for implementation (with defaults)
 
 | Question | Default this record sets |
 | --- | --- |
-| Which store anchors the settle window for an identity with no server? | The journal/durable store that holds the identity's chain (#2819 pattern). A fully offline identity with no peers has nobody to enforce a window or receive notice: there the window degrades to advisory and the code's 100 bits are the only check. Record the degradation in the UX rather than pretending the window exists. |
+| Which store and time evidence anchor the settle window? | Every claim is durably appended to the identity-chain journal at a monotonic position. For elapsed time, the network configures three independent witness keys, not controlled by the current key custodian; at least two sign receipts binding `identity_id`, journal position, event hash, witness-set version, and UTC time. Each witness has a documented clock-error bound of ±60 seconds, with at most one faulty witness. Validators require a 2-of-3 certificate both at claim and settle, using the same configured set. To prove the full wait, `min(settle receipt times) - 60s` must be at least `max(claim receipt times) + 60s + 72h`. The journal position proves event order; conservative witness-time bounds prove elapsed time. Without a durable anchor or valid time certificate, a client may prepare locally but no claim is accepted or settled; recovery remains unavailable until evidence is available. There is no offline/advisory bypass. |
 | Where do notification channels come from? | The directory account's emails and the hosted binding's channels; an identity with neither gets the claim recorded but no notice, and the UX says so. |
 | Does a cancelled claim count against the daily claim limit? | Yes — otherwise cancellation is free rate-limit evasion. |
 | How is the print screen implemented (PDF, plain text, browser print)? | #5884's call; this record only requires legible grouped codes, the slot labels, and the §7.1 copy. |
 | What happens to the old generation's published objects? | They remain valid history and remain attributable; no retroactive invalidation. |
 | Should slot indices be randomised rather than 0–9? | No: the index is not secret, and sequential labels are easier to read and to track. |
 
-## 14. Definition of done for this design ticket
+## 14. Handoff and definition of done for this design ticket
 
 - This record is linked from #5888.
-- #5884 carries the `RecoverySet` interface requirement before it settles the setup
-  artefact.
-- #5890 carries the §7 copy and the regeneration entry point.
+- #5884 owns the setup artefact and must publish the `RecoverySet` before declaring the
+  identity created; its current proposal is consistent with the shape settled here.
+- #5890 consumes the qualified §7 copy and regeneration rules; that sibling remains
+  open and is not part of this task.
 - No implementation is started; timing stays a separate decision.
