@@ -3307,8 +3307,9 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
 /** Wrap one attention section as a Datastar fragment container: the
  *  shell's placeholder and the fragment payload share this shape, so
  *  a refresh re-patches the container with itself (attrs included). */
-export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string): string {
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}')" data-on-dashrefresh__window="@get('/frag/attention/${section}')">${innerHtml}</div>`;
+export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
+  const q = query ? `?${query}` : "";
+  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on-dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3316,12 +3317,13 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string): string {
+  const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
-${attentionFragment("header", skel("queue status"))}
-${attentionFragment("queues", skel("the queues"))}
-${attentionFragment("sessions", skel("sessions"))}`;
+${attentionFragment("header", skel("queue status"), refsQuery)}
+${attentionFragment("queues", skel("the queues"), refsQuery)}
+${attentionFragment("sessions", skel("sessions"), refsQuery)}`;
   return layout(
     "Needs you",
     body,

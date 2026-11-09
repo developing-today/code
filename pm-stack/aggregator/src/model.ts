@@ -483,6 +483,8 @@ export type AttentionTier = "needs-drew" | "needs-orchestrator" | "in-motion";
 
 export interface TieredEntry extends AttentionEntry {
   tier: AttentionTier;
+  /** When the orchestration job first observed this session in its tier. */
+  tierSince?: string;
   /** Why this needs Drew — present iff tier is "needs-drew". */
   drewReason?: string;
   /** What the fleet will do with it — present iff tier is "needs-orchestrator". */
