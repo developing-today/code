@@ -119,6 +119,7 @@ func writeFeatureCoverageLedger(path string, rows []featureCoverageRow) error {
 }
 
 func TestMain(m *testing.M) {
+	installSandboxReaper()
 	code := m.Run()
 	path := featureCoverageLedgerPath()
 	rows := featureCoverageSnapshot()
