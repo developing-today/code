@@ -671,14 +671,16 @@ mod tests {
         assert_eq!(auth.codes.len(), CODE_PENDING_PER_ACCOUNT + 1);
         assert!(auth.check_code("other@x.co", &other, now()).is_ok());
         // A resend for one of the account's own pending addresses still
-        // replaces at the per-account cap.
+        // replaces at the per-account cap. (Checking the other account's
+        // code above consumed it, so the map is back to the account's own
+        // cap count; the resend replaces in place and changes nothing.)
         auth.issue_code(
             Purpose::Confirm { account },
             "mine0@x.co",
             now() + CODE_RESEND_MS,
         )
         .unwrap();
-        assert_eq!(auth.codes.len(), CODE_PENDING_PER_ACCOUNT + 1);
+        assert_eq!(auth.codes.len(), CODE_PENDING_PER_ACCOUNT);
     }
 
     #[test]
