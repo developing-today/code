@@ -332,24 +332,27 @@ export default (async ({ directory, worktree, project, client }, options) => {
    * the socket, and `auto` prefers the socket and spawns only when there is
    * no daemon or the daemon is too old to have the route.
    */
-  const viaDaemon = async <T>(fn: (c: DaemonClient) => Promise<T>): Promise<T | undefined> => {
+  const viaDaemon = async <T>(fn: (c: DaemonClient) => Promise<T>, signal?: AbortSignal): Promise<T | undefined> => {
     if (settings.backend === "cli") return undefined;
     const c = await daemon();
     if (!c) return undefined;
     try {
       return await fn(c);
     } catch (err) {
+      // Cancellation is not evidence that the daemon went away. Keep the
+      // choice so the next tool call in this session can reuse it.
+      if (signal?.aborted) throw err;
       // Stopped, restarted, or its configuration changed and the socket
       // moved. Forget it; the next call asks again.
       forget();
       throw err;
     }
   };
-  const viaCLI = async (argv: string[]): Promise<string> => {
+  const viaCLI = async (argv: string[], signal?: AbortSignal): Promise<string> => {
     if (settings.backend === "v1") {
       return "mcpx: no daemon is reachable, and backend=v1 forbids running the binary.";
     }
-    const out = await runBin(ladderOptions(), argv);
+    const out = await runBin(ladderOptions(), argv, undefined, signal);
     if (out === undefined) {
       return (
         "mcpx: no daemon is reachable and no mcpx binary could be run. " +
@@ -604,8 +607,11 @@ export default (async ({ directory, worktree, project, client }, options) => {
         // The session goes with the script: the daemon leases one pooled
         // instance per session, so state set by one mcpx_exec is there for
         // the next one in the same opencode session.
-        const out = await viaDaemon((c) => c.exec(args.source, context?.sessionID));
-        const body = out === undefined ? await viaCLI(["exec", args.source]) : renderExec(out);
+        const out = await viaDaemon(
+          (c) => c.exec(args.source, context?.sessionID, context?.abort),
+          context?.abort,
+        );
+        const body = out === undefined ? await viaCLI(["exec", args.source], context?.abort) : renderExec(out);
         return body + (await annotation());
       },
     }),
