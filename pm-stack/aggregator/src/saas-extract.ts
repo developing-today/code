@@ -27,6 +27,20 @@ import { isFiniteNumber, isNonEmptyString, isNonNegative, isRecord, parseIsoDate
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
+// Cap the string at max UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7743, mirroring the #7694/#7711 capUnits guard in
+// actions.ts): an astral character straddling the cap is dropped whole.
+// Local copy, like comments.ts (#7731) and activity.ts (#7725).
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
+
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
   // Real calendar dates only (#2264), mirroring snapshot-records.ts.
@@ -81,7 +95,7 @@ function readsOf(section: string, cap = 14): DatedRead[] {
   for (const raw of section.split("\n")) {
     const line = raw.replace(/^-\s/, "").replace(/\*\*/g, "").trim();
     const at = freshestDate(line);
-    if (at && line.length > 12) reads.push({ at, text: line.slice(0, 400) });
+    if (at && line.length > 12) reads.push({ at, text: capUnits(line, 400) });
   }
   return reads.sort((a, b) => b.at.localeCompare(a.at)).slice(0, cap);
 }
@@ -91,7 +105,7 @@ function conflictsOf(section: string): string[] {
   const out: string[] = [];
   for (const raw of section.split("\n")) {
     const line = raw.replace(/^-\s/, "").replace(/\*\*/g, "").trim();
-    if (/conflict|discrepancy|disagree/i.test(line) && line.length > 12) out.push(line.slice(0, 400));
+    if (/conflict|discrepancy|disagree/i.test(line) && line.length > 12) out.push(capUnits(line, 400));
   }
   return out;
 }
@@ -116,7 +130,7 @@ function paygOf(section: string): { estimate: PaygEstimate | null; note?: string
         low: Number(m[1]),
         high: Number(m[2]),
         period: "per month",
-        note: stripPaygLabel(text).replace(/\*\*/g, "").slice(0, 300),
+        note: capUnits(stripPaygLabel(text).replace(/\*\*/g, ""), 300),
       },
     };
   }
@@ -127,7 +141,7 @@ function paygOf(section: string): { estimate: PaygEstimate | null; note?: string
     const why = stripPaygLabel(text)
       .replace(/^not applicable\s*—\s*/i, "")
       .split(".")[0];
-    return { estimate: null, note: `not applicable — ${why}`.slice(0, 220) };
+    return { estimate: null, note: capUnits(`not applicable — ${why}`, 220) };
   }
   return { estimate: null };
 }
@@ -741,7 +755,7 @@ export function extractSaasServices(doc: string): SaasService[] {
         measuredAt,
         conflicts: conflictsOf(section),
         reads: readsOf(section),
-        usageNote: usageText ? usageText.slice(0, 600) : spec.shellNote,
+        usageNote: usageText ? capUnits(usageText, 600) : spec.shellNote,
         billedUsd: spec.id === "supabase" ? 0 : undefined,
       });
     } catch {
@@ -1062,7 +1076,7 @@ export function applySupabaseExport(
       limit,
       unit,
       percent: used != null && limit != null && limit > 0 ? Math.round((used / limit) * 1000) / 10 : undefined,
-      note: parts.join(" ").slice(0, 600),
+      note: capUnits(parts.join(" "), 600),
     };
   });
   if (doc.billing && doc.billing.measured !== false && isNonNegative(doc.billing.billedUsd)) {

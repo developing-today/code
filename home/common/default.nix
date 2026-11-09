@@ -633,6 +633,7 @@ in
         "%h/.config/opencode/opencode.jsonc"
         "%h/.local/share/t3code/userdata/settings.json"
         "%h/.claude.json"
+        "%h/.claude/.credentials.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
         "%h/.pi/agent/auth.json"
@@ -744,7 +745,9 @@ in
   # bin programs and the agyProxyPort/antigravityLsProxyPort lets from
   # git history, drop the session-variable removals below, and
   # re-point the plan seats in opencode.jsonc back from
-  # antigravity-direct.
+  # antigravity-direct. Before retiring any future provider door, run
+  # the retirement gate (scripts/check-provider-retirement-gate.sh, #5610)
+  # to verify zero active configuration references remain.
 
   # Design Code proxy removed (2026-11-03, Drew): its unit definition
   # stood here. Drew removed the design persona routes and the whole
@@ -1749,6 +1752,11 @@ in
       with pkgs;
       [
         libnotify
+        # On-screen keyboard (wvkbd-mobintl) for touch use over the
+        # Sunshine/Moonlight stream: launched only while a stream is
+        # live, by Sunshine's global_prep_cmd (nixos/hosts/amd-sunshine.nix);
+        # SUPER+SHIFT+O re-shows it (bind in config/hypr/hyprland.lua).
+        wvkbd
         # Atlas search CLI + service binary (pkgs/atlas-search);
         # step-6 cutover (#5356): the Rust binary is the resolved
         # `atlas-search` (the Python CLI is kept as atlas-search-py).
