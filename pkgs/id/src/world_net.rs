@@ -4426,12 +4426,13 @@ mod tests {
         let cap_beta = invite_for(&client_ep, &addr, Some("beta"), "bob").await;
 
         let mut sessions = WorldSessions::new(client_ep.clone());
-        let s = sessions
+        let s_handle = sessions
             .open_session(addr.clone(), Some("alpha"))
             .await
             .unwrap();
         let mut prekeyed = join(&cap_alpha, None);
         prekeyed["world"] = serde_json::json!("beta");
+        let s = sessions.session(s_handle).unwrap();
         s.send_json(&prekeyed).await.unwrap();
         assert_eq!(
             next(s).await.unwrap()["type"],
@@ -4440,20 +4441,21 @@ mod tests {
         );
 
         // A genuine beta session joins beta; alpha's chat stays in alpha.
-        let b = sessions
+        let b_handle = sessions
             .open_session(addr.clone(), Some("beta"))
             .await
             .unwrap();
+        let b = sessions.session(b_handle).unwrap();
         b.send_json(&join(&cap_beta, None)).await.unwrap();
         assert_eq!(next(b).await.unwrap()["type"], "snapshot");
-        let alpha = sessions.session(&addr, Some("alpha")).unwrap();
+        let alpha = sessions.session(s_handle).unwrap();
         alpha
             .send_json(&serde_json::json!({"type": "chat", "text": "alpha only"}))
             .await
             .unwrap();
         let frame = next(alpha).await.unwrap();
         assert!(frame.to_string().contains("alpha only"));
-        let beta = sessions.session(&addr, Some("beta")).unwrap();
+        let beta = sessions.session(b_handle).unwrap();
         let silent =
             tokio::time::timeout(std::time::Duration::from_millis(500), beta.recv_json()).await;
         assert!(
