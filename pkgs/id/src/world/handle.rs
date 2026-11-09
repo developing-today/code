@@ -128,6 +128,7 @@ impl WorldHandle {
             overdue_at_open,
             acting: None,
             acting_session: None,
+            device_manifest: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver));
