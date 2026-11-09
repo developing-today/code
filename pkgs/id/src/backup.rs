@@ -498,9 +498,21 @@ fn validate_envelope(envelope: &[u8]) -> Result<(), BackupError> {
             "unsupported envelope cipher",
         ));
     }
-    let memory_kib = u32::from_le_bytes(envelope[8..12].try_into().unwrap());
-    let iterations = u32::from_le_bytes(envelope[12..16].try_into().unwrap());
-    let lanes = u32::from_le_bytes(envelope[16..20].try_into().unwrap());
+    let memory_kib = u32::from_le_bytes(
+        envelope[8..12]
+            .try_into()
+            .map_err(|_| BackupError::MalformedEnvelope("truncated KDF memory parameter"))?,
+    );
+    let iterations = u32::from_le_bytes(
+        envelope[12..16]
+            .try_into()
+            .map_err(|_| BackupError::MalformedEnvelope("truncated KDF iteration parameter"))?,
+    );
+    let lanes = u32::from_le_bytes(
+        envelope[16..20]
+            .try_into()
+            .map_err(|_| BackupError::MalformedEnvelope("truncated KDF lane parameter"))?,
+    );
     if !(MIN_MEMORY_KIB..=MAX_MEMORY_KIB).contains(&memory_kib)
         || !(MIN_ITERATIONS..=MAX_ITERATIONS).contains(&iterations)
         || !(MIN_LANES..=MAX_LANES).contains(&lanes)
