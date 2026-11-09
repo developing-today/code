@@ -1518,9 +1518,11 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         // returned tasks stamped code-e and code-t), it checkpointed
         // and parked a task it did not own, and the guard below
         // could quarantine a live foreign claim. The conditional
-        // UPDATE by id stays atomic: if a competing claim takes the
-        // picked row first, its status leaves ('queued', 'parked'),
-        // this UPDATE affects 0 rows, and the loop re-picks.
+        // UPDATE by id stays atomic: it re-checks the full pick
+        // eligibility (status, attempts cap, not_before) at claim
+        // instant, so if a competing claim takes the picked row
+        // first — or it is parked into the future in between — this
+        // UPDATE affects 0 rows and the loop re-picks.
         let pick = t.query_objs(
             "SELECT id FROM tasks WHERE queue = ? \
                AND payload IS NOT NULL AND payload <> '' AND payload <> '{}' AND ( \
@@ -1545,7 +1547,10 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
                lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
                updated_at = ? \
-             WHERE id = ? AND status IN ('queued', 'parked')",
+             WHERE id = ? AND ( \
+               (status = 'queued' AND attempts < max_attempts \
+                 AND (not_before IS NULL OR not_before <= ?)) \
+               OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?))",
             &[
                 Arg::Text(worker.clone()),
                 Arg::Text(now.clone()),
@@ -1553,6 +1558,8 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 arg_str(lane.as_deref()),
                 Arg::Text(now.clone()),
                 Arg::Int(pick_id),
+                Arg::Text(now.clone()),
+                Arg::Text(now.clone()),
             ],
         )?;
         if upd.affected == 0 {
