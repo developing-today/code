@@ -539,13 +539,15 @@
       "id": "pkarr-worker",
       "paths": [
         "pkgs/pkarr-worker/test/deploy-args.test.ts",
+        "pkgs/pkarr-worker/test/deploy-probe.test.ts",
+        "pkgs/pkarr-worker/test/deploy-verification.test.ts",
         "pkgs/pkarr-worker/test/worker.test.ts"
       ],
       "invocation": "cd pkgs/pkarr-worker && npm test (Vitest)",
       "venue": null,
       "status": "uncovered",
       "phase2_issue": 6093,
-      "reason": "Clean-checkout execution is broken by lockfile mismatch and Vitest/pool-workers incompatibility; make runnable before wiring."
+      "reason": "Verified runnable from a clean checkout (2026-11-08 probe at aa01b61853: npm ci succeeds, npm test = 4 files / 61 tests passed); remaining gap is venue wiring (#6093)."
     },
     {
       "id": "chat.go",
@@ -798,7 +800,8 @@
       "id": "cold-store-reaper.worker",
       "paths": [
         "pkgs/cold-store-reaper/worker/test/run-local-proof.mjs",
-        "pkgs/cold-store-reaper/worker/test/range-ignored.test.mjs"
+        "pkgs/cold-store-reaper/worker/test/range-ignored.test.mjs",
+        "pkgs/cold-store-reaper/worker/test/bounded-decompress.test.mjs"
       ],
       "invocation": "cd pkgs/cold-store-reaper/worker && npm test",
       "venue": {
