@@ -1159,6 +1159,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1573,6 +1574,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -1631,6 +1634,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1882,6 +1887,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1918,6 +1924,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -3108,10 +3115,18 @@ mod tests {
     }
 
     #[test]
-    fn test_a_hold_of_an_arrived_key_is_skipped_and_leaves_no_row() {
-        // #3911: the ordinary hold path refuses a key the pool has already
-        // arrived, without a duplicate release. The pool does not hold it, and
-        // no row survives the transaction.
+    fn test_a_hold_of_a_released_key_is_held_again_release_only_contract() {
+        // #3911 originally pinned this path the other way: a hold of a key
+        // the pool had arrived was skipped, because the store's release
+        // recorded every key in the pool's arrived set. #1730 removed that
+        // recording (release-only store path, PR #3752): the set grew by
+        // one entry per event ever applied. Duplicate and replay
+        // recognition for an already-applied event lives in the store's
+        // applied table, above this Mirror — so at the Mirror level a
+        // hold after a release is a fresh hold, and its row is the hold's
+        // own. (#3911's restore guards still refuse keys the pool's
+        // standalone insert/park protocol recorded as arrived; the store
+        // path no longer records any.)
         let (_dir, mut store) = open();
         let signer = key(60);
         let events = chain_of(&signer, 2);
@@ -3125,9 +3140,9 @@ mod tests {
             })
             .unwrap();
 
-        // Simulate a durable stale row for the key after it has arrived. The
-        // skipped hold must remove that row in its own transaction; release
-        // itself already deleted the original row above.
+        // A durable row for the key exists again (written directly, the
+        // way a stale row would appear). The fresh hold takes ownership
+        // of it: exactly one row survives, and it is the hold's.
         let stale = Row {
             id: events[1].id,
             author: author(&signer),
@@ -3144,9 +3159,9 @@ mod tests {
                 Ok((again, true))
             })
             .unwrap();
-        assert_eq!(again, waiting_rows::Hold::Skipped);
-        assert!(!store.is_waiting(&events[1].id));
-        assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(again, waiting_rows::Hold::Held);
+        assert!(store.is_waiting(&events[1].id));
+        assert_eq!(store.waiting_ids().unwrap().len(), 1);
         store.check_invariants().unwrap();
     }
 

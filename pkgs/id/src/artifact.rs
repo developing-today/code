@@ -796,13 +796,16 @@ impl ArtifactLog {
     ///
     /// Fails if a complete line is corrupt or does not verify.
     pub fn open(path: &Path) -> Result<Self> {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error).context("reading the artifact file"),
         };
-        let kept = text.rfind('\n').map_or(0, |index| index + 1);
-        if kept < text.len() {
+        let kept = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        if kept < bytes.len() {
             // #2128: mirror Directory::replay / FileJournal::open - a torn
             // final entry is dropped loudly, not silently.
             tracing::warn!(
@@ -814,8 +817,9 @@ impl ArtifactLog {
                 .open(path)?
                 .set_len(u64::try_from(kept)?)?;
         }
+        let text = std::str::from_utf8(&bytes[..kept]).context("artifact file is not UTF-8")?;
         let mut log = Self::default();
-        for (number, line) in text[..kept].lines().enumerate() {
+        for (number, line) in text.lines().enumerate() {
             // #2128: blank lines are cosmetic (Directory::replay skips them
             // in its own journal); enumerate() keeps the physical line
             // number, so a corrupt non-blank line still reports its true
@@ -1796,14 +1800,20 @@ mod tests {
         let second = log.sign(&key(1), &declared(1, 7)).unwrap();
         log.insert(second.clone()).unwrap();
         append(&path, &second).unwrap();
-        let mut text = fs::read_to_string(&path).unwrap();
-        text.push_str("{\"author\":\"tor");
-        fs::write(&path, text).unwrap();
+        let complete = fs::read(&path).unwrap();
+        let mut torn = complete.clone();
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
+        fs::write(&path, torn).unwrap();
 
-        let reopened = ArtifactLog::open(&path).unwrap();
+        let mut reopened = ArtifactLog::open(&path).unwrap();
         assert_eq!(reopened, log);
-        assert!(fs::read_to_string(&path).unwrap().ends_with('\n'));
+        assert_eq!(fs::read(&path).unwrap(), complete);
         assert_eq!(reopened.head_seq(&public(1)), 2);
+        let third = reopened.sign(&key(1), &declared(1, 9)).unwrap();
+        reopened.insert(third.clone()).unwrap();
+        append(&path, &third).unwrap();
+        assert_eq!(ArtifactLog::open(&path).unwrap(), reopened);
     }
 
     #[test]

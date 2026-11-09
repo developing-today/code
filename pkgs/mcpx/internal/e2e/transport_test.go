@@ -122,7 +122,7 @@ func TestServeStdioCancellation(t *testing.T) {
 		case <-time.After(20 * time.Second):
 			t.Fatal("a ping behind a cancelled call was not answered")
 		}
-		stdin.Close()
+		_ = stdin.Close()
 		for f := range frames {
 			if f["id"] == float64(2) {
 				t.Fatalf("the cancelled request was answered: %v", f)
@@ -154,13 +154,13 @@ func TestDaemonMCPTransport(t *testing.T) {
 	t.Run("2025-11-25/streamable-http/foreign-origin-is-403", func(t *testing.T) {
 		r := do(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
 			map[string]string{"Origin": "https://attacker.example"})
-		r.Body.Close()
+		_ = r.Body.Close()
 		if r.StatusCode != http.StatusForbidden {
 			t.Fatalf("status %d, want 403", r.StatusCode)
 		}
 		r = do(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
 			map[string]string{"Origin": "http://localhost:5173"})
-		r.Body.Close()
+		_ = r.Body.Close()
 		if r.StatusCode != http.StatusOK {
 			t.Fatalf("a loopback origin should be served, got %d", r.StatusCode)
 		}
@@ -169,7 +169,7 @@ func TestDaemonMCPTransport(t *testing.T) {
 	t.Run("2026-07-28/streamable-http/missing-headers-is-400-header-mismatch", func(t *testing.T) {
 		r := do(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{`+
 			`"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`, nil)
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		var f struct {
 			Error struct {
 				Code int `json:"code"`
@@ -183,7 +183,7 @@ func TestDaemonMCPTransport(t *testing.T) {
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#listening-for-messages-from-the-server
 	t.Run("2025-11-25/streamable-http/get-stream-then-delete-then-404", func(t *testing.T) {
 		init := do(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}`, nil)
-		init.Body.Close()
+		_ = init.Body.Close()
 		sid := init.Header.Get("Mcp-Session-Id")
 		if sid == "" {
 			t.Fatal("no session")
@@ -195,12 +195,12 @@ func TestDaemonMCPTransport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer get.Body.Close()
+		defer func() { _ = get.Body.Close() }()
 		if !strings.HasPrefix(get.Header.Get("Content-Type"), "text/event-stream") {
 			t.Fatalf("GET: status %d type %q", get.StatusCode, get.Header.Get("Content-Type"))
 		}
 		del := do(http.MethodDelete, "", map[string]string{"Mcp-Session-Id": sid})
-		del.Body.Close()
+		_ = del.Body.Close()
 		ended := make(chan struct{})
 		go func() {
 			sc := bufio.NewScanner(get.Body)
@@ -214,7 +214,7 @@ func TestDaemonMCPTransport(t *testing.T) {
 			t.Fatal("DELETE should end the session's GET stream")
 		}
 		r := do(http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"ping"}`, map[string]string{"Mcp-Session-Id": sid})
-		r.Body.Close()
+		_ = r.Body.Close()
 		if r.StatusCode != http.StatusNotFound {
 			t.Fatalf("status %d after DELETE, want 404", r.StatusCode)
 		}

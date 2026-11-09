@@ -24,7 +24,12 @@
 //   weeks-to-complete for the remaining units; P50 and the
 //   conservative P80 are percentiles of that distribution. The seed
 //   derives from the buckets and the remaining-unit count, so the
-//   same inputs always produce the same forecast. A scope whose
+//   same inputs always produce the same forecast. A trial that does
+//   not finish within the per-trial week cap is a CENSORED
+//   observation, never a completion at the cap: a percentile whose
+//   rank falls on a censored trial lies beyond the simulation
+//   horizon and returns no date, with a limitation saying so
+//   (#6386). A scope whose
 //   total observed pace is zero still returns "no_measurable_pace":
 //   resampling zero buckets can only ever draw zero.
 // - Effort stays explicit: remaining work is reported per effort
@@ -46,7 +51,13 @@ import type { RefKey } from "./model.ts";
 // Outputs for the same inputs change materially (bursty scopes with
 // a zero median bucket now forecast instead of returning
 // no_measurable_pace), so the model version bumps.
-export const FORECAST_MODEL_VERSION = "forecast/v2";
+// forecast/v3 (#6386): capped resampling trials are censored
+// observations, not completions at the cap. Outputs change
+// materially for horizon-exceeding scopes (a percentile beyond the
+// simulation horizon now returns no date instead of a date at the
+// cap, which understated the true completion), so the version bumps
+// again.
+export const FORECAST_MODEL_VERSION = "forecast/v3";
 export const STALL_MODEL_VERSION = "stall-risk/v1";
 
 /** At/above this score an item is surfaced as "at risk" (§3). */
@@ -125,8 +136,13 @@ const RESAMPLE_TRIALS = 4096;
 /** Per-trial week cap: with any positive bucket a trial finishes
  * almost surely long before this; the cap only bounds pathological
  * inputs (a huge remaining count over near-zero pace) so the pure
- * function always terminates. A capped trial reads as that many
- * weeks, which is conservative for both percentiles. */
+ * function always terminates. A trial that reaches the cap
+ * unfinished is CENSORED — it is not a completion at the cap.
+ * (Before #6386 a capped trial read as a completion at that many
+ * weeks; the old comment here called that "conservative", which is
+ * backwards for a trial whose true completion exceeds the cap:
+ * recording the cap pulls the percentile EARLIER than the true
+ * completion and publishes an optimistic date.) */
 const RESAMPLE_MAX_WEEKS = 100_000;
 
 /**
@@ -134,30 +150,41 @@ const RESAMPLE_MAX_WEEKS = 100_000;
  * completion buckets (zero weeks included — they are observations,
  * not gaps) with replacement until the drawn completions cover the
  * remaining units; the number of drawn weeks is one sample of the
- * weeks-to-complete distribution. Returns the sorted samples.
+ * weeks-to-complete distribution. Returns the sorted samples, with
+ * a trial that does not finish within RESAMPLE_MAX_WEEKS as a
+ * censored observation (null, sorted last) — never as a completion
+ * at the cap (#6386).
  * Precondition: the buckets' total is positive (the caller returns
  * no_measurable_pace otherwise — resampling all-zero buckets can
  * only draw zero and no trial would ever finish).
  */
-function resampledWeeksToComplete(buckets: number[], remainingUnits: number): number[] {
+function resampledWeeksToComplete(buckets: number[], remainingUnits: number): (number | null)[] {
   const rng = mulberry32(estimatorSeed(buckets, remainingUnits));
-  const samples: number[] = [];
+  const maxBucket = Math.max(...buckets);
+  const samples: (number | null)[] = [];
   for (let trial = 0; trial < RESAMPLE_TRIALS; trial++) {
     let completed = 0;
     let weeks = 0;
     while (completed < remainingUnits && weeks < RESAMPLE_MAX_WEEKS) {
+      // Exact early censoring: when the units still remaining exceed
+      // what drawing the largest bucket every remaining week could
+      // cover, this trial cannot finish within the cap — it is
+      // censored now, and no further draws can change that.
+      if (remainingUnits - completed > (RESAMPLE_MAX_WEEKS - weeks) * maxBucket) break;
       completed += buckets[Math.floor(rng() * buckets.length)]!;
       weeks++;
     }
-    samples.push(weeks);
+    samples.push(completed >= remainingUnits ? weeks : null);
   }
-  return samples.sort((a, b) => a - b);
+  return samples.sort((a, b) => (a ?? Number.POSITIVE_INFINITY) - (b ?? Number.POSITIVE_INFINITY));
 }
 
-/** Nearest-rank percentile of an ascending-sorted sample. */
-function percentile(sortedXs: number[], q: number): number {
+/** Nearest-rank percentile of an ascending-sorted sample, or null
+ * when the rank falls on a censored sample: that percentile lies
+ * beyond the simulation horizon, so no weeks value is defensible. */
+function percentile(sortedXs: (number | null)[], q: number): number | null {
   const idx = Math.min(sortedXs.length - 1, Math.max(0, Math.ceil(q * sortedXs.length) - 1));
-  return sortedXs[idx]!;
+  return sortedXs[idx] ?? null;
 }
 
 export type ForecastConfidence = "high" | "medium" | "low" | "unavailable";
@@ -418,12 +445,23 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   // the median weeks-to-complete; P80 is the conservative (slower)
   // tail of the same distribution, so P50 <= P80 by construction.
   const weeksToComplete = resampledWeeksToComplete(paceSeries, remainingUnits);
-  result.p50 = etaDateForWeeks(asOf, percentile(weeksToComplete, 0.5));
-  if (result.p50 === null) {
+  const censoredTrials = weeksToComplete.filter((w) => w === null).length;
+  const p50Weeks = percentile(weeksToComplete, 0.5);
+  const p80Weeks = percentile(weeksToComplete, 0.8);
+  result.p50 = p50Weeks === null ? null : etaDateForWeeks(asOf, p50Weeks);
+  if (p50Weeks === null) {
+    limitations.push(
+      `P50 exceeds the simulation horizon: ${censoredTrials} of ${RESAMPLE_TRIALS} resampled trials did not complete within the ${RESAMPLE_MAX_WEEKS}-week cap (censored observations, not completions), so no P50 date is returned`,
+    );
+  } else if (result.p50 === null) {
     limitations.push("P50 horizon exceeds the representable date range; no P50 date is returned");
   }
-  result.p80 = etaDateForWeeks(asOf, percentile(weeksToComplete, 0.8));
-  if (result.p80 === null) {
+  result.p80 = p80Weeks === null ? null : etaDateForWeeks(asOf, p80Weeks);
+  if (p80Weeks === null) {
+    limitations.push(
+      `P80 exceeds the simulation horizon: ${censoredTrials} of ${RESAMPLE_TRIALS} resampled trials did not complete within the ${RESAMPLE_MAX_WEEKS}-week cap (censored observations, not completions), so no P80 date is returned`,
+    );
+  } else if (result.p80 === null) {
     limitations.push("P80 horizon exceeds the representable date range; no P80 date is returned");
   }
 
@@ -433,6 +471,11 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
     const stable = comparisonRate > 0 && Math.abs(primaryRate - comparisonRate) / comparisonRate <= 0.25;
     result.confidence = completionsComparison >= 12 && comparison.length >= 8 && stable ? "high" : "medium";
     if (!stable) limitations.push("4-week and 8-week rates differ materially; confidence capped");
+  }
+  if (p50Weeks === null && p80Weeks === null) {
+    // Both percentiles lie beyond the simulation horizon: no date
+    // was returned at all, so no confidence attaches to one.
+    result.confidence = "unavailable";
   }
   return result;
 }

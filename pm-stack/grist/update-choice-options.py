@@ -27,7 +27,10 @@ Usage:
         --add id --add infra [--base http://127.0.0.1:8484] [--dry-run]
 
 Exit codes: 0 ok (including "nothing to add"), 1 API/verification
-failure, 2 usage error.
+failure, 2 usage error. A stored widgetOptions value with an
+unexpected shape (not a JSON object, or a ``choices`` that is not a
+list of strings) is an exit-1 failure reported on stderr -- it is
+never coerced, and no PATCH is sent (#6588).
 """
 
 from __future__ import annotations
@@ -42,14 +45,57 @@ import urllib.request
 API_TIMEOUT_SECONDS = 30
 
 
+class WidgetOptionsError(ValueError):
+    """The stored widgetOptions value has an unexpected shape (#6588).
+
+    A data problem, not a usage problem: run() reports it on stderr
+    and exits 1, like an API/verification failure. It is raised before
+    any PATCH is built, so a shape failure never writes anything.
+    """
+
+
+def check_widget_options(widget_options: object) -> dict:
+    """Return widget_options if its shape is the one the merge needs.
+
+    The stored value is written by other tools and Grist versions as
+    well as this one, so its shape is not guaranteed: widgetOptions
+    must be a JSON object, and its ``choices`` (when present and not
+    null) must be a list of strings. Anything else is refused by
+    name -- a string ``choices`` used to be shredded into
+    one-character choices by list(), and a non-object widgetOptions
+    died as a raw ValueError traceback out of dict() (#6588).
+    """
+    if not isinstance(widget_options, dict):
+        raise WidgetOptionsError(
+            f"widgetOptions is not a JSON object (got {type(widget_options).__name__}); "
+            "refusing to merge choices into it"
+        )
+    choices = widget_options.get("choices")
+    if choices is not None:
+        if not isinstance(choices, list):
+            raise WidgetOptionsError(
+                f"widgetOptions 'choices' is not a list (got {type(choices).__name__}); "
+                "refusing to merge -- a string would be shredded into one-character choices"
+            )
+        for i, choice in enumerate(choices):
+            if not isinstance(choice, str):
+                raise WidgetOptionsError(
+                    f"widgetOptions 'choices' entry {i} is not a string "
+                    f"(got {type(choice).__name__}); refusing to merge"
+                )
+    return widget_options
+
+
 def merge_choices(widget_options: dict, additions: list[str]) -> tuple[dict, list[str]]:
     """Return (new_widget_options, actually_added).
 
     Pure function (unit-tested in test_update_choice_options.py):
     appends each addition that is not already a choice, preserves all
-    other keys and the existing choice order.
+    other keys and the existing choice order. Raises
+    WidgetOptionsError when the stored shape is not a JSON object
+    with a list-of-strings ``choices`` (#6588).
     """
-    merged = dict(widget_options)
+    merged = dict(check_widget_options(widget_options))
     choices = list(merged.get("choices") or [])
     added: list[str] = []
     for choice in additions:
@@ -92,7 +138,15 @@ def get_widget_options(base: str, key: str, doc: str, table: str, column: str) -
     for col in data["columns"]:  # type: ignore[index]
         if col["id"] == column:
             raw = col["fields"].get("widgetOptions") or ""
-            return json.loads(raw) if raw else {}
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise WidgetOptionsError(
+                    f"stored widgetOptions for column {column!r} is not valid JSON: {exc}"
+                ) from exc
+            return check_widget_options(parsed)
     raise SystemExit(f"column {column!r} not found in table {table!r}")
 
 
@@ -165,6 +219,9 @@ def run(argv: list[str] | None = None) -> int:
     try:
         return main(argv)
     except TimeoutError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except WidgetOptionsError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

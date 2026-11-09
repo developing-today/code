@@ -21,9 +21,18 @@
 {
   lib,
   rustPlatform,
-  onnxruntime,
+  callPackage,
   python3,
 }:
+
+let
+  # ONNX Runtime is pinned to the latest upstream release, vendored
+  # in-tree (./onnxruntime) — never the ambient nixpkgs version.
+  # The corpus and the Gate A fixtures are embedded/certified under
+  # that release; the library baked in below must be the same one
+  # (code#6765, Drew's ruling 2026-11-08).
+  onnxruntime = callPackage ./onnxruntime { };
+in
 
 rustPlatform.buildRustPackage {
   pname = "atlas-search";
