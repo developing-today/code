@@ -875,6 +875,25 @@
       "reason": "The registered scripts-test workflow is disabled_manually."
     },
     {
+      "id": "scripts.provider-retirement-gate",
+      "paths": [
+        "scripts/tests/test_check_provider_retirement_gate.py"
+      ],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "provider retirement gate contract tests (#5610)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [
+        5610,
+        7789
+      ],
+      "reason": "Wired by #7789: scripts-test.yml names the suite explicitly, following the sibling pattern for this directory. The workflow is active (the scripts.direct-python row's disabled_manually note is stale registry state for #6187 to refresh)."
+    },
+    {
       "id": "scripts.research-workflow",
       "paths": [
         "scripts/tests/test_research_workflow.py",

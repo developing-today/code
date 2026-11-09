@@ -132,6 +132,12 @@ pub struct Config {
     pub domains: BTreeMap<String, bool>,
     pub proxy: ProxyConfig,
     pub secrets: SecretsConfig,
+    /// `[queue-broker]` — the queue broker role's local view (#6215).
+    #[serde(rename = "queue-broker")]
+    pub queue_broker: RoleConfig,
+    /// `[secrets-broker]` — the secrets broker role's local view (#6215).
+    #[serde(rename = "secrets-broker")]
+    pub secrets_broker: RoleConfig,
     pub dispatch: DispatchConfig,
     #[serde(rename = "dispatch-test")]
     pub dispatch_test: DispatchTestConfig,
@@ -194,6 +200,23 @@ pub struct SecretsConfig {
     /// Path of the secrets-broker token file (handed to the session
     /// broker per request; fleet never opens it).
     pub token_file: Option<String>,
+}
+
+/// `[<role>]` — a broker role's local transport view (#6215,
+/// design #5699). Both fields are optional and both are
+/// preferences between *working* routes, never a disable lever:
+/// an unrecognized `transport` is ignored by the role's resolution
+/// (which then falls through to the probe), exactly like
+/// [`SearchConfig::via`].
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoleConfig {
+    /// Transport preference: "socket" | "tcp". Any other value is
+    /// ignored by [`Config::role_transport`].
+    pub transport: Option<String>,
+    /// Explicit socket path for the role. Relative paths resolve
+    /// under $HOME, like every other socket path here.
+    pub socket: Option<String>,
 }
 
 /// `[dispatch]` — the dispatch thin client's view of pm-dispatch
@@ -527,25 +550,76 @@ impl Config {
     }
 
     /// The queue broker's Unix socket path (#6216). `QUEUE_BROKER_SOCKET`
-    /// beats the default; no config-file field exists for it, so the
-    /// resolution is env -> default under $HOME, like the session
-    /// broker's socket with the config source absent.
+    /// beats the config file's `[queue-broker] socket` beats the
+    /// runtime-dir default (#6215).
     pub fn queue_broker_socket(&self) -> PathBuf {
-        Self::broker_socket_from(
+        Self::role_socket_from(
             env_path("QUEUE_BROKER_SOCKET"),
-            Some(DEFAULT_QUEUE_BROKER_SOCKET),
+            self.queue_broker.socket.as_deref(),
+            "queue-broker",
             &home_dir(),
+            env_xdg_base("XDG_RUNTIME_DIR"),
         )
     }
 
     /// The secrets broker's Unix socket path (#6216).
-    /// `SECRETS_BROKER_SOCKET` beats the default.
+    /// `SECRETS_BROKER_SOCKET` beats the config file's
+    /// `[secrets-broker] socket` beats the runtime-dir default (#6215).
     pub fn secrets_broker_socket(&self) -> PathBuf {
-        Self::broker_socket_from(
+        Self::role_socket_from(
             env_path("SECRETS_BROKER_SOCKET"),
-            Some(DEFAULT_SECRETS_BROKER_SOCKET),
+            self.secrets_broker.socket.as_deref(),
+            "secrets-broker",
             &home_dir(),
+            env_xdg_base("XDG_RUNTIME_DIR"),
         )
+    }
+
+    /// The transport preference for a broker role from
+    /// `[queue-broker] transport` / `[secrets-broker] transport`
+    /// ("socket" | "tcp"), when configured (#6215). `None` for an
+    /// unknown role or an unrecognized value: the caller then
+    /// probes, so a typo degrades to today's behavior instead of
+    /// disabling a route.
+    pub fn role_transport(&self, role: &str) -> Option<String> {
+        let configured = match role {
+            "queue-broker" => self.queue_broker.transport.as_deref(),
+            "secrets-broker" => self.secrets_broker.transport.as_deref(),
+            _ => None,
+        };
+        configured
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| v == "socket" || v == "tcp")
+    }
+
+    /// A role socket's resolution (#6215, design #5699): explicit
+    /// env > config > `$XDG_RUNTIME_DIR/fleet/<role>.sock` when
+    /// `XDG_RUNTIME_DIR` is an absolute non-empty base (tmpfs,
+    /// per-login, auto-cleaned — the right home for a runtime
+    /// socket) > the role's historical `$HOME`-anchored default.
+    /// Explicit overrides keep their documented relative meaning
+    /// (resolved under $HOME), like [`Config::broker_socket`].
+    fn role_socket_from(
+        env_socket: Option<PathBuf>,
+        config_socket: Option<&str>,
+        role: &str,
+        home: &std::path::Path,
+        xdg_runtime_dir: Option<PathBuf>,
+    ) -> PathBuf {
+        if let Some(p) = env_socket {
+            return resolve_under(home, &p);
+        }
+        if let Some(p) = config_socket {
+            return resolve_under(home, &PathBuf::from(p));
+        }
+        if let Some(runtime) = xdg_runtime_dir {
+            return runtime.join("fleet").join(format!("{role}.sock"));
+        }
+        let default = match role {
+            "queue-broker" => DEFAULT_QUEUE_BROKER_SOCKET,
+            _ => DEFAULT_SECRETS_BROKER_SOCKET,
+        };
+        resolve_under(home, &PathBuf::from(default))
     }
 
     pub fn idle_exit_secs(&self) -> u64 {
@@ -911,6 +985,134 @@ mod tests {
             home.join(".config")
                 .join("secrets-broker")
                 .join("broker.sock")
+        );
+    }
+
+    #[test]
+    fn role_sockets_prefer_the_runtime_dir_then_the_home_default() {
+        // #6215 (design #5699): env > config > $XDG_RUNTIME_DIR/fleet/
+        // <role>.sock > the role's historical $HOME default. Oracle:
+        // the documented precedence, checked at every rung.
+        let home = PathBuf::from("/home/tester");
+        let runtime = Some(PathBuf::from("/run/user/1000"));
+        let queue_default = home.join(DEFAULT_QUEUE_BROKER_SOCKET);
+        let secrets_default = home.join(DEFAULT_SECRETS_BROKER_SOCKET);
+
+        // No override, no runtime dir: today's HOME-anchored default.
+        assert_eq!(
+            Config::role_socket_from(None, None, "queue-broker", &home, None),
+            queue_default
+        );
+        assert_eq!(
+            Config::role_socket_from(None, None, "secrets-broker", &home, None),
+            secrets_default
+        );
+
+        // A runtime dir wins over the default, per role name.
+        assert_eq!(
+            Config::role_socket_from(None, None, "queue-broker", &home, runtime.clone()),
+            PathBuf::from("/run/user/1000/fleet/queue-broker.sock")
+        );
+        assert_eq!(
+            Config::role_socket_from(None, None, "secrets-broker", &home, runtime.clone()),
+            PathBuf::from("/run/user/1000/fleet/secrets-broker.sock")
+        );
+
+        // The config field wins over the runtime dir; a relative
+        // config path resolves under $HOME like every other socket.
+        assert_eq!(
+            Config::role_socket_from(
+                None,
+                Some("rel/q.sock"),
+                "queue-broker",
+                &home,
+                runtime.clone()
+            ),
+            home.join("rel").join("q.sock")
+        );
+
+        // The env var wins over everything.
+        assert_eq!(
+            Config::role_socket_from(
+                Some(PathBuf::from("/abs/env.sock")),
+                Some("/abs/config.sock"),
+                "queue-broker",
+                &home,
+                runtime
+            ),
+            PathBuf::from("/abs/env.sock")
+        );
+    }
+
+    #[test]
+    fn role_transport_parses_only_the_two_working_routes() {
+        // #6215: a preference between working routes, not a disable
+        // lever — an unrecognized value is None (the caller probes).
+        let cfg: Config = toml::from_str(
+            r#"
+[queue-broker]
+transport = " Socket "
+[secrets-broker]
+transport = "udp"
+"#,
+        )
+        .expect("parse");
+        assert_eq!(
+            cfg.role_transport("queue-broker").as_deref(),
+            Some("socket")
+        );
+        assert_eq!(cfg.role_transport("secrets-broker"), None);
+        assert_eq!(cfg.role_transport("dispatch"), None);
+        assert_eq!(Config::default().role_transport("queue-broker"), None);
+    }
+
+    #[test]
+    fn role_config_rejects_unknown_fields() {
+        // #6215: deny-unknown-fields discipline holds for the new
+        // role tables, so a typo is a parse error, not silence.
+        let err = toml::from_str::<Config>(
+            r#"
+[queue-broker]
+transports = "socket"
+"#,
+        )
+        .expect_err("unknown role field must not parse");
+        assert!(err.to_string().contains("transports"), "{err}");
+    }
+
+    #[test]
+    fn role_socket_overrides_read_from_the_config_file() {
+        // #6215: the public accessors wire env/config/runtime together;
+        // the config-file source is checked here (the env source is
+        // covered by role_sockets_prefer_the_runtime_dir_then_the_home_default).
+        let cfg: Config = toml::from_str(
+            r#"
+[queue-broker]
+socket = "/abs/q.sock"
+[secrets-broker]
+socket = "rel/s.sock"
+"#,
+        )
+        .expect("parse");
+        assert_eq!(
+            Config::role_socket_from(
+                None,
+                cfg.queue_broker.socket.as_deref(),
+                "queue-broker",
+                &PathBuf::from("/home/tester"),
+                Some(PathBuf::from("/run/user/1000"))
+            ),
+            PathBuf::from("/abs/q.sock")
+        );
+        assert_eq!(
+            Config::role_socket_from(
+                None,
+                cfg.secrets_broker.socket.as_deref(),
+                "secrets-broker",
+                &PathBuf::from("/home/tester"),
+                Some(PathBuf::from("/run/user/1000"))
+            ),
+            PathBuf::from("/home/tester").join("rel").join("s.sock")
         );
     }
 
