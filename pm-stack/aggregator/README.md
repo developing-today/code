@@ -480,10 +480,11 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 | `GRIST_API_KEY`            | —                                                      | Grist API key (Bitwarden `grist.api-key`)                                                                                                                                                              |
 | `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                               | The `Program roadmap` document id (Phase 2 seed)                                                                                                                                                       |
 | `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                                | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                                                                |
+| `PM_PROJECTOR_API_TOKEN`   | —                                                      | Projector bearer token; the GitHub hot-list consumer uses it to acknowledge completed checkpoints (copy the same secret configured on the projector into the aggregator environment)                 |
 | `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                      | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                                                            |
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                       | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                 |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                      | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                      |
-| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json` | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                                                       |
+| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json` | Activity-ingestion store (#3321) — per-source checkpoints, dedupe seen sets, source status, and gap records for watchdog/Kaneo/GitHub writers                                                         |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
@@ -503,19 +504,31 @@ view use the same summary, and `/api/today.json` includes it. Done cards
 are completion history and are not counted as WIP.
 ### Activity ingestion into the event stream (#3321)
 
-Watchdog breach episodes and Kaneo board changes are ingested into the
-#1739 event stream by `src/activity.ts`, with persisted per-source
-checkpoints: replaying a duplicate delivery is a no-op, and a restart
-resumes from the checkpoint instead of re-emitting. Known source
-outages are recorded as gap records (source + time range) and rendered
-on `/events` as holes in the history — never as complete coverage; a
-backfill/recovery pass flips a gap's status. Per-source coverage
-(supported / unsupported / historical ranges) is documented in
-`ACTIVITY_SOURCE_COVERAGE` in `src/activity.ts`, rendered on `/events`,
-and served at `/api/activity.json` together with the checkpoints and
-gaps. GitHub activity is explicitly **unsupported** until the #2072
-webhook/hot-list ingestion lands — #3321's boundary forbids a
-competing receiver.
+Watchdog breach episodes, Kaneo board changes, and GitHub events from
+the #2072/#5204 projector hot list are ingested into the #1739 event
+stream by `src/activity.ts`. The GitHub consumer in
+`src/github-hot-list.ts` pins each sweep to the projector's high-water
+and acknowledges the remote consumer checkpoint only after every row in
+that sweep is durably ingested. A duplicate replay is a no-op, and an
+aggregator restart resumes from the projector's persisted checkpoint
+with the local seen-id store as a second idempotency guard. Set
+`PM_PROJECTOR_API_TOKEN` in the aggregator environment to the same
+bearer token configured for the projector; `install.sh` copies only that
+one variable from the projector's state `.env` and does not expose the
+GitHub App credentials to the aggregator. Without the token the GitHub
+source is reported as `unconfigured` and is not represented as complete.
+
+Known source outages and consumer lag are recorded as gap records
+(source + time range) and rendered on `/events` as holes in the history;
+recovery closes a gap as backfilled, while malformed/unrecoverable
+checkpoint state is marked `unrecoverable`. `/api/activity.json` exposes
+checkpoints, gaps, source status, and `completeHistory: false` for the
+GitHub source: `current` means caught up to the hot-list high-water, not
+complete GitHub history. Per-source coverage (supported / unsupported /
+historical ranges) is documented in `ACTIVITY_SOURCE_COVERAGE` in
+`src/activity.ts` and rendered on `/events`. GitHub coverage begins only
+with rows retained in the hot list; upstream webhook deliveries the
+projector never received and pre-hot-list history remain unsupported.
 
 ## Capability provenance matrix (#1200)
 

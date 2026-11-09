@@ -96,6 +96,8 @@ export interface Config {
   };
   projector: {
     baseUrl: string | null;
+    /** Shared projector bearer token used only to ack the GitHub hot-list cursor. */
+    apiToken: string | null;
   };
   /** Probe targets for the /health page (#1147): the stack services the
    * aggregator does not otherwise read. Kaneo/Grist/projector targets
@@ -213,6 +215,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         env.PM_PROJECTOR_URL === "off" || env.PM_PROJECTOR_URL === "none"
           ? null
           : s(env.PM_PROJECTOR_URL, "http://127.0.0.1:7801"),
+      apiToken: env.PM_PROJECTOR_API_TOKEN?.trim() || null,
     },
     pad: {
       baseUrl: s(env.PM_AGG_PAD_URL, "http://127.0.0.1:7777"),

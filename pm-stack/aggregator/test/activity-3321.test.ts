@@ -1,26 +1,26 @@
 // #3321: activity ingestion — watchdog-event and Kaneo-change writers
 // into the #1739 stream, with per-source persisted checkpoints,
 // duplicate-delivery dedupe, restart resume, and gap records that a
-// backfill flips. GitHub stays unsupported pending #2072 (asserted in
-// the coverage table so the gap is documented, not implied away).
+// backfill flips. GitHub coverage is limited to retained #2072 hot-list
+// rows; pre-hot-list history and missed upstream deliveries stay explicit.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ACTIVITY_SOURCE_COVERAGE,
-  IngestionStore,
-  WatchdogEpisodeStabilizer,
+  type ActivityDelivery,
   activityCoverageHtml,
   createWatchdogGapSyncQueue,
   gapsHtml,
+  IngestionStore,
   ingestActivity,
+  type KaneoCardSnapshot,
   kaneoChangeDeliveries,
   maxUndatedSeqByCard,
   syncWatchdogGaps,
+  WatchdogEpisodeStabilizer,
   watchdogDeliveries,
-  type ActivityDelivery,
-  type KaneoCardSnapshot,
 } from "../src/activity.ts";
 import { EventsStore } from "../src/events.ts";
 import type { TierItem } from "../src/model.ts";
@@ -333,10 +333,12 @@ describe("ingestion store (#3321)", () => {
     expect(gaps.every((g) => g.status === "backfilled")).toBe(true);
   });
 
-  test("coverage documents github as unsupported pending #2072", () => {
+  test("coverage documents bounded GitHub hot-list support", () => {
     const github = ACTIVITY_SOURCE_COVERAGE.find((c) => c.source === "github");
-    expect(github?.status).toBe("unsupported");
-    expect(github?.unsupported).toContain("#2072");
+    expect(github?.status).toBe("supported");
+    expect(github?.supported).toContain("#2072");
+    expect(github?.unsupported).toContain("never received");
+    expect(github?.historical).toContain("no pre-ledger");
     const html = activityCoverageHtml();
     expect(html).toContain("watchdog");
     expect(html).toContain("kaneo");
