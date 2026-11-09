@@ -897,10 +897,9 @@ mod tests {
         // regardless of the gossip cap.
         let discovery = PeerDiscovery::new();
         let now = now_secs();
-        let retained: HashSet<EndpointId> =
-            [stamped(40, "rpc", now.saturating_sub(2)).node_id]
-                .into_iter()
-                .collect();
+        let retained: HashSet<EndpointId> = [stamped(40, "rpc", now.saturating_sub(2)).node_id]
+            .into_iter()
+            .collect();
         assert!(admit_gossip_announcement_capped(
             &discovery,
             stamped(41, "fills-the-cap", now.saturating_sub(1)),
