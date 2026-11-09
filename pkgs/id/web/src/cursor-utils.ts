@@ -141,6 +141,8 @@ export interface CursorForMerge {
   baseOpacity: number;
   onSameLine: boolean;
   isOwnCursor?: boolean;
+  /** Resolved #1790 tooltip display for this cursor, set by cursors.ts. */
+  tooltipDisplay?: TooltipDisplay;
 }
 
 /**
@@ -491,4 +493,51 @@ export function partitionCursorsByMinimized<T extends { clientID: string | numbe
     }
   }
   return { visible, minimized };
+}
+
+// ============================================================================
+// Cursor Lifecycle Logging (#1790, slice 3)
+// ============================================================================
+//
+// The lifecycle events the issue names: a cursor going inactive for the
+// first time (age reaches FADE_START_MS), reaching the fade minimum
+// (FADE_END_MS), being removed, and hover/unhover. Age is measured from
+// the cursor's last relayed update (lastUpdate): cursor frames arrive over
+// the websocket, and removal is driven by the server's connection
+// liveness (socket close / pong timeout, see pkgs/id/src/web/collab.rs),
+// never by local pointer idleness.
+
+export type CursorLifecycleEvent =
+  | "first-inactive"
+  | "minimum-reached"
+  | "removed"
+  | "hover"
+  | "unhover";
+
+/**
+ * Age-based lifecycle events that should be logged for a cursor of age
+ * `ageMs`, given the events already logged for it. Pure: the caller owns
+ * the `alreadyLogged` set and the actual log sink.
+ */
+export function lifecycleEventsForAge(
+  ageMs: number,
+  alreadyLogged: ReadonlySet<CursorLifecycleEvent>,
+): CursorLifecycleEvent[] {
+  const events: CursorLifecycleEvent[] = [];
+  if (ageMs >= FADE_START_MS && !alreadyLogged.has("first-inactive")) {
+    events.push("first-inactive");
+  }
+  if (ageMs >= FADE_END_MS && !alreadyLogged.has("minimum-reached")) {
+    events.push("minimum-reached");
+  }
+  return events;
+}
+
+/** One structured lifecycle log line (client console and tests share it). */
+export function formatCursorLifecycleLog(
+  event: CursorLifecycleEvent,
+  clientID: string | number,
+  name?: string,
+): string {
+  return `[cursor-lifecycle] ${event} client=${String(clientID)}${name ? ` name=${name}` : ""}`;
 }

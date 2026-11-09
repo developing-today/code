@@ -17,7 +17,12 @@ import {
   setCursorPinned,
   setCursorMinimized,
   partitionCursorsByMinimized,
+  lifecycleEventsForAge,
+  formatCursorLifecycleLog,
+  FADE_START_MS,
+  FADE_END_MS,
   type CursorDisplayStateMap,
+  type CursorLifecycleEvent,
 } from "./cursor-utils";
 
 const NOW = 100_000;
@@ -138,5 +143,35 @@ describe("partitionCursorsByMinimized (minimize/restore lists)", () => {
     const { visible, minimized } = partitionCursorsByMinimized(cursors, new Map());
     expect(visible).toHaveLength(2);
     expect(minimized).toHaveLength(0);
+  });
+});
+
+describe("cursor lifecycle logging (#1790 slice 3)", () => {
+  it("reports first-inactive at FADE_START_MS and minimum-reached at FADE_END_MS", () => {
+    const logged = new Set<CursorLifecycleEvent>();
+    expect(lifecycleEventsForAge(FADE_START_MS - 1, logged)).toEqual([]);
+    expect(lifecycleEventsForAge(FADE_START_MS, logged)).toEqual(["first-inactive"]);
+    logged.add("first-inactive");
+    expect(lifecycleEventsForAge(FADE_END_MS - 1, logged)).toEqual([]);
+    expect(lifecycleEventsForAge(FADE_END_MS, logged)).toEqual(["minimum-reached"]);
+  });
+
+  it("reports both events for a cursor first observed past the minimum", () => {
+    expect(lifecycleEventsForAge(FADE_END_MS + 1, new Set())).toEqual([
+      "first-inactive",
+      "minimum-reached",
+    ]);
+  });
+
+  it("never repeats an event already logged", () => {
+    const logged = new Set<CursorLifecycleEvent>(["first-inactive", "minimum-reached"]);
+    expect(lifecycleEventsForAge(FADE_END_MS + 1, logged)).toEqual([]);
+  });
+
+  it("formats one structured log line, with the name when known", () => {
+    expect(formatCursorLifecycleLog("removed", 42)).toBe("[cursor-lifecycle] removed client=42");
+    expect(formatCursorLifecycleLog("hover", "abc", "drew")).toBe(
+      "[cursor-lifecycle] hover client=abc name=drew",
+    );
   });
 });
