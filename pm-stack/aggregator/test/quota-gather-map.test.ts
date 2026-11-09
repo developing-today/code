@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+  ANTIGRAVITY_GEMINI_SERVICE_ID,
+  GO_POPESDREW_SERVICE_ID,
+  GO_DREWRYPOPE_SERVICE_ID,
+  canonicalProviderId,
+  entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
+  goPoolServiceId,
   lastKnownEntries,
   mapWithConcurrency,
   markRetained,
@@ -53,12 +60,22 @@ describe("normalizeResetAt", () => {
     expect(normalizeResetAt(null)).toBeNull();
     expect(normalizeResetAt(0)).toBeNull();
   });
+  test("impossible and non-ISO date strings are null (#4968)", () => {
+    expect(normalizeResetAt("2026-02-30")).toBeNull();
+    expect(normalizeResetAt("2026-04-31")).toBeNull();
+    expect(normalizeResetAt("2026-02-29")).toBeNull(); // 2026 is not a leap year
+    expect(normalizeResetAt("March 2, 2026")).toBeNull();
+  });
+  test("valid date-only and leap-day strings pass (#4968)", () => {
+    expect(normalizeResetAt("2026-03-02")).toBe("2026-03-02T00:00:00.000Z");
+    expect(normalizeResetAt("2024-02-29")).toBe("2024-02-29T00:00:00.000Z");
+  });
 });
 
 describe("entryFromResult", () => {
   test("maps windows onto the quota-current shape", () => {
     const entry = entryFromResult(OK_RESULT, "2026-10-27T05:00:00.000Z");
-    expect(entry.serviceId).toBe("cline-pass:cline-pass");
+    expect(entry.serviceId).toBe("cline-pass");
     expect(entry.state).toBe("ok");
     expect(entry.measuredAt).toBe(new Date(1793075143879).toISOString());
     const weekly = entry.windows.find((w) => w.name === "weekly");
@@ -68,6 +85,39 @@ describe("entryFromResult", () => {
     const balance = entry.windows.find((w) => w.name === "credits_balance");
     expect(balance?.pctOfLimit).toBeNull();
     expect(balance?.valueLabel).toBe("12.50");
+    expect(entry.credentialWatch).toBe(true);
+  });
+  test("maps only authoritative expiry metadata and separates unconfigured credentials", () => {
+    const entry = entryFromResult(
+      { ...OK_RESULT, providerId: "claude", credentialExpiresAt: 1793438427299, credentialSource: "claude-code" },
+      "2026-10-27T05:00:00.000Z",
+    );
+    expect(entry.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
+    expect(entry.credentialSource).toBe("claude-code");
+    const absent = entryFromResult({ ...OK_RESULT, configured: false, ok: false }, "2026-10-27T05:00:00.000Z");
+    expect(absent.state).toBe("unconfigured");
+    expect(absent.credentialWatch).toBe(true);
+  });
+  test.each([
+    ["impossible timestamp", "2026-02-30T00:00:00.000Z"],
+    ["impossible date-only value", "2026-04-31"],
+    ["non-ISO string", "March 2, 2026"],
+  ])("rejects %s credential expiry strings", (_kind, credentialExpiresAt) => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const entry = entryFromResult({ ...OK_RESULT, credentialExpiresAt }, tick);
+    expect(entry.credentialExpiresAt).toBeUndefined();
+  });
+
+  test("maps a valid ISO credential expiry string", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validIso = entryFromResult({ ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" }, tick);
+    expect(validIso.credentialExpiresAt).toBe("2027-01-15T00:00:00.000Z");
+  });
+
+  test("maps numeric epoch-ms credential expiry", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validEpoch = entryFromResult({ ...OK_RESULT, credentialExpiresAt: 1793438427299 }, tick);
+    expect(validEpoch.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
   });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
@@ -147,6 +197,40 @@ describe("entryFromResult", () => {
       ["full", 100],
       ["valid", 42],
       ["zero", 0],
+    ]);
+  });
+  test("turso windows keep over-limit percentages; other providers keep the [0,100] gate (#6227)", () => {
+    // The live path: the opencode quota subcommand's turso result
+    // reaches the gatherer through entryFromResult. Its storage and
+    // rows-read windows are usage-vs-limit ratios that legitimately
+    // exceed 100 over the Starter limits (see the entryFromTurso
+    // fixture above); negative and non-finite values still drop.
+    const entry = entryFromResult(
+      {
+        providerId: "turso",
+        providerName: "Turso",
+        ok: true,
+        configured: true,
+        usage: {
+          windows: {
+            databases: { usedPercent: 44 },
+            storage: { usedPercent: 147.16 },
+            "rows-read": { usedPercent: 164.287 },
+            "rows-written": { usedPercent: 16.721 },
+            sync: { usedPercent: 0 },
+            negative: { usedPercent: -1 },
+          },
+        },
+      },
+      "2026-11-05T13:00:00.000Z",
+    );
+    expect(entry.serviceId).toBe("turso");
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["databases", 44],
+      ["storage", 147.16],
+      ["rows-read", 164.287],
+      ["rows-written", 16.721],
+      ["sync", 0],
     ]);
   });
   test("error and unconfigured states stay distinct", () => {
@@ -240,7 +324,7 @@ describe("recordsFromEntries", () => {
     const first = recordsFromEntries([entry], new Map(), "quota-gatherer");
     expect(first.records).toHaveLength(1);
     expect(first.records[0]).toMatchObject({
-      serviceId: "cline-pass:cline-pass",
+      serviceId: "cline-pass",
       metricId: "weekly",
       value: 29,
       unit: "pct",
@@ -302,7 +386,7 @@ describe("recordsFromEntries — CNY balances (#1052)", () => {
     const first = recordsFromEntries([entry], new Map(), "quota-gatherer");
     expect(first.records).toHaveLength(1);
     expect(first.records[0]).toMatchObject({
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value: 44.63,
       unit: "cny",
@@ -438,7 +522,7 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
   };
   test("success document maps windows + dollar labels", () => {
     const entry = entryFromFileExport(okDoc, { fileMtimeIso: "2026-10-27T05:30:05.000Z", stale: false });
-    expect(entry.serviceId).toBe("meta:high-usage");
+    expect(entry.serviceId).toBe("meta");
     expect(entry.state).toBe("ok");
     expect(entry.source).toBe("file-export/meta-laptop");
     expect(entry.planLabel).toBe("PAID");
@@ -512,8 +596,16 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
 
 describe("serviceIdFor", () => {
   test("known pools map to hub ids; others pass through", () => {
-    expect(serviceIdFor("codex")).toBe("openai:codex");
-    expect(serviceIdFor("deepseek")).toBe("deepseek:api");
+    expect(serviceIdFor("codex")).toBe("openai.main");
+    expect(serviceIdFor("deepseek")).toBe("deepseek");
+    expect(serviceIdFor("meta")).toBe("meta");
+    expect(serviceIdFor("_muse")).toBe("meta");
+    expect(serviceIdFor("opendesign")).toBe("opendesign");
+    // The module's provider id is "command-code"; the pool (and the
+    // OpenCode config provider) is "commandcode". Without the mapping
+    // the read filed under a key no pool carries and never landed
+    // (the silent-mismatch family Drew ruled out, 2026-11-03).
+    expect(serviceIdFor("command-code")).toBe("commandcode");
     expect(serviceIdFor("openai.alternate")).toBe("openai.alternate");
   });
 });
@@ -594,6 +686,130 @@ describe("entryFromTurso (#1049)", () => {
     expect(empty.state).toBe("error");
     expect(empty.windows).toEqual([]);
   });
+  test("over-limit usage is kept with its native value and >100 pct (#6227)", () => {
+    // The 2026-11-05 live shape from issue #6227: storage and
+    // rows-read over their Starter limits — the exact windows the
+    // [0,100] percent gate used to drop, leaving a fresh-looking
+    // partial row that read as recovery.
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 44,
+            storage_bytes: 7_358_009_000,
+            rows_read: 821_437_321,
+            rows_written: 1_672_071,
+            bytes_synced: 0,
+          },
+        },
+      },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("storage")?.value).toBe(7.358009);
+    expect(byName.get("storage")?.pctOfLimit).toBe(147.16);
+    expect(byName.get("rows-read")?.value).toBe(821_437_321);
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(164.287);
+    expect(byName.get("databases")?.pctOfLimit).toBe(44);
+    expect(byName.get("sync")?.pctOfLimit).toBe(0);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 7.358009, unit: "gb", limit: 5 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 164.287, unit: "pct" });
+  });
+  test("dynamic limits: a /plans doc matched by plan name supplies the denominators (#5468)", () => {
+    // The 2026-11-08 live shape: org on Scaler since 2026-11-04, but
+    // Starter denominators made rows-read read ~235% and storage
+    // ~213%. /plans is the source of truth.
+    const plansDoc = {
+      plans: [
+        { name: "starter", quotas: { rowsRead: 500_000_000, rowsWritten: 10_000_000, databases: 100, storage: 5_000_000_000, bytesSynced: 3_000_000_000 } },
+        { name: "Scaler", quotas: { rowsRead: 100_000_000_000, rowsWritten: 100_000_000, databases: 1_000_000_000, storage: 24_000_000_000, bytesSynced: 24_000_000_000 } },
+      ],
+    };
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 40,
+            storage_bytes: 10_800_000_000,
+            rows_read: 1_180_000_000,
+            rows_written: 4_000_000,
+            bytes_synced: 1_200_000_000,
+          },
+        },
+      },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at, plansDoc },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.planLabel).toBe("scaler");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("rows-read")?.valueLabel).toBe("1,180,000,000 / 100,000,000,000");
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    expect(byName.get("rows-written")?.pctOfLimit).toBe(4);
+    expect(byName.get("sync")?.pctOfLimit).toBe(5);
+    expect(byName.get("sync")?.valueLabel).toBe("1.2 GB / 24 GB");
+    // Native-unit snapshot records carry the plan's limits too.
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 10.8, unit: "gb", limit: 24 });
+    expect(byMetric.get("sync")).toMatchObject({ value: 1.2, unit: "gb", limit: 24 });
+    expect(byMetric.get("databases")).toMatchObject({ value: 40, unit: "count", limit: 1_000_000_000 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 1.18, unit: "pct", limit: 100 });
+  });
+  test("plans doc absent: the per-plan fallback applies, so Scaler never regresses to Starter (#5468)", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { rows_read: 1_180_000_000, storage_bytes: 10_800_000_000 } } },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at },
+    );
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 24 });
+  });
+});
+
+describe("entryFromTurso period stamps (#5091)", () => {
+  const usageDoc = { organization: { usage: { databases: 3 } } };
+  const at = "2026-10-29T02:30:00.000Z";
+  const subWith = (start: unknown, end: unknown) => ({
+    subscription: {
+      plan: "starter",
+      current_billing_period_start: start,
+      current_billing_period_end: end,
+    },
+  });
+  const windowSecondsOf = (sub: unknown): number | null => {
+    const entry = entryFromTurso(usageDoc, sub as never, { measuredAt: at });
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.length).toBeGreaterThan(0);
+    return entry.windows[0].windowSeconds;
+  };
+  test("impossible period start yields a null window, not a rolled-over length", () => {
+    // 2026-02-30 does not exist; raw Date.parse rolls it to Mar 2 and would
+    // publish a 28-day window against the 2026-03-30 end.
+    expect(windowSecondsOf(subWith("2026-02-30T00:00:00Z", "2026-03-30T00:00:00Z"))).toBeNull();
+  });
+  test("impossible period end yields a null window", () => {
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-02-30T00:00:00Z"))).toBeNull();
+  });
+  test("non-ISO period stamps yield a null window", () => {
+    // Raw Date.parse accepts these (timezone-dependently); the gate refuses.
+    expect(windowSecondsOf(subWith("February 1, 2026", "March 3, 2026"))).toBeNull();
+  });
+  test("valid ISO period stamps still compute the window", () => {
+    // 2026-02-01 -> 2026-03-03 is exactly 30 days.
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-03-03T00:00:00Z"))).toBe(2_592_000);
+  });
 });
 
 describe("entryFromTurso negative usage (#2553)", () => {
@@ -648,6 +864,199 @@ describe("entryFromTurso negative usage (#2553)", () => {
     for (const r of records) {
       expect(r.value).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe("pool splits (#1331)", () => {
+  const TICK = "2026-11-03T05:00:00.000Z";
+  const goResult = (label: string | undefined, id: string): QuotaProviderResult => ({
+    providerId: "opencode-go",
+    providerName: "OpenCode Go",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    credentialId: id,
+    ...(label === undefined ? {} : { credentialLabel: label }),
+    usage: {
+      windows: {
+        "5h": { usedPercent: 12, windowSeconds: 18_000, resetAt: Date.parse(TICK) + 18_000_000 },
+        monthly: { usedPercent: 60, windowSeconds: null, resetAt: Date.parse("2026-12-03T03:02:00.000Z") },
+      },
+    },
+  });
+
+  test("Go per-workspace entries yield drewrypope/popesdrew split rows alongside the combined rows", () => {
+    const entries = [
+      entryFromResult(goResult("drewrypope", "cred_drewrypope"), TICK),
+      entryFromResult(goResult("popesdrew", "cred_popesdrew"), TICK),
+    ];
+    expect(entries.map((e) => e.serviceId)).toEqual(["opencode-go", "opencode-go"]);
+    const split = entriesWithPoolSplits(entries);
+    expect(split.map((e) => e.serviceId).sort()).toEqual([
+      "opencode-go",
+      "opencode-go",
+      GO_DREWRYPOPE_SERVICE_ID,
+      GO_POPESDREW_SERVICE_ID,
+    ]);
+    const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
+    expect(personal.providerId).toBe("opencode-go");
+    expect(personal.credentialId).toBe("cred_drewrypope");
+    expect(personal.credentialLabel).toBe("drewrypope");
+    expect(personal.state).toBe("ok");
+    expect(personal.measuredAt).toBe(entries[0].measuredAt);
+    expect(personal.windows).toEqual(entries[0].windows);
+    const lab = split.find((e) => e.serviceId === GO_POPESDREW_SERVICE_ID)!;
+    expect(lab.credentialId).toBe("cred_popesdrew");
+    // ...and the pool-level series continue in the snapshot records.
+    const { records } = recordsFromEntries(split, new Map(), "quota-gatherer");
+    expect(records.map((r) => `${r.serviceId}|${r.metricId}`).sort()).toEqual([
+      "opencode-go.drewrypope|5h",
+      "opencode-go.drewrypope|monthly",
+      "opencode-go.popesdrew|5h",
+      "opencode-go.popesdrew|monthly",
+      "opencode-go|5h",
+      "opencode-go|monthly",
+    ]);
+  });
+
+  test("Go lapse: an errored drewrypope row splits as a pool error; unconfigured rows never split", () => {
+    const lapsed: QuotaProviderResult = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: true,
+      fetchedAt: Date.parse(TICK),
+      credentialId: "cred_personal",
+      credentialLabel: "drewrypope",
+      error: "No active OpenCode Go subscription on the selected Console account",
+      usage: null,
+    };
+    const unconfigured: QuotaProviderResult = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: false,
+      credentialId: "cred_lab",
+      credentialLabel: "popesdrew",
+      error: "Not configured",
+      usage: null,
+    };
+    const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
+    expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_DREWRYPOPE_SERVICE_ID]);
+    const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
+    expect(personal.state).toBe("error");
+    expect(personal.error).toContain("No active OpenCode Go subscription");
+  });
+
+  test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {
+    expect(goPoolServiceId(entryFromResult(goResult("Home", "cred_home"), TICK))).toBeNull();
+    expect(goPoolServiceId(entryFromResult(goResult(undefined, "cred_x"), TICK))).toBeNull();
+    expect(goPoolServiceId(entryFromResult(goResult("  DREWRYPOPE ", "cred_p"), TICK))).toBe(GO_DREWRYPOPE_SERVICE_ID);
+    expect(goPoolServiceId(entryFromResult(goResult("popesdrew", "cred_l"), TICK))).toBe(GO_POPESDREW_SERVICE_ID);
+    const split = entriesWithPoolSplits([entryFromResult(goResult("Home", "cred_home"), TICK)]);
+    expect(split.map((e) => e.serviceId)).toEqual(["opencode-go"]);
+  });
+
+  const antigravityResult = (models: Record<string, Record<string, number>>): QuotaProviderResult => ({
+    providerId: "_antigravity",
+    providerName: "Antigravity",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    usage: {
+      models: Object.fromEntries(
+        Object.entries(models).map(([model, wins]) => [
+          model,
+          {
+            windows: Object.fromEntries(
+              Object.entries(wins).map(([name, pct]) => [
+                name,
+                { usedPercent: pct, windowSeconds: 604_800, resetAt: Date.parse("2026-11-10T05:00:00.000Z") },
+              ]),
+            ),
+          },
+        ]),
+      ),
+    },
+  });
+
+  test("Antigravity models group into gemini + claude-gpt pool rows; hottest window wins", () => {
+    const entry = entryFromResult(
+      antigravityResult({
+        "gemini-2.5-pro": { "5h": 70, weekly: 40 },
+        "gemini-flash": { weekly: 55 },
+        "claude-sonnet": { "5h": 20, weekly: 90 },
+        "gpt-5": { weekly: 10 },
+      }),
+      TICK,
+    );
+    expect(entry.serviceId).toBe("_antigravity");
+    expect(entry.windows).toHaveLength(6);
+    const split = entriesWithPoolSplits([entry]);
+    expect(split).toHaveLength(3);
+    expect(split[0].serviceId).toBe("_antigravity");
+    const gemini = split.find((e) => e.serviceId === ANTIGRAVITY_GEMINI_SERVICE_ID)!;
+    expect(gemini.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["5h", 70],
+      ["weekly", 55],
+    ]);
+    const claudeGpt = split.find((e) => e.serviceId === ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID)!;
+    expect(claudeGpt.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["5h", 20],
+      ["weekly", 90],
+    ]);
+    expect(gemini.measuredAt).toBe(entry.measuredAt);
+    expect(gemini.source).toBe(entry.source);
+  });
+
+  test("Antigravity grouping is order-independent and omits empty pools", () => {
+    const models = {
+      "gemini-2.5-pro": { weekly: 40 },
+      "claude-sonnet": { weekly: 90 },
+    };
+    const fwd = entriesWithPoolSplits([entryFromResult(antigravityResult(models), TICK)]);
+    const rev = entriesWithPoolSplits([
+      entryFromResult(antigravityResult({ "claude-sonnet": { weekly: 90 }, "gemini-2.5-pro": { weekly: 40 } }), TICK),
+    ]);
+    // The combined entry preserves module order by design; the derived
+    // pool rows must not depend on it.
+    const rowsOf = (split: ReturnType<typeof entriesWithPoolSplits>) =>
+      split.slice(1).map((e) => [e.serviceId, e.windows.map((w) => [w.name, w.pctOfLimit])]);
+    expect(rowsOf(fwd)).toEqual(rowsOf(rev));
+    const geminiOnly = entriesWithPoolSplits([
+      entryFromResult(antigravityResult({ "gemini-flash": { weekly: 55 } }), TICK),
+    ]);
+    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["_antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
+  });
+
+  test("Antigravity error lapses both pools; unconfigured splits nothing", () => {
+    const err = entryFromResult(
+      {
+        providerId: "_antigravity",
+        ok: false,
+        configured: true,
+        error: "Failed to refresh Antigravity token",
+        usage: null,
+      },
+      TICK,
+    );
+    const split = entriesWithPoolSplits([err]);
+    expect(split.map((e) => e.serviceId).sort()).toEqual([
+      "_antigravity",
+      ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+      ANTIGRAVITY_GEMINI_SERVICE_ID,
+    ]);
+    for (const row of split.slice(1)) {
+      expect(row.state).toBe("error");
+      expect(row.error).toContain("Failed to refresh");
+    }
+    const unconfigured = entriesWithPoolSplits([
+      entryFromResult(
+        { providerId: "_antigravity", ok: false, configured: false, error: "Not configured", usage: null },
+        TICK,
+      ),
+    ]);
+    expect(unconfigured.map((e) => e.serviceId)).toEqual(["_antigravity"]);
   });
 });
 
@@ -716,5 +1125,72 @@ describe("own-key guards on quota-gather-map lookups (#2781)", () => {
       expect(typeof r.unit).toBe("string");
       expect(Number.isFinite(r.limit)).toBe(true);
     }
+  });
+});
+
+describe("canonicalProviderId (config-id alignment, #1823)", () => {
+  const TICK = "2026-10-27T05:00:00.000Z";
+
+  test("module spellings map to the config provider ids; others pass through", () => {
+    expect(canonicalProviderId("antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("claude")).toBe("_claude");
+    expect(canonicalProviderId("command-code")).toBe("_commandcode");
+    expect(canonicalProviderId("meta")).toBe("_muse");
+    expect(canonicalProviderId("_antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("opendesign")).toBe("opendesign");
+    expect(canonicalProviderId("codex")).toBe("codex");
+  });
+
+  test("entryFromResult emits the canonical id and keeps the pool service id", () => {
+    const ag = entryFromResult({ ...OK_RESULT, providerId: "antigravity" }, TICK);
+    expect(ag.providerId).toBe("_antigravity");
+    expect(ag.serviceId).toBe("_antigravity");
+    const claude = entryFromResult({ ...OK_RESULT, providerId: "claude" }, TICK);
+    expect(claude.providerId).toBe("_claude");
+    expect(claude.serviceId).toBe("anthropic:claude-pro");
+    const cc = entryFromResult({ ...OK_RESULT, providerId: "command-code" }, TICK);
+    expect(cc.providerId).toBe("_commandcode");
+    expect(cc.serviceId).toBe("_commandcode");
+    const meta = entryFromResult({ ...OK_RESULT, providerId: "meta" }, TICK);
+    expect(meta.providerId).toBe("_muse");
+    expect(meta.serviceId).toBe("meta");
+  });
+
+  test("a module-spelled Antigravity entry splits into the renamed pool rows", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "antigravity",
+        providerName: "Antigravity",
+        ok: true,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        usage: {
+          models: {
+            "gemini-2.5-pro": {
+              windows: { weekly: { usedPercent: 40, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+            "claude-sonnet": {
+              windows: { weekly: { usedPercent: 90, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+          },
+        },
+      },
+      TICK,
+    );
+    const splits = entriesWithPoolSplits([entry]);
+    expect(splits.map((e) => e.serviceId)).toEqual([
+      "_antigravity",
+      ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+      ANTIGRAVITY_GEMINI_SERVICE_ID,
+    ]);
+  });
+
+  test("retention matches across the rename boundary and re-stamps the canonical id", () => {
+    const prevEntry = { ...entryFromResult(OK_RESULT, TICK), providerId: "claude" };
+    expect(lastKnownEntries([prevEntry], "claude")).toHaveLength(1);
+    expect(lastKnownEntries([prevEntry], "_claude")).toHaveLength(1);
+    const retained = markRetained([prevEntry], "2026-10-27T06:00:00.000Z");
+    expect(retained[0].providerId).toBe("_claude");
+    expect(retained[0].retainedFromFailedTick).toBe("2026-10-27T06:00:00.000Z");
   });
 });

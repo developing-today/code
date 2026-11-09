@@ -90,6 +90,9 @@ impl Writer {
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
         })
     }
 }
@@ -104,6 +107,9 @@ fn tag_ext(kind: &str, op: TagOp, after: Vec<Hash>) -> ChainExt {
         removes: None,
         note: None,
         link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -236,8 +242,7 @@ fn test_a_cleared_claim_is_not_returned() {
     let mut a = Writer::new(1);
     let seen = a.set(subject, "city", Some("Seattle"), vec![]);
     let kept = a.set(subject, "name", None, vec![seen.id]);
-    let mut b = Writer::new(2);
-    let cleared = b.clear(&[seen.id], vec![kept.id]);
+    let cleared = a.clear(&[seen.id], vec![kept.id]);
 
     let (_dir, mut store) = open();
     for event in [&seen, &kept, &cleared] {

@@ -16,6 +16,31 @@
 //
 // No balances or debt data pass through here: candidates are charge
 // evidence only (date, merchant, amount, payment-method label).
+//
+// The charges contract (#3161 — a charge is evidence), stated once:
+// (1) Admission requires payment evidence: a candidate exists only
+// where money demonstrably moved — declined/failed alerts and
+// amounts merely due are not charges, and the candidate's amount is
+// the amount paid (the producer's rule, produce-charge-candidates).
+// (2) Identity is one rule, applied in two forms. Cross-source
+// dedupe (matchCharges below) pairs observations from different
+// sources only, with equal amounts, dates inside the 3-day window
+// (DEDUPE_WINDOW_DAYS), and equal normalized merchants; when
+// normalization removes every token, the raw descriptors must
+// also agree exactly, so unrelated numeric merchant IDs cannot
+// collapse into one charge. The hand-fed merge (charges-collect's
+// sameCharge) compares merchant identity at token boundaries
+// instead, and adds the payment-method veto: conflicting known
+// card masks never merge there (agreement or absence does not
+// block it). Classification follows the boundary rule: service
+// names, aliases and SaaS markers match at token boundaries
+// only, against the hub's whole known catalog — SaaS services
+// plus the quota pools and their aliases.
+// (3) Delivery: surfaced means delivered — surfaced keys are
+// persisted only for charges in a feed that was successfully
+// published, and consumers read the charges sections on their own
+// validity, never gated on an unrelated section (the collector's
+// and the live source's side of the contract).
 
 import type { ChargeRow } from "./model.ts";
 

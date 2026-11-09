@@ -10,6 +10,8 @@ pub struct WorldHandle {
     /// The world's host metrics registry (F11.7), shared with the actor
     /// and the session layer.
     metrics: WorldMetrics,
+    /// Whether the actor runs in F12.13 read-only replica mode.
+    read_only: bool,
 }
 
 use super::*;
@@ -39,8 +41,43 @@ impl WorldHandle {
     /// [`WorldCore::restore`]); the actor only appends.
     pub fn spawn_durable(
         core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        Self::spawn_inner(core, program, journal, false, HashMap::new())
+    }
+
+    /// Spawn a replica actor over a verified, already-restored world.
+    /// Local mutations and program side effects are refused; the replica
+    /// carries no journal to append to. Only a core returned by
+    /// [`WorldCore::restore_replica`] may be served this way.
+    pub(crate) fn spawn_read_only(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        restored_presence: BTreeMap<u64, u64>,
+    ) -> Result<Self> {
+        if !core.replica_mode {
+            anyhow::bail!("read-only actors require a replica-restored core");
+        }
+        let presence = restored_presence
+            .into_iter()
+            .map(|(id, count)| (id, usize::try_from(count).map_or(usize::MAX, |count| count)))
+            .collect();
+        Ok(Self::spawn_inner(core, program, None, true, presence))
+    }
+
+    /// Whether this handle fronts a read-only replica actor.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn spawn_inner(
+        core: WorldCore,
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
+        read_only: bool,
+        presence: HashMap<u64, usize>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -74,6 +111,7 @@ impl WorldHandle {
             journal,
             metrics: metrics.clone(),
             storage_failed: false,
+            read_only,
             program_healthy,
             view_failures: 0,
             compaction_off: false,
@@ -82,13 +120,15 @@ impl WorldHandle {
             records_sender,
             replication_sender,
             view_changed: view_changed_sender,
-            presence: HashMap::new(),
+            presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
             acting: None,
+            acting_session: None,
+            device_manifest: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver));
@@ -99,6 +139,7 @@ impl WorldHandle {
             records,
             view_changed,
             metrics,
+            read_only,
         }
     }
 
@@ -126,6 +167,19 @@ impl WorldHandle {
             .context("world actor dropped metrics response")
     }
 
+    /// Capture journal-order event history and its records for an admin export.
+    /// The session layer must authorize the admin token before calling this.
+    pub(crate) async fn admin_event_history(&self) -> Result<AdminEventHistory> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminEventHistory { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped admin history response")?
+    }
+
     /// Capture a durable journal image and subscribe atomically to later
     /// appends and reset snapshots. The returned receiver is live before the
     /// snapshot is taken, preventing a write from being missed between them.
@@ -133,7 +187,7 @@ impl WorldHandle {
         &self,
     ) -> Result<(
         String,
-        JournalSnapshot,
+        JournalSnapshotSource,
         broadcast::Receiver<ReplicationUpdate>,
     )> {
         let (reply, response) = oneshot::channel();
@@ -145,6 +199,7 @@ impl WorldHandle {
             .await
             .context("world actor dropped replication feed response")?
     }
+
     /// The latest `(sequence, records)` published by the world program.
     /// Callers must authorize the reader first (see [`Self::participant_id`]).
     #[must_use]
@@ -629,11 +684,32 @@ impl WorldHandle {
 
     /// Submit bounded opaque game input.
     pub async fn input(&self, token: JoinCapability, input: Vec<u8>) -> Result<WorldEvent> {
+        self.input_with_session(token, input, None).await
+    }
+
+    /// Submit bounded opaque game input from a live session connection.
+    pub(crate) async fn input_from_session(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        session_id: SessionId,
+    ) -> Result<WorldEvent> {
+        self.input_with_session(token, input, Some(session_id))
+            .await
+    }
+
+    async fn input_with_session(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        session_id: Option<SessionId>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::Input {
                 token,
                 input,
+                session_id,
                 signed_move: None,
                 reply,
             })
@@ -679,6 +755,7 @@ impl WorldHandle {
             .send(WorldCommand::Input {
                 token,
                 input,
+                session_id: None,
                 signed_move: Some(signed_move),
                 reply,
             })

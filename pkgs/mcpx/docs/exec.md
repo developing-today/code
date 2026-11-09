@@ -110,7 +110,9 @@ type ExecOptions = {
   ns?: string[];
   args?: string[];
   export?: string;
-  typecheck?: "off" | "on" | "strict";
+  typecheck?: "off" | "types" | "strict" | "on"; // on is a legacy alias for types
+  checkOnError?: "fail" | "warn" | "run";
+  checkOnUnsupported?: "skip" | "warn" | "switch"; // switch uses Deno only as the checker
   launcher?: string;
   launcherName?: string; // template text, or "none"
   allowRepeat?: string[];
@@ -134,6 +136,10 @@ local, and they are not the same claim.
 
 `task` reuses `internal/tasks` unchanged. A long exec with artifacts is a task
 whose result holds references, which already fits `tasks/result`.
+Its 128-bit ID is an unguessable bearer handle, not an ownership check: anyone
+who can reach the daemon API and learns the ID can retrieve the result from
+`/v1/tasks/{id}`. The `/v1` list addresses the daemon-wide task store; it is
+separate from MCP's connection-scoped legacy `tasks/list`.
 
 ## Output shapes
 

@@ -117,7 +117,7 @@ export function inspectRouteRules(config) {
   const modelRouteWindows = activeMap(config, 'model_route_windows');
   const tiers = {};
 
-  const resolve = (reference, effort, tier, trace, stack) => {
+  const resolve = (reference, effort, tier, trace, stack, seen) => {
     const parsed = splitModelReference(reference);
     if (!parsed) {
       addIssue(`${tier}: invalid model target ${JSON.stringify(reference)} at ${trace}`);
@@ -135,7 +135,12 @@ export function inspectRouteRules(config) {
         addIssue(`${tier}: model-route cycle ${[...stack, parsed.model].join(' -> ')}`);
         return [];
       }
-      return resolveTargets(route, selectedEffort, tier, `${trace} -> ${parsed.model}`, [...stack, parsed.model]);
+      // Match runtime resolveRoute: one shared seen set per tier
+      // resolution, so a repeated nested-route reference is expanded
+      // once. Ancestry (stack) still reports true cycles above.
+      if (seen.has(parsed.model)) return [];
+      seen.add(parsed.model);
+      return resolveTargets(route, selectedEffort, tier, `${trace} -> ${parsed.model}`, [...stack, parsed.model], seen);
     }
 
     // Configured concrete providers take precedence over a same-named group,
@@ -205,11 +210,15 @@ export function inspectRouteRules(config) {
     return [candidate];
   };
 
-  const resolveTargets = (route, incomingEffort, tier, trace, stack) => {
-    if (!Array.isArray(route.targets) || route.targets.length === 0) {
-      addIssue(`${tier}: route "${trace.split(' -> ').at(-1)}" has no targets`);
+  const resolveTargets = (route, incomingEffort, tier, trace, stack, seen) => {
+    if (!Array.isArray(route.targets)) {
+      addIssue(`${tier}: route "${trace.split(' -> ').at(-1)}" has no targets list`);
       return [];
     }
+    // An empty target list is a deliberate chain stage that contributes
+    // nothing (the runtime expands it to zero candidates). Tier coverage
+    // is judged on the whole chain, so an emptied stage is not an issue.
+    if (route.targets.length === 0) return [];
     return route.targets.flatMap((target, index) => {
       const targetTrace = `${trace}.targets[${index}]`;
       const windowGate = isObject(target) ? normalizeWindowGate(target.window) : null;
@@ -237,7 +246,7 @@ export function inspectRouteRules(config) {
         addIssue(`${tier}: target at ${targetTrace} must be a model string or object with a model string`);
         return [];
       }
-      return resolve(reference, effort, tier, targetTrace, stack);
+      return resolve(reference, effort, tier, targetTrace, stack, seen);
     });
   };
 
@@ -247,7 +256,7 @@ export function inspectRouteRules(config) {
       tiers[tier] = { members: [], disabled_excluded: [], funds_excluded: [], coverage: [] };
       continue;
     }
-    const candidates = resolve(`opencode-route/${tier}`, null, tier, tier, []);
+    const candidates = resolve(`opencode-route/${tier}`, null, tier, tier, [], new Set());
     const disabledExcluded = candidates.filter((candidate) => candidate.disabled);
     const fundsExcluded = candidates.filter((candidate) => !candidate.disabled && candidate.funds);
     const members = candidates.filter((candidate) => !candidate.disabled);

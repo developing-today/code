@@ -25,7 +25,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
 import {
   archiveStoreBytes,
   quarantineUnreadableStore,
@@ -40,7 +40,10 @@ export interface CommentsFile {
   comments: DashComment[];
 }
 
-const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
+// Result URLs are rendered as link hrefs on the dashboard (#950):
+// only https://github.com/ result links are storable — a stored
+// javascript:/data: URL would render as a clickable script link.
+const GH_RESULT_URL = /^https:\/\/github\.com\//;
 const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
 
 function commentRecordProblem(value: unknown): string | null {
@@ -62,7 +65,7 @@ function commentRecordProblem(value: unknown): string | null {
     return "message triageState must be new or triaged";
   }
   if (value.kind === "github") {
-    if (value.githubRef !== undefined && (typeof value.githubRef !== "string" || !GH_REF.test(value.githubRef))) {
+    if (value.githubRef !== undefined && !isValidRef(value.githubRef)) {
       return "githubRef must be owner/repo#N";
     }
     if (
@@ -83,6 +86,20 @@ export function isObjectRef(s: unknown): s is string {
   return typeof s === "string" && s.length > 0 && s.length <= 300 && !/\s/.test(s);
 }
 
+// Cap the string at max UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7731, mirroring the #7694/#7711 capUnits guard in
+// actions.ts): an astral character straddling the cap is dropped whole.
+// Local copy, like activity.ts (#7725) — actions.ts imports validateAuthor
+// from this module, so importing its capUnits here would create a cycle.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 export function validateAuthor(a: unknown): DashAuthor | null {
   if (typeof a !== "object" || a === null) return null;
   const { kind, id, label, sessionId } = a as Partial<DashAuthor>;
@@ -90,9 +107,9 @@ export function validateAuthor(a: unknown): DashAuthor | null {
   if (typeof id !== "string" || id === "" || typeof label !== "string" || label === "") return null;
   return {
     kind,
-    id: id.slice(0, 120),
-    label: label.slice(0, 120),
-    ...(typeof sessionId === "string" && sessionId ? { sessionId: sessionId.slice(0, 120) } : {}),
+    id: capUnits(id, 120),
+    label: capUnits(label, 120),
+    ...(typeof sessionId === "string" && sessionId ? { sessionId: capUnits(sessionId, 120) } : {}),
   };
 }
 
@@ -116,7 +133,7 @@ export function validateNewComment(body: unknown): { ok: true; value: NewComment
   if (!author) return { ok: false, error: "author must be {kind: drew|muse|agent, id, label}" };
   if (typeof b.body !== "string" || b.body.trim() === "") return { ok: false, error: "body must be non-empty text" };
   if (b.kind === "github") {
-    if (typeof b.githubRef !== "string" || !GH_REF.test(b.githubRef)) {
+    if (!isValidRef(b.githubRef)) {
       return { ok: false, error: "kind github requires githubRef as owner/repo#N" };
     }
   }
@@ -126,7 +143,7 @@ export function validateNewComment(body: unknown): { ok: true; value: NewComment
       objectRef: b.objectRef,
       kind: b.kind,
       author,
-      body: b.body.trim().slice(0, 20_000),
+      body: capUnits(b.body.trim(), 20_000),
       ...(b.kind === "github" ? { githubRef: b.githubRef as RefKey } : {}),
     },
   };
@@ -352,6 +369,13 @@ export class CommentsStore {
       throw new Error("github result cannot carry both a url and an error");
     }
     if (result.url) {
+      // #950: the stored githubUrl is rendered as a link href, so only
+      // https://github.com/ result URLs are accepted — anything else
+      // (javascript:, data:, http:, other hosts) is refused with the
+      // state unchanged (the endpoint maps the throw to a 400).
+      if (!GH_RESULT_URL.test(result.url)) {
+        throw new Error("github result url must start with https://github.com/");
+      }
       if (c.githubState === "posted") {
         // Posted is terminal. A repeat of the same url is an
         // idempotent no-op; a different url is a conflicting

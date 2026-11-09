@@ -183,6 +183,46 @@ test('permanently closed window gates are rejected and excluded from coverage', 
   assert.ok(result.issues.some((issue) => issue.includes('permanently closed model-route window "closed"')));
 });
 
+test('repeated nested-route references expand once like the runtime', () => {
+  const config = configWith({ scout: ['opencode-route/shared#low', 'opencode-route/shared#max'] });
+  config.experimental.model_routes.shared = { targets: ['good/model'] };
+  const result = inspectRouteRules(config);
+  // The runtime shares one seen set per resolution, so the second
+  // reference to `shared` is skipped and its `#max` variant (which the
+  // tracked catalog does not declare) is never dispatched or judged.
+  assert.ok(
+    !result.issues.some((issue) => issue.startsWith('scout:') && issue.includes('not a declared variant')),
+    `unexpected scout variant issue: ${result.issues}`,
+  );
+  assert.deepEqual(
+    result.tiers.scout.coverage.map(({ effort }) => effort),
+    ['low'],
+  );
+  assert.equal(result.tiers.scout.candidate_count, 1);
+});
+
+test('an emptied chain stage contributes nothing instead of failing the tier', () => {
+  // main's workhorse-primary is deliberately targets: [] while the
+  // chain's other stages serve the tier (Drew emptied it 2026-11-07).
+  const config = configWith({
+    workhorse: ['opencode-route/empty-stage#low', 'good/model#high'],
+  });
+  config.experimental.model_routes['empty-stage'] = { targets: [] };
+  const result = inspectRouteRules(config);
+  assert.ok(
+    !result.issues.some((issue) => issue.includes('has no targets')),
+    `emptied stage must not be an issue: ${result.issues}`,
+  );
+  assert.deepEqual(result.tiers.workhorse.coverage.map(({ provider }) => provider), ['good']);
+});
+
+test('a route with no targets list at all is still flagged', () => {
+  const config = configWith({ scout: ['opencode-route/targetless#low'] });
+  config.experimental.model_routes.targetless = {};
+  const issues = checkRouteRules(config);
+  assert.ok(issues.some((issue) => issue.includes('has no targets list')));
+});
+
 test('canonical OpenCode config satisfies the route rules', () => {
   const source = fs.readFileSync('.opencode/opencode.jsonc', 'utf8');
   assert.deepEqual(checkRouteRules(source), []);

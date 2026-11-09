@@ -90,17 +90,19 @@ fn world_list_plain_row(name: &str, default: &str, open: bool) -> String {
 /// Fails if the host is unreachable, refuses the invite, or the stream breaks.
 pub async fn cmd_world(command: WorldCommand) -> Result<()> {
     match command {
-        WorldCommand::Invite {
-            node,
-            admin_token,
-            name,
-            role,
-            world,
-            addrs,
-            no_relay,
-            expires_in,
-            uses,
-        } => {
+        WorldCommand::Invite(args) => {
+            let crate::cli::WorldInviteArgs {
+                node,
+                admin_token,
+                name,
+                role,
+                world,
+                addrs,
+                no_relay,
+                expires_in,
+                uses,
+                ..
+            } = args;
             crate::world_session::check_invite_bounds(expires_in, uses)
                 .map_err(anyhow::Error::msg)?;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
@@ -113,15 +115,17 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", result?);
             Ok(())
         }
-        WorldCommand::Install {
-            node,
-            module,
-            admin_token,
-            seed,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Install(args) => {
+            let crate::cli::WorldInstallArgs {
+                node,
+                module,
+                admin_token,
+                seed,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let metadata = std::fs::metadata(&module)
                 .with_context(|| format!("read module metadata {}", module.display()))?;
             anyhow::ensure!(
@@ -138,14 +142,16 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", result?);
             Ok(())
         }
-        WorldCommand::Records {
-            node,
-            capability,
-            prefix,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Records(args) => {
+            let crate::cli::WorldRecordsArgs {
+                node,
+                capability,
+                prefix,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client.records(&capability, prefix.as_deref()).await;
             client.close();
@@ -153,16 +159,18 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
-        WorldCommand::Mirror {
-            node,
-            capability,
-            follow,
-            dir,
-            timeout_secs,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Mirror(args) => {
+            let crate::cli::WorldMirrorArgs {
+                node,
+                capability,
+                follow,
+                dir,
+                timeout_secs,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let ticket = client.records_ticket(&capability).await?;
             client.close();
@@ -191,14 +199,16 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             replica.shutdown().await;
             Ok(())
         }
-        WorldCommand::Download {
-            node,
-            capability,
-            output,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Download(args) => {
+            let crate::cli::WorldDownloadArgs {
+                node,
+                capability,
+                output,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = async {
                 let (_, active_module_hash, _) = client.info(&capability).await?;
@@ -216,17 +226,19 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             result
         }
-        WorldCommand::Compile {
-            node,
-            main_file,
-            files,
-            seed,
-            admin_token,
-            native,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Compile(args) => {
+            let crate::cli::WorldCompileArgs {
+                node,
+                main_file,
+                files,
+                seed,
+                admin_token,
+                native,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let mut paths = vec![("main.roc".to_owned(), main_file.clone())];
             for path in &files {
                 let name = path
@@ -267,17 +279,19 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{hash}");
             Ok(())
         }
-        WorldCommand::Caps {
-            node,
-            capability,
-            admin_token,
-            grant,
-            revoke,
-            ceiling,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Caps(args) => {
+            let crate::cli::WorldCapsArgs {
+                node,
+                capability,
+                admin_token,
+                grant,
+                revoke,
+                ceiling,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = if let Some(ceiling) = ceiling {
                 let admin_token = admin_token
@@ -305,20 +319,22 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
         }
-        WorldCommand::Profile {
-            node,
-            admin_token,
-            capability,
-            wasm_fuel,
-            wasm_memory_bytes,
-            wasm_message_bytes,
-            native_memory_bytes,
-            native_cpu_seconds,
-            native_call_deadline_ms,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Profile(args) => {
+            let crate::cli::WorldProfileArgs {
+                node,
+                admin_token,
+                capability,
+                wasm_fuel,
+                wasm_memory_bytes,
+                wasm_message_bytes,
+                native_memory_bytes,
+                native_cpu_seconds,
+                native_call_deadline_ms,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let has_updates = wasm_fuel.is_some()
                 || wasm_memory_bytes.is_some()
@@ -350,14 +366,16 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
-        WorldCommand::Isolation {
-            node,
-            mode,
-            admin_token,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Isolation(args) => {
+            let crate::cli::WorldIsolationArgs {
+                node,
+                mode,
+                admin_token,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client.set_isolation(&admin_token, &mode).await;
             client.close();
@@ -365,14 +383,16 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", result?);
             Ok(())
         }
-        WorldCommand::CrossWorldWrite {
-            node,
-            mode,
-            admin_token,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::CrossWorldWrite(args) => {
+            let crate::cli::WorldCrossWorldWriteArgs {
+                node,
+                mode,
+                admin_token,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client
                 .set_cross_world_write(&admin_token, mode == "on")
@@ -382,13 +402,15 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
-        WorldCommand::ForceCrossWorldWrite {
-            node,
-            admin_token,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::ForceCrossWorldWrite(args) => {
+            let crate::cli::WorldForceCrossWorldWriteArgs {
+                node,
+                admin_token,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client.force_cross_world_write(&admin_token).await;
             client.close();
@@ -396,15 +418,17 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
-        WorldCommand::FileScope {
-            node,
-            scope,
-            write_override,
-            admin_token,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::FileScope(args) => {
+            let crate::cli::WorldFileScopeArgs {
+                node,
+                scope,
+                write_override,
+                admin_token,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = client
                 .set_file_scope(
@@ -419,14 +443,16 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
-        WorldCommand::Doctor {
-            roc_bin,
-            platform,
-            journal,
-            ceiling,
-            profile,
-            json,
-        } => {
+        WorldCommand::Doctor(args) => {
+            let crate::cli::WorldDoctorArgs {
+                roc_bin,
+                platform,
+                journal,
+                ceiling,
+                profile,
+                json,
+                ..
+            } = args;
             let platform_dir = platform
                 .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
                 .or_else(|| {
@@ -475,36 +501,56 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             // findings exit nonzero, counted by failure_count().
             report.exit_result()
         }
-        WorldCommand::Diff {
-            node,
-            file,
-            capability,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Diff(args) => {
+            let crate::cli::WorldDiffArgs {
+                node,
+                file,
+                capability,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let manifest = parse_manifest_file(&file)?;
             let (endpoint, client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let state = current_world_state(&client, &capability, None).await?;
             client.close();
             endpoint.close().await;
             print!("{}", crate::world_manifest::diff(&manifest, &state));
+            // Diff stays informational: report drift an apply would refuse.
+            if let Err(error) = crate::world_manifest::check_schedule_horizon(
+                &crate::world_manifest::plan(&manifest, &state),
+                crate::time::unix_ms(),
+            ) {
+                eprintln!("warning: `world apply` would refuse this manifest: {error:#}");
+            }
             Ok(())
         }
-        WorldCommand::Apply {
-            node,
-            file,
-            admin_token,
-            capability,
-            dry_run,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Apply(args) => {
+            let crate::cli::WorldApplyArgs {
+                node,
+                file,
+                admin_token,
+                capability,
+                dry_run,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let manifest = parse_manifest_file(&file)?;
             let (endpoint, client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let state = current_world_state(&client, &capability, Some(&admin_token)).await?;
             let steps = crate::world_manifest::plan(&manifest, &state);
+            // Refuse before any step runs: schedules apply last, so the
+            // host's horizon refusal would otherwise abort a partial apply (#6486).
+            if let Err(error) =
+                crate::world_manifest::check_schedule_horizon(&steps, crate::time::unix_ms())
+            {
+                client.close();
+                endpoint.close().await;
+                return Err(error);
+            }
             if steps.is_empty() {
                 println!("no drift");
             } else {
@@ -551,27 +597,31 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         #[cfg(feature = "sandbox")]
-        WorldCommand::Measure {
-            module,
-            seed,
-            inputs,
-            width,
-            height,
-        } => {
+        WorldCommand::Measure(args) => {
+            let crate::cli::WorldMeasureArgs {
+                module,
+                seed,
+                inputs,
+                width,
+                height,
+                ..
+            } = args;
             let wasm = std::fs::read(&module)
                 .with_context(|| format!("read Wasm module {}", module.display()))?;
             let report = measure_module(&wasm, seed, &inputs, width.zip(height))?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
-        WorldCommand::Logs {
-            node,
-            capability,
-            seconds,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Logs(args) => {
+            let crate::cli::WorldLogsArgs {
+                node,
+                capability,
+                seconds,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             client
                 .send_json(&serde_json::json!({
@@ -609,13 +659,15 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             result
         }
-        WorldCommand::Stats {
-            node,
-            capability,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Stats(args) => {
+            let crate::cli::WorldStatsArgs {
+                node,
+                capability,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let result = async {
                 let info = client.info_details(&capability).await?;
@@ -640,19 +692,21 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
-        WorldCommand::Record {
-            node,
-            capability,
-            out,
-            world,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Record(args) => {
+            let crate::cli::WorldRecordArgs {
+                node,
+                admin_token,
+                out,
+                world,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             // Boxed so that `cmd_world`, already a large state machine, does not
             // grow by the recording's futures.
             Box::pin(record_command(
                 &node,
-                &capability,
+                &admin_token,
                 out.as_deref(),
                 world.as_deref(),
                 &addrs,
@@ -661,35 +715,54 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             .await
         }
         #[cfg(feature = "sandbox")]
-        WorldCommand::Replay {
-            module,
-            fixture,
-            seed,
-            allow_partial,
-        } => replay_fixture(&module, &fixture, seed, allow_partial),
+        WorldCommand::Replay(args) => {
+            let crate::cli::WorldReplayArgs {
+                module,
+                fixture,
+                seed,
+                allow_partial,
+                ..
+            } = args;
+            replay_fixture(&module, &fixture, seed, allow_partial)
+        }
         #[cfg(feature = "sandbox")]
-        WorldCommand::Verify {
-            module,
-            fixture,
-            seed,
-            allow_partial,
-        } => verify_fixture(&module, &fixture, seed, allow_partial),
-        WorldCommand::List {
-            node,
-            admin_token,
-            json,
-            addrs,
-            no_relay,
-        } => {
+        WorldCommand::Verify(args) => {
+            let crate::cli::WorldVerifyArgs {
+                module,
+                fixture,
+                seed,
+                allow_partial,
+                ..
+            } = args;
+            verify_fixture(&module, &fixture, seed, allow_partial)
+        }
+        WorldCommand::List(args) => {
+            let crate::cli::WorldListArgs {
+                node,
+                admin_token,
+                json,
+                addrs,
+                no_relay,
+                ..
+            } = args;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, None).await?;
-            let result = client.list_worlds(&admin_token).await;
+            // With an admin token this is the admin listing; without one
+            // it is the host's public directory (#812) — same reply shape.
+            let result = match &admin_token {
+                Some(token) => client.list_worlds(token).await,
+                None => client.directory().await,
+            };
             client.close();
             endpoint.close().await;
             let (default, worlds) = result?;
             if json {
                 let worlds: Vec<crate::world_hub::WorldInfo> = worlds
                     .into_iter()
-                    .map(|(name, open)| crate::world_hub::WorldInfo { name, open })
+                    .map(|(name, open, presence)| crate::world_hub::WorldInfo {
+                        name,
+                        open,
+                        presence,
+                    })
                     .collect();
                 println!(
                     "{}",
@@ -698,7 +771,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     ))?
                 );
             } else {
-                for (name, open) in worlds {
+                for (name, open, _presence) in worlds {
                     println!("{}", world_list_plain_row(&name, &default, open));
                 }
             }
@@ -718,18 +791,20 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", if result? { "created" } else { "exists" });
             Ok(())
         }
-        WorldCommand::Join {
-            node,
-            capability,
-            after,
-            command_mode,
-            json,
-            world,
-            addrs,
-            no_relay,
-            via,
-            ssh_host_key,
-        } => {
+        WorldCommand::Join(args) => {
+            let crate::cli::WorldJoinArgs {
+                node,
+                capability,
+                after,
+                command_mode,
+                json,
+                world,
+                addrs,
+                no_relay,
+                via,
+                ssh_host_key,
+                ..
+            } = args;
             let join = serde_json::json!({
                 "type": "join",
                 "capability": capability,
@@ -745,7 +820,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     let (endpoint, client) =
                         connect(&node, &addrs, no_relay, world.as_deref()).await?;
                     let (conn, send, recv) = client.into_parts();
-                    let result = pump(recv, send, &first, command_mode, json, &capability).await;
+                    let replay = terminal_probe_replay(command_mode).await;
+                    let result =
+                        pump(recv, send, &first, command_mode, json, &capability, replay).await;
                     conn.close(0_u32.into(), b"done");
                     endpoint.close().await;
                     result
@@ -759,13 +836,17 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 }
             }
         }
-        WorldCommand::SshTunnel {
-            node,
-            listen,
-            stdio,
-            addrs,
-            no_relay,
-        } => ssh_tunnel(&node, listen.as_deref(), stdio, &addrs, no_relay).await,
+        WorldCommand::SshTunnel(args) => {
+            let crate::cli::WorldSshTunnelArgs {
+                node,
+                listen,
+                stdio,
+                addrs,
+                no_relay,
+                ..
+            } = args;
+            ssh_tunnel(&node, listen.as_deref(), stdio, &addrs, no_relay).await
+        }
         WorldCommand::Fork {
             source,
             dir,
@@ -940,7 +1021,8 @@ async fn join_over_ssh(
     };
     let (_connection, stream) = connect_frames(&target, check).await?;
     let (recv, send) = tokio::io::split(stream);
-    pump(recv, send, first, command_mode, json, capability).await
+    let replay = terminal_probe_replay(command_mode).await;
+    pump(recv, send, first, command_mode, json, capability, replay).await
 }
 
 /// `id world ssh-tunnel`: forward a local TCP listener (or stdio, as an SSH
@@ -1064,10 +1146,11 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; an unrestricted
-    // ceiling is the whole catalog, which we fold back to "no ceiling".
+    // The report carries the world's own ceiling as a list; a ceiling equal
+    // to the default ceiling folds back to "no ceiling" (an apply then
+    // restores the default ceiling, #838).
     let ceiling = if caps.ceiling
-        == crate::world_caps::catalog_names()
+        == crate::world_caps::default_ceiling_names()
             .into_iter()
             .collect::<Vec<_>>()
     {
@@ -1187,9 +1270,11 @@ async fn apply_steps(
                 }
             }
             ApplyStep::SetCeiling { ceiling } => {
-                // `None` means "no ceiling": restore the whole catalog.
+                // `None` means "no ceiling": restore the default ceiling —
+                // providers with an `Excluded` manifest default stay out
+                // until a ceiling names them (#838).
                 let names = ceiling.clone().unwrap_or_else(|| {
-                    crate::world_caps::catalog_names()
+                    crate::world_caps::default_ceiling_names()
                         .into_iter()
                         .collect::<Vec<_>>()
                 });
@@ -1309,14 +1394,14 @@ fn read_compile_sources(source: &std::path::Path) -> Result<Vec<(String, String)
 /// be written.
 async fn record_command(
     node: &str,
-    capability: &str,
+    admin_token: &str,
     out: Option<&std::path::Path>,
     world: Option<&str>,
     addrs: &[SocketAddr],
     no_relay: bool,
 ) -> Result<()> {
     let (endpoint, mut client) = connect(node, addrs, no_relay, world).await?;
-    let result = crate::world_fixture::record(&mut client, capability).await;
+    let result = crate::world_fixture::record(&mut client, admin_token).await;
     client.close();
     endpoint.close().await;
     let fixture = result?;
@@ -1785,11 +1870,67 @@ impl Replica {
     }
 }
 
+/// One bounded probe of an interactive local TTY, returning the bytes that
+/// were typed while it ran so the pump can replay them in order.
+///
+/// F13.4 Phase 2 enables only the Tier 3 safe fallback: the probe result never
+/// changes the presenter, and a piped or scripted caller (no TTY) sends no
+/// probe bytes at all and keeps the JSON-lines behavior.
+async fn terminal_probe_replay(command_mode: bool) -> Vec<u8> {
+    if command_mode {
+        return Vec::new();
+    }
+    match tokio::task::spawn_blocking(crate::world_terminal::probe_local_tty).await {
+        Ok(Some(outcome)) => outcome.replay,
+        Ok(None) | Err(_) => Vec::new(),
+    }
+}
+
+/// Stdin that yields bytes captured during the startup terminal probe first.
+///
+/// The probe runs before the line pump takes stdin, so keystrokes typed while
+/// the terminal was answering are replayed here, in order, ahead of live input.
+struct PreloadedStdin {
+    preload: std::io::Cursor<Vec<u8>>,
+    stdin: tokio::io::Stdin,
+}
+
+impl PreloadedStdin {
+    fn new(preload: Vec<u8>) -> Self {
+        Self {
+            preload: std::io::Cursor::new(preload),
+            stdin: tokio::io::stdin(),
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for PreloadedStdin {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if (self.preload.position() as usize) < self.preload.get_ref().len() {
+            let target = buffer.initialize_unfilled();
+            return match std::io::Read::read(&mut self.preload, target) {
+                Ok(read) => {
+                    buffer.advance(read);
+                    std::task::Poll::Ready(Ok(()))
+                }
+                Err(error) => std::task::Poll::Ready(Err(error)),
+            };
+        }
+        std::pin::Pin::new(&mut self.stdin).poll_read(context, buffer)
+    }
+}
+
 /// Print server frames as JSON lines while sending stdin lines as chat.
 /// Local command responses go to stderr unless JSON transcript mode is enabled.
 ///
 /// The transport is any byte stream carrying the length-prefixed envelope
 /// (an iroh stream or an SSH exec channel); `first` is the join frame.
+/// `replay` holds bytes captured by the optional startup terminal probe, which
+/// are fed to the line reader before live stdin so typing order is preserved.
 async fn pump<R, W>(
     mut recv: R,
     mut send: W,
@@ -1797,6 +1938,7 @@ async fn pump<R, W>(
     command_mode: bool,
     json: bool,
     capability: &str,
+    replay: Vec<u8>,
 ) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1809,38 +1951,39 @@ where
         }
         anyhow::Ok(())
     });
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut stdin_open = true;
+    let mut lines = BufReader::new(PreloadedStdin::new(replay)).lines();
     let result = loop {
         tokio::select! {
-            line = lines.next_line(), if stdin_open => match line? {
+            line = lines.next_line() => match line? {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    let frame = if command_mode {
-                        match pump_command(line, capability) {
-                            PumpLine::Send(frame) => frame,
-                            PumpLine::Say { level, message } => {
-                                if json {
-                                    println!("{}", local_transcript_record(level, &message));
-                                } else {
-                                    eprintln!("{message}");
-                                }
-                                continue;
-                            }
-                            PumpLine::Quit => break Ok(()),
-                        }
+                    let action = if command_mode {
+                        pump_command(line, capability)
                     } else {
-                        match line.strip_prefix("/input ") {
-                            Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
-                            None => serde_json::json!({"type": "chat", "text": line}),
+                        pump_plain(line)
+                    };
+                    let frame = match action {
+                        PumpLine::Send(frame) => frame,
+                        PumpLine::Say { level, message } => {
+                            if json {
+                                println!("{}", local_transcript_record(level, &message));
+                            } else {
+                                eprintln!("{message}");
+                            }
+                            continue;
                         }
+                        PumpLine::Quit => break Ok(()),
                     };
                     if let Err(e) = write_frame_to(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
                     }
                 }
-                None => stdin_open = false,
+                // Stdin EOF ends the session: a scripted client leaves by
+                // closing stdin (interactive users have Ctrl-C). Keeping
+                // the pump alive past EOF hung every scripted join until
+                // the server happened to close the connection first.
+                None => break Ok(()),
             },
             ended = &mut reader => {
                 break ended.context("reader task")?;
@@ -1877,7 +2020,7 @@ fn check_contract(text: &str) -> Result<String> {
     )
 }
 
-/// What one stdin line does in the `id world join --command-mode` pump.
+/// What one stdin line does in the `id world join` pump.
 #[derive(Debug, PartialEq, Eq)]
 enum PumpLine {
     /// Send this session frame.
@@ -1941,6 +2084,29 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
             };
         }
     })
+}
+
+/// Map the plain `id world join` input line, validating `/input` while
+/// leaving every other line as chat.
+fn pump_plain(line: &str) -> PumpLine {
+    use crate::world_line::{WorldLine, parse_line};
+
+    if line != "/input" && !line.starts_with("/input ") {
+        return PumpLine::Send(serde_json::json!({"type": "chat", "text": line}));
+    }
+    match parse_line(line) {
+        Some(WorldLine::Input(hex)) => {
+            PumpLine::Send(serde_json::json!({"type": "input", "data_hex": hex}))
+        }
+        Some(WorldLine::Message(message)) => PumpLine::Say {
+            level: "error",
+            message,
+        },
+        _ => PumpLine::Say {
+            level: "info",
+            message: "usage: /input <hex>".to_owned(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2172,6 +2338,36 @@ mod tests {
     }
 
     #[test]
+    fn the_plain_pump_validates_input_and_preserves_chat() {
+        use super::pump_plain;
+        use serde_json::json;
+
+        for hex in ["00af", "00AF"] {
+            assert_eq!(
+                pump_plain(&format!("/input {hex}")),
+                PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+            );
+        }
+        assert_eq!(
+            pump_plain("/input  00AF"),
+            PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+        );
+        for line in ["/input ZZ", "/input 0", "/input"] {
+            assert_eq!(
+                pump_plain(line),
+                PumpLine::Say {
+                    level: "error",
+                    message: "usage: /input <hex>".to_owned()
+                }
+            );
+        }
+        assert_eq!(
+            pump_plain("hello world"),
+            PumpLine::Send(json!({"type": "chat", "text": "hello world"}))
+        );
+    }
+
+    #[test]
     fn the_contract_check_reports_conformance_or_every_violation() {
         let good = [
             r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
@@ -2181,7 +2377,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.4"
+            "3 frames conform to shell contract v1.5"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

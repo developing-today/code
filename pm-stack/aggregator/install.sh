@@ -103,6 +103,8 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_HOSTS=127.0.0.1,${TAILNET_IP}"
     echo "PM_AGG_FEED_FILE=${STATE_DIR}/fleet-feed.json"
     echo "PM_AGG_COMMENTS_FILE=${STATE_DIR}/comments.json"
+    echo "PM_AGG_EVENTS_FILE=${STATE_DIR}/events.json"
+    echo "PM_AGG_ACTIVITY_FILE=${STATE_DIR}/activity-ingestion.json"
     echo "PM_AGG_ACTIONS_FILE=${STATE_DIR}/actions.json"
     echo "PM_AGG_REGISTRY_FILE=${STATE_DIR}/registry.json"
     echo "PM_AGG_SNAPSHOTS_DIR=${STATE_DIR}/snapshots"
@@ -118,7 +120,11 @@ if [ "$CHANGED" -eq 1 ]; then
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
-  cp "$UNIT_SRC" "$UNIT_DST"
+  if [ -L "$UNIT_DST" ]; then
+    echo "pm-aggregator.service is symlink-managed at $UNIT_DST; skipping unit copy"
+  else
+    cp "$UNIT_SRC" "$UNIT_DST"
+  fi
 
   cd "$SRC"
   bun install --silent
