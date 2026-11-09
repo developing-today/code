@@ -29,7 +29,7 @@ const TELEMETRY_FIELDS: [&str; 4] = ["pool", "model", "effort", "cost_usd"];
 const TERMINAL_STATUSES: [&str; 3] = ["done", "cancelled", "failed"];
 
 fn home() -> String {
-    std::env::var("HOME").unwrap_or_default()
+    crate::home::from_env().unwrap_or_else(|error| die(3, error))
 }
 
 fn eprint(s: &str) {
@@ -53,7 +53,12 @@ fn print_json(v: &Value) {
 // ---------------------------------------------------------------------------
 
 fn broker_sock() -> String {
-    format!("{}/.cache/laptop-agent/broker.sock", home())
+    broker_sock_from_home(Some(&home())).unwrap_or_else(|error| die(3, error))
+}
+
+fn broker_sock_from_home(home_dir: Option<&str>) -> Result<String, &'static str> {
+    let home = crate::home::resolve(home_dir)?;
+    Ok(format!("{home}/.cache/laptop-agent/broker.sock"))
 }
 
 // ---------------------------------------------------------------------------
@@ -91,8 +96,10 @@ fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String
     if hostport.is_empty() || hostport.contains('/') {
         return Err(format!("bad broker URL {url:?}"));
     }
-    let token_file = std::env::var("REPO_QUEUE_TOKEN_FILE")
-        .unwrap_or_else(|_| format!("{}/.config/queue-broker/token", home()));
+    let token_file_env = std::env::var("REPO_QUEUE_TOKEN_FILE").ok();
+    let home_env = std::env::var("HOME").ok();
+    let token_file = token_file_from_env(token_file_env.as_deref(), home_env.as_deref())
+        .unwrap_or_else(|error| die(3, error));
     let token = crate::token_file::load_token_file(&token_file)?;
     let token = token.trim();
     let payload = serde_json::to_vec(body).unwrap();
@@ -203,19 +210,34 @@ fn unix_roundtrip(data: &[u8]) -> Result<Value, String> {
 fn broker_program() -> (String, Vec<String>) {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let fleet = dir.join("fleet");
-            if fleet.exists() {
-                return (
-                    fleet.to_string_lossy().into_owned(),
-                    vec!["proxy".to_string(), "serve".to_string()],
-                );
-            }
+            return broker_program_in(dir);
         }
     }
+    python_broker_program()
+}
+
+fn python_broker_program() -> (String, Vec<String>) {
     (
         "python3".to_string(),
         vec![format!("{}/tools/laptop-agent-broker.py", home())],
     )
+}
+
+/// The selection rule, pure over the directory beside the running
+/// binary so it is testable without touching the real install
+/// (#5758): a sibling `fleet` binary ALWAYS wins — no auto-start
+/// path may spawn the Python broker while a fleet binary exists;
+/// Python is the fallback for the standalone rollback builds that
+/// ship without one.
+fn broker_program_in(dir: &std::path::Path) -> (String, Vec<String>) {
+    let fleet = dir.join("fleet");
+    if fleet.exists() {
+        return (
+            fleet.to_string_lossy().into_owned(),
+            vec!["proxy".to_string(), "serve".to_string()],
+        );
+    }
+    python_broker_program()
 }
 
 fn spawn_broker() {
@@ -252,11 +274,110 @@ fn spawn_broker() {
 /// POST one queue-broker command; dies (exit 3) when the broker path
 /// is unavailable, otherwise returns the response envelope (which may
 /// itself be {ok:false, exit, error} — the caller decides).
-fn call(path: &str, body: &Value) -> Value {
-    match broker_roundtrip(path, body) {
-        Ok(v) => v,
-        Err(e) => die(3, &e),
+fn call_result(path: &str, body: &Value) -> Result<Value, (i32, String)> {
+    // #6450 posture (crate::backoff — the one shared policy): a
+    // broker envelope carrying a 57014 / PGRST002-class error is
+    // retried with exponential backoff + jitter instead of dying on
+    // the caller. Safe for writes: a 57014 means Postgres cancelled
+    // the statement, so the write rolled back and cannot
+    // double-apply (enqueue dedupe keys are a second belt).
+    let mut attempt: u32 = 0;
+    loop {
+        match broker_roundtrip(path, body) {
+            Ok(v) => {
+                let retryable = v.get("ok").and_then(|o| o.as_bool()) == Some(false)
+                    && v.get("error")
+                        .and_then(|e| e.as_str())
+                        .map(crate::backoff::is_retryable)
+                        .unwrap_or(false);
+                if retryable && attempt + 1 < crate::backoff::MAX_ATTEMPTS {
+                    crate::backoff::sleep_after_failure(attempt);
+                    attempt += 1;
+                    continue;
+                }
+                return Ok(v);
+            }
+            Err(e) => return Err((3, e)),
+        }
     }
+}
+
+fn call(path: &str, body: &Value) -> Value {
+    match call_result(path, body) {
+        Ok(v) => v,
+        Err((code, msg)) => die(code, &msg),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Permanent fallback arming (#6741; Drew's master plan, 2026-11-06:
+// "encounter any issue -> fallback"). The GitHub fallback is not an
+// outage-only mode any more: for the work verbs (claim, heartbeat,
+// checkpoint, complete, health), ANY primary-store failure — broker
+// unreachable, or an error envelope from the broker — switches the
+// caller to the GitHub fallback for that work instead of dying.
+// The switch is machine-readable: one JSON object on stdout with
+// "fallback": true, and exit code FALLBACK_SWITCH_EXIT, so a worker
+// loop can branch on it without parsing prose. Set
+// REPO_QUEUE_NO_FALLBACK_SWITCH=1 to restore the plain die-on-error
+// behavior (operator escape hatch).
+// ---------------------------------------------------------------------------
+
+const FALLBACK_SWITCH_EXIT: i32 = 6;
+
+fn fallback_switch_enabled() -> bool {
+    std::env::var("REPO_QUEUE_NO_FALLBACK_SWITCH")
+        .map(|v| v != "1")
+        .unwrap_or(true)
+}
+
+fn fallback_switch_json(verb: &str, code: i32, msg: &str) -> Value {
+    json!({
+        "ok": false,
+        "fallback": true,
+        "switch_to": "github-fallback",
+        "verb": verb,
+        "broker_exit": code,
+        "error": msg,
+        "hint": "continue this work with: fleet queue fallback scan|claim|heartbeat|release",
+    })
+}
+
+fn fallback_switch(verb: &str, code: i32, msg: &str) -> ! {
+    eprint(&format!(
+        "repo-queue: primary queue store failed on {verb} (exit {code}): {msg};          switching this work to the GitHub fallback"
+    ));
+    print_json(&fallback_switch_json(verb, code, msg));
+    exit(FALLBACK_SWITCH_EXIT);
+}
+
+fn call_fb(path: &str, body: &Value) -> Value {
+    match call_result(path, body) {
+        Ok(v) => v,
+        Err((code, msg)) => {
+            if fallback_switch_enabled() {
+                fallback_switch(path, code, &msg)
+            } else {
+                die(code, &msg)
+            }
+        }
+    }
+}
+
+fn unwrap_ok_fb(resp: Value, verb: &str) -> Value {
+    if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+        let code = resp.get("exit").and_then(|e| e.as_i64()).unwrap_or(4) as i32;
+        let msg = resp
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("queue-broker error")
+            .to_string();
+        if fallback_switch_enabled() {
+            fallback_switch(verb, code, &msg);
+        }
+        die(code, &msg);
+    }
+    resp
 }
 
 /// Unwrap an envelope: on {ok:false} print the error and exit with its
@@ -289,10 +410,24 @@ fn require_row(resp: &Value, fn_name: &str) -> Value {
 
 fn row_or_ledger(resp: &Value, fn_name: &str) {
     let row = require_row(resp, fn_name);
-    if let Some(ledger) = resp.get("lane_ledger") {
-        print_json(&json!({"task": row, "lane_ledger": ledger}));
-    } else {
-        print_json(&row);
+    // Broker envelope extras a caller must not lose: the triage
+    // completion follow-on (#7016) rides alongside the row.
+    let follow_on = resp.get("follow_on_task_id");
+    match (resp.get("lane_ledger"), follow_on) {
+        (Some(ledger), None) => {
+            print_json(&json!({"task": row, "lane_ledger": ledger}));
+        }
+        (Some(ledger), Some(fid)) => {
+            print_json(&json!({
+                "task": row, "lane_ledger": ledger, "follow_on_task_id": fid
+            }));
+        }
+        (None, Some(fid)) => {
+            print_json(&json!({"task": row, "follow_on_task_id": fid}));
+        }
+        (None, None) => {
+            print_json(&row);
+        }
     }
 }
 
@@ -581,8 +716,66 @@ fn parse_i64_flag(name: &str, raw: &str) -> Result<i64, String> {
         .map_err(|_| format!("argument --{name}: invalid int value {raw:?}"))
 }
 
+/// The accepted range for `list --limit` (#6419; design #6448 Phase 3
+/// pin: out-of-range is REJECTED, never clamped, at both the client
+/// and the broker). `limit=0` used to silently report no tasks and an
+/// unbounded value reached the PostgREST query verbatim.
+pub(crate) const LIST_LIMIT_MAX: i64 = 500;
+pub(crate) const LIST_LIMIT_DEFAULT: i64 = 20;
+
+/// Validate a `list --limit` value against `1..=LIST_LIMIT_MAX`; the
+/// error names `--limit` so a usage failure points at the flag.
+pub(crate) fn validate_list_limit(limit: i64) -> Result<i64, String> {
+    if (1..=LIST_LIMIT_MAX).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(format!(
+            "argument --limit: value {limit} out of range 1..={LIST_LIMIT_MAX}"
+        ))
+    }
+}
+
+/// The `list --limit` value for a call: the flag's value validated, or
+/// the unchanged default when the flag is absent.
+pub(crate) fn list_limit_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_list_limit(raw.unwrap_or(LIST_LIMIT_DEFAULT))
+}
+
+fn env_or_default(value: Option<&str>, default: &str) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn default_queue_from_env(value: Option<&str>) -> String {
+    env_or_default(value, DEFAULT_QUEUE)
+}
+
+fn signal_path_from_env(
+    value: Option<&str>,
+    home_dir: Option<&str>,
+) -> Result<String, &'static str> {
+    let home_dir = crate::home::resolve(home_dir)?;
+    let default = format!(
+        "{home_dir}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json"
+    );
+    Ok(env_or_default(value, &default))
+}
+
+fn token_file_from_env(
+    value: Option<&str>,
+    home_dir: Option<&str>,
+) -> Result<String, &'static str> {
+    let home_dir = crate::home::resolve(home_dir)?;
+    let default = format!("{home_dir}/.config/queue-broker/token");
+    Ok(env_or_default(value, &default))
+}
+
 fn default_queue() -> String {
-    std::env::var("REPO_QUEUE_DEFAULT_QUEUE").unwrap_or_else(|_| DEFAULT_QUEUE.to_string())
+    let value = std::env::var("REPO_QUEUE_DEFAULT_QUEUE").ok();
+    default_queue_from_env(value.as_deref())
 }
 
 fn opt_queue(args: &Args) -> String {
@@ -742,8 +935,38 @@ fn cmd_validate(rest: &[String]) -> i32 {
     0
 }
 
+/// Enqueue queue resolution (#7016, the shadow-default trap): the
+/// --queue flag wins, then the packet's own declared queue, then
+/// the REPO_QUEUE_DEFAULT_QUEUE env. There is deliberately NO
+/// built-in default for enqueue: with none of the three the enqueue
+/// fails loudly instead of silently landing in the shadow queue —
+/// the failure that misrouted ~291 tasks on 2026-11-07. Pure, so
+/// the resolution order is unit-testable.
+fn resolve_enqueue_queue(
+    flag: Option<&str>,
+    packet: &Value,
+    env_default: Option<&str>,
+) -> Result<String, String> {
+    let packet_queue = packet
+        .get("queue")
+        .and_then(|q| q.as_str())
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+    for candidate in [flag, packet_queue, env_default] {
+        if let Some(q) = candidate.map(str::trim).filter(|q| !q.is_empty()) {
+            return Ok(q.to_string());
+        }
+    }
+    Err(
+        "enqueue: no queue resolved — pass --queue, declare \"queue\" in the \
+         packet, or set REPO_QUEUE_DEFAULT_QUEUE (enqueue has no default queue; \
+         the old shadow default silently misrouted work)"
+            .to_string(),
+    )
+}
+
 fn cmd_enqueue(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &["dry-run"]);
+    let args = parse_args(rest, &["queue"], &["dry-run", "shadow-intent"]);
     reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
@@ -753,11 +976,32 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
     let packet = load_packet(&path);
     let dry_run = args.has("dry-run");
     validate_via_broker(&packet, dry_run);
-    let queue = opt_queue(&args);
+    let env_default = std::env::var("REPO_QUEUE_DEFAULT_QUEUE").ok();
+    let queue = match resolve_enqueue_queue(
+        args.get("queue").as_deref(),
+        &packet,
+        env_default.as_deref(),
+    ) {
+        Ok(q) => q,
+        Err(e) => die(2, &e),
+    };
+    let shadow_intent = args.has("shadow-intent");
+    if queue.ends_with("-shadow") && !shadow_intent {
+        die(
+            2,
+            &format!(
+                "enqueue: queue {queue} is a shadow queue — pass --shadow-intent \
+                 to enqueue there deliberately"
+            ),
+        );
+    }
     let call_started = now_micros();
     let resp = call(
         "/enqueue",
-        &json!({"packet": packet, "queue": queue, "dry_run": dry_run}),
+        &json!({
+            "packet": packet, "queue": queue, "dry_run": dry_run,
+            "shadow_intent": shadow_intent,
+        }),
     );
     let resp = unwrap_ok(resp);
     if dry_run {
@@ -788,7 +1032,17 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
     let skew = 10_000_000i64; // 10 s in micros
     let mut warnings: Vec<String> = Vec::new();
     let line;
-    if created.map(|c| c >= call_started - skew).unwrap_or(false) {
+    if let Some(pred) = resp.get("revived_from") {
+        // Broker-side revive (#6838): the key's prior task was
+        // terminal, so this enqueue created a fresh task linked to
+        // its predecessor.
+        line = format!(
+            "revived: new task {} (queue {q}, status {s}), predecessor task {} ({})",
+            fmt_cell(Some(&tid)),
+            fmt_cell(pred.get("task_id")),
+            fmt_cell(pred.get("status")),
+        );
+    } else if created.map(|c| c >= call_started - skew).unwrap_or(false) {
         line = format!(
             "enqueued new task {} (queue {q}, status {s})",
             fmt_cell(Some(&tid))
@@ -824,16 +1078,49 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
     0
 }
 
+/// One `/list` row as the printed table cells, in column order
+/// (task, priority, status, age, dedupe_key, title). Pure so the
+/// claimed-list recovery contract (#5486) is unit-testable: the cells
+/// are built from exactly the identifying fields the broker returns.
+fn list_row_cells(r: &Value) -> Vec<String> {
+    vec![
+        format!("task {}", fmt_cell(r.get("id"))),
+        fmt_cell(r.get("priority")),
+        fmt_cell(r.get("status")),
+        age_str(&r.get("created_at").cloned().unwrap_or(Value::Null)),
+        fmt_cell(r.get("dedupe_key")),
+        truncate(&fmt_cell(r.get("title")), 72),
+    ]
+}
+
+/// Find a task row by id in a `/list` rows array — the recovery path a
+/// worker uses when a claim's own output was lost: `list --status
+/// claimed` must return the same task with its identifying fields.
+fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
+    rows.iter()
+        .find(|r| r.get("id").and_then(|v| v.as_i64()) == Some(task_id))
+}
+
 fn cmd_list(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
+    let args = parse_args(
+        rest,
+        &["queue", "status", "limit", "not-before", "lane", "worker"],
+        &[],
+    );
     reject_extra_pos("list", &args, 0);
+    let limit = match list_limit_or_default(args.get_i64("limit")) {
+        Ok(limit) => limit,
+        Err(e) => die(2, &e),
+    };
     let resp = call(
         "/list",
         &json!({
             "queue": opt_queue(&args),
             "status": args.get("status"),
-            "limit": args.get_i64("limit").unwrap_or(20),
+            "limit": limit,
             "not_before": args.get("not-before"),
+            "lane": args.get("lane"),
+            "worker": args.get("worker"),
         }),
     );
     let resp = unwrap_ok(resp);
@@ -850,19 +1137,7 @@ fn cmd_list(rest: &[String]) -> i32 {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let str_rows: Vec<Vec<String>> = rows
-        .iter()
-        .map(|r| {
-            vec![
-                format!("task {}", fmt_cell(r.get("id"))),
-                fmt_cell(r.get("priority")),
-                fmt_cell(r.get("status")),
-                age_str(&r.get("created_at").cloned().unwrap_or(Value::Null)),
-                fmt_cell(r.get("dedupe_key")),
-                truncate(&fmt_cell(r.get("title")), 72),
-            ]
-        })
-        .collect();
+    let str_rows: Vec<Vec<String>> = rows.iter().map(list_row_cells).collect();
     print_table(&cols, &str_rows);
     0
 }
@@ -870,23 +1145,173 @@ fn cmd_list(rest: &[String]) -> i32 {
 fn cmd_claim(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane"], &[]);
     reject_extra_pos("claim", &args, 0);
+    let worker = opt_worker(&args);
     let mut body = json!({
         "queue": opt_queue(&args),
-        "worker": opt_worker(&args),
+        "worker": worker,
         "lease_seconds": args.get_i64("lease-seconds").unwrap_or(2700),
     });
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
-    let resp = unwrap_ok(call("/claim", &body));
+    let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
+    let (mut out, code) = claim_output(&resp);
+    if code != 0 {
+        eprint("repo-queue: no claimable task");
+        print_json(&out);
+        return code;
+    }
+    // No-double-serve guard (#6741): a task whose issue is held in
+    // the GitHub fallback right now must not be served from the
+    // primary store — block it back and report no claim.
+    match fallback_guard(&out, &worker) {
+        GuardOutcome::HeldBy(holder) => {
+            let task_id = out.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let (repo, issue) = task_issue(&out);
+            let blocker = format!(
+                "issue {repo}#{issue} is held in the GitHub fallback by {holder}; \
+                 primary-store claim auto-blocked to prevent double-serve (#6741)"
+            );
+            let resp = call(
+                "/block",
+                &json!({
+                    "task_id": task_id,
+                    "worker": worker,
+                    "reason_class": "fallback_held",
+                    "blocker": blocker,
+                    "progress": {},
+                }),
+            );
+            if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                eprint(
+                    "repo-queue: WARNING: fallback guard block failed;                      the task stays claimed under its lease",
+                );
+            }
+            print_json(&json!({
+                "task": Value::Null,
+                "guard": "fallback_held",
+                "held_by": holder,
+                "repo": repo,
+                "issue": issue,
+            }));
+            NO_CLAIM_EXIT
+        }
+        GuardOutcome::Unchecked(e) => {
+            if let Some(o) = out.as_object_mut() {
+                o.insert(
+                    "guard_warning".to_string(),
+                    json!(format!(
+                        "fallback double-serve guard could not check GitHub: {e}"
+                    )),
+                );
+            }
+            print_json(&out);
+            code
+        }
+        GuardOutcome::Serve => {
+            print_json(&out);
+            code
+        }
+    }
+}
+
+/// The (repo, issue) identity a claimed task's payload carries, for
+/// the fallback guard. ("", 0) when the packet names none.
+fn task_issue(row: &Value) -> (String, i64) {
+    let payload = row.get("payload").cloned().unwrap_or(Value::Null);
+    (
+        payload
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        payload
+            .get("issue")
+            .and_then(|i| i.get("number"))
+            .and_then(|n| n.as_i64())
+            .unwrap_or(0),
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GuardDecision {
+    Serve,
+    HeldBy(String),
+}
+
+/// Pure guard decision over a fallback claim-state object (the
+/// shape `fallback status` prints): live or contested in the
+/// fallback under a DIFFERENT worker means hands off; anything
+/// else (free / released / stale / held by me) may be served.
+fn guard_decision(state: &Value, my_worker: &str) -> GuardDecision {
+    let name = state.get("state").and_then(|v| v.as_str()).unwrap_or("");
+    let holder = state.get("worker").and_then(|v| v.as_str()).unwrap_or("");
+    if (name == "live" || name == "contested") && !holder.is_empty() && holder != my_worker {
+        GuardDecision::HeldBy(holder.to_string())
+    } else {
+        GuardDecision::Serve
+    }
+}
+
+enum GuardOutcome {
+    Serve,
+    HeldBy(String),
+    /// The GitHub check itself failed: serve, but say so — the
+    /// guard fails open with a warning rather than stalling every
+    /// claim on a GitHub outage (the primary store failing is what
+    /// the fallback switch above is for).
+    Unchecked(String),
+}
+
+fn fallback_guard(row: &Value, my_worker: &str) -> GuardOutcome {
+    let (repo, issue) = task_issue(row);
+    if repo.is_empty() || issue <= 0 {
+        return GuardOutcome::Serve;
+    }
+    match crate::fallback::issue_claim_state(&repo, issue) {
+        Ok(state) => match guard_decision(&state, my_worker) {
+            GuardDecision::HeldBy(h) => GuardOutcome::HeldBy(h),
+            GuardDecision::Serve => GuardOutcome::Serve,
+        },
+        Err(e) => GuardOutcome::Unchecked(e),
+    }
+}
+
+/// Exit code for a claim that found no task: nonzero, so an empty
+/// claim can never be mistaken for a successful one (#5486).
+const NO_CLAIM_EXIT: i32 = 5;
+
+/// Decode a `/claim` broker envelope into the (stdout value, exit
+/// code) pair `cmd_claim` emits. Pure so the wire/output contract is
+/// unit-testable without a broker. The oracle is the envelope shape
+/// itself (#5486): `{ok:true, row:{id,queue,status,dedupe_key,...}}`
+/// prints the row VERBATIM with exit 0 — the reported failure was an
+/// all-null row printed instead of the claimed task — while a null
+/// (or missing) row yields the distinct `{"task": null}` marker with
+/// NO_CLAIM_EXIT, a value carrying no id/queue/status/dedupe_key
+/// fields a caller could mistake for a task.
+fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
-        eprint("repo-queue: no claimable task");
-        print_json(&json!({"task": Value::Null}));
-        return 5;
+        return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
     }
-    print_json(&row);
-    0
+    // Defense in depth (#5444): the broker's claim path validates
+    // packets before handing them out, but a row that still arrives
+    // carrying a payload field that is null or an empty object is a
+    // payload-less packet — never print it as a claimed task. Rows
+    // without a payload field keep the #5486 verbatim contract.
+    if let Some(payload) = row.get("payload") {
+        let missing = payload.is_null()
+            || payload.as_object().is_some_and(|o| o.is_empty());
+        if missing {
+            eprint(&format!(
+                "repo-queue: claim skipped: task {} arrived payload-less (#5444); treating as no claim",
+                row.get("id").cloned().unwrap_or(Value::Null)
+            ));
+            return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
+        }
+    }
+    (row, 0)
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
@@ -930,15 +1355,18 @@ fn cmd_heartbeat(rest: &[String]) -> i32 {
         &[],
     );
     reject_extra_pos("heartbeat", &args, 1);
-    let resp = unwrap_ok(call(
+    let resp = unwrap_ok_fb(
+        call_fb(
+            "/heartbeat",
+            &json!({
+                "task_id": args.pos_i64(0, "task_id"),
+                "worker": opt_worker(&args),
+                "extend_seconds": args.get_i64("extend-seconds").unwrap_or(900),
+                "progress": progress_arg(&args),
+            }),
+        ),
         "/heartbeat",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": opt_worker(&args),
-            "extend_seconds": args.get_i64("extend-seconds").unwrap_or(900),
-            "progress": progress_arg(&args),
-        }),
-    ));
+    );
     print_json(&require_row(&resp, "heartbeat_task"));
     0
 }
@@ -949,15 +1377,18 @@ fn cmd_checkpoint(rest: &[String]) -> i32 {
     let stage = args
         .get("stage")
         .unwrap_or_else(|| die(2, "checkpoint: --stage is required"));
-    let resp = unwrap_ok(call(
+    let resp = unwrap_ok_fb(
+        call_fb(
+            "/checkpoint",
+            &json!({
+                "task_id": args.pos_i64(0, "task_id"),
+                "worker": opt_worker(&args),
+                "stage": stage,
+                "progress": progress_arg(&args).unwrap_or(json!({})),
+            }),
+        ),
         "/checkpoint",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": opt_worker(&args),
-            "stage": stage,
-            "progress": progress_arg(&args).unwrap_or(json!({})),
-        }),
-    ));
+    );
     print_json(&require_row(&resp, "checkpoint_task"));
     0
 }
@@ -1067,6 +1498,26 @@ fn cmd_cancel(rest: &[String]) -> i32 {
         }),
     ));
     print_json(&require_row(&resp, "cancel_repo_task"));
+    0
+}
+
+/// Revive a dead task in place (#6838): a failed task, or a queued
+/// task dead at cap (attempts exhausted), gets attempts=0 and a
+/// fresh not_before through the broker's /revive verb — the
+/// supported replacement for the monitor's direct-SQL resets.
+fn cmd_revive(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason", "not-before"], &[]);
+    reject_extra_pos("revive", &args, 1);
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+    });
+    if let Some(nb) = args.get("not-before") {
+        body["not_before"] = json!(nb);
+    }
+    let resp = unwrap_ok(call("/revive", &body));
+    print_json(&require_row(&resp, "revive_task"));
     0
 }
 
@@ -1199,7 +1650,7 @@ fn cmd_complete(rest: &[String]) -> i32 {
     if let Some(ex) = ex {
         body["execution"] = ex;
     }
-    let resp = unwrap_ok(call("/complete", &body));
+    let resp = unwrap_ok_fb(call_fb("/complete", &body), "/complete");
     row_or_ledger(&resp, "complete_task");
     0
 }
@@ -1211,7 +1662,7 @@ fn cmd_health(rest: &[String]) -> i32 {
     if let Some(q) = args.get("queue") {
         body["queue"] = json!(q);
     }
-    let resp = unwrap_ok(call("/health", &body));
+    let resp = unwrap_ok_fb(call_fb("/health", &body), "/health");
     let netloc = resp
         .get("project_netloc")
         .and_then(|v| v.as_str())
@@ -1253,12 +1704,9 @@ fn cmd_signal(rest: &[String]) -> i32 {
     let queued_count = resp.get("queued_count").cloned().unwrap_or(json!(0));
     let oldest = resp.get("oldest_queued_at").cloned().unwrap_or(Value::Null);
 
-    let signal_path = std::env::var("REPO_QUEUE_SIGNAL_PATH").unwrap_or_else(|_| {
-        format!(
-            "{}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json",
-            home()
-        )
-    });
+    let signal_path_env = std::env::var("REPO_QUEUE_SIGNAL_PATH").ok();
+    let signal_path = signal_path_from_env(signal_path_env.as_deref(), Some(&home()))
+        .unwrap_or_else(|error| die(3, error));
     let dir = std::path::Path::new(&signal_path)
         .parent()
         .map(|p| p.to_string_lossy().to_string())
@@ -1314,10 +1762,13 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|health|signal> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|revive|health|signal|fallback> ...",
         );
         return 2;
     }
+    // Fail before dispatching any verb, so unset and empty HOME never
+    // reach a broker or filesystem path with a root-anchored default.
+    let _ = home();
     let sub = args[0].as_str();
     let rest = &args[1..];
     match sub {
@@ -1332,10 +1783,12 @@ pub fn run(args: &[String]) -> i32 {
         "park" => cmd_park(rest),
         "block" => cmd_block(rest),
         "cancel" => cmd_cancel(rest),
+        "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
+        "fallback" => crate::fallback::run(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2
@@ -1348,8 +1801,150 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn fallback_switch_json_shape() {
+        let v = fallback_switch_json("/claim", 4, "store down");
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["fallback"], json!(true));
+        assert_eq!(v["switch_to"], json!("github-fallback"));
+        assert_eq!(v["verb"], json!("/claim"));
+        assert_eq!(v["broker_exit"], json!(4));
+        assert_eq!(FALLBACK_SWITCH_EXIT, 6);
+    }
+
+    #[test]
+    fn guard_decision_holds_only_live_or_contested_others() {
+        let live_other = json!({"state": "live", "worker": "lane-b"});
+        assert_eq!(
+            guard_decision(&live_other, "lane-a"),
+            GuardDecision::HeldBy("lane-b".to_string())
+        );
+        let contested = json!({"state": "contested", "worker": "lane-b"});
+        assert_eq!(
+            guard_decision(&contested, "lane-a"),
+            GuardDecision::HeldBy("lane-b".to_string())
+        );
+        // Held by me, stale, released, free: all servable.
+        assert_eq!(guard_decision(&live_other, "lane-b"), GuardDecision::Serve);
+        assert_eq!(
+            guard_decision(&json!({"state": "stale", "worker": "lane-b"}), "lane-a"),
+            GuardDecision::Serve
+        );
+        assert_eq!(
+            guard_decision(&json!({"state": "released", "worker": "lane-b"}), "lane-a"),
+            GuardDecision::Serve
+        );
+        assert_eq!(
+            guard_decision(&json!({"state": "free"}), "lane-a"),
+            GuardDecision::Serve
+        );
+    }
+
+    #[test]
+    fn task_issue_reads_payload_identity() {
+        let row = json!({"payload": {"repo": "developing-today/code", "issue": {"number": 6741}}});
+        assert_eq!(task_issue(&row), ("developing-today/code".to_string(), 6741));
+        assert_eq!(task_issue(&json!({"payload": {}})), (String::new(), 0));
+    }
+
     fn pos(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn assert_env_resolution(resolve: impl Fn(Option<&str>) -> String, default: &str) {
+        for value in [None, Some(""), Some(" \t\n")] {
+            assert_eq!(resolve(value), default);
+        }
+        assert_eq!(
+            resolve(Some(" /tmp/configured path ")),
+            "/tmp/configured path"
+        );
+    }
+
+    #[test]
+    fn default_queue_empty_env_values_use_default() {
+        assert_env_resolution(default_queue_from_env, DEFAULT_QUEUE);
+    }
+
+    #[test]
+    fn enqueue_queue_resolution_never_falls_back_to_shadow() {
+        // #7016: the flag wins over the packet, the packet wins over
+        // the env, and with none of the three the enqueue fails
+        // loudly — it never resolves to the shadow default.
+        let packet = json!({"queue": "repo-health-code-pilot"});
+        assert_eq!(
+            resolve_enqueue_queue(Some("repo-health-nix-pilot"), &packet, Some("env-q"))
+                .unwrap(),
+            "repo-health-nix-pilot"
+        );
+        assert_eq!(
+            resolve_enqueue_queue(None, &packet, Some("env-q")).unwrap(),
+            "repo-health-code-pilot"
+        );
+        assert_eq!(
+            resolve_enqueue_queue(None, &json!({}), Some("env-q")).unwrap(),
+            "env-q"
+        );
+        assert!(resolve_enqueue_queue(None, &json!({}), None).is_err());
+        assert!(resolve_enqueue_queue(None, &json!({"queue": "  "}), Some("")).is_err());
+        assert!(resolve_enqueue_queue(Some(""), &json!({}), None).is_err());
+    }
+
+    #[test]
+    fn signal_path_empty_env_values_use_home_default() {
+        let home_dir = "/home/test";
+        let default = format!(
+            "{home_dir}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json"
+        );
+        assert_env_resolution(
+            |value| signal_path_from_env(value, Some(home_dir)).unwrap(),
+            &default,
+        );
+    }
+
+    #[test]
+    fn token_file_empty_env_values_use_home_default() {
+        let home_dir = "/home/test";
+        let default = format!("{home_dir}/.config/queue-broker/token");
+        assert_env_resolution(
+            |value| token_file_from_env(value, Some(home_dir)).unwrap(),
+            &default,
+        );
+    }
+
+    #[test]
+    fn missing_or_empty_home_rejects_socket_token_and_signal_paths() {
+        for home_dir in [None, Some("")] {
+            assert_eq!(
+                broker_sock_from_home(home_dir),
+                Err(crate::home::HOME_REQUIRED)
+            );
+            assert_eq!(
+                token_file_from_env(None, home_dir),
+                Err(crate::home::HOME_REQUIRED)
+            );
+            assert_eq!(
+                signal_path_from_env(None, home_dir),
+                Err(crate::home::HOME_REQUIRED)
+            );
+        }
+    }
+
+    #[test]
+    fn home_derived_socket_token_and_signal_paths_are_unchanged() {
+        let home_dir = Some("/home/test");
+        assert_eq!(
+            broker_sock_from_home(home_dir),
+            Ok("/home/test/.cache/laptop-agent/broker.sock".to_string())
+        );
+        assert_eq!(
+            token_file_from_env(None, home_dir),
+            Ok("/home/test/.config/queue-broker/token".to_string())
+        );
+        assert_eq!(
+            signal_path_from_env(None, home_dir),
+            Ok("/home/test/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json".to_string())
+        );
     }
 
     #[test]
@@ -1414,6 +2009,26 @@ mod tests {
         assert!(err.contains("--limit"), "error names the flag: {err}");
         assert!(err.contains("abc"), "error names the value: {err}");
         assert_eq!(parse_i64_flag("limit", "20"), Ok(20));
+    }
+
+    #[test]
+    fn list_limit_range_is_validated() {
+        // #6419: 0 silently reported no tasks; negatives and unbounded
+        // values reached the broker verbatim. Out-of-range is a usage
+        // error naming --limit (design #6448 Phase 3: reject, not clamp).
+        for bad in [0, -1, LIST_LIMIT_MAX + 1, i64::MAX] {
+            let err = validate_list_limit(bad)
+                .err()
+                .expect("out-of-range --limit must be rejected");
+            assert!(err.contains("--limit"), "error names the flag: {err}");
+        }
+        // Boundaries and the ordinary value pass through unchanged.
+        assert_eq!(validate_list_limit(1), Ok(1));
+        assert_eq!(validate_list_limit(20), Ok(20));
+        assert_eq!(validate_list_limit(LIST_LIMIT_MAX), Ok(LIST_LIMIT_MAX));
+        // Absent --limit keeps the existing default of 20.
+        assert_eq!(list_limit_or_default(None), Ok(20));
+        assert_eq!(list_limit_or_default(Some(0)), validate_list_limit(0));
     }
 
     #[test]
@@ -1545,5 +2160,191 @@ mod tests {
                 prop_assert_eq!(args.get(name), Some(value.to_string()));
             }
         }
+    }
+
+    // #5486 regression coverage: the broker envelope -> CLI output
+    // contract for claim, plus claimed-list recovery. Oracles are the
+    // envelope/row shapes the broker actually returns (queue_broker
+    // wraps RPC results as {ok:true, row:...} / {ok:true, rows:[...]}).
+
+    fn claimed_row_fixture() -> Value {
+        json!({
+            "id": 10811,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:5486",
+            "title": "Add repo-queue claim response-shape regression tests (#5486)",
+            "priority": 50,
+            "worker_id": "repo-worker-code",
+        })
+    }
+
+    #[test]
+    fn claim_success_envelope_prints_the_real_row() {
+        // The reported #5486 failure printed an all-null task row for
+        // a claim the broker had actually made. The row must come
+        // through verbatim: real id, queue, status, and dedupe_key.
+        let row = claimed_row_fixture();
+        let resp = json!({"ok": true, "row": row.clone()});
+        let (out, code) = claim_output(&resp);
+        assert_eq!(code, 0);
+        assert_eq!(out, row);
+        assert_eq!(out.get("id"), Some(&json!(10811)));
+        assert_eq!(out.get("queue"), Some(&json!("repo-health-code-pilot")));
+        assert_eq!(out.get("status"), Some(&json!("claimed")));
+        assert_eq!(
+            out.get("dedupe_key"),
+            Some(&json!(
+                "repo-health:v1:fix:developing-today/code:issue:5486"
+            ))
+        );
+        for field in ["id", "queue", "status", "dedupe_key"] {
+            assert!(
+                !out.get(field).expect(field).is_null(),
+                "claimed row field {field} must not be null"
+            );
+        }
+    }
+
+    #[test]
+    fn claim_null_row_is_a_distinguishable_nonzero_no_claim() {
+        // Both a null row and a missing row field are "no task
+        // claimable": nonzero exit, and the marker carries none of
+        // the fields that would make it look like a task row.
+        for resp in [json!({"ok": true, "row": Value::Null}), json!({"ok": true})] {
+            let (out, code) = claim_output(&resp);
+            assert_eq!(code, NO_CLAIM_EXIT);
+            assert_ne!(code, 0, "an empty claim must not exit as success");
+            assert_eq!(out, json!({"task": Value::Null}));
+            for field in ["id", "queue", "status", "dedupe_key"] {
+                assert!(
+                    out.get(field).is_none(),
+                    "no-claim marker must not carry task field {field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claim_payload_less_row_is_a_no_claim_not_a_task() {
+        // #5444 defense in depth: a claimed row that CARRIES a
+        // payload field which is null or an empty object is the
+        // 2026-11-04 payload-less incident shape — it must degrade
+        // to the distinguishable no-claim marker with a nonzero
+        // exit, never print as a task a worker would try to route.
+        for payload in [Value::Null, json!({})] {
+            let mut row = claimed_row_fixture();
+            row["payload"] = payload;
+            let (out, code) = claim_output(&json!({"ok": true, "row": row}));
+            assert_eq!(code, NO_CLAIM_EXIT);
+            assert_eq!(out, json!({"task": Value::Null}));
+        }
+        // A row carrying a real payload object passes through.
+        let mut row = claimed_row_fixture();
+        row["payload"] = json!({"schema": "repo-task/v1", "kind": "small_fix"});
+        let (out, code) = claim_output(&json!({"ok": true, "row": row.clone()}));
+        assert_eq!(code, 0);
+        assert_eq!(out, row);
+    }
+
+    #[test]
+    fn claimed_list_recovers_the_claimed_task() {
+        // After a successful claim, `list --status claimed` returns
+        // rows the worker can recover the same task from, with its
+        // identifying fields intact.
+        let row = claimed_row_fixture();
+        let other = json!({
+            "id": 9999,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:1",
+            "title": "some other claimed task",
+            "priority": 30,
+        });
+        let rows = vec![other, row];
+        let found = find_task_row(&rows, 10811).expect("claimed task must be recoverable by id");
+        assert_eq!(found.get("status"), Some(&json!("claimed")));
+        assert_eq!(
+            found.get("dedupe_key"),
+            Some(&json!(
+                "repo-health:v1:fix:developing-today/code:issue:5486"
+            ))
+        );
+        assert!(find_task_row(&rows, 424242).is_none());
+        // The printed cells carry the same identifying fields.
+        let cells = list_row_cells(found);
+        assert_eq!(cells.len(), 6);
+        assert_eq!(cells[0], "task 10811");
+        assert_eq!(cells[1], "50");
+        assert_eq!(cells[2], "claimed");
+        assert_eq!(
+            cells[4],
+            "repo-health:v1:fix:developing-today/code:issue:5486"
+        );
+        assert_eq!(
+            cells[5],
+            "Add repo-queue claim response-shape regression tests (#5486)"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn claim_output_passes_any_non_null_row_through_verbatim(
+            id in 1i64..1_000_000,
+            priority in 0i64..100,
+            title in "[a-z ]{1,40}",
+        ) {
+            // Invariant (the #5486 oracle): whatever identifying
+            // fields a successful claim row carries reach stdout
+            // unchanged, with a success exit — no field is nulled,
+            // dropped, or re-keyed in decoding.
+            let row = json!({
+                "id": id,
+                "queue": "repo-health-code-pilot",
+                "status": "claimed",
+                "dedupe_key": format!("key-{id}"),
+                "title": title,
+                "priority": priority,
+            });
+            let (out, code) = claim_output(&json!({"ok": true, "row": row.clone()}));
+            prop_assert_eq!(code, 0);
+            prop_assert_eq!(out, row);
+        }
+    }
+
+    #[test]
+    fn broker_program_prefers_a_sibling_fleet_binary() {
+        // #5758 acceptance: while a fleet binary exists beside the
+        // running one, auto-start spawns `fleet proxy serve` —
+        // never the Python broker.
+        let dir =
+            std::env::temp_dir().join(format!("fleet-queue-broker-program-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fleet"), b"#!/bin/sh\n").unwrap();
+        let (program, args) = broker_program_in(&dir);
+        assert_eq!(program, dir.join("fleet").to_string_lossy());
+        assert_eq!(args, vec!["proxy".to_string(), "serve".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broker_program_falls_back_to_python_without_a_sibling() {
+        // The standalone rollback builds (no fleet beside them)
+        // keep the Python spawn.
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-queue-broker-program-none-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (program, args) = broker_program_in(&dir);
+        assert_eq!(program, "python3");
+        assert_eq!(args.len(), 1);
+        assert!(
+            args[0].ends_with("/tools/laptop-agent-broker.py"),
+            "{args:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildAttentionFlags } from "../src/derive.ts";
-import { lifecycleForEntry, safeProviderReason } from "../src/credential-lifecycle.ts";
+import { isCredentialLifecycleRow, lifecycleForEntry, safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renderQuota } from "../src/render.ts";
 import { overlayQuotaCurrent } from "../src/quota-current.ts";
 import { sanitizeQuotaView } from "../src/feed.ts";
@@ -44,6 +44,22 @@ describe("credential lifecycle", () => {
     expect(lifecycleForEntry(entry({ credentialExpiresAt: "2026-11-05T09:59:59.000Z" }), NOW).state).toBe("expiring");
     expect(lifecycleForEntry(entry({ credentialExpiresAt: "2026-11-06T10:00:01.000Z" }), NOW).state).toBe("ok");
     expect(lifecycleForEntry(entry(), NOW).state).toBe("unknown");
+  });
+
+  test("requires valid ISO dates for lifecycle rows and counts refused rows", () => {
+    const valid = lifecycleForEntry(entry({ credentialExpiresAt: "2026-11-05T10:00:00.000Z" }), NOW);
+    expect(isCredentialLifecycleRow(valid)).toBe(true);
+    expect(isCredentialLifecycleRow({ ...valid, measuredAt: "not-a-date" })).toBe(false);
+    expect(isCredentialLifecycleRow({ ...valid, measuredAt: "2026-02-30T00:00:00.000Z" })).toBe(false);
+    expect(isCredentialLifecycleRow({ ...valid, expiresAt: "2026-02-30T00:00:00.000Z" })).toBe(false);
+    expect(isCredentialLifecycleRow({ ...valid, expiresAt: "March 3, 2026" })).toBe(false);
+
+    const sanitized = sanitizeQuotaView({
+      ...emptyView(),
+      credentialLifecycle: [{ ...valid, measuredAt: "not-a-date" }],
+    });
+    expect(sanitized.droppedCredentialLifecycle).toBe(1);
+    expect(sanitized.view.dropped?.credentialLifecycle).toBe(1);
   });
 
   test("keeps not-configured distinct from provider errors and only labels explicit rejection", () => {

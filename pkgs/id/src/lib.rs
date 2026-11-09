@@ -159,6 +159,7 @@ pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
+pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
@@ -205,9 +206,11 @@ pub mod invites;
 pub mod issuer_rotation;
 pub(crate) mod key_envelope;
 pub mod local;
+pub mod local_claims;
 pub mod local_events;
 pub mod log_sync;
 mod peer_announcement;
+pub mod serve_proxy;
 pub use id_core::membership;
 pub mod match_audit;
 pub mod meta_client;

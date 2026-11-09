@@ -1,3 +1,4 @@
+// Package defaults defines every default value the program ships, parsed from the embedded defaults.json.
 package defaults
 
 import (
@@ -87,6 +88,11 @@ type Defaults struct {
 	Resolve struct {
 		DialTimeout string `json:"dialTimeout"`
 	} `json:"resolve"`
+	// Preflight governs the resolver's own outbound lookups while it
+	// walks an import graph.
+	Preflight struct {
+		NPMTimeout string `json:"npmTimeout"`
+	} `json:"preflight"`
 	// Elicit governs questions a server asks back.
 	Elicit struct {
 		TTL            string `json:"ttl"`
@@ -359,6 +365,7 @@ type Defaults struct {
 		EraFile        string `json:"eraFile"`
 		EraFileVersion int    `json:"eraFileVersion"`
 		ErrorBodyLimit string `json:"errorBodyLimit"`
+		ResponseBodyLimit string `json:"responseBodyLimit"`
 		// SSEReconnectDelay is the wait before resuming a Streamable HTTP
 		// stream the server closed without saying how long to wait (no
 		// retry field).
@@ -415,6 +422,11 @@ var (
 	// HTTPErrorBodyLimit bounds how much of a non-2xx body is read: enough
 	// for a JSON-RPC error, not enough for an HTML error page to matter.
 	HTTPErrorBodyLimit = mustBytes(builtin.Upstream.ErrorBodyLimit, "upstream.errorBodyLimit")
+	// ProviderResponseBodyLimit bounds how much of a model provider's
+	// response body is read on the success path: a chat-completion
+	// JSON has no business being larger, and an unbounded read lets a
+	// bad endpoint make the daemon allocate arbitrarily much (#4354).
+	ProviderResponseBodyLimit = mustBytes(builtin.Upstream.ResponseBodyLimit, "upstream.responseBodyLimit")
 	// UpstreamSSEReconnectDelay is the resume wait when a server sent no
 	// retry field.
 	UpstreamSSEReconnectDelay = mustDur(builtin.Upstream.SSEReconnectDelay, "upstream.sseReconnectDelay")
@@ -569,6 +581,12 @@ var (
 	// socket, so it either succeeds immediately or the daemon is gone;
 	// waiting longer only makes a dead daemon slower to report.
 	ResolveDialTimeout = mustDur(builtin.Resolve.DialTimeout, "resolve.dialTimeout")
+
+	// PreflightNPMTimeout bounds the npm registry lookup preflight makes
+	// for a package's latest version. Like ResolveDialTimeout it is an
+	// internal bound, so it lives in defaults.json only and is
+	// deliberately absent from the settings registry.
+	PreflightNPMTimeout = mustDur(builtin.Preflight.NPMTimeout, "preflight.npmTimeout")
 
 	ElicitTTL = mustDur(builtin.Elicit.TTL, "elicit.ttl")
 	// ElicitMaxAge is the absolute ceiling on a question's life under the

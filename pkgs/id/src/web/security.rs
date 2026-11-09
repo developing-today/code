@@ -74,6 +74,17 @@ impl WebSecurity {
     }
 }
 
+/// Apply the security guard to a completed router tree.
+///
+/// Public router constructors call this once before returning, so embedders
+/// cannot accidentally receive the unguarded route tree.
+pub(super) fn protect(router: axum::Router, security: WebSecurity) -> axum::Router {
+    router.layer(axum::middleware::from_fn_with_state(
+        Arc::new(security),
+        guard,
+    ))
+}
+
 /// Strip an optional `:port` from a `Host`/`Origin` authority and lower-case it.
 fn host_only(authority: &str) -> String {
     let a = authority.trim().to_lowercase();
@@ -513,7 +524,12 @@ mod tests {
         .await;
         assert_eq!(query.status(), StatusCode::SEE_OTHER);
         assert_eq!(
-            query.headers().get(header::LOCATION).unwrap().to_str().unwrap(),
+            query
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "/"
         );
         let set = query
@@ -556,7 +572,12 @@ mod tests {
         assert_eq!(loc, "/page?a=1&b=2");
         assert!(!loc.contains("s3cret"));
         assert!(!loc.contains("token="));
-        let set = r.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        let set = r
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(set.starts_with("id_token=s3cret"), "{set}");
         assert!(set.contains("HttpOnly"));
         assert!(set.contains("SameSite=Strict"));

@@ -388,7 +388,7 @@ func TestDeclaredReadOnlyClearsTheDestructiveFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer broker.Close()
+	defer func() { _ = broker.Close() }()
 	r := &Registry{
 		consumer: ConsumerPolicy{
 			WritePolicy:        "allow",

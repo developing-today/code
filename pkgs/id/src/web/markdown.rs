@@ -2984,8 +2984,12 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         NodeValue::Link(link) => {
             // Link - collect children with link mark added
+            // #5745: neutralize executable/unknown URL schemes at this
+            // single entry point — every Markdown link (typed, imported,
+            // or collaborative, which reaches this converter via
+            // collab.rs) carries the sanitized href from here on.
             let mut marks = active_marks.to_vec();
-            let mut attrs = json!({"href": link.url});
+            let mut attrs = json!({"href": sanitize_link_url(&link.url)});
             if !link.title.is_empty() {
                 attrs["title"] = json!(link.title);
             }
@@ -3008,7 +3012,7 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         NodeValue::Image(image) => {
             let mut attrs = json!({
-                "src": image.url
+                "src": sanitize_image_url(&image.url)
             });
 
             // #1417: store the alt in markdown form, not flattened plain
@@ -3896,7 +3900,7 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     let parsed = parse_tag_attrs(trimmed, 4);
     let attr = |name: &str| parsed.get(name).map(String::as_str);
 
-    let src = attr("src")?; // src is required
+    let src = sanitize_image_url(attr("src")?); // src is required
     let mut attrs = json!({"src": src});
 
     if let Some(alt) = attr("alt") {
@@ -3924,6 +3928,158 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     }))
 }
 
+/// #5745: the allowed-scheme oracle for link URLs.
+///
+/// A link URL is safe iff, after removing the characters browsers strip
+/// while parsing a URL (TAB/LF/CR anywhere, leading C0 controls and
+/// spaces), it either has no scheme at all — a relative or internal
+/// reference, a fragment, a query, or a protocol-relative `//host/path`
+/// reference, none of which can name an executable scheme — or its
+/// scheme is exactly `http`, `https`, or `mailto` (case-insensitive).
+/// Everything else (`javascript:`, `data:`, `vbscript:`, any unknown
+/// scheme, and any obfuscation of those the stripping above exposes)
+/// is unsafe. This explicit allowed set is the oracle every link test
+/// for #5745 checks against; do not rely on browser sanitization.
+fn link_url_is_safe(url: &str) -> bool {
+    let probe: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
+    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
+    let mut scheme_end = None;
+    for (i, c) in probe.char_indices() {
+        match c {
+            ':' => {
+                scheme_end = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    let Some(colon) = scheme_end else {
+        return true; // no scheme: relative / fragment / query / protocol-relative
+    };
+    let scheme = &probe[..colon];
+    let mut chars = scheme.chars();
+    let valid_scheme = !scheme.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid_scheme {
+        // A `:` in the first segment whose prefix is not a scheme
+        // (e.g. a relative path containing a colon) is not a scheme.
+        return true;
+    }
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto"
+    )
+}
+
+/// #5745: return `url` unchanged when [`link_url_is_safe`], else the
+/// inert fragment `"#"`. The link text and mark survive; only the
+/// executable target is removed, and `"#"` re-parses as a safe
+/// fragment, so sanitized documents are a stable round-trip fixpoint.
+fn sanitize_link_url(url: &str) -> String {
+    if link_url_is_safe(url) {
+        url.to_owned()
+    } else {
+        "#".to_owned()
+    }
+}
+
+/// #6364: the image-specific allowed-scheme oracle.
+///
+/// Image URLs allow relative/internal references and `http`/`https`, plus
+/// data URLs whose media type is one of the supported raster formats. SVG is
+/// deliberately excluded because it can contain active content. As with
+/// links, inspect the scheme after stripping TAB/LF/CR and leading C0
+/// controls/spaces so browser URL parsing cannot expose an obfuscated scheme.
+fn image_url_is_safe(url: &str) -> bool {
+    let probe: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
+
+    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
+    let mut scheme_end = None;
+    for (i, c) in probe.char_indices() {
+        match c {
+            ':' => {
+                scheme_end = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    let Some(colon) = scheme_end else {
+        return true;
+    };
+
+    let scheme = &probe[..colon];
+    let mut chars = scheme.chars();
+    let valid_scheme = !scheme.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid_scheme {
+        // Match the link oracle: a colon in a segment that is not a valid
+        // scheme (for example a relative path) does not introduce a scheme.
+        return true;
+    }
+
+    let Some((raw_scheme, _)) = url.split_once(':') else {
+        return true;
+    };
+    if raw_scheme.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
+        return false;
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" => true,
+        "data" => {
+            // Reject control-character spellings in the scheme or data URL
+            // header, even if removing them would produce an allowed MIME
+            // type. Controls in the encoded payload do not affect the scheme
+            // or media type and are left untouched.
+            let Some((header, _)) = url.split_once(',') else {
+                return false;
+            };
+            if header.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
+                return false;
+            }
+            let Some((metadata, _)) = probe[colon + 1..].split_once(',') else {
+                return false;
+            };
+            let media_type = metadata.split(';').next().unwrap_or_default();
+            matches!(
+                media_type.to_ascii_lowercase().as_str(),
+                "image/png"
+                    | "image/gif"
+                    | "image/jpeg"
+                    | "image/webp"
+                    | "image/avif"
+                    | "image/bmp"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// #6364: return `url` unchanged for an allowed image URL, otherwise the
+/// inert fragment `#`. Keeping only the target neutralized preserves the
+/// image node and makes the sanitized document a stable round-trip fixpoint.
+fn sanitize_image_url(url: &str) -> String {
+    if image_url_is_safe(url) {
+        url.to_owned()
+    } else {
+        "#".to_owned()
+    }
+}
+
 /// Parse an HTML `<a ...>` opening tag, returning its `href` and optional
 /// `title`. Returns `None` for anything else, including an anchor with no
 /// (or an empty) `href`.
@@ -3944,7 +4100,11 @@ fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
-    Some((href.clone(), title))
+    // #5745: a raw-HTML anchor wrapping an image gets the same
+    // allowed-scheme treatment as a Markdown link; an unsafe href is
+    // neutralized (not dropped, which would strand the raw anchor tag
+    // as a verbatim html_inline atom carrying the executable URL).
+    Some((sanitize_link_url(href), title))
 }
 
 /// Attach a wrapping anchor's link to an image node (#880/#893), in the
@@ -4169,7 +4329,8 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for token in fence_tokens {
         output = strip_fence_placeholder(&output, &token);
     }
-    Ok(restore_github_alert_markers(&output))
+    let output = restore_github_alert_markers(&output);
+    Ok(strip_end_list_separators(doc, &output))
 }
 
 /// Undo the CommonMark renderer's escaping of a GitHub alert marker when
@@ -4325,6 +4486,403 @@ fn restore_github_alert_markers(markdown: &str) -> String {
     }
 
     output
+}
+
+/// The start number a PM list renders with in Markdown, when it
+/// renders as an ordered list: ordered_list always (attrs.order,
+/// default 1); a task_list only when it carries attrs.order (#1370
+/// ordered task runs render as `1. [ ]`). Bullet-rendering lists and
+/// non-lists return None.
+fn ordered_start(node: &Value) -> Option<u64> {
+    let order = node["attrs"]["order"].as_u64();
+    match node["type"].as_str() {
+        Some("ordered_list") => Some(order.unwrap_or(1)),
+        Some("task_list") => order,
+        _ => None,
+    }
+}
+
+fn list_kind(node: &Value) -> Option<&str> {
+    match node["type"].as_str() {
+        Some(k @ ("bullet_list" | "ordered_list" | "task_list")) => Some(k),
+        _ => None,
+    }
+}
+
+/// The tightness a PM list effectively renders with: the stored
+/// `attrs.tight` when present; for a legacy task_list without the
+/// attribute, the same inference json_to_ast applies (loose if any
+/// item has more than one block child, else tight); bullet/ordered
+/// lists without the attribute render loose (json_to_ast defaults
+/// them to false). Boundary decisions in collect_boundary_kinds must
+/// use this, not the raw attribute: comparing raw attrs mistook a
+/// legacy tight task list for loose (CodeRabbit review, PR #3258).
+fn effective_tight(node: &Value) -> bool {
+    if let Some(tight) = node["attrs"]["tight"].as_bool() {
+        return tight;
+    }
+    if node["type"].as_str() == Some("task_list") {
+        return !node["content"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.len() > 1)
+            })
+        });
+    }
+    false
+}
+
+/// #1397: comrak's renderer separates adjacent list siblings with an
+/// `<!-- end list -->` comment - renderer-internal markup that lands in
+/// the user's file. Where the two lists are of DIFFERENT PM kinds the
+/// comment is the only thing keeping them apart, and it is not needed:
+/// a change of list type ends a list on reparse all by itself (and the
+/// #1370 parse-side split rebuilds task/plain runs), so the separator
+/// line is dropped and the lists sit directly adjacent in the text -
+/// tight lists stay tight, loose lists keep their blank lines. Where
+/// the kinds are the SAME (two ordered lists, two task lists) dropping
+/// it would merge the lists and lose restart/order information, so the
+/// separator stays for those pairs. It also stays for a DIFFERENT-kind
+/// pair that renders as the same ordered Markdown list (an ordered_list
+/// next to a task_list carrying `attrs.order`, or vice versa) when the
+/// second list does not start exactly where the first list's numbering
+/// ends: merging those on reparse renumbers the second run and loses
+/// its restart (Codex review, PR #3258). If the lines found in the output
+/// do not line up one-to-one with the boundaries computed from the doc,
+/// the output is returned untouched.
+/// The fence run a rendered line opens or closes, if any: returns the
+/// fence character and the remainder of the line starting at the run.
+/// List-marker prefixes are stripped first (blockquote `>` markers and
+/// indentation, then bullet / ordered / task-checkbox markers, repeated
+/// for nested items), because a code block that is a list item's first
+/// block renders its opening fence immediately after the marker
+/// (`- ``` `). Plain lines return their own trimmed remainder.
+fn list_fence_rest(line: &str) -> Option<(char, &str)> {
+    let mut rest = line.trim_start_matches(['>', ' ']).trim_start();
+    loop {
+        let mut stripped = false;
+        for marker in ["- ", "+ ", "* ", "[ ] ", "[x] ", "[X] "] {
+            if let Some(r) = rest.strip_prefix(marker) {
+                rest = r.trim_start();
+                stripped = true;
+                break;
+            }
+        }
+        if stripped {
+            continue;
+        }
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0 {
+            let after = &rest[digits..];
+            for marker in [". ", ") "] {
+                if let Some(r) = after.strip_prefix(marker) {
+                    rest = r.trim_start();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    if rest.starts_with("```") {
+        Some(('`', rest))
+    } else if rest.starts_with("~~~") {
+        Some(('~', rest))
+    } else {
+        None
+    }
+}
+
+/// Whether a list's first item renders empty (no text, no block content
+/// beyond empty paragraphs): an empty list item cannot interrupt a
+/// paragraph under CommonMark, whatever its marker (Codex review,
+/// PR #3258: `- a\n\n1.\n2. b` saved without the blank reparsed the
+/// empty `1.` as lazy continuation text and lost the ordered list).
+fn list_starts_with_empty_item(list: &Value) -> bool {
+    let Some(first) = list["content"].as_array().and_then(|items| items.first()) else {
+        return false;
+    };
+    fn node_is_empty(node: &Value) -> bool {
+        if node["text"].as_str().is_some_and(|t| !t.trim().is_empty()) {
+            return false;
+        }
+        match node["type"].as_str() {
+            Some("paragraph" | "list_item" | "task_list_item" | "text") | None => {}
+            Some(_) => return false,
+        }
+        node["content"]
+            .as_array()
+            .is_none_or(|parts| parts.iter().all(node_is_empty))
+    }
+    node_is_empty(first)
+}
+
+fn strip_end_list_separators(doc: &Value, output: &str) -> String {
+    // Recompute with kinds: the drop decision needs them, so collect
+    // (prev_kind, kind, tight_pair, merge_safe, needs_blank) tuples
+    // alongside.
+    let mut kinds: Vec<(String, String, bool, bool, bool)> = Vec::new();
+    collect_boundary_kinds(doc, &mut kinds);
+    if kinds.is_empty() {
+        return output.to_string();
+    }
+    let is_separator_line =
+        |line: &str| line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->";
+    let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
+    let lines: Vec<&str> = output.lines().collect();
+    // Codex review, PR #3258: a separator-looking line inside a fenced
+    // code block is authored content, not renderer markup - it must
+    // neither count toward the boundary correspondence nor be dropped.
+    // Track fence state (``` / ~~~, optionally blockquote-prefixed) and
+    // only treat lines outside fences as separators.
+    let mut in_fence = false;
+    let mut fence_char = '`';
+    let mut fence_len = 0usize;
+    // Codex review, PR #3258: raw HTML blocks are literal content too.
+    // A backtick-only line inside one (e.g. a <div> wrapping a ``` line)
+    // is not a fence opener, and a separator-looking line inside the
+    // block is authored HTML, not renderer markup. Track HTML block
+    // state (CommonMark: the block runs until a blank line; an HTML
+    // comment block runs until its --> closer) and exclude its lines
+    // from both fence tracking and separator counting.
+    let mut in_html = false;
+    let mut html_is_comment = false;
+    let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let html_probe = line.trim_start_matches(['>', ' ']).trim();
+        if in_html {
+            is_separator.push(false);
+            if html_is_comment {
+                if html_probe.contains("-->") {
+                    in_html = false;
+                    html_is_comment = false;
+                }
+            } else if html_probe.is_empty() {
+                in_html = false;
+            }
+            continue;
+        }
+        if !in_fence && !is_separator_line(line) {
+            let second = html_probe.chars().nth(1);
+            let opens_html = html_probe.starts_with('<')
+                && second.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
+            if opens_html {
+                is_separator.push(false);
+                if html_probe.starts_with("<!--") {
+                    if !html_probe[4..].contains("-->") {
+                        in_html = true;
+                        html_is_comment = true;
+                    }
+                } else {
+                    in_html = true;
+                }
+                continue;
+            }
+        }
+        // Codex review, PR #3258: a fence can open immediately after a
+        // list marker (a list item whose first block is a code block
+        // renders as `- ``` `): strip any list-marker prefixes (bullet,
+        // ordered, task checkbox, nested) before looking for the fence
+        // run, or the opener is missed, the fence's literal content is
+        // counted as a separator, and the closing fence is mistaken
+        // for an opener that hides the real separator.
+        let fence_rest = list_fence_rest(line);
+        let fence_marker = fence_rest.map(|(c, _)| c);
+        match fence_marker {
+            Some(c) if !in_fence => {
+                in_fence = true;
+                fence_char = c;
+                fence_len = fence_rest
+                    .map(|(_, rest)| rest.chars().take_while(|&ch| ch == c).count())
+                    .unwrap_or(0);
+                is_separator.push(false);
+            }
+            // CodeRabbit review, PR #3258: a fence closes only on a
+            // BARE run of the fence character at least as long as the
+            // opener. A content line such as ```rust starts with the
+            // marker but is not a closer; ending the fence there let a
+            // separator-looking line later in the code block be counted
+            // (and dropped) as renderer markup, losing authored lines.
+            Some(c)
+                if c == fence_char
+                    && fence_rest.is_some_and(|(_, rest)| {
+                        rest.trim_end().chars().all(|ch| ch == c)
+                            && rest.trim_end().len() >= fence_len
+                    }) =>
+            {
+                in_fence = false;
+                is_separator.push(false);
+            }
+            _ => is_separator.push(!in_fence && is_separator_line(line)),
+        }
+    }
+    let found = is_separator.iter().filter(|b| **b).count();
+    if found != kinds.len() {
+        return output.to_string();
+    }
+    let mut boundary = kinds.iter();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut idx = 0;
+    while idx < lines.len() {
+        let line = lines[idx];
+        if is_separator[idx] {
+            match boundary.next() {
+                Some((a, b, tight_pair, merge_safe, needs_blank)) if a != b && *merge_safe => {
+                    // Drop the separator. The renderer also puts a blank
+                    // line on each side of it; with the comment gone,
+                    // blanks between the lists would fuse them into ONE
+                    // loose list on reparse. A tight pair keeps no blank
+                    // line at all; a loose pair keeps exactly one. A
+                    // needs_blank pair also keeps exactly one: an ordered
+                    // list starting above 1 cannot interrupt the previous
+                    // item's paragraph, so with no blank line at all its
+                    // first line reparses as a lazy continuation and the
+                    // list is lost (Codex review, PR #3258).
+                    let prev_blank = kept.last().is_some_and(|l| is_blank_line(l));
+                    let next_blank = lines.get(idx + 1).is_some_and(|l| is_blank_line(l));
+                    if prev_blank && next_blank {
+                        if *tight_pair && !*needs_blank {
+                            kept.pop();
+                        }
+                        idx += 1; // skip the following blank line too
+                    }
+                }
+                _ => kept.push(line),
+            }
+        } else {
+            kept.push(line);
+        }
+        idx += 1;
+    }
+    let mut out = kept.join("\n");
+    if output.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// (prev PM kind, PM kind, both tight, merge-safe, needs-blank) for every list
+/// adjacency in the doc, in render order, interleaved with authored
+/// htmlBlocks (recorded as ("", "", false, false, false) so they consume a
+/// separator-line slot but are never dropped - see
+/// strip_end_list_separators' caller contract). Merge-safe is false
+/// only when dropping the separator would merge two ordered-rendering
+/// lists whose numbering does not continue across the boundary.
+fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, bool, bool)>) {
+    let Some(content) = node["content"].as_array() else {
+        return;
+    };
+    let mut prev_list: Option<&Value> = None;
+    // Effective tight of the current consecutive bullet_list run's
+    // FIRST list (the tight json_to_ast's coalesce renders with).
+    let mut bullet_run_tight: Option<bool> = None;
+    for child in content {
+        let kind = list_kind(child);
+        if let (Some(prev), Some(kind)) = (prev_list, kind)
+            && !(list_kind(prev) == Some("bullet_list") && kind == "bullet_list")
+        {
+            // Codex review, PR #3258: when prev is a bullet_list that
+            // json_to_ast coalesced with earlier bullet siblings, the
+            // rendered list carries the FIRST sibling's tight, so the
+            // boundary must compare that effective tightness - the last
+            // original sibling's attr can differ and silently loosens
+            // the following run on reparse.
+            let prev_tight = if list_kind(prev) == Some("bullet_list") {
+                bullet_run_tight.unwrap_or_else(|| effective_tight(prev))
+            } else {
+                effective_tight(prev)
+            };
+            let child_tight = effective_tight(child);
+            let tight_pair = prev_tight && child_tight;
+            // Two lists that both render as ordered Markdown merge into
+            // one list on reparse if the separator goes; the merge is
+            // lossless only when the second list starts exactly where
+            // the first list's numbering ends (start + item count), so
+            // convert_list_runs recomputes the same run orders.
+            let ordered_merge_safe = match (ordered_start(prev), ordered_start(child)) {
+                (Some(prev_start), Some(next_start)) => {
+                    let prev_count = prev["content"].as_array().map_or(0, |c| c.len()) as u64;
+                    // attrs.order comes from the request's PM JSON; a
+                    // crafted start near u64::MAX must not overflow the
+                    // sum (debug builds panic, release builds wrap and
+                    // could drop a separator that should stay).
+                    prev_start.checked_add(prev_count) == Some(next_start)
+                }
+                _ => true,
+            };
+            // Codex review, PR #3258: two lists that render as the same
+            // Markdown list family (bullet-rendering: bullet_list and
+            // order-less task_list; ordered-rendering: ordered_list and
+            // ordered task_list) merge into ONE list on reparse when the
+            // separator drops, and convert_list_runs then copies one
+            // run's tight onto both. When their tight attributes differ
+            // that silently loosens/tightens a run and breaks the save
+            // fixpoint, so the separator stays. Different families split
+            // on reparse by marker type and keep their own tightness.
+            let renders_ordered = |n: &Value| ordered_start(n).is_some();
+            let tight_differs = prev_tight != child_tight;
+            let tight_merge_safe =
+                !(renders_ordered(prev) == renders_ordered(child) && tight_differs);
+            let merge_safe = ordered_merge_safe && tight_merge_safe;
+            // Codex review, PR #3258: an ordered-rendering list that
+            // starts above 1 cannot interrupt a paragraph, so when the
+            // previous list does not itself render ordered, the boundary
+            // must keep a blank line or the second list's first line
+            // reparses as a lazy continuation of the previous item.
+            // The empty-item guard (below) applies only across
+            // different rendered list families: within one family the
+            // two runs reparse as a single list, where an empty sibling
+            // item needs no blank - keeping one would loosen the merged
+            // list and break the save fixpoint (Codex review, PR #3258).
+            let needs_blank = (matches!(ordered_start(child), Some(start) if start != 1)
+                && ordered_start(prev).is_none())
+                || (list_starts_with_empty_item(child)
+                    && renders_ordered(prev) != renders_ordered(child));
+            out.push((
+                list_kind(prev).unwrap_or_default().to_string(),
+                kind.to_string(),
+                tight_pair,
+                merge_safe,
+                needs_blank,
+            ));
+        }
+        if child["type"].as_str() == Some("code_block")
+            && child["attrs"]["htmlBlock"].as_bool() == Some(true)
+            && child["content"].as_array().is_some_and(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|n| n["text"].as_str())
+                    .collect::<String>()
+                    .trim()
+                    == "<!-- end list -->"
+            })
+        {
+            out.push((String::new(), String::new(), false, false, false));
+        }
+        // Codex review, PR #3258: lists inside a table cell are
+        // flattened to text by append_table_cell_child and emit no
+        // separator, so boundaries collected there have no line in
+        // the output to correspond to - skip the cell's subtree.
+        if !matches!(child["type"].as_str(), Some("table_header" | "table_cell")) {
+            collect_boundary_kinds(child, out);
+        }
+        if kind.is_some() {
+            if kind == Some("bullet_list") {
+                if prev_list.is_none_or(|p| list_kind(p) != Some("bullet_list")) {
+                    bullet_run_tight = Some(effective_tight(child));
+                }
+            } else {
+                bullet_run_tight = None;
+            }
+            prev_list = Some(child);
+        } else {
+            prev_list = None;
+            bullet_run_tight = None;
+        }
+    }
 }
 
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
@@ -4691,6 +5249,46 @@ fn is_whitespace_only_text_json(node: &Value) -> bool {
             .all(|c| c == ' ' || c == '\t')
 }
 
+/// Whether a hard break has no rendered content after it before the
+/// block ends. Whitespace-only text and further breaks do not make a
+/// trailing break interior content. This is the placement boundary for
+/// #1388: CommonMark cannot spell a break after the last content of a
+/// block, so normalize it away before building the comrak AST.
+fn hard_break_is_trailing(content: &[Value], idx: usize) -> bool {
+    content[idx + 1..]
+        .iter()
+        .all(|sibling| is_hard_break_json(sibling) || is_whitespace_only_text_json(sibling))
+}
+
+/// Apply the save-side hard-break placement policy for a block's inline
+/// children (#1388, transferring the #1492 placements): a hard break at
+/// block end is dropped explicitly (the renderer silently drops it); a
+/// heading is single-line CommonMark content, so an interior break
+/// degrades to a space instead of becoming an unspellable backslash-newline.
+/// Other interior paragraph breaks retain their existing LineBreak form.
+fn normalize_hard_break_placement(node_type: &str, content: &[Value]) -> Vec<Value> {
+    if !matches!(node_type, "heading" | "paragraph") {
+        return content.to_vec();
+    }
+
+    let mut normalized = Vec::with_capacity(content.len());
+    for (idx, child) in content.iter().enumerate() {
+        if !is_hard_break_json(child) {
+            normalized.push(child.clone());
+            continue;
+        }
+        if hard_break_is_trailing(content, idx) {
+            continue;
+        }
+        if node_type == "heading" {
+            normalized.push(json!({"type": "text", "text": " "}));
+        } else {
+            normalized.push(child.clone());
+        }
+    }
+    normalized
+}
+
 /// Whether scanning `siblings` (in render order) reaches a line edge —
 /// the start/end of the block or a `hard_break` — before any content
 /// that renders something (#1420).
@@ -4941,7 +5539,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "table_header" | "table_cell" => NodeValue::TableCell,
 
         "image" => {
-            let src = json["attrs"]["src"].as_str().unwrap_or("");
+            let src = sanitize_image_url(json["attrs"]["src"].as_str().unwrap_or(""));
             let title = json["attrs"]["title"].as_str().unwrap_or("");
             let alt = json["attrs"]["alt"].as_str().unwrap_or("");
             let width = json["attrs"]["width"].as_u64();
@@ -4951,7 +5549,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             if width.is_some() || height.is_some() {
                 // #873: escape values — a raw `"` truncated the attribute on
                 // reparse and could inject new attributes.
-                let mut tag = format!("<img src=\"{}\"", escape_attr_value(src));
+                let mut tag = format!("<img src=\"{}\"", escape_attr_value(&src));
                 if !alt.is_empty() {
                     tag.push_str(&format!(" alt=\"{}\"", escape_attr_value(alt)));
                 }
@@ -4972,7 +5570,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 if let Some(link_href) = json["attrs"]["linkHref"].as_str()
                     && !link_href.is_empty()
                 {
-                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(link_href));
+                    // #5745: a PM doc that arrived as raw ProseMirror JSON
+                    // (collab Rich mode) never passed the parse-direction
+                    // sanitizer, so neutralize unsafe hrefs on the way out.
+                    let safe_href = sanitize_link_url(link_href);
+                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(&safe_href));
                     if let Some(link_title) = json["attrs"]["linkTitle"].as_str()
                         && !link_title.is_empty()
                     {
@@ -4984,7 +5586,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             } else {
                 // Standard markdown image syntax
                 NodeValue::Image(Box::new(comrak::nodes::NodeLink {
-                    url: src.to_owned(),
+                    url: src,
                     title: title.to_owned(),
                 }))
             }
@@ -5117,9 +5719,10 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         // ordered_list is NOT merged (it carries restart numbering) and
         // task_list is a distinct PM node type, so neither is affected.
         let mut prev_bullet_list: Option<&AstNode<'a>> = None;
-        for (idx, child_json) in content.iter().enumerate() {
+        let normalized_content = normalize_hard_break_placement(node_type, content);
+        for (idx, child_json) in normalized_content.iter().enumerate() {
             let is_bullet_list = child_json["type"].as_str() == Some("bullet_list");
-            let normalized = normalize_inline_child_json(content, idx);
+            let normalized = normalize_inline_child_json(&normalized_content, idx);
             let child = json_to_ast(arena, &normalized)?;
             if is_bullet_list && let Some(list_node) = prev_bullet_list {
                 let items: Vec<&AstNode<'a>> = child.children().collect();
@@ -5194,7 +5797,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             wrappers.push((
                 mark_nesting_rank("link"),
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: link_href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(link_href),
                     title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
                 })),
             ));
@@ -5538,7 +6142,8 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                 let href = mark["attrs"]["href"].as_str().unwrap_or("");
                 let title = mark["attrs"]["title"].as_str().unwrap_or("");
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(href),
                     title: title.to_owned(),
                 }))
             }
@@ -5829,6 +6434,266 @@ mod tests {
             .find(|m| m["type"] == "link")
             .unwrap();
         assert_eq!(link_mark["attrs"]["href"], "https://example.com");
+    }
+
+    #[test]
+    fn test_image_executable_schemes_neutralized() {
+        // #6364: the image URL oracle allows only http/https, scheme-less
+        // references, and the explicitly allowed raster data-image types.
+        for src in [
+            "javascript:alert",
+            "JaVaScRiPt:alert",
+            "vbscript:msgbox",
+            "data:text/html,hello",
+            "data:image/svg+xml;base64,PHN2Zz4=",
+            "file:///etc/passwd",
+            "unknown-scheme:payload",
+        ] {
+            let md = format!("![open]({src})\n");
+            let doc = markdown_to_prosemirror(&md);
+            let image = doc["content"][0]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["type"] == "image")
+                .unwrap_or_else(|| panic!("no image node for {md:?}"));
+            assert_eq!(image["attrs"]["src"], "#", "unsafe src survived for {md:?}");
+
+            let (first, second) = two_saves(&md);
+            assert_eq!(first, "![open](#)\n", "save not neutralized for {md:?}");
+            assert_eq!(first, second, "no sanitized fixpoint for {md:?}");
+        }
+    }
+
+    #[test]
+    fn test_image_url_oracle_and_safe_forms() {
+        // #6364 policy oracle: accepted references remain byte-identical;
+        // unsafe, obfuscated, unsupported, and malformed data schemes fail
+        // closed to the inert fragment.
+        for (url, expected) in [
+            ("relative.png", true),
+            ("/blob/abc", true),
+            ("//images.example/x.png", true),
+            ("#fragment", true),
+            ("images/name:part.png", true),
+            ("http://images.example/x.png", true),
+            ("HTTPS://images.example/x.png", true),
+            ("data:image/png;base64,AA==", true),
+            ("DaTa:IMAGE/JPEG,AA==", true),
+            ("data:image/webp;charset=utf-8,AA==", true),
+            ("javascript:alert(1)", false),
+            ("JaVaScRiPt:alert(1)", false),
+            ("java\tscript:alert(1)", false),
+            ("h\nttps://images.example/x.png", false),
+            ("data:text/html,hello", false),
+            ("data:image/svg+xml,<svg>", false),
+            ("data:image/png", false),
+            ("file:///etc/passwd", false),
+            ("mailto:image@example.test", false),
+        ] {
+            assert_eq!(
+                image_url_is_safe(url),
+                expected,
+                "image URL oracle mismatch for {url:?}"
+            );
+            assert_eq!(
+                sanitize_image_url(url),
+                if expected { url } else { "#" },
+                "image URL sanitizer mismatch for {url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_raw_html_image_sources_are_sanitized() {
+        // Raw HTML imports bypass the Markdown destination parser, so they
+        // must use the same image-specific oracle directly.
+        for src in [
+            "javascript:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            "java\tscript:alert(1)",
+            "data:image/svg+xml,<svg>",
+        ] {
+            let html = format!("<img src=\"{src}\" alt=\"open\" />\n");
+            let doc = markdown_to_prosemirror(&html);
+            let image = &doc["content"][0]["content"][0];
+            assert_eq!(image["type"], "image", "raw image not imported: {html:?}");
+            assert_eq!(image["attrs"]["src"], "#", "unsafe src survived: {html:?}");
+        }
+    }
+
+    #[test]
+    fn test_prosemirror_image_sources_are_sanitized_on_save() {
+        // Collab PM JSON can bypass import sanitization. Cover both Markdown
+        // and sized-HTML emission paths so each save direction is protected.
+        for attrs in [
+            json!({"src": "javascript:alert(1)", "alt": "open"}),
+            json!({"src": "data:text/html,hello", "alt": "open", "width": 240}),
+        ] {
+            let doc = json!({
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "image", "attrs": attrs}]}]
+            });
+            let first = prosemirror_to_markdown(&doc).expect("save converts");
+            assert!(
+                first.contains("src=\"#\"") || first.contains("](#)"),
+                "unsafe src in {first:?}"
+            );
+            let reparsed = markdown_to_prosemirror(&first);
+            assert_eq!(reparsed["content"][0]["content"][0]["attrs"]["src"], "#");
+            let second = prosemirror_to_markdown(&reparsed).expect("second save converts");
+            assert_eq!(first, second, "sanitized image did not reach a fixpoint");
+        }
+    }
+
+    #[test]
+    fn test_link_executable_schemes_neutralized() {
+        // #5745 regression: a javascript: link must not produce an
+        // executable href. Oracle: the allowed set documented on
+        // link_url_is_safe (http/https/mailto or scheme-less).
+        for md in [
+            "[open](javascript:alert(document.domain))",
+            "[open](JaVaScRiPt:alert(1))",
+            "[open](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+            "[open](vbscript:msgbox(1))",
+            "[open](  javascript:alert(1))",
+            "[open](unknown-scheme:payload)",
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_text = para_content
+                .iter()
+                .find(|n| {
+                    n["marks"]
+                        .as_array()
+                        .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+                })
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            // The link text survives; only the target is neutralized.
+            assert_eq!(link_text["text"], "open", "link text lost for {md}");
+            let link_mark = link_text["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap();
+            assert_eq!(
+                link_mark["attrs"]["href"], "#",
+                "executable href survived for {md}"
+            );
+            // Save direction: the emitted Markdown carries the inert
+            // href, and re-parsing it is a stable fixpoint.
+            let saved = prosemirror_to_markdown(&doc).unwrap();
+            assert_eq!(saved, "[open](#)\n", "save not neutralized for {md}");
+            let (first, second) = two_saves(&saved);
+            assert_eq!(first, second, "no fixpoint after sanitize for {md}");
+        }
+    }
+
+    #[test]
+    fn test_link_tab_obfuscated_destination_forms_no_link() {
+        // #5745: a literal TAB inside a Markdown link destination is
+        // rejected by Comrak's destination grammar, so the source
+        // stays literal text and no link node — hence no href at
+        // all — is produced; there is nothing executable to render.
+        // TAB-obfuscated hrefs that arrive through the raw-HTML or
+        // ProseMirror-JSON paths (where no Comrak destination parse
+        // happens) are covered by the sanitizer's tab-stripping probe
+        // and the save-direction test below.
+        let doc = markdown_to_prosemirror("[open](java\tscript:alert(1))");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        assert!(
+            para_content.iter().all(|n| {
+                n["marks"]
+                    .as_array()
+                    .is_none_or(|marks| marks.iter().all(|mark| mark["type"] != "link"))
+            }),
+            "tab-obfuscated destination produced a link mark: {para_content:?}"
+        );
+    }
+
+    #[test]
+    fn test_link_safe_schemes_preserved() {
+        // #5745: every member of the documented allowed set (plus the
+        // scheme-less forms) keeps its href byte-for-byte, in both
+        // directions.
+        for (md, expected_href) in [
+            ("[a](http://example.com)", "http://example.com"),
+            (
+                "[a](https://example.com/x?y=1)",
+                "https://example.com/x?y=1",
+            ),
+            ("[a](HTTPS://example.com)", "HTTPS://example.com"),
+            ("[a](mailto:me@example.com)", "mailto:me@example.com"),
+            ("[a](notes.md)", "notes.md"),
+            ("[a](/abs/path.md)", "/abs/path.md"),
+            ("[a](#section)", "#section"),
+            ("[a](//example.com/x)", "//example.com/x"),
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_mark = para_content[0]["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            assert_eq!(
+                link_mark["attrs"]["href"], expected_href,
+                "safe href mutated for {md}"
+            );
+            let (first, second) = two_saves(&format!("{md}\n"));
+            assert_eq!(first, format!("{md}\n"), "safe link not preserved for {md}");
+            assert_eq!(first, second, "no fixpoint for {md}");
+        }
+    }
+
+    #[test]
+    fn test_link_sanitizer_save_direction_and_linked_image() {
+        // #5745: a PM doc that never passed the parse direction (the
+        // collab Rich path stores raw ProseMirror JSON) is neutralized
+        // on save.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "javascript:alert(1)"}}]
+                }]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(saved, "[click](#)\n");
+
+        // Same path with a TAB-obfuscated scheme: the sanitizer strips
+        // TAB/LF/CR before reading the scheme, so this is neutralized
+        // too (a Markdown destination could never carry it — Comrak
+        // rejects it — but raw ProseMirror JSON can).
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "java\tscript:alert(1)"}}]
+                }]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(saved, "[click](#)\n");
+
+        // A raw-HTML anchor wrapping an image (the parse_anchor_tag
+        // path) gets the same neutralization instead of an executable
+        // linkHref.
+        let doc = markdown_to_prosemirror(
+            "<a href=\"javascript:alert(1)\"><img src=\"x.png\" width=\"240\" /></a>",
+        );
+        let node = &doc["content"][0]["content"][0];
+        assert_eq!(node["type"], "image");
+        assert_eq!(node["attrs"]["linkHref"], "#");
     }
 
     #[test]
@@ -6171,6 +7036,534 @@ mod tests {
             assert!(first.contains(needle), "item {needle} preserved: {first:?}");
         }
         assert_eq!(first, second, "blockquote lists are a fixpoint");
+    }
+
+    #[test]
+    fn test_adjacent_different_kind_lists_no_end_list_artefact() {
+        // #1397: adjacent lists of DIFFERENT kinds (bullet vs ordered vs
+        // task) must save separated by blank lines only - never with the
+        // renderer's <!-- end list --> comment, which used to reopen as a
+        // phantom html code_block between the lists.
+        for original in [
+            "- a\n\n1. b\n",
+            "1. a\n\n- b\n",
+            "- a\n- b\n\n1. c\n2. d\n",
+            "1. [ ] a\n\n- b\n",
+            // Ordered plain/task pair whose numbering CONTINUES across
+            // the boundary (task run starts at 2): merging on reparse
+            // recomputes the same run order, so the separator drops.
+            "1. a\n\n2. [ ] b\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                !first.contains("end list"),
+                "no end-list artefact for {original:?}: {first:?}"
+            );
+            assert!(
+                !first.contains("```html"),
+                "no html-fence artefact for {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse yields the same two lists for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adjacent_ordered_task_restart_keeps_separator() {
+        // Codex review on PR #3258: an ordered_list next to a task_list
+        // carrying attrs.order (or vice versa) renders as the SAME
+        // ordered Markdown list type. When the second list restarts at
+        // 1 instead of continuing the first list's numbering, dropping
+        // the separator merges them on reparse and convert_list_runs
+        // renumbers the second run (order 2), silently losing the
+        // restart - so the separator stays for these pairs.
+        for original in [
+            "1. plain\n\n<!-- end list -->\n\n1. [ ] restarted\n",
+            "1. [ ] first\n\n<!-- end list -->\n\n1. plain\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains("<!-- end list -->"),
+                "separator preserved for restart pair {original:?}: {first:?}"
+            );
+            assert_eq!(
+                first, second,
+                "restart shape is a fixpoint for {original:?}"
+            );
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse preserves both lists and the restart for {original:?}"
+            );
+            let doc = markdown_to_prosemirror(&first);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2, "two lists for {original:?}");
+            assert_eq!(
+                content[1]["attrs"]["order"], 1,
+                "second list restarts at 1 for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adjacent_task_plain_tight_mismatch_keeps_separator() {
+        // Codex review on PR #3258 (P2): a tight bullet list next to a
+        // loose task list renders as the SAME Markdown list family.
+        // Dropping the separator merges them on reparse and
+        // convert_list_runs copies tight:false onto both runs, so the
+        // next save inserts a blank line inside the first list - the
+        // separator stays when tight differs within one render family.
+        let original = "- a\n- aa\n\n<!-- end list -->\n\n- [ ] b\n\n- [ ] c\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("<!-- end list -->"),
+            "separator preserved for tight-mismatched pair: {first:?}"
+        );
+        assert_eq!(first, second, "tight-mismatch shape is a fixpoint");
+        assert_eq!(
+            markdown_to_prosemirror(&first),
+            markdown_to_prosemirror(original),
+            "reparse preserves both lists and their tightness"
+        );
+        let doc = markdown_to_prosemirror(&first);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "two lists");
+        assert_eq!(content[0]["attrs"]["tight"], true, "first list stays tight");
+        assert_eq!(
+            content[1]["attrs"]["tight"], false,
+            "second list stays loose"
+        );
+    }
+
+    #[test]
+    fn test_coalesced_bullet_run_boundary_uses_first_lists_tight() {
+        // Codex review on PR #3258 (P2): a loose bullet list followed by
+        // a tight bullet list coalesces in json_to_ast using the FIRST
+        // list's tight (loose). The boundary to a following tight task
+        // list must be judged against that effective tightness: the two
+        // render as one loose bullet list, so dropping the separator
+        // merged everything into one loose list on reparse and silently
+        // loosened the task run (its next save grew a blank line inside
+        // it). The separator stays.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": false}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "aa"}]}]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "task_list", "attrs": {"tight": true}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c"}]}]},
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "d"}]}]}
+                ]}
+            ]
+        });
+        let first = prosemirror_to_markdown(&doc).unwrap();
+        assert!(
+            first.contains("<!-- end list -->"),
+            "separator kept for coalesced loose-bullet -> tight-task boundary: {first:?}"
+        );
+        let reparsed = markdown_to_prosemirror(&first);
+        let second = prosemirror_to_markdown(&reparsed).unwrap();
+        assert_eq!(first, second, "coalesced-boundary shape is a fixpoint");
+        let content = reparsed["content"].as_array().unwrap();
+        assert_eq!(
+            content.len(),
+            2,
+            "reparse yields bullet + task lists: {reparsed}"
+        );
+        assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
+    }
+
+    #[test]
+    fn test_legacy_task_list_boundary_uses_inferred_tight() {
+        // CodeRabbit review on PR #3258: collect_boundary_kinds compared
+        // raw attrs.tight, so a legacy task_list without the attribute
+        // (json_to_ast infers tight for single-paragraph items) counted
+        // as tight-differing next to an explicitly tight bullet list and
+        // kept a separator the rendered output does not need. With the
+        // inferred tightness the pair is a tight same-family pair whose
+        // separator drops, and the save is a fixpoint.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "task_list", "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let first = prosemirror_to_markdown(&doc).unwrap();
+        assert!(
+            !first.contains("end list"),
+            "no separator for inferred-tight legacy task pair: {first:?}"
+        );
+        let reparsed = markdown_to_prosemirror(&first);
+        let second = prosemirror_to_markdown(&reparsed).unwrap();
+        assert_eq!(first, second, "legacy-tight pair is a fixpoint");
+        let content = reparsed["content"].as_array().unwrap();
+        assert_eq!(
+            content.len(),
+            2,
+            "reparse yields bullet + task lists: {reparsed}"
+        );
+        assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
+    }
+
+    #[test]
+    fn test_fence_closes_only_on_bare_run() {
+        // CodeRabbit review on PR #3258 (Major): the fence scanner closed
+        // a fence on ANY line starting with the marker, so a ```rust
+        // content line ended the block early and a separator-looking line
+        // later in the block was counted as renderer markup. A fence now
+        // closes only on a bare run at least as long as its opener: the
+        // authored line inside the block below must neither count toward
+        // the boundary correspondence nor be dropped, while the real
+        // bullet -> ordered separator still drops.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "```\ncode\n```rust\n<!-- end list -->\nmore\n```\n\n- a\n\n<!-- end list -->\n\n1. b\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the code block's authored line remains: {out:?}"
+        );
+        assert!(
+            out.contains("```rust\n<!-- end list -->\nmore"),
+            "code block content survives intact: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_boundary_order_overflow_does_not_panic() {
+        // CodeRabbit review on PR #3258: the merge-safety check computed
+        // prev_start + prev_count on a request-supplied attrs.order; a
+        // start near u64::MAX overflowed (panic in debug builds, wrap in
+        // release). Checked addition treats overflow as not-merge-safe,
+        // so the separator stays and nothing panics.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "ordered_list", "attrs": {"tight": true, "order": u64::MAX}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "task_list", "attrs": {"tight": true, "order": 1}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "18446744073709551615. a\n\n<!-- end list -->\n\n1. [ ] b\n",
+        );
+        assert!(
+            out.contains("<!-- end list -->"),
+            "separator kept when the start sum overflows: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_end_list_literal_inside_code_fence_is_not_a_separator() {
+        // Codex review on PR #3258 (P2): a fenced code block whose
+        // literal content is the separator text is authored content.
+        // It must not satisfy the boundary count, and must survive
+        // while the real boundary separator drops. (Unit-level: the
+        // markdown-text roundtrip of a bare HTML-comment fence hits
+        // the parse-side htmlBlock handling, a different mechanism.)
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "code_block", "content": [{"type": "text", "text": "<!-- end list -->"}]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "- a\n\n<!-- end list -->\n\n1. b\n\n```\n<!-- end list -->\n```\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the code block's literal line remains: {out:?}"
+        );
+        assert!(
+            out.contains("```\n<!-- end list -->\n```"),
+            "code fence content survives verbatim: {out:?}"
+        );
+        assert!(
+            out.starts_with("- a\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_end_list_separator_not_confused_by_raw_html_blocks() {
+        // Codex review on PR #3258 (P2): raw HTML blocks containing
+        // backtick-only lines must not be read as code fences. The
+        // first div's ``` line used to open a phantom fence that hid
+        // the real separator, the second div's ``` closed it, and the
+        // authored <!-- end list --> inside the second div was then
+        // counted (and dropped) as the renderer separator.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "code_block", "attrs": {"params": "html", "htmlBlock": true}, "content": [{"type": "text", "text": "<div>\n```\n</div>"}]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "code_block", "attrs": {"params": "html", "htmlBlock": true}, "content": [{"type": "text", "text": "<div>\n```\n<!-- end list -->\n</div>"}]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "<div>\n```\n</div>\n\n- a\n\n<!-- end list -->\n\n1. b\n\n<div>\n```\n<!-- end list -->\n</div>\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the authored HTML comment remains: {out:?}"
+        );
+        assert!(
+            out.contains("- a\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+        assert!(
+            out.contains("<div>\n```\n<!-- end list -->\n</div>"),
+            "the raw HTML block survives verbatim: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_empty_item_blank_guard_not_applied_within_same_list_family() {
+        // Codex review on PR #3258 (P2): a tight task run followed by a
+        // tight bullet run beginning with an empty item renders as ONE
+        // bullet-family list on reparse; the empty item is a sibling,
+        // not an interruption, so no blank is kept when their separator
+        // drops - keeping one would loosen the merged list and break
+        // the save fixpoint.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "task_list", "attrs": {"tight": true}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": []}]},
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(&doc, "- [ ] a\n\n<!-- end list -->\n\n- \n- b\n");
+        assert_eq!(
+            out, "- [ ] a\n- \n- b\n",
+            "no blank kept between same-family runs: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_end_list_literal_inside_fence_after_list_marker_survives() {
+        // Codex review on PR #3258 (P2): a list item whose first block
+        // is a fenced code block renders its opener immediately after
+        // the list marker (`- ``` `). The scanner missed that opener,
+        // counted the fence's literal separator-looking line, mistook
+        // the closing fence for an opener (hiding the real separator),
+        // and the counts still matched - so the literal was deleted.
+        // The fence content must survive and the real separator drop.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "code_block", "content": [{"type": "text", "text": "<!-- end list -->"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "- ```\n  <!-- end list -->\n  ```\n\n<!-- end list -->\n\n1. b\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the fence's literal line remains: {out:?}"
+        );
+        assert!(
+            out.contains("- ```\n  <!-- end list -->\n  ```"),
+            "fenced code block survives verbatim: {out:?}"
+        );
+        assert!(
+            out.contains("```\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_adjacent_list_before_empty_first_item_keeps_blank() {
+        // Codex review on PR #3258 (P2): `- a\n\n1.\n2. b` saved
+        // without the blank line - an empty list item cannot interrupt
+        // a paragraph even when its marker starts at 1, so the empty
+        // `1.` reparsed as lazy continuation text and the ordered list
+        // was lost. The boundary keeps exactly one blank line.
+        let original = "- a\n\n1.\n2. b\n";
+        let (first, second) = two_saves(original);
+        // The blank line is kept; the renderer spells the empty item
+        // with a trailing space (`1. `), so the saved form is not
+        // byte-identical to the hand-written original.
+        assert_eq!(
+            first, "- a\n\n1. \n2. b\n",
+            "blank kept before the empty item: {first:?}"
+        );
+        assert!(!first.contains("end list"), "no artefact: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "two lists survive reparse: {content:?}");
+        assert_eq!(content[1]["type"], "ordered_list");
+        assert_eq!(
+            content[1]["content"].as_array().unwrap().len(),
+            2,
+            "both ordered items survive"
+        );
+    }
+
+    #[test]
+    fn test_table_cell_list_boundaries_do_not_consume_separator() {
+        // Codex review on PR #3258 (P2): lists inside a table cell are
+        // flattened to text and emit no separator. Their boundaries
+        // must not consume the correspondence of a real top-level
+        // boundary - here the doc has one real boundary (bullet ->
+        // ordered at top level) and one cell-internal pair; the saved
+        // text drops exactly the real separator.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "table", "content": [
+                    {"type": "table_row", "content": [
+                        {"type": "table_cell", "content": [
+                            {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x"}]}]}
+                            ]},
+                            {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "y"}]}]}
+                            ]}
+                        ]}
+                    ]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let mut kinds = Vec::new();
+        collect_boundary_kinds(&doc, &mut kinds);
+        assert_eq!(
+            kinds.len(),
+            1,
+            "only the top-level boundary is collected: {kinds:?}"
+        );
+        let out = strip_end_list_separators(&doc, "- a\n\n<!-- end list -->\n\n1. b\n");
+        assert!(!out.contains("end list"), "real separator dropped: {out:?}");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_to_ordered_starting_above_one_keeps_blank() {
+        // Codex review on PR #3258 (P2): a tight bullet list followed by
+        // a tight ordered list starting above 1 saved as `- a\n2. b` -
+        // an ordered marker above 1 cannot interrupt a paragraph, so on
+        // reparse `2. b` became a lazy continuation of the bullet item
+        // and the ordered list (and its start) was lost. The boundary
+        // keeps exactly one blank line instead of none.
+        for original in ["- a\n\n2. b\n", "- [ ] a\n\n3. b\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "blank kept, start preserved: {first:?}");
+            assert!(
+                !first.contains("end list"),
+                "no end-list artefact for {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse yields the same two lists for {original:?}"
+            );
+            let doc = markdown_to_prosemirror(&first);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2, "two lists for {original:?}");
+            assert_eq!(
+                content[1]["type"], "ordered_list",
+                "second list stays ordered for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adjacent_different_kind_lists_in_blockquote_fixpoint() {
+        // #1397: the blockquote shape was not even a save fixpoint.
+        let (first, second) = two_saves("> - a\n>\n> 1. b\n");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert_eq!(first, second, "blockquote shape is a fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        let quote = &doc["content"][0];
+        assert_eq!(quote["type"], "blockquote");
+        let kinds: Vec<&str> = quote["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["bullet_list", "ordered_list"]);
+    }
+
+    #[test]
+    fn test_saved_end_list_artefact_reopens_without_phantom_block() {
+        // #1397: a file already saved WITH the renderer artefact between
+        // two lists reopens as exactly the two lists - no phantom
+        // code_block between them.
+        let doc = markdown_to_prosemirror("- a\n\n<!-- end list -->\n\n1. b\n");
+        let kinds: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["bullet_list", "ordered_list"]);
     }
 
     #[test]
@@ -8794,6 +10187,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn test_footnote_multi_paragraph_definition_fixpoint() {
         // #1031: a two-paragraph footnote definition must keep its
         // paragraph boundary — the flat #945 shape fused the two
@@ -10513,6 +11907,158 @@ Some text
         let second =
             prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
         assert_eq!(md, second, "hard_break cell output is a fixpoint");
+    }
+
+    #[test]
+    fn test_heading_mid_hard_break_degrades_to_space() {
+        // #1388: a hard_break inside a heading cannot be spelled in
+        // CommonMark — the save emitted a backslash-newline inside the
+        // ATX heading, re-parse split it into heading + paragraph with
+        // a literal backslash, and the backslash doubled on the next
+        // save. Mid/start breaks degrade to a single space (headings
+        // are single-line content, mirroring the #1017 cell policy).
+        let doc = json!({"type": "doc", "content": [{"type": "heading", "attrs": {"level": 1}, "content": [
+            {"type": "text", "text": "Title"},
+            {"type": "hard_break"},
+            {"type": "text", "text": "more here"}
+        ]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "# Title more here\n", "break became a space: {md:?}");
+        let reopened = markdown_to_prosemirror(&md);
+        let blocks = reopened["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "still one block: {reopened:?}");
+        assert_eq!(
+            blocks[0]["type"], "heading",
+            "still a heading: {reopened:?}"
+        );
+        assert_eq!(
+            prosemirror_to_markdown(&reopened).expect("reconverts"),
+            md,
+            "heading output is a fixpoint"
+        );
+    }
+
+    #[test]
+    fn test_setext_heading_hard_break_roundtrips() {
+        // #1388: the creator probe — a setext heading whose lines are
+        // joined by a backslash break (and the two-trailing-spaces
+        // variant) parses to heading [text, hard_break, text] and must
+        // save back to one clean heading, not split with a backslash.
+        for source in ["Title\\\nmore here\n=====\n", "Title  \nmore here\n=====\n"] {
+            let doc = markdown_to_prosemirror(source);
+            let blocks = doc["content"].as_array().unwrap();
+            assert_eq!(
+                blocks.len(),
+                1,
+                "parses to one block: {source:?} -> {doc:?}"
+            );
+            assert_eq!(blocks[0]["type"], "heading", "{source:?} -> {doc:?}");
+            let md = prosemirror_to_markdown(&doc).expect("converts");
+            assert_eq!(
+                md, "# Title more here\n",
+                "no split, no backslash: {source:?} -> {md:?}"
+            );
+            let reopened = markdown_to_prosemirror(&md);
+            assert_eq!(
+                prosemirror_to_markdown(&reopened).expect("reconverts"),
+                md,
+                "setext heading output is a fixpoint: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_heading_edge_hard_breaks_normalize() {
+        // #1388: a heading-start break degrades to a space (erased by
+        // the #1420 line-edge trim, so no leading gap survives) and a
+        // heading-trailing break is dropped — both save clean and are
+        // fixpoints.
+        for (name, content) in [
+            (
+                "start",
+                vec![
+                    json!({"type": "hard_break"}),
+                    json!({"type": "text", "text": "Title"}),
+                ],
+            ),
+            (
+                "trailing",
+                vec![
+                    json!({"type": "text", "text": "Title"}),
+                    json!({"type": "hard_break"}),
+                ],
+            ),
+        ] {
+            let doc = json!({"type": "doc", "content": [
+                {"type": "heading", "attrs": {"level": 2}, "content": content}
+            ]});
+            let md = prosemirror_to_markdown(&doc).expect("converts");
+            assert_eq!(md, "## Title\n", "{name} break normalized: {md:?}");
+            let reopened = markdown_to_prosemirror(&md);
+            assert_eq!(
+                prosemirror_to_markdown(&reopened).expect("reconverts"),
+                md,
+                "{name} heading output is a fixpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn test_paragraph_trailing_hard_break_dropped_explicitly() {
+        // #1388 with the #1492 placements transferred in: a trailing
+        // hard_break at block end (paragraph, blockquote paragraph,
+        // list-item paragraph) used to vanish silently in the
+        // renderer; the save now drops it explicitly so the first
+        // saved file is already the fixpoint.
+        let doc = json!({"type": "doc", "content": [
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "foo"},
+                {"type": "hard_break"}
+            ]},
+            {"type": "blockquote", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "quoted"},
+                    {"type": "hard_break"}
+                ]}
+            ]},
+            {"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "text", "text": "item"},
+                        {"type": "hard_break"}
+                    ]}
+                ]}
+            ]}
+        ]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(
+            md, "foo\n\n> quoted\n\n- item\n",
+            "trailing breaks dropped: {md:?}"
+        );
+        let reopened = markdown_to_prosemirror(&md);
+        assert_eq!(
+            prosemirror_to_markdown(&reopened).expect("reconverts"),
+            md,
+            "trailing-break output is a fixpoint"
+        );
+    }
+
+    #[test]
+    fn test_break_only_paragraph_saves_as_empty_paragraph() {
+        // #1388 with the #1492 placement transferred in: a paragraph
+        // whose only content is a hard_break used to be deleted
+        // outright on save. Like a whitespace-only paragraph (#1420),
+        // it now saves as an empty paragraph.
+        let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "hard_break"}
+        ]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "", "break-only paragraph saves empty: {md:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&md),
+            json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            "reopens as an empty paragraph"
+        );
     }
 
     #[test]

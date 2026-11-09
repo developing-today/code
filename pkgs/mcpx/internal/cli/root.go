@@ -86,11 +86,11 @@ func parseFlags(a *App, fs *flag.FlagSet, args []string) error {
 		fs.Usage = func() {
 			if a != nil {
 				if text, herr := a.helpText(cmd); herr == nil {
-					fmt.Fprint(fs.Output(), text)
+					_, _ = fmt.Fprint(fs.Output(), text)
 					return
 				}
 			}
-			fmt.Fprintf(fs.Output(), "mcpx %s\n\n  run `mcpx help %s` for this command's help\n",
+			_, _ = fmt.Fprintf(fs.Output(), "mcpx %s\n\n  run `mcpx help %s` for this command's help\n",
 				fs.Name(), firstWord(fs.Name()))
 		}
 	}
@@ -348,7 +348,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 			sink = nil
 		} else {
 			writer = writer.WithFile(sink, slog.LevelDebug)
-			defer sink.Close()
+			defer func() { _ = sink.Close() }()
 		}
 	}
 	writer = writer.WithBase(map[string]any{logging.KeyTrace: string(daemonTrace)})
@@ -701,22 +701,22 @@ func (a *App) configSources(cfg *config.Config) error {
 	if len(out.Presets) > 0 {
 		fmt.Println()
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
+		_, _ = fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
 		for _, r := range out.Presets {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	}
 	if len(out.Servers) == 0 {
 		return nil
 	}
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SERVER\tDEFINED IN")
+	_, _ = fmt.Fprintln(tw, "SERVER\tDEFINED IN")
 	for _, r := range out.Servers {
-		fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
