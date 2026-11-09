@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +159,22 @@ func (r registrySource) Globals(_ context.Context, ns []string) (string, error) 
 	return codegen.GlobalDeclarations(nss), nil
 }
 
+// ClientModuleFor renders the generated client for one named script
+// language (#1917 Phase 2): the module installed beside a script of that
+// language and its ambient declarations. Today "python" is the only name a
+// caller asks for; any unknown name is an error, never the default target.
+func (r registrySource) ClientModuleFor(_ context.Context, language string, ns []string) (module, globals string, err error) {
+	lang, ok := codegen.Lookup(language)
+	if !ok {
+		return "", "", fmt.Errorf("unknown script language %q", language)
+	}
+	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
+	if err != nil {
+		return "", "", err
+	}
+	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
+}
+
 func (r registrySource) Namespaces(_ context.Context, ns []string) ([]string, error) {
 	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
 	if err != nil {
@@ -187,9 +202,14 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
-	lim.Typecheck = set.String("script.typecheck")
+	lim.Typecheck = set.String("script.check")
+	lim.TypeCheckOnError = set.String("script.checkOnError")
+	lim.TypeCheckOnUnsupported = set.String("script.checkOnUnsupported")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
+	lim.ImportsOnMissing = set.String("script.importsOnMissing")
+	lim.ImportsCrossProject = set.String("script.importsCrossProject")
+	lim.ImportsNetwork = set.String("script.importsNetwork")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -479,10 +499,15 @@ func (s *Server) handleArtifactList(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	limit := defaults.ArtifactListLimit
-	if v := q.Get("limit"); v != "" {
-		if n, cerr := strconv.Atoi(v); cerr == nil {
-			limit = n
+	// A present-but-unparseable limit is a 400, not the default (#3485 —
+	// this handler was the seventh member of the class, found by the
+	// registry guard in numeric_params_test.go).
+	if _, present := q["limit"]; present {
+		n, ok := parseOptionalIntQuery(w, q, "limit")
+		if !ok {
+			return
 		}
+		limit = n
 	}
 	list, err := store.List(artifacts.Filter{
 		Run: q.Get("run"), Session: q.Get("session"), Limit: limit,
@@ -511,7 +536,7 @@ func (s *Server) handleArtifactGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", meta.Mime)
 	// Attachment, and the name quoted: the name came from a script, and a
 	// browser deciding to render somebody else's bytes inline is how a store

@@ -94,13 +94,13 @@ func TestDistanceCountsUnicodeCharacters(t *testing.T) {
 		a, b string
 		want int
 	}{
-		{"café", "cafe", 1},       // substitution: é for e
-		{"entrée", "entree", 1},   // substitution in a longer name
-		{"привет", "привед", 1},   // Cyrillic substitution: т for д
-		{"café", "cafés", 1},      // insertion
-		{"cafés", "café", 1},      // deletion
-		{"café", "caéf", 1},       // adjacent transposition across a multibyte rune
-		{"", "éé", 2},             // two runes, four bytes
+		{"café", "cafe", 1},     // substitution: é for e
+		{"entrée", "entree", 1}, // substitution in a longer name
+		{"привет", "привед", 1}, // Cyrillic substitution: т for д
+		{"café", "cafés", 1},    // insertion
+		{"cafés", "café", 1},    // deletion
+		{"café", "caéf", 1},     // adjacent transposition across a multibyte rune
+		{"", "éé", 2},           // two runes, four bytes
 		{"café", "café", 0},
 	}
 	for _, c := range cases {
@@ -119,8 +119,8 @@ func TestNearRecognisesSingleMultibyteEdits(t *testing.T) {
 		{"entrée", "entree", true},
 		{"привет", "привед", true},
 		{"café", "caéf", true},
-		{"ééé", "éééé", true},  // prefix rule: both longer than two characters
-		{"éé", "éééé", false},  // prefix guard counts characters: a two-rune prefix is too short, and the distance is two
+		{"ééé", "éééé", true}, // prefix rule: both longer than two characters
+		{"éé", "éééé", false}, // prefix guard counts characters: a two-rune prefix is too short, and the distance is two
 	} {
 		if got := Near(c.a, c.b); got != c.want {
 			t.Errorf("Near(%q, %q) = %v, want %v", c.a, c.b, got, c.want)

@@ -20,6 +20,8 @@ type OpSpec = {
   response: "json" | "response"
 }
 
+export const OPERATION_FINGERPRINT = "f991ef3215011e82484759f8a9b2122671e0b974d4da47647141cf2f1017e8af"
+
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
   adapters_add: {
@@ -127,6 +129,18 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  authz_decisions: {
+    method: "GET",
+    path: "/v1/authz/decisions",
+    params: {},
+    response: "json",
+  },
+  authz_decisions_clear: {
+    method: "DELETE",
+    path: "/v1/authz/decisions",
+    params: {},
+    response: "json",
+  },
   batch: {
     method: "POST",
     path: "/v1/batch",
@@ -134,6 +148,7 @@ export const OPS: Record<string, OpSpec> = {
       calls: { in: "body", required: true },
       stopOnError: { in: "body" },
       parallel: { in: "body" },
+      safePrefix: { in: "body" },
       session: { in: "body" },
       context: { in: "body" },
     },
@@ -671,6 +686,12 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  sessions_read: {
+    method: "GET",
+    path: "/v1/sessions",
+    params: {},
+    response: "json",
+  },
   settings_get: {
     method: "GET",
     path: "/v1/settings/{path}",
@@ -793,6 +814,14 @@ export const OPS: Record<string, OpSpec> = {
       allProfiles: { in: "query" },
     },
     response: "response",
+  },
+  writes_clear: {
+    method: "POST",
+    path: "/v1/writes/{server}/clear",
+    params: {
+      server: { in: "path", required: true },
+    },
+    response: "json",
   },
 }
 
@@ -965,9 +994,24 @@ export class DaemonOps {
   }
 
   /**
+   * The permissive authorisation decision report. `GET /v1/authz/decisions`.
+   */
+  authzDecisions(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("authz_decisions", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Clear the recorded authorisation decisions. `DELETE /v1/authz/decisions`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  authzDecisionsClear(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("authz_decisions_clear", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Execute multiple tool calls in a single turn. `POST /v1/batch`.
    */
-  batch(args: { calls: unknown[]; stopOnError?: boolean; parallel?: boolean; session?: string; context?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
+  batch(args: { calls: unknown[]; stopOnError?: boolean; parallel?: boolean; safePrefix?: boolean; session?: string; context?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("batch", args, opts) as Promise<unknown>
   }
 
@@ -1396,6 +1440,13 @@ export class DaemonOps {
   }
 
   /**
+   * The session inventory: every pool's live instances. `GET /v1/sessions`.
+   */
+  sessionsRead(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("sessions_read", args, opts) as Promise<unknown>
+  }
+
+  /**
    * One setting. `GET /v1/settings/{path}`.
    */
   settingsGet(args: { path: string }, opts: CallOptions = {}): Promise<unknown> {
@@ -1495,5 +1546,13 @@ export class DaemonOps {
    */
   types(args: { ns?: string; instructions?: "0" | "1"; profile?: string; skipDefault?: "0" | "1"; allProfiles?: "0" | "1" } = {}, opts: CallOptions = {}): Promise<Response> {
     return this.invoke("types", args, opts) as Promise<Response>
+  }
+
+  /**
+   * Clear a server's unknown-write block. `POST /v1/writes/{server}/clear`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  writesClear(args: { server: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("writes_clear", args, opts) as Promise<unknown>
   }
 }

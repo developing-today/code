@@ -16,10 +16,11 @@ import { gapCursor } from "prosemirror-gapcursor";
 import { history } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { MenuItem, blockTypeItem, liftItem, redoItem, selectParentNodeItem, undoItem } from "prosemirror-menu";
-import { type MarkType, Node, Schema } from "prosemirror-model";
+import { Fragment, type Mark, type MarkType, Node, Schema, Slice } from "prosemirror-model";
 import { schema as basicSchema } from "prosemirror-schema-basic";
 import { addListNodes } from "prosemirror-schema-list";
-import { EditorState, type Plugin, TextSelection, type Transaction } from "prosemirror-state";
+import { EditorState, type Plugin, Selection, TextSelection, type Transaction } from "prosemirror-state";
+import { ReplaceStep } from "prosemirror-transform";
 import { EditorView } from "prosemirror-view";
 import { createActiveLinePlugin } from "./active-line";
 import { createCursorPlugin, type SendCursorFn } from "./cursors";
@@ -31,6 +32,7 @@ import { createImageUploadPlugin } from "./image-upload";
 import { createIndentPlugin } from "./indent";
 import { createSearchPlugins } from "./search-panel";
 import { createWrapPlugins } from "./wrap";
+import { MAX_STEPS_MESSAGE_BYTES, stepWireSize } from "./collab-step-budget";
 
 /**
  * Content mode types matching server-side enum.
@@ -150,6 +152,10 @@ export const richSchema = new Schema({
       attrs: {
         order: { default: 1, validate: "number" },
         tight: { default: true },
+        // #1380: mirror the codec's delimiter attr ("period"/"paren",
+        // default period) so paren-style lists are not rewritten on
+        // save; undeclared, it was dropped on editor load.
+        delimiter: { default: "period" },
       },
     })
     .update("image", {
@@ -211,7 +217,13 @@ export const richSchema = new Schema({
         // depends on it so multi-block task items do not fuse on save.
         // #997: ordered task lists carry their start in `order` (null for
         // bullet task lists), mirroring the markdown codec's attrs.order.
-        attrs: { tight: { default: true }, order: { default: null } },
+        // #1380: ordered task lists also carry `delimiter`, mirroring
+        // the codec (default period, as in ordered_list above).
+        attrs: {
+          tight: { default: true },
+          order: { default: null },
+          delimiter: { default: "period" },
+        },
         parseDOM: [
           {
             tag: "ul",
@@ -234,9 +246,11 @@ export const richSchema = new Schema({
               // reflection admits fractional/negative/hex starts the u64
               // markdown codec cannot represent).
               const el = dom as HTMLOListElement;
-              if (el.classList.contains("contains-task-list")) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (el.classList.contains("contains-task-list"))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               const firstLi = el.querySelector("li");
-              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (firstLi?.querySelector('input[type="checkbox"]'))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               return false;
             },
           },
@@ -340,6 +354,69 @@ export const richSchema = new Schema({
         ],
         toDOM(node) {
           return ["span", { "data-html-inline": node.attrs.html as string }, node.attrs.html as string];
+        },
+      },
+      // #1369: YAML front matter block (`---` delimiter only; TOML
+      // `+++` is out of scope) carried verbatim in `text`; the markdown
+      // codec reads/writes it. Atom leaf, never a heading/paragraph.
+      front_matter: {
+        group: "block",
+        atom: true,
+        selectable: false,
+        attrs: { text: { default: "" } },
+        parseDOM: [
+          {
+            tag: "pre[data-front-matter]",
+            getAttrs(dom) {
+              return { text: (dom as HTMLElement).dataset.frontMatter ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["pre", { "data-front-matter": node.attrs.text as string }];
+        },
+      },
+      // #1347: footnote reference atom carrying `label`; the markdown
+      // codec reads/writes it (markdown.rs). Display shows the
+      // reference as inert text — never rendered as live markup.
+      footnote_reference: {
+        inline: true,
+        group: "inline",
+        atom: true,
+        selectable: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "span[data-footnote-reference]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteReference ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          const label = node.attrs.label as string;
+          return ["span", { "data-footnote-reference": label }, `[^${label}]`];
+        },
+      },
+      // #1347: footnote definition block carrying `label` plus block
+      // children (paragraphs, lists, code blocks per #1031); the
+      // markdown codec reads/writes it. The label travels in the data
+      // attribute only — children render normally.
+      footnote_definition: {
+        group: "block",
+        content: "block+",
+        defining: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "div[data-footnote-definition]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteDefinition ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["div", { "data-footnote-definition": node.attrs.label as string }, 0];
         },
       },
     }),
@@ -447,6 +524,103 @@ function markMenuItem(markType: MarkType, options: { title: string; label: strin
       return state.doc.rangeHasMark(from, to, markType);
     },
   });
+}
+
+type TextRun = { text: string; marks: readonly Mark[] };
+
+/**
+ * Turn a single oversized, closed text replacement into smaller replace
+ * steps before the collab plugin sees it. Keeping these steps in one
+ * transaction preserves normal history grouping and selection mapping.
+ */
+export function splitOversizedTextInsertion(state: EditorState, transaction: Transaction): Transaction {
+  if (transaction.steps.length !== 1 || transaction.getMeta("addToHistory") === false) return transaction;
+
+  const step = transaction.steps[0];
+  if (!(step instanceof ReplaceStep) || step.slice.openStart !== 0 || step.slice.openEnd !== 0) return transaction;
+  if (!(transaction.selection instanceof TextSelection)) return transaction;
+  if (stepWireSize(step.toJSON()) <= MAX_STEPS_MESSAGE_BYTES) return transaction;
+
+  const runs: TextRun[] = [];
+  let textLength = 0;
+  let textOnly = step.slice.content.childCount > 0;
+  step.slice.content.forEach((node) => {
+    if (!node.isText || typeof node.text !== "string") {
+      textOnly = false;
+      return;
+    }
+    runs.push({ text: node.text, marks: node.marks });
+    textLength += node.text.length;
+  });
+  if (!textOnly || textLength === 0) return transaction;
+
+  const text = runs.map((run) => run.text).join("");
+  const sliceBetween = (from: number, to: number): Slice => {
+    const nodes: Node[] = [];
+    let offset = 0;
+    for (const run of runs) {
+      const runEnd = offset + run.text.length;
+      const start = Math.max(from, offset);
+      const end = Math.min(to, runEnd);
+      if (start < end) nodes.push(state.schema.text(run.text.slice(start - offset, end - offset), run.marks));
+      offset = runEnd;
+      if (offset >= to) break;
+    }
+    return new Slice(Fragment.fromArray(nodes), 0, 0);
+  };
+  const safeBoundary = (position: number): number => {
+    if (position > 0 && position < text.length) {
+      const before = text.charCodeAt(position - 1);
+      const after = text.charCodeAt(position);
+      if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) return position - 1;
+    }
+    return position;
+  };
+
+  const replacement = state.tr;
+  let start = 0;
+  while (start < text.length) {
+    let low = start + 1;
+    let high = text.length;
+    let best = start;
+    while (low <= high) {
+      const end = safeBoundary(Math.floor((low + high) / 2));
+      if (end <= start) {
+        low = Math.floor((low + high) / 2) + 1;
+        continue;
+      }
+      const from = step.from + start;
+      const to = start === 0 ? step.to : from;
+      const candidate = new ReplaceStep(from, to, sliceBetween(start, end));
+      if (stepWireSize(candidate.toJSON()) <= MAX_STEPS_MESSAGE_BYTES) {
+        best = end;
+        low = Math.floor((low + high) / 2) + 1;
+      } else {
+        high = Math.floor((low + high) / 2) - 1;
+      }
+    }
+    if (best === start) return transaction;
+
+    const from = step.from + start;
+    const to = start === 0 ? step.to : from;
+    replacement.step(new ReplaceStep(from, to, sliceBetween(start, best)));
+    start = best;
+  }
+
+  // Fail closed if the narrow rewrite did not produce precisely the same
+  // document. All generated steps must be within the shared outbound budget.
+  if (!replacement.doc.eq(transaction.doc)) return transaction;
+  if (replacement.steps.some((candidate) => stepWireSize(candidate.toJSON()) > MAX_STEPS_MESSAGE_BYTES)) {
+    return transaction;
+  }
+
+  replacement.setSelection(Selection.fromJSON(replacement.doc, transaction.selection.toJSON()));
+  const transactionMeta = (transaction as unknown as { meta: Record<string, unknown> }).meta;
+  for (const [key, value] of Object.entries(transactionMeta)) replacement.setMeta(key, value);
+  if (transaction.storedMarksSet) replacement.setStoredMarks(transaction.storedMarks);
+  replacement.setTime(transaction.time);
+  if (transaction.scrolledIntoView) replacement.scrollIntoView();
+  return replacement;
 }
 
 /**
@@ -697,6 +871,7 @@ export function initEditor(
       },
     },
     dispatchTransaction(transaction: Transaction) {
+      transaction = splitOversizedTextInsertion(view.state, transaction);
       const newState = view.state.apply(transaction);
       view.updateState(newState);
 

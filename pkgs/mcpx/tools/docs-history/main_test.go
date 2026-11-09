@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,7 +236,7 @@ func TestCheckDiffNeedsFragment(t *testing.T) {
 		t.Fatalf("fragment in the diff should satisfy the check, got %v", problems)
 	}
 	// Trivial marker also satisfies it (fragment removed again).
-	os.Remove(filepath.Join(dir, "docs/changes/lifetime.md"))
+	_ = os.Remove(filepath.Join(dir, "docs/changes/lifetime.md"))
 	if problems := Check([]string{p}, sampleDiff, true, ""); len(problems) != 0 {
 		t.Fatalf("trivial check should pass, got %v", problems)
 	}
@@ -407,5 +408,40 @@ func TestStampCompactMarkerWithExtraWhitespace(t *testing.T) {
 	}
 	if !strings.Contains(got, "since: 0.2.0") {
 		t.Fatalf("stamp did not write the version into the compact marker:\n%s", got)
+	}
+}
+
+func TestTrailingValueFlagsExitWithUsage(t *testing.T) {
+	if args := os.Getenv("DOCS_HISTORY_TEST_ARGS"); args != "" {
+		os.Args = append([]string{"docs-history"}, strings.Fields(args)...)
+		main()
+		return
+	}
+
+	for _, args := range []string{
+		"stamp --version",
+		"stamp --date",
+		"stamp --changes-dir",
+		"check --diff",
+		"check --changes-dir",
+	} {
+		t.Run(args, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestTrailingValueFlagsExitWithUsage$")
+			cmd.Env = append(os.Environ(), "DOCS_HISTORY_TEST_ARGS="+args)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("command %q succeeded; want exit code 2:\n%s", args, output)
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 2 {
+				t.Fatalf("command %q error = %v; want exit code 2:\n%s", args, err, output)
+			}
+			if strings.Contains(string(output), "panic:") {
+				t.Fatalf("command %q panicked:\n%s", args, output)
+			}
+			if !strings.Contains(string(output), "requires a value") || !strings.Contains(string(output), "usage:") {
+				t.Fatalf("command %q did not report the missing value and usage:\n%s", args, output)
+			}
+		})
 	}
 }

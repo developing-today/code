@@ -64,6 +64,82 @@ const MAX_NAME_LENGTH: usize = 48;
 /// Maximum token age before it's considered expired (30 days in seconds).
 const TOKEN_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// Maximum tolerated clock skew for a token issued in the future (5 minutes).
+const TOKEN_FUTURE_SKEW_SECS: u64 = 5 * 60;
+
+/// Default admission bound on registered web identities (#1766).
+///
+/// Registration used to grow the identity store — the in-memory maps
+/// AND the on-disk redb — without any bound. The bound refuses NEW
+/// registrations at capacity; it never deletes existing records, and
+/// already-registered identities keep authenticating and refreshing
+/// tokens at capacity (a cap is an admission control, not a cleanup —
+/// lifecycle deletion for legacy records is a separate design).
+/// Sized for a personal dashboard: one identity per browser profile /
+/// device / test run, with generous headroom.
+pub const DEFAULT_MAX_IDENTITIES: usize = 10_000;
+
+/// Environment variable overriding [`DEFAULT_MAX_IDENTITIES`]:
+/// a positive count, or `none` for unbounded.
+pub const MAX_IDENTITIES_ENV: &str = "ID_WEB_MAX_IDENTITIES";
+
+/// Registration refused because the identity store is at its
+/// configured admission bound (#1766). The register handler maps this
+/// to a 503 so a refused first visit is observable and explainable,
+/// never a silent or generic failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityCapacityError {
+    /// The configured admission bound.
+    pub limit: usize,
+    /// How many identities were registered when the refusal happened.
+    pub registered: usize,
+}
+
+impl std::fmt::Display for IdentityCapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "identity registration capacity reached ({}/{} identities); new registrations are refused — existing identities are unaffected and no records are deleted",
+            self.registered, self.limit
+        )
+    }
+}
+
+impl std::error::Error for IdentityCapacityError {}
+
+/// Resolve the configured identity admission bound (#1766): the
+/// `ID_WEB_MAX_IDENTITIES` environment variable when set (`none` =
+/// unbounded, otherwise a positive count), else
+/// [`DEFAULT_MAX_IDENTITIES`]. An unparsable or zero value is a
+/// configuration error an operator should hear about, so it logs a
+/// warning and falls back to the default rather than silently
+/// refusing every first visit.
+pub fn configured_max_identities() -> Option<usize> {
+    match std::env::var(MAX_IDENTITIES_ENV) {
+        Err(_) => Some(DEFAULT_MAX_IDENTITIES),
+        Ok(raw) => {
+            let value = raw.trim();
+            if value.eq_ignore_ascii_case("none") {
+                None
+            } else if let Ok(n) = value.parse::<usize>() {
+                if n == 0 {
+                    tracing::warn!(
+                        "[identity] {MAX_IDENTITIES_ENV}=0 would refuse every registration; falling back to the default bound {DEFAULT_MAX_IDENTITIES}"
+                    );
+                    Some(DEFAULT_MAX_IDENTITIES)
+                } else {
+                    Some(n)
+                }
+            } else {
+                tracing::warn!(
+                    "[identity] {MAX_IDENTITIES_ENV}={raw:?} is not a count or 'none'; falling back to the default bound {DEFAULT_MAX_IDENTITIES}"
+                );
+                Some(DEFAULT_MAX_IDENTITIES)
+            }
+        }
+    }
+}
+
 /// A client's identity information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientIdentity {
@@ -102,6 +178,13 @@ pub struct IdentityStore {
     signing_key: Arc<SigningKey>,
     /// Ed25519 verifying key (derived from signing key, used to verify tokens).
     verifying_key: VerifyingKey,
+    /// Admission bound on registered identities (#1766): `Some(limit)`
+    /// refuses NEW registrations once `clients` holds `limit` entries.
+    /// Records loaded from disk at startup count toward the bound.
+    /// Existing identities are never removed to make room, and the
+    /// verify/refresh paths ignore the bound. `None` is unbounded
+    /// (ephemeral/test stores by default).
+    max_identities: Option<usize>,
     /// Encrypted redb file for persistent storage (`None` for ephemeral/test mode).
     db: Option<Arc<IdentityDb>>,
 }
@@ -111,6 +194,7 @@ impl std::fmt::Debug for IdentityStore {
         f.debug_struct("IdentityStore")
             .field("clients", &self.clients)
             .field("signing_key", &"<SigningKey>")
+            .field("max_identities", &self.max_identities)
             .field("db", &self.db.as_ref().map(|_| "<Database>"))
             .finish_non_exhaustive()
     }
@@ -129,6 +213,19 @@ impl IdentityStore {
     /// * `secret_key` - 32-byte secret key (from iroh `SecretKey::to_bytes()`)
     /// * `db_path` - Path for the redb file (e.g., `.identity.redb`)
     pub async fn new(secret_key: [u8; 32], db_path: PathBuf) -> anyhow::Result<Self> {
+        Self::new_with_max_identities(secret_key, db_path, Some(DEFAULT_MAX_IDENTITIES)).await
+    }
+
+    /// Create a new identity store backed by an encrypted redb file,
+    /// with an explicit admission bound (#1766): `Some(limit)` refuses
+    /// new registrations once `limit` identities are held — records
+    /// loaded from disk count toward it — and `None` is unbounded.
+    /// See [`IdentityStore::new`] for the storage description.
+    pub async fn new_with_max_identities(
+        secret_key: [u8; 32],
+        db_path: PathBuf,
+        max_identities: Option<usize>,
+    ) -> anyhow::Result<Self> {
         let (signing_key, enc_bytes) = derive_keys(&secret_key)?;
         let verifying_key = signing_key.verifying_key();
 
@@ -153,6 +250,7 @@ impl IdentityStore {
             name_watchers: Arc::new(RwLock::new(name_watchers_map)),
             signing_key: Arc::new(signing_key),
             verifying_key,
+            max_identities,
             db: Some(Arc::new(db)),
         })
     }
@@ -162,6 +260,14 @@ impl IdentityStore {
     /// Generates a random signing key. Identities are lost when the store
     /// is dropped. Used in tests and when persistence is not needed.
     pub fn new_ephemeral() -> Self {
+        Self::new_ephemeral_with_limit(None)
+    }
+
+    /// Create an ephemeral identity store with an admission bound
+    /// (#1766): `Some(limit)` refuses new registrations once `limit`
+    /// identities are held; `None` is unbounded. The test seam for
+    /// capacity behavior.
+    pub fn new_ephemeral_with_limit(max_identities: Option<usize>) -> Self {
         let signing_key = SigningKey::generate(&mut rand::rng());
         let verifying_key = signing_key.verifying_key();
         Self {
@@ -169,6 +275,7 @@ impl IdentityStore {
             name_watchers: Arc::new(RwLock::new(HashMap::new())),
             signing_key: Arc::new(signing_key),
             verifying_key,
+            max_identities,
             db: None,
         }
     }
@@ -189,17 +296,60 @@ impl IdentityStore {
             updated_at: now,
         };
 
-        // Persist to database first (if available)
-        if let Some(db) = &self.db {
-            let db = Arc::clone(db);
-            let record = identity.clone();
-            run_blocking(move || db.create(&record)).await?;
-        }
-
-        // Store the identity in memory
+        // Admission bound (#1766): hold the clients write lock across
+        // check + persist + insert, so concurrent registrations cannot
+        // race past the bound (the redb create used to happen before
+        // the in-memory insert with no lock spanning both, which would
+        // have made a count check racy). Registrations are rare, so
+        // verify/refresh readers waiting out one create is acceptable.
+        // At capacity the refusal is the typed IdentityCapacityError —
+        // existing records are never deleted to make room.
+        //
+        // The critical section runs in a detached task (Codex P2 on
+        // PR #4143): spawn_blocking is not aborted when the awaiting
+        // future is cancelled, so a section owned by the caller's
+        // future could drop the lock with the record committed to disk
+        // but never inserted — the in-memory count would then
+        // under-count persisted records and repeated cancellations
+        // would bypass the bound (and the uncounted records would all
+        // load on restart). Detached, the section keeps the admission
+        // reservation and the in-memory accounting alive through
+        // completion of the blocking write, independently of the
+        // requesting future; awaiting the handle only observes the
+        // outcome.
         {
-            let mut clients = self.clients.write().await;
-            clients.insert(client_id.clone(), identity.clone());
+            let clients = Arc::clone(&self.clients);
+            let db = self.db.clone();
+            let max_identities = self.max_identities;
+            let record = identity.clone();
+            let persist = tokio::spawn(async move {
+                let mut clients = clients.write().await;
+                if let Some(limit) = max_identities {
+                    let registered = clients.len();
+                    if registered >= limit {
+                        tracing::warn!(
+                            "[identity] Registration refused at capacity: {registered}/{limit} identities (admission bound, issue 1766)"
+                        );
+                        return Err(anyhow::Error::from(IdentityCapacityError {
+                            limit,
+                            registered,
+                        }));
+                    }
+                }
+
+                // Persist to database first (if available)
+                if let Some(db) = &db {
+                    let db = Arc::clone(db);
+                    let record = record.clone();
+                    run_blocking(move || db.create(&record)).await?;
+                }
+
+                clients.insert(record.client_id.clone(), record);
+                Ok::<(), anyhow::Error>(())
+            });
+            persist
+                .await
+                .map_err(|e| anyhow::anyhow!("identity registration task failed: {e}"))??;
         }
 
         // Create a watch channel for name changes
@@ -376,8 +526,11 @@ impl IdentityStore {
         // Deserialize payload
         let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
 
-        // Reject expired tokens (older than TOKEN_MAX_AGE_SECS)
+        // Reject tokens dated implausibly far in the future, then apply the age cap.
         let now = unix_timestamp();
+        if payload.created_at > now.saturating_add(TOKEN_FUTURE_SKEW_SECS) {
+            return None;
+        }
         if now.saturating_sub(payload.created_at) > TOKEN_MAX_AGE_SECS {
             return None;
         }
@@ -412,24 +565,13 @@ fn hex_encode(bytes: &[u8]) -> String {
 pub(super) fn sanitize_name(name: Option<String>) -> Option<String> {
     name.map(|name| {
         name.chars()
-            .filter(|ch| !ch.is_control() && !is_bidi_override_or_isolate(*ch))
+            .filter(|ch| !ch.is_control() && !crate::is_format_char(*ch))
             .take(MAX_NAME_LENGTH)
             .collect::<String>()
             .trim()
             .to_owned()
     })
     .filter(|name| !name.is_empty())
-}
-
-fn is_bidi_override_or_isolate(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{061c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
-    )
 }
 
 /// Create a short display ID from a `client_id` (first 6 chars).
@@ -876,6 +1018,10 @@ mod tests {
             sanitize_name(Some("Bob".to_owned())),
             Some("Bob".to_owned())
         );
+        assert_eq!(
+            sanitize_name(Some("Mary Jane-Smith".to_owned())),
+            Some("Mary Jane-Smith".to_owned())
+        );
 
         assert_eq!(
             sanitize_name(Some("A\n\t\u{001b}\u{202e}lice".to_owned())),
@@ -886,8 +1032,12 @@ mod tests {
             Some("AB".to_owned())
         );
         assert_eq!(
+            sanitize_name(Some("a\u{200b}b\u{feff}c\u{00ad}d".to_owned())),
+            Some("abcd".to_owned())
+        );
+        assert_eq!(
             sanitize_name(Some("a\u{200d}b\u{200c}c".to_owned())),
-            Some("a\u{200d}b\u{200c}c".to_owned())
+            Some("abc".to_owned())
         );
         assert_eq!(
             sanitize_name(Some("こんにちは世界".to_owned())),
@@ -931,13 +1081,16 @@ mod tests {
         // sets them decodes to the same bytes, so a token had up to
         // 16 alias strings that all verified. Decode refuses the
         // non-canonical spellings outright.
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let alias = |encoded: &str, mask: u32| -> String {
             let mut bytes = encoded.as_bytes().to_vec();
             let last = bytes.len() - 1;
             let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
-            assert_eq!(value & mask, 0, "canonical encoding zeroes the trailing bits");
+            assert_eq!(
+                value & mask,
+                0,
+                "canonical encoding zeroes the trailing bits"
+            );
             bytes[last] = ALPHABET[(value | mask) as usize];
             String::from_utf8(bytes).unwrap()
         };
@@ -995,8 +1148,7 @@ mod tests {
         // verify, while the canonical spelling still does. The token
         // byte length fixes the final group: %4==3 chars -> low 2 bits
         // unused, %4==2 chars -> low 4 bits unused.
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let store = IdentityStore::new_ephemeral();
         let (token, _) = store.register(Some("Alice".to_owned())).await.unwrap();
         assert!(store.verify_token(&token).await.is_some());
@@ -1008,12 +1160,97 @@ mod tests {
         let mut bytes = token.as_bytes().to_vec();
         let last = bytes.len() - 1;
         let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
-        assert_eq!(value & mask, 0, "canonical spelling zeroes the trailing bits");
+        assert_eq!(
+            value & mask,
+            0,
+            "canonical spelling zeroes the trailing bits"
+        );
         bytes[last] = ALPHABET[(value | mask) as usize];
         let alias = String::from_utf8(bytes).unwrap();
         assert_ne!(alias, token);
         assert!(store.verify_token(&alias).await.is_none());
         assert!(store.verify_token_client_id(&alias).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_register_admission_bound_at_and_beyond_limit() {
+        // #1766: at the bound the next registration is refused with
+        // the typed capacity error; nothing is deleted to make room.
+        let store = IdentityStore::new_ephemeral_with_limit(Some(2));
+        store.register(Some("A".to_owned())).await.unwrap();
+        store.register(Some("B".to_owned())).await.unwrap();
+        let err = store.register(Some("C".to_owned())).await.unwrap_err();
+        let cap = err
+            .downcast_ref::<IdentityCapacityError>()
+            .expect("typed capacity error");
+        assert_eq!(cap.limit, 2);
+        assert_eq!(cap.registered, 2);
+        assert_eq!(store.clients.read().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_register_admission_bound_concurrent_race() {
+        // #1766: many registrations racing for the last slots —
+        // exactly `limit` succeed, because check + persist + insert
+        // run under one write lock.
+        let store = Arc::new(IdentityStore::new_ephemeral_with_limit(Some(5)));
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let s = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                s.register(Some(format!("racer-{i}"))).await
+            }));
+        }
+        let mut ok = 0;
+        let mut refused = 0;
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(_) => ok += 1,
+                Err(e) => {
+                    assert!(e.downcast_ref::<IdentityCapacityError>().is_some());
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!(ok, 5);
+        assert_eq!(refused, 11);
+        assert_eq!(store.clients.read().await.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_at_capacity_still_works() {
+        // #1766 acceptance pin: the bound refuses NEW registrations
+        // only — an existing identity keeps verifying and refreshing
+        // its token at capacity.
+        let store = IdentityStore::new_ephemeral_with_limit(Some(1));
+        let (token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+        assert!(store.register(Some("Bob".to_owned())).await.is_err());
+        let (fresh, refreshed) = store.verify_and_refresh(&token).await.unwrap();
+        assert_eq!(refreshed.client_id, identity.client_id);
+        assert!(store.verify_token(&fresh).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_restart_at_bound_serves_existing_refuses_new() {
+        // #1766: records loaded from disk at startup count toward the
+        // bound — a store reopened at capacity admits nobody new but
+        // still serves (and refreshes) everyone it loaded.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identities.redb");
+        let secret = [7u8; 32];
+        let store = IdentityStore::new_with_max_identities(secret, path.clone(), Some(1))
+            .await
+            .unwrap();
+        let (token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+        drop(store);
+
+        let store = IdentityStore::new_with_max_identities(secret, path, Some(1))
+            .await
+            .unwrap();
+        let err = store.register(Some("Bob".to_owned())).await.unwrap_err();
+        assert!(err.downcast_ref::<IdentityCapacityError>().is_some());
+        let (_, refreshed) = store.verify_and_refresh(&token).await.unwrap();
+        assert_eq!(refreshed.client_id, identity.client_id);
     }
 
     #[tokio::test]
@@ -1165,6 +1402,30 @@ mod tests {
         // Expired token should be rejected
         assert!(store.verify_token(&expired_token).await.is_none());
         assert!(store.verify_token_client_id(&expired_token).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_future_dated_token_within_and_beyond_skew() {
+        let store = IdentityStore::new_ephemeral();
+        let (_, identity) = store.register(None).await.unwrap();
+        let now = unix_timestamp();
+
+        let within_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS - 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&within_skew).await.is_some());
+
+        let beyond_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS + 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&beyond_skew).await.is_none());
+        assert!(store.verify_token_client_id(&beyond_skew).is_none());
     }
 
     /// A token with the given payload and 64 signature bytes, in the wire format.

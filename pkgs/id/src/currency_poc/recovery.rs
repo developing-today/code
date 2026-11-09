@@ -10,6 +10,14 @@
 //! - some legs present ⇒ impossible for an atomic linked chain, so it
 //!   is reported as [`ReconcileOutcome::Inconsistent`] for a human
 //!   rather than guessed at.
+//!
+//! A record whose leg vector is empty or repeats a transfer ID is
+//! malformed (#4133): it is reported `Inconsistent` too, never
+//! `Posted` — an empty vector would satisfy the full-match check
+//! vacuously, and a repeated ID would count one ledger transfer
+//! once per entry.
+
+use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 
@@ -51,7 +59,33 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
     policy: RecoveryPolicy,
 ) -> Result<Vec<(u128, ReconcileOutcome)>> {
     let mut outcomes = Vec::new();
-    for mut record in store.unresolved().context("listing unresolved intents")? {
+    let records = store.unresolved().context("listing unresolved intents")?;
+    // Entries the listing skipped (#4125) stay on disk for an
+    // operator; surface each one distinctly here instead of letting
+    // it pass silently, and reconcile everything readable regardless.
+    for unreadable in store.unreadable_entries() {
+        eprintln!(
+            "[recovery] skipping unreadable intent entry {}: {}",
+            unreadable.path.display(),
+            unreadable.reason
+        );
+    }
+    for mut record in records {
+        // A leg vector is the scanner's only statement of what must
+        // be in the ledger, so it must name at least one transfer and
+        // each transfer at most once (#4133): an empty vector would
+        // satisfy `matched == record.legs.len()` vacuously (0 == 0),
+        // and a repeated ID would count one ledger transfer once per
+        // entry. Either shape is malformed — report it Inconsistent
+        // and leave the record unresolved rather than guessing.
+        let mut leg_ids = HashSet::with_capacity(record.legs.len());
+        let malformed =
+            record.legs.is_empty() || !record.legs.iter().all(|leg| leg_ids.insert(leg.id));
+        if malformed {
+            outcomes.push((record.conversion_id, ReconcileOutcome::Inconsistent));
+            continue;
+        }
+
         // Existence by ID is not proof of posting: a looked-up
         // transfer must equal the persisted leg, otherwise the ID
         // collided with an unrelated transfer.
@@ -75,10 +109,14 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
             match policy {
                 RecoveryPolicy::Resubmit => {
                     let results = backend.create_transfers(&record.legs);
-                    let failed = results
-                        .iter()
-                        .find(|result| !matches!(result, Ok(()) | Err(TransferError::Exists)));
-                    if failed.is_some() {
+                    // #4669: a short result vector is a failed
+                    // resubmission, not a vacuous success — require
+                    // one result per leg before scanning for failures.
+                    let failed = results.len() != record.legs.len()
+                        || results
+                            .iter()
+                            .any(|result| !matches!(result, Ok(()) | Err(TransferError::Exists)));
+                    if failed {
                         // One rejected resubmission must not abort
                         // recovery of every later record: leave this
                         // record unresolved, report it, and continue.

@@ -10,20 +10,20 @@ forks of upstream projects.
 
 | Piece      | Image                                    | Notes                                                                                 |
 | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
-| Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` (pinned) | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
-| PostgreSQL | `postgres:16-alpine`                     | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
+| Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` + digest | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
+| PostgreSQL | `postgres:16-alpine` + digest             | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
 
 Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                                    | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)                        | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route       | `aggregator/`         |
-| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                 | `dispatch/`           |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                           | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181) | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname        | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname        | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route              | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                        | `dispatch/`           |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as
@@ -61,6 +61,62 @@ everything else is host-independent so the stack can move to the
 Kubernetes cluster later (the same values map onto a Secret + the
 upstream Helm chart's env).
 
+## Sandbox posture and alignment
+
+The sandbox is for Muse sessions, SSH, and web browsing only. It is not a
+PM-stack host: do not start or enable servers, proxies, containers, or
+service timers there. PM-stack services and the fleet-feed collector run
+on the laptop host `amd`; the old sandbox kill-collector timer has been
+retired, and its script refuses to run unless `hostname -s` is `amd`.
+
+To align a sandbox checkout with the laptop's repository source, preserve
+local work and fast-forward from `origin/main` (never reset or force a
+checkout):
+
+```bash
+cd ~/git/code
+git status --short --branch
+git fetch origin
+git switch main
+git merge --ff-only origin/main
+git rev-parse HEAD
+```
+
+Compare that commit with the laptop's `git -C ~/git/code rev-parse HEAD`
+using `~/tools/laptop-ssh.sh`. If the checkout has local changes or
+cannot fast-forward, stop and preserve them for reconciliation; do not
+reset it. Refresh repo-managed configuration from the aligned checkout,
+but keep runtime deployment on the laptop: do not run `deploy.sh`, an
+`install.sh`, `nixos-rebuild`, or any `systemctl enable/start` command on
+the sandbox. Keep copied configuration source-aligned; do not copy
+runtime state or rendered secret files as part of this alignment step.
+
+## GitHub Project #4 conventions
+
+The org Project **Developing Today** (#4) is the portfolio map; issues and
+their native GitHub relations remain the work record. For items in its pool:
+
+- **Project `Kind=Epic` is canonical.** The aggregator reads this field and
+  resolves `epicRef` through native sub-issue parents; it does not infer epic
+  membership from labels. The GitHub `epic` label is the maintained gate and
+  mirror: every pool item with `Kind=Epic` carries `epic`, and no other pool
+  item does. When adding a new epic, set both consistently.
+- **`meta/epic` is retired.** It has no consumer and must not be used as an
+  epic marker. Remove it rather than treating it as an alias. Keep the
+  separate `epic` label where the Project auto-add gate needs it.
+- **Hierarchy and dependencies are different edges.** Native sub-issue
+  parents establish epic membership; native `blockedBy`/`blocking` relations
+  express dependencies. Prose descriptions are not a substitute for either.
+- **The orchestrator is the Project's single writer.** Agents and the
+  dashboard do not edit Project fields directly; the aggregator reads the
+  pool through the fleet feed.
+
+This repository copy records the reconciled convention from #1265 because
+the private Project README is not readable with the fleet's current GitHub
+scope. Source/design records: [#910](https://github.com/developing-today/code/issues/910),
+[#1122](https://github.com/developing-today/code/issues/1122), and
+[#1265](https://github.com/developing-today/code/issues/1265).
+
 ## Secrets
 
 All secrets live in [`../secrets/pm-stack.sops.yaml`](../secrets/pm-stack.sops.yaml)
@@ -72,7 +128,10 @@ All secrets live in [`../secrets/pm-stack.sops.yaml`](../secrets/pm-stack.sops.y
 `cloudflare_tunnel_token` — plus the Phase 2 additions:
 `pad_api_key`, `pad_admin_email`, `pad_admin_password`,
 `pad_api_token`, `grist_session_secret`, `grist_admin_password`,
-`grist_api_key`, `grist_boot_key`. The same values are also filed in
+`grist_api_key`, `grist_boot_key` — plus the pm-dispatch Supabase
+additions: `supabase_url`, `supabase_service_role_key` (fleet
+Supabase is muse-dev2; Bitwarden source:
+`supabase.muse-dev2.service-role-key`). The same values are also filed in
 Bitwarden and 1Password under the names recorded in the design
 record (Bitwarden/1Password names use dots, e.g. `pad.api-token`,
 `grist.boot-key`).
@@ -89,7 +148,7 @@ instead). Changing `AUTH_SECRET` signs everyone out; changing
 `POSTGRES_PASSWORD` after first initialisation breaks the database
 login until the database password is changed to match.
 
-## Bring it up (first time, on the host)
+## Bring it up (first time, on laptop host `amd` only)
 
 ```bash
 # 1. Check out this repo (or copy this directory + ../secrets) and cd in
@@ -192,20 +251,26 @@ cd ready-for-agent
 ./install.sh clone    # one-time: clone the repos it serves into ./repos/
 ```
 
-- **Register a repo** through the harness's GraphQL API (loopback
-  `http://127.0.0.1:6056/graphql`): mutation
-  `addLocalRepository(path: "<absolute path to a full clone>")`.
-  Do **not** use the `ready-for-agent add` CLI from an interactive
-  SSH shell on this host — its in-process git inspection returns
+- **Register + configure repos declaratively (#1203):**
+  [`ready-for-agent/config.json`](ready-for-agent/config.json) names
+  every served repository (clone URL, local dir, `mergePolicy`,
+  `defaultModel`, `includeAllIssueAuthors`, paused). `./install.sh
+clone` clones/fetches them all into `ready-for-agent/repos/`, and
+  every `./install.sh` run finishes by applying the config through
+  the harness's GraphQL API via
+  [`ready-for-agent/apply-config.sh`](ready-for-agent/apply-config.sh)
+  (addLocalRepository for unregistered clones, a full-object
+  updateRepositorySettings built from the live settings with only
+  the config-owned fields overridden, pause/unpause to match; a
+  converged harness receives no mutations, so re-runs are no-ops;
+  `DRY_RUN=1 ./apply-config.sh` previews). Fleet posture:
+  `mergePolicy: OFF` (human merge) on every repo. Do **not** use the
+  `ready-for-agent add` CLI from an interactive SSH shell on this
+  host - its in-process git inspection returns
   `NOT_A_GIT_REPOSITORY` for valid repos there (it succeeds from
-  the service's clean environment, which is what GraphQL uses).
-- **Configure a repo** with `updateRepositorySettings` (a
-  full-object input — every field is required, so read the current
-  settings first) and `unpauseRepository`. Fleet posture for
-  `developing-today/code`: `mergePolicy: OFF` (human merge),
-  `includeAllIssueAuthors: true`, `defaultModel:
-opencode-go/kimi-k3.1-pro` on the OpenCode backend. A repo with
-  no build model set refuses Implement ("No build model set").
+  the service's clean environment, which is what GraphQL uses). A
+  repo with no build model set refuses Implement ("No build model
+  set") - the config's `defaultModel` is what prevents that.
 - **Dispatch:** label an issue `ready-for-agent`, then Implement
   from the UI, via GraphQL `implementNow(repositoryId, nativeId:
 "<issue number>")`, or via the CLI `ready-for-agent intake
@@ -280,6 +345,41 @@ cd grist
   `/apply` `UpdateColumn` (blocked by access rules) and never the
   document SQLite. Runbook: `grist/CHOICE-OPTIONS.md` (#1287).
 
+#### Reload a document after an external change
+
+Grist OSS **v1.7.21** provides the authenticated
+`POST /api/docs/{docId}/force-reload` endpoint. It closes and reopens
+the document inside the running Grist service; it does not restart the
+container. After an approved external document edit, verify the exact
+cell through the API while forcing the reload:
+
+```bash
+cd grist  # from pm-stack/
+./reload-doc.sh DOC_ID TABLE_ID ROW_ID COLUMN_ID EXPECTED_VALUE
+```
+
+The script reads `grist_api_key` from the same SOPS file and age key as
+`seed.sh`, sends the reload request, and exits non-zero if the selected
+cell does not read back with the expected text. It does not print the
+API key. For a simple API-supported text update that should be applied
+as part of the operation, append `--apply`; the script uses one
+`UpdateRecord` action, skips the write when the value is already equal,
+then force-reloads and verifies. Do not use `--apply` for schema
+changes or arbitrary actions.
+
+Before a live edit, choose a reversible, low-impact cell change and
+record its original value and restoration step. Check that no one is
+actively editing the document; Grist may reject the reload while a
+write is in progress. Inspect the aggregator's roadmap source chip or
+`/api/health` (`source.roadmap`) before, during, and after the operation:
+`live (Grist...)` means it is reading from Grist, while a
+`fixtures (...)` value explicitly signals fallback. If the roadmap
+source changes unexpectedly, stop and investigate rather than treating
+the fallback as live data. Confirm the container's `StartedAt` is
+unchanged to distinguish a document reload from a service restart.
+Direct SQLite editing is not the routine workflow; this wrapper only
+uses the Grist API.
+
 ## Day-2 operations
 
 - **Status:** `docker compose ps`, `docker compose logs -f kaneo`,
@@ -294,11 +394,11 @@ developing-today/code` (dispatch).
   restart). Each Phase 2 subdirectory has the same `deploy.sh`
   contract (Pad, Grist); ready-for-agent refreshes via
   `ready-for-agent/install.sh`.
-- **Update Kaneo:** bump the pinned tag in `compose.yml` after reading
-  the upstream release notes, then `./deploy.sh`. Never float on
-  `:latest`. Same rule per component: Pad/Grist image pins (tag +
-  digest) in their `compose.yml`, ready-for-agent's `PINNED_VERSION`
-  in `ready-for-agent/install.sh`.
+- **Update Kaneo or PostgreSQL:** after reviewing the upstream release
+  notes, bump the tag and digest together in `compose.yml`, then
+  `./deploy.sh`. Never float on a mutable tag. Same rule per component:
+  Pad/Grist image pins (tag + digest) in their `compose.yml`,
+  ready-for-agent's `PINNED_VERSION` in `ready-for-agent/install.sh`.
 - **Pad API token:** expires 90 days after minting (current:
   2027-01-22) — re-mint, re-file (SOPS + both vaults), restart
   nothing (the token is used by external automation, not the
@@ -342,6 +442,7 @@ pm-stack/
 │   ├── deploy.sh
 │   ├── .env.example
 │   ├── seed.sh                # idempotent seed via the REST API
+│   ├── reload-doc.sh          # force-reload + API read-back verification
 │   └── seed/roadmap.json      # Roadmap rows
 └── ready-for-agent/           # Phase 2 dispatch layer (ready-for-agent 1.1.0)
     ├── install.sh             # pinned npm install + unit + clone helper

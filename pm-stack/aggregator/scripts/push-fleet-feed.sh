@@ -37,7 +37,11 @@ export PATH
 cd "$(dirname "$0")/.."
 PKG="$PWD"
 LAPTOP=user@100.99.113.103
-DEST_DIR="~/pm-stack/aggregator"
+# Write directly to the state directory. Keep the laptop's
+# ~/pm-stack/aggregator -> ~/.local/state/pm-aggregator symlink in place
+# until the sandbox has pulled this change and feed delivery is verified;
+# older deployed push scripts still depend on that bridge.
+DEST_DIR="~/.local/state/pm-aggregator"
 KNOWN_HOSTS="${PUSH_FLEET_FEED_KNOWN_HOSTS:-$PKG/scripts/laptop_known_hosts}"
 
 # The collector itself needs egress under the systemd unit's minimal

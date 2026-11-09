@@ -5,11 +5,21 @@
 import { describe, expect, it } from "vitest";
 import { isSaveShortcut } from "./save-shortcut";
 
-function ev(partial: Partial<{
-  ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; code: string; key: string;
-}>) {
+function ev(
+  partial: Partial<{
+    ctrlKey: boolean;
+    metaKey: boolean;
+    shiftKey: boolean;
+    code: string;
+    key: string;
+  }>,
+) {
   return {
-    ctrlKey: false, metaKey: false, shiftKey: false, code: "", key: "",
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    code: "",
+    key: "",
     ...partial,
   };
 }

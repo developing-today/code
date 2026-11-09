@@ -13,6 +13,16 @@
 // not suppress the next. The note reports the cancellation and cleanup
 // outcomes, and the original launch error is returned for the wait:true
 // path's 502.
+//
+// #4917: the tracking issue itself is also closed as not planned on
+// every failure path. A failed launch's issue is a record of a dispatch
+// that never became real; leaving it open produced 66 orphan
+// 'do the thing' issues (#3499-#4899). Failures BEFORE the enqueue
+// (packet validation, enqueue itself) have no task to cancel — those
+// callers use compensateOrphanedIssue below, which performs the same
+// note + close for the issue they created. Only issues dispatch
+// created in the same request are ever closed here; attach targets
+// (caller-supplied issue numbers) are never compensated.
 
 /** The slice of the queue client launch-failure handling needs. */
 export interface LaunchFailureQueue {
@@ -22,6 +32,41 @@ export interface LaunchFailureQueue {
 /** The slice of the GitHub client launch-failure handling needs. */
 export interface LaunchFailureGitHub {
   comment(repo: string, issueNumber: number, body: string): Promise<void>;
+  closeIssue(repo: string, issueNumber: number, stateReason?: "not_planned" | "completed"): Promise<void>;
+}
+
+/**
+ * Compensate a tracking issue whose dispatch failed BEFORE a queue
+ * task existed (#4917): note the failure on the issue and close it as
+ * not planned, so it does not linger open as an orphan. Both steps are
+ * best-effort and individually guarded; the original error message is
+ * returned for the caller's error response. A null issue number (no
+ * issue was created) is a no-op.
+ */
+export async function compensateOrphanedIssue(
+  github: LaunchFailureGitHub,
+  repo: string,
+  issueNumber: number | null,
+  stage: string,
+  e: unknown,
+): Promise<string> {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (issueNumber == null) return msg;
+  try {
+    await github.comment(
+      repo,
+      issueNumber,
+      `Dispatch launch FAILED at ${stage} before a queue task was created, so this dispatch never became real. Closing this tracking issue as not planned so it does not linger as an orphan (#4917).\n\nError: ${msg}`,
+    );
+  } catch {
+    /* issue note is best-effort on the failure path */
+  }
+  try {
+    await github.closeIssue(repo, issueNumber, "not_planned");
+  } catch {
+    /* close is best-effort; the note above still records the failure */
+  }
+  return msg;
 }
 
 /** Mutable context shared by launchSession and its failure handler. */
@@ -54,9 +99,7 @@ export async function handleLaunchFailure(
   deleteSession?: (sessionId: string) => Promise<void>,
 ): Promise<string> {
   const msg = e instanceof Error ? e.message : String(e);
-  const sessionContext = sessionId == null
-    ? ""
-    : `; OpenCode session ${sessionId} may still be live`;
+  const sessionContext = sessionId == null ? "" : `; OpenCode session ${sessionId} may still be live`;
   let cancelError: string | null = null;
   try {
     await queue.cancelTask(taskId, `dispatch launch failed: ${msg}${sessionContext}`);
@@ -77,11 +120,12 @@ export async function handleLaunchFailure(
     }
   }
   if (issueNumber != null) {
-    const sessionNote = sessionId == null
-      ? ""
-      : cleanupError == null
-        ? `\n\nOpenCode session ${sessionId} may still be live; session cleanup succeeded.`
-        : `\n\nOpenCode session ${sessionId} may still be live; session cleanup failed: ${cleanupError}`;
+    const sessionNote =
+      sessionId == null
+        ? ""
+        : cleanupError == null
+          ? `\n\nOpenCode session ${sessionId} may still be live; session cleanup succeeded.`
+          : `\n\nOpenCode session ${sessionId} may still be live; session cleanup failed: ${cleanupError}`;
     const note =
       cancelError == null
         ? `Dispatch launch FAILED and queue task #${taskId} was cancelled.${sessionNote}\n\nError: ${msg}`
@@ -90,6 +134,13 @@ export async function handleLaunchFailure(
       await github.comment(repo, issueNumber, note);
     } catch {
       /* issue note is best-effort on the failure path */
+    }
+    // #4917: a failed launch's tracking issue must not stay open —
+    // close it as not planned after noting the failure.
+    try {
+      await github.closeIssue(repo, issueNumber, "not_planned");
+    } catch {
+      /* close is best-effort; the note above still records the failure */
     }
   }
   return msg;

@@ -58,9 +58,11 @@ use anyhow::{Result, bail};
 use iroh_base::EndpointId;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
-use crate::discovery::{MAX_PEERS, PeerAnnouncement, resolve_config};
+use crate::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
 use crate::peer_announcement::SignedPeerAnnouncement;
-use crate::protocol::{MetaRequest, MetaResponse};
+use crate::protocol::{
+    AbuseCountersRow, AbusePolicyView, MetaRequest, MetaResponse,
+};
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
 
@@ -97,6 +99,9 @@ pub struct PeersOptions {
     pub no_relay: bool,
     /// Disable mDNS local peer discovery.
     pub no_mdns: bool,
+    /// Show the local serve instance's per-peer abuse counters instead of
+    /// listing peers (local serve only).
+    pub abuse: bool,
 }
 
 /// Runs the peers discovery command.
@@ -121,6 +126,25 @@ pub struct PeersOptions {
 /// tab, CR, LF or other structure-breaking character is quoted and escaped by
 /// [`plain_field`] instead of shifting a column or forging a row (#1613).
 pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()> {
+    if options.depth < 0 {
+        bail!(
+            "peer crawl depth must be non-negative, got {}",
+            options.depth
+        );
+    }
+
+    if options.abuse {
+        if options.gossip {
+            bail!("--abuse cannot be combined with --gossip: abuse counters come from the local serve instance only");
+        }
+        if node.is_some() {
+            bail!("--abuse cannot be combined with a remote node ID: abuse counters come from the local serve instance only");
+        }
+        let (rows, policy) = query_local_abuse_counters().await?;
+        print!("{}", format_abuse_report(&rows, policy.as_ref()));
+        return Ok(());
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
     // Determine mode
@@ -161,7 +185,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
                 options.no_relay,
                 options.no_mdns,
             )
-            .await;
+            .await?;
             for peer in crawled {
                 all_peers.insert(peer.node_id, peer);
             }
@@ -173,9 +197,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         let gossip_peers = discover_via_gossip(&options).await;
         match gossip_peers {
             Ok(peers) => {
-                for peer in peers {
-                    all_peers.insert(peer.node_id, peer);
-                }
+                merge_gossip_peers(&mut all_peers, peers);
             }
             Err(e) => {
                 if options.gossip {
@@ -200,6 +222,23 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
     }
 
     Ok(())
+}
+
+/// Merge gossip results without letting an older announcement replace a
+/// fresher result already collected from RPC. Equal timestamps keep the
+/// existing arrival-order behavior: gossip, collected later, wins the tie.
+fn merge_gossip_peers(
+    all_peers: &mut HashMap<EndpointId, PeerAnnouncement>,
+    gossip_peers: impl IntoIterator<Item = PeerAnnouncement>,
+) {
+    for peer in gossip_peers {
+        if all_peers
+            .get(&peer.node_id)
+            .is_none_or(|existing| peer.timestamp_secs >= existing.timestamp_secs)
+        {
+            all_peers.insert(peer.node_id, peer);
+        }
+    }
 }
 
 /// One peer as the four tab-separated fields of the `id peers` row:
@@ -234,7 +273,7 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -247,7 +286,90 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
     result
 }
 
-/// Queries a specific remote node for its peer list.
+/// Queries the local serve instance for its per-peer abuse counters and the
+/// policy rates they were charged against.
+async fn query_local_abuse_counters() -> Result<(Vec<AbuseCountersRow>, Option<AbusePolicyView>)> {
+    let serve_info = get_serve_info()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("no local serve running"))?;
+
+    let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
+    let result = async {
+        let meta_conn = crate::connectivity::connect(&endpoint, endpoint_addr, META_ALPN).await?;
+        let (mut send, mut recv) = meta_conn.open_bi().await?;
+        let req = postcard::to_allocvec(&MetaRequest::AbuseCounters)?;
+        send.write_all(&req).await?;
+        send.finish()?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        meta_conn.close(0u32.into(), b"done");
+
+        match resp {
+            MetaResponse::AbuseCounters { rows, policy } => Ok((rows, policy)),
+            MetaResponse::Error { message } => Err(anyhow::anyhow!("{message}")),
+            _ => Err(anyhow::anyhow!("unexpected response")),
+        }
+    }
+    .await;
+    endpoint.close().await;
+    result
+}
+
+/// Renders abuse counters as the `id peers --abuse` report.
+///
+/// The registry sorts rows deterministically by local node then remote
+/// endpoint, and rows are printed in the order received. Endpoint IDs are
+/// rendered the same way `id peers` renders a peer's `node_id` (lowercase
+/// hex). Each row is one line, tab-separated:
+///
+/// ```text
+/// <local>\t<remote>\tin\t<frames>\t<bytes>\tout\t<frames>\t<bytes>\tunattributed\t<frames>\t<bytes>
+/// ```
+///
+/// An empty registry prints exactly one line and still succeeds.
+pub(crate) fn format_abuse_report(
+    rows: &[AbuseCountersRow],
+    policy: Option<&AbusePolicyView>,
+) -> String {
+    let mut out = String::new();
+    if rows.is_empty() {
+        out.push_str("no abuse counters recorded\n");
+        return out;
+    }
+    out.push_str("per-peer abuse counters (frames/bytes admitted by the evaluator)\n");
+    for row in rows {
+        out.push_str(&format!(
+            "{}\t{}\tin\t{}\t{}\tout\t{}\t{}\tunattributed\t{}\t{}\n",
+            encode_endpoint(&row.local),
+            encode_endpoint(&row.remote),
+            row.inbound_frames,
+            row.inbound_bytes,
+            row.outbound_frames,
+            row.outbound_bytes,
+            row.unattributed_frames,
+            row.unattributed_bytes,
+        ));
+    }
+    if let Some(policy) = policy {
+        out.push_str(&format!(
+            "policy: authorized frames {}/s burst {}, bytes {}/s burst {}\n",
+            policy.frames_per_sec, policy.frame_burst, policy.bytes_per_sec, policy.byte_burst,
+        ));
+    }
+    out
+}
+
+/// Lowercase hex, matching `EndpointId`'s `Display` as used by the peer rows.
+fn encode_endpoint(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        // Writing to a String cannot fail.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 async fn query_remote_peers(
     node_str: &str,
     no_relay: bool,
@@ -274,7 +396,7 @@ async fn query_remote_peers(
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -298,7 +420,11 @@ async fn crawl_peers(
     timeout_secs: u64,
     no_relay: bool,
     no_mdns: bool,
-) -> Vec<PeerAnnouncement> {
+) -> Result<Vec<PeerAnnouncement>> {
+    if depth < 0 {
+        bail!("peer crawl depth must be non-negative, got {depth}");
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
     let mut visited: HashSet<EndpointId> = HashSet::new();
     let mut frontier: Vec<EndpointId> = Vec::new();
@@ -310,10 +436,9 @@ async fn crawl_peers(
     }
 
     let mut current_depth = 0;
-    let max_depth = if depth < 0 { i32::MAX } else { depth };
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
 
-    while current_depth < max_depth && !frontier.is_empty() {
+    while current_depth < depth && !frontier.is_empty() {
         if all_peers.len() >= max_peers {
             tracing::warn!(
                 "peers: max-peers cap ({}) reached at depth {}",
@@ -363,7 +488,7 @@ async fn crawl_peers(
         current_depth += 1;
     }
 
-    all_peers.into_values().collect()
+    Ok(all_peers.into_values().collect())
 }
 
 /// Discovers peers via gossip by joining the discovery topic.
@@ -440,16 +565,14 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
 
     // Collect announcements for a limited time
     let collect_timeout = tokio::time::Duration::from_secs(options.timeout_secs);
-    let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+    let peers = PeerDiscovery::new();
 
     let _ = tokio::time::timeout(collect_timeout, async {
         while let Ok(event) = receiver.next().await {
             if let iroh_gossip::api::Event::Received(msg) = event
                 && let Some(announcement) = SignedPeerAnnouncement::decode_frame(&msg.content)
             {
-                if peers.contains_key(&announcement.node_id) || peers.len() < MAX_PEERS {
-                    peers.insert(announcement.node_id, announcement);
-                }
+                admit_gossip_announcement(&peers, announcement);
             }
         }
     })
@@ -459,7 +582,17 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     accept_handle.abort();
     endpoint.close().await;
 
-    Ok(peers.into_values().collect())
+    Ok(peers
+        .peers()
+        .into_iter()
+        .map(|peer| peer.announcement)
+        .collect())
+}
+
+/// Admit a decoded gossip announcement through the shared freshness and
+/// ordering checks used by the serve-side peer table.
+fn admit_gossip_announcement(peers: &PeerDiscovery, announcement: PeerAnnouncement) {
+    peers.update(announcement);
 }
 
 /// Parse bootstrap node IDs with serve parity (#2016): warn per invalid
@@ -489,6 +622,14 @@ mod tests {
     use crate::discovery::PeerDiscovery;
     use iroh_base::SecretKey;
 
+    #[tokio::test]
+    async fn crawl_peers_refuses_negative_depth_before_networking() {
+        let err = crawl_peers(&[], -1, 1000, 30, false, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("depth must be non-negative"));
+    }
+
     fn now_secs() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -505,6 +646,84 @@ mod tests {
             // older than STALE_THRESHOLD relative to the wall clock.
             timestamp_secs: now_secs(),
         }
+    }
+
+    #[test]
+    fn gossip_collection_uses_freshness_and_monotonic_ordering() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+
+        let mut ancient = announcement(30, Some("ancient"));
+        ancient.timestamp_secs = 1;
+        admit_gossip_announcement(&discovery, ancient);
+
+        let mut far_future = announcement(31, Some("far-future"));
+        far_future.timestamp_secs = u64::MAX;
+        admit_gossip_announcement(&discovery, far_future);
+
+        let mut newer = announcement(32, Some("newer"));
+        newer.timestamp_secs = now.saturating_sub(1);
+        admit_gossip_announcement(&discovery, newer);
+
+        let mut older_replay = announcement(32, Some("older replay"));
+        older_replay.timestamp_secs = now.saturating_sub(2);
+        admit_gossip_announcement(&discovery, older_replay);
+
+        // A fresh, in-order control remains collectable.
+        let mut fresh_control = announcement(33, Some("fresh control"));
+        fresh_control.timestamp_secs = now;
+        admit_gossip_announcement(&discovery, fresh_control);
+
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 2);
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(30, None).node_id)
+        );
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(31, None).node_id)
+        );
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(32, None).node_id
+                && peer.announcement.name.as_deref() == Some("newer")
+        }));
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(33, None).node_id
+                && peer.announcement.name.as_deref() == Some("fresh control")
+        }));
+    }
+
+    #[test]
+    fn gossip_merge_does_not_replace_fresher_rpc_results() {
+        let now = now_secs();
+
+        let mut rpc_fresher = announcement(34, Some("rpc fresher"));
+        rpc_fresher.timestamp_secs = now.saturating_sub(1);
+        let mut gossip_older = announcement(34, Some("gossip older"));
+        gossip_older.timestamp_secs = now.saturating_sub(2);
+
+        let mut rpc_older = announcement(35, Some("rpc older"));
+        rpc_older.timestamp_secs = now.saturating_sub(2);
+        let mut gossip_fresher = announcement(35, Some("gossip fresher"));
+        gossip_fresher.timestamp_secs = now.saturating_sub(1);
+
+        let mut all_peers = HashMap::from([
+            (rpc_fresher.node_id, rpc_fresher),
+            (rpc_older.node_id, rpc_older),
+        ]);
+        merge_gossip_peers(&mut all_peers, [gossip_older, gossip_fresher]);
+
+        assert_eq!(
+            all_peers[&announcement(34, None).node_id].name.as_deref(),
+            Some("rpc fresher")
+        );
+        assert_eq!(
+            all_peers[&announcement(35, None).node_id].name.as_deref(),
+            Some("gossip fresher")
+        );
     }
 
     fn valid_id_string(byte: u8) -> String {
@@ -655,6 +874,7 @@ mod tests {
             replace_defaults: false,
             no_relay: false,
             no_mdns: false,
+            abuse: false,
         };
 
         // Default mode: both RPC and gossip
@@ -681,6 +901,7 @@ mod tests {
             replace_defaults: false,
             no_relay: true,
             no_mdns: false,
+            abuse: false,
         };
 
         assert!(options.gossip);
@@ -728,5 +949,89 @@ mod tests {
         let use_gossip = gossip || !rpc;
         assert!(use_rpc);
         assert!(use_gossip);
+    }
+
+    fn abuse_row(local: u8, remote: u8, seed: u64) -> AbuseCountersRow {
+        AbuseCountersRow {
+            local: [local; 32],
+            remote: [remote; 32],
+            inbound_frames: seed,
+            inbound_bytes: seed * 10,
+            outbound_frames: seed * 100,
+            outbound_bytes: seed * 1_000,
+            unattributed_frames: seed * 10_000,
+            unattributed_bytes: seed * 100_000,
+        }
+    }
+
+    fn policy_view() -> AbusePolicyView {
+        AbusePolicyView {
+            frames_per_sec: 100,
+            frame_burst: 180,
+            bytes_per_sec: 1_048_576,
+            byte_burst: 2_097_152,
+        }
+    }
+
+    #[test]
+    fn abuse_report_renders_rows_in_registry_order() {
+        let local = 1;
+        let a = abuse_row(local, 2, 1);
+        let b = abuse_row(local, 3, 2);
+        let report = format_abuse_report(&[a, b], None);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(
+            lines[0],
+            "per-peer abuse counters (frames/bytes admitted by the evaluator)"
+        );
+        let hex = |byte: u8| encode_endpoint(&[byte; 32]);
+        let row_a = format!(
+            "{}\t{}\tin\t{}\t{}\tout\t{}\t{}\tunattributed\t{}\t{}",
+            hex(1),
+            hex(2),
+            1,
+            10,
+            100,
+            1_000,
+            10_000,
+            100_000
+        );
+        let row_b = format!(
+            "{}\t{}\tin\t{}\t{}\tout\t{}\t{}\tunattributed\t{}\t{}",
+            hex(1),
+            hex(3),
+            2,
+            20,
+            200,
+            2_000,
+            20_000,
+            200_000
+        );
+        assert_eq!(lines[1], row_a);
+        assert_eq!(lines[2], row_b);
+        assert_eq!(lines.len(), 3, "no policy line when policy is None");
+    }
+
+    #[test]
+    fn abuse_report_empty_registry_prints_one_line() {
+        let report = format_abuse_report(&[], None);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines, ["no abuse counters recorded"]);
+    }
+
+    #[test]
+    fn abuse_report_includes_policy_when_present() {
+        let report = format_abuse_report(&[abuse_row(1, 2, 1)], Some(&policy_view()));
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(
+            lines.last().copied(),
+            Some("policy: authorized frames 100/s burst 180, bytes 1048576/s burst 2097152")
+        );
+    }
+
+    #[test]
+    fn abuse_report_omits_policy_when_absent() {
+        let report = format_abuse_report(&[abuse_row(1, 2, 1)], None);
+        assert!(!report.contains("policy:"));
     }
 }

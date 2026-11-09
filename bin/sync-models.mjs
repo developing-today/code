@@ -3,6 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 
+// #2953 (define, don't assign): store an externally-spelled key with
+// define semantics, so "__proto__" becomes an own property instead of
+// invoking the Object.prototype setter and "constructor"/"toString"
+// shadow like any other key.
+const defineValue = (obj, key, value) => {
+  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+};
+
+
 const KNOWN_ARGS = new Set(['--dry-run', '--verbose', '-v']);
 const unknownArgs = process.argv.slice(2).filter(arg => !KNOWN_ARGS.has(arg));
 if (unknownArgs.length > 0) {
@@ -16,19 +26,31 @@ const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v'
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
 const HOME_DIR = process.env.HOME || '/home/user';
-// Config resolution (#591): in a repo checkout, sync the repo's own
-// .opencode/opencode.jsonc. When home-manager installs this script it lands
-// alone in the Nix store, so ROOT_DIR resolves to /nix and the repo-relative
-// path never exists — fall back to the deployed user config, which is the
-// file the sync-models service actually maintains. $OPENCODE_CONFIG_PATH
-// overrides both.
+// Config resolution (#591, #4544): the model catalogs this script maintains
+// live in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc),
+// which the OpenCode server layers over the tracked configured default via
+// OPENCODE_CONFIG. The tracked file carries deliberate configuration only,
+// so these automatic rewrites never dirty the repo tree. $OPENCODE_CONFIG_PATH
+// overrides everything. When no runtime overlay exists yet (pre-split
+// installs), fall back to the historical chain: in a repo checkout, sync the
+// repo's own .opencode/opencode.jsonc; when home-manager installs this script
+// it lands alone in the Nix store, so ROOT_DIR resolves to /nix and the
+// repo-relative path never exists — fall back to the deployed user config,
+// which is the file the sync-models service actually maintains.
+const RUNTIME_CONFIG_PATH = path.join(
+  HOME_DIR,
+  '.local/state/opencode/opencode-runtime.jsonc',
+);
 const REPO_CONFIG_PATH = path.join(ROOT_DIR, '.opencode/opencode.jsonc');
 const USER_CONFIG_PATH = path.join(HOME_DIR, '.config/opencode/opencode.jsonc');
 const OPENCODE_CONFIG_PATH =
   process.env.OPENCODE_CONFIG_PATH ||
-  (fs.existsSync(REPO_CONFIG_PATH) ? REPO_CONFIG_PATH : USER_CONFIG_PATH);
+  (fs.existsSync(RUNTIME_CONFIG_PATH)
+    ? RUNTIME_CONFIG_PATH
+    : fs.existsSync(REPO_CONFIG_PATH)
+      ? REPO_CONFIG_PATH
+      : USER_CONFIG_PATH);
 const POLICY_PATH = path.join(import.meta.dirname, 'sync-models.policy.json');
-const CODEX_CACHE_PATH = path.join(HOME_DIR, '.codex/models_cache.json');
 const GEMINI_CACHE_PATH = path.join(HOME_DIR, '.gemini/antigravity_models_cache.json');
 const LS_LOG_PATH = path.join(HOME_DIR, '.config/Antigravity/logs/language_server.log');
 
@@ -155,32 +177,6 @@ async function discoverAntigravityModels() {
 }
 
 // -----------------------------------------------------------------------------
-// 3. Discover Codex Models (via ~/.codex/models_cache.json)
-// -----------------------------------------------------------------------------
-function discoverCodexModels() {
-  console.log('[sync-models] Discovering Codex models...');
-  if (!fs.existsSync(CODEX_CACHE_PATH)) {
-    console.warn(`[sync-models] Codex cache file not found at ${CODEX_CACHE_PATH}`);
-    return [];
-  }
-  try {
-    const raw = fs.readFileSync(CODEX_CACHE_PATH, 'utf-8');
-    const data = JSON.parse(raw);
-    const models = (data.models || []).map(m => ({
-      slug: m.slug,
-      name: m.display_name || m.name || m.slug,
-      description: m.description || '',
-      defaultEffort: m.default_reasoning_effort || 'medium'
-    }));
-    console.log(`[sync-models] Discovered ${models.length} models from Codex cache`);
-    return models;
-  } catch (err) {
-    console.warn(`[sync-models] Failed to parse Codex cache: ${err.message}`);
-    return [];
-  }
-}
-
-// -----------------------------------------------------------------------------
 // Model policy (bin/sync-models.policy.json). Per provider, keep only the newest
 // model in each listed family and drop everything else. Exclusions are applied
 // before picking the newest, so excluding the newest promotes the one before it.
@@ -190,7 +186,7 @@ function loadPolicy() {
   const policy = JSON.parse(fs.readFileSync(POLICY_PATH, 'utf-8'));
   for (const [name, provider] of Object.entries(policy.providers || {})) {
     for (const family of provider.keep || []) {
-      if (!policy.families?.[family]) {
+      if (!Object.hasOwn(policy.families || {}, family) || !policy.families[family]) {
         throw new Error(`sync-models.policy.json: ${name} keeps unknown family "${family}"`);
       }
     }
@@ -215,9 +211,20 @@ function allowedModelIds(policy, providerPolicy, ids) {
     for (const family of providerPolicy.keep || []) {
       const match = id.match(new RegExp(policy.families[family]));
       if (!match) continue;
+      if (match[1] === undefined) continue;
       const version = match[1].replace(/-/g, '.').split('.').map(Number);
+      // #6893: a capture with a non-numeric component (e.g. "2-beta")
+      // maps that component to NaN, and every comparison against NaN
+      // is false — the "newest" pick would silently be whichever id
+      // was enumerated first. Such an id is deterministically
+      // excluded from selection: it can never be a family's newest
+      // model, in any input order.
+      if (version.some(component => Number.isNaN(component))) break;
       const current = newest.get(family);
-      if (!current || compareVersions(version, current.version) > 0) {
+      // Equal versions tie-break on the id itself, so the pick is
+      // the same set for every permutation of the same id list.
+      if (!current || compareVersions(version, current.version) > 0 ||
+          (compareVersions(version, current.version) === 0 && id > current.id)) {
         newest.set(family, { id, version });
       }
       break;
@@ -396,24 +403,46 @@ function setJsoncPath(text, keys, value) {
       for (let d = keys.length - 1; d > depth + 1; d--) nested = { [keys[d]]: nested };
       return setJsoncMember(text, object, keys[depth], { [keys[depth + 1]]: nested });
     }
+    if (member.value.type !== 'object') {
+      throw new Error(
+        `cannot set ${keys.join('/')}: ${keys.slice(0, depth + 1).join('/')} is a ${member.value.type}, expected object`,
+      );
+    }
     object = member.value;
   }
   return setJsoncMember(text, object, keys.at(-1), value);
 }
 
 // Removes the member at `keys` by deleting its lines (and its comma). Comments
-// on other lines are kept.
+// on other lines are kept; an inline comment on the removed member is refused
+// rather than silently discarded.
 function removeJsoncPath(text, keys) {
   let object = parseJsoncTree(text);
-  for (const key of keys.slice(0, -1)) {
-    object = object.members.find(m => m.key === key)?.value;
-    if (!object) return text;
+  for (const [i, key] of keys.slice(0, -1).entries()) {
+    const next = object.members.find(m => m.key === key)?.value;
+    if (!next) return text;
+    if (next.type !== 'object') {
+      throw new Error(
+        `cannot remove ${keys.join('/')}: ${keys.slice(0, i + 1).join('/')} is a ${next.type}, expected object`,
+      );
+    }
+    object = next;
   }
   const member = object.members.find(m => m.key === keys.at(-1));
   if (!member) return text;
   const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
   if (text.slice(lineStart, member.keyStart).trim() !== '') {
     throw new Error(`cannot remove ${keys.join('/')}: it shares a line with other JSON`);
+  }
+  const lineEnd = text.indexOf('\n', member.value.end);
+  const memberLineEnd = lineEnd < 0 ? text.length : lineEnd;
+  const trailing = text.slice(member.value.end, memberLineEnd);
+  if (trailing.includes('//') || trailing.includes('/*')) {
+    const error = new Error(
+      `cannot remove ${keys.join('/')}: inline comment on the member line would be lost`,
+    );
+    error.name = 'JsoncCommentRemovalError';
+    throw error;
   }
   let end = member.value.end;
   while (text[end] === ' ' || text[end] === '\t') end++;
@@ -422,13 +451,38 @@ function removeJsoncPath(text, keys) {
   return text.slice(0, lineStart) + text.slice(newline < 0 ? text.length : newline + 1);
 }
 
+// Shape validation at the parse boundary (#2832, design #3068 Phase 2):
+// parseJsonc proves the config parses; this proves the shape run() is about
+// to dereference, before the first deref and before any side effect. A
+// wrong-shaped entry produces one named, actionable error (config path +
+// key path) instead of a raw TypeError that blocks every provider. A
+// missing `provider` key is not an error: it means nothing to sync.
+function validateConfigShape(config, configPath) {
+  const shapeName = value =>
+    value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const fail = (keyPath, expected, value) => {
+    throw new Error(
+      `invalid config shape in ${configPath}: ${keyPath}: expected ${expected}, got ${shapeName(value)}`,
+    );
+  };
+  if (!isObject(config)) fail('(root)', 'object', config);
+  if (config.provider === undefined) return;
+  if (!isObject(config.provider)) fail('provider', 'object', config.provider);
+  for (const [name, prov] of Object.entries(config.provider)) {
+    if (!isObject(prov)) fail(`provider.${name}`, 'object', prov);
+    if (prov.models !== undefined && !isObject(prov.models)) {
+      fail(`provider.${name}.models`, 'object', prov.models);
+    }
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Main Sync Runner
 // -----------------------------------------------------------------------------
 async function run() {
   const modelsDev = await fetchModelsDev();
   const agyModels = await discoverAntigravityModels();
-  const codexModels = discoverCodexModels();
   const policy = loadPolicy();
 
   if (!fs.existsSync(OPENCODE_CONFIG_PATH)) {
@@ -440,6 +494,7 @@ async function run() {
   let config;
   try {
     config = parseJsonc(origConfigText);
+    validateConfigShape(config, OPENCODE_CONFIG_PATH);
   } catch (err) {
     console.error(`[sync-models] Error parsing ${OPENCODE_CONFIG_PATH}: ${err.message}`);
     process.exit(1);
@@ -452,7 +507,7 @@ async function run() {
   // file keeps its comments and formatting.
   const edits = [];
 
-  // 1. Sync antigravity-direct (the CLI-wire door; antigravity-agy &
+  // 1. Sync _antigravity (the CLI-wire door; antigravity-agy &
   // antigravity-ls retired 2026-10-30 — see home/common/default.nix)
   if (agyModels.length > 0) {
     // Write local cache for proxies
@@ -482,12 +537,12 @@ async function run() {
         }
       }
       if (!grouped[baseId]) {
-        grouped[baseId] = {
+        defineValue(grouped, baseId, {
           baseId,
           name: m.name.replace(/\s*\((Low|Medium|High|Extra-Low)\)$/i, ''),
           efforts: new Set(),
           variants: {}
-        };
+        });
       }
       if (effort) {
         grouped[baseId].efforts.add(effort);
@@ -500,8 +555,8 @@ async function run() {
       return { context: 1048576, output: 65536 };
     };
 
-    for (const targetProvider of ['antigravity-direct']) {
-      if (!config.provider[targetProvider]) continue;
+    for (const targetProvider of ['_antigravity']) {
+      if (!config.provider?.[targetProvider]) continue;
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};
       const modelsPath = ['provider', targetProvider, 'models'];
@@ -539,7 +594,7 @@ async function run() {
 
         if (!prov.models[baseId]) {
           console.log(`[sync-models] + Adding ${targetProvider}/${baseId}`);
-          prov.models[baseId] = modelEntry;
+          defineValue(prov.models, baseId, modelEntry);
           edits.push({ set: [...modelsPath, baseId], value: modelEntry });
           totalAdded++;
         } else {
@@ -563,69 +618,18 @@ async function run() {
     }
   }
 
-  // 2. Sync openai-codex
-  if (codexModels.length > 0 && config.provider['openai-codex']) {
-    const codexProv = config.provider['openai-codex'];
-    codexProv.models = codexProv.models || {};
-    const modelsPath = ['provider', 'openai-codex', 'models'];
+  // 2. openai-codex: retired 2026-11-03 -- the provider definition was
+  // deleted (dead-provider retirement ordered by Drew) after its route
+  // legs were re-seated onto openai-plan, so there is nothing to sync.
 
-    const codexEfforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-    const codexVariants = {};
-    for (const eff of codexEfforts) {
-      codexVariants[eff] = { options: { reasoning_effort: eff } };
-    }
-
-    for (const m of codexModels) {
-      if (m.slug === 'codex-auto-review') continue;
-      const entry = {
-        name: m.name.includes('(') ? m.name : `${m.name} (Codex CLI)`,
-        variants: codexVariants,
-        limit: { context: 1000000, output: 128000 }
-      };
-
-      if (!codexProv.models[m.slug]) {
-        console.log(`[sync-models] + Adding openai-codex/${m.slug}`);
-        codexProv.models[m.slug] = entry;
-        edits.push({ set: [...modelsPath, m.slug], value: entry });
-        totalAdded++;
-      } else {
-        if (codexProv.models[m.slug].limit?.context !== 1000000) {
-          codexProv.models[m.slug].limit = { context: 1000000, output: 128000 };
-          edits.push({ set: [...modelsPath, m.slug, 'limit'], value: { context: 1000000, output: 128000 } });
-          totalUpdated++;
-        }
-      }
-    }
-  }
-
-  // 3. Sync models.dev for cloud providers (google, openai, cloudflare-workers-ai)
+  // 3. Sync models.dev for cloud providers (openai; the google and
+  // cloudflare-gateway syncs were retired 2026-11-03 with their provider definitions)
   if (modelsDev) {
-    // Sync Google
-    if (config.provider.google && modelsDev.google?.models) {
-      const gProv = config.provider.google;
-      gProv.models = gProv.models || {};
-      for (const [mId, mSpec] of Object.entries(modelsDev.google.models)) {
-        if (!gProv.models[mId]) {
-          const entry = {
-            name: mSpec.name,
-            limit: mSpec.limit || { context: 1048576, output: 65536 }
-          };
-          if (mSpec.reasoning) {
-            entry.variants = {
-              low: { options: { thinkingLevel: 'low' } },
-              high: { options: { thinkingLevel: 'high' } }
-            };
-          }
-          console.log(`[sync-models] + Adding google/${mId}`);
-          gProv.models[mId] = entry;
-          edits.push({ set: ['provider', 'google', 'models', mId], value: entry });
-          totalAdded++;
-        }
-      }
-    }
+    // google: retired 2026-11-03 -- the provider definition was deleted
+    // (dead-provider retirement ordered by Drew), so there is nothing to sync.
 
     // Sync OpenAI
-    if (config.provider.openai && modelsDev.openai?.models) {
+    if (config.provider?.openai && modelsDev.openai?.models) {
       const oProv = config.provider.openai;
       oProv.models = oProv.models || {};
       for (const [mId, mSpec] of Object.entries(modelsDev.openai.models)) {
@@ -642,37 +646,14 @@ async function run() {
             };
           }
           if (VERBOSE) console.log(`[sync-models] + Adding openai/${mId}`);
-          oProv.models[mId] = entry;
+          defineValue(oProv.models, mId, entry);
           edits.push({ set: ['provider', 'openai', 'models', mId], value: entry });
           totalAdded++;
         }
       }
     }
 
-    // Sync Cloudflare Workers AI
-    if (config.provider['cloudflare-gateway'] && modelsDev['cloudflare-workers-ai']?.models) {
-      const cfProv = config.provider['cloudflare-gateway'];
-      cfProv.models = cfProv.models || {};
-      for (const [mId, mSpec] of Object.entries(modelsDev['cloudflare-workers-ai'].models)) {
-        if (!cfProv.models[mId]) {
-          const entry = {
-            name: mSpec.name,
-            limit: mSpec.limit || { context: 131072, output: 8192 }
-          };
-          if (mSpec.reasoning) {
-            entry.variants = {
-              low: { options: { reasoning_effort: 'low' } },
-              medium: { options: { reasoning_effort: 'medium' } },
-              high: { options: { reasoning_effort: 'high' } }
-            };
-          }
-          if (VERBOSE) console.log(`[sync-models] + Adding cloudflare-gateway/${mId}`);
-          cfProv.models[mId] = entry;
-          edits.push({ set: ['provider', 'cloudflare-gateway', 'models', mId], value: entry });
-          totalAdded++;
-        }
-      }
-    }
+    // cloudflare-gateway: retired 2026-11-03 with its provider definition.
   }
 
   console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ${totalRemoved} models removed.`);

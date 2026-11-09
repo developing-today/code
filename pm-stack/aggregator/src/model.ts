@@ -8,9 +8,9 @@
 /** The four working repositories (design record, "Request and intent"). */
 export const REPOS = [
   "developing-today/code",
-  "developing-today/opencode",
-  "developing-today/openchamber",
-  "dezren39/nix",
+  "developing-today-forks/opencode",
+  "developing-today-forks/openchamber",
+  "dezren39/darwin-nix",
 ] as const;
 
 /** "owner/repo#123" — the registry's canonical key for an issue or PR. */
@@ -84,6 +84,12 @@ export interface ProjectPoolItem {
   labels?: string[];
   author?: string;
   updatedAt?: string;
+  /** Completion timestamps from the linked issue/PR, when the
+   * projection carried them: an issue's closedAt, a PR's mergedAt
+   * (or its closedAt when closed unmerged). The digest's Done
+   * section selects by these, never by updatedAt (#5279 Codex). */
+  closedAt?: string;
+  mergedAt?: string;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
@@ -107,6 +113,38 @@ export interface ProjectPoolItem {
    *  no epic ancestor, and when the parent chain leaves the pool (the
    *  collector only knows Kind for items on the board). */
   epicRef?: RefKey;
+}
+
+/** One configured field on Project #4, exported for repository-readable audits. */
+export interface ProjectAuditField {
+  id: string;
+  name: string;
+  dataType: string;
+  options?: { id: string; name: string }[];
+}
+
+/** One saved view on Project #4. */
+export interface ProjectAuditView {
+  id: string;
+  name: string;
+  layout: string;
+  filter: string | null;
+}
+
+/** Scheduled, read-only Project #4 audit snapshot carried by the fleet feed. */
+export interface ProjectAudit {
+  title: string;
+  number: number;
+  url: string;
+  generatedAt: string;
+  totalItems: number;
+  fields: ProjectAuditField[];
+  views: ProjectAuditView[];
+  counts: {
+    status: Record<string, number>;
+    area: Record<string, number>;
+    repo: Record<string, number>;
+  };
 }
 
 export type CommentKind = "issue_comment" | "review" | "review_comment";
@@ -163,8 +201,6 @@ export interface BoardItem {
   kaneoUrl?: string;
   /** Every linked issue/PR, from any of the four repos. */
   links: Link[];
-  /** Pad notes linked to the item (planning layer), by title + URL. */
-  notes?: { title: string; url: string }[];
 }
 
 /** One row of the Grist "Roadmap" table (doc "Program roadmap"). */
@@ -176,6 +212,8 @@ export interface RoadmapRow {
   area: string;
   status: string;
   horizon: string;
+  /** Validation warning; the original Grist/seed value remains available in `horizon`. */
+  horizonError?: string;
   source: string;
   notes: string;
   links: Link[];
@@ -322,15 +360,32 @@ export interface BurnSegment {
 
 export interface QuotaView {
   pools: QuotaPool[];
+  /** Safe per-credential lifecycle status from the configured provider set. */
+  credentialLifecycle?: import("./credential-lifecycle.ts").CredentialLifecycleRow[];
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
-  /** Feed-load sanitization counts (#2429): present only when the
-   * loader dropped malformed pools/windows/burn segments, so an
+  /** Provider-auth keeper alerts (#6671), carried from
+   * quota-current.json by overlayQuotaCurrent; the board renders
+   * every non-ok keeper. Absent when no gatherer file was read. */
+  providerAuth?: import("./provider-auth-alerts.ts").ProviderAuthAlert[];
+  /** Feed-load sanitization counts (#2429/#3921): present only when the
+   * loader dropped malformed pools, credentials, windows, active sessions,
+   * or burn segments, so an
    * incomplete read is distinguishable from a successful empty one
-   * in the public payload (/api/quota.json projects this view).
+   * in the public payload (/api/quota.json projects this view). Optional
+   * pool freshness and burn-rate drops are counted without dropping the pool.
    * Additive for existing consumers. */
-  dropped?: { pools: number; windows: number; burn: number };
+  dropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+    credentialLifecycle?: number;
+  };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
@@ -416,6 +471,8 @@ export type AttentionTier = "needs-drew" | "needs-orchestrator" | "in-motion";
 
 export interface TieredEntry extends AttentionEntry {
   tier: AttentionTier;
+  /** When the orchestration job first observed this session in its tier. */
+  tierSince?: string;
   /** Why this needs Drew — present iff tier is "needs-drew". */
   drewReason?: string;
   /** What the fleet will do with it — present iff tier is "needs-orchestrator". */
@@ -430,21 +487,6 @@ export interface SourceCoverage {
   detail: string;
 }
 
-/** Keeper run totals for Jules, parsed from jules-review-state.json. */
-export interface JulesSummary {
-  /** When the keeper last ran (its `last_run`). */
-  at: string | null;
-  /** Sessions the keeper currently tracks in its `items` map. */
-  tracked: number;
-  /** Totals from the note written by the keeper's last run, when it parses. */
-  total?: number;
-  completed?: number;
-  failed?: number;
-  inProgress?: number;
-  awaitingFeedback?: number;
-  awaitingPlan?: number;
-}
-
 export function refKey(ref: GhRef): RefKey {
   return `${ref.repo}#${ref.number}`;
 }
@@ -457,12 +499,43 @@ export function parseRef(key: RefKey): GhRef {
   return { repo: m[1], number };
 }
 
+/** The one shared ref-validity rule (#4952): a value is a usable RefKey
+ *  only if parseRef accepts it — owner/repo#N shape AND a safe-integer
+ *  number. Boundary validators and store-load gates route through this
+ *  instead of re-checking the shape with a local regex whose \d+ group
+ *  admits numbers parseRef (and refUrl) then throw on. */
+/** The ref contract (design #6242, closed out by the Phase 4 inventory on
+ *  #6243): a ref is an annotation, not identity. (1) Validity is
+ *  isValidRef only - no local shape checks. (2) An invalid ref is dropped
+ *  at the consumption step beside its gate: the item survives, the drop
+ *  is traced (log or count). (3) Producers mint only valid refs: scrapes
+ *  route through refsInText / titleRefs, which filter with isValidRef,
+ *  and constructors validate before minting. (4) Rendering or deriving
+ *  reaches refUrl for stored or feed-derived refs only through a guard
+ *  (an isValidRef check, a load/read gate upstream, or a safe-link
+ *  helper); an invalid ref renders as plain text, never a throw.
+ *  Code-built refs (issue(n), fixture literals, validated config) are
+ *  exempt from (4): parseRef's throw is their test-time assertion. */
+
+export function isValidRef(value: unknown): value is RefKey {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value as RefKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
 
 /** Every GitHub issue/PR URL in a piece of text, as ref keys (deduplicated). */
 export function refsInText(text: string): RefKey[] {
   const out = new Set<RefKey>();
-  for (const m of text.matchAll(GH_URL)) out.add(`${m[1]}#${m[2]}`);
+  for (const m of text.matchAll(GH_URL)) {
+    const key = m[1] + "#" + m[2];
+    if (isValidRef(key)) out.add(key);
+  }
   return [...out];
 }
 
@@ -559,6 +632,9 @@ export type WhyUserClass = "decision" | "missing-info" | "approval" | "access" |
 export interface TierItemOption {
   id: string;
   label: string;
+  /** The survey question this shortcut answers, when it is one of the
+   *  question's alternate controls. */
+  questionId?: string;
   description?: string;
   /** Predicted effect of picking this option, shown under its button. */
   effect?: string;
@@ -874,7 +950,7 @@ export interface AaCoverage {
   /** Measured models no provider catalog carries under a matched name. */
   measuredNotInCatalog: string[];
   /** Catalog model ids (provider/model) with no AA measurement and no
-   * pool seat — e.g. commandcode/reflection/beam:free. Display names
+   * pool seat — e.g. _commandcode/reflection/beam:free. Display names
    * are catalog ids, not AA names, so they can be found in the config. */
   catalogNotPooledUnmeasured: string[];
 }
@@ -1236,6 +1312,19 @@ export interface SaasService {
   usageNote?: string;
 }
 
+/** A service evaluated in free-services-to-check.md but not represented
+ * by an instrumented quota card. Values are copied from that tracker so
+ * the overview never invents provider states or pricing behavior. */
+export interface UninstrumentedSaasService {
+  name: string;
+  whatFor: string;
+  /** Tracker status text with its dated check kept in checkedAt. */
+  status: string;
+  checkedAt: string | null;
+  overageBehavior: string;
+  guardrailNotes: string;
+}
+
 /** One line of the PAYG dollars card (§1.2). */
 export interface PaygLine {
   id: string;
@@ -1268,7 +1357,7 @@ export interface ChargeRow {
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
   label: string;
   detail: string;
   href: string;
@@ -1307,7 +1396,19 @@ export interface QuotaCurrentEntry {
   serviceId: string;
   credentialId?: string;
   credentialLabel?: string;
+  /** Internal provenance marker: this row came from the configured quota-credential registry. */
+  credentialWatch?: boolean;
+  /** Present only when the provider exposes an authoritative expiry instant. */
+  credentialExpiresAt?: string;
+  /** Provenance class for the provider's credential source; never a credential value. */
+  credentialSource?: "claude-code" | "opencode" | "environment";
   planLabel?: string;
+  /** Provider-side failure classification, when the quota module
+   *  carries one (e.g. meta's "no-data"); never a credential value. */
+  failureClass?: string;
+  /** ISO time of the provider's last successful read, when the quota
+   *  module carries one; lets readers age a degraded row honestly. */
+  lastSuccessAt?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;
   /** #1268: ISO time of the tick that retained this entry from the
@@ -1340,6 +1441,10 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Provider-auth keeper projection (#6671): both keepers' alert
+   * state, embedded by the gatherer from the renewal state files
+   * beside quota-current.json. Additive; absent on older files. */
+  providerAuth?: import("./provider-auth-alerts.ts").ProviderAuthAlert[];
   /** Parser diagnostics for malformed entries removed at the ingest boundary. */
   sanitized?: { droppedProviders: number; droppedWindows: number };
 }
@@ -1366,6 +1471,8 @@ export interface SnapshotRecord {
 /** The hub's family-2 + PAYG + charges model, served by Source.usage(). */
 export interface UsageView {
   services: SaasService[];
+  /** Tracker-derived SaaS services without an instrumented quota card. */
+  uninstrumentedServices: UninstrumentedSaasService[];
   payg: PaygLine[];
   charges: ChargeRow[];
   /** Set when no charge evidence could be derived — the strip explains itself. */

@@ -21,11 +21,15 @@
 //     state.json persists the keys already shown. Absent file = the
 //     pre-#1057 hand-fed charges only. No balances or debt data ever
 //     pass through: candidates are charge evidence only.
-//   - jules-review-state.json — keeper supervision entries annotate
-//     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
-//     (#899: tiers, dependencies, goal measurements), embedded as-is
-//     after a structural check; absent/malformed = section omitted.
+//     (#899: tiers, dependencies, goal measurements), embedded only
+//     after normalizeOrchestrationSection accepts it (the collector
+//     gate in the publisher -> collector -> aggregator contract,
+//     #1176); absent/malformed = section omitted. The publisher's
+//     pre-publish gate is `bun run contract:check -- --publisher
+//     <path>` (scripts/check-contract-corpus.ts), which runs this
+//     same validator; the shared corpus lives in
+//     test/contract-corpus/v1/.
 //   - the org GitHub Project "Developing Today" (#4, #910 stage 5) —
 //     read via GraphQL Projects v2 into the feed's `projects` pool.
 //     Token plumbing: GITHUB_PROJECT_TOKEN / GH_TOKEN from the env
@@ -45,7 +49,7 @@
 //     the Test_Runs data, and the price event log's v_current_prices),
 //     read through v_latest_import_batch via the Management API SQL endpoint.
 //     Token plumbing mirrors the Projects read: the Bitwarden secret
-//     named `supabase.access-token-muse-cli` (the sbp_ management
+//     named `supabase.muse-dev2.access-token-muse-cli` (the sbp_ management
 //     token), resolved by resolveBwsSecret and sent only to
 //     api.supabase.com. Any failure embeds the section in its absent
 //     form ({status:"absent", reason}) — the feed never fails over it.
@@ -54,7 +58,7 @@
 //     leaves); an unreadable config omits only the coverage.
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
-// Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, OPENCODE_SERVER_URL
+// Env overrides: QUOTA_VIEW_PATH, OPENCODE_SERVER_URL
 // (SANDBOX_OPENCODE_URL legacy alias), OPENCODE_SESSION_SOURCE,
 // OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH, DNS_REGISTER_PATH,
 // CLAUDE_LAUNCH_RECORDS_PATH, QUOTA_REGISTRY_PATH (the hub's PAYG/charges
@@ -62,24 +66,22 @@
 // USAGE_SNAPSHOT_OUTBOX_PATH (the §4 writers' outbox JSONL — stewardship
 // and check-usage append records there; each collection drains it into
 // the feed's snapshots field for the laptop store to ingest),
+// BURN_HISTORY_STATE_PATH (#3933: the collector's persisted
+// pool-window observations the burn history + measured rates are
+// derived from; beside the charges-surfaced state by default),
 // CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
 // producer's candidates file and the collector's surfaced-once state),
-// SUPABASE_PROJECT_REF (else the Bitwarden supabase.project-ref secret;
+// SUPABASE_PROJECT_REF (else the Bitwarden supabase.muse-dev2.project-ref secret;
 // fallback default: the muse-dev2 project),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
-import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dnsSectionFromRegister } from "../src/dns.ts";
-import {
-  disabledProvidersFromConfig,
-  aaAbsent,
-  aaSectionFromSupabase,
-  isAaSection,
-  type AaRawPayload,
-} from "../src/aa.ts";
+import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
+import { aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
 import {
   feedSectionStatus,
   normalizeOrchestrationSection,
@@ -89,12 +91,13 @@ import {
   type FleetFeed,
 } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
+import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import type {
   AaFeedSection,
   AaSection,
   DnsSection,
-  JulesSummary,
   OrchestrationSection,
+  BurnSegment,
   QuotaPool,
   SessionFeedEntry,
   SessionRecord,
@@ -105,46 +108,180 @@ import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
+import {
+  deriveBurnHistory,
+  deriveMeasuredRatesFromPoolTokens,
+  mergeObservations,
+  mergePoolTokenObservations,
+  type PoolTokenObservation,
+  observationsFromPools,
+  type PoolWindowObservation,
+} from "../src/burn-history.ts";
+import {
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+  extractUninstrumentedServices,
+} from "../src/saas-extract.ts";
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
-import { fetchProjectPool } from "../src/projects.ts";
+import { fetchProjectSnapshot } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
-import type { RepoCensus } from "../src/coverage.ts";
+import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import {
-  droppedJulesItemCount,
-  julesSummary,
-  mapJulesItems,
-  type JulesReviewState,
-} from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
+import type { FreshnessInput } from "../src/freshness.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
-const outArg = process.argv.indexOf("--out");
-const outPath = outArg >= 0 ? process.argv[outArg + 1] : (process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json"));
+export type FleetFeedPublication = Readonly<{
+  /** Absolute destination path that was replaced. */
+  path: string;
+  /** SHA-256 of the exact UTF-8 bytes published. */
+  sha256: string;
+  /** Number of UTF-8 bytes published. */
+  sizeBytes: number;
+}>;
+
+type PublicationTempFile = {
+  writeFile(contents: string): Promise<void>;
+  close(): Promise<void>;
+};
+
+/** File operations are injectable so failure cleanup can be exercised without platform-specific permissions. */
+export type FleetFeedPublicationFileOps = {
+  openTemp(path: string): Promise<PublicationTempFile>;
+  rename(from: string, to: string): Promise<void>;
+  unlink(path: string): Promise<void>;
+};
+
+const publicationFileOps: FleetFeedPublicationFileOps = {
+  async openTemp(path) {
+    const file = await open(path, "wx");
+    return {
+      async writeFile(contents) {
+        await file.writeFile(contents, { encoding: "utf8" });
+      },
+      close: () => file.close(),
+    };
+  },
+  rename,
+  unlink,
+};
+
+/**
+ * Publish one complete feed atomically. The returned metadata exists only
+ * after the same-directory rename succeeds, so callers can safely use it
+ * as the basis for a post-publication freshness invalidation.
+ */
+export async function publishFleetFeed(
+  outputPath: string,
+  contents: string,
+  fileOps: FleetFeedPublicationFileOps = publicationFileOps,
+): Promise<FleetFeedPublication> {
+  const path = resolve(outputPath);
+  const tempPath = join(dirname(path), "." + basename(path) + "." + process.pid + "." + randomUUID() + ".tmp");
+  let tempCreated = false;
+  try {
+    const tempFile = await fileOps.openTemp(tempPath);
+    tempCreated = true;
+    try {
+      await tempFile.writeFile(contents);
+    } finally {
+      await tempFile.close();
+    }
+    await fileOps.rename(tempPath, path);
+  } catch (error) {
+    if (tempCreated) await fileOps.unlink(tempPath).catch(() => {});
+    throw error;
+  }
+
+  return {
+    path,
+    sha256: createHash("sha256").update(contents, "utf8").digest("hex"),
+    sizeBytes: Buffer.byteLength(contents, "utf8"),
+  };
+}
+
+/** The notice is submitted only after the atomic replacement succeeds.
+ *  The generation + digest identity makes a retried notice idempotent. */
+export async function publishFleetFeedWithInvalidation(
+  outputPath: string,
+  contents: string,
+  generatedAt: string,
+  notify: (input: FreshnessInput) => Promise<unknown>,
+  fileOps: FleetFeedPublicationFileOps = publicationFileOps,
+): Promise<FleetFeedPublication> {
+  const publication = await publishFleetFeed(outputPath, contents, fileOps);
+  await notify({
+    eventId: `fleet-feed:${generatedAt}:${publication.sha256}`,
+    source: "fleet-feed",
+    scope: ["feed"],
+    occurredAt: Number.isFinite(Date.parse(generatedAt)) ? new Date(generatedAt).toISOString() : null,
+    reason: "source-event",
+  });
+  return publication;
+}
+
+// Strict operator-argument contract (#3352, #3509): the only accepted
+// forms are no arguments or one documented separated `--out <path>`.
+// Every other token — a trailing/empty/flag-like --out value, an
+// --out=<path> join, a duplicate --out, or any unknown or positional
+// token — is a usage error (exit 2) raised here, before any collection,
+// network, subprocess, lock, or file-write side effect.
+function usageError(message: string): never {
+  console.error(`collect-fleet-feed: ${message}; usage: bun run scripts/collect-fleet-feed.ts [--out <path>]`);
+  process.exit(2);
+}
+
+function resolveOutPath(): string {
+  const fallback = process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json");
+  const args = process.argv.slice(2);
+  if (args.length === 0) return fallback;
+  if (args.filter((a) => a === "--out").length > 1)
+    usageError(`duplicate --out (got ${JSON.stringify(args)}); the documented form is a single --out <path>`);
+  if (args[0] === "--out") {
+    const value: string | undefined = args[1];
+    if (value === undefined || value === "" || value.startsWith("--"))
+      usageError(`--out requires a path value (got ${value === undefined ? "no value" : JSON.stringify(value)})`);
+    if (args.length > 2) usageError(`unexpected argument ${JSON.stringify(args[2])}`);
+    return value;
+  }
+  usageError(`unknown argument ${JSON.stringify(args[0])}`);
+}
+
+const outPath = resolveOutPath();
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(
     HOME,
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
-const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
+const freeServicesTrackerPath =
+  process.env.PM_AGG_FREE_SERVICES_TRACKER ??
+  join(HOME, "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md");
 const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
 const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
   join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
+// Slice 2 of #902: register.json sits beside the register Markdown and
+// is the authoritative source for the fields it carries.
+const dnsRegisterJsonPath = process.env.DNS_REGISTER_JSON_PATH ?? join(dirname(dnsRegisterPath), "register.json");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
+const burnHistoryStatePath =
+  process.env.BURN_HISTORY_STATE_PATH ?? join(dirname(chargesSurfacedStatePath), "burn-history-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
+const opencodeRuntimeConfigPath =
+  process.env.AA_OPENCODE_RUNTIME_CONFIG_PATH ?? join(HOME, ".local", "state", "opencode", "opencode-runtime.jsonc");
 const serverUrl = process.env.OPENCODE_SERVER_URL ?? process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 /** Session source label for the scraped server: the collector's home host
  * decides — the laptop collector labels its local server
@@ -158,50 +295,36 @@ const passwordFile =
 function poolFor(provider: string, model: string): string | null {
   switch (provider) {
     case "meta":
-      return "meta:high-usage";
+      return "meta";
     case "claude-code":
+    case "_claude":
       return "anthropic:claude-pro";
     case "openai":
     case "openai-codex":
     case "chatgpt":
-      return "openai:codex";
+      // Keep aligned with the pool IDs in ../src/quota-extract.ts; matching below is exact.
+      return "openai.main";
     case "openai.alternate":
       return "openai.alternate";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
     case "opendesign":
-      return "opendesign:go";
+      return "opendesign";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
+    case "antigravity-direct":
     case "antigravity-ls":
     case "antigravity-agy":
     case "google":
-      return model.startsWith("gemini") ? "antigravity:gemini" : "antigravity:claude-gpt";
+      return model.startsWith("gemini") ? "antigravity-direct.gemini" : "antigravity-direct.claude-gpt";
+    case "_antigravity":
+      return model.startsWith("gemini") ? "_antigravity.gemini" : "_antigravity.claude-gpt";
     default:
       // opencode-go is deliberately unattributed in slice 1: which
       // workspace (Personal vs Lab) a sandbox session burns is not
       // visible from the session list alone.
       return null;
   }
-}
-
-/** sessionId -> "keeper <action> <at>" from jules-review-state.json. */
-async function supervisionNotes(): Promise<Map<string, string>> {
-  const notes = new Map<string, string>();
-  try {
-    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as {
-      opencode_supervision?: { at?: string; action?: string; error?: string; outcome?: string }[];
-    };
-    for (const entry of state.opencode_supervision ?? []) {
-      const text = `${entry.error ?? ""}\n${entry.outcome ?? ""}`;
-      for (const m of text.matchAll(/ses_[A-Za-z0-9]+/g)) {
-        notes.set(m[0], `keeper ${entry.action ?? "assessed"} ${entry.at ?? ""}`.trim());
-      }
-    }
-  } catch {
-    /* annotations are best-effort */
-  }
-  return notes;
 }
 
 /**
@@ -441,13 +564,15 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   const lastGood = await readAaLastGood();
   const degrade = (reason: string): AaFeedSection =>
     lastGood ? { ...lastGood.section, stale: true, staleReason: reason } : aaAbsent(reason, generatedAt);
-  const token = await resolveBwsSecret("supabase.access-token-muse-cli");
+  const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
   if (!token) return degrade("no Supabase management token available (bws)");
-  // Project ref: env override, else the Bitwarden supabase.project-ref
+  // Project ref: env override, else the Bitwarden supabase.muse-dev2.project-ref
   // secret (the same resolve-by-name discipline as the token), else the
   // muse-dev2 project — never the retired muse-dev project.
   const ref =
-    process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.project-ref")) ?? "keihfchslgjetkmnmzra";
+    process.env.SUPABASE_PROJECT_REF ??
+    (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ??
+    "keihfchslgjetkmnmzra";
   const fingerprint = await opencodeConfigFingerprint();
   // Cheap batch probe first (code#3332): the payload only changes on a
   // new import or a config change, so most ticks reuse the last good
@@ -481,7 +606,15 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     console.error("collector: opencode.jsonc unreadable; AA coverage omitted this run");
   }
-  const section = aaSectionFromSupabase(raw, configText, generatedAt);
+  // #4544: the sync-models-owned provider catalogs live in the runtime
+  // overlay; read it when present so AA coverage sees the effective config.
+  let runtimeText: string | null = null;
+  try {
+    runtimeText = await readFile(opencodeRuntimeConfigPath, "utf8");
+  } catch {
+    runtimeText = null;
+  }
+  const section = aaSectionFromSupabase(raw, configText, generatedAt, runtimeText);
   if (!section) return degrade("Supabase payload failed its structural check");
   await writeAaLastGood({ batch: section.batch, configFingerprint: fingerprint, section });
   return section;
@@ -503,20 +636,14 @@ async function main(): Promise<void> {
   let quotaViewText = "";
   try {
     quotaViewText = await readFile(quotaViewPath, "utf8");
-    // #1114: enforce the deployed config's disabled_providers at pool
-    // assembly. The config read mirrors the AA section's; an unreadable
-    // config leaves the set empty (fail soft, pools unfiltered).
-    let disabledProviderIds: ReadonlySet<string> = new Set();
-    try {
-      disabledProviderIds = disabledProvidersFromConfig(await readFile(opencodeConfigPath, "utf8"));
-    } catch {
-      console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
-    }
-    pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(
-        `collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`,
-      ),
-    );
+    // Pass-through (Drew, 2026-11-03): pool assembly applies NO
+    // disabled_providers filter. The #1114 filter dropped every pool
+    // whose direct config door was disabled — including live pools
+    // burned through model routes and measured by OpenCode (meta, the
+    // Antigravity splits, commandcode, anthropic:claude-pro, deepseek
+    // at removal time). The board displays the OpenCode quota read;
+    // the dated reads extracted here are only its fail-soft fallback.
+    pools = extractQuotaPools(quotaViewText, now);
     markSection("quota", "ok");
   } catch (err) {
     console.error(`collector: quota view unreadable (${sanitizeCollectionError(err)}); emitting no pools`);
@@ -525,6 +652,7 @@ async function main(): Promise<void> {
 
   // --- usage & billing hub sections (design §2.3: ride the same feed) ---
   let saas: SaasService[] | undefined;
+  let uninstrumentedServices: ReturnType<typeof extractUninstrumentedServices> | undefined;
   let payg: PaygLine[] | undefined;
   let charges: ChargeRow[] | undefined;
   let subscriptions: FleetFeed["subscriptions"];
@@ -542,6 +670,12 @@ async function main(): Promise<void> {
     for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "ok");
   } else {
     for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "skipped");
+  }
+  try {
+    const trackerText = await readFile(freeServicesTrackerPath, "utf8");
+    uninstrumentedServices = extractUninstrumentedServices(trackerText);
+  } catch {
+    console.error("collector: free-services tracker unreadable; quota registry omitted");
   }
 
   // --- charges auto-matching (#1057) -------------------------------------
@@ -582,6 +716,7 @@ async function main(): Promise<void> {
 
   // --- server attention + burn -------------------------------------------
   let attention: SessionFeedEntry[] = [];
+  const activePoolTokens: PoolTokenObservation[] = [];
   try {
     const password = (await readFile(passwordFile, "utf8")).trim();
     const mapped = await mapServerSessions({ baseUrl: serverUrl, password }, now.getTime(), {
@@ -591,11 +726,6 @@ async function main(): Promise<void> {
       attention = mapped.entries;
       for (const e of mapped.entries) {
         registry.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
-      }
-      const notes = await supervisionNotes();
-      for (const e of attention) {
-        const note = notes.get(e.sessionId);
-        if (note) e.supervisionNote = note;
       }
       // Burn attribution: sessions the server holds active right now.
       const simple = mapped.entries.map((e) => ({
@@ -611,7 +741,21 @@ async function main(): Promise<void> {
             if (poolFor(provider, s.model) === pool.id) sessions.push(s);
           }
         }
-        if (sessions.length) pool.activeSessions = sessions;
+        if (sessions.length) {
+          pool.activeSessions = sessions;
+          // #3933 live token source: this pool's measured token
+          // total at this instant, for the burn-history rate.
+          activePoolTokens.push({
+            pool: pool.id,
+            provider: pool.provider,
+            activeTokens: sessions.reduce((sum, s) => sum + s.tokens, 0),
+            // Per-session cumulative counters behind the total, so
+            // the rate derivation can diff MATCHING sessions only
+            // (PR #7354 Codex round 2) instead of the raw totals.
+            sessionTokens: Object.fromEntries(sessions.map((s) => [s.session, s.tokens])),
+            at: now.toISOString(),
+          });
+        }
       }
       markSection("attention", "ok");
     } else {
@@ -621,32 +765,6 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error(`collector: OpenCode server read failed (${sanitizeCollectionError(err)}); attention empty`);
     markSection("attention", "error", err);
-  }
-
-  // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
-  let jules: JulesSummary | undefined;
-  let julesState: unknown;
-  let julesReadable = false;
-  try {
-    julesState = JSON.parse(await readFile(julesStatePath, "utf8")) as unknown;
-    julesReadable = true;
-  } catch (err) {
-    console.error("collector: jules-review state unreadable; no Jules sessions this run");
-    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
-  }
-  if (julesReadable) {
-    const state = julesState as JulesReviewState;
-    const entries = mapJulesItems(state);
-    if (entries.length) attention = [...attention, ...entries];
-    for (const e of entries) registry.push(recordFromSessionEntry(e));
-    jules = julesSummary(state);
-    const dropped = droppedJulesItemCount(state);
-    if (dropped > 0) {
-      console.error(
-        `collector: jules-review state malformed; skipped ${dropped} item(s), kept ${entries.length} session(s)`,
-      );
-    }
-    markSection("julesSummary", "ok");
   }
 
   // --- Muse launch records (#906 §3) --------------------------------
@@ -662,22 +780,56 @@ async function main(): Promise<void> {
   }
   markSection("registry", registry.length ? "ok" : "skipped");
 
-  // --- DNS register (#902's file, parsed; #906 §1 owns the view) ---------
+  // --- DNS register (#902's files; #906 §1 owns the view) ----------------
+  // Slice 2: register.json is authoritative for the fields it carries;
+  // the Markdown parse supplies the editorial columns and is the
+  // FALLBACK when register.json is missing or malformed — the fallback
+  // is logged, never silent (see dnsSectionFromRegisterJson in dns.ts).
   let dns: DnsSection | undefined;
+  let dnsSourcePath = dnsRegisterPath;
+  let mdText: string | null = null;
+  let mdErr: unknown = null;
   try {
-    const md = await readFile(dnsRegisterPath, "utf8");
-    dns =
-      dnsSectionFromRegister(md, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
-      undefined;
-    if (!dns) {
-      console.error("collector: DNS register parsed to zero entries; section omitted");
-      markSection("dns", "error", "register did not produce a valid DNS section");
-    } else {
-      markSection("dns", "ok");
-    }
+    mdText = await readFile(dnsRegisterPath, "utf8");
   } catch (err) {
-    console.error("collector: DNS register unreadable; section omitted");
-    markSection("dns", isMissingInput(err) ? "skipped" : "error", err);
+    mdErr = err;
+  }
+  const mdEntries = mdText ? parseDnsRegister(mdText) : [];
+  let jsonProblem: string | null = null;
+  try {
+    const jsonText = await readFile(dnsRegisterJsonPath, "utf8");
+    dns =
+      dnsSectionFromRegisterJson(
+        jsonText,
+        now.toISOString(),
+        "register.json (#902 pipeline) via fleet feed collector",
+        mdEntries,
+      ) ?? undefined;
+    if (!dns) jsonProblem = "register.json did not produce a valid DNS section";
+  } catch (err) {
+    jsonProblem = err instanceof Error ? err.message : String(err);
+  }
+  if (dns) {
+    dnsSourcePath = dnsRegisterJsonPath;
+    markSection("dns", "ok");
+  } else {
+    console.error(
+      `collector: DNS register.json unusable (${jsonProblem ?? "unknown reason"}); FALLING BACK to the register Markdown parse`,
+    );
+    if (mdText) {
+      dns =
+        dnsSectionFromRegister(mdText, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
+        undefined;
+      if (!dns) {
+        console.error("collector: DNS register parsed to zero entries; section omitted");
+        markSection("dns", "error", "register did not produce a valid DNS section");
+      } else {
+        markSection("dns", "ok");
+      }
+    } else {
+      console.error("collector: DNS register unreadable; section omitted");
+      markSection("dns", isMissingInput(mdErr) ? "skipped" : "error", mdErr);
+    }
   }
 
   // --- orchestration section (#899) --------------------------------------
@@ -695,7 +847,11 @@ async function main(): Promise<void> {
       console.error(
         `collector: orchestration.json failed its structural check (${orchestrationSectionProblem(parsed)}); section omitted`,
       );
-      markSection("orchestration", "error", `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`);
+      markSection(
+        "orchestration",
+        "error",
+        `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`,
+      );
     }
   } catch (err) {
     // No orchestration file yet (the job has not run) is the normal
@@ -708,23 +864,30 @@ async function main(): Promise<void> {
   // other section: no token / read failure = section omitted, and the
   // aggregator's items() falls back to its previous chain.
   let projects: ProjectPoolItem[] | undefined;
+  let projectAudit: FleetFeed["projectAudit"];
   try {
     const token = await resolveProjectToken();
     if (!token) {
       console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
       markSection("projects", "skipped");
     } else {
-      projects = await fetchProjectPool(token);
+      const snapshot = await fetchProjectSnapshot(token, fetch, now.toISOString());
+      projects = snapshot.items;
+      projectAudit = snapshot.audit;
       if (!projects.length) {
+        // #3979: Project #4 is never legitimately empty, so a zero-item
+        // read is a broken read (lost scope, renamed project, shape
+        // drift) — mark it error like the DNS zero-entries case instead
+        // of reporting ok for a section that was omitted.
         console.error("collector: GitHub Project read returned zero items; projects section omitted");
         projects = undefined;
+        markSection("projects", "error", "GitHub Project read returned zero items");
+      } else {
+        markSection("projects", "ok");
       }
-      markSection("projects", "ok");
     }
   } catch (err) {
-    console.error(
-      `collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`,
-    );
+    console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
     projects = undefined;
     markSection("projects", "error", err);
   }
@@ -755,36 +918,45 @@ async function main(): Promise<void> {
         return body.total_count as number;
       };
       const rows: RepoCensus[] = [];
-      let failedRepos = 0;
+      const failedRepos = new Set<string>();
       for (const repo of REPOS) {
+        let staleOpenIssues: number | null = null;
+        let staleIssuesError: string | null = null;
+        let staleIssuesCollectedAt: string;
+        try {
+          staleOpenIssues = await count(staleIssueSearchQuery(repo, new Date()));
+          staleIssuesCollectedAt = new Date().toISOString();
+        } catch (err) {
+          failedRepos.add(repo);
+          staleIssuesCollectedAt = new Date().toISOString();
+          staleIssuesError = sanitizeCollectionError(err);
+          console.error(`collector: stale-issue census failed for ${repo} (${staleIssuesError})`);
+        }
+        let openIssues: number | null = null;
+        let gateNow: number | null = null;
+        let gateNext: number | null = null;
         try {
           const base = `repo:${repo} is:issue is:open`;
-          rows.push({
-            repo,
-            openIssues: await count(base),
-            gateNow: await count(`${base} label:now`),
-            gateNext: await count(`${base} label:next`),
-          });
+          openIssues = await count(base);
+          gateNow = await count(`${base} label:now`);
+          gateNext = await count(`${base} label:next`);
         } catch (err) {
-          failedRepos++;
-          console.error(
-            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); repo omitted`,
-          );
+          failedRepos.add(repo);
+          console.error(`collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`);
         }
+        rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
       }
       if (rows.length) coverage = rows;
-      if (failedRepos === REPOS.length && REPOS.length > 0) {
+      if (failedRepos.size === REPOS.length && REPOS.length > 0) {
         markSection("coverage", "error", "all repository census reads failed");
-      } else if (failedRepos > 0) {
-        markSection("coverage", "error", `${failedRepos} repository census reads failed`);
+      } else if (failedRepos.size > 0) {
+        markSection("coverage", "error", `${failedRepos.size} repository census reads failed`);
       } else {
         markSection("coverage", "ok");
       }
     }
   } catch (err) {
-    console.error(
-      `collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`,
-    );
+    console.error(`collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`);
     coverage = undefined;
     markSection("coverage", "error", err);
   }
@@ -815,7 +987,7 @@ async function main(): Promise<void> {
   if (payg) snapshotRecords.push(...recordsFromPaygLines(payg, "fleet-feed-collector"));
   if (dns) {
     try {
-      const registerStat = await stat(dnsRegisterPath);
+      const registerStat = await stat(dnsSourcePath);
       snapshotRecords.push(...recordsFromDns(dns, registerStat.mtime.toISOString(), "fleet-feed-collector"));
     } catch {
       console.error("collector: DNS register stat failed; dns snapshot records omitted this run");
@@ -841,38 +1013,104 @@ async function main(): Promise<void> {
   // instead of lying quietly. Fail-soft: any git problem becomes
   // state "unknown" with the reason, never a failed collection.
   const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
-  const feed: FleetFeed = {
-    version: 1,
+
+  // --- historical burn + measured rate (#3933) -------------------------
+  // Persist this run's pool-window observations beside the
+  // charges-surfaced state, then derive completed reset-period
+  // segments and measured per-pool rates from the series
+  // (src/burn-history.ts). Fail-soft like every other section: no
+  // readable state = this run's observations only, which honestly
+  // yields no segments and no rates yet.
+  let burnSegments: BurnSegment[] = [];
+  try {
+    let priorObservations: PoolWindowObservation[] = [];
+    let priorPoolTokens: PoolTokenObservation[] = [];
+    try {
+      const raw: unknown = JSON.parse(await readFile(burnHistoryStatePath, "utf8"));
+      if (Array.isArray(raw)) {
+        priorObservations = raw as PoolWindowObservation[];
+      } else if (raw && typeof raw === "object") {
+        const state = raw as { windows?: unknown; poolTokens?: unknown };
+        if (Array.isArray(state.windows)) priorObservations = state.windows as PoolWindowObservation[];
+        if (Array.isArray(state.poolTokens)) priorPoolTokens = state.poolTokens as PoolTokenObservation[];
+      }
+    } catch {
+      /* no state yet: history starts with this run */
+    }
+    const mergedObservations = mergeObservations(
+      priorObservations,
+      observationsFromPools(pools, now.toISOString()),
+      now.getTime(),
+    );
+    const mergedPoolTokens = mergePoolTokenObservations(priorPoolTokens, activePoolTokens, now.getTime());
+    try {
+      await writeFile(
+        burnHistoryStatePath,
+        JSON.stringify({ windows: mergedObservations, poolTokens: mergedPoolTokens }, null, 2),
+      );
+    } catch {
+      console.error("collector: burn-history state write failed; history restarts next run");
+    }
+    const derived = deriveBurnHistory(mergedObservations);
+    burnSegments = derived.segments;
+    // Measured rates: tokens-window pairs where a source provides
+    // them; otherwise the live session-attribution totals (#3933).
+    const sessionRates = deriveMeasuredRatesFromPoolTokens(mergedPoolTokens, now.getTime());
+    let ratesSet = 0;
+    for (const pool of pools) {
+      const rate = derived.burnTokensPerMin.get(pool.id) ?? sessionRates.get(pool.id);
+      if (rate !== undefined) {
+        pool.burnTokensPerMin = rate;
+        ratesSet += 1;
+      }
+    }
+    markSection("burnHistory", burnSegments.length || ratesSet ? "ok" : "skipped");
+  } catch (err) {
+    console.error("collector: burn-history derivation failed; burn stays empty this run");
+    markSection("burnHistory", "error", err);
+  }
+
+  const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     checkout,
     meta: { sections: sectionStatuses },
-    quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
+    quota: { pools, burn: burnSegments, choices: computeChoices(pools, now.getTime()) },
     attention,
-    julesSummary: jules,
     ...(orchestration ? { orchestration } : {}),
     ...(dns ? { dns } : {}),
     ...(registry.length ? { registry } : {}),
     ...(saas ? { saas } : {}),
+    ...(uninstrumentedServices ? { uninstrumentedServices } : {}),
     ...(payg ? { payg } : {}),
     ...(charges ? { charges } : {}),
     ...(chargesAttention ? { chargesAttention } : {}),
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
+    ...(projectAudit ? { projectAudit } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
-  };
-  await writeFile(outPath, JSON.stringify(feed, null, 2));
+  });
+  const freshnessUrl = process.env.PM_AGG_FRESHNESS_URL ?? "http://127.0.0.1:4871/publish";
+  await publishFleetFeedWithInvalidation(outPath, JSON.stringify(feed, null, 2), feed.generatedAt, async (input) => {
+    const response = await fetch(freshnessUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`freshness publisher returned ${response.status}`);
+  });
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource} + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
       (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
       (saas
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
-      (projects ? `, projects ${projects.length} items` : ", no projects section") +
+      (projectAudit ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable` : ", no projects section") +
       (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`
@@ -881,4 +1119,4 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (import.meta.main) await main();

@@ -45,8 +45,7 @@ const quotaViewPath =
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
 const registryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const providerUsagePath =
-  process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
+const providerUsagePath = process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 
 // Resolve the --by value BEFORE any file is read or written (#3295).
@@ -68,7 +67,33 @@ function resolveObservedBy(defaultName: string): string {
   return value;
 }
 
+// Reject unknown arguments BEFORE any file is read or written (#6961).
+// The argv used to be probed token-by-token and everything unrecognized
+// silently dropped: a misspelled --from-provider-usage fell through to
+// the default derivation mode and lost (or replaced) the whole run's
+// records with exit 0, and a typo'd --byy silently discarded the
+// requested observedBy. The token after --by is its value slot: it is
+// consumed here and judged by resolveObservedBy (#3295), never
+// re-interpreted as a flag.
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === "--from-provider-usage") continue;
+    if (arg === "--by") {
+      i++;
+      continue;
+    }
+    console.error(
+      `append-usage-snapshots: unknown argument '${arg}' ` +
+        "(usage: [--from-provider-usage] [--by <name>]); refusing to run, outbox untouched",
+    );
+    process.exit(2);
+  }
+}
+
 async function main(): Promise<void> {
+  rejectUnknownArgs();
   const fromProviderUsage = process.argv.includes("--from-provider-usage");
   let records: SnapshotRecord[] = [];
   if (fromProviderUsage) {

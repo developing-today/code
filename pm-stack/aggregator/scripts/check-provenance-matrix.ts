@@ -43,20 +43,14 @@ const check = (ok: boolean, message: string) => {
 // --- Facts from configuration and code -------------------------------------
 
 const nix = read("nixos/services/pm-stack/default.nix");
-check(
-  nix.includes("pm-projector = {"),
-  "NixOS module declares the pm-projector service",
-);
+check(nix.includes("pm-projector = {"), "NixOS module declares the pm-projector service");
 check(
   nix.includes('"PM_PROJECTOR_URL=http://127.0.0.1:'),
   "NixOS module pins the aggregator's PM_PROJECTOR_URL to the local projector (projector is deployed, not off)",
 );
 
 const install = read("pm-stack/aggregator/install.sh");
-check(
-  install.includes("PM_AGG_SOURCE=live"),
-  "install.sh renders PM_AGG_SOURCE=live for the deployment",
-);
+check(install.includes("PM_AGG_SOURCE=live"), "install.sh renders PM_AGG_SOURCE=live for the deployment");
 
 const live = read("pm-stack/aggregator/src/sources/live.ts");
 const poolIdx = live.indexOf("poolFromFeed(feed)");
@@ -71,10 +65,7 @@ check(
   commentsBody.includes("projectorComments(cfg.projector.baseUrl"),
   "live.ts comments() reads the GitHub comment projection from the projector",
 );
-check(
-  !live.includes("projector is dead by config"),
-  "live.ts carries no stale 'projector is dead by config' claim",
-);
+check(!live.includes("projector is dead by config"), "live.ts carries no stale 'projector is dead by config' claim");
 
 // --- Surfaces must agree -----------------------------------------------------
 
@@ -101,10 +92,7 @@ check(
   aggReadme.includes("**Projector** (service)") && aggReadme.includes("**Pad** (service)"),
   "the matrix names the projector and Pad explicitly",
 );
-check(
-  aggReadme.includes("Fleet feed's GitHub Project pool FIRST"),
-  "the matrix states items resolve pool-first",
-);
+check(aggReadme.includes("Fleet feed's GitHub Project pool FIRST"), "the matrix states items resolve pool-first");
 check(
   !aggReadme.includes("Fixture-backed today:** nothing, when the stack is up"),
   "aggregator README carries no unqualified 'nothing is fixture-backed' claim",

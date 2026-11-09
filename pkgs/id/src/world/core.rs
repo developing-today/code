@@ -1,8 +1,138 @@
+//! Durable world reconstruction and authority-bearing core state.
+//!
+//! Reconstruction is admission: validate each journal entry against the
+//! verifier's state rebuilt from earlier admitted entries. Refuse the whole
+//! restore on invalid input; never partially apply or silently repair it.
+//! Guest snapshots contain program-owned state, not host authority: the host
+//! capability ledger is reconstructed and checked separately, and guest
+//! requests remain subject to that ledger.
+
 use super::*;
 
 use anyhow::{Context, Result, ensure};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+
+mod checkpoint_parts;
+
+use checkpoint_parts::{
+    CheckpointEventPartKind, PendingCheckpointParts, checkpoint_part_json_len,
+    split_checkpoint_events, split_checkpoint_snapshot,
+};
+
+/// Encoded byte size of one admin-history event, or `None` when the event
+/// cannot be serialized at all. Serialization failure is deliberate in the
+/// accounting below (#4633): an unserializable event counts as
+/// `usize::MAX` bytes, exactly as the previous rescan-every-time helper
+/// treated it, so it forces the retained history to trim rather than
+/// silently occupying unaccounted space.
+fn admin_history_event_bytes(event: &WorldEvent) -> Option<usize> {
+    serde_json::to_vec(event).ok().map(|bytes| bytes.len())
+}
+
+fn admin_history_bytes<'a>(events: impl IntoIterator<Item = &'a WorldEvent>) -> usize {
+    events
+        .into_iter()
+        .map(|event| admin_history_event_bytes(event).unwrap_or(usize::MAX))
+        .fold(0usize, usize::saturating_add)
+}
+
+/// Incrementally maintained byte accounting for the retained admin history
+/// (#4633). `record_admin_history` used to re-serialize every retained
+/// event on every accepted event; this ledger caches each event's encoded
+/// size once, when the event is recorded (or once during restore, where a
+/// one-shot scan is acceptable), and maintains the running total as events
+/// are pushed and trimmed, so recording is amortized O(1) in the retained
+/// history size.
+///
+/// Invariant: `sizes` holds one entry per retained admin-history event, in
+/// the same order as `WorldCore::admin_history`. A `None` entry is an event
+/// that failed to serialize; while any `None` is retained,
+/// [`AdminHistoryByteLedger::effective_bytes`] is `usize::MAX`, matching
+/// the legacy rescan semantics.
+#[derive(Debug, Default)]
+pub(crate) struct AdminHistoryByteLedger {
+    sizes: VecDeque<Option<usize>>,
+    serializable_bytes: usize,
+    unserializable: usize,
+}
+
+impl AdminHistoryByteLedger {
+    /// Start tracking one newly retained event of the given encoded size.
+    pub(crate) fn track(&mut self, size: Option<usize>) {
+        self.sizes.push_back(size);
+        match size {
+            Some(bytes) => {
+                self.serializable_bytes = self.serializable_bytes.saturating_add(bytes);
+            }
+            None => {
+                self.unserializable = self.unserializable.saturating_add(1);
+            }
+        }
+    }
+
+    /// Stop tracking the oldest retained event (it was trimmed).
+    pub(crate) fn untrack_front(&mut self) {
+        if let Some(size) = self.sizes.pop_front() {
+            match size {
+                Some(bytes) => {
+                    self.serializable_bytes = self.serializable_bytes.saturating_sub(bytes);
+                }
+                None => {
+                    self.unserializable = self.unserializable.saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    /// The byte total the trim loop compares against the cap: the running
+    /// total, or `usize::MAX` while an unserializable event is retained.
+    pub(crate) fn effective_bytes(&self) -> usize {
+        if self.unserializable > 0 {
+            usize::MAX
+        } else {
+            self.serializable_bytes
+        }
+    }
+
+    /// Number of events currently tracked; equals the retained history len.
+    pub(crate) fn tracked(&self) -> usize {
+        self.sizes.len()
+    }
+
+    /// Rebuild the ledger for a restored history with a one-shot scan.
+    fn rebuild<'a>(events: impl IntoIterator<Item = &'a WorldEvent>) -> Self {
+        let mut ledger = Self::default();
+        for event in events {
+            ledger.track(admin_history_event_bytes(event));
+        }
+        ledger
+    }
+}
+
+fn presence_after(events: &[WorldEvent]) -> BTreeSet<u64> {
+    let mut present = BTreeSet::new();
+    for event in events {
+        if let WorldEventKind::System { event } = &event.kind
+            && let Some((participant, joined)) = presence_change(event)
+        {
+            if joined {
+                present.insert(participant);
+            } else {
+                present.remove(&participant);
+            }
+        }
+    }
+    present
+}
+
+pub(super) fn check_journal_version(version: u32, max_supported: u32) -> Result<()> {
+    ensure!(
+        (JOURNAL_VERSION..=max_supported).contains(&version),
+        "unsupported world journal version {version}"
+    );
+    Ok(())
+}
 
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
 #[derive(Debug)]
@@ -21,6 +151,11 @@ pub struct WorldCore {
     pub(crate) active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    /// The per-world total memory budget ledger (#557): created with
+    /// the default ceiling, and replaced by [`WorldCore::restore`]
+    /// with the ledger measured over the journal (its limit is the
+    /// last persisted profile budget, or the default ceiling).
+    pub(crate) memory_budget: crate::world_limits::WorldMemoryBudget,
     /// This world's own capability ceiling. The ledger allows the intersection
     /// of this and the server's `limits.server_caps`.
     pub(crate) caps_ceiling: BTreeSet<String>,
@@ -42,6 +177,18 @@ pub struct WorldCore {
     /// Monotonic origin used for chat bucket refill timestamps.
     pub(crate) chat_epoch: std::time::Instant,
     pub(crate) events: VecDeque<WorldEvent>,
+    /// Bounded journal-order history for admin-authorized fixture export.
+    pub(crate) admin_history: VecDeque<WorldEvent>,
+    /// False once the oldest part of the journal history has been trimmed.
+    pub(crate) admin_history_complete: bool,
+    /// Cached encoded sizes + running byte total for `admin_history`
+    /// (#4633); kept in lockstep with it by `record_admin_history` and
+    /// `restore_admin_history`.
+    pub(crate) admin_history_ledger: AdminHistoryByteLedger,
+    /// Participants whose join the program has seen without a later leave.
+    /// Unlike the actor's live-session refcount, this survives compaction so
+    /// restore can deliver one leave for sessions lost with the process.
+    pub(crate) open_presence: BTreeSet<u64>,
     pub(crate) directory: crate::directory::Directory,
     pub(crate) petnames: crate::petname::Petnames,
     /// Active region-seam handoffs this world is a side of (#3870 phase 1,
@@ -49,6 +196,25 @@ pub struct WorldCore {
     /// rebuilt by journal replay and preserved across compaction by the
     /// checkpoint's `transfers` field.
     pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+    /// The journal-resident native-spill write lease (design #2819,
+    /// phase 2 of issue #3804): rebuilt by journal replay from the
+    /// lease control entries and preserved across compaction by the
+    /// checkpoint's `lease` field. Bootstrap (DO holder, epoch 0) for
+    /// every world that has never spilled.
+    pub(crate) write_lease: WriteLease,
+    /// Author keys bound to participants for signed move capture (#2814):
+    /// participant id to the player's ed25519 verifying key bytes. A bound
+    /// participant's inputs must arrive player-signed (see
+    /// [`signed`](super::signed)). Runtime state in this first pass;
+    /// journal persistence of bindings is a follow-up.
+    pub(crate) author_keys: HashMap<u64, [u8; 32]>,
+    /// Each bound participant's expected signed-move chain position.
+    pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
+    /// Accepted signed moves, in world sequence order.
+    pub(crate) signed_moves: Vec<signed::SignedMoveRecord>,
+    /// This core came from a verified journal and may only be served as a
+    /// spectator replica. It is set only by `restore_replica`.
+    pub(crate) replica_mode: bool,
 }
 
 /// The abuse-evaluator policy for world chat: the historical caps
@@ -75,6 +241,46 @@ fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
     let mut endpoint = [0_u8; 32];
     endpoint[..8].copy_from_slice(&participant_id.to_be_bytes());
     endpoint
+}
+
+/// Validate the invariants shared by standalone handoff entries and
+/// checkpoint-carried transfer state. `prior_transfers` are the already
+/// admitted records, so callers validate a checkpoint's list in list order.
+fn validate_handoff_transfer(
+    transfer: &HandoffTransferState,
+    prior_transfers: &[HandoffTransferState],
+) -> Result<()> {
+    let name = match transfer.direction {
+        HandoffDirection::Export => "export",
+        HandoffDirection::Import => "import",
+    };
+    ensure!(
+        transfer.event.sequence == 0 && transfer.event.participant_id == 0,
+        "journal {name} event claims a sequence for handoff {:?}",
+        transfer.handoff_id
+    );
+    match transfer.direction {
+        HandoffDirection::Export => ensure!(
+            transfer.new_owner_epoch.is_none(),
+            "journal export for handoff {:?} carries a new owner epoch",
+            transfer.handoff_id
+        ),
+        HandoffDirection::Import => ensure!(
+            transfer.new_owner_epoch.is_some_and(|new_owner_epoch| {
+                transfer.prior_owner_epoch.checked_add(1) == Some(new_owner_epoch)
+            }),
+            "journal import for handoff {:?} does not advance the owner epoch",
+            transfer.handoff_id
+        ),
+    }
+    ensure!(
+        !prior_transfers.iter().any(|prior| {
+            prior.handoff_id == transfer.handoff_id && prior.direction == transfer.direction
+        }),
+        "journal {name}s handoff {:?} twice",
+        transfer.handoff_id
+    );
+    Ok(())
 }
 
 impl WorldCore {
@@ -129,7 +335,8 @@ impl WorldCore {
             active_module_provenance: None,
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
-            caps_ceiling: crate::world_caps::catalog_names(),
+            memory_budget: crate::world_limits::WorldMemoryBudget::default(),
+            caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
             isolation: Isolation::default(),
             cross_world_write: false,
@@ -141,9 +348,18 @@ impl WorldCore {
             chat_abuse: crate::abuse::AbuseEvaluator::new(chat_abuse_policy(), [0; 32]),
             chat_epoch,
             events: VecDeque::new(),
+            admin_history: VecDeque::new(),
+            admin_history_complete: true,
+            admin_history_ledger: AdminHistoryByteLedger::default(),
+            open_presence: BTreeSet::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
+            write_lease: WriteLease::bootstrap(),
+            author_keys: HashMap::new(),
+            move_chains: HashMap::new(),
+            signed_moves: Vec::new(),
+            replica_mode: false,
         };
         core.sync_ledger_ceiling();
         Ok(core)
@@ -179,33 +395,175 @@ impl WorldCore {
         limits: WorldLimits,
         entries: impl IntoIterator<Item = JournalEntry>,
     ) -> Result<RestoredWorld> {
+        Self::restore_with_runtime(
+            world_id,
+            limits,
+            crate::world_limits::RuntimeLimits::default(),
+            entries,
+        )
+    }
+
+    /// Rebuild a replica world from its verified journal (F12.13 phase 4).
+    ///
+    /// Same admission rules as [`Self::restore`], but presence-preserving:
+    /// no synthetic presence-off events are fed into the program for
+    /// participants the journal still shows present. That synthesis is
+    /// correct for a writer restart (its sessions really ended) but wrong
+    /// for a replica: a snapshot taken while participants remain connected
+    /// to the writer would otherwise mark them offline in the replica's
+    /// program state even though the journal is intact, breaking
+    /// writer-record parity at the snapshot cursor. The replica restores
+    /// presence as session state (its actor tracks live sessions) without
+    /// journaling or replaying synthetic events.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::restore`].
+    pub fn restore_replica(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        Self::restore_replica_with_runtime(
+            world_id,
+            limits,
+            crate::world_limits::RuntimeLimits::default(),
+            entries,
+        )
+    }
+
+    /// Like [`Self::restore_replica`], using the current server's resource
+    /// ceilings while admitting the verified journal.
+    pub fn restore_replica_with_runtime(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        let mut restored = Self::restore_inner(world_id, limits, runtime, entries, true)?;
+        restored.core.replica_mode = true;
+        Ok(restored)
+    }
+
+    /// Rebuild a world from its journal, resolving the persisted
+    /// per-world total memory budget against the server ceiling in `runtime`.
+    ///
+    /// # Errors
+    ///
+    /// Same refusal contract as [`Self::restore`].
+    pub fn restore_with_runtime(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        Self::restore_inner(world_id, limits, runtime, entries, false)
+    }
+
+    /// Shared restore; `preserve_presence` selects replica semantics.
+    fn restore_inner(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+        preserve_presence: bool,
+    ) -> Result<RestoredWorld> {
         let mut core = Self::new(world_id, limits)?;
         let mut program = None;
         let mut replay = Vec::new();
         let mut present: BTreeMap<u64, u64> = BTreeMap::new();
+        let entries: Vec<JournalEntry> = entries.into_iter().collect();
+        // #557 Phase 2: enforce the per-world total memory budget at
+        // restore. The effective limit resolves the journal's FINAL
+        // persisted profile against the CURRENT server ceiling
+        // (`runtime.total_memory_bytes`): replay replaces the whole
+        // execution profile, so a later profile whose budget is unset
+        // resets an earlier one — an unset budget inherits the current
+        // ceiling, and a set budget is clamped beneath it. The
+        // persisted request cannot be trusted to already be clamped:
+        // `set_execution_profile` journals the unclamped request, so
+        // resolving here is what makes lowering the server ceiling
+        // constrain restore and raising it reopen a budgetless journal
+        // written under a smaller ceiling. Charge the fixed core
+        // charge plus each materialized entry (serialized length +
+        // structural allowance) BEFORE applying any entry: an
+        // over-budget journal is refused whole with a typed
+        // [`crate::world_limits::WorldMemoryBudgetRefusal`], no state
+        // is partially applied, and the durable journal is never
+        // modified by a restore, so the same journal reopens unchanged
+        // once the configured budget allows it. This charges the
+        // restore/materialization seam only; runtime growth, program
+        // reservations, and transient peaks are later #557 phases.
+        let mut persisted_total: Option<u64> = None;
+        for entry in &entries {
+            match entry {
+                JournalEntry::ExecutionProfile { profile } => {
+                    persisted_total = profile.total_memory_bytes;
+                }
+                JournalEntry::Checkpoint {
+                    execution_profile, ..
+                } => {
+                    persisted_total = execution_profile
+                        .as_ref()
+                        .and_then(|profile| profile.total_memory_bytes);
+                }
+                _ => {}
+            }
+        }
+        let limit = persisted_total.map_or(runtime.total_memory_bytes, |total| {
+            total.min(runtime.total_memory_bytes)
+        });
+        let mut memory_budget = crate::world_limits::WorldMemoryBudget::new(limit);
+        memory_budget.try_charge(crate::world_limits::WORLD_MEMORY_BASE_BYTES)?;
+        for entry in &entries {
+            let serialized_len = serde_json::to_vec(entry).map_or(0, |bytes| bytes.len());
+            memory_budget.try_charge(crate::world_limits::journal_entry_charge(serialized_len))?;
+        }
+        // A compacted journal writes a revoked parent before its descendants'
+        // Issued/Revoked pairs. Remember descendants made unusable by that
+        // earlier revocation so their later explicit Revoked entries remain
+        // valid without allowing duplicate revocation entries.
+        let mut inherited_revocations = HashSet::new();
         let mut entries = entries.into_iter();
-        match entries.next() {
+        let journal_version = match entries.next() {
             Some(JournalEntry::Created { world_id, version }) => {
                 ensure!(
                     world_id == core.world_id,
                     "journal belongs to world {world_id:?}, not {:?}",
                     core.world_id
                 );
-                ensure!(
-                    (JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(&version),
-                    "unsupported world journal version {version}"
-                );
+                check_journal_version(version, MAX_JOURNAL_VERSION)?;
+                version
             }
             Some(_) => anyhow::bail!("world journal does not start with a header"),
             None => {
+                core.memory_budget = memory_budget;
                 return Ok(RestoredWorld {
                     core,
                     program,
                     replay,
+                    presence: BTreeMap::new(),
                 });
             }
-        }
+        };
+        let mut checkpoint_parts = PendingCheckpointParts::default();
         for entry in entries {
+            if checkpoint_parts.has_parts()
+                && !matches!(
+                    &entry,
+                    JournalEntry::CheckpointSnapshotPart { .. }
+                        | JournalEntry::CheckpointEventsPart { .. }
+                        | JournalEntry::CheckpointAdminPart { .. }
+                        | JournalEntry::Checkpoint { .. }
+                )
+            {
+                anyhow::bail!("checkpoint parts are not immediately followed by their checkpoint");
+            }
+            let required_version = journal_version_required_by(&entry);
+            ensure!(
+                journal_version >= required_version,
+                "journal entry requires version {required_version}, but header is version {journal_version}"
+            );
             match entry {
                 JournalEntry::Created { .. } => anyhow::bail!("duplicate world journal header"),
                 JournalEntry::Issued {
@@ -239,15 +597,19 @@ impl WorldCore {
                     // journals minted before format stripping landed can
                     // legitimately carry ZWJ/ZWNJ names such as family
                     // emoji, and those worlds restored fine before this
-                    // check existed.
+                    // check existed. The pre-#4711 sanitizer (no trim
+                    // after the 48-char cap) is also accepted: journals
+                    // minted before the boundary fix can legitimately
+                    // carry 48-char names ending in whitespace, and
+                    // refusing those would brick worlds that minted
+                    // fine under the rules of their time.
                     ensure!(
                         !participant.display_name.is_empty()
                             && (participant.display_name
                                 == sanitize_display_name(&participant.display_name)
                                 || participant.display_name
-                                    == legacy_sanitize_display_name(
-                                        &participant.display_name
-                                    )),
+                                    == legacy_sanitize_display_name(&participant.display_name)
+                                || is_pre_fix_mint_display_name(&participant.display_name)),
                         "participant {} has a display name mint could not have produced",
                         participant.id
                     );
@@ -276,6 +638,19 @@ impl WorldCore {
                             participant.id
                         );
                     }
+                    let mut ancestor = parent;
+                    let mut revoked_by_ancestor = false;
+                    while let Some(ancestor_id) = ancestor {
+                        let ancestor_record = core
+                            .capabilities
+                            .get(&ancestor_id)
+                            .context("delegated capability ancestor disappeared during restore")?;
+                        if ancestor_record.revoked {
+                            revoked_by_ancestor = true;
+                            break;
+                        }
+                        ancestor = ancestor_record.parent;
+                    }
                     // #2890: mint refuses scope bits from_bits rejects
                     // and scopes without JOIN; a journaled Issued entry
                     // must meet the same bar, or restore would resurrect
@@ -297,25 +672,31 @@ impl WorldCore {
                             .checked_add(1)
                             .context("participant ID exhausted")?,
                     );
+                    let issued_participant_id = participant.id;
                     core.capabilities.insert(
-                        participant.id,
+                        issued_participant_id,
                         CapabilityRecord {
                             digest,
                             participant,
                             scopes: validated_scopes,
                             parent,
-                            revoked: false,
+                            revoked: revoked_by_ancestor,
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
                             subject,
                         },
                     );
+                    if revoked_by_ancestor {
+                        inherited_revocations.insert(issued_participant_id);
+                    }
                 }
                 JournalEntry::Revoked { participant_id, .. } => {
-                    ensure!(
-                        !core.revoke_tree(participant_id).is_empty(),
-                        "journal revokes unknown or revoked participant {participant_id}"
-                    );
+                    if !inherited_revocations.remove(&participant_id) {
+                        ensure!(
+                            !core.revoke_tree(participant_id).is_empty(),
+                            "journal revokes unknown or revoked participant {participant_id}"
+                        );
+                    }
                 }
                 JournalEntry::CapsGranted { granted } => {
                     for name in &granted {
@@ -333,7 +714,7 @@ impl WorldCore {
                 }
                 JournalEntry::ExecutionProfile { profile } => {
                     profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in journal")?;
                     core.execution_profile = profile;
                 }
@@ -390,17 +771,7 @@ impl WorldCore {
                     payload,
                     payload_digest,
                 } => {
-                    ensure!(
-                        source_event.sequence == 0 && source_event.participant_id == 0,
-                        "journal export event claims a sequence"
-                    );
-                    ensure!(
-                        !core.handoff_transfers.iter().any(|t| {
-                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
-                        }),
-                        "journal exports handoff {handoff_id:?} twice"
-                    );
-                    core.handoff_transfers.push(HandoffTransferState {
+                    let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
                         source_region,
@@ -413,7 +784,9 @@ impl WorldCore {
                         payload_digest,
                         payload: Some(payload),
                         event: source_event.clone(),
-                    });
+                    };
+                    validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    core.handoff_transfers.push(transfer);
                     // Replay applies the ownership-changing event from the
                     // same durable fact (design #2818 §3).
                     replay.push(source_event);
@@ -431,21 +804,7 @@ impl WorldCore {
                     payload_digest,
                     destination_event,
                 } => {
-                    ensure!(
-                        destination_event.sequence == 0 && destination_event.participant_id == 0,
-                        "journal import event claims a sequence"
-                    );
-                    ensure!(
-                        new_owner_epoch == prior_owner_epoch + 1,
-                        "journal import for handoff {handoff_id:?} does not advance the owner epoch"
-                    );
-                    ensure!(
-                        !core.handoff_transfers.iter().any(|t| {
-                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Import
-                        }),
-                        "journal imports handoff {handoff_id:?} twice"
-                    );
-                    core.handoff_transfers.push(HandoffTransferState {
+                    let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
                         source_region,
@@ -458,10 +817,85 @@ impl WorldCore {
                         payload_digest,
                         payload: None,
                         event: destination_event.clone(),
-                    });
+                    };
+                    validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    core.handoff_transfers.push(transfer);
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
+                JournalEntry::LeaseGranted {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_grant(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRenewed {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_renew(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseHandedOff {
+                    from,
+                    to,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_handoff(&from, &to, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRevoked {
+                    former_holder,
+                    epoch,
+                    reason,
+                } => {
+                    core.write_lease
+                        .apply_revoke(&former_holder, epoch, &reason)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseWriteRejected {
+                    writer,
+                    presented_epoch,
+                    operation_id,
+                    observed_epoch,
+                    reason,
+                    received_at_ms,
+                } => {
+                    core.write_lease.apply_rejection(LeaseWriteRejection {
+                        writer,
+                        presented_epoch,
+                        operation_id,
+                        observed_epoch,
+                        reason,
+                        received_at_ms,
+                    })?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::CheckpointSnapshotPart {
+                    sequence,
+                    part_index,
+                    part_count,
+                    bytes,
+                } => checkpoint_parts.push_snapshot(sequence, part_index, part_count, bytes)?,
+                JournalEntry::CheckpointEventsPart {
+                    sequence,
+                    part_index,
+                    part_count,
+                    events,
+                } => checkpoint_parts.push_events(sequence, part_index, part_count, events)?,
+                JournalEntry::CheckpointAdminPart {
+                    sequence,
+                    part_index,
+                    part_count,
+                    events,
+                } => checkpoint_parts.push_admin(sequence, part_index, part_count, events)?,
                 // Audit-only: the install is carried by the `Committed`
                 // `ProgramInstalled` event; this entry records who ordered it
                 // and changes no restored state.
@@ -473,11 +907,21 @@ impl WorldCore {
                         event.sequence == 0 && event.participant_id == 0,
                         "journal system event claims a sequence"
                     );
-                    let change = match &event.kind {
-                        WorldEventKind::System { event: text } => presence_change(text),
-                        _ => None,
-                    };
-                    if let Some((participant, joined)) = change {
+                    ensure!(
+                        matches!(&event.kind, WorldEventKind::System { .. }),
+                        "journal system entry has a non-system payload"
+                    );
+                    if let WorldEventKind::System { event: text } = &event.kind
+                        && let Some((participant, joined)) = presence_change(text)
+                    {
+                        ensure!(
+                            core.capabilities.contains_key(&participant),
+                            "journal presence event names an unknown participant"
+                        );
+                        // Replica restore also needs per-participant
+                        // session counts (F12.13): `open_presence` records
+                        // only that a participant is present, not how many
+                        // sessions hold them there.
                         let count = present.entry(participant).or_insert(0);
                         if joined {
                             *count += 1;
@@ -489,6 +933,7 @@ impl WorldCore {
                         }
                     }
                     replay.push(event.clone());
+                    core.record_admin_history(event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::Committed { event } => {
@@ -498,6 +943,7 @@ impl WorldCore {
                         core.sequence,
                         event.sequence
                     );
+                    core.validate_restored_event_author(&event, false)?;
                     match &event.kind {
                         WorldEventKind::ProgramInstalled {
                             module_hash,
@@ -519,9 +965,10 @@ impl WorldCore {
                         WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
                             replay.push(event.clone())
                         }
-                        // System events belong to the journal's tail; a
-                        // checkpoint behind them already contains their effect.
-                        WorldEventKind::System { .. } | WorldEventKind::Chat(_) => {}
+                        WorldEventKind::System { .. } => anyhow::bail!(
+                            "host system events must use the unsequenced system journal entry"
+                        ),
+                        WorldEventKind::Chat(_) => {}
                     }
                     core.commit_prepared(event)?;
                 }
@@ -534,46 +981,171 @@ impl WorldCore {
                     caps_ceiling,
                     schedules,
                     transfers,
-                    snapshot,
-                    events,
+                    lease,
+                    mut snapshot,
+                    mut events,
+                    mut admin_history,
+                    open_presence,
                 } => {
+                    if checkpoint_parts.has_parts() {
+                        let (assembled_snapshot, assembled_events, assembled_admin) =
+                            checkpoint_parts.assemble(sequence)?;
+                        ensure!(
+                            snapshot.is_empty() && events.is_empty(),
+                            "split checkpoint duplicates variable-size checkpoint data"
+                        );
+                        let complete = admin_history
+                            .as_ref()
+                            .filter(|history| history.events.is_empty())
+                            .map(|history| history.complete)
+                            .context("split checkpoint is missing admin-history completeness")?;
+                        snapshot = assembled_snapshot;
+                        events = assembled_events;
+                        admin_history = Some(JournalAdminHistory {
+                            events: assembled_admin,
+                            complete,
+                        });
+                        checkpoint_parts = PendingCheckpointParts::default();
+                    }
                     ensure!(
                         core.sequence == 0 && program.is_none(),
                         "journal checkpoint does not come first"
                     );
                     ensure!(
                         events.last().is_none_or(|last| last.sequence == sequence)
-                            && events
-                                .windows(2)
-                                .all(|pair| pair[1].sequence == pair[0].sequence + 1),
+                            && events.windows(2).all(|pair| {
+                                pair[0].sequence.checked_add(1) == Some(pair[1].sequence)
+                            }),
                         "journal checkpoint events are out of order"
                     );
+                    ensure!(
+                        events.iter().all(|event| {
+                            event.sequence > 0
+                                && !matches!(&event.kind, WorldEventKind::System { .. })
+                        }),
+                        "journal checkpoint contains a host system event"
+                    );
+                    for event in &events {
+                        core.validate_restored_event_author(event, true)?;
+                    }
                     core.sequence = sequence;
                     core.events = events.into();
                     while core.events.len() > core.limits.retained_events {
                         core.events.pop_front();
                     }
+                    let history_presence = admin_history
+                        .as_ref()
+                        .filter(|history| history.complete)
+                        .map(|history| presence_after(&history.events));
+                    if let Some(admin_history) = admin_history {
+                        core.restore_admin_history(
+                            admin_history.events,
+                            admin_history.complete,
+                            sequence,
+                        )?;
+                    } else {
+                        // Older checkpoints retained only sequenced events, so
+                        // they can be exported as a partial window but cannot
+                        // claim to reproduce host-originated inputs.
+                        let events = core.events.iter().cloned().collect();
+                        core.restore_admin_history(events, false, sequence)?;
+                    }
+                    core.open_presence = if let Some(participants) = open_presence {
+                        ensure!(
+                            participants.len() <= MAX_CHECKPOINT_OPEN_PRESENCE,
+                            "checkpoint has more open presences than the journal limit ({MAX_CHECKPOINT_OPEN_PRESENCE})"
+                        );
+                        let unique: BTreeSet<u64> = participants.iter().copied().collect();
+                        ensure!(
+                            unique.len() == participants.len(),
+                            "checkpoint repeats an open-presence participant"
+                        );
+                        ensure!(
+                            unique.iter().all(|id| core.capabilities.contains_key(id)),
+                            "checkpoint open presence names an unknown participant"
+                        );
+                        if let Some(history_presence) = &history_presence {
+                            ensure!(
+                                &unique == history_presence,
+                                "checkpoint open presence disagrees with complete admin history"
+                            );
+                        }
+                        unique
+                    } else {
+                        // Complete legacy history recovers the exact set. If
+                        // it is absent or partial, the snapshot may still have
+                        // stale guest-visible presence and the missing joins
+                        // cannot be inferred. Conservatively send one `left`
+                        // for every known capability below. This can include
+                        // guests who were not present, but removes stale seats
+                        // without pretending the export history is complete.
+                        match history_presence {
+                            Some(present) => present,
+                            None => {
+                                ensure!(
+                                    core.capabilities.len() <= MAX_CHECKPOINT_OPEN_PRESENCE,
+                                    "legacy checkpoint has too many capabilities for safe presence cleanup ({MAX_CHECKPOINT_OPEN_PRESENCE})"
+                                );
+                                core.capabilities.keys().copied().collect()
+                            }
+                        }
+                    };
+                    ensure!(
+                        core.open_presence.len() <= MAX_CHECKPOINT_OPEN_PRESENCE,
+                        "checkpoint presence exceeds the journal limit ({MAX_CHECKPOINT_OPEN_PRESENCE})"
+                    );
+                    ensure!(
+                        core.open_presence
+                            .iter()
+                            .all(|id| core.capabilities.contains_key(id)),
+                        "checkpoint admin history presence names an unknown participant"
+                    );
                     core.active_module_hash = Some(module_hash.clone());
                     core.active_module_provenance = provenance.clone();
                     core.active_seed = seed;
                     let execution_profile = execution_profile.unwrap_or_default();
                     execution_profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in checkpoint")?;
                     core.execution_profile = execution_profile;
-                    // Absent means the whole catalog: older checkpoints and
-                    // default ceilings omit the field.
+                    // Absent means the default ceiling: older checkpoints and
+                    // default ceilings omit the field. A provider registered
+                    // since the checkpoint joins only if its manifest default
+                    // opts it in — never by registration alone (#838).
                     core.caps_ceiling = match caps_ceiling {
                         Some(ceiling) => {
                             crate::world_caps::validate_ceiling_names(&ceiling)
                                 .context("invalid capability ceiling in checkpoint")?;
                             ceiling.into_iter().collect()
                         }
-                        None => crate::world_caps::catalog_names(),
+                        None => crate::world_caps::default_ceiling_names(),
                     };
                     // A checkpoint comes first in its journal, so its
                     // transfer list is the whole active-handoff state.
-                    core.handoff_transfers = transfers.unwrap_or_default();
+                    let mut validated_transfers = Vec::new();
+                    for transfer in transfers.unwrap_or_default() {
+                        validate_handoff_transfer(&transfer, &validated_transfers)?;
+                        validated_transfers.push(transfer);
+                    }
+                    core.handoff_transfers = validated_transfers;
+                    // A checkpoint stands in for the journal it
+                    // compacted, so its lease field is the whole lease
+                    // state: validate the carried history reproduces
+                    // the claimed state before adopting it, exactly as
+                    // replaying the un-compacted lease entries would.
+                    // Lease entries are never written before their
+                    // checkpoint, so the lease here must still be the
+                    // bootstrap state the checkpoint replaces.
+                    if let Some(lease) = lease {
+                        ensure!(
+                            core.write_lease.is_bootstrap(),
+                            "journal checkpoint carries a write lease after lease entries"
+                        );
+                        lease
+                            .validate_history()
+                            .context("invalid write lease in journal checkpoint")?;
+                        core.write_lease = lease;
+                    }
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
@@ -591,26 +1163,108 @@ impl WorldCore {
                 }
             }
         }
+        ensure!(
+            !checkpoint_parts.has_parts(),
+            "checkpoint parts are not followed by their checkpoint"
+        );
         // Sessions end with the process, and a crash skips their leave, so
-        // anyone the journal still shows present is gone by now.
-        for participant in present.into_keys() {
-            let name = core
-                .participant(participant)
-                .map_or_else(|| participant.to_string(), |p| p.display_name);
-            replay.push(WorldEvent {
-                sequence: 0,
-                participant_id: 0,
-                kind: WorldEventKind::System {
-                    event: presence_event(participant, &name, false),
-                },
-            });
+        // anyone the journal still shows present is gone by now. Replicas
+        // (F12.13) skip this synthesis: see `restore_replica`.
+        if !preserve_presence {
+            for participant in std::mem::take(&mut core.open_presence) {
+                let name = core
+                    .participant(participant)
+                    .map_or_else(|| participant.to_string(), |p| p.display_name);
+                replay.push(WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: presence_event(participant, &name, false),
+                    },
+                });
+                if let Some(event) = replay.last() {
+                    core.record_admin_history(event.clone());
+                }
+            }
         }
+        let presence = if preserve_presence {
+            present
+        } else {
+            BTreeMap::new()
+        };
+        core.memory_budget = memory_budget;
         core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
             program,
             replay,
+            presence,
         })
+    }
+
+    /// Scopes a participant capability chain records in the journal
+    /// itself: the intersection of every ancestor issued scope.
+    /// Unlike `effective_scopes`, this never consults the world
+    /// directory: friendship and ceilings are mutable current state,
+    /// and restore runs before the directory is loaded, so historical
+    /// events are judged against what the journal recorded when they
+    /// were committed (Codex P1 finding on PR #4518).
+    fn journaled_scopes(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.capabilities.get(&participant_id)?;
+        let mut scopes = WorldScopes::ALL;
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
+            scopes = scopes.intersect(record.scopes.implied());
+            current = record.parent;
+        }
+        Some(scopes)
+    }
+
+    /// Check that a journaled event could have been authored by the
+    /// participant state rebuilt so far. For compacted checkpoint events,
+    /// revocation timing is no longer represented: `checkpoint_entries`
+    /// writes the current revoked flags before the retained historical events.
+    /// Keep those events valid when their participant and scope are present;
+    /// ordinary `Committed` entries retain enough journal order to reject an
+    /// author revoked before that event.
+    fn validate_restored_event_author(
+        &self,
+        event: &WorldEvent,
+        checkpoint_event: bool,
+    ) -> Result<()> {
+        let participant_id = event.participant_id;
+        if participant_id == 0 {
+            return Ok(());
+        }
+
+        let record = self.capabilities.get(&participant_id).with_context(|| {
+            format!(
+                "journal event at sequence {} uses participant {participant_id} before it was issued",
+                event.sequence
+            )
+        })?;
+        ensure!(
+            checkpoint_event || !record.revoked,
+            "journal event at sequence {} is authored by participant {participant_id} after revocation",
+            event.sequence
+        );
+
+        let required_scope = match &event.kind {
+            WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
+                Some((WorldScopes::INPUT, "INPUT"))
+            }
+            WorldEventKind::Chat(_) => Some((WorldScopes::CHAT, "CHAT")),
+            WorldEventKind::System { .. } | WorldEventKind::ProgramInstalled { .. } => None,
+        };
+        if let Some((scope, name)) = required_scope {
+            ensure!(
+                self.journaled_scopes(participant_id)
+                    .is_some_and(|scopes| scopes.contains(scope)),
+                "journal event at sequence {} uses participant {participant_id} without {name} scope",
+                event.sequence
+            );
+        }
+        Ok(())
     }
 
     /// Whether enough events piled up behind the last checkpoint to trim.
@@ -627,6 +1281,16 @@ impl WorldCore {
             .active_module_hash
             .clone()
             .context("no active program to checkpoint")?;
+        ensure!(
+            self.open_presence.len() <= MAX_CHECKPOINT_OPEN_PRESENCE,
+            "open presence exceeds the checkpoint limit ({MAX_CHECKPOINT_OPEN_PRESENCE}); keep the journal untrimmed"
+        );
+        ensure!(
+            self.open_presence
+                .iter()
+                .all(|id| self.capabilities.contains_key(id)),
+            "open presence names an unknown participant; keep the journal untrimmed"
+        );
         let mut ids: Vec<u64> = self.capabilities.keys().copied().collect();
         ids.sort_unstable();
         let mut entries = vec![JournalEntry::Created {
@@ -651,9 +1315,9 @@ impl WorldCore {
             entries.push(JournalEntry::CapsGranted { granted });
         }
         // The ceiling rides on the checkpoint, so compaction keeps it; the
-        // default is omitted and reads back as the whole catalog.
+        // default is omitted and reads back as the default ceiling.
         let caps_ceiling: Option<Vec<String>> = (self.caps_ceiling
-            != crate::world_caps::catalog_names())
+            != crate::world_caps::default_ceiling_names())
         .then(|| self.caps_ceiling.iter().cloned().collect());
         if let Some(ceiling) = &caps_ceiling {
             // An older binary cannot read a `CapsCeiling` entry and refuses the
@@ -706,18 +1370,77 @@ impl WorldCore {
         // entity, forget an import receipt, or drop an owner epoch.
         let transfers: Option<Vec<HandoffTransferState>> =
             (!self.handoff_transfers.is_empty()).then(|| self.handoff_transfers.clone());
-        entries.push(JournalEntry::Checkpoint {
-            sequence: self.sequence,
-            module_hash,
-            seed: self.active_seed,
-            provenance: self.active_module_provenance.clone(),
-            execution_profile: Some(self.execution_profile),
-            caps_ceiling,
-            schedules,
-            transfers,
-            snapshot,
-            events: self.events.iter().cloned().collect(),
-        });
+        // Never compact a lease history that would fail restore
+        // validation into the replacement journal: refuse the
+        // compaction and keep the un-compacted journal instead
+        // (Codex review on PR #5571).
+        if !self.write_lease.is_bootstrap() {
+            self.write_lease
+                .validate_history()
+                .context("write lease history does not validate; keep the journal untrimmed")?;
+        }
+        let checkpoint_events: Vec<WorldEvent> = self.events.iter().cloned().collect();
+        let checkpoint_admin_events: Vec<WorldEvent> = self.admin_history.iter().cloned().collect();
+        // A checkpoint that already fits the per-entry bound stays a single
+        // inline `Checkpoint` entry, exactly as before this change: its
+        // journal keeps the version its contents already require, and older
+        // binaries keep reading it. Only a checkpoint whose assembled
+        // encoding exceeds the bound is split into part entries (which bump
+        // the journal to version 6 via `journal_version_required_by`).
+        let make_checkpoint =
+            |snapshot: String, events: Vec<WorldEvent>, admin_events: Vec<WorldEvent>| {
+                JournalEntry::Checkpoint {
+                    sequence: self.sequence,
+                    module_hash: module_hash.clone(),
+                    seed: self.active_seed,
+                    provenance: self.active_module_provenance.clone(),
+                    execution_profile: Some(self.execution_profile),
+                    caps_ceiling: caps_ceiling.clone(),
+                    schedules: schedules.clone(),
+                    transfers: transfers.clone(),
+                    lease: (!self.write_lease.is_bootstrap()).then(|| self.write_lease.clone()),
+                    snapshot,
+                    events,
+                    admin_history: Some(JournalAdminHistory {
+                        events: admin_events,
+                        complete: self.admin_history_complete,
+                    }),
+                    // `Some(empty)` means the writer knows no participants are
+                    // open; `None` is reserved for legacy checkpoints whose
+                    // state is unknown.
+                    open_presence: Some(self.open_presence.iter().copied().collect()),
+                }
+            };
+        let inline_checkpoint = make_checkpoint(
+            snapshot.clone(),
+            checkpoint_events.clone(),
+            checkpoint_admin_events.clone(),
+        );
+        if checkpoint_part_json_len(&inline_checkpoint)? <= MAX_CHECKPOINT_PART_BYTES {
+            entries.push(inline_checkpoint);
+        } else {
+            entries.extend(split_checkpoint_snapshot(self.sequence, &snapshot)?);
+            entries.extend(split_checkpoint_events(
+                self.sequence,
+                &checkpoint_events,
+                CheckpointEventPartKind::Retained,
+            )?);
+            entries.extend(split_checkpoint_events(
+                self.sequence,
+                &checkpoint_admin_events,
+                CheckpointEventPartKind::Admin,
+            )?);
+            // The variable-size fields ride in the bounded part entries
+            // immediately above; empty placeholders keep the scalar
+            // checkpoint schema stable while older checkpoints remain
+            // readable through the legacy no-parts path in restore.
+            let checkpoint = make_checkpoint(String::new(), Vec::new(), Vec::new());
+            ensure!(
+                checkpoint_part_json_len(&checkpoint)? <= MAX_CHECKPOINT_PART_BYTES,
+                "checkpoint scalar fields exceed the encoded size limit ({MAX_CHECKPOINT_PART_BYTES} bytes); keep the journal untrimmed"
+            );
+            entries.push(checkpoint);
+        }
         // The compacted journal keeps the rollback contract (see
         // `JOURNAL_VERSION`): when the checkpoint re-emits an entry a
         // version-1 binary cannot read, the new header must say so, or the
@@ -756,7 +1479,7 @@ impl WorldCore {
     /// # Errors
     ///
     /// Fails when the text is empty, oversized, or entirely sanitized away.
-    pub(crate) fn system_chat(&mut self, text: &str) -> Result<WorldEvent> {
+    pub(crate) fn prepare_system_chat(&self, text: &str) -> Result<WorldEvent> {
         ensure!(
             text.len() <= self.limits.chat_bytes,
             "chat message exceeds {} bytes",
@@ -764,7 +1487,14 @@ impl WorldCore {
         );
         let text = sanitize_chat(text);
         ensure!(!text.is_empty(), "chat message must not be empty");
-        self.commit(0, WorldEventKind::Chat(text))
+        Ok(WorldEvent {
+            sequence: self
+                .sequence
+                .checked_add(1)
+                .context("world event sequence exhausted")?,
+            participant_id: 0,
+            kind: WorldEventKind::Chat(text),
+        })
     }
 
     /// Whether a `schedule.at` for `id` may be pended, given the host clock
@@ -775,16 +1505,22 @@ impl WorldCore {
     /// A malformed id, a duplicate pending id, a full schedule, or a time past
     /// the horizon.
     pub(crate) fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
-        self.check_schedule_replacing(id, at_ms, now_ms, false)
+        self.check_schedule_inner(id, at_ms, now_ms, false)
     }
 
     /// Like [`Self::check_schedule`], but for a set that replaces the pending
-    /// schedule with the same id: the entry being replaced counts as already
-    /// cancelled, so it is neither a duplicate nor a use of the capacity.
+    /// schedule with the same id. Whether this is a replacement is derived
+    /// from this core's schedule map: the entry being replaced counts as
+    /// already cancelled, so it is neither a duplicate nor a use of capacity.
     /// Callers validate with this BEFORE persisting the replacement's
     /// cancellation, so a refused replacement (say, past the horizon) leaves
     /// the existing schedule standing (#807).
-    pub(crate) fn check_schedule_replacing(
+    pub(crate) fn check_schedule_replacing(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
+        let replacing = self.schedules.contains_key(id);
+        self.check_schedule_inner(id, at_ms, now_ms, replacing)
+    }
+
+    fn check_schedule_inner(
         &self,
         id: &str,
         at_ms: u64,
@@ -845,7 +1581,21 @@ impl WorldCore {
         &self.handoff_transfers
     }
 
+    /// The world's journal-resident native-spill write lease
+    /// (design #2819, phase 2 of issue #3804).
+    #[must_use]
+    pub(crate) fn write_lease(&self) -> &WriteLease {
+        &self.write_lease
+    }
+
     /// The per-world resource requests, independent of current server ceilings.
+    /// The world's total-memory budget ledger (#557): the effective
+    /// limit, the logical charge measured at restore, its high-water
+    /// mark, and the refusal count. Logical accounting, not RSS.
+    pub const fn memory_budget(&self) -> &crate::world_limits::WorldMemoryBudget {
+        &self.memory_budget
+    }
+
     pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
         self.execution_profile
     }
@@ -984,7 +1734,11 @@ impl WorldCore {
             }
             current = record.parent;
         }
-        Some(scopes)
+        if self.replica_mode {
+            Some(scopes.intersect(WorldScopes::JOIN))
+        } else {
+            Some(scopes)
+        }
     }
 
     /// Fewest actions the capability or any ancestor may still take, or `None`
@@ -1154,6 +1908,15 @@ impl WorldCore {
 
     /// Commit a chat message after validating capability and bounds.
     pub fn chat(&mut self, token: &JoinCapability, text: &str) -> Result<WorldEvent> {
+        let event = self.prepare_chat(token, text)?;
+        self.commit_prepared(event)
+    }
+
+    pub(crate) fn prepare_chat(
+        &mut self,
+        token: &JoinCapability,
+        text: &str,
+    ) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::CHAT)?;
         self.ensure_uses_left(participant_id)?;
         ensure!(
@@ -1178,8 +1941,18 @@ impl WorldCore {
         self.chat_abuse
             .check_frame(chat_endpoint(participant_id), true, now_ms)
             .map_err(crate::abuse::RefusalError::from)?;
-        let event = self.commit(participant_id, WorldEventKind::Chat(text))?;
-        Ok(event)
+        // Prepare only: the caller journals the event and commit_prepared
+        // applies it (chat() above does exactly that). Main's version of this
+        // body ended in self.commit(...); merged into prepare_chat that
+        // double-applied the event and commit_prepared refused it as stale.
+        Ok(WorldEvent {
+            sequence: self
+                .sequence
+                .checked_add(1)
+                .context("world event sequence exhausted")?,
+            participant_id,
+            kind: WorldEventKind::Chat(text),
+        })
     }
 
     /// Commit an opaque game input after validating capability and bounds.
@@ -1188,8 +1961,152 @@ impl WorldCore {
         self.commit_prepared(event)
     }
 
+    /// Bind `author_key` (the player's ed25519 verifying key) to the
+    /// participant the capability names, opting that participant into
+    /// signed play (#2814): from now on its inputs must arrive as
+    /// player-signed moves via [`WorldCore::input_signed`], and the
+    /// unsigned path refuses them. Re-binding the same key is a no-op;
+    /// binding a different key is refused (key rotation is out of scope).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the capability does not authorize input, or a different
+    /// key is already bound to the participant.
+    pub fn bind_author_key(&mut self, token: &JoinCapability, author_key: [u8; 32]) -> Result<u64> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        if let Some(bound) = self.author_keys.get(&participant_id) {
+            ensure!(
+                *bound == author_key,
+                "participant {participant_id} already has a different author key bound"
+            );
+        } else {
+            self.author_keys.insert(participant_id, author_key);
+            self.move_chains.entry(participant_id).or_default();
+        }
+        Ok(participant_id)
+    }
+
+    /// Validate a player-signed input and prepare its event, verifying
+    /// the signed move against the participant's bound key and current
+    /// chain position without advancing the chain (see
+    /// [`WorldCore::record_signed_move`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input`], plus: the participant has no
+    /// bound author key, or the signed move fails
+    /// [`signed::MoveChain::verify`].
+    pub(crate) fn prepare_input_signed(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<(WorldEvent, crate::chain::Event)> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        self.ensure_uses_left(participant_id)?;
+        ensure!(
+            input.len() <= self.limits.input_bytes,
+            "world input exceeds {} bytes",
+            self.limits.input_bytes
+        );
+        ensure!(!input.is_empty(), "world input must not be empty");
+        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "participant {participant_id} has no bound author key; bind one before signed play"
+            )
+        })?;
+        let chain = self
+            .move_chains
+            .get(&participant_id)
+            .cloned()
+            .unwrap_or_default();
+        let signed = chain.verify(signed_move, &self.world_id, input, &author)?;
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        Ok((
+            WorldEvent {
+                sequence,
+                participant_id,
+                kind: WorldEventKind::Input(input.to_vec()),
+            },
+            signed,
+        ))
+    }
+
+    /// Record a signed move whose prepared event has just committed:
+    /// advance the author's chain past it and keep the cross-referenced
+    /// record. The actor calls this immediately after
+    /// [`WorldCore::commit_prepared`] for the prepared event, while no
+    /// other input can interleave.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the participant has no bound author key, or the signed
+    /// move is no longer the author's expected next move at commit time.
+    pub(crate) fn record_signed_move(
+        &mut self,
+        event: &WorldEvent,
+        signed: &crate::chain::Event,
+    ) -> Result<()> {
+        let participant_id = event.participant_id;
+        let author = self
+            .author_keys
+            .get(&participant_id)
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!("participant {participant_id} has no bound author key")
+            })?;
+        let chain = self.move_chains.entry(participant_id).or_default();
+        ensure!(
+            signed.header.seq_num == chain.next_seq() && signed.header.backlink == chain.frontier(),
+            "signed move is no longer the author's expected next move at commit"
+        );
+        chain.accept(signed);
+        self.signed_moves.push(signed::SignedMoveRecord {
+            world_sequence: event.sequence,
+            participant_id,
+            author,
+            author_seq: signed.header.seq_num,
+            event_id: signed.id,
+            bytes: signed.bytes.clone(),
+        });
+        Ok(())
+    }
+
+    /// Commit a player-signed game input (#2814): the move is verified
+    /// against the participant's bound key and chain position, committed
+    /// as a normal input event, and recorded as signed evidence.
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input_signed`].
+    pub fn input_signed(
+        &mut self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<WorldEvent> {
+        let (event, signed) = self.prepare_input_signed(token, input, signed_move)?;
+        let event = self.commit_prepared(event)?;
+        self.record_signed_move(&event, &signed)?;
+        Ok(event)
+    }
+
+    /// Accepted signed moves, in world sequence order (#2814): the
+    /// evidence base an attestation witness replays.
+    #[must_use]
+    pub fn signed_moves(&self) -> &[signed::SignedMoveRecord] {
+        &self.signed_moves
+    }
+
     pub(crate) fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.author_keys.contains_key(&participant_id),
+            "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
@@ -1220,7 +2137,94 @@ impl WorldCore {
         while self.events.len() > self.limits.retained_events {
             self.events.pop_front();
         }
+        self.record_admin_history(event.clone());
         Ok(event)
+    }
+
+    /// Add an event to the bounded, ordered history reserved for admin export.
+    pub(crate) fn record_admin_history(&mut self, event: WorldEvent) {
+        if let WorldEventKind::System { event } = &event.kind
+            && let Some((participant, joined)) = presence_change(event)
+        {
+            if joined {
+                self.open_presence.insert(participant);
+            } else {
+                self.open_presence.remove(&participant);
+            }
+        }
+        self.admin_history_ledger
+            .track(admin_history_event_bytes(&event));
+        self.admin_history.push_back(event);
+        while self.admin_history.len() > self.limits.retained_events.min(MAX_ADMIN_HISTORY_EVENTS)
+            || self.admin_history_ledger.effective_bytes() > MAX_ADMIN_HISTORY_BYTES
+        {
+            if self.admin_history.pop_front().is_none() {
+                break;
+            }
+            self.admin_history_ledger.untrack_front();
+            self.admin_history_complete = false;
+        }
+    }
+
+    fn restore_admin_history(
+        &mut self,
+        events: Vec<WorldEvent>,
+        complete: bool,
+        sequence: u64,
+    ) -> Result<()> {
+        ensure!(
+            events.len() <= self.limits.retained_events.min(MAX_ADMIN_HISTORY_EVENTS),
+            "checkpoint admin history exceeds its event bound"
+        );
+        ensure!(
+            admin_history_bytes(&events) <= MAX_ADMIN_HISTORY_BYTES,
+            "checkpoint admin history exceeds its byte bound"
+        );
+        let mut previous: Option<u64> = None;
+        for event in &events {
+            match &event.kind {
+                WorldEventKind::System { .. } => ensure!(
+                    event.sequence == 0 && event.participant_id == 0,
+                    "checkpoint admin history system event claims a sequence"
+                ),
+                _ => {
+                    ensure!(
+                        event.sequence > 0,
+                        "checkpoint admin history event has no sequence"
+                    );
+                    if let Some(last) = previous {
+                        ensure!(
+                            event.sequence == last.saturating_add(1),
+                            "checkpoint admin history sequence jumps from {last} to {}",
+                            event.sequence
+                        );
+                    }
+                    previous = Some(event.sequence);
+                }
+            }
+        }
+        ensure!(
+            previous.is_none_or(|last| last <= sequence),
+            "checkpoint admin history contains a sequence beyond {sequence}"
+        );
+        ensure!(
+            !complete || previous.unwrap_or(0) == sequence,
+            "complete checkpoint admin history ends at sequence {}, not {sequence}",
+            previous.unwrap_or(0)
+        );
+        ensure!(
+            !complete
+                || sequence == 0
+                || events
+                    .iter()
+                    .find(|event| event.sequence > 0)
+                    .is_some_and(|event| event.sequence == 1),
+            "complete checkpoint admin history does not start at sequence 1"
+        );
+        self.admin_history_ledger = AdminHistoryByteLedger::rebuild(&events);
+        self.admin_history = events.into();
+        self.admin_history_complete = complete;
+        Ok(())
     }
 
     /// Return the current bounded snapshot after validating join scope. Its
@@ -1311,29 +2315,6 @@ impl WorldCore {
         );
         self.ensure_not_expired(participant_id)?;
         Ok(participant_id)
-    }
-
-    pub(crate) fn commit(
-        &mut self,
-        participant_id: u64,
-        kind: WorldEventKind,
-    ) -> Result<WorldEvent> {
-        self.sequence = self
-            .sequence
-            .checked_add(1)
-            .context("world event sequence exhausted")?;
-        let event = WorldEvent {
-            sequence: self.sequence,
-            participant_id,
-            kind,
-        };
-        self.spend(participant_id);
-        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
-        self.events.push_back(event.clone());
-        while self.events.len() > self.limits.retained_events {
-            self.events.pop_front();
-        }
-        Ok(event)
     }
 
     pub(crate) fn oldest_sequence(&self) -> u64 {

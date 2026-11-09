@@ -4,7 +4,13 @@ import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommentsStore, validateNewComment } from "../src/comments.ts";
-import { dnsSectionFromRegister, isDnsSection, parseDnsRegister, summarizeDns } from "../src/dns.ts";
+import {
+  dnsSectionFromRegister,
+  dnsSectionFromRegisterJson,
+  isDnsSection,
+  parseDnsRegister,
+  summarizeDns,
+} from "../src/dns.ts";
 import type { SessionFeedEntry } from "../src/model.ts";
 import { PAGES } from "../src/pages.ts";
 import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
@@ -36,6 +42,25 @@ describe("dns register parser", () => {
     expect(active?.plan).toBe("Active — fleet infrastructure");
     expect(active?.status).toBe("active");
     expect(entries.find((e) => e.domain === "noprice.example")?.priceUsd).toBeNull();
+  });
+
+  test("rejects impossible calendar renewal dates, keeps the leap date (#2199)", () => {
+    const md = [
+      "# DNS / Domain Register",
+      "",
+      "| Domain | Registrar | DNS hosted at | Next renewal | Auto-renew | Renewal price (list) | Prior-year cost | Where used | Plan / status | Review? |",
+      "|---|---|---|---|---|---|---|---|---|---|",
+      "| feb30.example | Porkbun | Porkbun | 2026-02-30 | ON | $20.00 | unknown | Parked | Parked | REVIEW |",
+      "| month13.example | Porkbun | Porkbun | 2026-13-01 | ON | $30.00 | unknown | Parked | Parked | REVIEW |",
+      "| month00.example | Porkbun | Porkbun | 2026-00-10 | ON | $40.00 | unknown | Parked | Parked | REVIEW |",
+      "| apr31.example | Porkbun | Porkbun | 2026-04-31 | ON | $50.00 | unknown | Parked | Parked | REVIEW |",
+      "| leap.example | Porkbun | Porkbun | 2024-02-29 | ON | $5.00 | unknown | Parked | Parked | REVIEW |",
+      "| real.example | Porkbun | Porkbun | 2027-01-15 | ON | $10.00 | unknown | Parked | Parked | REVIEW |",
+    ].join("\n");
+    const entries = parseDnsRegister(md);
+    expect(entries.map((e) => e.domain)).toEqual(["leap.example", "real.example"]);
+    const section = dnsSectionFromRegister(md, "2026-10-25T00:00:00Z", "test");
+    expect(section?.totalAnnualListUsd).toBe(15);
   });
 
   test("classifies active / earmarked / unused from the plan cell", () => {
@@ -133,6 +158,172 @@ describe("dns register parser", () => {
     expect(dnsSectionFromRegister("# nothing\n", "2026-10-25T00:00:00Z", "test")).toBeNull();
   });
 
+  test("register.json section: JSON fields win, Markdown supplies editorial columns (#902 slice 2)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const json = JSON.stringify({
+      generated_at: "2026-11-01T16:26:34Z",
+      domains: [
+        {
+          domain: "first.de",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-02-09",
+          auto_renew: true,
+          renewal_price_usd: 4.07,
+          source: "porkbun-api",
+        },
+        {
+          domain: "active.example",
+          registrar: "Porkbun",
+          dns_hosted_at: "Cloudflare",
+          next_renewal: "2027-02-24",
+          auto_renew: false,
+          renewal_price_usd: 29.35,
+          source: "porkbun-api",
+        },
+        {
+          domain: "jsononly.example",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-03-01",
+          auto_renew: null,
+          renewal_price_usd: null,
+          source: "register-markdown",
+        },
+      ],
+    });
+    const section = dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "test-json", mdEntries);
+    expect(section).not.toBeNull();
+    // JSON is authoritative and complete: a domain absent from the
+    // Markdown still renders; a Markdown-only domain does not.
+    expect(section?.entries.map((e) => e.domain)).toEqual(["first.de", "active.example", "jsononly.example"]);
+    expect(section?.totalAnnualListUsd).toBe(33.42);
+    const active = section?.entries.find((e) => e.domain === "active.example");
+    expect(active?.priceUsd).toBe(29.35);
+    expect(active?.autoRenew).toBe("OFF");
+    // Editorial columns come from the Markdown row for the same domain.
+    expect(active?.plan).toBe("Active — fleet infrastructure");
+    expect(active?.status).toBe("active");
+    const jsonOnly = section?.entries.find((e) => e.domain === "jsononly.example");
+    expect(jsonOnly?.autoRenew).toBe("unknown");
+    expect(jsonOnly?.priceUsd).toBeNull();
+    expect(jsonOnly?.status).toBe("unused");
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("register.json section: missing/malformed JSON yields null so the caller falls back (#902 slice 2)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    expect(dnsSectionFromRegisterJson("{not json", "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    expect(dnsSectionFromRegisterJson('{"domains":[]}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    expect(dnsSectionFromRegisterJson('{"generated_at":"x"}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    const badRow = JSON.stringify({
+      domains: [
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "soon",
+          auto_renew: true,
+          renewal_price_usd: 1,
+        },
+      ],
+    });
+    expect(dnsSectionFromRegisterJson(badRow, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    const dup = JSON.stringify({
+      domains: [
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-01-01",
+          auto_renew: true,
+          renewal_price_usd: 1,
+        },
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-01-02",
+          auto_renew: true,
+          renewal_price_usd: 2,
+        },
+      ],
+    });
+    expect(dnsSectionFromRegisterJson(dup, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+  });
+
+  test("register.json section: impossible renewal dates yield null, leap date kept (#4858)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const row = (domain: string, next_renewal: string) => ({
+      domain,
+      registrar: "Porkbun",
+      dns_hosted_at: "Porkbun",
+      next_renewal,
+      auto_renew: true,
+      renewal_price_usd: 10,
+    });
+    // One impossible row poisons the whole JSON section: the builder
+    // returns null on ANY malformation so the caller falls back to
+    // the Markdown parse, mirroring the #2199 Markdown cases (#4835).
+    for (const bad of ["2027-02-30", "2026-13-01", "2026-00-10", "2026-04-31"]) {
+      const json = JSON.stringify({ domains: [row("good.example", "2027-01-15"), row("bad.example", bad)] });
+      expect(dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    }
+    // Real dates still parse, including the leap date.
+    const ok = JSON.stringify({ domains: [row("leap.example", "2024-02-29"), row("real.example", "2027-01-15")] });
+    const section = dnsSectionFromRegisterJson(ok, "2026-11-01T17:00:00Z", "t", mdEntries);
+    expect(section?.entries.map((e) => e.domain)).toEqual(["leap.example", "real.example"]);
+    expect(section?.totalAnnualListUsd).toBe(20);
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("register.json section: negative renewal prices yield null, zero kept (#4883)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const row = (domain: string, renewal_price_usd: number | null) => ({
+      domain,
+      registrar: "Porkbun",
+      dns_hosted_at: "Porkbun",
+      next_renewal: "2027-01-15",
+      auto_renew: true,
+      renewal_price_usd,
+    });
+    // A finite negative price is money the shared gate refuses
+    // (#4226): one negative row poisons the whole JSON section, so
+    // the builder returns null and the caller falls back to the
+    // Markdown parse — including a mixed register whose total only
+    // goes negative in aggregate.
+    for (const domains of [
+      [row("neg.example", -25)],
+      [row("neg.example", -0.01)],
+      [row("good.example", 10), row("neg.example", -40)],
+    ]) {
+      const json = JSON.stringify({ domains });
+      expect(dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    }
+    // Zero is valid money (#4226) and positive prices still build a
+    // section the gate accepts — the builder/gate invariant holds.
+    const ok = JSON.stringify({ domains: [row("free.example", 0), row("paid.example", 12.5)] });
+    const section = dnsSectionFromRegisterJson(ok, "2026-11-01T17:00:00Z", "t", mdEntries);
+    expect(section).not.toBeNull();
+    expect(section?.totalAnnualListUsd).toBe(12.5);
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("isDnsSection rejects impossible entry renewal dates (#4858)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    const withRenewal = (renewal: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, renewal } : e)),
+    });
+    for (const bad of ["2027-02-30", "2026-13-01", "2026-00-10", "2026-04-31", "soon", 20270209, undefined]) {
+      expect(isDnsSection(withRenewal(bad))).toBe(false);
+    }
+    expect(isDnsSection(withRenewal("2024-02-29"))).toBe(true);
+    expect(isDnsSection(withRenewal("2027-01-15"))).toBe(true);
+  });
+
   test("isDnsSection owns the finite-number + status rules (#2412)", () => {
     const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
     expect(good).not.toBeNull();
@@ -162,6 +353,33 @@ describe("dns register parser", () => {
     expect(isDnsSection(withStatus("unused"))).toBe(true);
   });
 
+  test("isDnsSection rejects negative money, allows zero (#4226)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    // Negative finite money passed the #2412 finiteness gate: a negative
+    // total renders as negative spend and records a negative snapshot.
+    expect(isDnsSection({ ...good, totalAnnualListUsd: -999 })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: -0.01 })).toBe(false);
+    // Zero is the control: a free tier totals 0 and stays valid.
+    expect(isDnsSection({ ...good, totalAnnualListUsd: 0 })).toBe(true);
+    const withEntry = (priceUsd: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, priceUsd } : e)),
+    });
+    expect(isDnsSection(withEntry(-4.07))).toBe(false);
+    expect(isDnsSection(withEntry(-0.01))).toBe(false);
+    expect(isDnsSection(withEntry(0))).toBe(true);
+    expect(isDnsSection(withEntry(null))).toBe(true);
+  });
+
+  test("isDnsSection rejects impossible generatedAt dates Date.parse rolls over (#3441)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
+      expect(isDnsSection({ ...good, generatedAt })).toBe(false);
+    }
+  });
 });
 
 // --- Identity registry (#906 §3) ---------------------------------------------
@@ -341,6 +559,43 @@ describe("dashboard comments", () => {
       url: "https://github.com/x#issuecomment-11",
     });
     expect(landed?.githubState).toBe("posted");
+  });
+
+  test("github result urls outside https://github.com/ are refused with state unchanged (#950)", async () => {
+    const dir3 = mkdtempSync(join(tmpdir(), "agg-comments-url-"));
+    const store = new CommentsStore(join(dir3, "comments.json"));
+    const addGh = () =>
+      store.add({
+        objectRef: "gh:developing-today/code#950",
+        kind: "github",
+        author: agent,
+        body: "posting this",
+        githubRef: "developing-today/code#950",
+      });
+
+    // Every non-github.com scheme/host is refused on a pending
+    // comment, with no githubUrl stored and state unchanged.
+    const pending = await addGh();
+    for (const bad of [
+      "javascript:alert(document.domain)",
+      "data:text/html,<script>alert(1)</script>",
+      "http://github.com/developing-today/code/issues/950#issuecomment-1",
+      "https://evil-github.com/developing-today/code#1",
+      "https://github.com.evil.com/#1",
+    ]) {
+      await expect(store.markGithubResult(pending.id, { url: bad })).rejects.toThrow("https://github.com/");
+      const row = (await store.all()).find((c) => c.id === pending.id);
+      expect(row?.githubState).toBe("pending");
+      expect(row?.githubUrl).toBeUndefined();
+    }
+
+    // The real flow still works: an https://github.com/ result URL
+    // is recorded and the comment posts.
+    const ok = await store.markGithubResult(pending.id, {
+      url: "https://github.com/developing-today/code/issues/950#issuecomment-1",
+    });
+    expect(ok?.githubState).toBe("posted");
+    expect(ok?.githubUrl).toBe("https://github.com/developing-today/code/issues/950#issuecomment-1");
   });
 
   test("a repeat report after a failed persist still lands the result on disk (#1686)", async () => {
@@ -552,6 +807,23 @@ afterAll(() => {
 });
 
 describe("slice-3 routes", () => {
+  test("global search HTML and JSON share ref/title matching", async () => {
+    const q = encodeURIComponent("developing-today/code#902");
+    const data = (await (await fetch(`http://127.0.0.1:${port}/api/search.json?q=${q}`)).json()) as {
+      query: string;
+      total: number;
+      results: { title: string; refs: string[] }[];
+    };
+    expect(data.query).toBe("developing-today/code#902");
+    expect(data.total).toBeGreaterThan(0);
+    expect(data.results.some((result) => result.refs.includes("developing-today/code#902"))).toBe(true);
+
+    const html = await (await fetch(`http://127.0.0.1:${port}/search?q=${q}`)).text();
+    expect(html).toContain("Search board and roadmap work");
+    expect(html).toContain("developing-today/code#902");
+    expect(html).toContain("items · fixtures");
+  });
+
   test("dns + sessions + pages routes serve", async () => {
     const dns = await (await fetch(`http://127.0.0.1:${port}/dns`)).text();
     expect(dns).toContain("DNS / domain register");
@@ -636,6 +908,32 @@ describe("slice-3 routes", () => {
     expect(discuss).toContain("Post as GitHub comment");
   });
 
+  test("github-result endpoint refuses non-github.com urls with a 400 (#950)", async () => {
+    const post = (body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/comments/github-result`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const author = { kind: "drew", id: "drew", label: "Drew" };
+    const ref = "gh:developing-today/code#950";
+    const created = (await (
+      await fetch(`http://127.0.0.1:${port}/api/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          objectRef: ref,
+          kind: "github",
+          author,
+          body: "for the issue",
+          githubRef: "developing-today/code#950",
+        }),
+      })
+    ).json()) as { comment: { id: string } };
+    const bad = await post({ id: created.comment.id, url: "javascript:alert(document.domain)" });
+    expect(bad.status).toBe(400);
+  });
+
   test("item page carries the dashboard comments form + kinds explainer", async () => {
     const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
       board: { id: string }[];
@@ -676,7 +974,10 @@ describe("slice-3 routes", () => {
     expect((await post(reshuffledRef, "Follow-up under the new row id")).status).toBe(201);
 
     const json = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
-      rows: { subject: string; annotations: { body: string; date: string; kind: string; author: { label: string } }[] }[];
+      rows: {
+        subject: string;
+        annotations: { body: string; date: string; kind: string; author: { label: string } }[];
+      }[];
       annotationAliases: Record<string, string>;
     };
     const reshuffledRow = json.rows.find((row) => row.subject === reshuffledRef)!;
@@ -684,13 +985,17 @@ describe("slice-3 routes", () => {
       "Moved after review",
       "Follow-up under the new row id",
     ]);
-    expect(reshuffledRow.annotations[0]).toMatchObject({ date: "2026-10-12", kind: "decision", author: { label: "Drew" } });
+    expect(reshuffledRow.annotations[0]).toMatchObject({
+      date: "2026-10-12",
+      kind: "decision",
+      author: { label: "Drew" },
+    });
     expect(json.annotationAliases[reshuffledRef]).toBe(stableRef);
 
     const detail = await (await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent(reshuffledRef)}`)).text();
     expect(detail).toContain("Roadmap annotations");
     expect(detail).toContain("Follow-up under the new row id");
-    expect(detail).toContain("name=\"date\"");
+    expect(detail).toContain('name="date"');
     const timeline = await (await fetch(`http://127.0.0.1:${port}/roadmap`)).text();
     expect(timeline).toContain("Moved after review");
   });

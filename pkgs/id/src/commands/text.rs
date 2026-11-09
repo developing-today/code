@@ -33,6 +33,40 @@
 //! A quoted field is a JSON string literal, so a consumer that needs the
 //! original bytes can parse it as JSON. Values with no structure-breaking
 //! character are the common case and stay unwrapped, exactly as before.
+//!
+//! # The plain-output contract (design #3455, Phase 3b)
+//!
+//! A plain-text field is row-safe only if it contains no character that can
+//! act on the terminal. There are exactly two such classes:
+//!
+//! * **Structure characters**: control characters (category Cc, matched by
+//!   `char::is_control`) plus the line/paragraph separators `U+2028` /
+//!   `U+2029`, which are not controls but which some consumers treat as line
+//!   breaks.
+//! * **Format characters**: category Cf, per the crate's one shared set
+//!   (`crate::is_format_char`). These are invisible or reorder the text
+//!   around them (bidi overrides/isolates, zero-width characters), so they
+//!   can falsify a row's columns at the terminal even from inside quotes.
+//!
+//! Every plain renderer in `pkgs/id` accounts for both classes; the
+//! disposition differs by surface kind:
+//!
+//! * **Row renderers escape**: [`plain_field`] (this module) and the
+//!   `key=value` renderer (`crate::commands::group`) quote an affected value and
+//!   render each offending character as `\uXXXX`, so the value stays complete
+//!   and JSON-recoverable but no raw actor reaches the terminal.
+//! * **Stripping sanitizers strip**: `crate::world::sanitize_display_name`,
+//!   `crate::world::sanitize_chat` and the SSH world's terminal gate drop both
+//!   classes (chat keeps `ZWJ`/`ZWNJ` so legitimate emoji survive; the SSH
+//!   gate keeps `LF`/`TAB` so terminal layout survives).
+//! * **Ingest validators refuse**: directory names/descriptions, invite
+//!   names and petnames refuse both classes at the boundary, so no new
+//!   stored value carries one.
+//!
+//! No surface re-derives the character set: the single definition is
+//! `crate::is_format_char`, the complete Unicode 16 general-category Cf
+//! set, defined once in `id-core` (`crates/id-core/src/unicode.rs`) and
+//! shared by validation and rendering.
 
 use std::fmt::Display;
 
@@ -108,6 +142,27 @@ pub fn plain_field(value: &str) -> String {
 /// Formats one tab-separated row whose name field may contain untrusted text.
 pub fn tsv_row(hash: impl Display, name: &str) -> String {
     format!("{hash}\t{}", plain_field(name))
+}
+
+/// Formats one file-listing row (#4973):
+/// `<hash>\t<name>\t<origin>\t<uploaded_at>`.
+///
+/// `origin` is the node that first wrote the file and `uploaded_at` its
+/// upload time (unix seconds), both from the file's metadata tags. A file
+/// written before those tags existed renders both as `unknown` — the
+/// listing never guesses an origin.
+pub fn list_tsv_row(
+    hash: impl Display,
+    name: &str,
+    origin: Option<&str>,
+    uploaded_at: Option<u64>,
+) -> String {
+    format!(
+        "{}\t{}\t{}",
+        tsv_row(hash, name),
+        origin.map_or_else(|| "unknown".to_owned(), plain_field),
+        uploaded_at.map_or_else(|| "unknown".to_owned(), |ts| ts.to_string())
+    )
 }
 
 #[cfg(test)]
@@ -216,6 +271,22 @@ mod tests {
         );
         assert_eq!(rendered.matches('\t').count(), 0);
         assert!(!rendered.contains('\n'));
+    }
+
+    #[test]
+    fn list_tsv_row_shows_origin_and_upload_time() {
+        assert_eq!(
+            list_tsv_row("hash", "a.txt", Some("node-a"), Some(1_700_000_000)),
+            "hash\ta.txt\tnode-a\t1700000000"
+        );
+    }
+
+    #[test]
+    fn list_tsv_row_unknown_for_pre_change_files() {
+        assert_eq!(
+            list_tsv_row("hash", "old.txt", None, None),
+            "hash\told.txt\tunknown\tunknown"
+        );
     }
 
     #[test]
