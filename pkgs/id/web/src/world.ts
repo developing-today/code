@@ -198,7 +198,8 @@ function initWorld(): void {
     isRecord(value) &&
     typeof value.capability === "string" &&
     value.capability.length > 0 &&
-    typeof value.display_name === "string";
+    typeof value.display_name === "string" &&
+    value.display_name.length > 0;
 
   const rejectFrame = () => {
     setStatus("Received an invalid world frame", "error");

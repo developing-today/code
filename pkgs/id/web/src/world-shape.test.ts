@@ -121,7 +121,9 @@ describe("world page HTTP response shape validation (#7831)", () => {
     ["records null", { records_sequence: 0, records: null, next_after: null }],
     ["records missing", { records_sequence: 0, next_after: null }],
     ["records_sequence missing", { records: {}, next_after: null }],
+    ["records_sequence wrong type", { records_sequence: "7", records: {}, next_after: null }],
     ["next_after wrong type", { records_sequence: 0, records: {}, next_after: 7 }],
+    ["surface wrong type", { records_sequence: 0, records: {}, next_after: null, surface: "x" }],
   ])("host-view malformed payload (%s) fails closed with no partial render", async (_label, p) => {
     payload = p;
     const recordsBefore = q("[data-world-records]").textContent;
@@ -156,6 +158,8 @@ describe("world page HTTP response shape validation (#7831)", () => {
     ["numeric capability", { capability: 123, display_name: "ada" }],
     ["empty capability", { capability: "", display_name: "ada" }],
     ["missing display_name", { capability: "cap-x" }],
+    ["empty display_name", { capability: "cap-x", display_name: "" }],
+    ["display_name wrong type", { capability: "cap-x", display_name: 7 }],
   ])("invite malformed payload (%s) fails with nothing stored or shown", async (_label, p) => {
     payload = p;
     sessionStorage.clear();
