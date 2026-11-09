@@ -6,9 +6,11 @@
 //! `@`/`#` phrases against in-memory indexes (the notes/documents surface), demonstrates
 //! the spec's ranking, and renders stored references in all four states. The #5178 slice
 //! adds [`FanOut`]: resolution across several stores' indexes with a deterministic merge
-//! (see its docs for the ordering and provenance rules). There is still no locator fetch
-//! (following a stored reference's hints to render a target in another store) and no
-//! hosted-store search here; those remain later #5178 slices. The fan-out design
+//! (see its docs for the ordering and provenance rules). The #5927 slice adds locator
+//! fetch ([`FanOut::fetch_located`] / [`FanOut::render_located`]): following a stored
+//! reference's hints to fetch and render a target in another store, with the renamed,
+//! cleared, and unresolved-for-viewer states kept distinct across the boundary. There
+//! is still no hosted-store search here; that remains a later #5178 slice. The fan-out design
 //! record is `doc/2026-11-04T15-33-00Z_design_friendly_name_fanout.md`.
 //!
 //! The rules that matter, from the spec:
@@ -113,7 +115,8 @@ pub struct Reference {
     /// The phrase as the author typed/chose it. Kept verbatim: a renamed target still renders
     /// with this surface (historical fidelity); it is never silently rewritten.
     pub surface: String,
-    /// Stores where the target was found, as hints for a later locator fetch (v2, not here).
+    /// Stores where the target was found, as hints for the locator fetch
+    /// ([`FanOut::fetch_located`] / [`FanOut::render_located`], #5927).
     pub locator_hints: Vec<StoreId>,
     /// Who authored the reference.
     pub author_context: AuthorKey,
@@ -674,10 +677,10 @@ impl LocalIndex {
 ///   hidden targets), so fan-out inherits the per-store access filtering: an
 ///   inaccessible target contributes no candidate and no claimant count in any store.
 ///
-/// What this slice is not: following a stored reference's locator hints to fetch or
-/// render a target across a store boundary, and hosted-store indexing/search. Both are
-/// later #5178 slices; a fan-out [`Reference`] already records every store that holds
-/// its target as locator hints for that follow-up.
+/// What this type is not: hosted-store indexing/search (a later #5178 slice). A
+/// fan-out [`Reference`] records every store that holds its target as locator hints,
+/// and the locator-fetch slice (#5927) follows them — see
+/// [`fetch_located`](Self::fetch_located) and [`render_located`](Self::render_located).
 #[derive(Clone, Debug, Default)]
 pub struct FanOut {
     stores: Vec<LocalIndex>,
@@ -791,6 +794,106 @@ impl FanOut {
                 Ok(self.insert(only, &resolution.phrase, author))
             }
             _ => Err(InsertError::Ambiguous(top.len())),
+        }
+    }
+}
+
+/// A stored reference rendered by following its locator hints across stores
+/// (#5927, the locator-fetch slice of #5178): the [`Rendered`] view plus the store
+/// that held the target for this viewer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocatedRender {
+    /// The rendered reference, in the state the answering store gives it:
+    /// resolved, renamed, or cleared when a hinted store holds the target, and
+    /// unresolved-for-viewer when none does.
+    pub rendered: Rendered,
+    /// The store that answered the fetch — the first locator hint whose store
+    /// holds the target visibly for this viewer. `None` in the
+    /// unresolved-for-viewer state: the render is then built from the stored
+    /// surface alone and names no store, so a target that is inaccessible to
+    /// this viewer is indistinguishable from an absent one — no candidate, no
+    /// claimant, no existence information crosses the boundary.
+    pub store: Option<StoreId>,
+}
+
+impl FanOut {
+    /// The hinted store that holds `reference`'s target for this viewer, if any.
+    ///
+    /// The hints are the locator contract: when a reference records hints, only
+    /// those stores are consulted, in hint order, and the first one holding the
+    /// target decides — live, renamed, or cleared. A store where the target is
+    /// hidden from this viewer holds nothing (`LocalIndex::object` is
+    /// viewer-scoped), so the search passes to the next hint without the hidden
+    /// target's existence ever surfacing. With no hints recorded — a reference
+    /// parsed back from its markdown degradation carries none — the viewer's
+    /// stores are tried in fan-out order.
+    fn located_store(&self, reference: &Reference) -> Option<&LocalIndex> {
+        if reference.locator_hints.is_empty() {
+            return self
+                .stores
+                .iter()
+                .find(|store| store.object(&reference.target_id).is_some());
+        }
+        for hint in &reference.locator_hints {
+            // Every index carrying the hinted store id is examined, in
+            // fan-out order: an earlier index with the same id that does
+            // not hold the target does not shadow a later one that does.
+            for store in &self.stores {
+                if store.store() == hint && store.object(&reference.target_id).is_some() {
+                    return Some(store);
+                }
+            }
+        }
+        None
+    }
+
+    /// Fetches the target of `reference` by following its locator hints across
+    /// this fan-out's stores (#5927): the answering store and the object as
+    /// that store holds it for this viewer (a cleared target is returned with
+    /// `cleared` set — rendering decides what that means). `None` when no
+    /// hinted store holds the target visibly for this viewer, which covers
+    /// both "not there" and "there but inaccessible": the two are deliberately
+    /// indistinguishable, so nothing about an inaccessible target leaks.
+    ///
+    /// The fetch follows the reference's stable logical ID; an exact-revision
+    /// pin (`Reference::pinned_revision`) stays on the reference and does not
+    /// change which object is fetched — the per-store indexes hold the logical
+    /// object, not its revision chain.
+    #[must_use]
+    pub fn fetch_located(&self, reference: &Reference) -> Option<(&StoreId, &IndexedObject)> {
+        let store = self.located_store(reference)?;
+        let object = store.object(&reference.target_id)?;
+        Some((store.store(), object))
+    }
+
+    /// Renders `reference` for this viewer by following its locator hints
+    /// across the store boundary (#5927): the single-store [`render`] of the
+    /// answering store, so the renamed, cleared, and resolved states mean
+    /// exactly what they mean locally, plus the store that answered. When no
+    /// hinted store holds the target for this viewer, the state is
+    /// [`RenderState::Unresolved`] — the unresolved-for-viewer state, distinct
+    /// from cleared (a tombstone the viewer may know about) — the text is
+    /// built from the stored surface alone, and no store is named.
+    #[must_use]
+    pub fn render_located(&self, reference: &Reference) -> LocatedRender {
+        match self.located_store(reference) {
+            Some(store) => LocatedRender {
+                rendered: render(reference, store),
+                store: Some(store.store().clone()),
+            },
+            None => LocatedRender {
+                rendered: Rendered {
+                    state: RenderState::Unresolved,
+                    text: format!(
+                        "{}{} (unresolved)",
+                        reference.sigil.chr(),
+                        reference.surface
+                    ),
+                    current_label: None,
+                    target_id: reference.target_id,
+                },
+                store: None,
+            },
         }
     }
 }
@@ -1474,5 +1577,418 @@ mod tests {
         let parsed_unpinned =
             Reference::from_markdown(&unpinned.to_markdown(), Sigil::Topic).unwrap();
         assert_eq!(parsed_unpinned.pinned_revision, None);
+    }
+
+    fn located_reference(target: Hash, surface: &str, hints: &[&str]) -> Reference {
+        Reference {
+            target_id: target,
+            pinned_revision: None,
+            sigil: Sigil::Topic,
+            surface: surface.to_owned(),
+            locator_hints: hints
+                .iter()
+                .map(|hint| StoreId((*hint).to_owned()))
+                .collect(),
+            author_context: author(9),
+        }
+    }
+
+    #[test]
+    fn locator_fetch_renders_a_target_from_another_store() {
+        // The target lives only in b-store; the hints name a-store first, so the
+        // fetch must cross the boundary to render it at all (#5927 acceptance 1).
+        let doc = object(b"loc-doc", Sigil::Topic, "Atlas", vec![], 1);
+        let fanout = FanOut::new(vec![
+            store_index("a-store", vec![]),
+            store_index("b-store", vec![doc.clone()]),
+        ]);
+        let reference = located_reference(doc.id, "Atlas", &["a-store", "b-store"]);
+        let (store, fetched) = fanout.fetch_located(&reference).unwrap();
+        assert_eq!(*store, StoreId("b-store".to_owned()));
+        assert_eq!(fetched.id, doc.id);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Resolved);
+        assert_eq!(located.rendered.current_label.as_deref(), Some("Atlas"));
+        assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
+    }
+
+    #[test]
+    fn locator_fetch_renders_renamed_across_the_boundary() {
+        // The target was renamed in its home store after the reference was
+        // stored: the stored surface is kept, the current label is the new one,
+        // and the state is Renamed — distinct from Resolved and Cleared.
+        let doc = object(b"loc-renamed", Sigil::Topic, "Atlas Revised", vec![], 1);
+        let fanout = FanOut::new(vec![store_index("b-store", vec![doc.clone()])]);
+        let reference = located_reference(doc.id, "Atlas", &["b-store"]);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Renamed);
+        assert_eq!(located.rendered.text, "#Atlas");
+        assert_eq!(
+            located.rendered.current_label.as_deref(),
+            Some("Atlas Revised")
+        );
+        assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
+    }
+
+    #[test]
+    fn locator_fetch_renders_cleared_across_the_boundary() {
+        // A tombstone in the hinted store is a state the viewer may know about:
+        // Cleared, with the answering store named — distinct from unresolved.
+        let doc = object(b"loc-cleared", Sigil::Topic, "Atlas", vec![], 1);
+        let mut b = store_index("b-store", vec![doc.clone()]);
+        assert!(b.clear(&doc.id));
+        let fanout = FanOut::new(vec![b]);
+        let reference = located_reference(doc.id, "Atlas", &["b-store"]);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Cleared);
+        assert_eq!(located.rendered.current_label, None);
+        assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
+        // The fetch itself returns the tombstone; rendering decides its state.
+        let (_, fetched) = fanout.fetch_located(&reference).unwrap();
+        assert!(fetched.cleared);
+    }
+
+    #[test]
+    fn locator_fetch_unresolved_for_viewer_is_distinct_and_names_no_store() {
+        // No hinted store holds the target for this viewer (it lives in a store
+        // the hints do not name, and one hint names a store not in the set at
+        // all): unresolved-for-viewer — inert text from the stored surface
+        // alone, no current label, no store named.
+        let doc = object(b"loc-elsewhere", Sigil::Topic, "Atlas", vec![], 1);
+        let fanout = FanOut::new(vec![
+            store_index("a-store", vec![]),
+            store_index("b-store", vec![doc.clone()]),
+        ]);
+        let reference = located_reference(doc.id, "Atlas", &["a-store", "gone-store"]);
+        assert_eq!(fanout.fetch_located(&reference), None);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Unresolved);
+        assert_eq!(located.rendered.text, "#Atlas (unresolved)");
+        assert_eq!(located.rendered.current_label, None);
+        assert_eq!(located.store, None);
+    }
+
+    #[test]
+    fn locator_fetch_hidden_target_leaks_nothing() {
+        // The hinted store holds the target but this viewer may not see it:
+        // the fetch must behave exactly as if the target were absent — no
+        // object, no label, no store named, no existence signal (#5927
+        // acceptance 3).
+        let secret = object(b"loc-secret", Sigil::Topic, "Zephyr", vec![], 2);
+        let mut b = store_index("b-store", vec![secret.clone()]);
+        b.hide(&secret.id);
+        let fanout = FanOut::new(vec![b]);
+        let reference = located_reference(secret.id, "Zephyr", &["b-store"]);
+        assert_eq!(fanout.fetch_located(&reference), None);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Unresolved);
+        assert_eq!(located.rendered.text, "#Zephyr (unresolved)");
+        assert_eq!(located.rendered.current_label, None);
+        assert_eq!(located.store, None);
+    }
+
+    #[test]
+    fn locator_fetch_follows_hint_order() {
+        // One target replicated in two stores whose copies have diverged: the
+        // hint order, not the fan-out order, picks the answering store.
+        let in_a = object(b"loc-order", Sigil::Topic, "Atlas Renamed", vec![], 1);
+        let in_b = object(b"loc-order", Sigil::Topic, "Atlas", vec![], 1);
+        assert_eq!(in_a.id, in_b.id);
+        let target_id = in_a.id;
+        let fanout = FanOut::new(vec![
+            store_index("a-store", vec![in_a]),
+            store_index("b-store", vec![in_b]),
+        ]);
+        let b_first = located_reference(target_id, "Atlas", &["b-store", "a-store"]);
+        let located = fanout.render_located(&b_first);
+        assert_eq!(located.rendered.state, RenderState::Resolved);
+        assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
+        let a_first = located_reference(target_id, "Atlas", &["a-store", "b-store"]);
+        let located = fanout.render_located(&a_first);
+        assert_eq!(located.rendered.state, RenderState::Renamed);
+        assert_eq!(located.store, Some(StoreId("a-store".to_owned())));
+    }
+
+    #[test]
+    fn locator_fetch_first_holding_hint_decides_even_when_cleared() {
+        // Cleared in the first hinted store, live in the second: the first
+        // store holding the target decides, so the render is Cleared — a
+        // tombstone is an answer, not an absence to skip past.
+        let doc = object(b"loc-tombstone", Sigil::Topic, "Atlas", vec![], 1);
+        let mut a = store_index("a-store", vec![doc.clone()]);
+        assert!(a.clear(&doc.id));
+        let fanout = FanOut::new(vec![a, store_index("b-store", vec![doc.clone()])]);
+        let reference = located_reference(doc.id, "Atlas", &["a-store", "b-store"]);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Cleared);
+        assert_eq!(located.store, Some(StoreId("a-store".to_owned())));
+    }
+
+    #[test]
+    fn locator_fetch_without_hints_uses_the_store_set_in_order() {
+        // A reference parsed back from markdown carries no hints; it still
+        // renders against the viewer's store set, in fan-out order.
+        let doc = object(b"loc-nohints", Sigil::Topic, "Atlas", vec![], 1);
+        let fanout = FanOut::new(vec![
+            store_index("a-store", vec![]),
+            store_index("b-store", vec![doc.clone()]),
+        ]);
+        let reference = located_reference(doc.id, "Atlas", &[]);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Resolved);
+        assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
+    }
+
+    #[test]
+    fn locator_fetch_keeps_an_exact_revision_pin_working() {
+        // A pinned reference follows its logical ID across the boundary
+        // exactly like an unpinned one; the pin stays on the reference.
+        let doc = object(b"loc-pinned", Sigil::Topic, "Atlas", vec![], 1);
+        let fanout = FanOut::new(vec![store_index("b-store", vec![doc.clone()])]);
+        let mut reference = located_reference(doc.id, "Atlas", &["b-store"]);
+        reference.pinned_revision = Some(Hash::digest(b"loc-pinned-rev-3"));
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Resolved);
+        assert_eq!(located.rendered.target_id, doc.id);
+        assert_eq!(
+            reference.pinned_revision,
+            Some(Hash::digest(b"loc-pinned-rev-3"))
+        );
+    }
+    #[test]
+    fn locator_fetch_checks_every_index_carrying_a_hinted_store_id() {
+        // Two indexes share one store id; only the second holds the
+        // target. The hint must reach the second index -- the first
+        // index carrying the id does not shadow it (CodeRabbit
+        // finding on PR #5932).
+        let doc = object(b"loc-dup-id", Sigil::Topic, "Atlas", vec![], 1);
+        let fanout = FanOut::new(vec![
+            store_index("b-store", vec![]),
+            store_index("b-store", vec![doc.clone()]),
+        ]);
+        let reference = located_reference(doc.id, "Atlas", &["b-store"]);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Resolved);
+        assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
+    }
+
+    // ---- Locator-selection property coverage (Codex P1 on PR #5932) ----
+    //
+    // The locator_fetch_* tests above are hand-written examples. The
+    // locator contract also has invariants that must hold for EVERY
+    // store layout and hint list, so they are stated here as
+    // properties checked against a small selection model (the
+    // oracle): the answering store is the first store in hint order
+    // -- or in fan-out order when the reference carries no hints --
+    // whose copy of the target is visible to this viewer (live or
+    // cleared); hidden and absent copies never answer, and stores
+    // the hints do not name cannot affect a hinted fetch at all.
+    use proptest::prelude::*;
+
+    /// One store's placement of the property-test target.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Placement {
+        Absent,
+        LiveSame,
+        LiveRenamed,
+        Cleared,
+        Hidden,
+    }
+
+    const PLACEMENTS: [Placement; 5] = [
+        Placement::Absent,
+        Placement::LiveSame,
+        Placement::LiveRenamed,
+        Placement::Cleared,
+        Placement::Hidden,
+    ];
+
+    const PROP_STORES: [&str; 3] = ["a-store", "b-store", "c-store"];
+    const PROP_SURFACE: &str = "Atlas";
+
+    fn prop_fanout(placements: &[Placement; 3]) -> (FanOut, Hash) {
+        let target = object(b"loc-prop-target", Sigil::Topic, PROP_SURFACE, vec![], 1);
+        let target_id = target.id;
+        let mut stores = Vec::new();
+        for (i, placement) in placements.iter().enumerate() {
+            let decoy = object(b"loc-prop-decoy", Sigil::Topic, "Decoy", vec![], 3);
+            let mut index = store_index(PROP_STORES[i], vec![decoy]);
+            match placement {
+                Placement::Absent => {}
+                Placement::LiveSame => index.add(target.clone()),
+                Placement::LiveRenamed => {
+                    let mut renamed = target.clone();
+                    renamed.title = "Atlas Revised".to_owned();
+                    index.add(renamed);
+                }
+                Placement::Cleared => {
+                    index.add(target.clone());
+                    assert!(index.clear(&target_id));
+                }
+                Placement::Hidden => {
+                    let mut hidden = target.clone();
+                    hidden.title = "Zephyr".to_owned();
+                    index.add(hidden);
+                    index.hide(&target_id);
+                }
+            }
+            stores.push(index);
+        }
+        (FanOut::new(stores), target_id)
+    }
+
+    /// The selection model: which store answers, and with which
+    /// placement. Visible means live or cleared; hidden copies are
+    /// indistinguishable from absent ones and never answer.
+    fn prop_model(placements: &[Placement; 3], hints: &[usize]) -> Option<(usize, Placement)> {
+        let visible = |p: Placement| {
+            matches!(
+                p,
+                Placement::LiveSame | Placement::LiveRenamed | Placement::Cleared
+            )
+        };
+        if hints.is_empty() {
+            return (0..3).find_map(|i| visible(placements[i]).then_some((i, placements[i])));
+        }
+        hints
+            .iter()
+            .filter(|&&h| h < 3)
+            .find_map(|&i| visible(placements[i]).then_some((i, placements[i])))
+    }
+
+    fn prop_fetch_tuple(
+        fanout: &FanOut,
+        reference: &Reference,
+    ) -> Option<(StoreId, Hash, bool, String)> {
+        fanout.fetch_located(reference).map(|(store, object)| {
+            (
+                store.clone(),
+                object.id,
+                object.cleared,
+                object.title.clone(),
+            )
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn locator_selection_matches_the_model(
+            placement_idx in proptest::collection::vec(0usize..5, 3),
+            hint_idx in proptest::collection::vec(0usize..4, 0..5),
+        ) {
+            let placements: [Placement; 3] = [
+                PLACEMENTS[placement_idx[0]],
+                PLACEMENTS[placement_idx[1]],
+                PLACEMENTS[placement_idx[2]],
+            ];
+            let (fanout, target_id) = prop_fanout(&placements);
+            let hint_names: Vec<String> = hint_idx
+                .iter()
+                .map(|&h| {
+                    if h < 3 {
+                        PROP_STORES[h].to_owned()
+                    } else {
+                        "gone-store".to_owned()
+                    }
+                })
+                .collect();
+            let hint_refs: Vec<&str> = hint_names.iter().map(String::as_str).collect();
+            let reference = located_reference(target_id, PROP_SURFACE, &hint_refs);
+
+            let model = prop_model(&placements, &hint_idx);
+            // Fetch: the model names the answering store and its copy.
+            let expected_fetch = model.map(|(i, placement)| {
+                let title = match placement {
+                    Placement::LiveRenamed => "Atlas Revised".to_owned(),
+                    _ => PROP_SURFACE.to_owned(),
+                };
+                (
+                    StoreId(PROP_STORES[i].to_owned()),
+                    target_id,
+                    placement == Placement::Cleared,
+                    title,
+                )
+            });
+            prop_assert_eq!(prop_fetch_tuple(&fanout, &reference), expected_fetch);
+            // Render: same answering store; the state follows the
+            // copy that store holds.
+            let located = fanout.render_located(&reference);
+            let (want_store, want_state, want_label, want_text) = match model {
+                Some((i, Placement::LiveSame)) => (
+                    Some(StoreId(PROP_STORES[i].to_owned())),
+                    RenderState::Resolved,
+                    Some(PROP_SURFACE.to_owned()),
+                    format!("#{}", PROP_SURFACE),
+                ),
+                Some((i, Placement::LiveRenamed)) => (
+                    Some(StoreId(PROP_STORES[i].to_owned())),
+                    RenderState::Renamed,
+                    Some("Atlas Revised".to_owned()),
+                    format!("#{}", PROP_SURFACE),
+                ),
+                Some((i, Placement::Cleared)) => (
+                    Some(StoreId(PROP_STORES[i].to_owned())),
+                    RenderState::Cleared,
+                    None,
+                    format!("#{} (cleared)", PROP_SURFACE),
+                ),
+                _ => (
+                    None,
+                    RenderState::Unresolved,
+                    None,
+                    format!("#{} (unresolved)", PROP_SURFACE),
+                ),
+            };
+            prop_assert_eq!(located.store, want_store);
+            prop_assert_eq!(located.rendered.state, want_state);
+            prop_assert_eq!(located.rendered.current_label, want_label);
+            prop_assert_eq!(located.rendered.text, want_text);
+
+            // Invariant: a hidden copy is indistinguishable from an
+            // absent one -- swapping every Hidden placement for
+            // Absent changes neither the fetch nor the render.
+            let mut absent_swapped = placements;
+            for placement in &mut absent_swapped {
+                if *placement == Placement::Hidden {
+                    *placement = Placement::Absent;
+                }
+            }
+            let (swapped_fanout, _) = prop_fanout(&absent_swapped);
+            prop_assert_eq!(
+                prop_fetch_tuple(&swapped_fanout, &reference),
+                prop_fetch_tuple(&fanout, &reference)
+            );
+            prop_assert_eq!(
+                swapped_fanout.render_located(&reference),
+                fanout.render_located(&reference)
+            );
+
+            // Invariant: when the reference carries hints, stores
+            // the hints do not name cannot affect the outcome --
+            // scrambling every unhinted store's placement changes
+            // neither the fetch nor the render.
+            if !hint_idx.is_empty() {
+                let mut scrambled_idx = placement_idx.clone();
+                for (i, idx) in scrambled_idx.iter_mut().enumerate() {
+                    if !hint_idx.contains(&i) {
+                        *idx = (*idx + 2) % 5;
+                    }
+                }
+                let scrambled: [Placement; 3] = [
+                    PLACEMENTS[scrambled_idx[0]],
+                    PLACEMENTS[scrambled_idx[1]],
+                    PLACEMENTS[scrambled_idx[2]],
+                ];
+                let (scrambled_fanout, _) = prop_fanout(&scrambled);
+                prop_assert_eq!(
+                    prop_fetch_tuple(&scrambled_fanout, &reference),
+                    prop_fetch_tuple(&fanout, &reference)
+                );
+                prop_assert_eq!(
+                    scrambled_fanout.render_located(&reference),
+                    fanout.render_located(&reference)
+                );
+            }
+        }
     }
 }

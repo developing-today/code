@@ -147,7 +147,11 @@ export function buildDigest(inputs: DigestInputs): Digest {
   const poolFreshBase = facetStale(inputs.provenanceDetail, "items", staleAgeMs, inputs.sourceKind);
   const poolFresh =
     inputs.poolAvailable === false
-      ? { stale: true, note: "fleet feed carried no projects section — the pool is unavailable, not empty; pool sections are unverified", ageMs: poolFreshBase.ageMs }
+      ? {
+          stale: true,
+          note: "fleet feed carried no projects section — the pool is unavailable, not empty; pool sections are unverified",
+          ageMs: poolFreshBase.ageMs,
+        }
       : poolFreshBase;
   const byRef = new Map(inputs.pool.map((i) => [i.ref, i] as const));
   const byUpdatedDesc = (a: ProjectPoolItem, b: ProjectPoolItem) =>
@@ -221,8 +225,7 @@ export function buildDigest(inputs: DigestInputs): Digest {
     };
   } else {
     const censusAgeMs = now.getTime() - Date.parse(inputs.needsDrew.fetchedAt);
-    const censusStale =
-      !inputs.needsDrew.complete || !Number.isFinite(censusAgeMs) || censusAgeMs > staleAgeMs;
+    const censusStale = !inputs.needsDrew.complete || !Number.isFinite(censusAgeMs) || censusAgeMs > staleAgeMs;
     const items = cap(
       inputs.needsDrew.items.map(
         (i): DigestItem => ({
@@ -412,11 +415,7 @@ export async function writeDigestArchive(dir: string, digest: Digest): Promise<s
   return file;
 }
 
-export async function readDigestArchive(
-  dir: string,
-  date: string,
-  kind: DigestKind = "daily",
-): Promise<Digest | null> {
+export async function readDigestArchive(dir: string, date: string, kind: DigestKind = "daily"): Promise<Digest | null> {
   try {
     const raw = await readFile(join(dir, digestArchiveName(kind, date)), "utf8");
     const parsed = JSON.parse(raw) as Digest;
@@ -426,9 +425,7 @@ export async function readDigestArchive(
   }
 }
 
-export async function listDigestArchives(
-  dir: string,
-): Promise<{ kind: DigestKind; date: string; route: string }[]> {
+export async function listDigestArchives(dir: string): Promise<{ kind: DigestKind; date: string; route: string }[]> {
   let names: string[];
   try {
     names = await readdir(dir);

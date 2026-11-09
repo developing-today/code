@@ -11,6 +11,7 @@
 // the file extension -- and there is no setting yet (script.language is a
 // later slice of #1917), so an inline snippet is TypeScript unless its
 // shebang says otherwise.
+
 package runner
 
 import (

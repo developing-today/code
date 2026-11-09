@@ -112,12 +112,12 @@ func (t *StdioTransport) Reattach() {
 	t.startStderr()
 }
 
-// AdoptStdio takes over a child a predecessor process detached. It fails if
-// the child is no longer running, so a dead child is never resumed.
 // ErrChildGone is returned by AdoptStdio when the child has exited, so a
 // successor can drop it instead of failing the whole handoff over it.
 var ErrChildGone = errors.New("child is not running")
 
+// AdoptStdio takes over a child a predecessor process detached. It fails if
+// the child is no longer running, so a dead child is never resumed.
 func AdoptStdio(h StdioHandoff) (*StdioTransport, error) {
 	if !childAlive(h.PID, h.StartTime) {
 		return nil, fmt.Errorf("child %d (%s): %w", h.PID, h.Label, ErrChildGone)
@@ -252,6 +252,15 @@ func (c *Client) HTTPSession() (HTTPHandoff, bool) {
 
 // SessionState is the protocol state a resumed client needs, without a handshake.
 func (c *Client) SessionState() Session { return c.session() }
+
+// MarkResumedSession arms the first application-request recovery for a
+// successfully probed cold-restored session. The probe itself is not the
+// caller's first request; after that request succeeds or gets one recovery
+// attempt, later 404s keep the session's ordinary behavior.
+func (c *Client) MarkResumedSession() {
+	c.resumedSession.Store(true)
+	c.resumedFirstRequest.Store(true)
+}
 
 func (c *Client) session() Session {
 	c.mu.Lock()

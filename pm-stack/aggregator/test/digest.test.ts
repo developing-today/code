@@ -67,14 +67,18 @@ const quota: QuotaView = {
       provider: "Fine",
       plan: "Plan",
       state: "healthy",
-      windows: [{ name: "weekly", unit: "tokens", limit: 1000, used: 100, resetsAt: "2026-11-09T00:00:00Z", percent: 10 }],
+      windows: [
+        { name: "weekly", unit: "tokens", limit: 1000, used: 100, resetsAt: "2026-11-09T00:00:00Z", percent: 10 },
+      ],
     },
     {
       id: "pool-hot",
       provider: "Hot",
       plan: "Plan",
       state: "near",
-      windows: [{ name: "weekly", unit: "tokens", limit: 1000, used: 950, resetsAt: "2026-11-09T00:00:00Z", percent: 95 }],
+      windows: [
+        { name: "weekly", unit: "tokens", limit: 1000, used: 950, resetsAt: "2026-11-09T00:00:00Z", percent: 95 },
+      ],
     },
   ],
   burn: [],
@@ -110,10 +114,7 @@ describe("buildDigest", () => {
     const d = buildDigest(inputs());
     expect(d.date).toBe("2026-11-02");
     expect(d.archiveRoute).toBe("/digest?date=2026-11-02");
-    expect(section(d, "moved").items.map((i) => i.ref)).toEqual([
-      "developing-today/code#1",
-      "developing-today/code#3",
-    ]);
+    expect(section(d, "moved").items.map((i) => i.ref)).toEqual(["developing-today/code#1", "developing-today/code#3"]);
     expect(section(d, "done").items.map((i) => i.ref)).toEqual(["developing-today/code#2"]);
     const blocked = section(d, "blocked");
     expect(blocked.items).toHaveLength(1);
@@ -187,7 +188,14 @@ describe("buildDigest", () => {
           state: "healthy",
           burnTokensPerMin: 100,
           windows: [
-            { name: "weekly", unit: "tokens", limit: 100000, used: 90000, resetsAt: "2026-11-09T00:00:00Z", percent: 90 },
+            {
+              name: "weekly",
+              unit: "tokens",
+              limit: 100000,
+              used: 90000,
+              resetsAt: "2026-11-09T00:00:00Z",
+              percent: 90,
+            },
           ],
         },
       ],
@@ -231,7 +239,9 @@ describe("buildDigest", () => {
           plan: "Plan",
           state: "error",
           freshness: { measuredAt: "2026-11-02T06:00:00Z", source: "gatherer", state: "error", error: "boom" },
-          windows: [{ name: "weekly", unit: "tokens", limit: 1000, used: 100, resetsAt: "2026-11-09T00:00:00Z", percent: 10 }],
+          windows: [
+            { name: "weekly", unit: "tokens", limit: 1000, used: 100, resetsAt: "2026-11-09T00:00:00Z", percent: 10 },
+          ],
         },
         {
           id: "pool-stale",
@@ -239,7 +249,9 @@ describe("buildDigest", () => {
           plan: "Plan",
           state: "stale",
           freshness: { measuredAt: "2026-11-01T06:00:00Z", source: "gatherer", state: "stale" },
-          windows: [{ name: "weekly", unit: "tokens", limit: 1000, used: 950, resetsAt: "2026-11-09T00:00:00Z", percent: 95 }],
+          windows: [
+            { name: "weekly", unit: "tokens", limit: 1000, used: 950, resetsAt: "2026-11-09T00:00:00Z", percent: 95 },
+          ],
         },
       ],
     };

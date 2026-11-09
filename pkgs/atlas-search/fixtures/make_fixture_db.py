@@ -13,6 +13,7 @@ Usage: make_fixture_db.py [OUT.db]   (default: ./fixture.db)
 Also writes OUT.qvec.json (the fixture query vector, for
 ATLAS_SEARCH_QVEC_FILE) next to the DB.
 """
+
 import json
 import sqlite3
 import struct

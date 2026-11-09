@@ -46,14 +46,22 @@ SECB_PID=""
 SRCH_PID=""
 trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID $DS_PID $SECB_PID $SRCH_PID 2>/dev/null; rm -rf "$TMP"' EXIT
 
-ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
-bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
+ok() {
+  PASS=$((PASS + 1))
+  echo "ok   - $1"
+}
+bad() {
+  FAIL=$((FAIL + 1))
+  echo "FAIL - $1"
+}
 
 # run <name> <expected-rc> <required-substring|-> <cmd...>
 run() {
-  local name=$1 want_rc=$2 want_sub=$3; shift 3
+  local name=$1 want_rc=$2 want_sub=$3
+  shift 3
   local out rc
-  out=$("$@" 2>&1); rc=$?
+  out=$("$@" 2>&1)
+  rc=$?
   if [ "$rc" -ne "$want_rc" ]; then
     bad "$name (exit $rc, want $want_rc)"
     echo "$out" | head -5 | sed 's/^/       /'
@@ -79,10 +87,10 @@ check_variant() {
 }
 
 echo "== variants =="
-check_variant full    "$FULL_OUT/bin/fleet"    "$FULL_CAPS"
-check_variant serve   "$SERVE_OUT/bin/fleet"   "$SERVE_CAPS"
+check_variant full "$FULL_OUT/bin/fleet" "$FULL_CAPS"
+check_variant serve "$SERVE_OUT/bin/fleet" "$SERVE_CAPS"
 check_variant connect "$CONNECT_OUT/bin/fleet" "$CONNECT_CAPS"
-check_variant static  "$STATIC_OUT/bin/fleet"  "$CONNECT_CAPS"
+check_variant static "$STATIC_OUT/bin/fleet" "$CONNECT_CAPS"
 
 echo "== help marks =="
 run "full: --help marks nothing unavailable" 0 "-" "$FULL_OUT/bin/fleet" --help
@@ -118,6 +126,19 @@ run "connect as atlas-search stubs 69" 69 "this build does not include 'search'"
 run "serve as queue-broker reaches the real broker role (missing token file: exit 3)" 3 "cannot read token file" \
   env QUEUE_BROKER_TOKEN_FILE="$TMP/no-such-token" "$TMP/queue-broker"
 
+echo "== search serve role (#5604): reaches the real service role, no stub =="
+# Hermetic: the service config path does not exist, so the role stops
+# at config load (exit 2) before any Turso token, embedder or socket.
+run "connect: fleet serve search stubs" 69 "this build does not include 'serve'" \
+  "$CONNECT_OUT/bin/fleet" serve search
+run "serve: fleet serve search reaches the real role (missing config: exit 2)" 2 "cannot read service config" \
+  env ATLAS_SEARCH_SERVICE_CONFIG="$TMP/no-such-service.json" "$SERVE_OUT/bin/fleet" serve search
+run "full: fleet serve search --help prints the role usage" 0 "usage: fleet serve search" \
+  "$FULL_OUT/bin/fleet" serve search --help
+mkdir -p "$TMP/asp" && ln -sf "$SERVE_OUT/bin/fleet" "$TMP/asp/atlas-search"
+run "serve as atlas-search: 'serve' is the same role (the rollback spelling)" 2 "cannot read service config" \
+  env ATLAS_SEARCH_SERVICE_CONFIG="$TMP/no-such-service.json" "$TMP/asp/atlas-search" serve
+
 echo "== proxy domain: serve + connect + init + shims (step 3, #5431) =="
 # Hermetic proxy world: a scratch HOME (token file), scratch socket,
 # scratch state dirs, and a stub HTTP upstream on loopback ports. The
@@ -126,9 +147,9 @@ echo "== proxy domain: serve + connect + init + shims (step 3, #5431) =="
 # step's live proofs, not in per-variant smoke.
 PX="$TMP/proxy"
 mkdir -p "$PX/home/tools" "$PX/state" "$PX/state-connect"
-printf 'smoke-broker-token\n' > "$PX/home/tools/laptop-agent-token"
+printf 'smoke-broker-token\n' >"$PX/home/tools/laptop-agent-token"
 
-cat > "$PX/upstream.py" <<'PYEOF'
+cat >"$PX/upstream.py" <<'PYEOF'
 import socket, threading, json, time
 def handle(conn, port):
     f = conn.makefile("rb")
@@ -162,7 +183,7 @@ PYEOF
 python3 "$PX/upstream.py" >"$PX/upstream.log" 2>&1 &
 UP_PID=$!
 
-cat > "$PX/fleet.toml" <<'EOF'
+cat >"$PX/fleet.toml" <<'EOF'
 [proxy]
 direct = true
 target_host = "127.0.0.1"
@@ -179,7 +200,7 @@ EOF
 
 proxy_env() {
   env HOME="$PX/home" FLEET_CONFIG="$PX/fleet.toml" \
-      FLEET_BROKER_SOCKET="$PX/broker.sock" XDG_STATE_HOME="$PX/state" "$@"
+    FLEET_BROKER_SOCKET="$PX/broker.sock" XDG_STATE_HOME="$PX/state" "$@"
 }
 
 # connect auto-starts the broker and round-trips through it.
@@ -211,7 +232,7 @@ fi
 # own shims; it cannot serve (69), and neither can its init.
 run "proxy: connect variant round-trips through the full broker" 0 '"status":200' \
   env HOME="$PX/home" FLEET_CONFIG="$PX/fleet.toml" \
-      FLEET_BROKER_SOCKET="$PX/broker.sock" XDG_STATE_HOME="$PX/state-connect" \
+  FLEET_BROKER_SOCKET="$PX/broker.sock" XDG_STATE_HOME="$PX/state-connect" \
   "$CONNECT_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
 if [ -L "$PX/state-connect/fleet/shims/repo-queue" ]; then
   ok "proxy: connect variant materialized its own shims"
@@ -225,7 +246,7 @@ run "proxy: connect variant stubs fleet init at 69 (no serve in build)" 69 "does
 
 # Legacy (proto 0) client against the fleet broker: raw 8-byte
 # frames, no hello — the Python clients' dialect, still served.
-cat > "$PX/legacy.py" <<'PYEOF'
+cat >"$PX/legacy.py" <<'PYEOF'
 import socket, struct, json, sys
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
@@ -250,7 +271,12 @@ run "proxy: legacy proto-0 client round-trips (no hello)" 0 "legacy-ok" \
 # with no LAPTOP_AGENT_POOL anywhere in its environment, so
 # its startup line must render the compiled default of 50.
 run "proxy: broker startup renders the effective pool size (default 50)" 0 \
-  "pool: 50 per port" grep "pool: 50 per port" "$PX/broker.log"
+  "pool_size=50" grep "pool_size=50" "$PX/broker.log"
+# Identity stamp (#5758): the same first startup line names the
+# implementation and carries a UTC timestamp + pid, so broker
+# ownership of an incident window is reconstructable from the log.
+run "proxy: broker startup line is timestamped with implementation + pid" 0 \
+  "implementation=fleet-proxy" grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z fleet proxy serve start implementation=fleet-proxy version=[^ ]+ pool_size=50 pid=[0-9]+" "$PX/broker.log"
 
 # 32-concurrent burst against that default-config broker,
 # mirroring the #5412 benchmark method (hello-negotiated
@@ -260,7 +286,7 @@ run "proxy: broker startup renders the effective pool size (default 50)" 0 \
 # wait's safety properties — 32 in flight at once, none hang,
 # none fail — plus a sane p50; the production cliff it
 # prevents was measured against real egress (see #5563).
-cat > "$PX/burst.py" <<'PYEOF'
+cat >"$PX/burst.py" <<'PYEOF'
 import json, socket, struct, sys, threading, time
 sock_path, port = sys.argv[1], int(sys.argv[2])
 lat, errors = [], []
@@ -321,7 +347,7 @@ run "proxy: 32-concurrent burst on the default pool (no hang, no failure)" 0 "bu
 kill "$PB_PID" 2>/dev/null
 sleep 0.5
 rm -f "$PX/broker.sock"
-cat > "$PX/fleet.toml" <<'EOF'
+cat >"$PX/fleet.toml" <<'EOF'
 [proxy]
 direct = true
 target_host = "127.0.0.1"
@@ -345,7 +371,7 @@ PB_PID=""
 # Idle exit: a broker with an 8-second idle span exits on its own
 # even though its keepalive loop is running (keepalive != use).
 mkdir -p "$PX/idle"
-cat > "$PX/idle.toml" <<'EOF'
+cat >"$PX/idle.toml" <<'EOF'
 [proxy]
 direct = true
 target_host = "127.0.0.1"
@@ -356,8 +382,8 @@ port = 14799
 name = "laptop-agent"
 EOF
 env HOME="$PX/home" FLEET_CONFIG="$PX/idle.toml" \
-    FLEET_BROKER_SOCKET="$PX/idle/broker.sock" XDG_STATE_HOME="$PX/state" \
-    "$FULL_OUT/bin/fleet" proxy serve >"$PX/idle.log" 2>&1 &
+  FLEET_BROKER_SOCKET="$PX/idle/broker.sock" XDG_STATE_HOME="$PX/state" \
+  "$FULL_OUT/bin/fleet" proxy serve >"$PX/idle.log" 2>&1 &
 IDLE_PID=$!
 sleep 1
 if kill -0 "$IDLE_PID" 2>/dev/null; then
@@ -365,7 +391,10 @@ if kill -0 "$IDLE_PID" 2>/dev/null; then
 else
   bad "proxy: idle broker alive inside its span"
 fi
-for i in $(seq 1 40); do kill -0 "$IDLE_PID" 2>/dev/null || break; sleep 1; done
+for i in $(seq 1 40); do
+  kill -0 "$IDLE_PID" 2>/dev/null || break
+  sleep 1
+done
 if kill -0 "$IDLE_PID" 2>/dev/null; then
   bad "proxy: idle broker exits after its span (keepalive does not reset it)"
 else
@@ -378,8 +407,8 @@ UP_PID=""
 echo "== queue domain: serve roles bind + answer; client surface (step 2, #5430) =="
 # Scratch token files: the roles refuse to start without them. The
 # contents are dummies — these instances serve nothing real.
-printf 'smoke-secrets-token\n' > "$TMP/sb-token"
-printf 'smoke-queue-token\n' > "$TMP/qb-token"
+printf 'smoke-secrets-token\n' >"$TMP/sb-token"
+printf 'smoke-queue-token\n' >"$TMP/qb-token"
 
 # secrets-broker role on a scratch port: /health answers unauthenticated.
 env SECRETS_BROKER_BIND=127.0.0.1:19800 SECRETS_BROKER_TOKEN_FILE="$TMP/sb-token" \
@@ -425,7 +454,7 @@ echo "== dispatch domain: thin client over a stub pm-dispatch (step 4, #5432) ==
 # Authorization: Bearer, and print the service's JSON verbatim.
 DS="$TMP/dispatch"
 mkdir -p "$DS/bin" "$DS/home"
-cat > "$DS/stub.py" <<'PYEOF'
+cat >"$DS/stub.py" <<'PYEOF'
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = "smoke-dispatch-token"
@@ -470,7 +499,7 @@ HTTPServer(("127.0.0.1", 14879), H).serve_forever()
 PYEOF
 python3 "$DS/stub.py" >"$DS/stub.log" 2>&1 &
 DS_PID=$!
-cat > "$DS/bin/bws" <<'EOF'
+cat >"$DS/bin/bws" <<'EOF'
 #!/usr/bin/env bash
 # fleet-secrets' bws fallback, stubbed: one secret under a fixed id.
 if [ "$1 $2" = "secret list" ]; then
@@ -482,7 +511,7 @@ else
 fi
 EOF
 chmod +x "$DS/bin/bws"
-printf '[dispatch]\nport = 14879\n' > "$DS/fleet.toml"
+printf '[dispatch]\nport = 14879\n' >"$DS/fleet.toml"
 sleep 1
 run "dispatch: status round-trips the stub /health" 0 '"version": "smoke"' \
   env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
@@ -493,19 +522,19 @@ run "dispatch: status names its transport" 0 '"transport": "direct http://127.0.
 run "dispatch: launch round-trips with the by-name bearer token" 0 '"task_id": 4242' \
   env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
   "$FULL_OUT/bin/fleet" dispatch launch --repo developing-today/code \
-    --prompt "smoke launch" --no-wait
+  --prompt "smoke launch" --no-wait
 run "dispatch: enqueue round-trips" 0 '"task_id": 4243' \
   env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
   "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
-    --title "smoke" --prompt "smoke enqueue"
+  --title "smoke" --prompt "smoke enqueue"
 run "dispatch: a service HTTP error exits 4 with its message" 4 "dedupe_key already has an open task" \
   env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
   "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
-    --title "smoke" --prompt "x" --dedupe-key smoke-dupe
+  --title "smoke" --prompt "x" --dedupe-key smoke-dupe
 run "dispatch: an unknown task kind is a usage error" 2 "unknown task kind" \
   env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
   "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
-    --title "t" --prompt "p" --kind bogus
+  --title "t" --prompt "p" --kind bogus
 run "dispatch: an unresolved token name exits 3 before any request" 3 "unresolved" \
   env HOME="$DS/home" PATH="/nonexistent" FLEET_CONFIG="$DS/fleet.toml" \
   "$FULL_OUT/bin/fleet" dispatch launch --repo developing-today/code --prompt "x"
@@ -521,7 +550,7 @@ echo "== secrets domain: broker-first chain, bws fallback (step 6, #5554) =="
 # returned value alone.
 SEC="$TMP/secrets"
 mkdir -p "$SEC/bin" "$SEC/home"
-cat > "$SEC/broker.py" <<'SECEOF'
+cat >"$SEC/broker.py" <<'SECEOF'
 import socket, struct, json, sys, threading, os
 sock_path = sys.argv[1]
 RESP = {
@@ -556,7 +585,7 @@ while True:
 SECEOF
 python3 "$SEC/broker.py" "$SEC/broker.sock" >"$SEC/broker.log" 2>&1 &
 SECB_PID=$!
-cat > "$SEC/bin/bws" <<'EOF'
+cat >"$SEC/bin/bws" <<'EOF'
 #!/usr/bin/env bash
 # fleet-secrets' bws fallback, stubbed: two secrets under fixed ids.
 # smoke.secret exists in BOTH sources with different values (the
@@ -594,7 +623,6 @@ run "secrets: broker down, list fails loud (no bws substitution)" 3 "unavailable
 run "secrets: unknown name fails clean through both legs" 3 "unresolved" \
   secrets_env "$FULL_OUT/bin/fleet" secrets get absent.name
 
-
 echo "== search domain: via-service client over a stub atlas service (step 5, #5433) =="
 # Hermetic search world: a stub atlas service speaking the job
 # protocol (atlas-proto shapes) on a scratch loopback port. The
@@ -612,7 +640,7 @@ echo "== search domain: via-service client over a stub atlas service (step 5, #5
 SRCH="$TMP/search"
 mkdir -p "$SRCH/bin" "$SRCH/home" "$SRCH/home-laptop/.local/state/atlas-search"
 touch "$SRCH/home-laptop/.local/state/atlas-search/service.json"
-cat > "$SRCH/stub.py" <<'PYEOF'
+cat >"$SRCH/stub.py" <<'PYEOF'
 import json, re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 CAPS = {"smoke-personal-token": "personal", "smoke-secret-token": "secret-bearing"}
@@ -679,7 +707,7 @@ HTTPServer(("127.0.0.1", 14877), H).serve_forever()
 PYEOF
 python3 "$SRCH/stub.py" >"$SRCH/stub.log" 2>&1 &
 SRCH_PID=$!
-cat > "$SRCH/bin/atlas-search" <<'EOF'
+cat >"$SRCH/bin/atlas-search" <<'EOF'
 #!/bin/sh
 # The kept standalone artifact, stubbed: echo the argv it was
 # handed so delegation is provable from the output alone.
@@ -689,14 +717,14 @@ chmod +x "$SRCH/bin/atlas-search"
 sleep 1
 search_env() {
   env HOME="$SRCH/home" PATH="$SRCH/bin:$PATH" \
-      ATLAS_SEARCH_URL=http://127.0.0.1:14877 "$@"
+    ATLAS_SEARCH_URL=http://127.0.0.1:14877 "$@"
 }
 # Ceiling invariant, personal client: requesting secret-bearing is
 # clamped by the server; the canary chunk is absent and the
 # applied filter says personal.
 search_env ATLAS_SEARCH_TOKEN=smoke-personal-token \
   "$FULL_OUT/bin/fleet" search "smoke query" --max-sensitivity secret-bearing \
-  > "$SRCH/personal.out" 2> "$SRCH/personal.err"
+  >"$SRCH/personal.out" 2>"$SRCH/personal.err"
 if python3 -c "
 import json, sys
 doc = json.load(open('$SRCH/personal.out'))
@@ -713,7 +741,7 @@ fi
 # leads the ranking.
 search_env ATLAS_SEARCH_TOKEN=smoke-secret-token \
   "$FULL_OUT/bin/fleet" search "smoke query" --max-sensitivity secret-bearing \
-  > "$SRCH/secret.out" 2> "$SRCH/secret.err"
+  >"$SRCH/secret.out" 2>"$SRCH/secret.err"
 if python3 -c "
 import json
 doc = json.load(open('$SRCH/secret.out'))
@@ -729,7 +757,7 @@ fi
 # The atlas-search argv0 route lands on the same client.
 ln -s "$FULL_OUT/bin/fleet" "$SRCH/atlas-search"
 search_env ATLAS_SEARCH_TOKEN=smoke-personal-token \
-  "$SRCH/atlas-search" search "smoke query" > "$SRCH/argv0.out" 2>/dev/null
+  "$SRCH/atlas-search" search "smoke query" >"$SRCH/argv0.out" 2>/dev/null
 if python3 -c "
 import json
 doc = json.load(open('$SRCH/argv0.out'))
@@ -755,7 +783,7 @@ run "search: laptop seat defaults to standalone (delegates)" 0 \
 run "search: service down falls back loudly to standalone" 0 \
   "falling back to standalone" \
   env HOME="$SRCH/home" PATH="$SRCH/bin:$PATH" \
-      ATLAS_SEARCH_URL=http://127.0.0.1:9 \
+  ATLAS_SEARCH_URL=http://127.0.0.1:9 \
   "$FULL_OUT/bin/fleet" search "fallback query"
 kill "$SRCH_PID" 2>/dev/null
 SRCH_PID=""
@@ -778,7 +806,7 @@ run "connect as fleet: queue still stubs not-in-build" 69 "this build does not i
   "$TMP/fleet" queue
 
 echo "== config-disabled domain (exit 69, config wording) =="
-printf '[domains]\nqueue = false\n' > "$TMP/fleet.toml"
+printf '[domains]\nqueue = false\n' >"$TMP/fleet.toml"
 run "full with queue=false: fleet queue stubs as disabled" 69 "disabled by config" \
   env FLEET_CONFIG="$TMP/fleet.toml" "$FULL_OUT/bin/fleet" queue
 run "full with queue=false: version drops queue capabilities" 0 "proxy-serve, queue-broker" \

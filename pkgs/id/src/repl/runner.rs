@@ -664,14 +664,15 @@ fn required_value<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
 }
 
 /// Like `required_value`, but for `--exclude`: exclusion patterns are
-/// data, and a pattern may legitimately start with a hyphen (e.g.
-/// `--exclude -draft`), so any non-empty next token is accepted.
+/// data, and a pattern may legitimately start with a single hyphen (e.g.
+/// `--exclude -draft`). Double-hyphen tokens are reserved for flags; use
+/// another spelling for patterns that begin with `--`.
 fn required_pattern<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
     let flag = rest[*i];
     let value = rest
         .get(*i + 1)
         .copied()
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty() && !value.starts_with("--"))
         .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
     *i += 1;
     Ok(value)
@@ -1963,6 +1964,7 @@ mod tests {
         assert_eq!(args.output_file, Some("out.txt"));
     }
 
+    #[test]
     fn test_parse_find_args_basic() {
         let rest = vec!["query1", "query2"];
         let args = parse_find_args(&rest, "union").unwrap();
@@ -2004,6 +2006,17 @@ mod tests {
                 .exclude,
             vec!["-draft"]
         );
+        // A double-dash option is not swallowed as an exclusion pattern;
+        // single-dash patterns remain supported (#2274).
+        for tokens in [
+            vec!["report", "--dir", "--all"],
+            vec!["report", "--format", "--tag"],
+            vec!["report", "--exclude", "--count"],
+        ] {
+            let error = parse_find_args(&tokens, "union").err().unwrap().to_string();
+            assert!(error.contains("requires a value"), "{tokens:?}: {error}");
+            assert!(!error.contains(tokens[2]), "{tokens:?}: {error}");
+        }
     }
 
     #[test]
@@ -2029,6 +2042,15 @@ mod tests {
                 .exclude,
             vec!["-draft"]
         );
+        for tokens in [
+            vec!["report", "-o", "--quiet"],
+            vec!["report", "--output", "--quiet"],
+            vec!["report", "--exclude", "--all"],
+        ] {
+            let error = parse_peek_args(&tokens).err().unwrap().to_string();
+            assert!(error.contains("requires a value"), "{tokens:?}: {error}");
+            assert!(!error.contains(tokens[2]), "{tokens:?}: {error}");
+        }
         assert_eq!(parse_peek_args(&["report", "--lines"]).unwrap().1.lines, 5);
         assert_eq!(
             parse_peek_args(&["report", "-n", "--quiet"])
@@ -2300,6 +2322,9 @@ mod tests {
     fn test_parse_peek_args_output_file() {
         let rest = vec!["readme", "-o", "out.txt"];
         let (find_args, _) = parse_peek_args(&rest).unwrap();
+        assert_eq!(find_args.output_file, Some("out.txt"));
+
+        let (find_args, _) = parse_peek_args(&["readme", "--output", "out.txt"]).unwrap();
         assert_eq!(find_args.output_file, Some("out.txt"));
     }
 

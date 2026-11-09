@@ -4,6 +4,7 @@
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
@@ -19,12 +20,14 @@ import {
   coverageFromFeed,
   poolAvailableFromFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import type { NewStreamEvent } from "../events.ts";
+import type { FreshnessInput } from "../freshness.ts";
 import {
   kaneoChangeDeliveries,
   maxUndatedSeqByCard,
@@ -33,6 +36,7 @@ import {
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
@@ -41,6 +45,7 @@ import {
   extractPaygLines,
   extractSaasServices,
   extractSubscriptions,
+  extractUninstrumentedServices,
 } from "../saas-extract.ts";
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
@@ -76,6 +81,7 @@ import {
   type SessionRecord,
   type SourceCoverage,
   type UsageView,
+  isValidRef,
   parseRef,
   refsInText,
   refUrl,
@@ -217,7 +223,16 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
             // refs are never invented from a guessed repo.
             const m = /github\.com\/([\w.-]+\/[\w.-]+)\//.exec(l.url);
             if (!m) return [];
-            return [{ ref: `${m[1]}#${l.externalId}`, relation: "tracks" as const }];
+            const ref = `${m[1]}#${l.externalId}` as RefKey;
+            // #6243 (ref contract rule 3): a producer mints only valid
+            // refs - an externalId parseRef would reject (unsafe integer,
+            // non-numeric) must not become a board link renderers throw
+            // on; the card survives, the drop is traced.
+            if (!isValidRef(ref)) {
+              console.error(`[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`);
+              return [];
+            }
+            return [{ ref, relation: "tracks" as const }];
           });
         out.push({
           // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
@@ -245,9 +260,33 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
 
 // --- Grist --------------------------------------------------------------
 
-interface GristRecord {
+export interface GristRecord {
   id: number;
   fields: Record<string, unknown>;
+}
+
+/** Map a live Grist row without dropping or rewriting an invalid Horizon value. */
+export function mapGristRoadmapRecord(docId: string, rec: GristRecord): RoadmapRow {
+  const f = rec.fields;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const source = str(f.Source);
+  const notes = str(f.Notes);
+  const horizon = str(f.Horizon);
+  const horizonValidation = validateRoadmapHorizon(horizon);
+  const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
+  return {
+    id: rec.id,
+    subject: `grist:${docId}/Roadmap/${rec.id}`,
+    title: str(f.Title),
+    area: str(f.Area),
+    status: str(f.Status),
+    horizon,
+    ...(!horizonValidation.valid ? { horizonError: horizonValidation.error } : {}),
+    source,
+    notes,
+    links,
+    gristUrl: gristDocUrl(docId),
+  };
 }
 
 async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
@@ -257,25 +296,7 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
   });
   if (!r.ok) throw new Error("grist roadmap read failed");
   const records = (r.json as { records?: GristRecord[] }).records ?? [];
-  return records.map((rec) => {
-    const f = rec.fields;
-    const str = (v: unknown) => (typeof v === "string" ? v : "");
-    const source = str(f.Source);
-    const notes = str(f.Notes);
-    const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
-    return {
-      id: rec.id,
-      subject: `grist:${cfg.grist.docId}/Roadmap/${rec.id}`,
-      title: str(f.Title),
-      area: str(f.Area),
-      status: str(f.Status),
-      horizon: str(f.Horizon),
-      source,
-      notes,
-      links,
-      gristUrl: gristDocUrl(cfg.grist.docId),
-    };
-  });
+  return records.map((rec) => mapGristRoadmapRecord(cfg.grist.docId, rec));
 }
 
 // --- Projector (J's service, pm-stack/projector) -------------------------
@@ -363,7 +384,11 @@ export function mapProjectorComment(row: ProjectorCommentRow): Comment {
     author: row.author ?? "",
     body: row.body ?? "",
     createdAt: row.created_at,
-    url: row.url ?? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr"),
+    // #6243 (ref contract rule 4): row.ref is stored projector data; the
+    // stored url wins, and the refUrl fallback fires only for a ref the
+    // shared rule accepts - an invalid stored ref yields no URL instead
+    // of throwing out of the map (cf. the #6211 read gate for links).
+    url: row.url ?? (isValidRef(row.ref) ? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr") : ""),
     path: row.path ?? undefined,
     line: row.line ?? undefined,
     reviewState: row.review_state ?? undefined,
@@ -483,7 +508,19 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
   if (!r.ok) return [];
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
-  return rows.map((row) => ({ ref: row.ref, relation: asRelation(row.relation) }));
+  // Stored rows bypass the projector's POST /links gate (legacy/seeded
+  // data), so the shared ref rule (#4952) is applied here at the read
+  // boundary (#6211): a ref parseRef rejects - an unsafe-integer number,
+  // or not owner/repo#N at all - must never reach a renderer, where
+  // refUrl would throw on it and 500 the page. The drop is logged so a
+  // bad registry row stays visible instead of silently vanishing.
+  return rows.flatMap((row) => {
+    if (!isValidRef(row.ref)) {
+      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      return [];
+    }
+    return [{ ref: row.ref, relation: asRelation(row.relation) }];
+  });
 }
 
 /**
@@ -521,7 +558,7 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
   code: "developing-today/code",
   opencode: "developing-today-forks/opencode",
   openchamber: "developing-today-forks/openchamber",
-  nix: "dezren39/nix",
+  nix: "dezren39/darwin-nix",
 };
 
 /**
@@ -533,9 +570,15 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
  * also carries queue/task numbers — so it is left unlinked rather
  * than guessed at.
  */
-export function titleRefs(title: string): RefKey[] {
+export function titleRefs(title: string, onInvalid?: (ref: string) => void): RefKey[] {
   const out: RefKey[] = [];
   const add = (ref: RefKey) => {
+    // #6243 (ref contract rule 2): a dropped candidate is traced, never
+    // silent - callers that own a trace surface pass onInvalid.
+    if (!isValidRef(ref)) {
+      onInvalid?.(ref);
+      return;
+    }
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
@@ -598,6 +641,8 @@ const normTitle = (s: string): string =>
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
+ * Only parseRef-accepted refs participate; invalid candidates are logged
+ * and otherwise behave as absent.
  * Tasks with no ref anywhere still emit (title only, no GitHub link).
  */
 export function inFlightBoardItems(section: OrchestrationSection, existing: BoardItem[]): BoardItem[] {
@@ -613,11 +658,17 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
     if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked")
       continue;
     const refs: RefKey[] = [];
-    const add = (ref: RefKey) => {
+    const add = (ref: unknown) => {
+      if (!isValidRef(ref)) {
+        console.error(
+          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
+        );
+        return;
+      }
       if (!refs.includes(ref)) refs.push(ref);
     };
-    if (item.ref) add(item.ref);
-    for (const ref of titleRefs(item.title)) add(ref);
+    if (item.ref !== undefined && item.ref !== null && item.ref !== "") add(item.ref);
+    for (const ref of titleRefs(item.title, (bad) => add(bad))) add(ref);
     const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
     if (refs.length > 0 && remainingRefs.length === 0) continue;
     const titleKey = normTitle(item.title);
@@ -700,6 +751,9 @@ export function liveSource(
       | boolean
       | { failed: number; failedIds?: string[] }
       | void;
+    /** Separate invalidation sink (#3977); complete Kaneo snapshots are
+     *  keyed by a stable content fingerprint, never added to #1739/#3321. */
+    onFreshness?: (input: FreshnessInput) => Promise<unknown> | unknown;
     // Kaneo polling-gap sink (#3321, Codex P2 on PR #5141): called
     // with (source, gapFrom, failureTime) while polls are failing or
     // partial, and with (source, gapFrom, null) on the first complete
@@ -738,6 +792,43 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
+    if (!opts?.onFreshness) return;
+    const cards = board
+      .filter((item) => item.source === "kaneo")
+      .map((item) => ({
+        id: item.id,
+        repo: item.repo,
+        title: item.title,
+        status: item.status,
+        priority: item.priority ?? null,
+        updatedAt: item.updatedAt ?? null,
+        kaneoUrl: item.kaneoUrl ?? null,
+        links: item.links.map((link) => `${link.relation}:${link.ref}`).sort(),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const snapshot = JSON.stringify(cards);
+    const digest = createHash("sha256").update(snapshot).digest("hex");
+    const occurredAt = cards
+      .map((card) => card.updatedAt)
+      .filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)))
+      .sort((a, b) => Date.parse(a) - Date.parse(b))
+      .at(-1);
+    try {
+      // Repeated complete polls use the same stable key. If the journal
+      // is unavailable, the next poll retries; no raw card payload is
+      // persisted and only canonical data is reread by consumers.
+      await opts.onFreshness({
+        eventId: `kaneo:${digest}`,
+        source: "kaneo",
+        scope: ["board"],
+        occurredAt: occurredAt ? new Date(occurredAt).toISOString() : null,
+        reason: "source-event",
+      });
+    } catch (err) {
+      console.error(`[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   // #3321: per-card ingested-transition counters (the `seq` on
   // KaneoCardSnapshot), kept outside the snapshot map so a card that
   // leaves the board and later reappears resumes its count instead
@@ -1047,6 +1138,7 @@ export function liveSource(
           await enqueueKaneoIngestion(async () => {
             await seedKaneoSeqFromPersisted();
             await noteKaneoRecovered();
+            await publishKaneoFreshness(board);
             try {
               const cards: KaneoCardSnapshot[] = board
                 .filter((b) => b.source === "kaneo")
@@ -1226,6 +1318,10 @@ export function liveSource(
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
     },
+    async projectAudit() {
+      const feed = await getFeed();
+      return projectAuditFromFeed(feed);
+    },
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
     },
@@ -1324,6 +1420,11 @@ export function liveSource(
       // plus the stewardship / check-usage outbox); a background writer
       // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
+      const uninstrumentedServices =
+        feed?.uninstrumentedServices ??
+        (await readFile(cfg.freeServicesTrackerFile, "utf8")
+          .then(extractUninstrumentedServices)
+          .catch(() => []));
       const store = new SnapshotStore(cfg.snapshotsDir);
       const history = await store.byService().catch(() => ({}));
       const domains =
@@ -1358,10 +1459,13 @@ export function liveSource(
       const chargesDroppedNote = feed?.chargesDropped
         ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
         : "";
+      const trackerRowsDroppedNote = feed?.uninstrumentedServicesDropped
+        ? ` · sanitized at load: dropped ${feed.uninstrumentedServicesDropped} malformed tracker row(s) (#1172)`
+        : "";
       const saasDroppedNote = feed?.saasDropped
         ? ` · sanitized at load: dropped ${feed.saasDropped} malformed SaaS service row(s) (#2451)`
         : "";
-      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote;
+      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote + trackerRowsDroppedNote;
       const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
         kind: "unmatched-charge",
         label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -1381,6 +1485,7 @@ export function liveSource(
           .catch(() => null);
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: feed.payg ?? [],
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
@@ -1413,6 +1518,7 @@ export function liveSource(
         // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: extractPaygLines(doc, registryText),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
@@ -1438,6 +1544,7 @@ export function liveSource(
         // sections that are missing, not for the ones that arrived.
         return {
           ...fallback,
+          uninstrumentedServices,
           charges: feedCharges.length ? feedCharges : fallback.charges,
           chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
           attention: [...fallback.attention, ...feedChargeFlags],
@@ -1640,6 +1747,7 @@ export function liveSource(
       // Muse launches) merged with the laptop server's live
       // sessions, accumulated into the durable store.
       const incoming: SessionRecord[] = [];
+      let droppedSessionElements = 0;
       const feed = await getFeed();
       if (feed?.registry) {
         for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
@@ -1647,6 +1755,8 @@ export function liveSource(
       try {
         const mapped = await laptopMapped();
         if (mapped) {
+          // Element-wise drops are surfaced, never swallowed (#2543).
+          droppedSessionElements = mapped.droppedElements;
           for (const e of mapped.entries) {
             incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
           }
@@ -1654,6 +1764,10 @@ export function liveSource(
       } catch {
         /* laptop part fails soft, like attention */
       }
+      const droppedNote =
+        droppedSessionElements > 0
+          ? ` · dropped ${droppedSessionElements} malformed OpenCode wire element(s) (#2543)`
+          : "";
       if (incoming.length > 0) {
         const merged = await mergeIntoRegistry(incoming);
         lastRegistryMergedCount = merged.length;
@@ -1662,12 +1776,12 @@ export function liveSource(
         // contribution labelled as what it is. (This string used to
         // headline the incoming batch, so one page carried two counts
         // for "records" with nothing explaining the difference.)
-        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
         return merged;
       }
       const store = await loadRegistryStore();
       lastRegistryMergedCount = store.length;
-      provenance.registry = "store only (no live registry source reachable)";
+      provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
       return store;
     },
     async coverage(): Promise<SourceCoverage[]> {

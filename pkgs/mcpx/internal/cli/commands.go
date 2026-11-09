@@ -148,7 +148,7 @@ func (a *App) CmdLs(ctx context.Context, args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAMESPACE\tTOOLS\tSHARING\tSCOPE\tLIVE\tSTATE\tDESCRIPTION")
+	_, _ = fmt.Fprintln(tw, "NAMESPACE\tTOOLS\tSHARING\tSCOPE\tLIVE\tSTATE\tDESCRIPTION")
 	broken := 0
 	for _, n := range nss {
 		state := "ready"
@@ -165,10 +165,10 @@ func (a *App) CmdLs(ctx context.Context, args []string) error {
 		if n.Error != "" {
 			desc = truncate(oneLine(n.Error), 60)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\n",
 			n.Namespace, n.Tools, n.Sharing, n.Scope, n.Live, state, desc)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	if *verbose {
 		fmt.Println()
@@ -360,7 +360,7 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "CALL\tNATIVE\tDESCRIPTION")
+	_, _ = fmt.Fprintln(tw, "CALL\tNATIVE\tDESCRIPTION")
 	for _, h := range hits {
 		call, native := h.Call, h.Native
 		if call == "" {
@@ -369,18 +369,18 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 			call = "tools." + h.Function + "(args)"
 			native = strings.Replace(h.Function, ".", "_", 1)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", call, native, truncate(oneLine(h.Description), 90))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", call, native, truncate(oneLine(h.Description), 90))
 		if *explain {
 			for _, ts := range h.Explain {
 				field := ts.Field
 				if field == "" {
 					field = "no match"
 				}
-				fmt.Fprintf(tw, "  \t%s\t%s +%d\n", ts.Term, field, ts.Points)
+				_, _ = fmt.Fprintf(tw, "  \t%s\t%s +%d\n", ts.Term, field, ts.Points)
 			}
 		}
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -656,7 +656,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	noLauncher := fs.Bool("no-launcher", false,
 		"run the script with no launcher: no globals, no capture, no wrapper")
 	typecheck := fs.String("typecheck", "",
-		"check the program before running it: off, on, strict")
+		"check the program before running it: off, types, strict (on aliases types)")
 	promptFlag := fs.String("prompt", "",
 		"synthesize and execute a script from a natural language prompt")
 	validateFlag := fs.Bool("validate", false,
@@ -949,7 +949,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		filepath.Join(a.Paths.State, "logs")); dir != "" && set.Bool("logging.file") {
 		if sink, serr := logging.NewFileSink(fileOptions(set, dir)); serr == nil {
 			writer = writer.WithFile(sink, slog.LevelDebug)
-			defer sink.Close()
+			defer func() { _ = sink.Close() }()
 		}
 	}
 
@@ -965,7 +965,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if !a.JSON && eo.Output == execsvc.OutputText {
 		stdout := io.Writer(os.Stdout)
 		onResult = func(v logging.Streamed) {
-			fmt.Fprintln(stdout, string(v.Value))
+			_, _ = fmt.Fprintln(stdout, string(v.Value))
 		}
 	}
 
@@ -1061,8 +1061,13 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.TypeCheckOnError = shape.checkOnError
+	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
+	opts.ImportsOnMissing = shape.importsOnMissing
+	opts.ImportsCrossProject = shape.importsCrossProject
+	opts.ImportsNetwork = shape.importsNetwork
 	opts.Launcher, opts.LauncherName = shape.launcher, shape.launcherName
 	opts.PlaceholderFiles = PlaceholderFiles()
 	opts.AllowRepeat = shape.allowRepeat
@@ -1103,7 +1108,6 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 				fmt.Fprintln(os.Stderr, "mcpx: script had fatal diagnostics; automatically repaired and verified with model provider")
 				opts.Source = diagRes.Repaired
 				opts.File = ""
-				diagSource = opts.Source
 			} else {
 				return derr
 			}
@@ -1138,7 +1142,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	var store *artifacts.Store
 	if st, serr := a.localStore(); serr == nil {
 		store = st
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 	} else if eo.ArtifactsDir != "" {
 		// Only worth failing for when the caller actually asked for files.
 		return serr
@@ -1453,13 +1457,13 @@ func (a *App) CmdStatus(ctx context.Context, args []string) error {
 	_ = json.Unmarshal(b, &servers)
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAMESPACE\tSHARING\tSCOPE\tLIVE/MAX\tTOOLS\tSCHEMA\tERROR")
+	_, _ = fmt.Fprintln(tw, "NAMESPACE\tSHARING\tSCOPE\tLIVE/MAX\tTOOLS\tSCHEMA\tERROR")
 	for _, s := range servers {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d/%d\t%d\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d/%d\t%d\t%s\t%s\n",
 			s.Namespace, s.Sharing, s.Scope, s.Live, s.Max, s.Tools, s.SchemaAge,
 			truncate(oneLine(s.LastError), 50))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	any := false
 	for _, s := range servers {
@@ -1470,14 +1474,14 @@ func (a *App) CmdStatus(ctx context.Context, args []string) error {
 	if any {
 		fmt.Println()
 		tw = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "INSTANCE\tPID\tHOLDERS\tCALLS\tUPTIME\tIDLE\tKEY")
+		_, _ = fmt.Fprintln(tw, "INSTANCE\tPID\tHOLDERS\tCALLS\tUPTIME\tIDLE\tKEY")
 		for _, s := range servers {
 			for _, in := range s.Instances {
-				fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%ds\t%ds\t%s\n",
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%ds\t%ds\t%s\n",
 					in.ID, in.PID, in.Holders, in.Calls, in.UptimeSec, in.IdleSec, truncate(in.Key, 28))
 			}
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	}
 	return nil
 }
@@ -1757,11 +1761,11 @@ func (a *App) CmdDaemons(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PID\tRUNNING\tSTARTED\tCONFIG")
+	_, _ = fmt.Fprintln(tw, "PID\tRUNNING\tSTARTED\tCONFIG")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%d\t%v\t%s\t%s\n", r.PID, r.Running, r.Started, r.Config)
+		_, _ = fmt.Fprintf(tw, "%d\t%v\t%s\t%s\n", r.PID, r.Running, r.Started, r.Config)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -1885,15 +1889,15 @@ func (a *App) CmdScripts(ctx context.Context, args []string) error {
 		return a.out(entries)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tDESCRIPTION\tPATH")
+	_, _ = fmt.Fprintln(tw, "NAME\tDESCRIPTION\tPATH")
 	for _, e := range entries {
 		name := e.Name
 		if e.Shadowed {
 			name += " (shadowed)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, truncate(oneLine(e.Summary), 54), e.Path)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", name, truncate(oneLine(e.Summary), 54), e.Path)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	fmt.Println("\nRun one with: mcpx run <name>")
 	return nil
 }
@@ -1972,11 +1976,11 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 			return a.out(available)
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SKILL\tDESCRIPTION")
+		_, _ = fmt.Fprintln(tw, "SKILL\tDESCRIPTION")
 		for _, s := range available {
-			fmt.Fprintf(tw, "%s\t%s\n", s.Name, truncate(oneLine(s.Description), 60))
+			_, _ = fmt.Fprintf(tw, "%s\t%s\n", s.Name, truncate(oneLine(s.Description), 60))
 		}
-		tw.Flush()
+		_ = tw.Flush()
 		fmt.Println("\nInstall with: mcpx skills install [--agent opencode|claude|codex|agy] [--to <dir>]")
 		return nil
 	}
@@ -2307,15 +2311,18 @@ type scriptFlags struct {
 type scriptShape struct {
 	// hooks carries the autonomy gate so the caller can report which
 	// configured phases were withheld, and why.
-	hooks                      *hookGate
-	env                        map[string]string
-	typecheck                  string
-	imports, importsOnDynamic  string
-	launcher, launcherName     string
-	allowRepeat                []string
-	captureConsole             bool
-	prefix, suffix             []string
-	before, onSuccess, onError []string
+	hooks                                       *hookGate
+	env                                         map[string]string
+	typecheck, checkOnError, checkOnUnsupported string
+	imports, importsOnDynamic                   string
+	importsOnMissing                            string
+	importsCrossProject                         string
+	importsNetwork                              string
+	launcher, launcherName                      string
+	allowRepeat                                 []string
+	captureConsole                              bool
+	prefix, suffix                              []string
+	before, onSuccess, onError                  []string
 }
 
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
@@ -2416,15 +2423,19 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	sh.onSuccess = cfg.ScriptPhase("onSuccess", sh.hooks.phaseValues("script.onSuccess", f.onSuccess))
 	sh.onError = cfg.ScriptPhase("onError", sh.hooks.phaseValues("script.onError", f.onError))
 
-	// Read from the resolved set, so the value is whichever layer won: the
-	// short --typecheck spelling, the generated --script-typecheck, a
-	// variable, or the config file.
-	sh.typecheck = firstNonEmpty(f.typecheck, a.Settings().String("script.typecheck"))
+	// Read the canonical setting after resolution so legacy path, variable,
+	// and flag spellings all pass through the same value normalization.
+	sh.typecheck = a.Settings().String("script.check")
+	sh.checkOnError = a.Settings().String("script.checkOnError")
+	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.
 	sh.imports = a.Settings().String("script.imports")
 	sh.importsOnDynamic = a.Settings().String("script.importsOnDynamic")
+	sh.importsOnMissing = a.Settings().String("script.importsOnMissing")
+	sh.importsCrossProject = a.Settings().String("script.importsCrossProject")
+	sh.importsNetwork = a.Settings().String("script.importsNetwork")
 
 	if f.noLauncher && f.launcher != "" {
 		return sh, errors.New("--launcher and --no-launcher contradict each other; " +

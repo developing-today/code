@@ -4,15 +4,30 @@ name: mcpx test
 #
 # First measured CI iteration for mcpx (#1998, design #1985): the serial
 # `go test ./...` in mcpx.yml's push-only test job is complemented here by
-# a sharded suite that also runs on PRs — init generates a static e2e
-# matrix from the test names actually present in the tree, unit and lint
-# run as their own legs, and ci-ok aggregates everything and prints the
-# #140 measurement table. The shard partition is re-decided for the
-# current suite (345 e2e tests in 56 files at introduction): the stale
-# 2+1 plan in #1998 would have left ~62% of e2e in one leg, so init
-# deals the sorted test names round-robin into 6 shards (~58 tests
-# each). Nothing in the matrix is hand-maintained: adding or renaming a
-# test re-deals the shards on the next run.
+# a sharded suite that also runs on PRs — init generates an e2e matrix
+# from the test names actually present in the tree, unit and lint run as
+# their own legs, and ci-ok aggregates everything and prints the #140
+# measurement table. Nothing in the matrix is hand-maintained: adding or
+# renaming a test re-deals the shards on the next run.
+#
+# #1994: shards are dealt by measured time, not by test count.
+# pkgs/mcpx/scripts/ci/e2e-shard-packer.py reads the committed seed
+# pkgs/mcpx/scripts/ci/e2e-timings.json (test -> seconds), gives
+# unmeasured tests the seed median, and LPT-packs the suite into
+# N = clamp(ceil(T / target_leg_seconds), 1, 6) shards. init fails if the
+# emitted regexes do not cover every `func Test` in internal/e2e exactly
+# once, so a shard cannot silently run zero tests. Each e2e leg runs
+# `go test -json` and uploads its per-test Elapsed values, which is where
+# the next seed refresh comes from.
+#
+# WHEN TO STOP SPLITTING (#1994 stop rule — arithmetic, not taste):
+# a shard only helps while T/N is below a leg's fixed cost plus queue
+# delay, or while the e2e leg is the longest job. Fixed cost per leg is
+# ~35 s (checkout + Go setup) plus the deno/bun/node setup time; run
+# 41530429335 measured six shards at 2 m 50 s-3 m 05 s of test work each
+# but a 38-45 min queue delay, so the queue, not T/N, was the wall clock:
+# adding a seventh shard there would have bought ~25 s of test time and
+# more queue pressure. Target leg and max shards live in the init step.
 #
 # Reconciliation with the live workflows (#1998): mcpx.yml keeps its
 # direct-Go push test + bot vendorhash-repair, mcpx-nixbuild.yml keeps
@@ -32,46 +47,35 @@ permissions:
 
 jobs:
   init:
-    name: "basic: mcpx-test init (static e2e matrix)"
+    name: "basic: mcpx-test init (measured-time e2e matrix)"
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.shards.outputs.matrix }}
       total: ${{ steps.shards.outputs.total }}
+      seed: ${{ steps.seed.outputs.seed }}
     steps:
       - uses: actions/checkout@v7
-      - id: shards
-        name: Generate the static e2e shard matrix from the tree
+      - id: seed
+        name: Mint the run seed (#1949)
         run: |
-          python3 - <<'EOF'
-          import glob, json, os, re
-          names = set()
-          for path in glob.glob("pkgs/mcpx/internal/e2e/*_test.go"):
-              for line in open(path, errors="replace"):
-                  m = re.match(r"func (Test[A-Za-z0-9_]*)\s*\(", line)
-                  if m:
-                      names.add(m.group(1))
-          ordered = sorted(names)
-          shards = 6
-          buckets = [[] for _ in range(shards)]
-          for i, name in enumerate(ordered):
-              buckets[i % shards].append(name)
-          include = [
-              {"shard": i, "count": len(b), "run": "|".join(b)}
-              for i, b in enumerate(buckets) if b
-          ]
-          print(f"e2e tests: {len(ordered)} in {len(include)} shards: "
-                + ", ".join(str(len(b)) for b in buckets))
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write("matrix=" + json.dumps({"include": include}) + "\n")
-              fh.write(f"total={len(ordered)}\n")
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
-              fh.write("## mcpx-test init\n\n")
-              fh.write(f"e2e tests found: {len(ordered)} across "
-                       f"{len(include)} static shards "
-                       f"(counts: {', '.join(str(len(b)) for b in buckets)})\n")
-          EOF
+          set -euo pipefail
+          seed="$(python3 -c "import os,time;b=bytearray(int(time.time()*1000).to_bytes(6,'big')+os.urandom(10));b[6]=b[6]&15|0x70;b[8]=b[8]&63|0x80;h=b.hex();print(f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}')")"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "MCPX_TEST_SEED=$seed" >> "$GITHUB_STEP_SUMMARY"
+      - id: shards
+        name: Generate the measured-time e2e shard matrix
+        # Measured-time packing (#1994). target-seconds is the intended
+        # test time per leg; it, not a constant shard count, sets N.
+        # Raising the seed's coverage (from the uploaded -json artifacts)
+        # is what makes the pack converge on real runtime.
+        run: |
+          python3 pkgs/mcpx/scripts/ci/e2e-shard-packer.py \
+            --tests-dir pkgs/mcpx/internal/e2e \
+            --timings pkgs/mcpx/scripts/ci/e2e-timings.json \
+            --target-seconds 170 \
+            --max-shards 6
 
   unit:
     name: "basic: mcpx-test unit"
@@ -87,6 +91,8 @@ jobs:
           cache-dependency-path: pkgs/mcpx/go.sum
       - name: Affected-test selector regressions
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v
+      - name: Run-seed wrapper regressions (#1949)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v
       # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
       # shell out to deno/bun/node too, and a missing runtime reads as a
       # test failure (first run of this workflow, PR #2888).
@@ -99,6 +105,8 @@ jobs:
           node-version: 24
       - name: Unit tests (everything except internal/e2e)
         working-directory: pkgs/mcpx
+        env:
+          MCPX_TEST_SEED: ${{ needs.init.outputs.seed }}
         run: |
           # Intentional word splitting: $pkgs is a newline-separated package list
           # from go list and must split into separate go test arguments --
@@ -131,6 +139,35 @@ jobs:
           fi
           go vet ./...
 
+
+  plugin-ts:
+    name: "basic: mcpx-test plugin-ts"
+    if: github.event_name != pull_request || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # #5151: lint + type-check coverage for the mcpx-owned TypeScript
+      # plugin sources (plugin/opencode/mcpx/), which the Go jobs and
+      # the bun test suite never type-check. Toolchain is pinned
+      # exactly in plugin/opencode/package.json + bun.lock: biome lint
+      # under the repo-root biome.json (mcpx/biome.json extends it and
+      # disables only noAssignInExpressions — daemon.ts parses Go
+      # durations with the canonical while ((m = re.exec(s))) loop)
+      # and tsc --noEmit under plugin/opencode/tsconfig.json (strict).
+      # Deno was evaluated first (it is already in this workflow for
+      # the Go legs):  fails on these sources inside its
+      # tsc host, and  default rules flag the daemon wire
+      # codes established patterns wholesale, so the repos existing
+      # biome + tsc pair (id web, pm-stack aggregator) is the fit.
+      - name: Install the pinned plugin check toolchain
+        working-directory: pkgs/mcpx/plugin/opencode
+        run: bun install --frozen-lockfile
+      - name: Lint and type-check the plugin TypeScript
+        working-directory: pkgs/mcpx/plugin/opencode
+        run: bun run check
+
   e2e:
     name: "basic: mcpx-test e2e (shard ${{ matrix.shard }})"
     needs: init
@@ -158,9 +195,60 @@ jobs:
         working-directory: pkgs/mcpx
         env:
           RUN_PATTERN: ${{ matrix.run }}
+          SHARD: ${{ matrix.shard }}
+          EXPECTED_COUNT: ${{ matrix.count }}
+          MCPX_TEST_SEED: ${{ needs.init.outputs.seed }}
         run: |
-          echo "go test ./internal/e2e -run '^($RUN_PATTERN)$' -count=1"
-          go test ./internal/e2e -run "^($RUN_PATTERN)$" -count=1
+          echo "go test ./internal/e2e -run '^($RUN_PATTERN)$' -count=1 -json"
+          set +e
+          go test ./internal/e2e -run "^($RUN_PATTERN)$" -count=1 -json \
+            > "$RUNNER_TEMP/e2e-shard-${SHARD}.json"
+          rc=$?
+          set -e
+          # The -json stream is both the CI log's timing record and the
+          # artifact the next seed refresh reads (#1994).
+          python3 - "$RUNNER_TEMP/e2e-shard-${SHARD}.json" <<'EOF'
+          import json, os, sys
+          names = set(os.environ["RUN_PATTERN"].split("|"))
+          elapsed, passed, failed = 0.0, 0, 0
+          with open(sys.argv[1], errors="replace") as fh:
+              for line in fh:
+                  try:
+                      event = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  # Top-level tests only: subtests (TestX/case) pass/fail
+                  # events would otherwise double-count parent elapsed time
+                  # and the assigned-test assertion.
+                  if event.get("Action") not in ("pass", "fail"):
+                      continue
+                  if event.get("Test") not in names:
+                      continue
+                  elapsed += float(event.get("Elapsed", 0) or 0)
+                  passed += event["Action"] == "pass"
+                  failed += event["Action"] == "fail"
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          text = (f"shard {os.environ.get('SHARD')}: {passed + failed} tests reported "
+                  f"({passed} pass, {failed} fail), {elapsed:.1f}s of test time "
+                  f"(expected {os.environ.get('EXPECTED_COUNT')} tests)")
+          print(text)
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write(f"- {text}\n")
+          if passed + failed == 0:
+              raise SystemExit("shard ran no tests: the generated regex matched nothing")
+          if passed + failed != int(os.environ.get("EXPECTED_COUNT", "0")):
+              raise SystemExit("shard test count differs from the init assignment")
+          EOF
+          exit $rc
+      - name: Upload per-test timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpx-e2e-timings-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/e2e-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Surviving mcpx daemons
         if: always()
         run: |
@@ -169,7 +257,7 @@ jobs:
 
   ci-ok:
     name: "mcpx-test ci-ok"
-    needs: [init, unit, lint, e2e]
+    needs: [init, unit, lint, plugin-ts, e2e]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10

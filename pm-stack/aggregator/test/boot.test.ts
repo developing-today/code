@@ -45,6 +45,36 @@ describe("server boots from fixtures", () => {
     expect(body.source.board).toBe("fixtures");
   });
 
+  test("item JSON exposes ready-for-agent dispatch state and provenance", async () => {
+    const id = "kaneo:code/fx0dispatchtrial0000107";
+    const res = await fetch(`http://127.0.0.1:${port}/api/item/${encodeURIComponent(id)}.json`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      linkedItems: { ref: string; labels: string[] }[];
+      dispatchStates: { ref: string; state: string; provenance: { source: string; observedAt: string } }[];
+    };
+    expect(body.linkedItems.find((item) => item.ref === "developing-today/code#762")?.labels).toContain("ready-for-agent");
+    expect(body.dispatchStates).toHaveLength(1);
+    // Fixtures mode is deterministic and never reads the live harness:
+    // the canned dispatch-trial item has no work item, so its state is
+    // exactly "not picked up" — never an environment-dependent
+    // "unavailable".
+    expect(body.dispatchStates[0].state).toBe("not picked up");
+    expect(body.dispatchStates[0].provenance.source).toBe("ready-for-agent");
+    expect(body.dispatchStates[0].provenance.observedAt).toBeTruthy();
+  });
+
+  test("unknown item JSON id returns a structured JSON 404", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/item/${encodeURIComponent("kaneo:code/no-such-item-4969")}.json`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not found");
+    const page = await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent("kaneo:code/no-such-item-4969")}`);
+    expect(page.status).toBe(404);
+    expect(page.headers.get("content-type")).toContain("text/html");
+  });
+
   test("front door renders the overview, board lives at /board (#1134)", async () => {
     const root = await fetch(`http://127.0.0.1:${port}/`);
     expect(root.status).toBe(200);
@@ -138,6 +168,8 @@ describe("server boots from fixtures", () => {
     const today = await (await fetch(`http://127.0.0.1:${port}/frag/today`)).text();
     expect(today.includes("Top objectives")).toBe(true);
     expect(today.includes("Project momentum")).toBe(true);
+    expect(today.includes("Next up")).toBe(true);
+    expect(today.includes("stale inputs")).toBe(false); // fixture inputs are an intentional static source
     const todayJson = (await (await fetch(`http://127.0.0.1:${port}/api/today.json`)).json()) as {
       objectives: unknown[];
       momentum: unknown[];
@@ -186,8 +218,12 @@ describe("server boots from fixtures", () => {
     expect(board.board.every((item) => !("notes" in item))).toBe(true);
     const quota = (await (await fetch(`http://127.0.0.1:${port}/api/quota.json`)).json()) as { pools: unknown[] };
     expect(quota.pools.length).toBeGreaterThan(0);
-    const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as unknown[];
+    const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as {
+      id?: string;
+      tier?: string;
+    }[];
     expect(attention.length).toBeGreaterThan(0);
+    expect(attention.some((entry) => entry.tier === "needs-drew")).toBe(true);
   });
 
   test("unknown project page is a styled 404; a known project stays 200 (#1186)", async () => {

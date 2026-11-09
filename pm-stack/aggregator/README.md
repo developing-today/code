@@ -13,6 +13,38 @@ by this server.
 Design record (source of truth):
 [`doc/2026-10-24T11-05-38Z_design_project-management-stack/`](../../doc/2026-10-24T11-05-38Z_design_project-management-stack/).
 
+## Lazy-initialization contract (#3879)
+
+**A lazy initializer memoizes success, never failure.** Concurrent
+callers share the one in-flight attempt; once that attempt settles, a
+failure — a rejection, or a fail-soft failure *value* (`null`,
+`false`) — leaves no memo behind, so the next caller retries. A
+success is memoized for the process lifetime unless the module
+already has an explicit invalidation path, which stays. Every layer
+clears independently: an initializer built on another initializer
+applies the contract to its own resolved value — "the layer below
+retries" is never a reason for a layer to keep a failure. Per-call
+fail-soft behaviour is unchanged: a caller whose attempt failed still
+gets the failure value for that call and reports its surface
+unavailable — the contract removes the *permanence*, not the
+posture. Retry cost stays bounded by the layer that knows it
+(`src/secrets.ts` caches a failed resolution for 5 minutes), never by
+a second per-site failure TTL.
+
+The aggregator's three memo sites follow this contract:
+
+- `src/supabase.ts` — `clientPromise` (`getSupabaseClient`), cleared
+  when an attempt resolves `null` or rejects (#3732).
+- `src/alerts.ts` — `storePromise` (`getAlertsStore`), cleared
+  independently of the client layer when an attempt resolves `null`
+  or rejects (#3732).
+- `src/push.ts` — `configurePromise` (`ensurePushConfigured`),
+  cleared when an attempt settles `false`; the 401/403 reset in
+  `sendPush` is its explicit invalidation path and stays (#3729).
+
+Design: #3879 ("failure is not a result"). The rule was first stated
+for pm-dispatch in #2668; it is one rule for both apps.
+
 ## The views
 
 Nav tiers (#1497 curation, confirmed 2026-11-01): the top nav bar carries the
@@ -35,7 +67,7 @@ is a live index — last-rendered time + status per page from the render registr
 | `/dns`            | **DNS / domain register** (dropdown-only since #1497) (slice 3, #906; data owned by #902) — the register rendered next-renewal-first: renewing-soon spend, then in-use / unused-but-earmarked / completely-unused views and the full table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `/api/dns.json`                                                                                                                |
 | `/sessions`       | **Sessions** (dropdown-only since #1497) (slice 3, #906) — the identity registry: every known session with its stable id, agent identity, parent, task refs, and token total, grouped by source.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `/api/registry.json`                                                                                                           |
 | `/program`        | **Program status — projects index** (#1046, generalized #1121) — one card per configured project (title, live Project-pool counts by status for its Area, Grist roadmap row count, home-doc link), the whole-pool summary, orchestration freshness, and the pool's unset-Area count as a visible gap, and — since the #1497 merge — the full Projects pool section (`#projects-pool`: raw pool cards, area filter, Project-vs-derived disagreements). Driven by the project registry in `src/project-config.ts`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `/api/program.json` (incl. per-project summaries)                                                                              |
-| `/projects`       | **Projects — merged into Program status** (#1497) — redirects (302) to `/program#projects-pool` (the `?area=` filter is preserved as `/program?area=`); the pool view itself is the Program section above.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `/api/projects.json` (unchanged)                                                                                               |
+| `/projects`       | **Projects — merged into Program status** (#1497) — redirects (302) to `/program#projects-pool` (the `?area=` filter is preserved as `/program?area=`); the pool view itself is the Program section above.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `/api/projects.json` (pool items, scheduled Project #4 audit snapshot, and coverage)                                           |
 | `/program/<id>`   | **Project page** (#1121) — one per registry entry (pm-dashboard, lab-cluster, id, repo-fleet, mcpx, cloud-program): intro + home-doc/dashboard links, live tracked-issue states, its Area's pool items grouped by status, its roadmap area's rows, and editorial done/next/long-term/gaps where configured. Null Area/roadmap/home-doc render as honest gap notes, never empty sections. The full PM-dashboard document (#1046) lives at `/program/pm-dashboard`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `/api/program-project.json?id=<id>`                                                                                            |
 | `/health`         | **Health & topology** (#1147 + #1137) — every stack service probed live (60 s probe cache): the aggregator, Kaneo, its Postgres, ready-for-agent, Pad, Grist, the fleet-feed collector, the orchestration pass, and the projector (off by config, stated not implied); the services & ports topology table (port, bind, runs-as, consumers, what breaks); feed section ages; last job runs; per-source facets; and this dashboard's own per-page render history (in-process registry — an unrendered page says so, never fake-green).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `/api/health` (extended in place: `services` / `feed` / `pages` / `jobs` beside the original `status` / `source` / `sections`) |
 | `/pages`          | **All pages** (dropdown-only since #1497) — the page manifest as a live index: every registered page, its route, JSON twin, nav tier, and last-rendered time + status from the render registry (#1147).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | — (the manifest is `src/pages.ts`)                                                                                             |
@@ -394,6 +426,48 @@ The contract's existing embodiment is `src/token-adapter.ts` (#1153):
 it validates its document once at the boundary and rejects-and-retains
 on failure, and new boundaries are written to its standard.
 
+## Measurement grammar (#3005)
+
+A measurement string is a **plain decimal**. Everywhere the PM stack
+turns a string into a measurement — a coercion gate in this app or in
+the laptop exporters — exactly two forms exist:
+
+- **Field form** (a value that IS the measurement — API fields, sheet
+  cells): an optional sign where the gate's domain already admits
+  negatives, digits, and an optional single fraction
+  (`/^[+-]?[0-9]+(\.[0-9]+)?$/`, narrowed per gate — counts are
+  unsigned integers; kind rules stay with their gates). Everything
+  else — empty, whitespace-padded, radix-prefixed (`0x10`),
+  scientific (`1e2`), thousands separators in a field value — is
+  *not a measurement*: the gate returns its existing not-measured
+  outcome (`null` here; the exporters' fail-closed error), never a
+  reinterpreted number.
+- **Prose form** (a count embedded in a human-written bullet): the
+  extraction captures the grouped form (`[\d,]+`, strip commas —
+  the idiom in `src/dns.ts` `parsePriceUsd` and
+  `src/snapshot-records.ts`). A bare `\d+` adjacent to a count noun
+  is a defect; where a grouped figure cannot match, the metric is
+  absent — never truncated, never a partial-group match.
+
+Pins: scientific spellings are **refused** in both forms (no source
+emits them; the landed meta-exporter gate refuses them); whitespace
+padding is **refused** (padding is drift, not a spelling); grouping
+well-formedness is **stripped, not validated** (`1,2,3` parses as
+123 — strict grouping was considered and rejected). Already-typed
+numbers are untouched: a `typeof number` input keeps each gate's
+existing finite check — the grammar governs strings only.
+
+The grammar lives as **per-app copies with one shared probe matrix**
+(these apps deploy independently): `"12"`/`"12.5"` measure;
+`"1,234"` + noun reads 1234 in prose form and is not a measurement
+in field form; `""`, `"0x10"`, `"1e2"`, `" 12 "`, `"12abc"` are not
+measured. Embodiments: `src/aa.ts` `num()` (#2985),
+`src/saas-extract.ts` count patterns (#2997, #3000),
+cloudflare-export and supabase-export gates (#2791, #2743),
+meta-exporter's `parseSubscriptionQuota` (#2789 — drift found by
+the closing audit: the #6333 re-home restored the pre-#2789 bare
+coercion; restoration is filed as #7880). Closing audit: issue #3006.
+
 ## First-class requirements (from the design record)
 
 1. **Cross-repo links.** Any board card or roadmap row links any GitHub
@@ -430,32 +504,45 @@ except the default Source itself: serving fixtures without an explicit
 a deployment that forgets `PM_AGG_SOURCE=live` fails at startup instead
 of silently showing canned data. `bun run dev` sets the switch for you.
 
-| Env var                    | Default                                             | Purpose                                                                                                                                                               |
-| -------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PM_AGG_SOURCE`            | `fixtures` (dev-gated, see below)                   | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet; explicit `fixtures` stays available for deliberate fixture work; unset/invalid without `PM_AGG_DEV=1` refuses to start (#1195) |
-| `PM_AGG_DEV`               | —                                                   | Set to `1` for local development: allows the implicit (unset or invalid `PM_AGG_SOURCE`) fixture default; never set in deployment — `install.sh` renders `PM_AGG_SOURCE=live` instead |
-| `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                                             |
-| `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                      |
-| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                           |
-| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill |
-| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                                               |
-| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback                                                                                          |
-| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                                                                                                |
-| `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                                                                                                         |
-| `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                                       |
-| `KANEO_ADMIN_PASSWORD`     | —                                                   | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                                               |
-| `GRIST_URL`                | `http://127.0.0.1:8484`                             | Grist base URL                                                                                                                                                        |
-| `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                                                                                                             |
-| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                                                                                                      |
-| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                               |
-| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                           |
-| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                |
-| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                                     |
-| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json`                         | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                      |
+| Env var                    | Default                                                | Purpose                                                                                                                                                                                                |
+| -------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PM_AGG_SOURCE`            | `fixtures` (dev-gated, see below)                      | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet; explicit `fixtures` stays available for deliberate fixture work; unset/invalid without `PM_AGG_DEV=1` refuses to start (#1195) |
+| `PM_AGG_DEV`               | —                                                      | Set to `1` for local development: allows the implicit (unset or invalid `PM_AGG_SOURCE`) fixture default; never set in deployment — `install.sh` renders `PM_AGG_SOURCE=live` instead                  |
+| `PM_AGG_PORT`              | `4870`                                                 | HTTP port                                                                                                                                                                                              |
+| `PM_AGG_HOSTS`             | `127.0.0.1`                                            | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                                                       |
+| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                    | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                                                            |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                          | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill                                  |
+| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`          | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                                                                                |
+| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`        | The hub's second dated-read source (billing incidents) for the same fallback                                                                                                                           |
+| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json`    | Laptop OpenCode server port + password source (laptop attention, live)                                                                                                                                 |
+| `KANEO_URL`                | `http://127.0.0.1:5173`                                | Kaneo base URL (board reader)                                                                                                                                                                          |
+| `KANEO_ADMIN_EMAIL`        | —                                                      | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                                                                        |
+| `KANEO_ADMIN_PASSWORD`     | —                                                      | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                                                                                |
+| `GRIST_URL`                | `http://127.0.0.1:8484`                                | Grist base URL                                                                                                                                                                                         |
+| `GRIST_API_KEY`            | —                                                      | Grist API key (Bitwarden `grist.api-key`)                                                                                                                                                              |
+| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                               | The `Program roadmap` document id (Phase 2 seed)                                                                                                                                                       |
+| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                                | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                                                                |
+| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                      | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                                                            |
+| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                       | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                 |
+| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                      | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                      |
+| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json` | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                                                       |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
+### WIP-cap configuration (#1281 step 1)
+
+The single source for cross-repo board WIP caps is
+[`src/wip-caps.json`](src/wip-caps.json). `laneCaps` sets the starting
+cap for each standard board lane; `defaultCap` applies to any additional
+lane. The initial values are pilot thresholds, not hard limits: exceeding
+one only displays a warning and never blocks work. `projectCaps` may
+override a lane cap by the GitHub Project URL, and `epicCaps` may override
+it by canonical epic ref (`owner/repo#N`). Project and epic counts are
+derived from the board items linked to the current Project-pool snapshot;
+unlinked cards still count toward their lane total. The board and Today
+view use the same summary, and `/api/today.json` includes it. Done cards
+are completion history and are not counted as WIP.
 ### Activity ingestion into the event stream (#3321)
 
 Watchdog breach episodes and Kaneo board changes are ingested into the
@@ -496,7 +583,7 @@ the load-bearing claims against the code and configuration (see
 | Quota (#851)                 | Fleet feed file (`fleet-feed.json`), overlaid by the quota gatherer's `quota-current.json`                                                                              | fixtures when no feed exists                               | collector (sandbox) + gatherer timer                                                                                                                                                                                          |
 | Attention (#852)             | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed                                                                                            | fixtures when neither is reachable                         | OpenCode servers (both hosts)                                                                                                                                                                                                 |
 | DNS (#906)                   | Fleet feed `dns` section, parsed collector-side from the #902 register                                                                                                  | fixtures when no section exists                            | collector (sandbox)                                                                                                                                                                                                           |
-| Registry (#906)              | Feed registry records (sandbox OpenCode, Muse launches) merged with live laptop OpenCode records into the durable registry file                                  | fixtures when the feed is absent                           | aggregator unit + collector                                                                                                                                                                                                   |
+| Registry (#906)              | Feed registry records (sandbox OpenCode, Muse launches) merged with live laptop OpenCode records into the durable registry file                                         | fixtures when the feed is absent                           | aggregator unit + collector                                                                                                                                                                                                   |
 | **Projector** (service)      | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it                                                                        |
 | **Pad** (service)            | — (the aggregator reads no Pad data; Pad is not a facet source)                                                                                                         | —                                                          | **Deployed as the planning layer only**: NixOS OCI container `pm-pad`, declared by `services.pm-apps` (`nixos/services/pm-apps/default.nix`); named here so its absence from the facet rows is a stated fact, not an omission |
 
@@ -547,6 +634,23 @@ requirement Kaneo cannot provide) render live.
 The footer of every page states, facet by facet, whether it is live or
 fixture-backed. When a live reader is unreachable, that facet alone
 falls back to fixtures and the footer says why.
+
+## Roadmap Horizon contract (#1207)
+
+`Program roadmap.Horizon` accepts a real calendar date (`YYYY-MM-DD`), a
+quarter (`Q1`–`Q4 YYYY`), or one of `Now`, `Next`, `Later`, `Ongoing`, and
+`Unscheduled`. Dates must exist in the Gregorian calendar. Leading/trailing
+whitespace and bucket/quarter case are normalized for classification only;
+the reader never rewrites a Grist cell. `Now`/`Next`/`Later` are retained as
+legacy relative buckets, while blank and unknown values are invalid.
+
+Invalid rows are not filtered: the original value stays on the roadmap card,
+with a warning and an invalid-value banner. Correct cells in Grist explicitly;
+the seed command validates `seed/roadmap.json` before making API calls, but
+does not migrate or overwrite an existing populated table (seed is not a
+migration mechanism). Day views also show dated rows outside the selected
+window and undated/coarse rows, and every grain displays per-theme Done/total
+counts over the full roadmap set.
 
 ## The fleet feed (quota + sandbox attention, slice 1 — #890)
 
@@ -600,36 +704,46 @@ clone (`~/git/code`) and writes its outputs under
 
 Each tick:
 
-- imports the OpenChamber quota module in-process (from the laptop's
-  OpenChamber checkout) and fetches every configured provider
-  per-credential, with credentials read **directly from OpenCode's
-  credential store** (`opencode.db`, read-only) — no OpenCode server
-  needs to be listening. One provider failing or exceeding the 15s
-  cap degrades only its own rows.
-- ingests laptop **file exports** in the Meta Phase-1 convention
-  (#1301): a producer's `latest.json` (today: Meta,
-  `~/atlas/meta-quota-export/latest.json`) maps onto the same
-  contract; a failure-status document or a file older than 30
-  minutes is an error entry, never zeros.
-- writes **`quota-current.json`** — the latest-state contract
+- runs the OpenDesign session keeper (Drew's provider browser-auth
+  auto-renewal rule): the one browser-session credential in the
+  system is read, slid, or re-captured over CDP before it is used,
+  with its horizon recorded in `opendesign-renewal.json`. The keeper
+  maintains a credential; it is not a quota source.
+- invokes the ONE quota source - the opencode fork's quota
+  subcommand, `opencode quota --json` (#6125/#6127) - whose
+  per-provider quota functions live in the providers that own the
+  credentials. A second invocation asks explicitly for the
+  route-disabled live pools (`meta`, `command-code`), which a named
+  ask always fetches. The gatherer fetches no provider itself and
+  imports no quota module; a provider failing degrades only its own
+  rows, and #1268 retention keeps last-known rows for errored runs.
+- writes **`quota-current.json`** - the latest-state contract
   (`QuotaCurrentFile` in `src/model.ts`: per provider/credential,
   windows carrying value, % of limit, reset, measured-at, source,
-  state) — and `quota-gatherer-heartbeat.json` (tick time,
-  per-provider state/duration; the heartbeat also rides inside
+  state; the file's `source` is `opencode-quota`) - and
+  `quota-gatherer-heartbeat.json` (tick time, per-provider
+  state/duration; the heartbeat also rides inside
   quota-current.json), both in the aggregator state directory beside
   `fleet-feed.json`.
-- appends §4 snapshot records for windows whose value **moved**
+- appends S4 snapshot records for windows whose value **moved**
   since the last appended record, directly to the snapshot store
   (`SnapshotStore.append` dedupes; change-tracking state in
   `quota-gatherer-state.json`). Setting `USAGE_SNAPSHOT_OUTBOX_PATH`
   reroutes records to the writers' outbox instead.
+- appends one Supabase `agent.quota_records` row per pool entry to
+  muse-dev2 (source `opencode-quota`), so the readings land in
+  Supabase on the same tick as the dashboard file. Fail-soft: a sink
+  failure is logged and never fails the tick.
 
-Fail-soft: a module-import or credential-store failure writes a
+Fail-soft: a subcommand failure or unparseable output writes a
 heartbeat with the error, exits non-zero, and leaves the previous
-`quota-current.json` untouched. **Remaining hop:** the aggregator
-does not read `quota-current.json` yet — `Source` pickup (freshness
-rendering, lazy pull on page load) is the follow-up that makes the
-tick visible on /quota.
+`quota-current.json` untouched. The aggregator does read
+`quota-current.json`: `overlayQuotaCurrent` (`src/quota-current.ts`)
+overlays the latest tick onto the /quota display, consumed by the
+live source (`src/sources/live.ts`). That consumption is
+display-only — decision consumption (measured placement, rotation,
+demotion) is the OpenCode-side remainder tracked by
+developing-today-forks/opencode#566.
 
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with

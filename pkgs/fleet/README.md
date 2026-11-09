@@ -12,12 +12,10 @@ the hello negotiation and the PATH shims. Step 4 (#5432) landed
 the dispatch domain — a thin client over pm-stack dispatch. Step 5
 (#5433) landed the search domain — the atlas-search client surface
 over the live Atlas service, gated on the #5350 step-6 cutover.
-Step 6 (#5554) landed the secrets verb. With search in, every
-domain in the registry runs for real in the full build; the one
-remaining stub is the search *serve role* (`fleet serve search`):
-the atlas user unit still points at the standalone atlas-search
-service, and re-pointing it is tracked separately from this epic's
-client-surface step.
+Step 6 (#5554) landed the secrets verb. #5604 landed the search
+_serve role_ (`fleet serve search`): the Atlas service itself,
+rehomed from the atlas-search bin crate. With it, every domain and
+every serve role in the registry runs for real in the full build.
 
 ## Layout
 
@@ -30,8 +28,14 @@ crates/fleet-registry/      the FULL domain registry — every domain's
                             capability ids behind them. Compiled into
                             every variant, so --help is always complete.
 crates/fleet-config/        fleet.toml: [domains] switches, [proxy],
-                            [secrets], [dispatch]; path/ports/socket
-                            constants.
+                            [secrets], [queue-broker], [secrets-broker],
+                            [dispatch]; path/ports/socket constants.
+                            Role sockets (#6215, design #5699):
+                            env > [<role>] socket > $XDG_RUNTIME_DIR/
+                            fleet/<role>.sock > the $HOME default;
+                            [<role>] transport = "socket" | "tcp" is a
+                            preference between working routes (the
+                            search_via shape), never a disable lever.
 crates/fleet-secrets/       secrets by NAME only (broker first, then
                             `bws` fallback). Values never appear in
                             code, tests, errors or logs.
@@ -80,6 +84,21 @@ crates/fleet-search/        the search domain (step 5): the
                             writers are ported verbatim from the
                             atlas-search bin so service envelopes
                             print byte-identically.
+                            The `serve` cargo feature (#5604) adds
+                            the service role: `fleet serve search`
+                            (also spelled `atlas-search serve` via
+                            argv0) — server.rs is a parity-guarded
+                            verbatim copy of atlas-search's service,
+                            serve.rs the role glue (arg surface,
+                            lazy shared embedder, read-only Turso
+                            backend). atlas-core / atlas-embed /
+                            atlas-proto are consumed by relative
+                            path from pkgs/atlas-search, untouched,
+                            which is why default.nix builds from the
+                            pkgs/ tree. The standalone atlas-search
+                            artifact stays buildable: it is the
+                            single-step rollback of the unit
+                            re-point (home/common: atlasSearchServeViaFleet).
 crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
                             client over pm-stack's pm-dispatch —
                             `dispatch status` (GET /health),
@@ -107,14 +126,14 @@ names (`repo-queue`, `queue-broker`, `secrets-broker`,
 `laptop-agent`, `atlas-search`, `laptop-agent-broker`) route to
 their domain through argv0.
 
-| nix attr              | profile | capabilities                                                        |
-| --------------------- | ------- | ------------------------------------------------------------------- |
-| `fleet`               | full    | all ten                                                            |
-| `fleet-serve`         | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve |
-| `fleet-static`        | full    | all nine (musl static; the sandbox's artifact)              |
-| `fleet-connect`       | connect | proxy-connect (dynamic)                                             |
-| `fleet-connect-static`| connect | proxy-connect (musl static, runs anywhere)                          |
-| `fleet-brokers`       | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)  |
+| nix attr               | profile | capabilities                                                           |
+| ---------------------- | ------- | ---------------------------------------------------------------------- |
+| `fleet`                | full    | all ten                                                                |
+| `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets |
+| `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                         |
+| `fleet-connect`        | connect | proxy-connect (dynamic)                                                |
+| `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                             |
+| `fleet-brokers`        | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)       |
 
 Every package installs its binary as `bin/fleet`; the hyphen
 variants also get a `bin/fleet-serve` / `bin/fleet-connect` symlink
@@ -125,12 +144,12 @@ for side-by-side installs.
 A domain that cannot run answers on stderr and exits **69**
 (EX_UNAVAILABLE), with wording that says which layer said no:
 
-| case                        | wording                                                    |
-| --------------------------- | ---------------------------------------------------------- |
-| not compiled into this build| `this build does not include '<domain>'` + enabled list    |
-| narrowed out by argv0 name  | `invoked as 'fleet-connect', this build does not include …`|
-| disabled by config          | `'<domain>' is disabled by config on this host`            |
-| compiled in, not yet built  | `'<domain>' is included in this build but not implemented yet` |
+| case                         | wording                                                        |
+| ---------------------------- | -------------------------------------------------------------- |
+| not compiled into this build | `this build does not include '<domain>'` + enabled list        |
+| narrowed out by argv0 name   | `invoked as 'fleet-connect', this build does not include …`    |
+| disabled by config           | `'<domain>' is disabled by config on this host`                |
+| compiled in, not yet built   | `'<domain>' is included in this build but not implemented yet` |
 
 Usage errors exit 2. `fleet --help` always renders the full
 registry, marking each unavailable domain with the reason
@@ -146,6 +165,56 @@ nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static
 ./pkgs/fleet/smoke.sh ./result ./result-1 ./result-2 ./result-3
 cargo test --workspace   # unit tests (registry, config, proto, secrets)
 ```
+
+## Deploy: the two live installs (read this before merging a new verb)
+
+A verb is **not shipped when it merges** — it is shipped when BOTH
+live installs report it. #6728 is the failure this section exists to
+prevent: `fleet queue fallback` was merged as source + docs
+(`crates/fleet-queue/src/fallback.rs`, wired in `lib.rs`/`client.rs`)
+while the installed 0.1.0 binaries kept answering
+`repo-queue: unknown command "fallback"` for a full day of
+backend-down shifts.
+
+Build ONE artifact from current `main` and deploy that same build to
+both installs. If the build fails in the cargo vendor step with
+`no matching package named '<crate>' found ... required by package
+'atlas-core'` (or another atlas crate), `pkgs/fleet/Cargo.lock` has
+drifted from the atlas-search path dependencies again — the fleet
+lock covers their external dependencies too (see `default.nix`).
+Regenerate it before building:
+
+```sh
+(cd pkgs/fleet && cargo update --workspace)
+```
+
+```sh
+nix build .#fleet
+./result/bin/fleet version   # record the source rev; both installs must match it
+```
+
+1. **Laptop install** — a plain binary copy at `~/.local/bin/fleet`
+   (lane-writable). Copy the fresh artifact over it, then verify.
+2. **Sandbox install** — `~/tools/fleet`, reached through the
+   `~/tools/bin/fleet` and `~/tools/bin/repo-queue` symlinks. This
+   file is **root-owned provisioning** (read-only to lanes): a lane
+   cannot redeploy it. The sandbox redeploy is done by whoever
+   provisions `~/tools`; a lane that verifies the sandbox install is
+   stale files/updates the tracking issue with both source revs
+   (installed vs current `main`) instead of improvising a replacement
+   on `PATH` — the symlinks are the contract every lane resolves.
+
+Verify BOTH installs after every deploy, with the verb surface as
+the check (a version string alone proves nothing):
+
+```sh
+fleet queue --help            # on the laptop AND on the sandbox
+fleet queue fallback scan --repo developing-today/code   # JSON items, exit 0
+```
+
+If the two installs ever disagree on source rev or verb list, the
+stale one is a bug: file it against this section (the #6728 shape)
+rather than working around it silently.
 
 The connect variants carry the D7 size contract: **≤ 2 MiB hard
 gate** (target ≤ 1.5 MiB), enforced in `default.nix` postFixup

@@ -17,6 +17,7 @@ import {
   upsertItem as storeUpsertItem,
   upsertComment as storeUpsertComment,
   markCommentDeleted as storeMarkCommentDeleted,
+  deleteItem as storeDeleteItem,
   recordPush as storeRecordPush,
   type HotEventInput,
 } from "../src/store";
@@ -44,6 +45,7 @@ function libsqlStore(dbx: Client): ProjectorStore {
     upsertItem: (i) => storeUpsertItem(dbx, i),
     upsertComment: (c) => storeUpsertComment(dbx, c),
     markCommentDeleted: (c) => storeMarkCommentDeleted(dbx, c),
+    deleteItem: (ref) => storeDeleteItem(dbx, ref),
     recordPush: (p) => storeRecordPush(dbx, p),
     appendHotEvents: (events) => appendHotEvents(dbx, events),
   };
@@ -130,8 +132,18 @@ describe("projector: hot mapping", () => {
         sender: { login: "dezren39" },
         repository: { full_name: "developing-today/code" },
         commits: [
-          { id: "aaa111", url: "https://github.com/developing-today/code/commit/aaa111", timestamp: "2026-10-25T01:00:00Z", author: { username: "dezren39" } },
-          { id: "bbb222", url: "https://github.com/developing-today/code/commit/bbb222", timestamp: "2026-10-25T01:01:00Z", author: { username: "dezren39" } },
+          {
+            id: "aaa111",
+            url: "https://github.com/developing-today/code/commit/aaa111",
+            timestamp: "2026-10-25T01:00:00Z",
+            author: { username: "dezren39" },
+          },
+          {
+            id: "bbb222",
+            url: "https://github.com/developing-today/code/commit/bbb222",
+            timestamp: "2026-10-25T01:01:00Z",
+            author: { username: "dezren39" },
+          },
         ],
       },
       [],
@@ -220,7 +232,12 @@ describe("projector: hot mapping", () => {
     );
     const rows = await listHotEvents(db, { after: before });
     expect(rows.length).toBe(2);
-    expect(rows[0]).toMatchObject({ event: "issues", action: "opened", ref: "developing-today/code#77", actor: "dezren39" });
+    expect(rows[0]).toMatchObject({
+      event: "issues",
+      action: "opened",
+      ref: "developing-today/code#77",
+      actor: "dezren39",
+    });
     expect(rows[1]).toMatchObject({ event: "issue_comment", action: "deleted", ref: "developing-today/code#77" });
     expect(JSON.stringify(rows)).not.toContain("secret body text");
   });

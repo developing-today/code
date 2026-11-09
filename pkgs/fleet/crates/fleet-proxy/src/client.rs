@@ -252,16 +252,36 @@ pub struct RequestArgs {
     pub body: Option<serde_json::Value>,
 }
 
+/// The `fleet proxy connect` usage text, shared by the parser's
+/// help arm and the bin's help intercept, which prints it to
+/// stdout at exit 0 (#5619).
+pub const CONNECT_USAGE: &str = "\
+usage: fleet proxy connect [--print-path] [--stdio [--host H] \
+[--port N]] [--request METHOD PATH [--service-port N] \
+[--token-file F] [--body JSON]]
+
+Connect to the session proxy: ensure a broker answers (starting
+one when none does), sync the PATH shims from its services map,
+and optionally issue one request over the negotiated stream.
+
+Each flag may be given at most once. --stdio and --print-path are
+mutually exclusive with --request, and --host/--port require
+--stdio.";
+
 impl ConnectArgs {
     pub fn parse(argv: &[String]) -> Result<ConnectArgs, ClientError> {
         let mut out = ConnectArgs::default();
         let mut i = 0;
         let usage = |what: &str| ClientError::Usage(format!("proxy connect: {what}"));
+        let repeated = |flag: &str| usage(&format!("{flag} given more than once"));
         while i < argv.len() {
             match argv[i].as_str() {
                 "--print-path" => out.print_path = true,
                 "--stdio" => out.stdio = true,
                 "--host" => {
+                    if out.host.is_some() {
+                        return Err(repeated("--host"));
+                    }
                     i += 1;
                     out.host = Some(
                         argv.get(i)
@@ -270,6 +290,9 @@ impl ConnectArgs {
                     );
                 }
                 "--port" => {
+                    if out.port.is_some() {
+                        return Err(repeated("--port"));
+                    }
                     i += 1;
                     out.port = Some(
                         argv.get(i)
@@ -279,6 +302,9 @@ impl ConnectArgs {
                     );
                 }
                 "--request" => {
+                    if out.request.is_some() {
+                        return Err(repeated("--request"));
+                    }
                     i += 1;
                     let method = argv
                         .get(i)
@@ -298,6 +324,13 @@ impl ConnectArgs {
                     });
                 }
                 "--service-port" => {
+                    if out
+                        .request
+                        .as_ref()
+                        .is_some_and(|r| r.service_port.is_some())
+                    {
+                        return Err(repeated("--service-port"));
+                    }
                     i += 1;
                     let value = argv
                         .get(i)
@@ -310,6 +343,9 @@ impl ConnectArgs {
                         .service_port = Some(value);
                 }
                 "--token-file" => {
+                    if out.request.as_ref().is_some_and(|r| r.token_file.is_some()) {
+                        return Err(repeated("--token-file"));
+                    }
                     i += 1;
                     let value = argv
                         .get(i)
@@ -321,6 +357,9 @@ impl ConnectArgs {
                         .token_file = Some(value);
                 }
                 "--body" => {
+                    if out.request.as_ref().is_some_and(|r| r.body.is_some()) {
+                        return Err(repeated("--body"));
+                    }
                     i += 1;
                     let value = argv
                         .get(i)
@@ -333,18 +372,39 @@ impl ConnectArgs {
                         .body = Some(body);
                 }
                 "--help" | "-h" => {
-                    return Err(ClientError::Usage(
-                        "usage: fleet proxy connect [--print-path] [--stdio [--host H] \
-                         [--port N]] [--request METHOD PATH [--service-port N] \
-                         [--token-file F] [--body JSON]]"
-                            .to_string(),
-                    ));
+                    return Err(ClientError::Usage(CONNECT_USAGE.to_string()));
                 }
                 other => return Err(usage(&format!("unknown argument {other:?}"))),
             }
             i += 1;
         }
+        out.validate()?;
         Ok(out)
+    }
+
+    /// Reject flag combinations that would silently drop an
+    /// argument: `run_connect` returns early for `--stdio` and
+    /// `--print-path` (never sending a `--request`), and
+    /// `--host`/`--port` only feed the stdio relay (#5929).
+    pub fn validate(&self) -> Result<(), ClientError> {
+        let usage = |what: &str| ClientError::Usage(format!("proxy connect: {what}"));
+        if self.request.is_some() {
+            if self.stdio {
+                return Err(usage("--stdio cannot be combined with --request"));
+            }
+            if self.print_path {
+                return Err(usage("--print-path cannot be combined with --request"));
+            }
+        }
+        if !self.stdio {
+            if self.host.is_some() {
+                return Err(usage("--host requires --stdio"));
+            }
+            if self.port.is_some() {
+                return Err(usage("--port requires --stdio"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -356,6 +416,7 @@ pub fn run_connect(
     client: &str,
     capabilities: &[String],
 ) -> Result<i32, ClientError> {
+    args.validate()?;
     if args.stdio {
         let host = args
             .host
@@ -428,6 +489,16 @@ pub fn run_connect(
     Ok(0)
 }
 
+/// The `fleet init` usage text (#5619).
+pub const INIT_USAGE: &str = "\
+Usage: fleet init
+
+Autostart the session proxy if it is not running: probe the broker
+socket, sync the PATH shims when a broker answers, and start one
+when none does. A strict no-op when a broker is already running.
+
+Takes no arguments.";
+
 /// `fleet init` — autostart semantics (§8): probe first; a live
 /// broker (either dialect) means status + shim sync and out,
 /// never a spawn, never a restart. Only an unanswered socket
@@ -438,6 +509,13 @@ pub fn run_init(
     client: &str,
     capabilities: &[String],
 ) -> Result<i32, ClientError> {
+    // A help flag asks for the usage: print it and succeed, like
+    // the other fleet leaves (#5619) - it is not an illegal
+    // argument, and asking must never probe, spawn, or sync shims.
+    if argv.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
+        println!("{INIT_USAGE}");
+        return Ok(0);
+    }
     if !argv.is_empty() {
         return Err(ClientError::Usage(format!(
             "fleet init takes no arguments (got {:?})",
@@ -485,4 +563,142 @@ pub fn run_init(
         sync.tools.join(", ")
     );
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn init_help_succeeds_without_touching_the_broker() {
+        // #5619: --help/-h print the init usage and return Ok(0)
+        // before the takes-no-arguments rejection and before any
+        // socket probe, so these calls double as the
+        // no-side-effect pins.
+        let config = Config::default();
+        for flag in ["--help", "-h"] {
+            assert_eq!(
+                run_init(&strings(&[flag]), &config, "test-client", &[]).ok(),
+                Some(0),
+                "{flag} must print the init usage and succeed"
+            );
+        }
+        // A non-help argument is still a usage error (exit 2).
+        let err = run_init(&strings(&["--bogus"]), &config, "test-client", &[])
+            .expect_err("a non-help argument must be rejected");
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.to_string().contains("--bogus"));
+    }
+
+    fn parse_err(list: &[&str]) -> String {
+        let err = ConnectArgs::parse(&strings(list)).expect_err("must be rejected");
+        assert_eq!(err.exit_code(), EXIT_USAGE, "{list:?}");
+        err.to_string()
+    }
+
+    #[test]
+    fn connect_rejects_repeated_value_flags() {
+        // #5929: last-wins used to discard earlier values silently.
+        let cases: [(&[&str], &str); 6] = [
+            (&["--stdio", "--host", "a", "--host", "b"], "--host"),
+            (&["--stdio", "--port", "1", "--port", "2"], "--port"),
+            (
+                &["--request", "GET", "/a", "--request", "GET", "/b"],
+                "--request",
+            ),
+            (
+                &[
+                    "--request",
+                    "GET",
+                    "/a",
+                    "--service-port",
+                    "1",
+                    "--service-port",
+                    "2",
+                ],
+                "--service-port",
+            ),
+            (
+                &[
+                    "--request",
+                    "GET",
+                    "/a",
+                    "--token-file",
+                    "x",
+                    "--token-file",
+                    "y",
+                ],
+                "--token-file",
+            ),
+            (
+                &["--request", "POST", "/a", "--body", "1", "--body", "2"],
+                "--body",
+            ),
+        ];
+        for (argv, flag) in cases {
+            let msg = parse_err(argv);
+            assert!(
+                msg.contains(flag) && msg.contains("more than once"),
+                "{msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_rejects_conflicting_modes() {
+        let msg = parse_err(&["--stdio", "--request", "GET", "/a"]);
+        assert!(
+            msg.contains("--stdio") && msg.contains("--request"),
+            "{msg}"
+        );
+        let msg = parse_err(&["--request", "GET", "/a", "--stdio"]);
+        assert!(
+            msg.contains("--stdio") && msg.contains("--request"),
+            "{msg}"
+        );
+        let msg = parse_err(&["--print-path", "--request", "GET", "/a"]);
+        assert!(
+            msg.contains("--print-path") && msg.contains("--request"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn connect_rejects_host_and_port_without_stdio() {
+        assert!(parse_err(&["--host", "h"]).contains("--host requires --stdio"));
+        assert!(parse_err(&["--port", "22"]).contains("--port requires --stdio"));
+        assert!(parse_err(&["--print-path", "--host", "h"]).contains("--stdio"));
+    }
+
+    #[test]
+    fn connect_valid_shapes_still_parse() {
+        let a = ConnectArgs::parse(&strings(&[
+            "--request",
+            "POST",
+            "/a",
+            "--service-port",
+            "8080",
+            "--token-file",
+            "t",
+            "--body",
+            "{\"k\":1}",
+        ]))
+        .unwrap();
+        let r = a.request.unwrap();
+        assert_eq!((r.method.as_str(), r.path.as_str()), ("POST", "/a"));
+        assert_eq!(r.service_port, Some(8080));
+        assert_eq!(r.token_file.as_deref(), Some("t"));
+        assert!(r.body.is_some());
+
+        let a = ConnectArgs::parse(&strings(&["--stdio", "--host", "h", "--port", "22"])).unwrap();
+        assert!(a.stdio && a.host.as_deref() == Some("h") && a.port == Some(22));
+
+        let a = ConnectArgs::parse(&strings(&["--print-path"])).unwrap();
+        assert!(a.print_path && !a.stdio && a.request.is_none());
+        assert!(ConnectArgs::parse(&[]).is_ok());
+    }
 }

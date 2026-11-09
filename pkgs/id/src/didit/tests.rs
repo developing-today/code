@@ -66,6 +66,18 @@ fn always(mut expectation: Expectation) -> Expectation {
     expectation
 }
 
+fn overnight_hours(mut expectation: Expectation) -> Expectation {
+    expectation.active = ActiveWindow::Hours {
+        hours: vec![HoursSpan {
+            from_minute: 1200,
+            to_minute: 360,
+            days: None,
+        }],
+        tz: CHICAGO.to_owned(),
+    };
+    expectation
+}
+
 fn record(id_byte: u8, subjects: Vec<Hash>, act: &str, at: i64) -> Record {
     Record {
         id: id(id_byte),
@@ -397,6 +409,27 @@ fn dst_day_is_twenty_three_hours() {
 }
 
 #[test]
+fn day_count_includes_previous_days_wrapping_span() {
+    let outside = overnight_hours(expectation(
+        0x55,
+        vec![dog_a()],
+        "outside",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Day,
+        },
+    ));
+    let at_2am = record(0x56, vec![dog_a()], "outside", chicago(2026, 6, 16, 2, 0));
+    let now = chicago(2026, 6, 16, 12, 0);
+
+    let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 16));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Satisfied);
+    assert_eq!(today[0].count, 1);
+}
+
+#[test]
 fn count_verdict_is_violated_after_last_active_span_closes() {
     // #5049: CountPerPeriod 2/Day with the default active window
     // (07:00-22:00 America/Chicago) and no records. Once the period's last
@@ -518,6 +551,27 @@ fn count_verdict_overnight_carry_in_span_is_not_unmeetable() {
 }
 
 #[test]
+fn week_count_includes_previous_days_wrapping_span() {
+    let outside = overnight_hours(expectation(
+        0x57,
+        vec![dog_a()],
+        "outside",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Week,
+        },
+    ));
+    let at_2am = record(0x58, vec![dog_a()], "outside", chicago(2026, 6, 15, 2, 0));
+    let now = chicago(2026, 6, 15, 12, 0);
+
+    let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");
+    let this_week = current(&verdicts, midnight(2026, 6, 15));
+    assert_eq!(this_week.len(), 1);
+    assert_eq!(this_week[0].state, VerdictState::Satisfied);
+    assert_eq!(this_week[0].count, 1);
+}
+
+#[test]
 fn wrapping_active_span_is_handled() {
     // "Which may not be daytime": 20:00–06:00 is one span across midnight.
     let outside = expectation(
@@ -587,6 +641,134 @@ fn supersede_is_order_independent() {
             .iter()
             .all(|verdict| verdict.expectation == newer.id),
         "only the superseding expectation is evaluated"
+    );
+}
+
+#[test]
+fn self_supersede_is_rejected_when_decoding() {
+    let valid = always(expectation(
+        0x72,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    let encoded = encode_expectation_body(&valid).expect("encode");
+    let mut items = match Value::decode(&encoded).expect("decode value") {
+        Value::Array(items) => items,
+        other => panic!("not an array: {other:?}"),
+    };
+    items[7] = Value::ByteString(valid.id.as_bytes().to_vec().into());
+    let invalid_body = Value::Array(items).encode();
+    assert!(matches!(
+        decode_expectation_body(&invalid_body),
+        Err(DiditError::Invalid(_))
+    ));
+
+    let mut self_superseding = valid;
+    self_superseding.supersedes = Some(self_superseding.id);
+    assert!(matches!(
+        encode_expectation_body(&self_superseding),
+        Err(DiditError::Invalid(_))
+    ));
+}
+
+fn supersede_cycle(ids: &[u8]) -> Vec<Expectation> {
+    let mut expectations: Vec<_> = ids
+        .iter()
+        .map(|byte| {
+            always(expectation(
+                *byte,
+                vec![dog_a()],
+                "fed",
+                Window::AtLeastOncePer {
+                    period: Period::Day,
+                },
+            ))
+        })
+        .collect();
+    for index in 0..expectations.len() {
+        let superseded = expectations[(index + 1) % expectations.len()].id;
+        expectations[index].supersedes = Some(superseded);
+    }
+    expectations
+}
+
+#[test]
+fn evaluator_rejects_a_self_supersede_cycle() {
+    let mut self_superseding = always(expectation(
+        0x73,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    self_superseding.supersedes = Some(self_superseding.id);
+    assert_eq!(
+        evaluate(&[self_superseding], &[], chicago(2026, 6, 15, 20, 0)).expect_err("cycle"),
+        EvalError::SupersedeCycle(vec![id(0x73)])
+    );
+}
+
+#[test]
+fn evaluator_rejects_a_two_expectation_supersede_cycle() {
+    let cycle = supersede_cycle(&[0x81, 0x80]);
+    assert_eq!(
+        evaluate(&cycle, &[], chicago(2026, 6, 15, 20, 0)).expect_err("cycle"),
+        EvalError::SupersedeCycle(vec![id(0x80), id(0x81)])
+    );
+}
+
+#[test]
+fn evaluator_rejects_a_three_expectation_supersede_cycle() {
+    let cycle = supersede_cycle(&[0x84, 0x82, 0x83]);
+    assert_eq!(
+        evaluate(&cycle, &[], chicago(2026, 6, 15, 20, 0)).expect_err("cycle"),
+        EvalError::SupersedeCycle(vec![id(0x82), id(0x83), id(0x84)])
+    );
+}
+
+#[test]
+fn evaluator_keeps_only_the_head_of_a_supersede_chain() {
+    let oldest = always(expectation(
+        0x87,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    let mut middle = always(expectation(
+        0x86,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    let mut head = always(expectation(
+        0x85,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    middle.supersedes = Some(oldest.id);
+    head.supersedes = Some(middle.id);
+    let verdicts = evaluate(
+        &[oldest, middle, head.clone()],
+        &[],
+        chicago(2026, 6, 15, 20, 0),
+    )
+    .expect("normal chain evaluates");
+    assert!(!verdicts.is_empty());
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| verdict.expectation == head.id)
     );
 }
 
@@ -857,4 +1039,169 @@ fn interval_gap_crossing_sleep_window_seam_is_judged_across_it() {
     assert_eq!(seam[0].count, 18);
     assert!(seam[0].detail.contains("6300"), "{}", seam[0].detail);
     assert_eq!(seam[0].window_end, day + 86_400 + 3_600);
+}
+
+#[test]
+fn entity_alias_count_is_capped() {
+    use crate::didit::body::MAX_ALIASES;
+    // Oracle: the named cap MAX_ALIASES (mirroring MAX_SUBJECTS/MAX_DETAILS),
+    // sized well under the CBOR decoder's 8192-element LENGTH_LIMIT — a body
+    // at the cap round-trips, one alias over is refused by encode with an
+    // error naming the count and the limit.
+    let mut entity = Entity {
+        entity: dog_a(),
+        household: household(),
+        kind: "dog".to_owned(),
+        name: "Ada".to_owned(),
+        aliases: (0..MAX_ALIASES).map(|i| format!("alias-{i}")).collect(),
+        retired_at: None,
+    };
+    let bytes = encode_entity_body(&entity).expect("at the cap encodes");
+    assert_eq!(decode_entity_body(&bytes).expect("decode"), entity);
+
+    entity.aliases.push("one-too-many".to_owned());
+    assert!(matches!(
+        encode_entity_body(&entity).expect_err("over the cap is refused"),
+        DiditError::Invalid(message)
+            if message.contains("513") && message.contains("512")
+    ));
+}
+
+#[test]
+fn hours_span_count_is_capped() {
+    use crate::didit::body::MAX_HOURS_SPANS;
+    // Oracle: the named cap MAX_HOURS_SPANS, same shape as the alias cap —
+    // an expectation at the cap round-trips, one span over is refused by
+    // encode with an error naming the count and the limit.
+    let span = HoursSpan {
+        from_minute: 420,
+        to_minute: 1320,
+        days: None,
+    };
+    let mut fed = expectation(
+        0x61,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
+        },
+    );
+    fed.active = ActiveWindow::Hours {
+        hours: vec![span.clone(); MAX_HOURS_SPANS],
+        tz: CHICAGO.to_owned(),
+    };
+    let bytes = encode_expectation_body(&fed).expect("at the cap encodes");
+    assert_eq!(decode_expectation_body(&bytes).expect("decode"), fed);
+
+    let ActiveWindow::Hours { hours, .. } = &mut fed.active else {
+        panic!("the expectation carries an hours window");
+    };
+    hours.push(span);
+    assert!(matches!(
+        encode_expectation_body(&fed).expect_err("over the cap is refused"),
+        DiditError::Invalid(message)
+            if message.contains("513") && message.contains("512")
+    ));
+}
+
+#[test]
+fn custom_period_extreme_anchor_is_out_of_range_not_a_panic_or_wrapped_window() {
+    // #7766: Period::check rejects only a zero length, so a body can carry
+    // any i64 anchor. count_periods must answer OutOfRange for windows its
+    // arithmetic cannot represent — the unchecked operators panicked in
+    // debug builds and silently wrapped to a phantom (or end-before-start)
+    // window in release builds.
+    for (anchor, length_seconds, at) in [
+        (i64::MIN, 86_400_u64, 0_i64),
+        (i64::MAX - 100, 1_000, i64::MAX - 100),
+        (i64::MIN + 1_000, 86_400, i64::MIN + 1_000),
+    ] {
+        let fed = always(expectation(
+            0x62,
+            vec![dog_a()],
+            "fed",
+            Window::CountPerPeriod {
+                count: 1,
+                period: Period::Custom(PeriodCustom {
+                    anchor,
+                    length_seconds,
+                }),
+            },
+        ));
+        assert_eq!(
+            evaluate(&[fed], &[], at),
+            Err(EvalError::OutOfRange),
+            "anchor={anchor} length={length_seconds}"
+        );
+    }
+    // An ordinary custom period still evaluates.
+    let fed = always(expectation(
+        0x63,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
+        },
+    ));
+    assert!(evaluate(&[fed], &[], midnight(2026, 6, 16)).is_ok());
+}
+
+#[test]
+fn week_period_at_calendar_boundary_is_out_of_range_not_a_panic() {
+    // #7771: the Week branch of count_periods used unchecked
+    // NaiveDate +/- Duration, which panics (chrono's expect) when
+    // monday + 7, monday - 7, or the Monday offset itself leaves the
+    // representable calendar — where the Day branch answers
+    // OutOfRange via succ_opt/pred_opt (and Custom since #7766).
+    // `always` expectations evaluate in UTC.
+    for (label, at) in [
+        (
+            "max",
+            NaiveDate::MAX
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp(),
+        ),
+        (
+            "min",
+            NaiveDate::MIN
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp(),
+        ),
+    ] {
+        let fed = always(expectation(
+            0x64,
+            vec![dog_a()],
+            "fed",
+            Window::AtLeastOncePer {
+                period: Period::Week,
+            },
+        ));
+        assert_eq!(
+            evaluate(&[fed], &[], at),
+            Err(EvalError::OutOfRange),
+            "week period at calendar {label}"
+        );
+    }
+    // An ordinary week still evaluates.
+    let fed = always(expectation(
+        0x65,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Week,
+        },
+    ));
+    assert!(evaluate(&[fed], &[], midnight(2026, 6, 16)).is_ok());
 }

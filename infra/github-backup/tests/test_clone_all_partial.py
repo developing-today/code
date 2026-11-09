@@ -10,7 +10,8 @@ cleared it — the repo stayed unmirrored on every rerun.
 Drives the real clone_all.main() against a temp backup root with a
 fake subprocess standing in for `git clone` (the fake mimics real git:
 cloning into a non-empty destination fails; otherwise it creates a
-real bare mirror with git init --bare). valid_mirror stays real.
+real bare mirror with one commit — since #3238 a zero-ref skeleton
+is not a valid mirror). valid_mirror stays real.
 
   partial dest        -> cleared, clone retried, ok + cleared_partial
   partial dest, clone
@@ -41,6 +42,48 @@ from ghb_common import mirror_path, valid_mirror
 
 REAL_RUN = subprocess.run
 REPO = "octo/widgets"
+
+GIT_IDENTITY = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "ghb-test",
+    "GIT_AUTHOR_EMAIL": "ghb-test@example.invalid",
+    "GIT_COMMITTER_NAME": "ghb-test",
+    "GIT_COMMITTER_EMAIL": "ghb-test@example.invalid",
+}
+
+
+def make_bare_with_commit(dest):
+    """A REAL valid mirror: bare + one commit on refs/heads/main.
+
+    Since #3238 a bare skeleton (git init --bare, zero refs) is not
+    a valid mirror — validity requires a resolvable HEAD — so test
+    fixtures that need a valid mirror must give it history.
+    """
+    r = REAL_RUN(["git", "init", "--bare", dest], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    tree = REAL_RUN(
+        ["git", "-C", dest, "mktree"], input="", capture_output=True, text=True
+    )
+    assert tree.returncode == 0, tree.stderr
+    commit = REAL_RUN(
+        ["git", "-C", dest, "commit-tree", tree.stdout.strip(), "-m", "seed"],
+        capture_output=True,
+        text=True,
+        env=GIT_IDENTITY,
+    )
+    assert commit.returncode == 0, commit.stderr
+    r = REAL_RUN(
+        ["git", "-C", dest, "update-ref", "refs/heads/main", commit.stdout.strip()],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    r = REAL_RUN(
+        ["git", "-C", dest, "symbolic-ref", "HEAD", "refs/heads/main"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
 
 
 class FakeSubprocess:
@@ -86,8 +129,7 @@ class FakeSubprocess:
             return subprocess.CompletedProcess(
                 cmd, 1, "", "fatal: simulated clone failure"
             )
-        r = REAL_RUN(["git", "init", "--bare", dest], capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
+        make_bare_with_commit(dest)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
@@ -138,10 +180,7 @@ class Harness:
 
     def seed_valid_mirror(self):
         os.makedirs(os.path.dirname(self.dest), exist_ok=True)
-        r = REAL_RUN(
-            ["git", "init", "--bare", self.dest], capture_output=True, text=True
-        )
-        assert r.returncode == 0, r.stderr
+        make_bare_with_commit(self.dest)
         with open(os.path.join(self.dest, "marker.txt"), "w") as f:
             f.write("do not touch")
 

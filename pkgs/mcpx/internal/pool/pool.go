@@ -58,11 +58,11 @@ const ownServerName = "mcpx"
 // falls back to convicting on the aggregate surface alone.
 var OwnInstanceID string
 
-// Trace, when set, receives a line per tool call naming the instance that
-// served it. The daemon wires this to its logger when MCPX_TRACE is set.
+// Trace receives a line per tool call naming the instance that
+// served it, when set. The daemon wires this to its logger when MCPX_TRACE is set.
 var Trace func(string, ...any)
 
-// Lifecycle, when set, receives structured lifecycle events: a server
+// Lifecycle receives structured lifecycle events when set: a server
 // starting, stopping or being reaped. Reported here rather than inferred from
 // logs so that a consumer sees the same events the pool acted on.
 var Lifecycle func(event string, attrs map[string]any)
@@ -191,6 +191,13 @@ type Pool struct {
 	// draining counts the children a lazy restart is closing in the
 	// background. See WaitDrained.
 	draining sync.WaitGroup
+	// sessionMu orders a persistence save against a pool retirement. A
+	// configuration reload clears records before publishing the replacement
+	// pool, so it cannot resume a session the retiring client will DELETE.
+	sessionMu sync.Mutex
+	// sessionsClosing is set before a reload removes persisted records. It is
+	// atomic because session-save callbacks can run while p.mu is held.
+	sessionsClosing atomic.Bool
 
 	// reqLimiter is this pool's one per-server rate-limit budget for
 	// sampling and elicitation (#2192), built lazily from the hooks'
@@ -362,7 +369,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 			if dup := p.findLaneLocked(key, legacy); dup != nil {
 				p.cond.Broadcast()
 				p.mu.Unlock()
-				go in.Client.Close()
+				go func() { _ = in.Client.Close() }()
 				p.mu.Lock()
 				continue
 			}
@@ -544,13 +551,9 @@ func (p *Pool) reapDeadLocked() {
 		if p.lastErr == nil {
 			p.lastErr = in.Client.Err()
 		}
-		go in.Client.Close()
+		go func() { _ = in.Client.Close() }()
 	}
 	p.instances = kept
-}
-
-func (p *Pool) start(ctx context.Context) (*Instance, error) {
-	return p.startLane(ctx, false, config.ResolvedScope{})
 }
 
 // installServerHooks wires what a server may ask of mcpx into the options its
@@ -678,6 +681,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		}
 	}
 	var cl *mcpclient.Client
+	var resumedSession bool
 	if cached.Transport == TransportHTTPSSE && !p.cfg.Stdio() {
 		// Last time this endpoint spoke only the deprecated HTTP+SSE
 		// transport; going straight there saves the two refused POSTs.
@@ -698,7 +702,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		if resumed != nil {
-			cl, source = resumed, mcpclient.SourceCache
+			cl, source, resumedSession = resumed, mcpclient.SourceCache, true
 		}
 	}
 	if cl == nil {
@@ -818,6 +822,11 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	// transport adopts a new session id mid-flight. Installed on the
 	// final transport, after every redial path above has settled.
 	p.installSessionPersistence(eff, rs.Key, legacy, ref, cl, tr)
+	if resumedSession {
+		// Startup-only probes and configuration notifications are complete;
+		// the next request is the first one exposed to the caller.
+		cl.MarkResumedSession()
+	}
 	p.saveUpstreamSession(eff, rs.Key, legacy, ref)
 	return in, nil
 }
@@ -1924,7 +1933,7 @@ func (p *Pool) CloseGraceful(timeout time.Duration) {
 // tuning change or a removed server cut a call that ran past that grace.
 // WaitDrained covers this as well as a lazy restart.
 func (p *Pool) CloseDrained() {
-	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change")
+	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change", true)
 }
 
 // CloseDrainedWithin is CloseDrained for a daemon that is shutting down. drain
@@ -1932,10 +1941,10 @@ func (p *Pool) CloseDrained() {
 // its drain window once the HTTP server has stopped taking calls. The window
 // is ExecDrainTimeout, the same as a reload's, so a stop is bounded by it.
 func (p *Pool) CloseDrainedWithin(drain time.Duration) {
-	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down")
+	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down", false)
 }
 
-func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
+func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, forgetSessions bool) {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
@@ -1946,8 +1955,16 @@ func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
 	for _, in := range stop {
 		in.retiring = true
 	}
+	if forgetSessions {
+		p.sessionsClosing.Store(true)
+	}
 	p.cond.Broadcast()
 	p.mu.Unlock()
+	if forgetSessions {
+		for _, in := range stop {
+			p.forgetUpstreamSession(in)
+		}
+	}
 	for _, in := range stop {
 		p.draining.Add(1)
 		go func(in *Instance) {

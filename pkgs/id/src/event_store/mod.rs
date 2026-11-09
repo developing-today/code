@@ -62,6 +62,7 @@ use redb::{
 
 use crate::chain::{self, Event};
 
+mod chat;
 mod claims;
 mod documents;
 mod ingest;
@@ -72,7 +73,7 @@ mod waiting_rows;
 
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use ingest::{Ingest, Refusal};
-use ingest::{is_present, present_in};
+use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
 
 /// The store's file name in its directory.
@@ -163,6 +164,9 @@ pub enum StoreError {
     /// refuses further calls. Reopening it rebuilds them.
     #[error("event store is unusable after a failed write: reopen it")]
     Unusable,
+    /// The reader is not a member of the group whose chat they asked to read (#3950).
+    #[error("the reader is not a member of this group")]
+    NotMember,
 }
 
 fn corrupt(message: impl Into<String>) -> StoreError {
@@ -1297,9 +1301,12 @@ impl EventStore {
     }
 
     /// Rebuilds the waiting pool from the rows, in arrival order. A row due at `now_ms` is
-    /// dropped, and so is a row past its author's cap. The drops commit with the rebuild. A row
-    /// that waits for a present event means the rows and the store disagree, so the rebuild
-    /// fails as corruption and the pool is left as it was.
+    /// dropped, and so is a row past its author's cap. A row whose event is already present --
+    /// stored, applied, or voided -- is stale, so it is dropped too: restoring it would hold an
+    /// already-decided event again. A row for a fork proof header is instead re-held through
+    /// the explicit held-for-good route, even though the header is present. Every drop commits
+    /// with the rebuild. A row that waits for a present event means the rows and the store
+    /// disagree, so the rebuild fails as corruption and the pool is left as it was.
     fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;
         let mut pool = WaitingPool::new(self.limits);
@@ -1312,6 +1319,35 @@ impl EventStore {
                 dropped = true;
                 continue;
             }
+            let event = row_event(&row)?;
+            if is_proof_header(&txn, &row.author, &row.id)? {
+                // A proof header is present but never applied: it stays held for good through
+                // the explicit route, which the ordinary restore's arrived guard would refuse.
+                match pool.restore_held_for_good(row.author, row.id, event, row.arrived_at) {
+                    Ok(()) => {
+                        if !row.deps.is_empty() {
+                            let parked = Row {
+                                deps: Vec::new(),
+                                ..row
+                            };
+                            waiting_rows::put(&txn, &parked)?;
+                            dropped = true;
+                        }
+                    }
+                    Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
+                        waiting_rows::delete(&txn, &row.id)?;
+                        dropped = true;
+                    }
+                }
+                continue;
+            }
+            if is_present(&txn, &row.id)? {
+                // The event is already stored, applied, or voided: the row is stale, so it
+                // goes rather than holding an already-decided event again.
+                waiting_rows::delete(&txn, &row.id)?;
+                dropped = true;
+                continue;
+            }
             for dep in &row.deps {
                 if is_present(&txn, dep)? {
                     return Err(corrupt(
@@ -1319,9 +1355,14 @@ impl EventStore {
                     ));
                 }
             }
-            let event = row_event(&row)?;
             match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
-                Ok(()) => {}
+                Ok(()) if pool.contains(&row.id) => {}
+                Ok(()) => {
+                    // Skipped by an arrived, ready, or duplicate guard: the row names an
+                    // event the rebuilt pool does not hold, so the row goes with the rebuild.
+                    waiting_rows::delete(&txn, &row.id)?;
+                    dropped = true;
+                }
                 Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                     waiting_rows::delete(&txn, &row.id)?;
                     dropped = true;
@@ -1662,6 +1703,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         }
     }
 

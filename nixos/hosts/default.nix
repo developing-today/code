@@ -24,9 +24,11 @@ in
       "services/flatpak"
       "services/id-mail"
       "services/pm-stack"
+      "services/lab-tunnel"
       "services/pm-apps"
       "services/power-guard"
       "services/openai-cred-watchdog"
+      "services/opencode-go-seating-guard"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -64,6 +66,11 @@ in
         services.pm-stack.enable = true;
       }
       {
+        # Lab cluster Cloudflare Tunnel (code#6455): connector +
+        # edge status service for lab.security.cab.
+        services.lab-tunnel.enable = true;
+      }
+      {
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
         # Pad as oci-containers, ready-for-agent as a user service —
         # the last hand-run servers, now flake-declared.
@@ -77,6 +84,12 @@ in
         # asserting the OpenCode credential store never regains an
         # active token-sharing credential for the GPT providers.
         services.openai-cred-watchdog.enable = true;
+      }
+      {
+        # OpenCode Go seating guard (code#5611): hourly user timer
+        # asserting every Go leaf seated in a pool has an exact-id active
+        # credential and has recorded a successful route attempt recently.
+        services.opencode-go-seating-guard.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
@@ -221,6 +234,13 @@ in
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix
+      # Sunshine + Moonlight primary remote desktop (code#5924):
+      # VAAPI-pinned streaming host, Moonlight client, encoder
+      # watchdog. KRdp above remains the Plasma-side option.
+      ./amd-sunshine.nix
+      # RustDesk permanent-password re-assertion from the vault
+      # (code#5694); RustDesk itself stays imperative, see the file.
+      ./amd-rustdesk.nix
       ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
     ];

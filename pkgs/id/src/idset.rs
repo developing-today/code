@@ -50,9 +50,16 @@
 //! shorter array) be canonical bytes and still decode, while a re-encoded
 //! entry always carries the flag.
 //!
-//! This module is types and encoding only. Expansion, projection, and
-//! counting are later slices of the spec's routing (§9 items 2–4) and are
-//! deliberately absent here.
+//! `set_id` is checked against its derivation: a set with `scope: Some(purpose)`
+//! must carry `set_id == derive_set_id(owner, purpose)` or both the encoder
+//! and the decoder refuse it. A set with `scope: None` has no purpose to derive
+//! from, so its `set_id` is an owner-chosen opaque value, unverifiable by
+//! design.
+//!
+//! This module is the types and encoding. Expansion now lives beside the
+//! types: [`expand`] wires [`view`]'s pure projection to the membership
+//! layer (spec §9 item 2). Counting is a later slice of the spec's routing
+//! (§9 item 4) and is deliberately absent here.
 
 use cbor_core::{DecodeOptions, Strictness, Value};
 use p2panda_core::Hash;
@@ -60,6 +67,12 @@ use unicode_normalization::is_nfc;
 
 use crate::groups::Role;
 use crate::waiting::AuthorKey;
+
+/// Store-wired expansion over the membership layer (spec §9 item 2).
+pub mod expand;
+
+/// View projection and discovery over an explicitly pinned snapshot.
+pub mod view;
 
 /// The kind of a writer-set event, as the header's `kind` names it.
 pub const WRITER_KIND: &str = "idset.writer";
@@ -99,6 +112,15 @@ const OOM_MITIGATION: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WriterSet {
     /// The set's stable derived ID (see [`WriterSet::derive_set_id`]).
+    ///
+    /// When `scope` is `Some(purpose)`, [`WriterSet::check`] requires this to
+    /// equal `derive_set_id(owner, purpose)`. When `scope` is `None` there is
+    /// no purpose to derive from, so the ID is an owner-chosen opaque value
+    /// that cannot be verified here — unverifiable by design. Consumers that
+    /// group versions by `set_id` (spec §4.1) are still safe, because the
+    /// owner signs every version of its own chain; the check closes the
+    /// separate hole of a scoped set claiming an identity its own
+    /// `(owner, scope)` does not derive.
     pub set_id: Hash,
     /// The publishing event's sequence number in the owner's chain.
     pub version: u64,
@@ -130,12 +152,19 @@ impl WriterSet {
     /// # Errors
     ///
     /// Returns [`IdsetError::Shape`] for a scope that is too long or not NFC,
-    /// for more than [`MAX_ENTRIES`] entries in total, or for a duplicate
+    /// for a scoped set whose `set_id` is not
+    /// `derive_set_id(owner, scope)` (a `scope: None` set is not checked, see
+    /// [`WriterSet::set_id`]), for more than [`MAX_ENTRIES`] entries in total, or for a duplicate
     /// entry identity within `entries` or within `excludes` (see
     /// [`check_entry_identities`]).
     pub fn check(&self) -> Result<(), IdsetError> {
         if let Some(scope) = &self.scope {
             check_scope(scope)?;
+            if self.set_id != Self::derive_set_id(&self.owner, scope) {
+                return Err(IdsetError::Shape(
+                    "set_id does not match derive_set_id(owner, scope)".to_owned(),
+                ));
+            }
         }
         let total = self.entries.len() + self.excludes.0.len();
         if total > MAX_ENTRIES {
@@ -627,7 +656,7 @@ mod tests {
     use p2panda_core::SigningKey;
 
     use super::*;
-    use crate::chain::{decode, sign, ChainExt};
+    use crate::chain::{ChainExt, decode, sign};
 
     fn owner() -> AuthorKey {
         std::array::from_fn(|i| u8::try_from(i).unwrap())
@@ -686,6 +715,77 @@ mod tests {
         };
         let body = encode_rescind_body(&unbounded).unwrap();
         assert_eq!(decode_rescind_body(&body).unwrap(), unbounded);
+    }
+
+    fn assert_set_id_mismatch(set: &WriterSet) {
+        assert!(matches!(
+            set.check(),
+            Err(IdsetError::Shape(ref msg)) if msg.contains("set_id")
+        ));
+        assert!(matches!(
+            encode_writer_body(set),
+            Err(IdsetError::Shape(ref msg)) if msg.contains("set_id")
+        ));
+    }
+
+    /// Re-encodes a set's body with its `set_id` bytes replaced, bypassing the
+    /// encoder's check, so the decoder is tested on its own.
+    fn body_with_set_id(set: &WriterSet, forged: Hash) -> Vec<u8> {
+        let good = encode_writer_body(set).unwrap();
+        let real = set.set_id.as_bytes();
+        let at = good
+            .windows(32)
+            .position(|w| w == real)
+            .expect("set_id bytes present");
+        let mut body = good;
+        body[at..at + 32].copy_from_slice(forged.as_bytes());
+        body
+    }
+
+    #[test]
+    fn mismatched_set_id_is_refused_for_scoped_sets() {
+        let good = sample_set();
+        // control: the correctly derived set passes and round-trips
+        assert!(good.check().is_ok());
+        assert_eq!(
+            decode_writer_body(&encode_writer_body(&good).unwrap()).unwrap(),
+            good
+        );
+
+        let wrong_purpose = WriterSet {
+            set_id: WriterSet::derive_set_id(&owner(), "cat-care"),
+            ..sample_set()
+        };
+        let wrong_owner = WriterSet {
+            set_id: WriterSet::derive_set_id(&[1u8; 32], "dog-care"),
+            ..sample_set()
+        };
+        let arbitrary = WriterSet {
+            set_id: Hash::digest(b"anything"),
+            ..sample_set()
+        };
+        for forged in [&wrong_purpose, &wrong_owner, &arbitrary] {
+            assert_set_id_mismatch(forged);
+            // decoder side: wire bytes carrying the forged identity
+            let body = body_with_set_id(&good, forged.set_id);
+            assert!(matches!(
+                decode_writer_body(&body),
+                Err(IdsetError::Shape(ref msg)) if msg.contains("set_id")
+            ));
+        }
+    }
+
+    /// With no scope there is nothing to derive from: any `set_id` passes.
+    #[test]
+    fn unscoped_set_id_is_unverifiable_by_design() {
+        let set = WriterSet {
+            set_id: Hash::digest(b"opaque-owner-chosen"),
+            scope: None,
+            ..sample_set()
+        };
+        assert!(set.check().is_ok());
+        let body = encode_writer_body(&set).unwrap();
+        assert_eq!(decode_writer_body(&body).unwrap(), set);
     }
 
     #[test]
@@ -809,6 +909,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             },
         )
         .unwrap();
