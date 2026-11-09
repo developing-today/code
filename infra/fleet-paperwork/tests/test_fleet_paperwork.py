@@ -343,3 +343,113 @@ class TestResponseShapes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _CloseArgs:
+    def __init__(self, issue, dry_run=False):
+        self.sops = None
+        self.repo = "developing-today/code"
+        self.issue = issue
+        self.dry_run = dry_run
+        self.pace = 0
+
+
+class _FakeCloseClient:
+    def assert_repo_in_scope(self, repo):
+        return None
+
+    def token_for(self, owner):
+        return "test-token"
+
+
+class TestCmdClosePullRequestGuard(unittest.TestCase):
+    """cmd_close must never close a pull request (#6900): the issues API
+    returns PRs as issues, so a PR-shaped GET payload (carrying a
+    `pull_request` key) must be refused before any PATCH — including
+    under --dry-run — while an issue-shaped payload still closes and
+    verifies."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False)
+        self.tmp.close()
+        self.old_env = os.environ.get("FLEET_PAPERWORK_LEDGER")
+        os.environ["FLEET_PAPERWORK_LEDGER"] = self.tmp.name
+
+    def tearDown(self):
+        try:
+            os.unlink(self.tmp.name)
+        except FileNotFoundError:
+            pass
+        if self.old_env is None:
+            os.environ.pop("FLEET_PAPERWORK_LEDGER", None)
+        else:
+            os.environ["FLEET_PAPERWORK_LEDGER"] = self.old_env
+
+    def run_close(self, item, dry_run=False):
+        calls = []
+        state = dict(item)
+
+        def fake_http(method, path, token, payload=None):
+            calls.append(method)
+            if method == "PATCH":
+                state["state"] = payload["state"]
+                return 200, dict(state)
+            return 200, dict(state)
+
+        args = _CloseArgs(state["number"], dry_run=dry_run)
+        with unittest.mock.patch.object(
+            fp, "AppClient", lambda sops: _FakeCloseClient()
+        ), unittest.mock.patch.object(fp, "http", fake_http):
+            result = fp.cmd_close(args)
+        return result, calls, state
+
+    def test_pr_payload_is_refused_before_any_patch(self):
+        pr = {
+            "number": 4242,
+            "state": "open",
+            "title": "a live pull request",
+            "pull_request": {"url": "https://api.github.com/x/pulls/4242"},
+        }
+        calls = []
+        state = dict(pr)
+
+        def fake_http(method, path, token, payload=None):
+            calls.append(method)
+            return 200, dict(state)
+
+        with unittest.mock.patch.object(
+            fp, "AppClient", lambda sops: _FakeCloseClient()
+        ), unittest.mock.patch.object(fp, "http", fake_http):
+            with self.assertRaises(SystemExit):
+                fp.cmd_close(_CloseArgs(4242))
+        self.assertNotIn("PATCH", calls)
+        self.assertEqual(state["state"], "open")
+
+    def test_pr_payload_is_refused_under_dry_run(self):
+        pr = {
+            "number": 4243,
+            "state": "open",
+            "title": "a live pull request",
+            "pull_request": {"url": "https://api.github.com/x/pulls/4243"},
+        }
+        calls = []
+        state = dict(pr)
+
+        def fake_http(method, path, token, payload=None):
+            calls.append(method)
+            return 200, dict(state)
+
+        args = _CloseArgs(4243, dry_run=True)
+        with unittest.mock.patch.object(
+            fp, "AppClient", lambda sops: _FakeCloseClient()
+        ), unittest.mock.patch.object(fp, "http", fake_http):
+            with self.assertRaises(SystemExit):
+                fp.cmd_close(args)
+        self.assertNotIn("PATCH", calls)
+
+    def test_issue_payload_still_closes_and_verifies(self):
+        issue = {"number": 4244, "state": "open", "title": "a real issue"}
+        result, calls, state = self.run_close(issue)
+        self.assertEqual(result, 0)
+        self.assertIn("PATCH", calls)
+        self.assertEqual(state["state"], "closed")

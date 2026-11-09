@@ -549,6 +549,12 @@ def cmd_close(args) -> int:
     client.assert_repo_in_scope(args.repo)
     token = client.token_for(args.repo.split("/")[0])
     _, current = http("GET", f"/repos/{args.repo}/issues/{args.issue}", token)
+    if "pull_request" in current:
+        die(
+            f"refusing to close {args.repo}#{args.issue}: that number is a "
+            "pull request, not an issue (the issues API returns PRs as "
+            "issues); close it through the pull request workflow instead"
+        )
     if current.get("state") == "closed":
         print(f"already closed: {args.repo}#{args.issue}")
         return 0
