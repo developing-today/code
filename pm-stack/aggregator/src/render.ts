@@ -22,11 +22,12 @@ import {
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
-import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
+import { diffCoverage, staleIssueState, type CoverageSnapshotFile } from "./coverage.ts";
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
+import { summarizeWipLanes } from "./wip-limits.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -116,6 +117,7 @@ import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 import type { SearchResult } from "./search-view.ts";
+import { dnsAnchor } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -451,15 +453,17 @@ export function pageDropdown(active: string): string {
       return `<optgroup label="${esc(group.title)}">${options}</optgroup>`;
     })
     .join("");
-  return `<select aria-label="Go to page" class="select select-bordered select-sm" data-on-change="if (evt.target.value) { window.location.href = evt.target.value; }"><option value="">Pages ▾</option>${groups}</select>`;
+  return `<select aria-label="Go to page" class="select select-bordered select-sm" data-on:change="if (evt.target.value) { window.location.href = evt.target.value; }"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
 export function themeToggle(): string {
-  // Datastar-first theme toggle (Phase C): a $pmTheme signal seeded from
+  // Datastar-first theme toggle (Phase C): the vendored Datastar v1 binds
+  // data-on:<event> (colon form) for handlers — the dash form does not bind
+  // clicks (verified live against the vendored bundle). A $pmTheme signal seeded from
   // the <html data-theme> the inline bootstrap set (stored choice or the
   // dark default); the effect is the single writer of data-theme +
   // localStorage, and the click handler only flips the signal.
-  return `<span class="theme-toggle-wrap" data-signals="{ pmTheme: 'dark' }" data-init="$pmTheme = document.documentElement.getAttribute('data-theme') || 'dark'" data-effect="document.documentElement.setAttribute('data-theme', $pmTheme); try { localStorage.setItem('pm-theme', $pmTheme); } catch (e) {}"><button type="button" class="btn btn-ghost btn-sm theme-toggle" data-on-click="$pmTheme = $pmTheme === 'dark' ? 'light' : 'dark'" aria-label="Toggle between dark and light theme" title="Toggle dark / light theme">◐ <span data-text="$pmTheme === 'dark' ? 'Dark' : 'Light'"></span></button></span>`;
+  return `<span class="theme-toggle-wrap" data-signals="{ pmTheme: 'dark' }" data-init="$pmTheme = document.documentElement.getAttribute('data-theme') || 'dark'" data-effect="document.documentElement.setAttribute('data-theme', $pmTheme); try { localStorage.setItem('pm-theme', $pmTheme); } catch (e) {}"><button type="button" class="btn btn-ghost btn-sm theme-toggle" data-on:click="$pmTheme = $pmTheme === 'dark' ? 'light' : 'dark'" aria-label="Toggle between dark and light theme" title="Toggle dark / light theme">◐ <span data-text="$pmTheme === 'dark' ? 'Dark' : 'Light'"></span></button></span>`;
 }
 
 function globalSearch(): string {
@@ -490,7 +494,7 @@ function layout(
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
-/** First-slice global search over board/roadmap subjects and linked refs. */
+/** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
 export function renderSearch(
   query: string,
   results: SearchResult[],
@@ -503,22 +507,38 @@ export function renderSearch(
       const badges = result.refs
         .map((ref) => {
           const item = items.get(ref);
+          // Codex P1 on PR #7331 (defense in depth): a non-GitHub ref
+          // (tracked-goal id, orch: key) must never reach refUrl, which
+          // throws on it — render it as a plain-text badge instead.
           return item
             ? itemBadge(item)
-            : `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`;
+            : isValidRef(ref)
+              ? `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`
+              : `<span class="badge closed">${esc(ref)} · unresolved</span>`;
         })
         .join(" ");
-      return `<div class="card"><a href="/item/${encodeURIComponent(result.id)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+      return `<div class="card"><a href="${esc(result.href)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
     })
     .join("");
-  const body = `<h1>Search</h1><p class="muted">Search board items and roadmap rows by subject, title, or linked issue/PR ref. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  // #1212 slice 2: the search page carries the same freshness facets
+  // as the home page of each result kind present (board/roadmap/items
+  // for work, registry for sessions, dns for the register, quota and
+  // usage for services, orchestration/attention/registry for tiers).
+  const chipKeys = new Set<keyof Provenance>(["board", "roadmap", "items"]);
+  for (const result of results) {
+    if (result.kind === "registry") chipKeys.add("registry");
+    if (result.kind === "dns") chipKeys.add("dns");
+    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
+    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+  }
   return layout(
     "Search",
     body,
     provenance,
     "/search",
     "",
-    detail ? freshnessChips(detail, ["board", "roadmap", "items"]) : "",
+    detail ? freshnessChips(detail, [...chipKeys]) : "",
   );
 }
 
@@ -1454,11 +1474,17 @@ export function renderBoardBody(
   // source assembled it (the Kaneo source filters too; see
   // board-policy.ts). Surviving done renders collapsed, below.
   board = applyBoardDonePolicy(board);
+  const wipByLane = new Map(
+    summarizeWipLanes(board, [...(act?.poolByRef?.values() ?? [])]).map((summary) => [summary.lane, summary]),
+  );
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
     const key = item.status === "done" ? "done" : item.status;
     const k = key === "to-do" ? "to-do" : key;
     cols.set(k, [...(cols.get(k) ?? []), item]);
+  }
+  for (const lane of wipByLane.keys()) {
+    if (!cols.has(lane)) cols.set(lane, []);
   }
   const order = ["in-flight", "to-do", "in-progress", "in-review", "done"];
   const extra = [...cols.keys()].filter((k) => !order.includes(k));
@@ -1529,9 +1555,18 @@ export function renderBoardBody(
       }
       const heading =
         k === "in-flight"
-          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
-          : `${esc(k)} (${colItems.length})`;
-      return `<div class="col"><h2>${heading}</h2>${cards}</div>`;
+          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`
+          : `${esc(k)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`;
+      const summary = wipByLane.get(k);
+      const scopeFlags = [
+        ...(summary?.projects ?? []).filter((scope) => scope.overCap).map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.epics ?? []).filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
+      ];
+      if (summary?.overCap) scopeFlags.unshift(`lane over cap by ${summary.count - summary.cap}`);
+      const overCapBadges = scopeFlags
+        .map((flag) => `<span class="badge blocked" role="status">${esc(flag)}</span>`)
+        .join(" ");
+      return `<div class="col"><h2>${heading} ${overCapBadges}</h2>${cards}</div>`;
     })
     .join("");
   return `<div class="board">${bodies}</div>`;
@@ -1674,7 +1709,10 @@ function roadmapCard(
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
     : "";
   const briefPanels = briefPanelsForRefs(refs, briefs);
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  const horizonWarning = row.horizonError
+    ? ` <span class="badge horizon-invalid" title="${esc(row.horizonError)}">Invalid Horizon</span>`
+    : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1692,13 +1730,15 @@ function timelineTable(
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
     .map((theme) => {
+      const themeRows = [...(tl.cells.get(theme)?.values() ?? [])].flat();
+      const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("")}</td>`;
         })
         .join("");
-      return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
+      return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
     })
     .join("");
   return `<div class="tblwrap"><table class="table table-zebra"><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
@@ -1730,6 +1770,10 @@ export function renderRoadmap(
     ([g, label]) =>
       `<a href="/roadmap?h=${g}${viewQuery ? `&${viewQuery}` : ""}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
+  const invalidHorizons = rows.filter((row) => row.horizonError);
+  const horizonFlag = invalidHorizons.length
+    ? `<div class="flag">${invalidHorizons.length} roadmap row${invalidHorizons.length === 1 ? " has" : "s have"} an invalid Horizon value. Original values are preserved and marked on their cards; correct them in Grist using the documented Horizon grammar.</div>`
+    : "";
   let body: string;
   if (grain === "quarter") {
     body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs);
@@ -1737,24 +1781,35 @@ export function renderRoadmap(
     body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs);
   } else {
     const dg = roadmapDayGrain(rows, grain);
-    const sections = dg.lanes
-      .map(
-        (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
-      )
-      .join("");
-    const notes: string[] = [];
-    if (dg.outside > 0) notes.push(`${dg.outside} dated row${dg.outside === 1 ? "" : "s"} fall outside this window`);
-    if (dg.coarse.length > 0) {
-      notes.push(
-        `${dg.coarse.length} row${dg.coarse.length === 1 ? "" : "s"} have no calendar date (quarter grain, ongoing, or unscheduled) — see the Quarter view`,
-      );
+    const byTheme = new Map<string, RoadmapRow[]>();
+    for (const row of rows) {
+      const theme = row.area || "Unthemed";
+      byTheme.set(theme, [...(byTheme.get(theme) ?? []), row]);
     }
-    body = `${sections}${notes.length ? `<p class="muted">${notes.join(" · ")}</p>` : ""}`;
+    body = byTheme.size
+      ? [...byTheme.entries()]
+          .map(([theme, themeRows]) => {
+            const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
+            const cards = (laneRows: RoadmapRow[]) =>
+              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs)).join("");
+            const lanes = dg.lanes
+              .map((lane) => {
+                const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
+                return laneRows.length ? `<h3>${esc(lane.label)}</h3>${cards(laneRows)}` : "";
+              })
+              .join("");
+            const outsideRows = dg.outsideRows.filter((row) => (row.area || "Unthemed") === theme);
+            const coarseRows = dg.coarse.filter((row) => (row.area || "Unthemed") === theme);
+            const outside = outsideRows.length ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}` : "";
+            const coarse = coarseRows.length ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}` : "";
+            return `<section class="roadmap-theme"><h2>${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></h2>${lanes}${outside}${coarse}</section>`;
+          })
+          .join("")
+      : '<p class="muted">No roadmap rows.</p>';
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}`,
     provenance,
     "/roadmap",
     "",
@@ -1784,6 +1839,8 @@ export interface ItemExtras {
   epicRollup?: EpicRollup;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
+  /** Real ready-for-agent dispatch state for explicitly labelled linked issues. */
+  dispatchStates?: { ref: RefKey; state: string; provenance: { source: string; observedAt: string } }[];
   /** The shared audit stream, scoped to the item's canonical refs. */
   activity?: { events: AuditEvent[]; globalHref: string; gaps: GapRecord[]; coverage?: readonly ActivityCoverage[] };
 }
@@ -1869,12 +1926,20 @@ export function renderItem(
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
   const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
+  const dispatchSection = extras?.dispatchStates?.length
+    ? `<section><h2>ready-for-agent dispatch</h2><ul>${extras.dispatchStates
+        .map(
+          (entry) =>
+            `<li><a href="https://github.com/${esc(entry.ref.replace("#", "/issues/"))}">${esc(entry.ref)}</a>: <strong>${esc(entry.state)}</strong> <span class="muted">· ${esc(entry.provenance.source)} checked ${esc(entry.provenance.observedAt)}</span></li>`,
+        )
+        .join("")}</ul></section>`
+    : "";
   const activitySection = extras?.activity
     ? `<h2>Activity stream</h2><p><a href="${esc(extras.activity.globalHref)}">View these events in the global river</a></p><p class="muted"><strong>Freshness: unknown.</strong> The ingestion checkpoint records deliveries, not successful source polls. An empty event list does not establish complete coverage. Known gaps and documented source coverage are shown below.</p>${eventTableHtml(extras.activity.events)}<h3>Known activity gaps</h3><p class="muted">Gap records are source-scoped and do not currently identify affected item refs, so this is the global known-gap list.</p><div class="tblwrap">${gapsHtml(extras.activity.gaps)}</div><h3>Activity source coverage</h3><div class="tblwrap">${activityCoverageHtml(extras.activity.coverage)}</div>`
     : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
 ${
   extras?.briefs
     ? briefPanelsForRefs(
@@ -1905,14 +1970,13 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const renderedRefs = r.taskRefs.flatMap((ref) => {
-    try {
-      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
-    } catch {
-      // A malformed ref may still exist in an older or ungated in-memory
-      // record. Keep the session visible and omit only the invalid link.
-      return [];
-    }
+  const renderedRefs = r.taskRefs.map((ref) => {
+    // #6243 (ref contract rule 4, #6242): a malformed ref may still
+    // exist in an older or ungated in-memory record. Keep the session
+    // visible and render the invalid ref as plain text — the same
+    // treatment tierItemCard (#6149) and poolRefLink give it — never
+    // a throw, and never silently omitted.
+    return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>` : esc(ref);
   });
   const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
@@ -2026,6 +2090,17 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     : "";
   const pace = paceLineHtml(svc.id, history);
   return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+}
+
+function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
+  if (!services.length) return "";
+  const rows = services
+    .map(
+      (svc) =>
+        `<tr><th scope="row">${esc(svc.name)}</th><td>${esc(svc.whatFor)}</td><td>${esc(svc.status)}</td><td>${esc(svc.checkedAt ?? "no check date recorded")}</td><td>${esc(svc.overageBehavior)}</td><td>${esc(svc.guardrailNotes)}</td></tr>`,
+    )
+    .join("");
+  return `<h2>Tracker services without instrumented quotas</h2><details><summary>${services.length} evaluated services — expand for tracker states and guardrails</summary><div class="tblwrap"><table><caption>Services in free-services-to-check.md</caption><tr><th scope="col">Service</th><th scope="col">What for</th><th scope="col">Tracker state</th><th scope="col">Checked</th><th scope="col">Overage behavior</th><th scope="col">Guardrail notes</th></tr>${rows}</table></div></details>`;
 }
 
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
@@ -2175,6 +2250,26 @@ export function renderQuota(
         })
         .join("")}</div>`
     : "";
+  // #6671: provider-auth keeper problems render as their own card —
+  // a dying provider session (or a keeper that stopped reporting)
+  // must be visible on the board, not only in a state file. All-ok
+  // keepers render nothing here (no alert, no noise).
+  const providerAuthProblems = (view.providerAuth ?? []).filter((a) => a.reporting !== "ok");
+  const providerAuthSection = providerAuthProblems.length
+    ? `<h2>Provider auth</h2><div class="card">${providerAuthProblems
+        .map((a) => {
+          const detail =
+            a.reporting === "attention"
+              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtDate(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtDate(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtDate(a.lastGoodAt)}` : ""}`
+              : a.reporting === "stale"
+                ? `keeper not reporting · last check ${fmtDate(a.checkedAt)}`
+                : a.reporting === "invalid"
+                  ? "keeper not reporting · state file invalid"
+                  : "keeper not reporting · no state file";
+          return `<div><strong>${esc(a.provider)}</strong> <span class="badge error">${esc(a.reporting)}</span> <span class="muted">${detail}</span></div>`;
+        })
+        .join("")}</div>`
+    : "";
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -2224,6 +2319,7 @@ export function renderQuota(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${credentialLifecycle}
+${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
@@ -2267,10 +2363,11 @@ ${burnAndChoices}`,
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
+${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
-<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
+<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
 <h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
@@ -3210,8 +3307,9 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
 /** Wrap one attention section as a Datastar fragment container: the
  *  shell's placeholder and the fragment payload share this shape, so
  *  a refresh re-patches the container with itself (attrs included). */
-export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string): string {
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}')" data-on-dashrefresh__window="@get('/frag/attention/${section}')">${innerHtml}</div>`;
+export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
+  const q = query ? `?${query}` : "";
+  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on-dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3219,12 +3317,13 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string): string {
+  const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
-${attentionFragment("header", skel("queue status"))}
-${attentionFragment("queues", skel("the queues"))}
-${attentionFragment("sessions", skel("sessions"))}`;
+${attentionFragment("header", skel("queue status"), refsQuery)}
+${attentionFragment("queues", skel("the queues"), refsQuery)}
+${attentionFragment("sessions", skel("sessions"), refsQuery)}`;
   return layout(
     "Needs you",
     body,
@@ -3341,6 +3440,16 @@ export function renderTodayBody(
       `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
     );
   }
+  const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
+    ...(lane.overCap ? [`${lane.lane} ${lane.count}/${lane.cap}`] : []),
+    ...lane.projects.filter((scope) => scope.overCap).map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.epics.filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+  ]);
+  if (wipViolations.length) {
+    alerts.push(
+      `<div class="banner"><strong>WIP cap violations:</strong> ${wipViolations.map(esc).join("; ")} — <a href="/board">board</a>. Informational only; work is not blocked.</div>`,
+    );
+  }
   // #1139: the derived view's banner names the section's TRUE state —
   // absent, invalid, and stale are different failures, and "has not
   // published yet" is only honest for one of them.
@@ -3359,11 +3468,16 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  // #6174: an objective ref comes from publisher lined-up data and is
+  // only sometimes a GitHub ref — tracked-goal items carry their goal id,
+  // and refUrl throws on those, which 500ed the whole /today render (the
+  // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
+  // GitHub refs link, everything else renders as plain code.
   const objectives = today.objectives.length
     ? today.objectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br><a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -3459,7 +3573,9 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
       const epic = item.epic
-        ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+        ? item.epic.url
+          ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+          : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
@@ -3588,12 +3704,19 @@ function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
     for (const task of goal.linedUp) {
       if (task.status !== "in-progress") continue;
       if (task.ref) {
-        signal(task.ref, "active-session", task.title);
+        // #6205: a lined-up ref is feed data, not necessarily a GitHub
+        // ref (goal ids, bare numbers). Signaling an invalid ref makes
+        // ensure() fall back to refUrl(), whose parseRef throws and
+        // kills the whole overview — skip refs the shared rule rejects.
+        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
         continue;
       }
       for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
       for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
-        signal(`${match[1]}#${match[2]}`, "active-session", task.title);
+        const ref = `${match[1]}#${match[2]}`;
+        // #6205: same guard for title-scraped refs — \d+ admits
+        // numbers parseRef rejects as unsafe integers.
+        if (isValidRef(ref)) signal(ref, "active-session", task.title);
       }
     }
   }
@@ -3792,7 +3915,7 @@ function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>, nextRenewal?
   const rows = entries
     .map(
       (e) =>
-        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
+        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong id="${esc(dnsAnchor(e.domain))}">${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
   return `<div class="tblwrap"><table id="dns-register-table"><caption>Domain register</caption><thead><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</tbody></table></div>`;
@@ -6176,16 +6299,29 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   };
   const rows = current.repos
     .map(
-      (r) =>
-        `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td></tr>`,
+      (r) => {
+        const state = staleIssueState(r);
+        const status =
+          state === "error"
+            ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
+            : state === "stale"
+              ? "STALE — collection is over 7 days old"
+              : state === "unavailable"
+                ? "Unavailable — collection failed or not collected"
+                : "Current";
+        const collectedAt = r.staleIssuesCollectedAt
+          ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
+          : "—";
+        return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+      },
     )
     .join("");
   const note = baseline
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
- <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table></div>
-<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
+ <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th><th scope="col">Open issues untouched &gt;90 days</th><th scope="col">Stale count collected at (UTC)</th><th scope="col">Stale count status</th></tr></thead><tbody>${rows}</tbody></table></div>
+<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The stale count includes open issues only, is captured at the per-repository timestamp, and is marked stale after seven days; missing/error data is not presented as zero. The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
 /** The Projects pool body (cards, chips, coverage) without the page
@@ -6451,6 +6587,12 @@ ${trackedTable(live.tracked)}${poolSectionHtml}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** Render a graph ref as a link only when it satisfies the shared ref rule. */
+function poolRefLink(ref: RefKey): string {
+  const label = esc(ref);
+  return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${label}</a>` : label;
+}
+
 /** The #2400 graph section of a project page: blocked weight + longest
  * blocked chain and the depth-graph SVG, from the part-1 edge contract
  * (#2399). Graceful absence is explicit: a pool with no effort labels
@@ -6467,7 +6609,7 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   const blocked = blockedSummary(items);
   const chainHtml =
     blocked.longestChain.length >= 2
-      ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+      ? ` · longest blocked chain: ${blocked.longestChain.map(poolRefLink).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
       : "";
   const blockedHtml = blocked.blockedCount
     ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
@@ -6568,17 +6710,21 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
 
-  // Ranked summary: open member items by how many unresolved blockers
-  // they wait on, from the graph's pre-cap ranking (the full transitive
-  // unblock ranking is #3974; this is the per-epic blocked summary
-  // beside the graph). Never derived from the capped node list: a
-  // member the cap hid is still waiting.
+  // Ranked summary: open member items by how many distinct open epic items
+  // are in the transitive blockedBy ancestry of their blockers (the full
+  // transitive downstream ranking is #3974). Never derived from the
+  // capped node list: a member the cap hid is still waiting.
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
         .map(
-          (r) =>
-            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+          (r) => {
+            const blockerItems = r.blockers.map((b) => poolRefLink(b));
+            const contributingItems = r.contributingItems.length > 0
+              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
+              : "";
+            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+          },
         )
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
@@ -6620,7 +6766,8 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : n.epic
           ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
           : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
-      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+      const nodeLabel = `<text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text>`;
+      return `${shape}${isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${nodeLabel}</a>` : nodeLabel}`;
     })
     .join("");
   const svg = g.edges.length
@@ -6633,13 +6780,14 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         ? "not in this pool / status unknown — unresolved"
         : `issue ${esc(n.state ?? "unknown")}`;
       const blockedBy = n.blockers.length
-        ? `blocked by: ${n.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        ? `blocked by: ${n.blockers.map((b) => `${poolRefLink(b)}${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
         : "blocked by: none observed";
       const blocks = n.dependents.length
-        ? `blocks: ${n.dependents.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}`
+        ? `blocks: ${n.dependents.map(poolRefLink).join(", ")}`
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
-      return `<li><a href="${esc(n.issueUrl)}">${esc(n.ref)}</a> ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
     })
     .join("")}</ul>`;
 

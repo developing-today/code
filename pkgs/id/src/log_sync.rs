@@ -414,6 +414,19 @@ async fn send_message<T: Serialize>(send: &mut SendStream, message: &T) -> Resul
         .map_err(|error| SyncError::Stream(format!("{error:#}")))
 }
 
+/// Decodes one postcard message and refuses bytes after its encoding.
+fn decode_full_message<T: DeserializeOwned>(frame: &[u8]) -> Result<T, SyncError> {
+    let (message, remainder) =
+        postcard::take_from_bytes(frame).map_err(|error| SyncError::Frame(error.to_string()))?;
+    if !remainder.is_empty() {
+        return Err(SyncError::Frame(format!(
+            "the postcard payload left {} trailing bytes",
+            remainder.len()
+        )));
+    }
+    Ok(message)
+}
+
 /// Reads one handshake message from the raw stream. A first frame that does not decode
 /// as the expected message is a [`SyncError::Frame`]: the session is refused, never
 /// reinterpreted as another protocol.
@@ -422,7 +435,7 @@ async fn next_message<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T, S
         .await
         .map_err(|error| SyncError::Stream(format!("{error:#}")))?
         .ok_or_else(|| SyncError::Stream("the stream ended during the handshake".to_owned()))?;
-    postcard::from_bytes(&frame).map_err(|error| SyncError::Frame(error.to_string()))
+    decode_full_message(&frame)
 }
 
 /// Ends our side of a raw stream pair, then reads to the peer's end, so nothing sent is
@@ -467,8 +480,7 @@ async fn run_log_sync(
         let arrivals = &arrivals_tx;
         async move {
             let frame = frame.map_err(SyncError::Stream)?;
-            let message: LogSyncMessage<ChainLog> = postcard::from_bytes(&frame)
-                .map_err(|error| SyncError::Frame(error.to_string()))?;
+            let message: LogSyncMessage<ChainLog> = decode_full_message(&frame)?;
             if let LogSyncMessage::Operation((header, body)) = &message {
                 // Events carry no body here, and a body is not stored, so a body is refused.
                 let arrival = if body.is_some() {
@@ -671,6 +683,7 @@ mod tests {
     use iroh::endpoint::{Connection, RelayMode, presets};
     use iroh::protocol::Router;
     use p2panda_core::{SeqNum, SigningKey};
+    use proptest::prelude::*;
 
     use super::*;
     use crate::chain::{Event, sign};
@@ -717,6 +730,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -947,6 +961,119 @@ mod tests {
         assert_eq!(again.received, Tally::default());
         assert_eq!(again_answered.received, Tally::default());
         assert_eq!(again.metrics.sent_operations, 0);
+    }
+
+    /// #2414, mirrored for the log sync tally: a range session under the
+    /// LogSync protocol counts an arrival it stores but does not apply as
+    /// voided. The shape matches the event store range test: a content event
+    /// naming a voided group operation, by an author who is not a member of
+    /// the group at that position, is kept without applying.
+    #[tokio::test]
+    async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
+        use crate::membership::AuthId;
+        use crate::membership::body::encode_body;
+        use p2panda_auth::Access;
+        use p2panda_auth::group::{GroupAction, GroupMember};
+
+        fn gauth(who: u8) -> AuthId {
+            AuthId::Key(*key(who).verifying_key().as_bytes())
+        }
+        fn ext(group: Option<Hash>, after: Vec<Hash>, kind: &str) -> ChainExt {
+            ChainExt {
+                kind: kind.to_owned(),
+                group,
+                after,
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+            }
+        }
+        let create_body = encode_body(&GroupAction::Create {
+            initial_members: [b'A', b'B', b'C']
+                .iter()
+                .map(|who| (GroupMember::Individual(gauth(*who)), Access::manage()))
+                .collect(),
+        })
+        .unwrap();
+        let create = sign(
+            &key(b'A'),
+            0,
+            None,
+            Some(&create_body),
+            ext(None, Vec::new(), "group.op"),
+        )
+        .unwrap();
+        let grp = create.id;
+        let op_body = encode_body(&GroupAction::Add {
+            member: GroupMember::Individual(gauth(b'E')),
+            access: Access::manage(),
+        })
+        .unwrap();
+        let op = sign(
+            &key(b'D'),
+            0,
+            None,
+            Some(&op_body),
+            ext(Some(grp), vec![grp], "group.op"),
+        )
+        .unwrap();
+        let target = sign(
+            &key(b'D'),
+            1,
+            Some(op.id),
+            None,
+            ext(Some(grp), vec![op.id], "message"),
+        )
+        .unwrap();
+
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        for store in [&store_a, &store_b] {
+            let created = store.ingest(&create.bytes, Some(&create_body), 0).unwrap();
+            assert!(matches!(created, Ingest::Accepted { .. }), "{created:?}");
+            let voided = store.ingest(&op.bytes, Some(&op_body), 0).unwrap();
+            assert!(matches!(voided, Ingest::Voided { .. }), "{voided:?}");
+        }
+        let held = store_a.ingest(&target.bytes, None, 0).unwrap();
+        assert!(matches!(held, Ingest::Voided { .. }), "{held:?}");
+
+        let (server, _router, mut results) =
+            responder_support(&store_a, Arc::new(LogAndRange)).await;
+        let client = endpoint().await;
+        // Synced before, with no difference: the rule picks range.
+        let synced = Estimate {
+            chains: 1,
+            difference: 0,
+            last_completed_sync_ms: Some(1),
+        };
+        assert_eq!(choose(&synced), SyncMethod::Range);
+        let outcome = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            group(9),
+            &synced,
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let answered = results.recv().await.unwrap().unwrap();
+
+        assert_eq!(outcome.method, SyncMethod::Range);
+        assert_eq!(answered.method, SyncMethod::Range);
+        assert_eq!(
+            outcome.received.voided, 1,
+            "B stores the target without applying it: {:?}",
+            outcome.received
+        );
+        assert_eq!(outcome.received.accepted, 0, "{:?}", outcome.received);
+        assert_eq!(outcome.received.refused, 0, "{:?}", outcome.received);
+        assert_eq!(answered.received.voided, 0, "{:?}", answered.received);
     }
 
     /// Issue #1302: on a failed bulk session, read the responder's own
@@ -1224,6 +1351,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1571,6 +1699,129 @@ mod tests {
             matches!(answered, Err(SyncError::Frame(_))),
             "a foreign first frame is a frame error, got {answered:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_a_first_request_with_trailing_bytes_is_refused() {
+        let (_d, store) = open();
+        let (server, _router, mut results) = responder(&store).await;
+        let client = endpoint().await;
+        let conn = connect(&client, loopback(&server), SYNC_ALPN)
+            .await
+            .unwrap();
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        let request = Request {
+            topic: group(16),
+            method: SyncMethod::Log,
+        };
+        let mut frame = postcard::to_allocvec(&request).unwrap();
+        frame.push(0x00);
+        write_frame(&mut send, &frame).await.unwrap();
+        send.finish().unwrap();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(answered, Err(SyncError::Frame(_))),
+            "a padded Request is a frame error, got {answered:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct PaddedLogSyncPeer {
+        inbound_frames: Vec<Vec<u8>>,
+    }
+
+    impl ProtocolHandler for PaddedLogSyncPeer {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                return Ok(());
+            };
+            if !matches!(read_frame(&mut recv).await, Ok(Some(_))) {
+                return Ok(());
+            }
+            let answer = postcard::to_allocvec(&Answer::Agree(SyncMethod::Log)).unwrap();
+            write_frame(&mut send, &answer).await.unwrap();
+            for frame in &self.inbound_frames {
+                write_frame(&mut send, frame).await.unwrap();
+            }
+            conn.closed().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_padded_log_sync_operation_errors_before_ingest() {
+        let topic = group(17);
+        let signer = key(17);
+        let operation = chain_of(&signer, 1, topic).remove(0);
+        let header = operation.bytes;
+
+        let mut have = p2panda_core::logs::LogHeights::new();
+        have.entry(signer.verifying_key())
+            .or_default()
+            .insert(ChainLog, 1);
+        let have = postcard::to_allocvec(&LogSyncMessage::<ChainLog>::Have(have)).unwrap();
+        let presync = postcard::to_allocvec(&LogSyncMessage::<ChainLog>::PreSync {
+            total_operations: 1,
+            total_bytes: u32::try_from(header.len()).unwrap(),
+        })
+        .unwrap();
+        let mut padded_operation =
+            postcard::to_allocvec(&LogSyncMessage::<ChainLog>::Operation((header, None))).unwrap();
+        padded_operation.push(0xde);
+
+        let server = endpoint().await;
+        let peer = PaddedLogSyncPeer {
+            inbound_frames: vec![have, presync, padded_operation],
+        };
+        let _router = Router::builder(server.clone())
+            .accept(SYNC_ALPN, peer)
+            .spawn();
+        let (_d, store) = open();
+        let before = applied(&store, &[&signer], 0);
+        let client = endpoint().await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&error, SyncError::LogSync(message) if message.contains("Frame")),
+            "the session reports its malformed message-stream error, got {error:#}"
+        );
+        assert_eq!(
+            applied(&store, &[&signer], 0),
+            before,
+            "the padded operation never reaches the ingest worker"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn test_full_postcard_messages_reject_any_nonempty_suffix(
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            // Oracle: a clean postcard encoding round-trips; any generated nonempty suffix
+            // violates full frame consumption and must be refused.
+            let request = Request { topic: group(18), method: SyncMethod::Log };
+            let frame = postcard::to_allocvec(&request).unwrap();
+            prop_assert_eq!(decode_full_message::<Request>(&frame).unwrap(), request);
+
+            let mut padded = frame;
+            padded.extend_from_slice(&suffix);
+            prop_assert!(matches!(
+                decode_full_message::<Request>(&padded),
+                Err(SyncError::Frame(_))
+            ));
+        }
     }
 
     /// P6.5: open pull is today's behaviour. A stranger pulls every event of the topic.

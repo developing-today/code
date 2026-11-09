@@ -47,7 +47,7 @@ describe("registry task-ref validation (#2485)", () => {
     expect(() => refUrl("owner/repo#12345678901234567890123")).toThrow();
   });
 
-  test("rendering skips poisoned refs while retaining valid links", () => {
+  test("rendering renders poisoned refs as plain text while retaining valid links (#6243 disposition 5 supersedes the #2485 omit pin for sessionRecordLine)", () => {
     const poisoned = rec({
       id: "ses_poisoned",
       taskRefs: ["code#2480", "developing-today/code#2485", "owner/repo#12345678901234567890123"],
@@ -56,12 +56,16 @@ describe("registry task-ref validation (#2485)", () => {
     expect(() => sessionRecordLine(poisoned)).not.toThrow();
     const line = sessionRecordLine(poisoned);
     expect(line).toContain('href="https://github.com/developing-today/code/issues/2485"');
-    expect(line).not.toContain("code#2480");
-    expect(line).not.toContain("12345678901234567890123");
+    // #6243 disposition 5 (ref contract rule 4): invalid stored refs render
+    // as plain text - visible, never a throw, never an anchor.
+    expect(line).toContain("code#2480");
+    expect(line).not.toContain('href="https://github.com/code');
+    expect(line).toContain("12345678901234567890123");
+    expect(line).not.toContain('href="https://github.com/owner/repo/issues/12345678901234567890123"');
 
     const html = renderSessions([poisoned], fixtureSource().provenance());
     expect(html).toContain('href="https://github.com/developing-today/code/issues/2485"');
-    expect(html).not.toContain("code#2480");
+    expect(html).toContain("code#2480");
   });
 
   test("launch writer refuses malformed --task values without writing a record", async () => {

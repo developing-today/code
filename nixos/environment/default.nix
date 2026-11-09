@@ -315,24 +315,38 @@ let
   # `Exec=firefox` / `Exec=zen-beta`, resolved through PATH, so
   # wrapping bin/ covers shell and launcher launches alike.
   firefoxBidi = wrapFirefoxBidi "firefox" pkgs.firefox 19225;
-  wrapFirefoxBidi = name: pkg: port:
-    pkgs.symlinkJoin {
-      name = "${pkg.name}-bidi";
-      paths = [ pkg ];
-      nativeBuildInputs = [ pkgs.makeWrapper ];
-      postBuild = ''
-        for bin in "$out"/bin/*; do
-          [ -L "$bin" ] || continue
-          target=$(readlink -f "$bin")
-          [ -x "$target" ] || continue
-          rm "$bin"
-          makeWrapper "$target" "$bin" \
-            --add-flags "--remote-debugging-port=${toString port}"
-        done
-      '';
-      meta = (pkg.meta or { }) // {
-        mainProgram = pkg.meta.mainProgram or null;
+  wrapFirefoxBidi =
+    name: pkg: port:
+    let
+      joined = pkgs.symlinkJoin {
+        name = "${pkg.name}-bidi";
+        paths = [ pkg ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          for bin in "$out"/bin/*; do
+            [ -L "$bin" ] || continue
+            target=$(readlink -f "$bin")
+            [ -x "$target" ] || continue
+            rm "$bin"
+            makeWrapper "$target" "$bin" \
+              --add-flags "--remote-debugging-port=${toString port}"
+          done
+        '';
+        meta = (pkg.meta or { }) // {
+          mainProgram = pkg.meta.mainProgram or null;
+        };
       };
+    in
+    joined
+    // lib.optionalAttrs (pkg ? override) {
+      # Keep the wrapped package override-compatible (code#6156):
+      # consumers such as home-manager's firefox module probe and
+      # call `package.override`; a bare symlinkJoin has none.
+      # Forward the underlying package's override, re-applying this
+      # wrap to its result and preserving its function-args shape.
+      override = lib.setFunctionArgs (args: wrapFirefoxBidi name (pkg.override args) port) (
+        lib.functionArgs pkg.override
+      );
     };
 
   zenBidi = wrapFirefoxBidi "zen" inputs.zen-browser.packages.${system}.default 19226;

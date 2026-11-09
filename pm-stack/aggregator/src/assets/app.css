@@ -5831,7 +5831,174 @@ html[data-theme="light"] .chips a, html[data-theme="light"] .fchip, html[data-th
   color: #1f2328;
   border-color: #d1d9e0;
 }
-html[data-theme="light"] .card {
+html[data-theme="light"] .hchip button {
+  color: #1f2328;
+}
+html[data-theme="light"] .chips a.active {
+  color: #0969da;
+}
+html[data-theme="light"] .fchip.stale, html[data-theme="light"] .fchip.absent, html[data-theme="light"] .qblock .qremaining {
+  color: #9a6700;
+}
+html[data-theme="light"] .fchip.invalid, html[data-theme="light"] .cform .err, html[data-theme="light"] .aform .err {
+  color: #cf222e;
+}
+html[data-theme="light"] .dot {
+  background: #59636e;
+}
+html[data-theme="light"] .dot.up, html[data-theme="light"] .dot.self {
+  background: #1a7f37;
+}
+html[data-theme="light"] .dot.down, html[data-theme="light"] .dot.invalid {
+  background: #cf222e;
+}
+html[data-theme="light"] .dot.stale, html[data-theme="light"] .dot.absent {
+  background: #9a6700;
+}
+html[data-theme="light"] .dot.off, html[data-theme="light"] .dot.unknown {
+  background: #59636e;
+}
+html[data-theme="light"] .dot.fixtures {
+  background: transparent;
+  border-color: #8250df;
+}
+html[data-theme="light"] .cmt {
+  background: #f6f8fa;
+  border-left-color: #d1d9e0;
+}
+html[data-theme="light"] .cov, html[data-theme="light"] .cform, html[data-theme="light"] .actbox, html[data-theme="light"] .skel {
+  background: #f6f8fa;
+  border-color: #d1d9e0;
+}
+html[data-theme="light"] .chart {
+  background: #0d1117;
+  border-color: #30363d;
+  color: #e6edf3;
+}
+html[data-theme="light"] .chart .muted {
+  color: #8b949e;
+}
+html[data-theme="light"] .chart .xpl-ctl button, html[data-theme="light"] .chart .xpl-ctl select {
+  background: #161b22;
+  color: #e6edf3;
+  border-color: #30363d;
+}
+html[data-theme="light"] .chart .xpl-ctl button.active {
+  background: #1f6feb;
+  color: #fff;
+  border-color: #1f6feb;
+}
+html[data-theme="light"] .cform textarea, html[data-theme="light"] .cform select, html[data-theme="light"] .cform input[type="text"], html[data-theme="light"] .raform textarea, html[data-theme="light"] .raform select, html[data-theme="light"] .raform input[type="date"], html[data-theme="light"] .actbox select, html[data-theme="light"] .aform select, html[data-theme="light"] .aform input[type="text"], html[data-theme="light"] .aform input[type="datetime-local"], html[data-theme="light"] nav select, html[data-theme="light"] .xpl-filters input[type="search"], html[data-theme="light"] .xpl-filters select, html[data-theme="light"] .xpl-ctl select {
+  background: #ffffff;
+  color: #1f2328;
+  border-color: #d1d9e0;
+}
+html[data-theme="light"] .cform label, html[data-theme="light"] .actbox .ahead label, html[data-theme="light"] .aform .why, html[data-theme="light"] .optform .effect, html[data-theme="light"] .orderctl {
+  color: #59636e;
+}
+html[data-theme="light"] .cform .kinds label {
+  color: #1f2328;
+}
+html[data-theme="light"] .aform button {
+  background: #f6f8fa;
+  color: #1f2328;
+  border-color: #d1d9e0;
+}
+html[data-theme="light"] .aform button.danger {
+  color: #cf222e;
+  border-color: #cf222e;
+}
+html[data-theme="light"] .xtabs {
+  border-bottom-color: #d1d9e0;
+}
+html[data-theme="light"] .xtab {
+  color: #59636e;
+}
+html[data-theme="light"] .xtab:hover, html[data-theme="light"] .xtab.active {
+  color: #1f2328;
+}
+html[data-theme="light"] .xtab.active {
+  background: #f6f8fa;
+  border-color: #d1d9e0;
+}
+html[data-theme="light"] .xp-seg button {
+  background: #f6f8fa;
+  color: #59636e;
+}
+html[data-theme="light"] .xpl-table tr:hover td {
+  background: #f6f8fa;
+}
+html[data-theme="light"] .xpl-ctl button {
+  background: #f6f8fa;
+  color: #1f2328;
+  border-color: #d1d9e0;
+}
+html[data-theme="light"] .card .sentline, html[data-theme="light"] .qblock .qanswered {
+  color: #1a7f37;
+}
+html[data-theme="light"] details.carddetail {
+  border-top-color: #d1d9e0;
+}
+html[data-theme="light"] details.carddetail dt {
+  color: #59636e;
+}
+html[data-theme="light"] details.carddetail summary, html[data-theme="light"] .cbox summary, html[data-theme="light"] .kids summary {
+  color: #0969da;
+}
+html[data-theme="light"] .kids {
+  border-left-color: #d1d9e0;
+}
+html[data-theme="light"] .obj .n {
+  color: #0969da;
+}
+html[data-theme="light"] .foot {
+  border-top-color: #d1d9e0;
+}
+html[data-theme="light"] .qblock {
+  border-top-color: #d1d9e0;
+}
+html[data-theme="light"] .cbox {
+  border-top-color: #d1d9e0;
+}
+html[data-theme="light"] .navsearch input, html[data-theme="light"] .search-page-form input {
+  background: #ffffff;
+  color: #1f2328;
+  border-color: #d1d9e0;
+}
+html[data-theme="light"] .navsearch button, html[data-theme="light"] .search-page-form button {
+  background: #eaeef2;
+  color: #1f2328;
+  border-color: #d1d9e0;
+}
+html[data-theme="dark"] body {
+  background: #0e1117;
+  color: #e6edf3;
+}
+html[data-theme="dark"] nav {
+  background: #161b22;
+  border-bottom-color: #30363d;
+}
+html[data-theme="dark"] .card {
+  background: #161b22;
+  border-color: #30363d;
+}
+html[data-theme="dark"] .col {
+  background: #0d1117;
+  border-color: #30363d;
+}
+html[data-theme="dark"] th {
+  background: #161b22;
+}
+html[data-theme="dark"] th, html[data-theme="dark"] td {
+  border-color: #30363d;
+}
+html[data-theme="dark"] .muted, html[data-theme="dark"] .foot, html[data-theme="dark"] caption {
+  color: #8b949e;
+}
+html[data-theme="dark"] a {
+  color: #58a6ff;
+}
+.card {
   border-radius: 12px;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.28);
 }

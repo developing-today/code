@@ -1341,11 +1341,11 @@ func stripPinnedScopeResAtWithVisiblePins(v any, pinned map[string]bool, pinVals
 			// projected as a conjunct branching on which
 			// pinned names the caller supplied, not by
 			// subtracting every pin from the bound.
-			switch conjunct := pinnedCountConjunct(k, n, sortedPinnedNames(pinned)); {
-			case conjunct == true:
+			switch conjunct := pinnedCountConjunct(k, n, sortedPinnedNames(pinned)); conjunct {
+			case true:
 				// Every caller instance satisfies the
 				// merged count: no constraint survives.
-			case conjunct == false:
+			case false:
 				// The pins alone exceed the bound: no
 				// caller input can satisfy this scope.
 				unsatisfiable = true
