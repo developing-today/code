@@ -66,6 +66,7 @@ records.
 - [Knowledge-layer sharing and permissions](../../doc/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions.md)
 - [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
 - [Capability observability: who can see which capability facts, where](../../doc/2026-11-08T10-40-00Z_design_id_capability_observability/2026-11-08T10-40-00Z_design_id_capability_observability.md)
+- [Atlas chunk-boundary policy v2 — structural first](../../doc/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2.md)
 
 ## Package architecture docs (living, with the code)
 
