@@ -131,8 +131,8 @@ not re-arm, retire, or re-enable any workflow.
 
 `.github/workflows/workflow-lint.yml` is a **basic-tier** check
 (job `basic: workflow lint`): on pull requests touching
-`.github/workflows/**` or `.github/actions/**`, and on merge
-groups, it runs `.github/scripts/check-workflows.sh`, which lints
+`.github/workflows/**` or `.github/actions/**` it runs
+`.github/scripts/check-workflows.sh`, which lints
 the complete workflow set with actionlint (shellcheck over `run:`
 blocks at `-S warning` when shellcheck is available, matching the
 mcpx leg) and shape-validates every `.github/actions/*/action.yml`
@@ -148,7 +148,8 @@ workflow before use.
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and
-its fixtures on pull requests, merge groups, and pushes to `main`. The
+its fixtures on pull requests and pushes to `main` (the merge-group leg
+is not active under the no-merge-queue ruling). The
 guard checks known metered selections (`cloudflare-*` and the direct
 PAYG `deepseek` provider) in model-route targets/fallbacks, provider-route
 selections, top-level defaults, and agent model/fallback fields. Disabled
