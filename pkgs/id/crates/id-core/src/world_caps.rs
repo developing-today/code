@@ -568,8 +568,7 @@ const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[TEST_PROVIDER_MANIFEST];
 const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[];
 
 /// Number of manifests in the assembled provider registry.
-const CATALOG_ENTRY_COUNT: usize =
-    PRODUCTION_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len();
+const CATALOG_ENTRY_COUNT: usize = PRODUCTION_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len();
 
 /// Assemble the production manifests plus any feature-gated registry-only
 /// additions into one array.
