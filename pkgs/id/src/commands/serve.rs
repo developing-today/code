@@ -1307,13 +1307,18 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Build router — gossip ALPN is always registered (needed by iroh-docs),
     // but peer discovery gossip topic only joins when gossip is enabled
-    let meta = MetaProtocol::new(
+    let mut meta = MetaProtocol::new(
         &store_handle,
         Some(peer_discovery.clone()),
         Arc::clone(&tag_store),
         access.clone(),
         node_id,
     );
+    // Server-to-server transfers (#5345) are initiated from this handler
+    // with the server's own endpoint and identity.
+    if let Some(inner) = Arc::get_mut(&mut meta) {
+        inner.endpoint = Some(endpoint.clone());
+    }
     // iroh-blobs rejects pushes unless an event handler enables them; this one
     // allows them only from nodes the access policy lets write.
     let blobs = BlobsProtocol::new(

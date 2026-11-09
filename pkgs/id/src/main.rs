@@ -448,6 +448,14 @@ async fn main() -> Result<()> {
             no_relay,
         }) => cmd_put_multi(files, content, stdin, hash_only, no_relay).await,
         Some(Command::PutHash { source }) => cmd_put_hash(&source).await,
+        Some(Command::Send {
+            source,
+            name,
+            to,
+            dest_name,
+            replace,
+            no_relay,
+        }) => id::commands::cmd_send(&source, &name, &to, dest_name, replace, no_relay).await,
         Some(Command::Get {
             sources,
             stdin,

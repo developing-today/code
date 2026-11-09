@@ -242,6 +242,7 @@ pub use id_core::sync_method;
 pub mod tag_claims;
 pub mod tag_index;
 pub mod tags;
+pub mod transfer;
 #[cfg(test)]
 mod test_forgeries;
 pub(crate) mod text;

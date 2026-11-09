@@ -69,6 +69,7 @@ pub mod match_audit;
 pub mod peers;
 pub mod put;
 pub mod repl;
+pub mod send;
 pub mod serve;
 pub mod tag;
 pub mod text;
@@ -94,6 +95,7 @@ pub use put::{
     cmd_put_one_remote,
 };
 pub use repl::{ReplContext, ReplContextInner};
+pub use send::cmd_send;
 pub use serve::{
     ServeInfo, ServeOptions, build_access_policy, cmd_serve, create_serve_lock, get_serve_info,
     is_process_alive, remove_serve_lock,

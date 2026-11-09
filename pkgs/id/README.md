@@ -140,6 +140,7 @@ it is — a valid world capability, minted by the host's admin with
 | `repl`         | `shell`                        | Interactive REPL with pipes and subshells          |
 | `put`          | `in`, `add`, `store`, `import` | Store files in blob store                          |
 | `put-hash`     |                                | Store content by hash only (no named tag)          |
+| `send`         |                                | Copy a file from one server to another             |
 | `get`          |                                | Retrieve files by name or hash                     |
 | `get-hash`     |                                | Retrieve file by hash with explicit output path    |
 | `cat`          | `output`, `out`                | Output file content to stdout                      |
