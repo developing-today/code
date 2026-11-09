@@ -12,7 +12,7 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # without the client, and a client-only build is possible for the
 # standalone artifact.
 [features]
-client = []
+client = ["dep:fleet-config"]
 queue-broker = ["client", "dep:tiny_http", "dep:ureq", "dep:fleet-config"]
 secrets-broker = ["dep:tiny_http", "dep:fleet-config"]
 
