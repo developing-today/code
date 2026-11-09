@@ -821,6 +821,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
 }
 
 /// Collect list item children of a list node.
+#[allow(dead_code)]
 fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
     node.children()
         .map(|child| convert_node(child, &[]))
