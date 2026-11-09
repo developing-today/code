@@ -67,34 +67,35 @@ func dialTestTransport(t *testing.T, url string) *mcpclient.HTTPTransport {
 
 const fallbackPing = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
 
-// TestSendNonJSONFallbackIsBounded is the regression test for #4282: an
-// oversized non-JSON 200 body must be truncated at HTTPErrorBodyLimit, never
-// buffered and pushed whole. Bodies at or under the limit pass through
-// byte-for-byte, as before.
+// TestSendNonJSONFallbackIsBounded is the regression test for #4282: a
+// non-JSON 200 body at or under the cap passes through byte-for-byte, as
+// before, and one over the cap makes Send refuse it — error, nothing pushed
+// (design #4375 decision 2: never truncate, never buffer whole).
 func TestSendNonJSONFallbackIsBounded(t *testing.T) {
-	limit := int64(defaults.HTTPErrorBodyLimit)
+	limit := int64(defaults.HTTPBodyLimit)
 	for _, size := range []int64{16, limit - 1, limit, limit + 1, limit*4 + 123} {
 		t.Run(fmt.Sprintf("bytes-%d", size), func(t *testing.T) {
 			body := strings.Repeat("A", int(size)) // never valid JSON
 			tr := dialTestTransport(t, plainServer(t, "text/html", body).URL)
-			got := sendFrame(t, tr, fallbackPing)
 			if size <= limit {
-				if string(got) != body {
+				if got := sendFrame(t, tr, fallbackPing); string(got) != body {
 					t.Fatalf("small non-JSON body changed: got %d bytes, want %d whole", len(got), len(body))
 				}
 				return
 			}
-			if int64(len(got)) > limit {
-				t.Fatalf("oversized non-JSON body not bounded: got %d bytes, limit %d", len(got), limit)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := tr.Send(ctx, []byte(fallbackPing))
+			if err == nil {
+				t.Fatalf("oversized non-JSON body accepted: want an error naming the %d-byte limit", limit)
 			}
-			if int64(len(got)) != limit {
-				t.Fatalf("oversized non-JSON body not truncated at the limit: got %d bytes, want %d", len(got), limit)
+			if !strings.Contains(err.Error(), "non-JSON body") || !strings.Contains(err.Error(), fmt.Sprintf("%d-byte limit", limit)) {
+				t.Fatalf("oversized non-JSON body error does not name the surface and the cap: %v", err)
 			}
-			if len(got) >= len(body) {
-				t.Fatalf("oversized non-JSON body pushed whole: got %d bytes of %d", len(got), len(body))
-			}
-			if string(got) != body[:len(got)] {
-				t.Fatalf("bounded body is not the head of the reply: got %q", got)
+			select {
+			case got := <-recvChan(t, tr):
+				t.Fatalf("oversized non-JSON body pushed %d bytes after refusal (limit %d)", len(got), limit)
+			case <-time.After(200 * time.Millisecond):
 			}
 		})
 	}
@@ -132,7 +133,7 @@ func recvChan(t *testing.T, tr *mcpclient.HTTPTransport) <-chan []byte {
 // touch: a single JSON value, including one far larger than the fallback
 // limit, arrives whole.
 func TestSendValidJSONUnchanged(t *testing.T) {
-	limit := int64(defaults.HTTPErrorBodyLimit)
+	limit := int64(defaults.HTTPBodyLimit)
 	big := strings.Repeat("z", int(limit*2))
 	for _, reply := range []string{
 		`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`,

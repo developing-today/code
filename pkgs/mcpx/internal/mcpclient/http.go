@@ -290,25 +290,31 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		// subscriptions/listen -- was read until the server closed it,
 		// which for a subscription is never: the acknowledgement and every
 		// list_changed after it sat unread, and the stream's caller hung.
-		limit := int64(defaults.HTTPErrorBodyLimit)
-		head := &firstValue{max: limit}
+		// The fallback buffer is capped at http.bodyLimit (#4282): the tee
+		// must never hold a whole non-JSON reply, however large it is.
+		limit := int64(defaults.HTTPBodyLimit)
+		head := &firstValue{max: limit + 1}
 		dec := json.NewDecoder(io.TeeReader(resp.Body, head))
 		var first json.RawMessage
 		if err := dec.Decode(&first); err != nil {
-			// Empty, or not JSON: handed on whole as before, for push to
-			// judge — but bounded at HTTPErrorBodyLimit (#4282), so a
-			// misbehaving or proxied upstream cannot force unbounded
-			// memory growth with a huge non-JSON 200 reply.
-			var rest []byte
-			var readErr error
-			if room := limit - int64(head.buf.Len()); room > 0 {
-				rest, readErr = io.ReadAll(io.LimitReader(resp.Body, room))
+			// Empty, or not JSON: read at most one byte past the cap and
+			// hand a body under it on whole, as before. A body over it is
+			// refused, not truncated (#4282, design #4375 decision 2): a
+			// truncated non-JSON body would manufacture a partial message
+			// out of bytes that are definitionally not a protocol message.
+			room := limit + 1 - int64(head.buf.Len())
+			if room < 0 {
+				room = 0
 			}
+			rest, readErr := io.ReadAll(io.LimitReader(resp.Body, room))
 			_ = resp.Body.Close()
 			if readErr != nil {
 				return readErr
 			}
 			b := append(head.buf.Bytes(), rest...)
+			if int64(len(b)) > limit {
+				return fmt.Errorf("mcpclient: %s replied with a non-JSON body larger than the %d-byte limit", t.url, limit)
+			}
 			if len(bytes.TrimSpace(b)) > 0 {
 				t.push(b)
 			}
