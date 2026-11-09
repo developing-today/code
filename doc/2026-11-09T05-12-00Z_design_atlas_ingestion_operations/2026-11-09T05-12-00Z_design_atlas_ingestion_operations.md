@@ -26,7 +26,7 @@ Revalidated against GitHub state and current main on 2026-11-09.
 | #6060 cross-tier vector comparability | score normalization across embedding models/tiers | **Settled** (issue closed; record on main: `doc/2026-11-08T10-44-00Z_decision_atlas_cross_tier_vector_comparability/`) | Nothing operational; cited so the sweep never treats cross-tier score drift as an ingestion failure. |
 | #6061 storage growth model | churn × retention simulation; calibration of v1 retention defaults | **Settled** (issue closed, PR #7654 merged; record on main: `doc/2026-11-08T11-18-02Z_design_atlas_storage_growth_model/`) | The growth projection feeding §5's headroom alerts, including its §6 rule: a projection crossing 70% of the storage envelope within 180 days is surfaced for a human decision. |
 | #6028 delta-only ingestion + offset embeds | span-anchored delta protocol; land only changes | **Open** (design record on main: `doc/2026-11-08T10-26-00Z_design_atlas_offset_matching/`; issue open/parked) | The discovery protocol every sweep in §3 assumes. Treated as an in-force input for append-mostly classes; the runbook (§6) must not depend on its open parameters being final. |
-| #6045 ingest attestation record | in-toto-shaped per-batch statement binding chunks to sources | **Open** (parked) | The batch manifest in §6 carries the attestation fields as optional-until-#6045-lands; a sweep never blocks on attestation, and never claims it once #6045 lands without emitting it. |
+| #6045 ingest attestation record | in-toto-shaped per-batch statement binding chunks to sources | **Settled** (issue closed 2026-11-09; record on main: `doc/2026-11-09T05-12-32Z_design_atlas_ingest_attestation/`) | The batch manifest in §6 carries the attestation fields as required: every landed batch emits the #6045 statement binding its chunks to their sources. (Row corrected at merge time — #6045 closed and its record landed after this record was first drafted.) |
 | #6057 staging-shard ingest gate | write → classify → dedup → provenance-check → publish | **Open** (in review) | The promotion path in §3: sweeps land in staging only; promotion is the gate's job, on merge-on-close per #5669. |
 | #6059 secret-tier local embedder | local embedding for secret text; fleet-hardware evaluation | **Open** (in review) | The routing rule in §2: secret-tier content is never sent to a hosted embedder by a sweep, whether or not #6059 has landed — until it lands, secret-tier classes are held out of automated sweeps entirely (§2, approval column). |
 
@@ -93,7 +93,7 @@ semantics at each seam:
    items land in the staging shard under their content address.
    Landing is idempotent by construction: re-landing the same content
    address is a no-op, which is what makes sweep retries and overlaps
-   safe (§6). The batch is attested per #6045 when that lands.
+   safe (§6). The batch is attested per #6045 (record on main: `doc/2026-11-09T05-12-32Z_design_atlas_ingest_attestation/`).
 4. **Promote (merge-on-close, #5669; gate, #6057).** Promotion from
    staging to the production atlas happens through the ingest gate —
    classify → dedup → provenance-check → publish — not by the sweep.
