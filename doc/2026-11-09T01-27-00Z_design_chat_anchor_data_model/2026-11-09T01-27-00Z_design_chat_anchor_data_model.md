@@ -18,12 +18,22 @@ Keep the original target revision and selector immutable. Resolve an anchor on
 later revisions using the object's stable part IDs and revision edit map first,
 then a unique exact content fingerprint. Show a relocation warning when
 content matching moves the anchor. Never silently choose among approximate or
-multiple matches. Preserve an orphaned or tombstoned link and its conversation
-rather than deleting or retargeting it.
+multiple matches. When the resolver has neither a deterministic map, nor a
+unique fingerprint match, nor a retained origin revision to offer, the anchor
+is explicitly `unresolved` rather than guessed. Preserve an orphaned or
+tombstoned link and its conversation rather than deleting or retargeting it.
 
-The link model is application metadata, not message content or a new required
-chat-protocol field. All link, selector, fingerprint, status, and reverse-index
-data remains subject to the target object's access checks: a caller who cannot
+On the wire this record consumes the sibling mechanisms already decided:
+`about`, `anchored-to-part`, and `derived-from` edges fold from #5872's
+append-only `chat.anchor.v1` events on the conversation log (`talk-for`
+remains #5872's separate canonical talk-page binding), and `resolved-into`
+edges fold from #5874's `chat.resolution.v1` events. The log is the durable
+source; the `ConversationLink` is the canonical projected edge. Part
+selectors additionally satisfy #5873's terminal constraint: every selector has
+a URL-fragment-safe textual form.
+
+All link, selector, fingerprint, status, and reverse-index data remains
+subject to the target object's access checks: a caller who cannot
 read a private target must not learn that a link or target exists.
 
 ## Context and scope
@@ -35,7 +45,10 @@ typed relationships, navigation in both directions, cross-object conversations,
 and anchors that survive edits, versions, and deletion. It also requires that
 private-object content and existence not leak to non-readers.
 
-This record settles the structural model for the first feature only. It does
+This record settles the structural model for the first feature only.
+Mechanically it builds on the sibling decisions without re-deciding them:
+#5872's anchor events, #5873's fragment-safe textual selector frame, and
+#5874's resolution events. It does
 not decide talk-page lifecycle or visibility policy, terminal interaction,
 notifications, presence, search semantics, or the discussion-to-edit workflow
 (the sibling designs #5871–#5875, including #5874). It does not add fields to
@@ -72,10 +85,17 @@ The link contains no target excerpt or preview. The allowed combinations are:
 | `derived-from` | conversation/thread | absent | The conversation/thread was forked or spun out of that source conversation/thread. |
 | `resolved-into` | ID object | absent | The discussion produced or points to an addressable edit, decision, or other result object. |
 
-The `resolved_into` edge records a result reference only; it does not define
+Mechanically, `about`, `anchored-to-part`, and `derived-from` edges are the
+folded projection of #5872's append-only `chat.anchor.v1` events on the
+conversation log; `talk-for` stays #5872's separate canonical talk-page
+binding and is not a fifth value of this vocabulary. `resolved-into` edges
+fold from #5874's `chat.resolution.v1` events (kind `edit`): only an
+addressable edit result produces an object-side edge, per #5874.
+
+The `resolved-into` edge records a result reference only; it does not define
 proposal, approval, or editing semantics. Those remain with the separate
 discussion-to-edit design. A result that is not an addressable ID object is
-not a `resolved_into` target until it has an object identity.
+not a `resolved-into` target until it has an object identity.
 
 A conversation may have any number of links, including links to several
 objects. Each part link names one selector; use another link record for another
@@ -117,6 +137,16 @@ The selector variants are:
   are not valid. Prefer stable logical identifiers over positions when the
   object type has them.
 
+Every selector variant has a URL-fragment-safe textual form for terminal and
+link rendering: the `id://` object reference with a `#`-suffixed selector
+fragment, per the frame fixed by #5873. The textual form encodes the same
+canonical selector (offsets, block ID, or typed region value); it never
+carries raw content. Object types own the exact fragment encoding of their
+region selectors, but every encoding must survive URL-fragment transport
+without loss or ambiguity. If a future object type cannot express its
+selector as a fragment, that is a change to #5873's record and must be
+recorded there, not silently absorbed here.
+
 The optional fingerprint is private resolver metadata, not a quote. It may be
 computed from selected content and bounded context, but it must be opaque and
 available only to the authorized resolver. Do not put raw selected text,
@@ -142,12 +172,24 @@ uses this order:
    mark it **drifted**. Warn, retain the original anchor, and require a person
    or object-specific resolver to confirm a candidate before navigation
    retargets. Candidate details are visible only to readers of the object.
-4. If the selected part or range no longer exists and there is no candidate,
+4. If the resolver has neither a deterministic revision map, nor a unique
+   fingerprint match, nor a retained origin revision to offer (for example
+   the fingerprint was never recorded and the origin revision is pruned),
+   mark the anchor **unresolved**. Warn, retain the original anchor, and
+   offer no navigation target until a person or object-specific resolver
+   confirms one. An `unresolved` anchor is never silently followed.
+5. If the selected part or range no longer exists and there is no candidate,
    mark it **orphaned**. Keep the link and conversation; do not guess a new
    target.
-5. If the whole object is deleted, mark its target **tombstoned**. Keep the
+6. If the whole object is deleted, mark its target **tombstoned**. Keep the
    link and conversation, but do not preserve a content preview or make the
    tombstone visible to a caller who could not read the object.
+
+The resolution states are `current`, `relocated`, `drifted`, `unresolved`,
+`orphaned`, and `tombstoned`. Anchor absence (no link record at all) is a
+valid state, not an error, per #5872; `talk-for` binding disputes
+(`disputed`) belong to #5872's canonical-binding rule, not to this
+vocabulary.
 
 An anchor follows revisions of the same object identity only. A copied object,
 fork with a new object ID, or unrelated object that happens to contain the
@@ -158,13 +200,13 @@ status never deletes the conversation or changes its message history.
 
 ### Protocol and privacy boundary
 
-The link is application-level metadata attached to a conversation/thread, not
-a message body field. A client that understands links can resolve the record
-and navigate; a client that does not understand links can still exchange the
-underlying chat messages. If link records need replication, use the optional
-application metadata/extension path already supported by #2036. Do not require
-a new message kind, a new mandatory envelope field, or a protocol-version bump
-for ordinary chat. The exact transport/storage endpoint remains an
+`about`, `anchored-to-part`, and `derived-from` links replicate as #5872's
+additive `chat.anchor.v1` log events; `resolved-into` edges replicate as
+#5874's `chat.resolution.v1` events. No message-body field, no mandatory
+envelope field, and no protocol-version bump are required: clients that
+predate the extensions skip the new event kinds and link metadata without
+failing ordinary chat projection (unknown-kind tolerance, #5872 invariant 7).
+The exact storage endpoint for the folded link index remains an
 implementation choice within that boundary.
 
 Apply authorization before returning a link or any projection of it. This
@@ -189,7 +231,7 @@ preview, and notification rendering do not disclose the private target.
 | Publish a tombstone or relation to every conversation reader | Reveals private-object existence; access checks must hide the edge itself, not merely its preview. |
 | One universal coordinate format for all object regions | Text, media, tables, boards, and other object types have different semantics and units; typed object-native selectors are less ambiguous. |
 | Duplicate a reverse link record | Creates two sources of truth that can disagree; derive reverse navigation from the canonical edge. |
-| Require new core protocol fields or a protocol-version change | Expands the parent protocol/client scope unnecessarily; optional application metadata preserves compatibility with ordinary chat clients. |
+| Put link state in message bodies or require a protocol-version change | Couples link lifecycle to message history and breaks older clients; the additive event kinds decided in #5872 already preserve compatibility without a version change, so this record specifies no further protocol change. |
 
 ## Implementation invariants
 
@@ -199,7 +241,9 @@ Implementations of this decision must hold all of the following:
    four allowed relation/endpoint combinations above.
 2. `anchored-to-part` has exactly one object target, one origin revision, and
    one valid selector. Ranges are non-empty half-open Unicode-scalar ranges;
-   block and region selectors are valid for the target object type.
+   block and region selectors are valid for the target object type. Every
+   selector has a URL-fragment-safe textual form (the `id://` reference with
+   a `#`-suffixed selector fragment) encoding the same canonical selector.
 3. Link creation is idempotent for an identical edge, but separate selectors
    are not collapsed. Bidirectional navigation is derived from the same
    canonical record.
@@ -210,8 +254,10 @@ Implementations of this decision must hold all of the following:
    derived state, and only an exact deterministic mapping or unique exact
    fingerprint match may retarget automatically.
 6. Approximate or ambiguous matches are `drifted`, visibly warned, and never
-   silently followed. Missing selectors are `orphaned`; deletion of the whole
-   object is `tombstoned`.
+   silently followed. A resolver with no deterministic map, no unique
+   fingerprint match, and no retained origin revision marks the anchor
+   `unresolved` and offers no target until confirmation. Missing selectors are
+   `orphaned`; deletion of the whole object is `tombstoned`.
 7. Orphaning or tombstoning a target does not delete the link, its conversation,
    or chat messages. No resolver follows content into a different object ID.
 8. Unknown or unsupported link metadata does not prevent a client from reading
@@ -219,15 +265,23 @@ Implementations of this decision must hold all of the following:
    status and warning rather than presenting a stale selector as current.
 9. Reverse lookup, search, and rendering apply object authorization before
    returning any existence-bearing result.
+10. `about`, `anchored-to-part`, and `derived-from` edges fold
+    deterministically from `chat.anchor.v1` events and `resolved-into` edges
+    from `chat.resolution.v1` events (kind `edit`); replicas folding the same
+    log converge on the same edge set.
 
 ## Parent-decision check and implementation handoff
 
 This record refines the first feature in #5682; it does not reverse a parent
 choice or take on talk-page, thread-visibility, terminal, or edit-loop policy.
-It applies the parent's existing private-object non-disclosure constraint to
-the link and resolver data. The optional-metadata boundary above is a
-compatibility constraint for this model, not a replacement for #5682's
-protocol design.
+It consumes the sibling mechanisms without re-deciding them: #5872's
+`chat.anchor.v1` anchor events and `talk-for` binding, #5873's fragment-safe
+textual selector frame, and #5874's `chat.resolution.v1` ownership of
+`resolved-into` edges. It applies the parent's existing private-object
+non-disclosure constraint to the link and resolver data. The one parent
+wording boundary (a decision summary or no-action outcome with no addressable
+result object remains thread-resolution state, not a reverse object edge) is
+recorded explicitly on #5682 rather than silently forked.
 
 No implementation code is included here. The link shape and resolver form one
 cohesive design unit; implementation sequencing and issue splitting remain
