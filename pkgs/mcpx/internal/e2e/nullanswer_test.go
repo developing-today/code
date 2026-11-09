@@ -41,7 +41,7 @@ func TestANullSamplingAnswerIsRefusedAndTheDaemonSurvives(t *testing.T) {
 			done <- "error: " + err.Error()
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, _ := io.ReadAll(resp.Body)
 		done <- string(raw)
 	}()
@@ -74,7 +74,7 @@ func TestANullSamplingAnswerIsRefusedAndTheDaemonSurvives(t *testing.T) {
 		t.Fatalf("the daemon did not answer the POST: %v", err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		t.Errorf("a null answer to a sampling request must be refused, got 200: %s", body)
 	}

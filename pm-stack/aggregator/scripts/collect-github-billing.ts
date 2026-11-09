@@ -36,11 +36,6 @@ const outboxPath =
   process.env.USAGE_SNAPSHOT_OUTBOX_PATH ??
   join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files/usage-snapshot-outbox.jsonl");
 
-function argValue(flag: string): string | undefined {
-  const i = process.argv.indexOf(flag);
-  return i >= 0 ? process.argv[i + 1] : undefined;
-}
-
 // Validate explicit --year/--month/--user values BEFORE any gh call
 // (#3419). Malformed values used to flow straight into the billing API
 // URL (month=NaN, month=13, users/--print) and the failure was then
@@ -58,6 +53,22 @@ function explicitArg(flag: string): string {
   if (value === undefined || value.startsWith("--"))
     usageError(`${flag} requires a value (got ${value === undefined ? "no value" : JSON.stringify(value)})`);
   return value;
+}
+
+// Resolve the --by value BEFORE any gh call (#6922). It is the last
+// unguarded flag value in this script: an empty/whitespace value used
+// to flow into every derived record, fail isSnapshotRecord for all of
+// them, and throw AFTER the gh call — discarding the whole month's
+// collection with a data-validation error for a usage mistake; a flag
+// token (e.g. --by --print) was recorded verbatim as the observer (and
+// consumed a second time as the flag itself); a trailing --by silently
+// fell back to the default. Same guard as append-usage-snapshots'
+// resolveObservedBy (#3295), built on this file's explicitArg (#3419).
+function resolveObservedBy(): string {
+  if (!process.argv.includes("--by")) return "collect-github-billing";
+  const raw = explicitArg("--by");
+  if (raw.trim() === "") usageError(`--by requires a non-empty name (got ${JSON.stringify(raw)})`);
+  return raw;
 }
 
 function resolveYear(now: Date): number {
@@ -104,12 +115,46 @@ function fetchUsageItems(user: string, year: number, month: number): BillingUsag
   return items as BillingUsageItem[];
 }
 
+// Reject unknown, duplicated, or positional arguments BEFORE any gh
+// call or outbox write (#7254). The flag values were validated in
+// #3419/#6922, but argv itself was only probed token-by-token
+// (includes/indexOf), so an unrecognized token was silently ignored:
+// a typo'd --yer fell back to the current year, a typo'd --prnit made
+// the includes("--print") check false and turned a dry run into a
+// real outbox append, and a duplicated flag silently took the first
+// value. Mirrors rejectUnknownArgs in generate-digest.ts (#7097) /
+// append-usage-snapshots.ts (#6961).
+const VALUE_FLAGS = ["--year", "--month", "--user", "--by"];
+const STANDALONE_FLAGS = ["--print"];
+const USAGE = "collect-github-billing [--year YYYY] [--month M] [--user <name>] [--by <name>] [--print]";
+
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (VALUE_FLAGS.includes(token)) {
+      if (seen.has(token)) usageError(`duplicate ${token} (usage: ${USAGE})`);
+      seen.add(token);
+      i++; // skip the value; the resolvers validate it
+      continue;
+    }
+    if (STANDALONE_FLAGS.includes(token)) {
+      if (seen.has(token)) usageError(`duplicate ${token} (usage: ${USAGE})`);
+      seen.add(token);
+      continue;
+    }
+    usageError(`unknown argument ${JSON.stringify(token)} (usage: ${USAGE})`);
+  }
+}
+rejectUnknownArgs();
+
 async function main(): Promise<void> {
   const now = new Date();
   const year = resolveYear(now);
   const month = resolveMonth(now);
   const user = resolveUser();
-  const observedBy = argValue("--by") ?? "collect-github-billing";
+  const observedBy = resolveObservedBy();
   const items = fetchUsageItems(user, year, month);
   const totals = summarizeBillingDays(aggregateBillingUsage(items));
   console.log(

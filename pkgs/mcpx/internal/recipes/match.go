@@ -60,7 +60,7 @@ func Match(rs []Recipe, text string, limit int) []Candidate {
 // Terms splits a request into the words worth matching on.
 func Terms(text string) []string {
 	fields := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	})
 	var out []string
 	seen := map[string]bool{}

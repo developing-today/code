@@ -75,7 +75,11 @@ run_case() {
   local before="" after=""
   [ -f "$mirror" ] && before="$(sha256sum "$mirror" | cut -d' ' -f1)"
 
-  out="$("$UNDER_TEST" --check --out "$mirror" 2>&1)"
+  # CASE_FLAGS is a word list on purpose (e.g. "--dry-run --check").
+  local flags_str="${CASE_FLAGS:---check}"
+  unset CASE_FLAGS
+  local -a flags=($flags_str)
+  out="$("$UNDER_TEST" "${flags[@]}" --out "$mirror" 2>&1)"
   rc=$?
 
   [ -f "$mirror" ] && after="$(sha256sum "$mirror" | cut -d' ' -f1)"
@@ -142,6 +146,19 @@ run_case operational \
 run_case missing \
   "$FRESH_BWS" "MISSING" 1 \
   "  + alpha" "  + beta"
+
+# 8. Combined flags: --check takes precedence over --dry-run (#6631). A
+#    stale mirror must report drift (exit 1) — the dry run's exit 0 for a
+#    check that never compared anything was the defect.
+CASE_FLAGS="--check --dry-run" run_case check_beats_dry_run \
+  '{"alpha": "VALUE-ALPHA", "beta": "VALUE-BETA", "delta": "VALUE-DELTA"}' \
+  "$FRESH_MIRROR" 1 \
+  "  + delta"
+
+# 9. Combined flags in the other order, fresh mirror -> exit 0, and the
+#    output is the check's verdict, not the dry run's listing.
+CASE_FLAGS="--dry-run --check" run_case dry_run_then_check_fresh \
+  "$FRESH_BWS" "$FRESH_MIRROR" 0
 
 if [ "$FAILURES" -gt 0 ]; then
   echo "FAIL: $FAILURES case(s) failed" >&2

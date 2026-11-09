@@ -30,7 +30,7 @@ function baseView(): QuotaView {
       pool("meta", [{ name: "weekly", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: null }], "walled"),
       pool("deepseek", []),
       pool("cline-pass", [{ name: "monthly", unit: "other", limit: 100, used: 69, percent: 69, resetsAt: null }]),
-      pool("commandcode", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
+      pool("_commandcode", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
     ],
     burn: [],
     choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: ["meta"] },
@@ -254,7 +254,7 @@ describe("quota-current overlay", () => {
 
   test("pools with no gatherer entry are untouched and carry no freshness", () => {
     const out = overlayQuotaCurrent(baseView(), file([entry({ serviceId: "meta", windows: [] })]), NOW);
-    const cc = out.pools.find((p) => p.id === "commandcode")!;
+    const cc = out.pools.find((p) => p.id === "_commandcode")!;
     expect(cc.freshness).toBeUndefined();
     expect(cc.windows[0].used).toBe(6.57);
     expect(cc.state).toBe("healthy");
@@ -742,8 +742,8 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     view.pools.push(
       pool("opencode-go.drewrypope", []),
       pool("opencode-go.popesdrew", []),
-      pool("antigravity-direct.gemini", []),
-      pool("antigravity-direct.claude-gpt", []),
+      pool("_antigravity.gemini", []),
+      pool("_antigravity.claude-gpt", []),
     );
     const out = overlayQuotaCurrent(
       view,
@@ -764,12 +764,12 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity-direct.gemini",
+          serviceId: "_antigravity.gemini",
           windows: [win("weekly", 40, iso(5 * 60_000))],
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity-direct.claude-gpt",
+          serviceId: "_antigravity.claude-gpt",
           windows: [win("weekly", 90, iso(5 * 60_000))],
         }),
       ]),
@@ -778,15 +778,15 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     const byId = new Map(out.pools.map((p) => [p.id, p]));
     expect(byId.get("opencode-go.drewrypope")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
     expect(byId.get("opencode-go.popesdrew")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
-    expect(byId.get("antigravity-direct.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
-    expect(byId.get("antigravity-direct.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([
+    expect(byId.get("_antigravity.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("_antigravity.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([
       ["weekly", 90],
     ]);
     for (const id of [
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
-      "antigravity-direct.gemini",
-      "antigravity-direct.claude-gpt",
+      "_antigravity.gemini",
+      "_antigravity.claude-gpt",
     ]) {
       expect(byId.get(id)!.freshness).toEqual({
         measuredAt: iso(5 * 60_000),

@@ -1,4 +1,5 @@
-# The deploy registry + CLI — issue #5766, slice 1 (registry + list).
+# The deploy registry + CLI — issue #5766, slices 1-2 (registry + list;
+# unit/plist rendering, --dry-run plans, generation log, status/rollback logic).
 #
 # deployTargets: this repo's service definitions (services.nix) in the
 # design §3 shape, with each definition's `package` still a derivation —
@@ -20,6 +21,16 @@ let
   definitions = import ./services.nix {
     fleet = fleetPkgs.fleet;
     mcpx = callPackage ../mcpx/package.nix { };
+    routeProxy = callPackage ./route-proxy.nix { };
+    # The existing Cloudflare deploy apps (issue #5767, phase 1) — the
+    # same callPackage expressions lib/default.nix uses for the
+    # id-mail-deploy / pkarr-deploy / developing-today-backup-deploy
+    # flake apps, so the registry references the identical derivations.
+    idMailDeploy = callPackage ../../nixos/services/id-mail/worker/deploy.nix { };
+    pkarrDeploy = callPackage ../../pkgs/pkarr-worker/deploy.nix {
+      cf = callPackage ../cf { };
+    };
+    developingTodayBackupDeploy = callPackage ../../infra/github-backup/deploy.nix { };
   };
   jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
 in
@@ -33,7 +44,7 @@ in
       {
         nativeBuildInputs = [ makeWrapper ];
         meta = {
-          description = "Deploy CLI (slice 1: registry list + definition validation) for the services deployment layer";
+          description = "Deploy CLI (slices 1-2: registry list + validation, unit rendering, dry-run plans, generation log, status/rollback logic) for the services deployment layer";
           mainProgram = "deploy";
         };
       }

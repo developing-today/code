@@ -54,9 +54,9 @@ test('invalid values throw an error naming the env var and the value', () => {
   ];
   for (const raw of invalid) {
     assert.throws(
-      () => parseProxyPortValue('CODEX_PROXY_PORT', raw, 18744),
+      () => parseProxyPortValue('X_PROXY_PORT', raw, 18744),
       (err) => {
-        assert.match(err.message, /CODEX_PROXY_PORT/);
+        assert.match(err.message, /X_PROXY_PORT/);
         assert.ok(
           err.message.includes(`"${raw}"`),
           `message should quote the value: ${err.message}`
@@ -140,18 +140,6 @@ test('host:port addresses are parsed strictly (#494)', () => {
   }
 });
 
-const runCodex = (value) =>
-  spawnSync(process.execPath, [path.join(binDir, 'codex-proxy.mjs')], {
-    env: {
-      ...process.env,
-      CODEX_PROXY_PORT: value,
-      CODEX_PROXY_TOKEN_SYNC: '0',
-      CODEX_PROXY_CODEX_BIN: '/bin/true'
-    },
-    encoding: 'utf8',
-    timeout: 10000
-  });
-
 const runRelay = (value) =>
   spawnSync(process.execPath, [path.join(binDir, 'proxy-relay.mjs')], {
     env: {
@@ -163,15 +151,6 @@ const runRelay = (value) =>
     timeout: 10000
   });
 
-test('codex-proxy exits at startup naming the var for abc / 0x… / 99999', () => {
-  for (const raw of ['abc', '0x4a38', '99999']) {
-    const result = runCodex(raw);
-    assert.equal(result.status, 1, `value ${raw}: ${result.stderr}`);
-    assert.match(result.stderr, /CODEX_PROXY_PORT/);
-    assert.ok(result.stderr.includes(`"${raw}"`), result.stderr);
-    assert.doesNotMatch(result.stdout, /listening/);
-  }
-});
 
 test('proxy-relay rejects every invalid target segment at startup', () => {
   const invalid = [
@@ -257,64 +236,19 @@ test('proxy-relay starts with an ordered valid target list', async (t) => {
   assert.equal(endpoint.relayTo, '100.99.113.103:18745');
 });
 
-test('codex-proxy binds exactly the requested valid port', async (t) => {
-  const probe = net.createServer();
-  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
-  const port = probe.address().port;
-  await new Promise((resolve) => probe.close(resolve));
-
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-port-test-'));
-  const child = spawn(process.execPath, [path.join(binDir, 'codex-proxy.mjs')], {
-    env: {
-      ...process.env,
-      HOME: tmp,
-      XDG_STATE_HOME: path.join(tmp, 'state'),
-      CODEX_PROXY_PORT: String(port),
-      CODEX_PROXY_TOKEN_SYNC: '0',
-      CODEX_PROXY_CODEX_BIN: '/bin/true'
-    },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  t.after(() => child.kill());
-  const listening = await new Promise((resolve, reject) => {
-    let out = '';
-    const timer = setTimeout(
-      () => reject(new Error(`no listening line: ${out}`)),
-      10000
-    );
-    child.stdout.on('data', (chunk) => {
-      out += chunk;
-      if (out.includes('listening')) {
-        clearTimeout(timer);
-        resolve(out);
-      }
-    });
-    child.on('exit', () => {
-      clearTimeout(timer);
-      reject(new Error(`proxy exited early: ${out}`));
-    });
-  });
-  assert.ok(
-    listening.includes(`http://127.0.0.1:${port}`),
-    `expected the requested port in: ${listening}`
-  );
-  const res = await fetch(`http://127.0.0.1:${port}/health`);
-  assert.equal(res.status, 200);
-  assert.equal((await res.json()).port, port);
-});
-
 test('every proxy port parse site in the surviving proxies uses the shared helper', () => {
   // Per-file inventory, named, so a rework that moves a port from one proxy
   // to another has to update this list on purpose instead of drifting a bare
   // total. The retired doors (agy-proxy, antigravity-ls-proxy and
   // design-code-proxy — retired 2026-10-30/2026-11-03, their bins kept
-  // as history until then — plus claude-code-proxy and
-  // commandcode-proxy) left this list with their bin programs in the
-  // 2026-11-06 proxy-infra decommission.
-  const expected = {
-    'codex-proxy.mjs': ['CODEX_PROXY_PORT'],
-    'muse-proxy.mjs': ['MUSE_PROXY_PORT']
-  };
+  // as history until then — plus claude-code-proxy,
+  // commandcode-proxy and codex-proxy) left this list with their bin programs in the
+  // 2026-11-06 proxy-infra decommission, and muse-proxy — the last
+  // provider proxy — left it the same day when muse-direct went
+  // native in the fork (opencode#1825). The list is empty: no
+  // provider proxy remains. proxy-supervise and proxy-relay still
+  // use the shared helper but take no per-proxy port variable.
+  const expected = {};
   for (const [file, names] of Object.entries(expected)) {
     const source = fs.readFileSync(path.join(binDir, file), 'utf8');
     assert.match(
@@ -334,36 +268,6 @@ test('every proxy port parse site in the surviving proxies uses the shared helpe
       parsed.sort(),
       [...names].sort(),
       `${file} should parse ${names.join(', ')} through the helper`
-    );
-  }
-});
-
-test('home-manager launches codex-proxy from the bin directory', () => {
-  // default.nix used to interpolate each script as a single store file
-  // (${../../bin/<name>.mjs}); a sibling import like ./proxy-port.mjs
-  // cannot resolve from there. The directory form must stay where it
-  // is used: today that is the codex-proxy PATH wrapper (the surviving
-  // doors' units exec the live checkout, $HOME/code/bin, which
-  // satisfies the same requirement by construction). The other
-  // entries this test once listed were removed with their launchers:
-  // agy-proxy + antigravity-ls-proxy (retired 2026-10-30),
-  // design-code-proxy (2026-11-03), clef-proxy (2026-11-04,
-  // opencode#1410); the retired doors' bin programs were removed in
-  // the 2026-11-06 proxy-infra decommission.
-  const nix = fs.readFileSync(
-    path.join(binDir, '..', 'home', 'common', 'default.nix'),
-    'utf8'
-  );
-  for (const file of [
-    'codex-proxy.mjs'
-  ]) {
-    assert.ok(
-      nix.includes('${../../bin}/' + file),
-      `default.nix should launch ${file} via the bin directory`
-    );
-    assert.ok(
-      !nix.includes('${../../bin/' + file + '}'),
-      `default.nix still launches ${file} as a single store file`
     );
   }
 });
