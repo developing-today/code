@@ -213,7 +213,8 @@ function pctWindows(entry: QuotaCurrentEntry): QuotaWindow[] {
 }
 
 function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState): boolean {
-  // Returns true when the pool's windows were replaced by a fresh read.
+  // Returns true when model-choice guidance needs recomputing: a fresh
+  // read replaced windows, or a terminal lapse removed the pool's windows.
   const freshness: PoolFreshness = {
     measuredAt: entry.measuredAt,
     source: entry.source,
@@ -232,7 +233,7 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
     pool.state = "lapsed";
     pool.windows = [];
     delete pool.wallLiftsAt;
-    return false;
+    return true;
   }
   if (state === "stale") {
     pool.state = "stale";
@@ -368,20 +369,20 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     else byService.set(e.serviceId, [e]);
   }
 
-  let anyFreshWindows = false;
+  let recomputeChoices = false;
   const pools = view.pools.map((orig) => {
     const entries = byService.get(orig.id);
     if (!entries || entries.length === 0) return orig;
     const pool: QuotaPool = { ...orig, windows: [...orig.windows] };
     const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
-      if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      if (applyEntry(pool, freshOk[0], "ok")) recomputeChoices = true;
       const rows = credentialRows(entries, nowMs);
       if (rows) pool.credentials = rows;
       return pool;
     }
     const newest = [...entries].sort(newestFirst(nowMs))[0];
-    applyEntry(pool, newest, entryState(newest, nowMs));
+    if (applyEntry(pool, newest, entryState(newest, nowMs))) recomputeChoices = true;
     return pool;
   });
 
@@ -411,11 +412,11 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     };
     const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
-      if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      if (applyEntry(pool, freshOk[0], "ok")) recomputeChoices = true;
       const rows = credentialRows(entries, nowMs);
       if (rows) pool.credentials = rows;
     } else {
-      applyEntry(pool, newest, entryState(newest, nowMs));
+      if (applyEntry(pool, newest, entryState(newest, nowMs))) recomputeChoices = true;
     }
     synthesized.push(pool);
   }
@@ -430,7 +431,7 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     .filter((entry) => entry.credentialWatch === true)
     .map((entry) => lifecycleForEntry(entry, now));
   if (credentialLifecycle.length) out.credentialLifecycle = credentialLifecycle;
-  if (anyFreshWindows) out.choices = computeChoices(allPools, nowMs);
+  if (recomputeChoices) out.choices = computeChoices(allPools, nowMs);
   return out;
 }
 
