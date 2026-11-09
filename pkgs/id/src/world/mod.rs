@@ -61,6 +61,7 @@ pub use replica::{
     restore_replica_entries_with_runtime, restore_replica_journal,
     restore_replica_journal_with_runtime, serve_replica,
 };
+pub(crate) use replication::oversized_journal_entry;
 pub use replication::{
     AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
     REPLICATION_ENVELOPE_VERSION, REPLICATION_FRAME_MAGIC, ReplicationCursor, ReplicationEnvelope,
@@ -68,7 +69,6 @@ pub use replication::{
     SignedReplicationEnvelope, advance_cursor, chain_base_cursor, chain_payload, frame_digest,
     journal_entry_line, payload_digest, split_entry_payload,
 };
-pub(crate) use replication::oversized_journal_entry;
 pub use replication_receiver::{
     DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
     ReceiverProgress,
