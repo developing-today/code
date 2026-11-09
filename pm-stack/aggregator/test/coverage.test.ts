@@ -138,7 +138,6 @@ describe("computeCoverage", () => {
   test("repos are sorted and stamped", () => {
     expect(report.repos.map((r) => r.repo)).toEqual([
       "developing-today/code",
-      "developing-today/openchamber",
       "developing-today/opencode",
       "dezren39/nix",
     ]);
@@ -155,10 +154,10 @@ describe("snapshot rotation + delta", () => {
         openIssues: codeOpen,
         gateNow: 1,
         gateNext: 2,
-          poolItems: 10,
-          poolUnsetStatus: 3,
-          poolUnsetArea: 4,
-          staleOpenIssues: 5,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+        staleOpenIssues: 5,
           staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
           staleIssuesError: null,
       },
@@ -201,13 +200,8 @@ describe("computeCoverage — pool unavailable (PR #3309 Codex)", () => {
     expect(code?.poolItems).toBeNull();
     expect(code?.poolUnsetStatus).toBeNull();
     expect(code?.poolUnsetArea).toBeNull();
-    // Configured repos remain visible even without census or pool rows.
-    expect(report.repos.map((r) => r.repo)).toEqual([
-      "developing-today/code",
-      "developing-today/openchamber",
-      "developing-today/opencode",
-      "dezren39/nix",
-    ]);
+    // No pool -> no pool-only repos appear.
+    expect(report.repos.map((r) => r.repo)).toEqual(["developing-today/code", "dezren39/nix"]);
   });
 
   test("delta against a baseline is null for pool fields while the pool is unavailable", () => {
@@ -254,7 +248,8 @@ describe("stale open-issue census", () => {
       staleIssuesCollectedAt: row.staleIssuesCollectedAt,
       staleIssuesError: null,
     });
-    expect(report.repos.find((r) => r.repo === "dezren39/nix")?.staleOpenIssues).toBeNull();
+    // Repos with no census row do not appear (union of census + pool, #1220).
+    expect(report.repos.map((r) => r.repo)).toEqual(["developing-today/code"]);
     expect(isRepoCensus({ ...row, staleOpenIssues: 1.5 })).toBe(false);
   });
 });
@@ -268,10 +263,10 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
         openIssues: codeOpen,
         gateNow: 1,
         gateNext: 2,
-          poolItems: 10,
-          poolUnsetStatus: 3,
-          poolUnsetArea: 4,
-          staleOpenIssues: 5,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+        staleOpenIssues: 5,
           staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
           staleIssuesError: null,
       },

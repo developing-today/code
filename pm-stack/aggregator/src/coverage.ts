@@ -25,7 +25,7 @@
 // unavailable pool never masquerades as zero coverage.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { REPOS, type ProjectPoolItem } from "./model.ts";
+import type { ProjectPoolItem } from "./model.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const STALE_ISSUE_AGE_MS = 90 * DAY_MS;
@@ -178,7 +178,6 @@ export function computeCoverage(
     }
     return r;
   };
-  for (const repo of REPOS) row(repo);
   for (const c of census ?? []) {
     const r = row(c.repo);
     r.openIssues = c.openIssues;
