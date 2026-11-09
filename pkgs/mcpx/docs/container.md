@@ -174,7 +174,8 @@ everywhere else silently.
 | release tarball       | not decided here | the release pipeline is #1881's; this policy is the input it should consume                                                                                 |
 
 Measured, not assumed (the CGO_ENABLED=0 build, before it became the
-default):
+default). The commands are kept as the historical record of the retired
+`Containerfile` prototype; the equivalent today is the Nix image above:
 
 ```
 $ docker build -f Containerfile --build-arg CGO_ENABLED=0 -t mcpx:cgo0 .
