@@ -48,6 +48,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -215,17 +216,48 @@ def triage_packet(repo: str, issue: dict, checked_at: str) -> dict:
     }
 
 
-def enqueue_packet(packet: dict, queue: str, fleet: str) -> tuple[bool, str]:
-    """Enqueue via the sanctioned CLI path. Returns (ok, detail)."""
-    tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"coverage-{packet['payload']['issue']['number']}.json"
-    tmp.write_text(json.dumps(packet))
+def enqueue_packet(
+    packet: dict,
+    queue: str,
+    fleet: str,
+    broker_url: str,
+    token_file: str,
+) -> tuple[bool, str]:
+    """Enqueue via the sanctioned CLI path. Returns (ok, detail).
+
+    The child gets the same broker URL and token file this run selected
+    (`--broker-url` / `--token-file`), so it cannot enqueue into a
+    different broker than the one whose coverage was read. The packet
+    file is unique per enqueue: an ad-hoc run overlapping the scheduled
+    one must never overwrite or delete the other's packet.
+    """
+    payload = packet["payload"]
+    repo_slug = payload["repo"].replace("/", "-")
+    number = payload["issue"]["number"]
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"coverage-{repo_slug}-{number}-",
+        suffix=".json",
+        dir=os.environ.get("TMPDIR") or None,
+    )
+    tmp = Path(tmp_name)
     try:
-        out = subprocess.run(
-            [fleet, "queue", "enqueue", str(tmp), "--queue", queue],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        with os.fdopen(fd, "w") as fh:
+            json.dump(packet, fh)
+        env = os.environ.copy()
+        env["REPO_QUEUE_BROKER_URL"] = broker_url
+        env["REPO_QUEUE_TOKEN_FILE"] = str(token_file)
+        try:
+            out = subprocess.run(
+                [fleet, "queue", "enqueue", str(tmp), "--queue", queue],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            # A launch failure or timeout is an enqueue failure, not a
+            # reason to abandon the remaining issues and the report.
+            return False, f"could not run enqueue: {exc}"
     finally:
         tmp.unlink(missing_ok=True)
     if out.returncode != 0:
@@ -340,7 +372,9 @@ def main(argv: list[str] | None = None) -> int:
         if do_import and uncovered:
             for issue in uncovered:
                 packet = triage_packet(repo, issue, checked_at)
-                ok, detail = enqueue_packet(packet, queue, args.fleet)
+                ok, detail = enqueue_packet(
+                    packet, queue, args.fleet, args.broker_url, args.token_file
+                )
                 if ok:
                     imported += 1
                 else:

@@ -73,8 +73,12 @@ class StubFleet:
             "path = args[2]\n"
             "queue = args[args.index('--queue') + 1]\n"
             "packet = json.load(open(path))\n"
+            "env = {\n"
+            "    'REPO_QUEUE_BROKER_URL': os.environ.get('REPO_QUEUE_BROKER_URL'),\n"
+            "    'REPO_QUEUE_TOKEN_FILE': os.environ.get('REPO_QUEUE_TOKEN_FILE'),\n"
+            "}\n"
             "with open(log, 'a') as fh:\n"
-            "    fh.write(json.dumps({'queue': queue, 'packet': packet}) + '\\n')\n"
+            "    fh.write(json.dumps({'queue': queue, 'packet': packet, 'path': path, 'env': env}) + '\\n')\n"
             "print('{\"ok\": true}')\n"
         )
         self.bin.chmod(self.bin.stat().st_mode | stat.S_IEXEC)
@@ -158,6 +162,64 @@ class CoverageReconcileTest(unittest.TestCase):
         self.assertTrue((self.state / "latest.md").exists())
         reports = list(self.state.glob("report-*.md"))
         self.assertEqual(len(reports), 1)
+
+    def test_import_child_gets_the_selected_broker_and_token(self):
+        token = self.tmp / "token"
+        token.write_text("test-token\n")
+        code, _ = self.run_cli(
+            fixture([], [3]),
+            "--import",
+            "--broker-url", "http://broker.example:4801",
+            "--token-file", str(token),
+        )
+        self.assertEqual(code, 0)
+        env = self.fleet.calls()[0]["env"]
+        self.assertEqual(env["REPO_QUEUE_BROKER_URL"], "http://broker.example:4801")
+        self.assertEqual(env["REPO_QUEUE_TOKEN_FILE"], str(token))
+
+    def test_enqueue_launch_failure_is_an_error_not_a_crash(self):
+        import unittest.mock
+
+        fx_path = self.tmp / "fixture.json"
+        fx_path.write_text(json.dumps(fixture([], [3, 4])))
+        with unittest.mock.patch.object(
+            check_coverage.subprocess,
+            "run",
+            side_effect=OSError("fleet missing"),
+        ):
+            code = check_coverage.main(
+                [
+                    "--fixture", str(fx_path),
+                    "--state-dir", str(self.state),
+                    "--fleet", str(self.fleet.bin),
+                    "--repo", REPO,
+                    "--import",
+                    "--now", "2026-11-08T13:00:00Z",
+                ]
+            )
+        self.assertEqual(code, 3)
+        report = (self.state / "latest.md").read_text()
+        self.assertIn("ERROR", report)
+        self.assertIn("fleet missing", report)
+
+    def test_packet_paths_are_unique_per_enqueue(self):
+        a = check_coverage.triage_packet(
+            "developing-today/code", {"number": 7, "title": "a"}, "2026-11-08T13:00:00Z"
+        )
+        b = check_coverage.triage_packet(
+            "developing-today-forks/opencode", {"number": 7, "title": "b"}, "2026-11-08T13:00:00Z"
+        )
+        self.assertTrue(
+            check_coverage.enqueue_packet(a, QUEUE, str(self.fleet.bin), "http://x", "/t")[0]
+        )
+        self.assertTrue(
+            check_coverage.enqueue_packet(b, QUEUE, str(self.fleet.bin), "http://x", "/t")[0]
+        )
+        paths = [c["path"] for c in self.fleet.calls()]
+        self.assertEqual(len(paths), 2)
+        self.assertNotEqual(paths[0], paths[1])
+        self.assertFalse(Path(paths[0]).exists())
+        self.assertFalse(Path(paths[1]).exists())
 
 
 if __name__ == "__main__":

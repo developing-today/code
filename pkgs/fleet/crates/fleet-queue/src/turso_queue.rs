@@ -954,7 +954,7 @@ fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
             let Some(key) = r.get("dedupe_key").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if let Some(n) = issue_number_from_dedupe(key, &repo) {
+            if let Some(n) = issue_number_for_repo(key, &repo) {
                 live.entry(n).or_insert((id, status));
             }
         }
@@ -1015,6 +1015,32 @@ fn issue_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
         return None;
     }
     digits.parse::<i64>().ok()
+}
+
+/// The other name a repository's issue dedupe keys may carry.
+///
+/// Two repos moved to the developing-today-forks org on 2026-11-04 and
+/// `dezren39/nix` was renamed to `dezren39/darwin-nix`; `validate.rs`
+/// keeps both names allowlisted because in-flight tasks still carry the
+/// old ones. A live task under either name is coverage for the issue, so
+/// matching only the current name would report covered issues as
+/// uncovered and import duplicate triage work.
+fn legacy_alias(repo: &str) -> Option<&'static str> {
+    match repo {
+        "developing-today-forks/opencode" => Some("developing-today/opencode"),
+        "developing-today/opencode" => Some("developing-today-forks/opencode"),
+        "developing-today-forks/openchamber" => Some("developing-today/openchamber"),
+        "developing-today/openchamber" => Some("developing-today-forks/openchamber"),
+        "dezren39/darwin-nix" => Some("dezren39/nix"),
+        "dezren39/nix" => Some("dezren39/darwin-nix"),
+        _ => None,
+    }
+}
+
+/// Issue number from a key under `repo` or any legacy alias of it.
+fn issue_number_for_repo(key: &str, repo: &str) -> Option<i64> {
+    issue_number_from_dedupe(key, repo)
+        .or_else(|| legacy_alias(repo).and_then(|alias| issue_number_from_dedupe(key, alias)))
 }
 
 fn touch_worker(t: &TursoBackend, worker: &str, task_id: Option<i64>) -> Result<(), TErr> {
@@ -2973,6 +2999,60 @@ mod tests {
             issue_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:12abc", repo),
             None
         );
+    }
+
+    #[test]
+    fn issue_number_matches_legacy_repo_aliases() {
+        // The two names of each renamed repo are the same coverage.
+        assert_eq!(
+            issue_number_for_repo(
+                "repo-health:v1:triage:developing-today/opencode:issue:195",
+                "developing-today-forks/opencode"
+            ),
+            Some(195)
+        );
+        assert_eq!(
+            issue_number_for_repo(
+                "repo-health:v1:fix:developing-today/openchamber:issue:42",
+                "developing-today-forks/openchamber"
+            ),
+            Some(42)
+        );
+        assert_eq!(
+            issue_number_for_repo(
+                "repo-health:v1:triage:dezren39/nix:issue:1637",
+                "dezren39/darwin-nix"
+            ),
+            Some(1637)
+        );
+        // Matching works in the other direction too: a new-name key is
+        // coverage when the caller names the old one.
+        assert_eq!(
+            issue_number_for_repo(
+                "repo-health:v1:triage:developing-today-forks/opencode:issue:195",
+                "developing-today/opencode"
+            ),
+            Some(195)
+        );
+    }
+
+    #[test]
+    fn alias_matching_does_not_cross_repos() {
+        // An opencode key is never coverage for code or openchamber,
+        // alias or not.
+        for repo in [
+            "developing-today/code",
+            "developing-today-forks/openchamber",
+            "dezren39/darwin-nix",
+        ] {
+            assert_eq!(
+                issue_number_for_repo(
+                    "repo-health:v1:triage:developing-today/opencode:issue:1",
+                    repo
+                ),
+                None
+            );
+        }
     }
 
     proptest! {

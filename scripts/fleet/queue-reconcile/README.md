@@ -84,4 +84,7 @@ no queue mutation are needed.
 The broker half is covered by the `turso_queue` unit tests in
 `pkgs/fleet/crates/fleet-queue/src/turso_queue.rs` (parser cases plus two
 `proptest` properties: canonical keys round-trip for every class and
-dispatch suffix, and a key for another repo never matches).
+dispatch suffix, and a key for another repo never matches; plus the
+legacy repo-name aliases — `developing-today/opencode`,
+`developing-today/openchamber`, `dezren39/nix` — matching their renamed
+counterparts, and not crossing into a different repo).
