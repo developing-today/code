@@ -101,7 +101,9 @@ by applying, in order:
 - Themes: §3's layering (base → target → mode variant).
 - Override map: #5853 §2.5, unchanged.
 - Raw CSS (web): the web platform's own CSS cascade applies *inside*
-  this layer only; it does not reach back into layers 1–4.
+  this layer only — including source-order resolution of
+  equal-specificity declarations, which §9 invariant 2 expressly
+  exempts; it does not reach back into layers 1–4.
 
 ### 2.3 Raw HTML/CSS off the web target
 
@@ -277,8 +279,12 @@ form "settings":
    source is identical for all targets and names no target.
 2. **Cascade determinism.** §2's layer order plus within-layer
    specificity is total: every element/property/target has exactly
-   one winning declaration or a reported error. Source order is never
-   a tiebreaker.
+   one winning declaration or a reported error. Within layers 1–4
+   source order is never a tiebreaker. Layer 5 is exempt: inside raw
+   CSS the web platform's own cascade (§2.2) applies, including its
+   source-order resolution of equal-specificity declarations — that
+   resolution is internal to layer 5 and never reorders the layers
+   themselves.
 3. **Roles, not values.** Assertions and overrides reference named
    roles/tokens only; raw values live only in themes (per target)
    and in web raw CSS (layer 5).
