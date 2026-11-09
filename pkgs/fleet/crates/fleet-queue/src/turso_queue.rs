@@ -1442,10 +1442,27 @@ fn quarantine_payload_missing(t: &TursoBackend, queue: &str) -> Result<(), TErr>
     Ok(())
 }
 
+/// #7617: the claim lease default and the heartbeat extension
+/// default are different contracts and must never be conflated: a
+/// claim taken without --lease-seconds lives for
+/// CLAIM_DEFAULT_LEASE_SECONDS (2700), while a heartbeat without
+/// --extend-seconds extends by HEARTBEAT_DEFAULT_EXTEND_SECONDS
+/// (900). The 2026-11-08 incident (task 11049) reported
+/// lease_until = claimed_at + 2700 while the claim died at ~900 s.
+pub(crate) const CLAIM_DEFAULT_LEASE_SECONDS: i64 = 2700;
+pub(crate) const HEARTBEAT_DEFAULT_EXTEND_SECONDS: i64 = 900;
+
+/// The lease_until a claim stores — on BOTH the tasks row and the
+/// leases row: exactly claimed_at + the requested lease, never the
+/// heartbeat extension default.
+fn claim_lease_until(claimed_at_unix: i64, lease_seconds: i64) -> String {
+    iso(claimed_at_unix + lease_seconds)
+}
+
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let queue = req_str(req, "queue").unwrap_or("").to_string();
-    let lease_seconds = req_i64(req, "lease_seconds").unwrap_or(2700);
+    let lease_seconds = req_i64(req, "lease_seconds").unwrap_or(CLAIM_DEFAULT_LEASE_SECONDS);
     let lane = req_str(req, "lane").map(str::to_string);
     let work = (|| -> Result<Option<Value>, TErr> {
         if let Some(lane_id) = &lane {
@@ -1475,8 +1492,9 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         }
         expire_leases(t)?;
         quarantine_payload_missing(t, &queue)?;
-        let now = now_iso();
-        let lease_until = after_iso(lease_seconds);
+        let now_unix = now_unix();
+        let now = iso(now_unix);
+        let lease_until = claim_lease_until(now_unix, lease_seconds);
         // One conditional UPDATE = the claim. The subquery picks the
         // same row PG's SKIP LOCKED pick would (priority, then age;
         // parked rows whose not_before has passed resume without an
@@ -1489,41 +1507,72 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         let mut id: i64;
         let mut skipped = 0usize;
         loop {
+        // #7617: pick the candidate id FIRST, then claim THAT row by
+        // id, and read it back by id. The previous shape claimed via
+        // a subquery and re-read the result as "the newest claimed
+        // row for (queue, worker_id)" — but every lane shares
+        // worker_id repo-worker-code, so under concurrent claims
+        // that re-read could return ANOTHER lane's just-claimed
+        // task: the caller was handed a row stamped with a foreign
+        // lane_id (live repro 2026-11-08: lane code-u claims
+        // returned tasks stamped code-e and code-t), it checkpointed
+        // and parked a task it did not own, and the guard below
+        // could quarantine a live foreign claim. The conditional
+        // UPDATE by id stays atomic: it re-checks the full pick
+        // eligibility (status, attempts cap, not_before) at claim
+        // instant, so if a competing claim takes the picked row
+        // first — or it is parked into the future in between — this
+        // UPDATE affects 0 rows and the loop re-picks.
+        let pick = t.query_objs(
+            "SELECT id FROM tasks WHERE queue = ? \
+               AND payload IS NOT NULL AND payload <> '' AND payload <> '{}' AND ( \
+               (status = 'queued' AND attempts < max_attempts \
+                 AND (not_before IS NULL OR not_before <= ?)) \
+               OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)) \
+             ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1",
+            &[
+                Arg::Text(queue.clone()),
+                Arg::Text(now.clone()),
+                Arg::Text(now.clone()),
+            ],
+            &[],
+        )?;
+        let Some(picked) = pick.into_iter().next() else {
+            return Ok(None);
+        };
+        let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         let upd = t.exec(
             "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
                lease_until = ?, \
                attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
                lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
                updated_at = ? \
-             WHERE id = ( \
-               SELECT id FROM tasks WHERE queue = ? \
-                 AND payload IS NOT NULL AND payload <> '' AND payload <> '{}' AND ( \
-                 (status = 'queued' AND attempts < max_attempts \
-                   AND (not_before IS NULL OR not_before <= ?)) \
-                 OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)) \
-               ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1) \
-             AND status IN ('queued', 'parked')",
+             WHERE id = ? AND ( \
+               (status = 'queued' AND attempts < max_attempts \
+                 AND (not_before IS NULL OR not_before <= ?)) \
+               OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?))",
             &[
                 Arg::Text(worker.clone()),
                 Arg::Text(now.clone()),
                 Arg::Text(lease_until.clone()),
                 arg_str(lane.as_deref()),
                 Arg::Text(now.clone()),
-                Arg::Text(queue.clone()),
+                Arg::Int(pick_id),
                 Arg::Text(now.clone()),
                 Arg::Text(now.clone()),
             ],
         )?;
         if upd.affected == 0 {
-            return Ok(None);
+            // Lost the race for the picked row; re-pick.
+            skipped += 1;
+            if skipped >= 32 {
+                return Ok(None);
+            }
+            continue;
         }
         let rows = t.query_objs(
-            &format!(
-                "SELECT {TASK_COLS} FROM tasks \
-                 WHERE queue = ? AND worker_id = ? AND status = 'claimed' \
-                 ORDER BY claimed_at DESC LIMIT 1"
-            ),
-            &[Arg::Text(queue.clone()), Arg::Text(worker.clone())],
+            &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
+            &[Arg::Int(pick_id)],
             &TASK_JSON_COLS,
         )?;
         let Some(candidate) = rows.into_iter().next() else {
@@ -1811,7 +1860,7 @@ fn claimed_by(
 fn verb_heartbeat(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
-    let extend = req_i64(req, "extend_seconds").unwrap_or(900);
+    let extend = req_i64(req, "extend_seconds").unwrap_or(HEARTBEAT_DEFAULT_EXTEND_SECONDS);
     let row = match claimed_by(t, task_id, &worker, "heartbeat_task") {
         Ok(r) => r,
         Err(v) => return v,
@@ -2481,7 +2530,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let rich = req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false);
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
-         worker_id, lease_until, lane_id, attempts, max_attempts, progress"
+         worker_id, lease_until, lane_id, attempts, max_attempts, progress, payload"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before"
     };
@@ -2510,10 +2559,39 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     sql += &format!(
         " ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}"
     );
-    let json_cols: &[&str] = if rich { &["progress"] } else { &[] };
+    let json_cols: &[&str] = if rich { &["progress", "payload"] } else { &[] };
     match t.query_objs(&sql, &args, json_cols) {
         Ok(rows) => ok(json!({"rows": rows})),
         Err(e) => terr(e),
+    }
+}
+
+/// One queue's health row with every counter zeroed. The client
+/// renders the health table from these keys, so a field added here
+/// surfaces in the health table output with no client change.
+fn health_entry(queue: &str) -> Value {
+    json!({
+        "queue": queue, "queued": 0, "at_cap_queued": 0, "claimed": 0,
+        "parked": 0, "blocked": 0, "done": 0, "cancelled": 0,
+        "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
+        "terminal_events_24h": 0, "terminal_events_7d": 0,
+    })
+}
+
+/// Fold per-queue at-cap queued counts (#6528) into health entries:
+/// tasks with status='queued' AND attempts >= max_attempts can never
+/// be claimed again (the claim query requires attempts <
+/// max_attempts), so a queue whose queued tasks are all at cap reads
+/// as dead-in-queue — health must name that instead of letting it
+/// look like ordinary backlog. Queues with no at-cap rows keep the
+/// zero default from health_entry.
+fn apply_at_cap_queued(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    for r in rows {
+        let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+        let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
+        if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
+            obj.insert("at_cap_queued".to_string(), json!(n));
+        }
     }
 }
 
@@ -2539,12 +2617,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 .unwrap_or("")
                 .to_string();
             let entry = by_queue.entry(q.clone()).or_insert_with(|| {
-                json!({
-                    "queue": q, "queued": 0, "claimed": 0, "parked": 0,
-                    "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
-                    "total": 0, "oldest_queued_at": Value::Null,
-                    "terminal_events_24h": 0, "terminal_events_7d": 0,
-                })
+                health_entry(&q)
             });
             let status = r
                 .get("status")
@@ -2566,6 +2639,20 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 }
             }
         }
+        // At-cap queued counts (#6528): the dead-in-queue alert
+        // class. Separate query because the status GROUP BY above
+        // cannot express the attempts >= max_attempts predicate.
+        let mut asql = "SELECT queue, COUNT(*) AS n FROM tasks \
+             WHERE status = 'queued' AND attempts >= max_attempts"
+            .to_string();
+        let mut aargs: Vec<Arg> = Vec::new();
+        if let Some(q) = &queue_filter {
+            asql += " AND queue = ?";
+            aargs.push(Arg::Text(q.clone()));
+        }
+        asql += " GROUP BY queue";
+        let arows = t.query_objs(&asql, &aargs, &[])?;
+        apply_at_cap_queued(&mut by_queue, &arows);
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
@@ -2592,12 +2679,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 .unwrap_or("")
                 .to_string();
             let entry = by_queue.entry(q.clone()).or_insert_with(|| {
-                json!({
-                    "queue": q, "queued": 0, "claimed": 0, "parked": 0,
-                    "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
-                    "total": 0, "oldest_queued_at": Value::Null,
-                    "terminal_events_24h": 0, "terminal_events_7d": 0,
-                })
+                health_entry(&q)
             });
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert(
@@ -2695,6 +2777,43 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_lease_is_the_requested_lease_not_the_heartbeat_default() {
+        // #7617 oracle: a claim's stored lease_until is claimed_at +
+        // the lease the caller requested (2700 s for a 45-minute
+        // claim), never claimed_at + the 900 s heartbeat extension
+        // default. Task 11049 (2026-11-08) reported the former and
+        // died at the latter.
+        let claimed = 1_794_020_400; // 2026-11-07T03:00:00Z
+        assert_eq!(claim_lease_until(claimed, 2700), "2026-11-07T03:45:00Z");
+        assert_eq!(
+            claim_lease_until(claimed, CLAIM_DEFAULT_LEASE_SECONDS),
+            claim_lease_until(claimed, 2700)
+        );
+        assert_ne!(
+            claim_lease_until(claimed, CLAIM_DEFAULT_LEASE_SECONDS),
+            iso(claimed + HEARTBEAT_DEFAULT_EXTEND_SECONDS)
+        );
+        assert_eq!(CLAIM_DEFAULT_LEASE_SECONDS, 2700);
+        assert_eq!(HEARTBEAT_DEFAULT_EXTEND_SECONDS, 900);
+    }
+
+    #[test]
+    fn claim_lane_argument_is_stored_verbatim() {
+        // #7617 / #7598 oracle: the lane passed at claim is the lane
+        // stored on the task row — the claim writes lane_id through
+        // arg_str(lane) with no substitution, and a lane-less claim
+        // stores NULL rather than some other lane's id.
+        match arg_str(Some("code-u")) {
+            Arg::Text(v) => assert_eq!(v, "code-u"),
+            _ => panic!("a passed lane must reach the UPDATE as text"),
+        }
+        match arg_str(None) {
+            Arg::Null => {}
+            _ => panic!("a lane-less claim must store NULL lane_id"),
+        }
+    }
 
     #[test]
     fn iso_epoch_and_known_instants() {
@@ -2831,6 +2950,38 @@ mod tests {
         assert!(revive_eligible("claimed", 4, 4).is_err());
         assert!(revive_eligible("done", 4, 4).is_err());
         assert!(revive_eligible("cancelled", 4, 4).is_err());
+    }
+
+    #[test]
+    fn health_entry_defaults_at_cap_queued_to_zero() {
+        let e = health_entry("repo-health-code-pilot");
+        assert_eq!(e.get("at_cap_queued"), Some(&json!(0)));
+        assert_eq!(e.get("queued"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn at_cap_fold_covers_zero_claimable_and_partial_queues() {
+        // Fixture for #6528 criterion 3: queue-dead has queued > 0
+        // with EVERY queued task at cap (zero claimable); queue-live
+        // has some at cap; queue-calm has none.
+        let mut by_queue: Map<String, Value> = Map::new();
+        for (q, queued) in [("queue-dead", 3), ("queue-live", 5), ("queue-calm", 2)] {
+            let mut e = health_entry(q);
+            e.as_object_mut().unwrap().insert("queued".to_string(), json!(queued));
+            by_queue.insert(q.to_string(), e);
+        }
+        let rows = vec![
+            json!({"queue": "queue-dead", "n": 3}),
+            json!({"queue": "queue-live", "n": 2}),
+        ];
+        apply_at_cap_queued(&mut by_queue, &rows);
+        let dead = &by_queue["queue-dead"];
+        assert_eq!(dead.get("queued"), Some(&json!(3)));
+        assert_eq!(dead.get("at_cap_queued"), Some(&json!(3)));
+        // at_cap == queued means nothing in this queue can be claimed.
+        assert_eq!(dead.get("at_cap_queued"), dead.get("queued"));
+        assert_eq!(by_queue["queue-live"].get("at_cap_queued"), Some(&json!(2)));
+        assert_eq!(by_queue["queue-calm"].get("at_cap_queued"), Some(&json!(0)));
     }
 
     #[test]

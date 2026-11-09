@@ -692,7 +692,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             // broker since the binary-direct migration retired the
             // Python helper it used to import).
             let select = if req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false) {
-                "id,queue,title,priority,status,dedupe_key,created_at,not_before,worker_id,lease_until,lane_id,attempts,max_attempts,progress"
+                "id,queue,title,priority,status,dedupe_key,created_at,not_before,worker_id,lease_until,lane_id,attempts,max_attempts,progress,payload"
             } else {
                 "id,queue,title,priority,status,dedupe_key,created_at,not_before"
             };

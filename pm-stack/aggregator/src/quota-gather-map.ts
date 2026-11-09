@@ -153,6 +153,7 @@ export const GATHERER_SOURCE = "opencode-quota";
  */
 export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
 export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
+export const GO_DEVELOPING_TODAY_0_SERVICE_ID = "opencode-go.developing-today-0";
 export const ANTIGRAVITY_GEMINI_SERVICE_ID = "_antigravity.gemini";
 export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
 // Pre-rename (#1823) split ids: a gatherer still paired with the old
@@ -164,7 +165,8 @@ export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.clau
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
  * credential's human label. OpenCode credential labels are user-set; on
- * the fleet laptop the Go accounts are labeled "drewrypope" and "popesdrew"
+ * the fleet laptop the Go accounts are labeled "drewrypope", "popesdrew"
+ * and "developing-today-0" (third account, added 2026-11-08)
  * (the "Home" workspace was removed 2026-11-03 and has no hub pool). Org ids are opaque per-machine strings, so they
  * cannot name pools — the label is the only stable gatherer-side
  * signal. Unmatched entries yield null: no fabricated pool row, the
@@ -174,6 +176,7 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
   const label = entry.credentialLabel?.trim().toLowerCase();
   if (label === "drewrypope") return GO_DREWRYPOPE_SERVICE_ID;
   if (label === "popesdrew") return GO_POPESDREW_SERVICE_ID;
+  if (label === "developing-today-0") return GO_DEVELOPING_TODAY_0_SERVICE_ID;
   return null;
 }
 
