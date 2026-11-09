@@ -69,6 +69,19 @@ outage is recoverable, a double-launch's damage is not.
   close — plus the live root-session count for the cap, plus a
   `stuck_bound` list: bound tasks whose sessions look
   created-but-never-prompted and dead (step 1's recovery rule, #4758).
+  Candidates ALSO include handed-off tasks sitting PARKED
+  (`status: "parked"` in the candidate entry): the handing-off lane
+  parks the task as its handoff sink (the park clears its claim and
+  stamps a default timer), so claimed-only discovery never saw them
+  and they looped claim → handoff → park → re-claim (#7907/#6533).
+  For a parked candidate, claimant.py first collects the claim by id
+  (`repo-queue claim --task <id>`, as worker `opencode-claimant`;
+  the broker takes a parked row by id only when it is a recorded
+  unbound opencode handoff), then launches exactly as for a claimed
+  candidate, with the session working under `--worker
+  opencode-claimant`. A parked candidate whose by-id claim fails or
+  lands on a different task is skipped with the reason logged —
+  never launched over a guessed claim.
   Retain the candidate list from the start of each fire; a task recovered
   during supervision is eligible on the next fire, not this one.
 - Concurrency cap: **36** active root sessions across the fleet. Count

@@ -34,6 +34,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_inputs.py' -v
       - name: Run worker preflight contract tests (#4862)
         run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
+      - name: Run failure classifier contract tests (#2176)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_classify_failure.py' -v
       - name: Run bitwarden-load-secrets multiline contract tests (#5650)
         run: python3 -m unittest discover -s scripts/tests -p 'test_bitwarden_load_secrets.py' -v
       - name: Run provider retirement gate contract tests (#5610)

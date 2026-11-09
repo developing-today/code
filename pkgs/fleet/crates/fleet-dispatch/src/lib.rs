@@ -980,6 +980,35 @@ mod tests {
         assert!(err.message().contains("--prompt-file"), "{}", err.message());
     }
 
+    /// Characterization test salvaged from archive PR #7524 (probe
+    /// worktree `probe-dispatch-dechunk-wt`, issue #6512): the
+    /// completeness checker does unchecked arithmetic on the
+    /// peer-declared chunk size, so the two largest `usize` values
+    /// overflow. Pinned here so the checked-arithmetic fix for #6512
+    /// trips this test and updates it deliberately.
+    #[test]
+    fn probe_dechunked_len_huge_chunk_size() {
+        // controls: the existing pins
+        assert_eq!(
+            dechunked_len(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"),
+            Some(9)
+        );
+        assert_eq!(dechunked_len(b"4\r\nWi"), None);
+        // dechunk() itself guards the declared size before slicing:
+        assert_eq!(dechunk(b"ffffffffffffffff\r\nXX"), Vec::<u8>::new());
+        // the completeness checker on the same peer-declared size:
+        let max = std::panic::catch_unwind(|| dechunked_len(b"ffffffffffffffff\r\nXX"));
+        assert!(
+            max.is_err(),
+            "dechunked_len must overflow-panic on usize::MAX until #6512 lands"
+        );
+        let max_minus_one = std::panic::catch_unwind(|| dechunked_len(b"fffffffffffffffe\r\nXX"));
+        assert!(
+            max_minus_one.is_err(),
+            "dechunked_len must overflow-panic on usize::MAX - 1 until #6512 lands"
+        );
+    }
+
     #[test]
     fn usage_errors_exit_2_and_transport_3() {
         assert_eq!(usage("x").exit_code(), 2);
