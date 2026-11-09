@@ -59,9 +59,12 @@ Build in dependency order; each channel consumes the one before it.
    end); a system-wide variant (`sudo`) documented, not default. The
    script verifies the checksum before installing — an installer that
    skips verification teaches users to pipe unverified binaries.
-3. **Container image.** The existing Containerfile, published to GHCR by
-   the same release workflow, version taken from the release (§3), not
-   from a fifth copy of the string.
+3. **Container image.** The Nix-built `packages.x86_64-linux.mcpx-container`
+   image (`pkgs/mcpx/container-image.nix`), published to GHCR by the same
+   release workflow, its tag taken from `pkgs/mcpx/VERSION` (§3), not from
+   another copy of the string. (Before the #5771 audit this channel built
+   a Debian-based `Containerfile` with `VERSION` passed as a build arg;
+   the Nix cutover kept the single-source property and dropped the arg.)
 4. **Nix.** Already works (`nix profile install …#mcpx`); the release
    does not change it beyond the version source (§3).
 
@@ -84,12 +87,9 @@ records #1881's recommendation against it as a decision.
   commit — one for humans, one for the Go toolchain — rather than
   letting the Go scheme dictate the public one.)
 - **Single source: a `pkgs/mcpx/VERSION` file.** `package.nix` reads it
-  for both its `version` and its `-X main.version=` ldflag; the
-  Containerfile takes `VERSION` as a build argument whose workflow
-  callers pass the file's contents (the in-file `ARG` default becomes
-  the file's value at release time, and a comment in the Containerfile
-  says the file is the source); the release workflow refuses to publish
-  when the tag and `VERSION` disagree.
+  for both its `version` and its `-X main.version=` ldflag; the Nix
+  container image takes its tag from the same binding (the release
+  workflow refuses to publish when the tag and `VERSION` disagree).
 - **`cmd/mcpx/main.go`'s fallback becomes a sentinel** (`0.0.0-dev`), so
   a binary built without ldflags announces that fact instead of
   impersonating a release. The fallback is the one place a literal

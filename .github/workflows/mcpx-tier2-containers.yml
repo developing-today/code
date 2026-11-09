@@ -24,24 +24,29 @@ permissions:
 
 jobs:
   image:
-    name: "tier2: shipped image ships a static mcpx"
+    name: "tier2: shipped image runs mcpx"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - name: Build the shipped Containerfile (static by default, #1987)
-        working-directory: pkgs/mcpx
-        run: docker build -f Containerfile -t mcpx-tier2-image .
-      - name: The shipped mcpx is not a dynamic executable
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Build the shipped Nix image (#5771)
+        run: nix build .#packages.x86_64-linux.mcpx-container --print-build-logs --out-link mcpx-image
+      - name: The shipped image runs mcpx and executes a script
         run: |
-          # ldd exits 1 and writes to stderr for a static binary -- that
-          # is the success case here, so capture both and assert on the
-          # text instead of piping (pipefail would fail the step).
-          out=$(docker run --rm --entrypoint sh mcpx-tier2-image \
-            -c 'ldd /usr/local/bin/mcpx 2>&1' || true)
-          echo "$out"
-          grep -q 'not a dynamic executable' <<<"$out"
-          docker run --rm mcpx-tier2-image --version
+          loaded=$(docker load -i mcpx-image | sed -n 's/^Loaded image: //p')
+          test -n "$loaded"
+          echo "loaded $loaded"
+          docker run --rm "$loaded" --version
+          docker run --rm "$loaded" exec 'console.log("tier2-shipped-ok")' | grep -q 'tier2-shipped-ok'
 
   legs:
     name: "tier2: ${{ matrix.leg }}"

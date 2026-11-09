@@ -387,7 +387,7 @@
       "chapter": "build-and-packaging",
       "role": "chapter-source",
       "lines": 243,
-      "note": "what Containerfile builds and deliberately does not (#182)"
+      "note": "Nix-built image, its closure choices, and measurements from the retired Containerfile prototype (#182, #5771)"
     },
     {
       "path": "docs/decisions/0001-hook-vocabulary.md",
