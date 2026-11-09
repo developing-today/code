@@ -135,6 +135,16 @@ const COMBINING_MARK = /^\p{M}$/u;
 /** Width of one code point under unicode-width 0.2: wide = 2, combining/zero-width = 0, else 1. */
 function codePointWidth(character: string, codePoint: number): number {
   if (codePoint === 0x200d || codePoint === 0x200c || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)) return 0;
+  // Emoji modifiers (U+1F3FB-U+1F3FF) attach to the preceding emoji:
+  // unicode-width 0.2 measures them 0, so a modified emoji stays
+  // width 2 in total instead of summing to 4 (Codex finding on
+  // PR #7120). They sit inside a wide range below, so this check
+  // must come before isWideCodePoint.
+  if (codePoint >= 0x1f3fb && codePoint <= 0x1f3ff) return 0;
+  // Hangul Jamo medial vowels and trailing consonants
+  // (U+1160-U+11FF) are 0 in unicode-width 0.2: a decomposed
+  // syllable measures as its initial's width 2, not 2+1+1.
+  if (codePoint >= 0x1160 && codePoint <= 0x11ff) return 0;
   if (isWideCodePoint(codePoint)) return 2;
   if (COMBINING_MARK.test(character)) return 0;
   return 1;
@@ -145,6 +155,9 @@ function codePointWidth(character: string, codePoint: number): number {
  * a ZWJ sequence containing a wide/emoji code point measures 2 in total
  * (not per component), and U+FE0F (emoji presentation) forces width 2 —
  * e.g. 😀, 𠮷, 👨‍👩‍👧 and ⚠️ are all width 2, matching the Rust validator.
+ * Sequences whose trailing components are zero-width under the same
+ * table (emoji modifiers, Hangul Jamo vowels/finals) likewise stay
+ * at the base width: 👍🏽 and decomposed 각 both measure 2.
  */
 function graphemeWidth(symbol: string): number {
   const characters = Array.from(symbol);

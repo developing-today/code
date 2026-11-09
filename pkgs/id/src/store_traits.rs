@@ -37,7 +37,7 @@ use p2panda_store::topics::TopicStore;
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Event;
-use crate::event_store::{EventStore, Ingest, StoreError};
+use crate::event_store::{BlockKind, BlockList, EventStore, Ingest, StoreError};
 use crate::waiting::AuthorKey;
 
 /// Entries read per page. A page takes the read lock once, so a stream never holds the lock
@@ -133,6 +133,59 @@ impl SharedEventStore {
             .write()
             .map_err(|_err| TraitStoreError::Poisoned)?;
         Ok(store.ingest_batch(batch, now_ms)?)
+    }
+
+    /// The range sync set of the store, under the read lock, taken for this one call.
+    /// See [`EventStore::sync_entries`]. This is one step of the range session seam
+    /// (`event_store::sync::RangeStore`, #179): the lock is never held across an await.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub(crate) fn range_entries(
+        &self,
+    ) -> Result<
+        Vec<(
+            crate::event_store::range::Key,
+            crate::event_store::range::Id,
+        )>,
+        TraitStoreError,
+    > {
+        self.read(|store| Ok(store.sync_entries()?))
+    }
+
+    /// The bytes of the event with this ID, under the read lock, taken for this one
+    /// call. See [`EventStore::sync_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub(crate) fn range_bytes(
+        &self,
+        id: &crate::event_store::range::Id,
+    ) -> Result<Option<Vec<u8>>, TraitStoreError> {
+        self.read(|store| Ok(store.sync_bytes(id)?))
+    }
+
+    /// Decides a batch of received events in one write transaction, under the write
+    /// lock, taken for this one call. See [`EventStore::ingest_events`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for the first mismatch, or a redb error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub(crate) fn range_ingest_events(
+        &self,
+        events: Vec<Event>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, TraitStoreError> {
+        let mut store = self
+            .inner
+            .write()
+            .map_err(|_err| TraitStoreError::Poisoned)?;
+        Ok(store.ingest_events(events, now_ms)?)
     }
 
     /// Checks the store's own rows. See [`EventStore::check_invariants`].
@@ -248,6 +301,19 @@ impl SharedEventStore {
             resolved.insert(VerifyingKey::from_bytes(&author)?, vec![ChainLog]);
         }
         Ok(resolved)
+    }
+}
+
+impl BlockList for SharedEventStore {
+    /// Whether (`kind`, `value`) is on the store's operator block list
+    /// and still enforced, under the read lock, taken for this one call.
+    /// The wall clock judges expiry, and a read error or a poisoned lock
+    /// invents no block.
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        self.read(|store| {
+            Ok(EventStore::is_blocked(store, kind, value, crate::time::unix_ms()).unwrap_or(false))
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -485,30 +551,220 @@ mod tests {
     use crate::chain::{ChainExt, sign};
     use crate::waiting::WaitingLimits;
 
-    /// The build has no SQLite, with `LogSync` wired in. p2panda-sync's store dependency defaults to
-    /// SQLite, so the vendored copy turns that default off (`vendor/README.md`). This fails if the
-    /// lock names SQLite or sqlx, if p2panda-sync is missing, or if the vendored line loses the change.
+    /// One `[[package]]` entry of the lock: its name and the names it
+    /// depends on. Dependency entries are `"name"`, `"name version"` or
+    /// `"name version (source)"`; the name is the first word.
+    fn lock_packages(lock: &str) -> Vec<(String, Vec<String>)> {
+        let mut packages = Vec::new();
+        let mut current: Option<(String, Vec<String>)> = None;
+        let mut in_deps = false;
+        for raw in lock.lines() {
+            let line = raw.trim();
+            if line.starts_with("[[") {
+                in_deps = false;
+                if let Some(package) = current.take() {
+                    packages.push(package);
+                }
+            } else if current.is_none() {
+                if let Some(rest) = line.strip_prefix("name = \"") {
+                    current = Some((rest.trim_end_matches('"').to_owned(), Vec::new()));
+                }
+            } else if line == "dependencies = [" {
+                in_deps = true;
+            } else if in_deps && line == "]" {
+                in_deps = false;
+            } else if in_deps {
+                if let Some(entry) = line.strip_suffix(',') {
+                    let entry = entry.trim_matches('"');
+                    if let Some(name) = entry.split(' ').next() {
+                        current.as_mut().unwrap().1.push(name.to_owned());
+                    }
+                }
+            }
+        }
+        if let Some(package) = current.take() {
+            packages.push(package);
+        }
+        packages
+    }
+
+    /// Whether a manifest section header opens a dev-dependency section
+    /// (`Some(true)`), a shipped one — normal or build (`Some(false)`) — or
+    /// neither. Plain, target-specific and per-crate subtable spellings all
+    /// count: `[dev-dependencies]`, `[target.'cfg(..)'.dependencies]`,
+    /// `[dependencies.rusqlite]`.
+    fn dep_section_dev(section: &str) -> Option<bool> {
+        let tail = section.rsplit('.').next().unwrap_or(section);
+        match tail {
+            "dev-dependencies" => Some(true),
+            "dependencies" | "build-dependencies" => Some(false),
+            _ if section.starts_with("dev-dependencies.") => Some(true),
+            _ if section.starts_with("dependencies.")
+                || section.starts_with("build-dependencies.") =>
+            {
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+
+    /// The crate names a manifest declares in dependency sections of one
+    /// class (`dev` selects dev-dependencies, otherwise the shipped ones).
+    /// A `package = "..."` rename counts under the real name.
+    fn manifest_dep_names(manifest: &str, dev: bool) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut in_class = false;
+        for raw in manifest.lines() {
+            let line = raw.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                let section = line.trim_matches(|c| c == '[' || c == ']');
+                in_class = dep_section_dev(section) == Some(dev);
+                if in_class {
+                    // A per-crate subtable names the crate in the header:
+                    // `[dependencies.rusqlite]`.
+                    if let Some((_, name)) = section.rsplit_once('.')
+                        && !matches!(
+                            name,
+                            "dependencies" | "build-dependencies" | "dev-dependencies"
+                        )
+                    {
+                        names.push(name.to_owned());
+                    }
+                }
+                continue;
+            }
+            if !in_class {
+                continue;
+            }
+            if let Some((key, _)) = line.split_once('=') {
+                let key = key.trim().trim_matches('"');
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                {
+                    names.push(key.to_owned());
+                }
+            }
+            if let Some((_, rest)) = line.split_once("package = \"")
+                && let Some(name) = rest.split('"').next()
+            {
+                names.push(name.to_owned());
+            }
+        }
+        names
+    }
+
+    /// The `[package]` name of a manifest.
+    fn manifest_package_name(manifest: &str) -> Option<String> {
+        let mut in_package = false;
+        for raw in manifest.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') {
+                in_package = line == "[package]";
+                continue;
+            }
+            if in_package && let Some(rest) = line.strip_prefix("name = \"") {
+                return Some(rest.trim_end_matches('"').to_owned());
+            }
+        }
+        None
+    }
+
+    /// The shipped default build has no SQLite, with `LogSync` wired in. p2panda-sync's store
+    /// dependency defaults to SQLite, so the vendored copy turns that default off
+    /// (`vendor/README.md`).
+    ///
+    /// Cargo.lock records optional dependencies even when they are inactive, so its raw package
+    /// edges cannot prove what ships. Keep checking for unexpected SQLite-family edges (allowing
+    /// p2panda-store's optional `sqlx` edge), then ask Cargo for the shipped default-feature graph.
+    /// The root manifest must still declare SQLite names only as dev-dependencies. This catches
+    /// a shipped SQLite path, a root manifest regression, a missing p2panda-sync package, or the
+    /// vendored line losing its `default-features = false`.
     #[test]
     fn test_the_lock_has_no_sqlite_with_logsync_wired() {
-        let lock =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).unwrap();
-        for name in ["sqlx", "sqlite", "rusqlite", "libsqlite3-sys"] {
-            assert!(
-                !lock.contains(&format!("name = \"{name}")),
-                "Cargo.lock names {name}: SQLite is back in the build (see vendor/README.md)"
-            );
-        }
+        const SQLITE: [&str; 4] = ["sqlx", "sqlite", "rusqlite", "libsqlite3-sys"];
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let lock = std::fs::read_to_string(format!("{manifest_dir}/Cargo.lock")).unwrap();
+        let packages = lock_packages(&lock);
         assert!(
-            lock.contains("name = \"p2panda-sync\""),
+            packages.iter().any(|(name, _)| name == "p2panda-sync"),
             "Cargo.lock does not name p2panda-sync: LogSync is not wired in"
         );
 
-        let manifest = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/vendor/p2panda-sync/Cargo.toml"
-        ))
-        .unwrap();
-        let store_line = manifest
+        let manifest = std::fs::read_to_string(format!("{manifest_dir}/Cargo.toml")).unwrap();
+        let root = manifest_package_name(&manifest).unwrap();
+        // This package may declare SQLite names only as dev-dependencies.
+        let shipped = manifest_dep_names(&manifest, false);
+        for name in SQLITE {
+            assert!(
+                !shipped.iter().any(|declared| declared.as_str() == name),
+                "Cargo.toml declares {name} outside dev-dependencies: SQLite is back in the \
+                 shipped build (see vendor/README.md)"
+            );
+        }
+        // Cargo.lock includes optional dependency edges. p2panda-store declares optional `sqlx`,
+        // which is inactive in the shipped default-feature graph checked below.
+        for (name, deps) in &packages {
+            for dep in deps {
+                if SQLITE.contains(&dep.as_str()) {
+                    assert!(
+                        SQLITE.contains(&name.as_str())
+                            || name == &root
+                            || (name == "p2panda-store" && dep == "sqlx")
+                            // Cargo.lock records sqlx-sqlite's optional backend edge even
+                            // when it is inactive; cargo tree below checks the shipped graph.
+                            || (name == "sqlx-sqlite" && dep == "libsqlite3-sys"),
+                        "{name} depends on {dep}: SQLite is back in the shipped build (see \
+                         vendor/README.md)"
+                    );
+                }
+            }
+        }
+
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let tree = std::process::Command::new(cargo)
+            .current_dir(manifest_dir)
+            .args([
+                "tree",
+                "--locked",
+                "--package",
+                "id",
+                "--edges",
+                "normal",
+                "--no-default-features",
+                "--features",
+                "sandbox,world",
+                "--prefix",
+                "none",
+                "--format",
+                "{p}",
+            ])
+            .output()
+            .expect("run cargo tree for the shipped default feature set");
+        assert!(
+            tree.status.success(),
+            "cargo tree failed: {}",
+            String::from_utf8_lossy(&tree.stderr)
+        );
+        let active_packages = String::from_utf8(tree.stdout).unwrap();
+        for package in active_packages
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+        {
+            assert!(
+                !SQLITE.contains(&package),
+                "{package} is active in the shipped default-feature graph (see vendor/README.md)"
+            );
+        }
+
+        let vendored =
+            std::fs::read_to_string(format!("{manifest_dir}/vendor/p2panda-sync/Cargo.toml"))
+                .unwrap();
+        let store_line = vendored
             .lines()
             .find(|line| line.starts_with("p2panda-store = {"))
             .unwrap();
@@ -546,6 +802,11 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

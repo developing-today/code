@@ -88,8 +88,18 @@ describe("world screen presenter", () => {
   it("measures astral-plane, ZWJ and variation-selector glyphs as width 2, like Rust unicode-width (#761)", () => {
     const root = document.createElement("div");
     // Each of these is exactly one grapheme whose Rust unicode-width 0.2 width is 2:
-    // 😀 U+1F600, 𠮷 U+20BB7 (CJK Ext. B), 👨‍👩‍👧 (ZWJ sequence), ⚠️ U+26A0 U+FE0F.
-    const wideGlyphs = ["\u{1F600}", "\u{20BB7}", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}", "\u26A0\uFE0F"];
+    // 😀 U+1F600, 𠮷 U+20BB7 (CJK Ext. B), 👨‍👩‍👧 (ZWJ sequence), ⚠️ U+26A0 U+FE0F,
+    // 👍🏽 U+1F44D U+1F3FD (emoji modifier is zero-width; Codex regression
+    // on PR #7120), decomposed Hangul U+1100 U+1161 U+11A8 (Jamo medial
+    // vowel and final are zero-width; same Codex regression).
+    const wideGlyphs = [
+      "\u{1F600}",
+      "\u{20BB7}",
+      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}",
+      "\u26A0\uFE0F",
+      "\u{1F44D}\u{1F3FD}",
+      "\u1100\u1161\u11A8",
+    ];
     for (const symbol of wideGlyphs) {
       const screen: ScreenSurface = {
         kind: "screen",
