@@ -64,7 +64,8 @@ locator         = ( path | "line:" 1*DIGIT | "span:" 1*DIGIT "-" 1*DIGIT | opaqu
 hash            = "#" hash-alg ":" 64 lower-hex ;
 hash-alg        = "sha256" ;                   (* v1 closed set; see V5 *)
 
-token           = 1*128 ( %x21-40 / %x5B-60 / %x7B-7E ) ;  (* printable ASCII, no Cc/Cf *)
+token-char      = %x21-22 / %x24-39 / %x3B-3F / %x41-5A / %x5B-60 / %x61-7A / %x7B-7E ;
+token           = 1*128 token-char ;           (* printable ASCII incl. letters %x41-5A / %x61-7A; delimiters @ %x40, : %x3A, # %x23 excluded; no space, Cc, or Cf *)
 opaque          = 1*256 token-char ;
 rfc3339-utc     = %x... "T" ... "Z" ;          (* RFC 3339, always UTC, always "Z" *)
 hex             = "0".."9" / "a".."f" ;
