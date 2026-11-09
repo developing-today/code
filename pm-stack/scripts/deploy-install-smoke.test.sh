@@ -300,9 +300,13 @@ if "$BASH_BIN" -n "$READY_INSTALL"; then pass 'ready-for-agent/install.sh syntax
 
 # Build a minimal aggregator package copy so install.sh's hash/copy logic
 # runs entirely inside a disposable HOME. Side-effecting tools are stubbed.
-AGG_SRC="$TMP/aggregator-src"
+# install.sh requires its cwd to be the primary checkout's package path
+# ($HOME/git/code/pm-stack/aggregator) and reads the unit from the sibling
+# $SRC/../systemd; the fixture therefore lives at that exact path instead
+# of being symlinked to it, because `..` after a symlink resolves against
+# the link target, not the checkout layout the installer expects.
 AGG_HOME="$TMP/aggregator-home"
-AGG_EXPECTED_SRC="$AGG_HOME/git/code/pm-stack/aggregator"
+AGG_SRC="$AGG_HOME/git/code/pm-stack/aggregator"
 mkdir -p "$AGG_SRC" "$AGG_HOME/secrets" "$AGG_HOME/git/code/pm-stack/systemd"
 cp "$AGG_INSTALL" "$AGG_SRC/install.sh"
 printf '%s\n' '{"name":"smoke-aggregator","version":"1.0.0"}' >"$AGG_SRC/package.json"
@@ -314,18 +318,20 @@ printf '%s\n' '// fixture' >"$AGG_SRC/src/smoke.ts"
 printf '%s\n' '// fixture' >"$AGG_SRC/test/smoke.test.ts"
 printf '%s\n' '# fixture' >"$AGG_SRC/scripts/smoke.sh"
 printf '%s\n' '// fixture' >"$AGG_SRC/opencode-tools/smoke.ts"
-printf '%s\n' '[Service]' >"$AGG_SRC/systemd/quota-gatherer.service"
-printf '%s\n' '[Timer]' >"$AGG_SRC/systemd/quota-gatherer.timer"
-printf '%s\n' '[Service]' >"$AGG_HOME/git/code/pm-stack/systemd/pm-aggregator.service"
+cp "$PM_STACK_DIR/aggregator/systemd/quota-gatherer.service" "$AGG_SRC/systemd/quota-gatherer.service"
+cp "$PM_STACK_DIR/aggregator/systemd/quota-gatherer.timer" "$AGG_SRC/systemd/quota-gatherer.timer"
+# The unit install.sh copies is the checkout-owned one at $SRC/../systemd,
+# so the fixture uses the real unit: a missing or moved unit file is a
+# fixture failure, not something a placeholder can hide.
+cp "$PM_STACK_DIR/systemd/pm-aggregator.service" "$AGG_HOME/git/code/pm-stack/systemd/pm-aggregator.service"
 printf '%s\n' 'fake encrypted aggregator fixture' >"$AGG_HOME/secrets/pm-stack.sops.yaml"
-ln -s "$AGG_SRC" "$AGG_EXPECTED_SRC"
 AGG_SOPS_LOG="$TMP/aggregator-sops.log"
 AGG_OUTPUT="$TMP/aggregator-install.out"
 if env HOME="$AGG_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_SECRETS="$AGG_HOME/secrets/pm-stack.sops.yaml" \
   PM_TEST_COMMAND_LOG="$COMMAND_LOG" PM_TEST_SOPS_LOG="$AGG_SOPS_LOG" \
   PM_TEST_BUILD_VERSION=smoke-build-v1 TAILNET_IP=100.64.20.21 \
-  "$BASH_BIN" "$AGG_EXPECTED_SRC/install.sh" >"$AGG_OUTPUT" 2>&1; then
+  "$BASH_BIN" "$AGG_SRC/install.sh" >"$AGG_OUTPUT" 2>&1; then
   pass 'aggregator install smoke completes using temporary HOME and stubs'
 else
   cat "$AGG_OUTPUT"
@@ -340,7 +346,8 @@ else
 fi
 if [[ -f "$AGG_HOME/.config/systemd/user/pm-aggregator.service" &&
   -f "$AGG_HOME/.config/systemd/user/quota-gatherer.service" &&
-  -f "$AGG_HOME/.local/state/pm-aggregator/.deploy-tree-hash" ]]; then
+  -f "$AGG_HOME/.local/state/pm-aggregator/.deploy-tree-hash" ]] &&
+  cmp -s "$AGG_HOME/.config/systemd/user/pm-aggregator.service" "$PM_STACK_DIR/systemd/pm-aggregator.service"; then
   pass 'aggregator copies package and unit files only under temporary HOME'
 else
   fail 'aggregator copies package and unit files only under temporary HOME'
@@ -357,14 +364,29 @@ READY_ROOT="$TMP/ready-src"
 READY_HOME="$TMP/ready-home"
 mkdir -p "$READY_ROOT/systemd" "$READY_HOME/.local/bin"
 cp "$READY_INSTALL" "$READY_ROOT/install.sh"
-printf '%s\n' '[Service]' >"$READY_ROOT/systemd/ready-for-agent.service"
+cp "$PM_STACK_DIR/ready-for-agent/systemd/ready-for-agent.service" "$READY_ROOT/systemd/ready-for-agent.service"
+# install.sh runs ./apply-config.sh from its own directory once the new
+# process is verified, so the fixture must ship that sibling file. The
+# real script mutates the live harness over GraphQL, which a smoke test
+# must not do: this stub records the call and succeeds.
+cat >"$READY_ROOT/apply-config.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'apply-config %s\n' "$(basename "$PWD")" >>"${PM_TEST_COMMAND_LOG:?}"
+printf 'ready-for-agent config applied (smoke stub)\n'
+STUB
+chmod +x "$READY_ROOT/apply-config.sh"
 cat >"$READY_HOME/.local/bin/ready-for-agent" <<'FAKE'
 #!/usr/bin/env bash
 printf 'ready-for-agent 1.1.0\n'
 FAKE
 chmod +x "$READY_HOME/.local/bin/ready-for-agent"
 READY_OUTPUT="$TMP/ready-install.out"
-if env HOME="$READY_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
+# XDG_STATE_HOME is pinned inside the isolated HOME: install.sh otherwise
+# writes its pending-restart marker to the inherited XDG state dir, which
+# is outside the fixture and must never be touched by the smoke test.
+if env HOME="$READY_HOME" XDG_STATE_HOME="$READY_HOME/.local/state" \
+  PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_COMMAND_LOG="$COMMAND_LOG" \
   "$BASH_BIN" "$READY_ROOT/install.sh" >"$READY_OUTPUT" 2>&1; then
   pass 'ready-for-agent install smoke completes using temporary HOME and stubs'
@@ -373,19 +395,25 @@ else
   fail 'ready-for-agent install smoke completes using temporary HOME and stubs'
 fi
 if [[ -f "$READY_HOME/.config/systemd/user/ready-for-agent.service" ]] &&
+  cmp -s "$READY_HOME/.config/systemd/user/ready-for-agent.service" "$PM_STACK_DIR/ready-for-agent/systemd/ready-for-agent.service" &&
   contains "$READY_OUTPUT" 'is running after restart'; then
   pass 'ready-for-agent copies its unit and passes the fake UI health check'
 else
   fail 'ready-for-agent copies its unit and passes the fake UI health check'
 fi
+if contains "$READY_OUTPUT" 'ready-for-agent config applied'; then
+  pass 'ready-for-agent install runs its sibling apply-config.sh step'
+else
+  fail 'ready-for-agent install runs its sibling apply-config.sh step'
+fi
 if ! grep -Fq 'npm ' "$COMMAND_LOG"; then pass 'ready-for-agent smoke makes no package-manager call'; else fail 'ready-for-agent smoke makes no package-manager call'; fi
 
 if ((FAILURES)); then
   echo 'LIMITATION: HTTP, SOPS, systemd, git, Bun execution/package install, Docker and npm are stubbed; no live service, host unit, network, or package state is exercised.'
-  echo 'LIMITATION: ready-for-agent clone mode is intentionally not run because it is network-heavy.'
+  echo 'LIMITATION: ready-for-agent clone mode and its live GraphQL apply-config step are intentionally not run because they are network-heavy and mutate the host harness.'
   printf 'deploy-install-smoke.test.sh: %d check(s) failed\n' "$FAILURES"
   exit 1
 fi
 echo 'LIMITATION: HTTP, SOPS, systemd, git, Bun execution/package install, Docker and npm are stubbed; no live service, host unit, network, or package state is exercised.'
-echo 'LIMITATION: ready-for-agent clone mode is intentionally not run because it is network-heavy; only the non-clone install path is smoke-tested.'
+echo 'LIMITATION: ready-for-agent clone mode and its live GraphQL apply-config step are intentionally not run because they are network-heavy and mutate the host harness; only the non-clone install path is smoke-tested with a config stub.'
 echo 'deploy-install-smoke.test.sh: all checks passed'
