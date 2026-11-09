@@ -323,3 +323,8 @@ acceptance criteria derived from the sections it names.
 - Entry artifact: first-pass findings on #6280 (comment 6729662452)
 - Shell contract: `pkgs/id/contract/shell-contract.v1.json` (`id-shell`)
 - Sibling ladder (still gated): v2 #6301, v3 #6302, v4 #6303
+- Spike breakdown (sub-issues of #6300, filed by task 12936): step 1
+  #7913 (agent shell profile) · step 2 #7914 (MCP bridge; blocked by
+  #7913) · step 3 #7915 (identity + delegation) · step 4 #7916
+  (policy point) · step 5 #7917 (bounded program interaction + spike
+  run; blocked by #7914, #7915, #7916)
