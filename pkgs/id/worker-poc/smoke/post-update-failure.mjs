@@ -21,6 +21,13 @@ class MemoryJournal {
       const latest = [...this.rows].sort((a, b) => b.step - a.step).slice(0, 1);
       return { toArray: () => latest.map((row) => ({ step: row.step, snapshot: row.snapshot })) };
     }
+    // #6373: /cold-start asks only for the latest journaled step, without the
+    // snapshot. Answer from the journaled rows so the cold-start assertion
+    // still exercises the real journal rather than a hard-coded value.
+    if (query.startsWith("SELECT step FROM journal")) {
+      const latest = [...this.rows].sort((a, b) => b.step - a.step).slice(0, 1);
+      return { toArray: () => latest.map((row) => ({ step: row.step })) };
+    }
     if (query.startsWith("INSERT INTO journal")) {
       const [step, participant, event, snapshot, view, records, snapshotHash] = params;
       this.rows.push({
