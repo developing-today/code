@@ -80,6 +80,184 @@ pub struct SearchConfig {
     pub url: Option<String>,
 }
 
+/// The `fleet serve` role names a `[host]` manifest may assign
+/// (design #5687 §1). The role set of a manifest is exactly the key
+/// set of its `[host.roles]` table; any other name is a loud parse
+/// error, never silently ignored — a typo'd role that never starts
+/// is exactly the failure the manifest exists to prevent.
+pub const HOST_ROLES: [&str; 5] = [
+    "proxy",
+    "queue-broker",
+    "secrets-broker",
+    "search",
+    "laptop-agent",
+];
+
+/// How `fleet init` ensures a location's roles (design #5687 §5):
+/// `spawn` detached-spawns (the sandbox's session proxy), `systemd`
+/// reports unit state and asks systemd — never a detached spawn of
+/// a daemon systemd owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitMode {
+    Spawn,
+    Systemd,
+}
+
+impl InitMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InitMode::Spawn => "spawn",
+            InitMode::Systemd => "systemd",
+        }
+    }
+
+    fn parse(value: &str) -> Option<InitMode> {
+        match value {
+            "spawn" => Some(InitMode::Spawn),
+            "systemd" => Some(InitMode::Systemd),
+            _ => None,
+        }
+    }
+}
+
+/// Per-role options under `[host.roles]` (design #5687 §1):
+/// deliberately thin in v1 — `enabled` only. Everything else a role
+/// needs already has a home (`[proxy]`, `[dispatch]`, `[search]`,
+/// the `[domains]` kill switch) and must not be duplicated here.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HostRoleOptions {
+    /// Default true; `false` skips the role without editing the set.
+    pub enabled: Option<bool>,
+}
+
+/// `[host]` — this machine's location/role manifest (design #5687
+/// §1), also the grammar of the `FLEET_HOST_CONFIG` env override
+/// (§2: the env value is this table's contents as inline TOML, so
+/// one parser serves both). All fields are optional at parse time;
+/// a section with any field set but no `location` is a loud load
+/// error (see [`HostConfig::validate`]). Provisioning writes this
+/// section; `fleet init` never does.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HostConfig {
+    /// This machine's location/role-set name (e.g. "sandbox").
+    pub location: Option<String>,
+    /// "spawn" | "systemd" (see [`InitMode`]).
+    pub init_mode: Option<String>,
+    /// Role name → per-role options. The key set IS the role set.
+    #[serde(default)]
+    pub roles: BTreeMap<String, HostRoleOptions>,
+}
+
+impl HostConfig {
+    /// Any field set at all: a `[host]` header with only a comment
+    /// under it is no manifest, but one written key is a manifest
+    /// that must name its location.
+    fn is_present(&self) -> bool {
+        self.location.is_some() || self.init_mode.is_some() || !self.roles.is_empty()
+    }
+
+    /// The manifest's own loud rules (design #5687 §1/§2): an
+    /// unknown role name, an unknown `init_mode`, and an empty
+    /// location are misspelling-class errors in the crate's usual
+    /// shape — a silently ignored manifest entry would defeat the
+    /// manifest exactly the way a silently ignored `[domains]`
+    /// disable defeats that lever (#5460).
+    fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
+        let err = |message: String| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message,
+        };
+        if let Some(location) = &self.location {
+            if location.trim().is_empty() {
+                return Err(err(
+                    "[host] location must not be empty; omit the [host] section for no manifest"
+                        .to_string(),
+                ));
+            }
+        }
+        if let Some(mode) = &self.init_mode {
+            if InitMode::parse(mode).is_none() {
+                return Err(err(format!(
+                    "[host] init_mode {mode:?} is not a known mode; use \"spawn\" or \"systemd\""
+                )));
+            }
+        }
+        for role in self.roles.keys() {
+            if !HOST_ROLES.contains(&role.as_str()) {
+                return Err(err(format!(
+                    "[host.roles] {role:?} is not a fleet serve role; known roles: {}",
+                    HOST_ROLES.join(", ")
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Roles the manifest assigns and does not disable, in sorted
+    /// (map) order.
+    fn enabled_roles(&self) -> Vec<String> {
+        self.roles
+            .iter()
+            .filter(|(_, opts)| opts.enabled != Some(false))
+            .map(|(role, _)| role.clone())
+            .collect()
+    }
+
+    /// Roles the manifest assigns but disables (`enabled = false`):
+    /// reported as skipped with this reason, never silently dropped
+    /// (design #5687 §4).
+    fn disabled_roles(&self) -> Vec<String> {
+        self.roles
+            .iter()
+            .filter(|(_, opts)| opts.enabled == Some(false))
+            .map(|(role, _)| role.clone())
+            .collect()
+    }
+}
+
+/// Where a resolved host manifest came from (design #5687 §4) —
+/// named in the `fleet init` report so an operator can see which
+/// source is authoritative on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSource {
+    /// `FLEET_HOST_CONFIG` — a complete inline manifest; wins outright.
+    EnvContents,
+    /// `FLEET_LOCATION` — names the location; roles came from the
+    /// matching file manifest or the built-in role map.
+    EnvLocation,
+    /// The config file's `[host]` section.
+    File,
+}
+
+impl HostSource {
+    pub fn describe(&self, file_path: &std::path::Path) -> String {
+        match self {
+            HostSource::EnvContents => "$FLEET_HOST_CONFIG".to_string(),
+            HostSource::EnvLocation => "$FLEET_LOCATION".to_string(),
+            HostSource::File => format!("{} [host]", file_path.display()),
+        }
+    }
+}
+
+/// A location + role set after resolution (design #5687 §4):
+/// exactly one source won; nothing was field-merged across sources
+/// (merging is how a stale laptop file's roles would end up running
+/// on the sandbox).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedHost {
+    pub location: String,
+    pub init_mode: InitMode,
+    /// Enabled roles to ensure, sorted.
+    pub roles: Vec<String>,
+    /// `(role, reason)` pairs the manifest itself skips
+    /// (`enabled = false`); the `[domains]` gate is applied by the
+    /// caller, which owns the rest of the report.
+    pub skipped_roles: Vec<(String, String)>,
+    pub source: HostSource,
+}
+
 /// The token file the session broker reads when a request names
 /// none — the laptop-agent token, exactly the Python broker's
 /// default (`la.TOKEN_FILE`).
@@ -142,6 +320,10 @@ pub struct Config {
     #[serde(rename = "dispatch-test")]
     pub dispatch_test: DispatchTestConfig,
     pub search: SearchConfig,
+    /// `[host]` — the location/role manifest (design #5687,
+    /// implementation #6770). Absent means "no manifest": fleet
+    /// init reports an unknown location and starts nothing.
+    pub host: HostConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -533,7 +715,171 @@ impl Config {
                 DEFAULT_DISPATCH_TEST_THRESHOLD,
             ));
         }
+        // [host] (#6770, design #5687 §1): the manifest's loud
+        // rules run at load like every other section's, plus one
+        // structural rule of its own — a section that sets
+        // anything but names no location is a manifest that
+        // cannot resolve, and saying so at load beats an
+        // unknown-location report at every init.
+        self.host.validate(path)?;
+        if self.host.is_present() && self.host.location.is_none() {
+            return Err(ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: "[host] section sets init_mode/roles but no location;                           a manifest must name its location"
+                    .to_string(),
+            });
+        }
         Ok(())
+    }
+
+    /// The built-in role map for a location (design #5687 §5):
+    /// the roles a location runs when a source names the location
+    /// but carries no role set of its own. Only the two locations
+    /// that exist today have maps; a future lab node provisions
+    /// its own `[host]` section instead of growing this table.
+    pub fn builtin_host(location: &str) -> Option<(InitMode, Vec<String>)> {
+        match location {
+            "sandbox" => Some((InitMode::Spawn, vec!["proxy".to_string()])),
+            "laptop" => Some((
+                InitMode::Systemd,
+                vec![
+                    "laptop-agent".to_string(),
+                    "queue-broker".to_string(),
+                    "search".to_string(),
+                    "secrets-broker".to_string(),
+                ],
+            )),
+            _ => None,
+        }
+    }
+
+    /// Resolve this machine's location + role set from the live
+    /// environment (design #5687 §4). An empty env value counts as
+    /// unset, per the crate's #5473 rule.
+    pub fn resolve_host(&self) -> Result<Option<ResolvedHost>, ConfigError> {
+        let env_contents = std::env::var("FLEET_HOST_CONFIG")
+            .ok()
+            .filter(|v| !v.is_empty());
+        let env_location = std::env::var("FLEET_LOCATION")
+            .ok()
+            .filter(|v| !v.is_empty());
+        self.resolve_host_from(
+            env_contents.as_deref(),
+            env_location.as_deref(),
+            &Self::file_path(),
+        )
+    }
+
+    /// Resolution, pure over the three sources so the precedence
+    /// is pinnable in tests. Highest first, no field-merging
+    /// across sources (design #5687 §4):
+    ///
+    /// 1. `FLEET_HOST_CONFIG` — a complete inline manifest; wins
+    ///    outright. Malformed TOML, an unknown role, or a missing
+    ///    location is a loud error, never a silent fall-through
+    ///    to the file.
+    /// 2. `FLEET_LOCATION` — sets the location. Roles come from
+    ///    the file's `[host.roles]` only if the file's location
+    ///    equals it; otherwise from the built-in map for that
+    ///    location; otherwise the location is unknown.
+    /// 3. The file `[host]` section.
+    ///
+    /// `Ok(None)` is the unknown-location case: no manifest from
+    /// any source, or a location with no roles from any source.
+    /// It is not an error — `fleet init` reports it and starts
+    /// nothing (exit 69).
+    pub fn resolve_host_from(
+        &self,
+        env_contents: Option<&str>,
+        env_location: Option<&str>,
+        file_path: &std::path::Path,
+    ) -> Result<Option<ResolvedHost>, ConfigError> {
+        if let Some(text) = env_contents {
+            let label = PathBuf::from("$FLEET_HOST_CONFIG");
+            let host: HostConfig = toml::from_str(text).map_err(|e| ConfigError::Parse {
+                path: label.clone(),
+                message: e.to_string(),
+            })?;
+            host.validate(&label)?;
+            let location = host.location.clone().ok_or_else(|| ConfigError::Parse {
+                path: label.clone(),
+                message: "FLEET_HOST_CONFIG manifest has no location".to_string(),
+            })?;
+            return Ok(Self::resolved_from_manifest(
+                host,
+                &location,
+                HostSource::EnvContents,
+            ));
+        }
+        if let Some(location) = env_location {
+            let location = location.trim();
+            if location.is_empty() {
+                // An all-whitespace value is the empty case of the
+                // #5473 rule wearing spaces; treat it as unset and
+                // fall through to the file.
+                return self.resolve_host_from(None, None, file_path);
+            }
+            if self.host.location.as_deref() == Some(location) && self.host.is_present() {
+                return Ok(Self::resolved_from_manifest(
+                    self.host.clone(),
+                    location,
+                    HostSource::EnvLocation,
+                ));
+            }
+            return Ok(
+                Self::builtin_host(location).map(|(mode, roles)| ResolvedHost {
+                    location: location.to_string(),
+                    init_mode: mode,
+                    roles,
+                    skipped_roles: Vec::new(),
+                    source: HostSource::EnvLocation,
+                }),
+            );
+        }
+        if self.host.is_present() {
+            if let Some(location) = self.host.location.clone() {
+                return Ok(Self::resolved_from_manifest(
+                    self.host.clone(),
+                    &location,
+                    HostSource::File,
+                ));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Build the resolution for a winning manifest. The role set
+    /// is the manifest's own, exactly — no built-in supplementation
+    /// (a complete manifest that assigns no enabled role resolves
+    /// to no roles, which is the unknown case of §4). `init_mode`
+    /// falls back to the built-in map's mode for the location,
+    /// then to `spawn`, when the manifest omits it.
+    fn resolved_from_manifest(
+        host: HostConfig,
+        location: &str,
+        source: HostSource,
+    ) -> Option<ResolvedHost> {
+        let roles = host.enabled_roles();
+        if roles.is_empty() {
+            return None;
+        }
+        let init_mode = host
+            .init_mode
+            .as_deref()
+            .and_then(InitMode::parse)
+            .or_else(|| Self::builtin_host(location).map(|(mode, _)| mode))
+            .unwrap_or(InitMode::Spawn);
+        Some(ResolvedHost {
+            location: location.to_string(),
+            init_mode,
+            roles,
+            skipped_roles: host
+                .disabled_roles()
+                .into_iter()
+                .map(|role| (role, "disabled in [host.roles]".to_string()))
+                .collect(),
+            source,
+        })
     }
 
     /// Is a domain enabled on this host? Default yes; `[domains]`
@@ -1442,6 +1788,170 @@ socket = "rel/s.sock"
         let (_dir3, path3) = write_temp("[dispatch-test]\nthreshold = 7\n");
         let cfg = Config::load_from(&path3).unwrap();
         assert_eq!(cfg.dispatch_test_threshold(), 7);
+    }
+    // ---- [host] manifest + location resolution (#6770, #5687) ----
+
+    fn cfg_from(contents: &str) -> (tempfile_dir::Dir, PathBuf, Config) {
+        let (dir, path) = write_temp(contents);
+        let cfg = Config::load_from(&path).unwrap();
+        (dir, path, cfg)
+    }
+
+    #[test]
+    fn host_file_manifest_resolves_with_its_roles() {
+        let (_d, path, cfg) = cfg_from(
+            "[host]\nlocation = \"sandbox\"\ninit_mode = \"spawn\"\n\n[host.roles]\nproxy = {}\n",
+        );
+        let resolved = cfg
+            .resolve_host_from(None, None, &path)
+            .unwrap()
+            .expect("a file manifest resolves");
+        assert_eq!(resolved.location, "sandbox");
+        assert_eq!(resolved.init_mode, InitMode::Spawn);
+        assert_eq!(resolved.roles, vec!["proxy".to_string()]);
+        assert_eq!(resolved.source, HostSource::File);
+    }
+
+    #[test]
+    fn host_no_manifest_resolves_to_unknown() {
+        let cfg = Config::default();
+        let path = PathBuf::from("/nonexistent/fleet.toml");
+        assert_eq!(cfg.resolve_host_from(None, None, &path).unwrap(), None);
+        // A bare [host] header (nothing set) is no manifest either.
+        let (_d, path, cfg) = cfg_from("[host]\n");
+        assert_eq!(cfg.resolve_host_from(None, None, &path).unwrap(), None);
+    }
+
+    #[test]
+    fn host_unknown_role_is_a_loud_load_error() {
+        let (_d, path) = write_temp("[host]\nlocation = \"sandbox\"\n\n[host.roles]\nprox = {}\n");
+        let err = Config::load_from(&path).expect_err("a typo'd role must not load");
+        assert!(err.to_string().contains("prox"), "{err}");
+        assert!(err.to_string().contains("not a fleet serve role"), "{err}");
+    }
+
+    #[test]
+    fn host_bad_init_mode_is_a_loud_load_error() {
+        let (_d, path) = write_temp("[host]\nlocation = \"sandbox\"\ninit_mode = \"spwan\"\n");
+        let err = Config::load_from(&path).expect_err("a typo'd mode must not load");
+        assert!(err.to_string().contains("spwan"), "{err}");
+    }
+
+    #[test]
+    fn host_section_without_location_is_a_loud_load_error() {
+        let (_d, path) = write_temp("[host]\ninit_mode = \"spawn\"\n");
+        let err = Config::load_from(&path).expect_err("a manifest must name its location");
+        assert!(err.to_string().contains("no location"), "{err}");
+    }
+
+    #[test]
+    fn host_disabled_role_is_skipped_not_active() {
+        let (_d, path, cfg) = cfg_from(
+            "[host]\nlocation = \"laptop\"\ninit_mode = \"systemd\"\n\n[host.roles]\nqueue-broker = {}\nsecrets-broker = { enabled = false }\n",
+        );
+        let resolved = cfg.resolve_host_from(None, None, &path).unwrap().unwrap();
+        assert_eq!(resolved.roles, vec!["queue-broker".to_string()]);
+        assert_eq!(
+            resolved.skipped_roles,
+            vec![(
+                "secrets-broker".to_string(),
+                "disabled in [host.roles]".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn host_env_contents_wins_outright_over_file_and_location() {
+        let (_d, path, cfg) =
+            cfg_from("[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = {}\n");
+        let env = "location=\"laptop\"\ninit_mode=\"systemd\"\n[roles]\nqueue-broker={}";
+        let resolved = cfg
+            .resolve_host_from(Some(env), Some("sandbox"), &path)
+            .unwrap()
+            .expect("the env manifest resolves");
+        assert_eq!(resolved.location, "laptop");
+        assert_eq!(resolved.init_mode, InitMode::Systemd);
+        assert_eq!(resolved.roles, vec!["queue-broker".to_string()]);
+        assert_eq!(resolved.source, HostSource::EnvContents);
+    }
+
+    #[test]
+    fn host_malformed_env_contents_is_loud_never_a_fallthrough() {
+        let (_d, path, cfg) =
+            cfg_from("[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = {}\n");
+        let err = cfg
+            .resolve_host_from(Some("location = ["), None, &path)
+            .expect_err("malformed env TOML is an error, not a fall-through to the file");
+        assert!(err.to_string().contains("FLEET_HOST_CONFIG"), "{err}");
+        // An env manifest naming an unknown role is loud the same way.
+        let err = cfg
+            .resolve_host_from(Some("location=\"sandbox\"\n[roles]\nprox={}"), None, &path)
+            .expect_err("an unknown env role is an error");
+        assert!(err.to_string().contains("not a fleet serve role"), "{err}");
+        // And one with no location at all.
+        let err = cfg
+            .resolve_host_from(Some("[roles]\nproxy={}"), None, &path)
+            .expect_err("an env manifest without a location is an error");
+        assert!(err.to_string().contains("no location"), "{err}");
+    }
+
+    #[test]
+    fn host_env_location_uses_file_roles_only_on_a_match() {
+        let (_d, path, cfg) = cfg_from(
+            "[host]\nlocation = \"sandbox\"\ninit_mode = \"spawn\"\n\n[host.roles]\nproxy = {}\nsearch = {}\n",
+        );
+        // Match: the file's role set (not the built-in sandbox set,
+        // which is proxy-only) wins, sourced to the env selection.
+        let resolved = cfg
+            .resolve_host_from(None, Some("sandbox"), &path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            resolved.roles,
+            vec!["proxy".to_string(), "search".to_string()]
+        );
+        assert_eq!(resolved.source, HostSource::EnvLocation);
+        // Mismatch: the file's roles do NOT leak across locations;
+        // the built-in laptop map supplies the set instead.
+        let resolved = cfg
+            .resolve_host_from(None, Some("laptop"), &path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.init_mode, InitMode::Systemd);
+        assert!(resolved.roles.contains(&"queue-broker".to_string()));
+        assert!(!resolved.roles.contains(&"proxy".to_string()));
+        // No built-in map and no file match: unknown, not an error.
+        assert_eq!(
+            cfg.resolve_host_from(None, Some("lab-99"), &path).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn host_env_location_sandbox_builtin_map_is_proxy_spawn() {
+        // The hermetic-provisioning shape: FLEET_LOCATION alone on
+        // a machine with no [host] section resolves to exactly
+        // today's sandbox behaviour (design #5687 §5/§6).
+        let cfg = Config::default();
+        let path = PathBuf::from("/nonexistent/fleet.toml");
+        let resolved = cfg
+            .resolve_host_from(None, Some("sandbox"), &path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.init_mode, InitMode::Spawn);
+        assert_eq!(resolved.roles, vec!["proxy".to_string()]);
+    }
+
+    #[test]
+    fn host_manifest_with_no_enabled_roles_is_unknown() {
+        // §4: a location with no roles from any source is unknown —
+        // a manifest whose only role is disabled resolves to None,
+        // so init reports and starts nothing rather than succeeding
+        // vacuously.
+        let (_d, path, cfg) = cfg_from(
+            "[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = { enabled = false }\n",
+        );
+        assert_eq!(cfg.resolve_host_from(None, None, &path).unwrap(), None);
     }
 }
 
