@@ -66,6 +66,7 @@ records.
 - [ID shader asset format — v1 design](../../doc/2026-11-08T00-57-08Z_design_shader_asset_format/2026-11-08T00-57-08Z_design_shader_asset_format.md)
 - [Knowledge-layer sharing and permissions](../../doc/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions.md)
 - [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
+- [Explicit platform contexts for pure libraries](../../doc/2026-11-08T17-23-00Z_design_id5963_programming_model/2026-11-08T17-23-00Z_design_id5963_programming_model.md)
 - [Capability observability: who can see which capability facts, where](../../doc/2026-11-08T10-40-00Z_design_id_capability_observability/2026-11-08T10-40-00Z_design_id_capability_observability.md)
 - [Server-side invariants: budgets, observability, exploit resistance, containment](../../doc/2026-11-09T05-15-00Z_design_id_server_invariants/2026-11-09T05-15-00Z_design_id_server_invariants.md)
 - [Two-level metering: burst bucket + hard per-tick ceiling, per function](../../doc/2026-11-10T03-10-00Z_design_id_two_level_metering/2026-11-10T03-10-00Z_design_id_two_level_metering.md)
