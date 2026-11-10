@@ -40,7 +40,7 @@ Ladder levels are defined in §3. "Supported" means supported-by-default under t
 | `MIT` | permissive | permissive | allowed |
 | `MIT-0` (MIT No Attribution) | permissive | permissive | allowed |
 | `MIT-advertising` (pre-1999 MIT with the advertising clause) | permissive | permissive | informational — an ancestor, distinct from `MIT`; the advertising obligation must be visible, not silently read as MIT |
-| `BSD-0-Clause` (0BSD) | permissive | permissive, public-domain-like | allowed |
+| `0BSD` (BSD Zero Clause) | permissive | permissive, public-domain-like | allowed |
 | `BSD-2-Clause` | permissive | permissive | allowed |
 | `BSD-3-Clause` | permissive | permissive | allowed |
 | `BSD-3-Clause-Clear` | permissive | permissive | informational |
@@ -51,7 +51,7 @@ Ladder levels are defined in §3. "Supported" means supported-by-default under t
 | `Zlib` | permissive | permissive | informational |
 | `Unlicense` | public-domain-like | public-domain-like, permissive | informational — a dedication with a fallback license; see §4 |
 
-The allowed set means exactly: `MIT`, `MIT-0`, `BSD-0-Clause`, `BSD-2-Clause`, `BSD-3-Clause`, `Apache-2.0`, `BlueOak-1.0.0`, and `MPL-2.0` (§2.3) at its warning level. Anything else permissive-shaped is `informational`, not `allowed` — the system distinguishes each of Drew's named licenses individually, per the requirement.
+The allowed set means exactly: `MIT`, `MIT-0`, `0BSD`, `BSD-2-Clause`, `BSD-3-Clause`, `Apache-2.0`, `BlueOak-1.0.0`, and `MPL-2.0` (§2.3) at its warning level. Anything else permissive-shaped is `informational`, not `allowed` — the system distinguishes each of Drew's named licenses individually, per the requirement.
 
 ### 2.2 Public domain and CC0 (see §4 for the full treatment)
 
@@ -86,8 +86,8 @@ The allowed set means exactly: `MIT`, `MIT-0`, `BSD-0-Clause`, `BSD-2-Clause`, `
 | `CC-BY-SA-4.0` | share-alike-content | share-alike | warning — the allowed shape for share-alike content; derivatives carry the same license |
 | `CC-BY-NC-4.0` | noncommercial | noncommercial | strong-warning — NC entries are flagged *differently* from copyleft: the restriction is on field of use, not on derivatives; policy (#5984) owns what servers do with them |
 | `CC-BY-NC-SA-4.0` | noncommercial | noncommercial, share-alike | strong-warning (both traits present — #5985's rules key on traits independently) |
-| `CC-BY-ND-4.0` | permissive | permissive | strong-warning — no-derivatives is a reuse restriction a consumer must see before combining |
-| `CC-BY-NC-ND-4.0` | noncommercial | noncommercial | strong-warning |
+| `CC-BY-ND-4.0` | permissive | permissive, no-derivatives | strong-warning — no-derivatives is a reuse restriction a consumer must see before combining |
+| `CC-BY-NC-ND-4.0` | noncommercial | noncommercial, no-derivatives | strong-warning |
 
 ### 2.6 The non-license slots
 
@@ -113,6 +113,16 @@ Five levels, in order. The ladder is a property of the *entry*, not of a deploym
 Two ladder rules:
 
 - **Ceiling rule.** "By default we support nothing further copyleft than MPL" is level 2's upper edge: levels 0–2 are supported, 3–4 are flagged and unsupported unless the deployment's policy (admin-configurable, #5984) says otherwise. The taxonomy records the ceiling; it does not enforce it.
+- **The `no-derivatives` trait (interface addition, flagged for #5985).**
+  The ND entries carry a `no-derivatives` trait that is *not* in #5985's
+  v1 trait vocabulary. It is added here deliberately: without it, an ND
+  asset's fact record is indistinguishable from plain `CC-BY` (or from
+  `CC-BY-NC` for NC-ND), and the combination checker — which keys on
+  traits, not ladder levels — would never warn on a derivative use.
+  #5985's checker must treat `no-derivatives` as a gating trait
+  (derivative combinations warn + exception, alongside its R3/R7
+  handling); this record flags the addition explicitly rather than
+  folding ND into a trait it does not mean.
 - **Rank within a level.** Where the brief orders entries inside one level (GPL-2 below GPL-3 below AGPL), the order above is the display and reporting order. Combination rules key on traits, not on rank.
 
 ## 4. Public domain vs CC0 — separate entries, normalized storage (#6009 adopted)
@@ -144,7 +154,21 @@ Public domain and CC0 are **not the same object**, and the taxonomy keeps them a
 
   whose value is an **SPDX-style license expression** over §2 entry ids: one id, or `A OR B` for dual licensing, or `A AND B` for multi-license artifacts. Taxonomy-local ids (`LicenseRef-*`) are valid expression atoms. No other syntax (no `+` suffix — the `-only` / `-or-later` entry ids carry that distinction; no free text; no URLs).
 
-- **In the registry**: one license-fact record per artifact (§1's four fields), keyed by artifact id and content hash. The registry stores the *normalized* id (§4) as `license_id`; the declared id survives only in provenance.
+- **In the registry**: the manifest expression is stored verbatim as the
+  artifact's `license_expression`, plus **one license-fact record per
+  atom** in the expression (§1's four fields each), keyed by artifact id
+  and content hash. The registry stores the *normalized* id (§4) as each
+  atom's `license_id`; the declared id survives only in provenance.
+  Expression semantics for consumers (the combination checker above
+  all): an `OR` expression is a *choice* — obligations are those of the
+  one branch the consumer elects, and the election is recorded at
+  combination time; an `AND` expression is a *conjunction* — every
+  branch's obligations apply, evaluated per branch record, never by
+  unioning trait sets into a fictitious single license. A consumer
+  must never flatten an expression into one fact record: unioning an
+  `OR`'s traits would make an optional branch's obligations mandatory,
+  and dropping an `AND` branch would lose conditions the artifact
+  actually carries.
 
 - **Versioning of the taxonomy itself**: entries are append-only. An entry is never renamed or re-leveled in place; a correction adds a new entry and deprecates the old one, because stored fact records cite entry ids and levels historically.
 
