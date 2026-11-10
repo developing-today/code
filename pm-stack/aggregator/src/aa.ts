@@ -1157,6 +1157,37 @@ export function aaSectionFromSupabase(
   };
 }
 
+/**
+ * Re-derive a section's current-price overlay from `prices` (#8211).
+ *
+ * The batch-bound payload (rankings, configs, thresholds, test runs,
+ * sources, cai, coverage, catalog membership) is untouched; only the
+ * two price-derived facets move: the section's `prices` list and each
+ * catalog entry's `rate`, recomputed through the same lookup
+ * `aaCatalogFromConfig` uses (full id, then bare model part). This is
+ * what lets a cached historical batch report current rates at serve
+ * time without refetching any of its batch-bound measurements: the
+ * overlay is batch-independent by definition (`v_current_prices`), so
+ * freezing it into the per-batch cache was the defect. The input
+ * section is not mutated.
+ */
+export function aaApplyPriceOverlay(section: AaSection, prices: AaPrice[]): AaSection {
+  const rates = catalogRates(prices);
+  const out: AaSection = { ...section };
+  if (section.catalog) {
+    out.catalog = section.catalog.map((entry) => ({
+      ...entry,
+      rate: rates.get(entry.id) ?? rates.get(`part:${normalizeModelName(modelPart(entry.id))}`) ?? null,
+    }));
+  }
+  if (prices.length) {
+    out.prices = [...prices];
+  } else {
+    delete out.prices;
+  }
+  return out;
+}
+
 /** Structural check shared by the collector and the live source. */
 export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
