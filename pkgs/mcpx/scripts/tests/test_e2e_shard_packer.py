@@ -26,11 +26,20 @@ SPEC.loader.exec_module(packer)
 
 
 class WeightLoadingTest(unittest.TestCase):
-    def load_seed(self, value):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as seed:
+    def write_seed(self, value):
+        # Write-close-read: close the temp file before anything reopens
+        # its path (an open NamedTemporaryFile cannot be reopened on
+        # Windows).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as seed:
             json.dump(value, seed)
-            seed.flush()
-            return packer.load_weights(seed.name, ["TestA", "TestB"])
+            path = seed.name
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def load_seed(self, value):
+        return packer.load_weights(self.write_seed(value), ["TestA", "TestB"])
 
     def test_non_object_tests_field_falls_back_with_named_reason(self):
         for invalid_tests in ([ ["TestA", 10] ], "TestA=10"):
@@ -59,10 +68,7 @@ class WeightLoadingTest(unittest.TestCase):
             "TestLow", "TestHigh", "TestInfinity", "TestNegativeInfinity",
             "TestNaN", "TestZero", "TestNegative", "TestTrue", "TestFalse",
         ]
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as seed:
-            json.dump(value, seed)
-            seed.flush()
-            weights, note = packer.load_weights(seed.name, names)
+        weights, note = packer.load_weights(self.write_seed(value), names)
 
         invalid_names = [
             "TestInfinity", "TestNegativeInfinity", "TestNaN", "TestZero",
@@ -83,10 +89,9 @@ class WeightLoadingTest(unittest.TestCase):
 
     def test_all_invalid_seed_falls_back_and_names_rejected_entries(self):
         names = ["TestTrue", "TestZero"]
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as seed:
-            json.dump({"tests": {"TestTrue": True, "TestZero": 0}}, seed)
-            seed.flush()
-            weights, note = packer.load_weights(seed.name, names)
+        weights, note = packer.load_weights(
+            self.write_seed({"tests": {"TestTrue": True, "TestZero": 0}}), names
+        )
 
         self.assertEqual(weights, {name: 3.0 for name in names})
         self.assertIn("no usable timing seed", note)
@@ -94,10 +99,10 @@ class WeightLoadingTest(unittest.TestCase):
         self.assertIn("TestZero", note)
 
     def test_well_formed_seed_preserves_weights_and_lpt_assignment(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as seed:
-            json.dump({"tests": {"TestA": 12, "TestB": 8}}, seed)
-            seed.flush()
-            weights, note = packer.load_weights(seed.name, ["TestA", "TestB", "TestC"])
+        weights, note = packer.load_weights(
+            self.write_seed({"tests": {"TestA": 12, "TestB": 8}}),
+            ["TestA", "TestB", "TestC"],
+        )
 
         self.assertEqual(weights, {"TestA": 12.0, "TestB": 8.0, "TestC": 10.0})
         self.assertEqual(note, "seed: 2 measured, median 10.0s for the rest")
@@ -119,23 +124,30 @@ class WeightLoadingTest(unittest.TestCase):
         )
 
     def test_committed_timing_seed_cli_emits_a_finite_matrix(self):
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".out") as output:
-            result = subprocess.run(
-                [
-                    sys.executable, PACKER_PATH,
-                    "--tests-dir", os.path.join(MCPX_DIR, "internal", "e2e"),
-                    "--timings", TIMINGS_PATH,
-                    "--target-seconds", "170",
-                    "--max-shards", "6",
-                    "--github-output", output.name,
-                ],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            output.seek(0)
+        # Write-close-read: close the output file before the subprocess
+        # opens it by path (an open NamedTemporaryFile cannot be reopened
+        # on Windows).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".out", delete=False
+        ) as output:
+            output_path = output.name
+        self.addCleanup(os.unlink, output_path)
+        result = subprocess.run(
+            [
+                sys.executable, PACKER_PATH,
+                "--tests-dir", os.path.join(MCPX_DIR, "internal", "e2e"),
+                "--timings", TIMINGS_PATH,
+                "--target-seconds", "170",
+                "--max-shards", "6",
+                "--github-output", output_path,
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(output_path) as output:
             values = dict(line.rstrip("\n").split("=", 1) for line in output)
 
         matrix = json.loads(values["matrix"])
