@@ -23,7 +23,7 @@ import {
   type Discovery,
   type DiscoverOptions,
   type Target,
-} from "./mcpx/daemon.ts";
+} from "../core/daemon.ts";
 // The only reliable way to tell, in v1, whether anyone is looking at a
 // screen. See `headless` below.
 import { isMainThread } from "node:worker_threads";

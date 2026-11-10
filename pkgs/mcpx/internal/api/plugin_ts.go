@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// PluginTS renders plugin/opencode/mcpx/ops.gen.ts: one typed method per
+// PluginTS renders plugin/core/ops.gen.ts: one typed method per
 // /v1 operation, for the opencode plugin's DaemonClient.
 //
 // Generated for the reason the MCP tools and the CLI commands are: the
