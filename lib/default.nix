@@ -1202,6 +1202,26 @@ let
     }
   );
 
+  # pm-stack apps (pkgs/pm-*; code#8171): the projector, aggregator,
+  # dispatch, and git-sync as Nix derivations built from this repo's
+  # pm-stack source. The nixos pm-stack module callPackages the same
+  # files into its units; these outputs make `nix build .#pm-<app>`
+  # the package-level check.
+  make-pm-stack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+    in
+    {
+      packages = {
+        pm-projector = pkgs.callPackage ../pkgs/pm-projector/package.nix { };
+        pm-aggregator = pkgs.callPackage ../pkgs/pm-aggregator/package.nix { };
+        pm-dispatch = pkgs.callPackage ../pkgs/pm-dispatch/package.nix { };
+        pm-git-sync = pkgs.callPackage ../pkgs/pm-git-sync/package.nix { };
+      };
+    }
+  );
+
   # deploy registry + CLI (pkgs/deploy; issue #5766 slice 1):
   # deployTargets merges this repo's service definitions (design
   # 2026-11-04 section 3); the checks pin the packet's acceptance --
@@ -1493,6 +1513,7 @@ let
         make-id
         make-mcpx-overlay
         make-mcpx-modules
+        make-pm-stack
         make-laptop-backups-checks
         make-fleet
         make-deploy
