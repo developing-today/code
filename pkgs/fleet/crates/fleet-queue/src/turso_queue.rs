@@ -2147,6 +2147,29 @@ fn claim_by_id(
     if let Some(reason) = claim_guard_reason(&row) {
         quarantine_task(t, task_id, &reason)?;
         return Ok(None);
+    // #8217: the plain by-id path honors the same recorded
+    // platform limitation the transfer claim enforces (#8210):
+    // an invalid (reason-less) stored limitation is cleared,
+    // never enforced; a valid one refuses a claim from any
+    // other family (or none) — the row simply reads unclaimable
+    // by id, like any other by-id refusal.
+    if let Some(ledger) = get_ledger(t, task_id)? {
+        let limit = ledger
+            .get("platform_limit")
+            .and_then(|v| v.as_str());
+        let limit_reason = ledger
+            .get("platform_limit_reason")
+            .and_then(|v| v.as_str());
+        if platform_limit_invalid(limit, limit_reason) {
+            t.exec(
+                "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
+                   platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
+                &[Arg::Text(now_iso()), Arg::Int(task_id)],
+            )?;
+        } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
+            return Ok(None);
+        }
+    }
     }
     let status = row
         .get("status")
@@ -2245,6 +2268,27 @@ fn claim_by_id(
 /// and the caller re-picks — it can never be handed the winner's
 /// row. Extracted as a builder so the regression tests below pin
 /// the statement's shape without a live store.
+/// The recorded platform limitation, expressed for the claim
+/// pick (#8217, extending #8210's transfer-claim enforcement to
+/// every pick): a row is unservable while its lane-ledger row
+/// carries a VALID limitation — platform_limit and
+/// platform_limit_reason both recorded (a reason-less stored
+/// limitation is invalid: cleared, never enforced, exactly as
+/// platform_limit_refusal treats it) — naming a family other
+/// than the claim's declared family. A claim declaring no family
+/// is served only unlimited rows. The two placeholders are the
+/// claim's family, twice; callers append them after the pick
+/// predicate's own arguments, in both the pick SELECT and the
+/// claim UPDATE re-check. Semantics mirror
+/// platform_limit_refusal's truth table (pinned by
+/// platform_limit_pick_semantics_8217).
+const PLATFORM_LIMIT_PICK_CLAUSE: &str = "AND NOT EXISTS (SELECT 1 FROM \
+    repo_task_lane_ledger l WHERE l.task_id = tasks.id \
+      AND l.platform_limit IS NOT NULL AND l.platform_limit <> '' \
+      AND l.platform_limit_reason IS NOT NULL \
+      AND l.platform_limit_reason <> '' \
+      AND (? IS NULL OR l.platform_limit <> ?))";
+
 fn claim_update_sql(pick_predicate: &str) -> String {
     format!(
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
@@ -2254,7 +2298,7 @@ fn claim_update_sql(pick_predicate: &str) -> String {
            park_kind = NULL, wait_kind = NULL, not_before = NULL, \
            updated_at = ? \
          WHERE id = ? \
-           AND ( {pick_predicate} )"
+           AND ( {pick_predicate} ) {PLATFORM_LIMIT_PICK_CLAUSE}"
     )
 }
 
@@ -2508,6 +2552,299 @@ fn transfer_update_sql() -> &'static str {
      WHERE id = ? AND status = 'claimed' AND worker_id = ?"
 }
 
+/// The claim preamble (#8217: shared by the single claim and
+/// the batch claim): validate the caller's lane against the
+/// registry, sweep expired leases, and quarantine payload-less
+/// rows in this queue before any pick runs.
+fn claim_preamble(
+    t: &TursoBackend,
+    queue: &str,
+    worker: &str,
+    lane: &Option<String>,
+) -> Result<(), TErr> {
+    if let Some(lane_id) = &lane {
+        let lanes = t.query_objs(
+            "SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?",
+            &[Arg::Text(lane_id.clone())],
+            &[],
+        )?;
+        let Some(l) = lanes.into_iter().next() else {
+            return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+        };
+        if l.get("worker_id").and_then(|v| v.as_str()) != Some(worker) {
+            return Err(format!(
+                "claim_repo_task: lane {lane_id} belongs to worker {}, not {worker}",
+                l.get("worker_id").and_then(|v| v.as_str()).unwrap_or("")
+            ));
+        }
+        if l.get("enabled").and_then(|v| v.as_i64()) == Some(0) {
+            return Err(format!("claim_repo_task: lane {lane_id} is disabled"));
+        }
+        if l.get("queue").and_then(|v| v.as_str()) != Some(queue) {
+            return Err(format!(
+                "claim_repo_task: lane {lane_id} is for queue {}, not {queue}",
+                l.get("queue").and_then(|v| v.as_str()).unwrap_or("")
+            ));
+        }
+    }
+    expire_leases(t)?;
+    quarantine_payload_missing(t, queue)?;
+    Ok(())
+}
+
+/// One pick-path claim: the atomic pick + the post-claim flow
+/// (binding clear, lease row, model stamp, claimed event).
+/// Extracted from verb_claim for #8217 so the batch claim runs
+/// the identical pick N times; a single claim is exactly one
+/// call of this. Returns the claimed row, or None when nothing
+/// is eligible.
+fn claim_pick_once(
+    t: &TursoBackend,
+    queue: String,
+    worker: String,
+    lane: &Option<String>,
+    lease_seconds: i64,
+    family: Option<String>,
+    claim_session: Option<String>,
+    model: &Option<ClaimModel>,
+    handoff_pick: bool,
+) -> Result<Option<Value>, TErr> {
+    let now_unix = now_unix();
+    let now = iso(now_unix);
+    let lease_until = claim_lease_until(now_unix, lease_seconds);
+    // One conditional UPDATE = the claim. The subquery picks the
+    // same row PG's SKIP LOCKED pick would (priority, then age;
+    // parked rows whose not_before has passed resume without an
+    // attempts increment); the outer status re-check keeps the
+    // statement atomic against a competing claim.
+    // #5444: the pick loops past rows the guard quarantines —
+    // a skipped row degrades to the next candidate or to no
+    // claim, never to a handed-out invalid packet.
+    let mut row: Value;
+    let mut id: i64;
+    let mut skipped = 0usize;
+    loop {
+        // #7617: pick the candidate id FIRST, then claim THAT row by
+        // id, and read it back by id. The previous shape claimed via
+        // a subquery and re-read the result as "the newest claimed
+        // row for (queue, worker_id)" — but every lane shares
+        // worker_id repo-worker-code, so under concurrent claims
+        // that re-read could return ANOTHER lane's just-claimed
+        // task: the caller was handed a row stamped with a foreign
+        // lane_id (live repro 2026-11-08: lane code-u claims
+        // returned tasks stamped code-e and code-t), it checkpointed
+        // and parked a task it did not own, and the guard below
+        // could quarantine a live foreign claim. The conditional
+        // UPDATE by id stays atomic: it re-checks the full pick
+        // eligibility (status, attempts cap, not_before) at claim
+        // instant, so if a competing claim takes the picked row
+        // first — or it is parked into the future in between — this
+        // UPDATE affects 0 rows and the loop re-picks.
+        // #8097: the pick predicate is built per pick mode.
+        // #8187: NEITHER mode filters by platform — the mark a
+        // claim declares (family) is stamped by the claim
+        // UPDATE, never matched against the item. The default mode keeps the ordinary predicate
+        // (queued rows due; parked rows whose timer has passed).
+        // Handoff mode picks the next parked recorded opencode
+        // handoff (PARKED_HANDOFF_SQL) with no caller-named id
+        // and no not_before gating — Rule 1's default collection
+        // path for the claimant.
+        let pick_predicate = if handoff_pick {
+            PARKED_HANDOFF_SQL.to_string()
+        } else {
+            default_pick_predicate()
+        };
+        let pick_sql = format!(
+            "SELECT id FROM tasks WHERE queue = ? \
+           AND payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
+           AND ( {pick_predicate} ) {PLATFORM_LIMIT_PICK_CLAUSE} \
+         ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1"
+        );
+        let mut pick_args: Vec<Arg> = vec![Arg::Text(queue.clone())];
+        if !handoff_pick {
+            pick_args.push(Arg::Text(now.clone()));
+            pick_args.push(Arg::Text(now.clone()));
+        }
+        pick_args.push(arg_str(family.as_deref()));
+        pick_args.push(arg_str(family.as_deref()));
+        let pick = t.query_objs(&pick_sql, &pick_args, &[])?;
+        let Some(picked) = pick.into_iter().next() else {
+            return Ok(None);
+        };
+        let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let upd_sql = claim_update_sql(&pick_predicate);
+        let mut upd_args: Vec<Arg> = vec![
+            Arg::Text(worker.clone()),
+            Arg::Text(now.clone()),
+            Arg::Text(lease_until.clone()),
+            arg_str(lane.as_deref()),
+            arg_str(family.as_deref()),
+            Arg::Text(now.clone()),
+            Arg::Int(pick_id),
+        ];
+        if !handoff_pick {
+            upd_args.push(Arg::Text(now.clone()));
+            upd_args.push(Arg::Text(now.clone()));
+        }
+            upd_args.push(arg_str(family.as_deref()));
+            upd_args.push(arg_str(family.as_deref()));
+        let upd = t.exec(&upd_sql, &upd_args)?;
+        if upd.affected == 0 {
+            // Lost the race for the picked row; re-pick.
+            skipped += 1;
+            if skipped >= 32 {
+                return Ok(None);
+            }
+            continue;
+        }
+        let rows = t.query_objs(
+            &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
+            &[Arg::Int(pick_id)],
+            &TASK_JSON_COLS,
+        )?;
+        let Some(candidate) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        if let Some(reason) = claim_guard_reason(&candidate) {
+            let cid = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            quarantine_task(t, cid, &reason)?;
+            skipped += 1;
+            if skipped >= 32 {
+                return Ok(None);
+            }
+            continue;
+        }
+        id = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        row = candidate;
+        break;
+    }
+    let mut row = row;
+    // Migration 0023 §4: a fresh claim never inherits a binding.
+    let progress = row.get("progress").cloned().unwrap_or(json!({}));
+    let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
+    if cleared.is_some() {
+        t.exec(
+            "UPDATE tasks SET progress = ? WHERE id = ?",
+            &[Arg::Text(progress.to_string()), Arg::Int(id)],
+        )?;
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert("progress".to_string(), progress);
+        }
+    }
+    t.exec(
+        "INSERT INTO leases (task_id, worker_id, lease_until, heartbeat_at) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(task_id) DO UPDATE SET worker_id = excluded.worker_id, \
+           lease_until = excluded.lease_until, heartbeat_at = excluded.heartbeat_at",
+        &[
+            Arg::Int(id),
+            Arg::Text(worker.clone()),
+            Arg::Text(lease_until),
+            Arg::Text(now_iso()),
+        ],
+    )?;
+    stamp_claim_model(t, id, &mut row, model)?;
+    touch_worker(t, &worker, Some(id))?;
+    if let Some(old) = &cleared {
+        on_binding_cleared(t, &worker, id, old, "claim_repo_task")?;
+    }
+    event(
+        t,
+        Some(&worker),
+        Some(id),
+        "claimed",
+        &with_marks(
+            &json!({
+                "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
+                "cleared_session_id": cleared, "lane_id": lane,
+                "platform": family, "session_id": claim_session,
+                "model_provider": model.as_ref().map(|m| m.provider.clone()),
+                "model_id": model.as_ref().and_then(|m| m.model.clone()),
+                "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
+                "pick": if handoff_pick { "parked_handoff" } else { "default" },
+            }),
+            &row,
+        ),
+    )?;
+    Ok(Some(row))
+}
+
+/// The most tasks one batch claim may take (#8217). A batch is
+/// only legitimate paired with immediate per-item dispatch, and
+/// the dispatcher must launch + verify-bind every item inside one
+/// touch before leases age: five dedicated launches fit that
+/// window with margin, and a bigger batch would recreate the
+/// claimed-and-idle pile the single-session design forbids.
+pub const BATCH_CLAIM_MAX: i64 = 5;
+
+/// Parse a claim request's batch count (#8217): absent means the
+/// single claim (1); anything outside 1..=BATCH_CLAIM_MAX is a
+/// usage error, never a silent clamp.
+fn parse_batch_count(req: &Value) -> Result<i64, String> {
+    match req_i64(req, "count") {
+        None => Ok(1),
+        Some(n) if (1..=BATCH_CLAIM_MAX).contains(&n) => Ok(n),
+        Some(n) => Err(format!(
+            "count {n} is out of range: a batch claim takes              1..={BATCH_CLAIM_MAX} items (#8217)"
+        )),
+    }
+}
+
+/// Batch claim (#8217): the claim preamble once, then the
+/// identical atomic pick up to `count` times — same eligibility,
+/// same priority/age order, same attempts/lease semantics and
+/// per-item claimed events as that many single claims. A partial
+/// batch is normal: the loop stops at the first no-task pick and
+/// returns what exists.
+#[allow(clippy::too_many_arguments)]
+fn verb_claim_batch(
+    t: &TursoBackend,
+    queue: &str,
+    worker: &str,
+    lane: &Option<String>,
+    lease_seconds: i64,
+    family: &Option<String>,
+    claim_session: &Option<String>,
+    model: &Option<ClaimModel>,
+    handoff_pick: bool,
+    count: i64,
+) -> Value {
+    let work = (|| -> Result<Vec<Value>, TErr> {
+        claim_preamble(t, queue, worker, lane)?;
+        let mut rows = Vec::new();
+        for _ in 0..count {
+            let Some(row) = claim_pick_once(
+                t,
+                queue.to_string(),
+                worker.to_string(),
+                lane,
+                lease_seconds,
+                family.clone(),
+                claim_session.clone(),
+                model,
+                handoff_pick,
+            )?
+            else {
+                break;
+            };
+            rows.push(row);
+        }
+        Ok(rows)
+    })();
+    match work {
+        Ok(rows) => {
+            let claimed = rows.len();
+            ok(json!({
+                "rows": rows,
+                "claimed": claimed,
+                "requested": count,
+            }))
+        }
+        Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
+        Err(e) => terr(e),
+    }
+}
+
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let queue = req_str(req, "queue").unwrap_or("").to_string();
@@ -2545,34 +2882,40 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             return fail(2, format!("claim_repo_task: unknown pick mode {other:?}"));
         }
     };
-    let work = (|| -> Result<Option<Value>, TErr> {
-        if let Some(lane_id) = &lane {
-            let lanes = t.query_objs(
-                "SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?",
-                &[Arg::Text(lane_id.clone())],
-                &[],
-            )?;
-            let Some(l) = lanes.into_iter().next() else {
-                return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
-            };
-            if l.get("worker_id").and_then(|v| v.as_str()) != Some(worker.as_str()) {
-                return Err(format!(
-                    "claim_repo_task: lane {lane_id} belongs to worker {}, not {worker}",
-                    l.get("worker_id").and_then(|v| v.as_str()).unwrap_or("")
-                ));
-            }
-            if l.get("enabled").and_then(|v| v.as_i64()) == Some(0) {
-                return Err(format!("claim_repo_task: lane {lane_id} is disabled"));
-            }
-            if l.get("queue").and_then(|v| v.as_str()) != Some(queue.as_str()) {
-                return Err(format!(
-                    "claim_repo_task: lane {lane_id} is for queue {}, not {queue}",
-                    l.get("queue").and_then(|v| v.as_str()).unwrap_or("")
-                ));
-            }
+    // #8217: batch claim. `count` absent or 1 is the single claim
+    // below, byte for byte. count > 1 runs the same pick that many
+    // times (verb_claim_batch) and returns every claimed row; it
+    // never combines with a named task (by-id and transfer claims
+    // take exactly one row).
+    let count = match parse_batch_count(req) {
+        Ok(c) => c,
+        Err(e) => return fail(2, format!("claim_repo_task: {e}")),
+    };
+    if count > 1 {
+        if req_i64(req, "task_id").is_some() {
+            return fail(
+                2,
+                "claim_repo_task: --count cannot be combined with --task: \
+                 a by-id claim takes exactly one task (#8217)"
+                    .to_string(),
+            );
         }
-        expire_leases(t)?;
-        quarantine_payload_missing(t, &queue)?;
+        return verb_claim_batch(
+            t,
+            &queue,
+            &worker,
+            &lane,
+            lease_seconds,
+            &family,
+            &claim_session,
+            &model,
+            handoff_pick,
+            count,
+        );
+    }
+
+    let work = (|| -> Result<Option<Value>, TErr> {
+        claim_preamble(t, &queue, &worker, &lane)?;
         // By-id claim — the SPECIAL CASE (#8097 Rule 1): when the
         // request names a task, take exactly that row (claim_by_id)
         // instead of the pick. Reserved for one-off revivals of a
@@ -2609,160 +2952,17 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 &model,
             );
         }
-        let now_unix = now_unix();
-        let now = iso(now_unix);
-        let lease_until = claim_lease_until(now_unix, lease_seconds);
-        // One conditional UPDATE = the claim. The subquery picks the
-        // same row PG's SKIP LOCKED pick would (priority, then age;
-        // parked rows whose not_before has passed resume without an
-        // attempts increment); the outer status re-check keeps the
-        // statement atomic against a competing claim.
-        // #5444: the pick loops past rows the guard quarantines —
-        // a skipped row degrades to the next candidate or to no
-        // claim, never to a handed-out invalid packet.
-        let mut row: Value;
-        let mut id: i64;
-        let mut skipped = 0usize;
-        loop {
-            // #7617: pick the candidate id FIRST, then claim THAT row by
-            // id, and read it back by id. The previous shape claimed via
-            // a subquery and re-read the result as "the newest claimed
-            // row for (queue, worker_id)" — but every lane shares
-            // worker_id repo-worker-code, so under concurrent claims
-            // that re-read could return ANOTHER lane's just-claimed
-            // task: the caller was handed a row stamped with a foreign
-            // lane_id (live repro 2026-11-08: lane code-u claims
-            // returned tasks stamped code-e and code-t), it checkpointed
-            // and parked a task it did not own, and the guard below
-            // could quarantine a live foreign claim. The conditional
-            // UPDATE by id stays atomic: it re-checks the full pick
-            // eligibility (status, attempts cap, not_before) at claim
-            // instant, so if a competing claim takes the picked row
-            // first — or it is parked into the future in between — this
-            // UPDATE affects 0 rows and the loop re-picks.
-            // #8097: the pick predicate is built per pick mode.
-            // #8187: NEITHER mode filters by platform — the mark a
-            // claim declares (family) is stamped by the claim
-            // UPDATE, never matched against the item. The default mode keeps the ordinary predicate
-            // (queued rows due; parked rows whose timer has passed).
-            // Handoff mode picks the next parked recorded opencode
-            // handoff (PARKED_HANDOFF_SQL) with no caller-named id
-            // and no not_before gating — Rule 1's default collection
-            // path for the claimant.
-            let pick_predicate = if handoff_pick {
-                PARKED_HANDOFF_SQL.to_string()
-            } else {
-                default_pick_predicate()
-            };
-            let pick_sql = format!(
-                "SELECT id FROM tasks WHERE queue = ? \
-               AND payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
-               AND ( {pick_predicate} ) \
-             ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1"
-            );
-            let mut pick_args: Vec<Arg> = vec![Arg::Text(queue.clone())];
-            if !handoff_pick {
-                pick_args.push(Arg::Text(now.clone()));
-                pick_args.push(Arg::Text(now.clone()));
-            }
-            let pick = t.query_objs(&pick_sql, &pick_args, &[])?;
-            let Some(picked) = pick.into_iter().next() else {
-                return Ok(None);
-            };
-            let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-            let upd_sql = claim_update_sql(&pick_predicate);
-            let mut upd_args: Vec<Arg> = vec![
-                Arg::Text(worker.clone()),
-                Arg::Text(now.clone()),
-                Arg::Text(lease_until.clone()),
-                arg_str(lane.as_deref()),
-                arg_str(family.as_deref()),
-                Arg::Text(now.clone()),
-                Arg::Int(pick_id),
-            ];
-            if !handoff_pick {
-                upd_args.push(Arg::Text(now.clone()));
-                upd_args.push(Arg::Text(now.clone()));
-            }
-            let upd = t.exec(&upd_sql, &upd_args)?;
-            if upd.affected == 0 {
-                // Lost the race for the picked row; re-pick.
-                skipped += 1;
-                if skipped >= 32 {
-                    return Ok(None);
-                }
-                continue;
-            }
-            let rows = t.query_objs(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
-                &[Arg::Int(pick_id)],
-                &TASK_JSON_COLS,
-            )?;
-            let Some(candidate) = rows.into_iter().next() else {
-                return Ok(None);
-            };
-            if let Some(reason) = claim_guard_reason(&candidate) {
-                let cid = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                quarantine_task(t, cid, &reason)?;
-                skipped += 1;
-                if skipped >= 32 {
-                    return Ok(None);
-                }
-                continue;
-            }
-            id = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-            row = candidate;
-            break;
-        }
-        let mut row = row;
-        // Migration 0023 §4: a fresh claim never inherits a binding.
-        let progress = row.get("progress").cloned().unwrap_or(json!({}));
-        let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
-        if cleared.is_some() {
-            t.exec(
-                "UPDATE tasks SET progress = ? WHERE id = ?",
-                &[Arg::Text(progress.to_string()), Arg::Int(id)],
-            )?;
-            if let Some(obj) = row.as_object_mut() {
-                obj.insert("progress".to_string(), progress);
-            }
-        }
-        t.exec(
-            "INSERT INTO leases (task_id, worker_id, lease_until, heartbeat_at) \
-             VALUES (?, ?, ?, ?) \
-             ON CONFLICT(task_id) DO UPDATE SET worker_id = excluded.worker_id, \
-               lease_until = excluded.lease_until, heartbeat_at = excluded.heartbeat_at",
-            &[
-                Arg::Int(id),
-                Arg::Text(worker.clone()),
-                Arg::Text(lease_until),
-                Arg::Text(now_iso()),
-            ],
-        )?;
-        stamp_claim_model(t, id, &mut row, &model)?;
-        touch_worker(t, &worker, Some(id))?;
-        if let Some(old) = &cleared {
-            on_binding_cleared(t, &worker, id, old, "claim_repo_task")?;
-        }
-        event(
+        claim_pick_once(
             t,
-            Some(&worker),
-            Some(id),
-            "claimed",
-            &with_marks(
-                &json!({
-                    "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
-                    "cleared_session_id": cleared, "lane_id": lane,
-                    "platform": family, "session_id": claim_session,
-                    "model_provider": model.as_ref().map(|m| m.provider.clone()),
-                    "model_id": model.as_ref().and_then(|m| m.model.clone()),
-                    "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
-                    "pick": if handoff_pick { "parked_handoff" } else { "default" },
-                }),
-                &row,
-            ),
-        )?;
-        Ok(Some(row))
+            queue.clone(),
+            worker.clone(),
+            &lane,
+            lease_seconds,
+            family,
+            claim_session,
+            &model,
+            handoff_pick,
+        )
     })();
     match work {
         Ok(Some(row)) => ok(json!({"row": row})),
@@ -3392,6 +3592,71 @@ fn wake_eligible(status: &str) -> Result<(), String> {
 /// next claim is an ordinary execution claim. This replaces the
 /// lanes' 25-minute re-check loop as the wake path for recorded
 /// waits: the park TTL floor is only the backstop.
+/// Release a claimed task straight back to queued (#8217): the
+/// holder gives the item back to the pool NOW — no park timer, no
+/// attempt change (the claim happened; the `released` event
+/// carries the reason, and revive remains the cap-repair tool).
+/// Holder-only, through the same claimed_by guard as checkpoint.
+/// This is the dispatch failure path: an item whose sub-task
+/// session failed to launch/bind returns to the pool immediately
+/// instead of sitting claimed-idle under the dispatcher.
+fn verb_release(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id").unwrap_or(0);
+    let worker = req_str(req, "worker").unwrap_or("").to_string();
+    let reason = req_str(req, "reason").unwrap_or("").to_string();
+    if reason.trim().is_empty() {
+        return fail(
+            2,
+            "release_repo_task: a release requires a reason              (--reason): the audit event is the only record of why              the item went back"
+                .to_string(),
+        );
+    }
+    let row = match claimed_by(t, task_id, &worker, "release_repo_task") {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let work = (|| -> Result<Value, TErr> {
+        // A released claim never leaves a binding behind
+        // (migration 0023 §4's rule, mirrored from the claim path).
+        let progress = row.get("progress").cloned().unwrap_or(json!({}));
+        let (progress, cleared) = clear_binding(&progress, "release_repo_task");
+        t.exec(
+            "UPDATE tasks SET status = 'queued', worker_id = NULL, \
+               lease_until = NULL, not_before = NULL, park_kind = NULL, \
+               wait_kind = NULL, progress = ?, updated_at = ? \
+             WHERE id = ?",
+            &[
+                Arg::Text(progress.to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ],
+        )?;
+        t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
+        touch_worker(t, &worker, Some(task_id))?;
+        if let Some(old) = &cleared {
+            on_binding_cleared(t, &worker, task_id, old, "release_repo_task")?;
+        }
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            "released",
+            &with_marks(
+                &json!({
+                    "reason": reason, "via": "release_repo_task_turso",
+                    "cleared_session_id": cleared,
+                }),
+                &row,
+            ),
+        )?;
+        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+    })();
+    match work {
+        Ok(row) => ok(json!({ "row": row })),
+        Err(e) => terr(e),
+    }
+}
+
 fn verb_wake(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker")
@@ -4164,6 +4429,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/heartbeat" => verb_heartbeat(t, req),
         "/checkpoint" => verb_checkpoint(t, req),
         "/park" => verb_park(t, req),
+        "/release" => verb_release(t, req),
         "/wake" => verb_wake(t, req),
         "/block" => verb_block(t, req),
         "/cancel" => verb_cancel(t, req),
@@ -5454,5 +5720,164 @@ mod tests {
             let key = format!("repo-health:v1:triage:developing-today-forks/opencode:issue:{n}");
             prop_assert_eq!(issue_number_from_dedupe(&key, "developing-today/code"), None);
         }
+    }
+
+    // ---- #8217: batch claim, platform limitation in the pick,
+    // ---- and the release verb ----
+
+    fn seg8217<'a>(src: &'a str, from: &str, to: &str) -> &'a str {
+        src.split(from)
+            .nth(1)
+            .unwrap_or("")
+            .split(to)
+            .next()
+            .unwrap_or("")
+    }
+
+    #[test]
+    fn batch_count_parsing_and_cap_8217() {
+        // The cap is a named constant with the reasoning on #8217:
+        // one batch = one lane touch = one supervisor.
+        assert_eq!(BATCH_CLAIM_MAX, 5);
+        assert_eq!(parse_batch_count(&json!({})), Ok(1));
+        assert_eq!(parse_batch_count(&json!({"count": 1})), Ok(1));
+        assert_eq!(parse_batch_count(&json!({"count": 3})), Ok(3));
+        assert_eq!(
+            parse_batch_count(&json!({"count": BATCH_CLAIM_MAX})),
+            Ok(BATCH_CLAIM_MAX)
+        );
+        let over = parse_batch_count(&json!({"count": BATCH_CLAIM_MAX + 1})).unwrap_err();
+        assert!(over.contains("out of range") && over.contains("1..=5"), "{over}");
+        assert!(parse_batch_count(&json!({"count": 0})).is_err());
+        assert!(parse_batch_count(&json!({"count": -2})).is_err());
+    }
+
+    #[test]
+    fn batch_claim_response_shape_8217() {
+        // The batch verb's wire shape: the claimed rows in pick
+        // order, how many were claimed, how many were requested —
+        // a short batch is a normal partial success, and an empty
+        // one is the usual no-task verdict on the client.
+        let rows = vec![json!({"id": 11}), json!({"id": 7}), json!({"id": 42})];
+        let out = json!({"rows": rows, "claimed": 3, "requested": 5});
+        assert_eq!(out["claimed"], json!(3));
+        assert_eq!(out["requested"], json!(5));
+        let ids: Vec<i64> = out["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![11, 7, 42], "rows keep pick order");
+    }
+
+    #[test]
+    fn batch_claim_runs_the_single_pick_repeatedly_8217() {
+        // Oracle: the batch verb is a loop over claim_pick_once
+        // (the single claim's pick — same eligibility, same order,
+        // same per-item lease, marks and claimed event) behind ONE
+        // claim_preamble, and the single claim routes count > 1 to
+        // it while refusing the by-id combination.
+        let src = include_str!("turso_queue.rs");
+        let batch = seg8217(src, "fn verb_claim_batch(", "\nfn verb_claim(");
+        assert!(batch.contains("claim_preamble("), "one preamble per batch");
+        assert!(
+            batch.contains("claim_pick_once("),
+            "batch = the single pick, repeated"
+        );
+        assert!(batch.contains("\"rows\": rows"), "batch returns the claimed set");
+        let single = seg8217(src, "fn verb_claim(", "\nfn verb_bind(");
+        assert!(single.contains("count > 1"), "single claim routes batches");
+        assert!(
+            single.contains("cannot be combined with --task"),
+            "by-id and transfer claims stay single"
+        );
+        assert!(
+            single.contains("claim_preamble(") && single.contains("claim_pick_once("),
+            "single claim is one preamble + one pick"
+        );
+    }
+
+    #[test]
+    fn platform_limit_pick_clause_shape_8217() {
+        // The clause consults the lane ledger and skips only rows
+        // with a VALID stored limitation (a recorded reason)
+        // naming the OTHER family; reason-less rows are not
+        // limitations (Drew's rule: no reason, no limitation).
+        for needle in [
+            "repo_task_lane_ledger",
+            "platform_limit IS NOT NULL",
+            "platform_limit_reason IS NOT NULL",
+            "platform_limit_reason <> ''",
+            "(? IS NULL OR",
+        ] {
+            assert!(
+                PLATFORM_LIMIT_PICK_CLAUSE.contains(needle),
+                "clause misses {needle}"
+            );
+        }
+        // Both pick statements carry the clause after the
+        // eligibility predicate, with the claim's family bound
+        // twice: 7 fixed placeholders + 2 predicate + 2 clause.
+        let upd = claim_update_sql(&default_pick_predicate());
+        assert!(
+            upd.contains("AND NOT EXISTS (SELECT 1 FROM repo_task_lane_ledger"),
+            "{upd}"
+        );
+        assert_eq!(upd.matches('?').count(), 11, "claim UPDATE bindings: {upd}");
+        let src = include_str!("turso_queue.rs");
+        let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
+        assert_eq!(
+            pick.matches("pick_args.push(arg_str(family.as_deref()))").count(),
+            2,
+            "candidate SELECT binds the family twice"
+        );
+        assert_eq!(
+            pick.matches("upd_args.push(arg_str(family.as_deref()))").count(),
+            2,
+            "claim UPDATE binds the family twice"
+        );
+    }
+
+    #[test]
+    fn claim_by_id_enforces_platform_limit_like_the_pick_8217() {
+        // Oracle: a plain by-id claim refuses a cross-family valid
+        // limitation (the row reads as not claimable) and CLEARS a
+        // reason-less stored one instead of enforcing it.
+        let src = include_str!("turso_queue.rs");
+        let seg = seg8217(src, "fn claim_by_id(", "\nfn claim_transfer(");
+        assert!(
+            seg.contains("platform_limit_refusal("),
+            "by-id claim enforces the limitation"
+        );
+        assert!(
+            seg.contains("platform_limit = NULL")
+                && seg.contains("platform_limit_reason = NULL"),
+            "an invalid stored limit is cleared, not enforced"
+        );
+    }
+
+    #[test]
+    fn release_verb_contract_8217() {
+        // Oracle: release is holder-checked and reason-required,
+        // and returns the row to `queued` with its lease and
+        // session binding cleared and a `released` audit event;
+        // attempts are NOT handed back.
+        let src = include_str!("turso_queue.rs");
+        let seg = seg8217(src, "/// Release a claimed task straight back", "\nfn verb_park(");
+        for needle in [
+            "a release requires a reason",
+            "claimed_by(",
+            "\"released\"",
+            "DELETE FROM leases",
+            "attempt change",
+            "SET status = 'queued'",
+        ] {
+            assert!(seg.contains(needle), "verb_release misses {needle}");
+        }
+        assert!(
+            src.contains("\"/release\" => verb_release(t, req),"),
+            "release is dispatched"
+        );
     }
 }

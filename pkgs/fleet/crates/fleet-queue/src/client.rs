@@ -1315,6 +1315,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "lease-seconds",
             "lane",
             "task",
+            "count",
             "from-session",
             "platform",
             "session-id",
@@ -1385,6 +1386,16 @@ fn cmd_claim(rest: &[String]) -> i32 {
     if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
     }
+    // --count <n> (#8217): batch claim — the broker runs the same
+    // atomic pick n times and answers with every claimed row. The
+    // cap is enforced here (local, instant) and broker-side.
+    let count = match batch_count_flag(args.get_i64("count")) {
+        Ok(c) => c,
+        Err(e) => die(2, &e),
+    };
+    if count > 1 {
+        body["count"] = json!(count);
+    }
     // --from-session <ses>: with --task, a session-to-session
     // TRANSFER (#8210) — claim exactly this task DIRECTLY from
     // the session named, which must be the task's current holder
@@ -1396,6 +1407,9 @@ fn cmd_claim(rest: &[String]) -> i32 {
         body["from_session"] = json!(fs);
     }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
+    if count > 1 {
+        return claim_batch_output(&resp, &worker, count);
+    }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
         eprint("repo-queue: no claimable task");
@@ -1502,6 +1516,138 @@ enum GuardOutcome {
     /// claim on a GitHub outage (the primary store failing is what
     /// the fallback switch above is for).
     Unchecked(String),
+}
+
+/// #8217: --count validation for the batch claim. Absent or 1 is
+/// the ordinary single claim; 2..=BATCH_CLAIM_MAX is a batch;
+/// anything else is a usage error, checked locally so the failure
+/// is instant (the broker enforces the same bound).
+fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
+    match n {
+        None => Ok(1),
+        Some(n) if n == 1 => Ok(1),
+        Some(n) if (2..=crate::turso_queue::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
+        Some(n) => Err(format!(
+            "claim --count {n} is out of range: a batch claim takes \
+             1..={} items (#8217)",
+            crate::turso_queue::BATCH_CLAIM_MAX
+        )),
+    }
+}
+
+/// The batch claim's response handling (#8217): the broker ran the
+/// pick repeatedly and returned every claimed row. Each row goes
+/// through the SAME per-item post-claim handling as a single
+/// claim — the payload defense in depth and the #6741
+/// no-double-serve guard (a fallback-held row is blocked back,
+/// never served) — then prints one verdict:
+/// {"tasks": [...], "claimed": k, "requested": n, "guard_held": [...]}.
+/// Zero served rows is the usual no-claim verdict (NO_CLAIM_EXIT).
+fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
+    let rows = resp
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut tasks: Vec<Value> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+    for row in rows {
+        // Payload defense in depth, as in claim_output (#5444): a
+        // well-formed claim never carries a null or {} payload.
+        if let Some(payload) = row.get("payload") {
+            if payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty()) {
+                continue;
+            }
+        }
+        match fallback_guard(&row, worker) {
+            GuardOutcome::HeldBy(holder) => {
+                let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let (repo, issue) = task_issue(&row);
+                let blocker = format!(
+                    "issue {repo}#{issue} is held in the GitHub fallback by {holder}; \
+                     primary-store claim auto-blocked to prevent double-serve (#6741)"
+                );
+                let resp = call(
+                    "/block",
+                    &json!({
+                        "task_id": task_id,
+                        "worker": worker,
+                        "reason_class": "fallback_held",
+                        "blocker": blocker,
+                        "progress": {},
+                    }),
+                );
+                if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                    eprint(
+                        "repo-queue: WARNING: fallback guard block failed; \
+                         the task stays claimed under its lease",
+                    );
+                }
+                held.push(json!({
+                    "task": task_id,
+                    "held_by": holder,
+                    "repo": repo,
+                    "issue": issue,
+                }));
+            }
+            GuardOutcome::Unchecked(e) => {
+                let mut row = row;
+                if let Some(o) = row.as_object_mut() {
+                    o.insert(
+                        "guard_warning".to_string(),
+                        json!(format!(
+                            "fallback double-serve guard could not check GitHub: {e}"
+                        )),
+                    );
+                }
+                tasks.push(row);
+            }
+            GuardOutcome::Serve => tasks.push(row),
+        }
+    }
+    let claimed = tasks.len();
+    print_json(&json!({
+        "tasks": tasks,
+        "claimed": claimed,
+        "requested": requested,
+        "guard_held": held,
+    }));
+    if claimed == 0 {
+        eprint("repo-queue: no claimable task");
+        return NO_CLAIM_EXIT;
+    }
+    0
+}
+
+/// Release a claimed task straight back to the queue (#8217):
+/// `release <task_id> --worker <w> --reason <text>`. The broker
+/// returns the row to `queued`, immediately claimable, and records
+/// the reason on a `released` event. Dispatch uses it for an item
+/// whose sub-task failed to launch or bind: the item goes back to
+/// the pool in the same touch instead of sitting claimed and idle
+/// until its lease expires.
+fn cmd_release(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("release", &args, 1);
+    let Some(reason) = args.get("reason") else {
+        die(
+            2,
+            "release requires --reason \"<why this task goes back to the pool>\" (#8217)",
+        );
+    };
+    if reason.trim().is_empty() {
+        die(2, "release requires a non-empty --reason (#8217)");
+    }
+    let resp = unwrap_ok(call(
+        "/release",
+        &json!({
+            "task_id": args.pos_i64(0, "task_id"),
+            "worker": opt_worker(&args),
+            "reason": reason,
+        }),
+    ));
+    print_json(&require_row(&resp, "release_repo_task"));
+    0
 }
 
 fn fallback_guard(row: &Value, my_worker: &str) -> GuardOutcome {
@@ -2035,7 +2181,7 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|wake|block|cancel|fail|complete|revive|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|cancel|fail|complete|revive|health|signal|fallback> ...",
         );
         return 2;
     }
@@ -2049,6 +2195,7 @@ pub fn run(args: &[String]) -> i32 {
         "enqueue" => cmd_enqueue(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
+        "release" => cmd_release(rest),
         "lane" => cmd_lane(rest),
         "bind" => cmd_bind(rest),
         "heartbeat" => cmd_heartbeat(rest),
@@ -2111,6 +2258,22 @@ mod tests {
         assert_eq!(platform_flag("muse"), Ok("muse".to_string()));
         assert!(platform_flag("code-a").is_err());
         assert!(platform_flag("").is_err());
+    }
+
+    #[test]
+    fn batch_count_flag_bounds_8217() {
+        // #8217: absent/1 = the single claim; 2..=cap = a batch;
+        // anything else is a usage error naming the cap.
+        assert_eq!(batch_count_flag(None), Ok(1));
+        assert_eq!(batch_count_flag(Some(1)), Ok(1));
+        assert_eq!(batch_count_flag(Some(2)), Ok(2));
+        assert_eq!(
+            batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX)),
+            Ok(crate::turso_queue::BATCH_CLAIM_MAX)
+        );
+        assert!(batch_count_flag(Some(0)).is_err());
+        assert!(batch_count_flag(Some(-3)).is_err());
+        assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
     }
 
     #[test]
