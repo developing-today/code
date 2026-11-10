@@ -666,23 +666,36 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     section: latestSection,
   });
 
-  // Build a bounded number of missing historical payloads per tick. Failures
-  // are logged without detail and retried on a later tick.
-  let built = 0;
+  // Build a bounded number of missing historical payloads per tick. The
+  // budget is consumed before each fetch, so a failing or unassemblable
+  // batch still counts against the tick limit — an upstream outage can
+  // never turn this loop into an unbounded run of 60 s queries.
+  let attempts = 0;
   for (const row of index) {
-    if (built >= AA_HISTORICAL_BUILDS_PER_TICK) break;
+    if (attempts >= AA_HISTORICAL_BUILDS_PER_TICK) break;
     if (row.importBatch === latestSection.batch) continue;
     if (cacheMeta.get(row.importBatch)?.cached) continue;
+    attempts++;
     try {
-      const section = await assemble(await fetchAaPayload(token, ref, row.importBatch));
-      if (section) built++;
+      await assemble(await fetchAaPayload(token, ref, row.importBatch));
     } catch (err) {
       console.error(`collector: AA historical batch build failed (${err instanceof Error ? err.message : "error"})`);
     }
   }
 
   const batches: AaBatchSummary[] = summarizeBatches(index, cacheMeta);
-  return { ...latestSection, batches };
+  const withIndex: AaSection = { ...latestSection, batches };
+  // #3302 review: the last-good payload must carry the selector index.
+  // Re-writing it after the index exists means a later transient failure
+  // degrades to a page that still offers every cached version, instead
+  // of silently losing the picker until the next successful collection.
+  await writeAaLastGood({
+    batch: withIndex.batch,
+    configFingerprint: fingerprint,
+    fingerprint: cacheMeta.get(withIndex.batch)?.fingerprint ?? undefined,
+    section: withIndex,
+  });
+  return withIndex;
 }
 
 async function main(): Promise<void> {
