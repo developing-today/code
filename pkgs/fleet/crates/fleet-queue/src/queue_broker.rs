@@ -13,7 +13,8 @@
 //!      QUEUE_BROKER_SOCKET (Unix socket dual-bind, #6216; default
 //!      ~/.config/queue-broker/broker.sock via fleet-config),
 //!      QUEUE_BROKER_TOKEN_FILE (default ~/.config/queue-broker/token),
-//!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800),
+//!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800,
+//!      or unix://<path> for the secrets broker's socket, #6218),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
 //!
 //! Backend (#6741): QUEUE_BROKER_BACKEND=postgres (default; the
@@ -121,6 +122,9 @@ impl SecretSource for DirectSecrets {
             name: name.to_string(),
             detail,
         };
+        if let Some(socket) = self.url.strip_prefix("unix://") {
+            return self.resolve_uds(name, socket);
+        }
         let url = format!("{}/secret/{}", self.url, name);
         let mut resp = self
             .agent
@@ -130,28 +134,108 @@ impl SecretSource for DirectSecrets {
             .map_err(|e| unavailable(format!("secrets broker unreachable: {e}")))?;
         let status = resp.status().as_u16();
         let text = resp.body_mut().read_to_string().unwrap_or_default();
-        if status == 404 {
-            return Err(SecretError::NotFound {
-                source: "secrets-broker",
-                name: name.to_string(),
-            });
+        secret_from_response(name, status, &text)
+    }
+}
+
+impl DirectSecrets {
+    /// The UDS leg (#6218): the same GET /secret/<name> exchange
+    /// over the secrets broker's Unix socket -- its handler is
+    /// transport-agnostic (uds_http), so routes and auth are
+    /// identical. A connect failure falls back to the TCP endpoint
+    /// within the same resolve (the #6218 stale-socket rule).
+    fn resolve_uds(&self, name: &str, socket: &str) -> Result<SecretValue, SecretError> {
+        use std::io::{Read, Write};
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "secrets-broker",
+            name: name.to_string(),
+            detail,
+        };
+        let mut stream = match std::os::unix::net::UnixStream::connect(socket) {
+            Ok(stream) => stream,
+            Err(_) => {
+                let tcp = DirectSecrets {
+                    url: "http://100.99.113.103:4800".to_string(),
+                    token: self.token.clone(),
+                    agent: self.agent.clone(),
+                };
+                return tcp.resolve(name);
+            }
+        };
+        stream.set_read_timeout(Some(Duration::from_secs(90))).ok();
+        let req = format!(
+            "GET /secret/{name} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\nConnection: close\r\n\r\n",
+            self.token
+        );
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| unavailable(format!("secrets broker unreachable: {e}")))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|e| unavailable(format!("secrets broker unreachable: {e}")))?;
+        let text_raw = String::from_utf8_lossy(&raw).into_owned();
+        let mut parts = text_raw.splitn(2, "\r\n\r\n");
+        let head = parts.next().unwrap_or("");
+        let status: u16 = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        let text = parts.next().unwrap_or("").to_string();
+        secret_from_response(name, status, &text)
+    }
+}
+
+/// The response tail both DirectSecrets legs share: 404 is
+/// NotFound, >=300 is Unavailable, a 2xx body must carry `value`.
+fn secret_from_response(name: &str, status: u16, text: &str) -> Result<SecretValue, SecretError> {
+    let unavailable = |detail: String| SecretError::Unavailable {
+        source: "secrets-broker",
+        name: name.to_string(),
+        detail,
+    };
+    if status == 404 {
+        return Err(SecretError::NotFound {
+            source: "secrets-broker",
+            name: name.to_string(),
+        });
+    }
+    if status >= 300 {
+        return Err(unavailable(format!(
+            "secrets broker HTTP {status} for {name}: {}",
+            trim(text, 200)
+        )));
+    }
+    let v: Value = serde_json::from_str(text)
+        .map_err(|e| unavailable(format!("secrets broker bad JSON for {name}: {e}")))?;
+    v.get("value")
+        .and_then(|x| x.as_str())
+        .map(|s| SecretValue::from_resolved(s.to_string()))
+        .ok_or(SecretError::Unavailable {
+            source: "secrets-broker",
+            name: name.to_string(),
+            detail: format!("secrets broker response for {name} has no value"),
+        })
+}
+
+/// The queue broker's secrets-broker endpoint (#6218): an explicit
+/// QUEUE_BROKER_SECRETS_URL wins (http:// or unix:// form); without
+/// one, fleet-config's probe-based choice for the secrets-broker
+/// role decides -- a live role socket selects the UDS endpoint,
+/// otherwise the historical TCP default.
+fn default_secrets_url(explicit: Option<String>) -> String {
+    if let Some(u) = explicit {
+        if !u.trim().is_empty() {
+            return u;
         }
-        if status >= 300 {
-            return Err(unavailable(format!(
-                "secrets broker HTTP {status} for {name}: {}",
-                trim(&text, 200)
-            )));
+    }
+    let cfg = fleet_config::Config::load().unwrap_or_default();
+    match cfg.role_transport_choice("secrets-broker") {
+        Some(fleet_config::RoleTransport::Socket(socket)) => {
+            format!("unix://{}", socket.display())
         }
-        let v: Value = serde_json::from_str(&text)
-            .map_err(|e| unavailable(format!("secrets broker bad JSON for {name}: {e}")))?;
-        v.get("value")
-            .and_then(|x| x.as_str())
-            .map(|s| SecretValue::from_resolved(s.to_string()))
-            .ok_or(SecretError::Unavailable {
-                source: "secrets-broker",
-                name: name.to_string(),
-                detail: format!("secrets broker response for {name} has no value"),
-            })
+        _ => "http://100.99.113.103:4800".to_string(),
     }
 }
 
@@ -692,7 +776,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             // broker since the binary-direct migration retired the
             // Python helper it used to import).
             let select = if req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false) {
-                "id,queue,title,priority,status,dedupe_key,created_at,not_before,worker_id,lease_until,lane_id,attempts,max_attempts,progress"
+                "id,queue,title,priority,status,dedupe_key,created_at,not_before,worker_id,lease_until,lane_id,attempts,max_attempts,progress,payload"
             } else {
                 "id,queue,title,priority,status,dedupe_key,created_at,not_before"
             };
@@ -811,6 +895,36 @@ fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     provided.map(|v| v == expected).unwrap_or(false)
 }
 
+/// Pre-body gate for the broker transports (#6515, PR #6514 thread
+/// 4492609604). Oracle: an unauthorized or oversized request is
+/// refused from its headers alone, before a single body byte is
+/// read — an unauthenticated client can no longer stream a large or
+/// unfinished body and hold the connection until the handler's 401.
+/// Returns the refusal to send, or `None` to proceed to the body.
+/// The only unauthenticated route is the health probe, mirroring
+/// `handle_request`.
+fn pre_body_refusal(
+    method: &str,
+    target: &str,
+    provided_token: Option<&str>,
+    token: &str,
+    content_length: Option<u64>,
+) -> Option<(u16, Value)> {
+    let path = target.split('?').next().unwrap_or("");
+    if method == "GET" && path == "/healthz" {
+        return None;
+    }
+    if !token_matches(provided_token, token) {
+        return Some((401, json!({"error": "unauthorized"})));
+    }
+    if let Some(n) = content_length {
+        if n > crate::uds_http::MAX_BODY_BYTES as u64 {
+            return Some((413, json!({"error": "request body too large"})));
+        }
+    }
+    None
+}
+
 /// Transport-agnostic request handling (#6216): the TCP loop adapts
 /// tiny_http requests to this function and the UDS loop adapts
 /// Unix-socket requests; routes and auth are identical on both
@@ -845,6 +959,7 @@ fn handle_request(
 }
 
 pub fn run() -> i32 {
+    use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
     let home = crate::home::from_env().unwrap_or_else(|error| {
@@ -857,8 +972,7 @@ pub fn run() -> i32 {
         crate::log::info("queue-broker", &e);
         std::process::exit(3);
     });
-    let secrets_url = std::env::var("QUEUE_BROKER_SECRETS_URL")
-        .unwrap_or_else(|_| "http://100.99.113.103:4800".to_string());
+    let secrets_url = default_secrets_url(std::env::var("QUEUE_BROKER_SECRETS_URL").ok());
     let secrets_token_file = std::env::var("QUEUE_BROKER_SECRETS_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
     let secrets_token =
@@ -964,20 +1078,43 @@ pub fn run() -> i32 {
                 &format!("listening on uds {}", socket_path.display()),
             );
             std::thread::spawn(move || {
-                crate::uds_http::serve(listener, move |req| {
-                    let (status, value) = handle_request(
-                        &st,
-                        &tok,
-                        &req.method,
-                        &req.target,
-                        req.header("X-Agent-Token"),
-                        &req.body,
-                    );
-                    (
-                        status,
-                        serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-                    )
-                });
+                let pre_tok = tok.clone();
+                crate::uds_http::serve_with_precheck(
+                    listener,
+                    move |head| {
+                        // #6515: same pre-body gate as the TCP loop.
+                        let content_length = head
+                            .header("Content-Length")
+                            .and_then(|v| v.parse::<u64>().ok());
+                        pre_body_refusal(
+                            &head.method,
+                            &head.target,
+                            head.header("X-Agent-Token"),
+                            &pre_tok,
+                            content_length,
+                        )
+                        .map(|(status, value)| {
+                            (
+                                status,
+                                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                            )
+                        })
+                    },
+                    move |req| {
+                        let (status, value) = handle_request(
+                            &st,
+                            &tok,
+                            &req.method,
+                            &req.target,
+                            req.header("X-Agent-Token"),
+                            &req.body,
+                        );
+                        (
+                            status,
+                            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                        )
+                    },
+                );
             });
         }
         Ok(None) => crate::log::info(
@@ -1004,9 +1141,40 @@ pub fn run() -> i32 {
                 .iter()
                 .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
                 .map(|h| h.value.as_str().to_string());
+            // #6515: authenticate and size-check from the headers
+            // before reading any body byte. tiny_http 0.12 exposes
+            // no per-connection read timeout, so the residual TCP
+            // slow-body risk is bounded by this gate plus the capped
+            // read below and thread-per-connection isolation; the
+            // UDS transport carries real read timeouts (uds_http).
+            let content_length = req
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
+                .and_then(|h| h.value.as_str().parse::<u64>().ok());
+            if let Some((status, value)) = pre_body_refusal(
+                &method,
+                &target,
+                provided.as_deref(),
+                &token,
+                content_length,
+            ) {
+                let _ = req.respond(json_response(status, value));
+                return;
+            }
             let mut body = Vec::new();
             if method == "POST" {
-                let _ = req.as_reader().read_to_end(&mut body);
+                // Capped read: cap+1 bytes detect an overrun that
+                // the declared length hid (or never declared).
+                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
+                let _ = req.as_reader().take(cap).read_to_end(&mut body);
+                if body.len() > crate::uds_http::MAX_BODY_BYTES {
+                    let _ = req.respond(json_response(
+                        413,
+                        json!({"error": "request body too large"}),
+                    ));
+                    return;
+                }
             }
             let (status, value) =
                 handle_request(&state, &token, &method, &target, provided.as_deref(), &body);
@@ -1020,6 +1188,118 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_body_refusal_decides_from_headers_alone() {
+        // #6515 oracle (thread 4492609604): the gate's answer
+        // depends only on method/target/token/declared length —
+        // never on body bytes — so an unauthorized or oversized
+        // request is refused before its body is read.
+        let over = crate::uds_http::MAX_BODY_BYTES as u64 + 1;
+        // Unauthorized: refused even with an enormous declared body.
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", None, "tok", Some(over)).map(|r| r.0),
+            Some(401)
+        );
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("wrong"), "tok", None).map(|r| r.0),
+            Some(401)
+        );
+        // Authorized but oversized: 413.
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("tok"), "tok", Some(over)).map(|r| r.0),
+            Some(413)
+        );
+        // Authorized and within cap (or undeclared): proceeds.
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("tok"), "tok", Some(2)),
+            None
+        );
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("tok"), "tok", None),
+            None
+        );
+        // The health probe stays unauthenticated, as in handle_request.
+        assert_eq!(pre_body_refusal("GET", "/healthz", None, "tok", None), None);
+    }
+
+    #[test]
+    fn secrets_url_explicit_wins_and_default_is_a_known_endpoint() {
+        // #6218: QUEUE_BROKER_SECRETS_URL beats probe selection in
+        // both forms; empty counts as unset; the default is either
+        // the probed socket endpoint or the historical TCP one.
+        assert_eq!(
+            default_secrets_url(Some("http://127.0.0.1:9".to_string())),
+            "http://127.0.0.1:9"
+        );
+        assert_eq!(
+            default_secrets_url(Some("unix:///tmp/s.sock".to_string())),
+            "unix:///tmp/s.sock"
+        );
+        let default = default_secrets_url(Some("  ".to_string()));
+        assert!(
+            default == "http://100.99.113.103:4800" || default.starts_with("unix://"),
+            "unexpected default endpoint: {default}"
+        );
+        let default_none = default_secrets_url(None);
+        assert_eq!(default_none, default);
+    }
+
+    #[test]
+    fn secret_from_response_maps_statuses() {
+        // #6218: the shared tail of both DirectSecrets legs.
+        let ok = secret_from_response("n", 200, "{\"value\":\"v1\"}").expect("200 resolves");
+        assert_eq!(ok.expose(), "v1");
+        assert!(matches!(
+            secret_from_response("n", 404, ""),
+            Err(SecretError::NotFound { .. })
+        ));
+        assert!(matches!(
+            secret_from_response("n", 500, "boom"),
+            Err(SecretError::Unavailable { .. })
+        ));
+        assert!(matches!(
+            secret_from_response("n", 200, "{}"),
+            Err(SecretError::Unavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn direct_secrets_resolves_over_a_unix_socket() {
+        // #6218: the UDS leg speaks the same GET /secret/<name>
+        // exchange the TCP leg makes with ureq.
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("fleet-queue-uds-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let socket = dir.join("secrets.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind socket");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let body = "{\"value\":\"uds-secret\"}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).expect("write reply");
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let source = DirectSecrets {
+            url: format!("unix://{}", socket.display()),
+            token: "test-token".to_string(),
+            agent,
+        };
+        let value = source.resolve("some-name").expect("UDS resolve succeeds");
+        assert_eq!(value.expose(), "uds-secret");
+        server.join().expect("server thread");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn list_limit_rejects_out_of_range_before_the_postgrest_path() {

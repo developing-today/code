@@ -1044,10 +1044,9 @@ pub(super) fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Resul
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
 /// text verbatim when non-empty, otherwise its `src` verbatim when
-/// non-empty, otherwise nothing; a `front_matter` block contributes
-/// its `text` attr verbatim (#5639). Known remaining gap: `footnote_reference`
-/// atoms are not yet rendered — they contribute nothing; that is
-/// explicitly out of scope for the #1491 fix.
+/// non-empty, otherwise nothing; a `footnote_reference` contributes
+/// `[^<label>]` when its label is non-empty. A `front_matter` block
+/// contributes its `text` attr verbatim (#5639).
 pub(super) fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
@@ -1124,7 +1123,9 @@ pub(super) fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut 
 /// as a newline, and any other inline node recursed into (its own
 /// inline content contributes its text instead of being dropped).
 /// The `image` atom has no content — its payload is `attrs`, rendered
-/// per the pinned policy on `extract_plain_text` (#1491).
+/// per the pinned policy on `extract_plain_text` (#1491). A
+/// `footnote_reference` atom similarly renders its non-empty label
+/// using the Markdown footnote-reference form.
 pub(super) fn extract_inline_text(node: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -1149,6 +1150,18 @@ pub(super) fn extract_inline_text(node: &serde_json::Value) -> String {
                         attrs.and_then(|a| a.get("src")).and_then(|v| v.as_str())
                     {
                         out.push_str(src);
+                    }
+                }
+                "footnote_reference" => {
+                    if let Some(label) = inline
+                        .get("attrs")
+                        .and_then(|attrs| attrs.get("label"))
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|label| !label.is_empty())
+                    {
+                        out.push_str("[^");
+                        out.push_str(label);
+                        out.push(']');
                     }
                 }
                 _ => out.push_str(&extract_inline_text(inline)),

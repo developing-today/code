@@ -129,7 +129,7 @@ proptest! {
             link: None,
             checkpoint: None,
             rotation: None,
-            after: after.clone(), tag: None, document: None, removes: None, chat: None,
+            chat: None,
         };
         prop_assert!(sign(&key(), 0, None, None, ext.clone()).is_err());
         prop_assert!(ext.validate().is_err());
@@ -200,7 +200,7 @@ proptest! {
                     link: None,
                     checkpoint: None,
                     rotation: None,
-                    after: Vec::new(), tag: None, document: None, removes: None, chat: None,
+                    chat: None,
                 },
             )
             .encode();

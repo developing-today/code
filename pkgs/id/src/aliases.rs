@@ -89,7 +89,10 @@ pub fn aliases_of(claims: &[Claim], subject: &Hash) -> Vec<Alias> {
         .iter()
         .filter(|claim| claim.subject == *subject && claim.name == ALIAS_NAME)
         .filter_map(|claim| {
-            let text = claim.value.as_deref().filter(|text| !text.trim().is_empty())?;
+            let text = claim
+                .value
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())?;
             Some(Alias {
                 claim: claim.id,
                 text: text.to_owned(),

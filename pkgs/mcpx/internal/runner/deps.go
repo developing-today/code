@@ -792,6 +792,24 @@ func depsFlags(kind string, d *Deps) []string {
 	return nil
 }
 
+// checkerDepsFlags selects the dependency flags the preflight checker
+// runs with. When the runtime checks itself they are the execution
+// flags (execFlags), so a Deno file run keeps the --config
+// materialiseDeps added. When the checker differs -- the switch policy
+// checks a Node or Bun script with Deno -- the execution flags describe
+// a runtime the checker is not: Bun's --no-install is discarded by
+// ResolutionArgs and Node contributes none, so a deps.autoInstall=off
+// set would let the Deno checker download uncached dependencies before
+// execution starts. The checker gets the flags its own runtime would
+// carry for the same set instead, preserving the no-download policy
+// (Codex review, PR #6111).
+func checkerDepsFlags(execKind, onUnsupported string, d *Deps, execFlags []string) []string {
+	if d == nil || execKind == KindDeno || onUnsupported != "switch" {
+		return execFlags
+	}
+	return depsFlags(KindDeno, d)
+}
+
 // frozenNPM reports whether this run must install a frozen npm set
 // before executing: a node run carrying a package-lock.json or an
 // npm-shrinkwrap.json -- npm ci accepts either name for a frozen

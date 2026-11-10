@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  MIN_PROMPT_SPEC_CHARS,
   ValidationError,
   parseModel,
   parseSessionRequest,
@@ -149,13 +150,31 @@ describe("request validation", () => {
     }
   });
   test("sessions require repo and prompt; defaults issue+wait on", () => {
-    const r = parseSessionRequest({ repo: "developing-today/code", prompt: "do the thing" });
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "Fix the parser so trailing whitespace in a mark is rejected",
+    });
     expect(r.issue).toBe(true);
     expect(r.wait).toBe(true);
     expect(r.priority).toBe(40);
     expect(() => parseSessionRequest({ prompt: "x" })).toThrow(/repo/);
     expect(() => parseSessionRequest({ repo: "developing-today/code" })).toThrow(/prompt/);
     expect(() => parseSessionRequest("nope")).toThrow(ValidationError);
+  });
+
+  test("minimum spec gate rejects a titleless prompt that names no work (#4925)", () => {
+    const repo = "developing-today/code";
+    // Too short and no title: refused, and the error names the missing spec.
+    expect(() => parseSessionRequest({ repo, prompt: "do the thing" })).toThrow(/too short to name any work/);
+    expect(() => parseSessionRequest({ repo, prompt: "x".repeat(MIN_PROMPT_SPEC_CHARS - 1) })).toThrow(ValidationError);
+    // An explicit title exempts the request (the caller named the work).
+    const titled = parseSessionRequest({ repo, prompt: "do the thing", title: "Fix pm-dispatch spec gate" });
+    expect(titled.title).toBe("Fix pm-dispatch spec gate");
+    // A prompt at the floor with no title passes.
+    const compliant = parseSessionRequest({ repo, prompt: "x".repeat(MIN_PROMPT_SPEC_CHARS) });
+    expect(compliant.title).toBeUndefined();
+    // The gate runs after field validation: an invalid priority still errors as priority.
+    expect(() => parseSessionRequest({ repo, prompt: "x", priority: "constructor" })).toThrow(/priority/);
   });
 
   test("a prototype-spelling priority 400s at parse time, so no non-number reaches the packet (#2757)", () => {
@@ -172,7 +191,9 @@ describe("request validation", () => {
       parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", priority: "__proto__" }),
     ).toThrow(ValidationError);
     // A valid named priority still parses to a number.
-    expect(parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "high" }).priority).toBe(20);
+    expect(
+      parseSessionRequest({ repo: "developing-today/code", prompt: "x", title: "t", priority: "high" }).priority,
+    ).toBe(20);
   });
 
   test("tasks accept prompt or body, default kind triage and issue off", () => {
@@ -301,7 +322,7 @@ describe("session blank title/directory parsing (issue #2664)", () => {
   test("empty and whitespace-only title/directory parse as omitted", () => {
     const r = parseSessionRequest({
       repo: "developing-today/code",
-      prompt: "do the thing",
+      prompt: "make the mark parser reject trailing whitespace",
       title: "  ",
       directory: "",
     });
@@ -309,7 +330,7 @@ describe("session blank title/directory parsing (issue #2664)", () => {
     expect(r.directory).toBeUndefined();
     const r2 = parseSessionRequest({
       repo: "developing-today/code",
-      prompt: "do the thing",
+      prompt: "make the mark parser reject trailing whitespace",
       title: "",
       directory: " \t ",
     });

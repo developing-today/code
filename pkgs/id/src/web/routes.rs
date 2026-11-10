@@ -21,7 +21,7 @@ use super::security::{self, WebSecurity};
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
-    render_peers, render_settings,
+    render_peers, render_peers_content, render_settings,
 };
 use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use crate::tags::TagStore;
@@ -1085,7 +1085,10 @@ async fn peers_partial_handler(State(state): State<AppState>) -> impl IntoRespon
         Vec::new()
     };
 
-    Html(render_peers(&peers_data))
+    // Return only the inner content: fetchPartial assigns this as
+    // innerHTML of #peers-content, so the wrapper must not be included
+    // (issue #6956).
+    Html(render_peers_content(&peers_data))
 }
 
 /// Static assets handler.
@@ -2957,6 +2960,7 @@ async fn identity_update_name_handler(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
         let content: Vec<serde_json::Value> = blocks
@@ -3160,6 +3164,10 @@ mod tests {
         serde_json::json!({"type": "image", "attrs": attrs})
     }
 
+    fn footnote_reference(label: &str) -> serde_json::Value {
+        serde_json::json!({"type": "footnote_reference", "attrs": {"label": label}})
+    }
+
     #[test]
     fn test_extract_plain_text_image_only_paragraph_saves_as_alt() {
         // #1491: an image atom's only text is its alt.
@@ -3212,6 +3220,88 @@ mod tests {
             {"type": "text", "text": "y"}
         ]})]);
         assert_eq!(extract_plain_text(&doc), "xy");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_between_text_runs() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "before "},
+            footnote_reference("note:α"),
+            {"type": "text", "text": " after"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "before [^note:α] after");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_in_recursive_container() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+            {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "listed "},
+                footnote_reference("1"),
+                {"type": "text", "text": " text"}
+            ]})]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "listed [^1] text");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_missing_or_empty_label_is_nothing() {
+        for reference in [
+            serde_json::json!({"type": "footnote_reference"}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {}}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {"label": ""}}),
+        ] {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x"},
+                reference,
+                {"type": "text", "text": "y"}
+            ]})]);
+            assert_eq!(extract_plain_text(&doc), "xy");
+        }
+    }
+
+    // Oracle for the two proptests below (#5366, Codex P1 on PR #6427):
+    // plain-text serialization concatenates inline text runs verbatim, so
+    // a footnote_reference with a non-empty label L between runs B and A
+    // must serialize to exactly B + "[^" + L + "]" + A, at any nesting
+    // depth — the implementation only ever push_str's the label between
+    // the fixed "[^" and "]" markers.
+    proptest! {
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_label_verbatim(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": before.clone()},
+                footnote_reference(&label),
+                {"type": "text", "text": after.clone()}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
+        }
+
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_in_recursive_container(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                    {"type": "text", "text": before.clone()},
+                    footnote_reference(&label),
+                    {"type": "text", "text": after.clone()}
+                ]})]}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
+        }
     }
 
     #[test]

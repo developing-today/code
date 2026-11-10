@@ -67,6 +67,13 @@ type Auth struct {
 
 	// OAuth configures the full flow, for a server that demands it.
 	OAuth *OAuth `json:"oauth,omitempty"`
+
+	// Failover configures identity failover (#7948): an ordered list of
+	// identities whose credentials are named by secret name only. When
+	// set, the pool resolves the CURRENT identity's credential at
+	// connection start (see Rotator.ResolveCurrent), and rotation state
+	// persists across restarts at Failover.StatePath.
+	Failover *Failover `json:"failover,omitempty"`
 }
 
 // OAuth is the 2.1 flow the specification describes for HTTP transports.
@@ -237,6 +244,13 @@ func (a *Auth) ResolveWith(get func(name string) string) (*Resolved, error) {
 // Used by `mcpx config` and `mcpx doctor`, both of which people paste into
 // issues.
 func (a *Auth) Describe() string {
+	if a != nil && a.Failover != nil && len(a.Failover.Identities) > 0 {
+		names := make([]string, len(a.Failover.Identities))
+		for i, id := range a.Failover.Identities {
+			names[i] = id.Name
+		}
+		return "failover (" + strings.Join(names, ", ") + ")"
+	}
 	if a == nil || a.Type == "" || strings.EqualFold(a.Type, "none") {
 		if a != nil && len(a.Env) > 0 {
 			return fmt.Sprintf("env (%d variables)", len(a.Env))

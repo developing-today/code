@@ -173,6 +173,59 @@ class TestIsCandidate(unittest.TestCase):
         self.assertFalse(poll.is_candidate(self.row(progress={})))
 
 
+class TestIsHandoffParked(unittest.TestCase):
+    """The handoff sink: a handed-off task parked by its claiming
+    lane must surface as a candidate, or it loops claim → handoff →
+    park → re-claim forever (#7907/#6533)."""
+
+    def row(self, **over):
+        r = {
+            "status": "parked",
+            "progress": {
+                "lane": "opencode",
+                "last_checkpoint": {"stage": "handed_off"},
+                "session_id": None,
+            },
+            "lane_id": "code-j",
+        }
+        r.update(over)
+        return poll.normalize_row(r)
+
+    def test_parked_handoff_is_candidate(self):
+        self.assertTrue(poll.is_handoff_parked(self.row()))
+        cands = poll.get_parked_candidates([self.row()])
+        self.assertEqual(len(cands), 1)
+
+    def test_parked_launch_failed_yield_is_candidate(self):
+        r = self.row(progress={"lane": "opencode", "stage": "launch_failed"})
+        self.assertTrue(poll.is_handoff_parked(r))
+
+    def test_genuine_wait_park_is_not_candidate(self):
+        # A gated dependency park: stage is the park itself.
+        r = self.row(
+            progress={"lane": "opencode", "stage": "parked", "gate": "#3801 OPEN"}
+        )
+        self.assertFalse(poll.is_handoff_parked(r))
+
+    def test_parked_bound_row_is_not_candidate(self):
+        r = self.row(
+            progress={
+                "lane": "opencode",
+                "stage": "handed_off",
+                "session_id": "ses_1",
+            }
+        )
+        self.assertFalse(poll.is_handoff_parked(r))
+
+    def test_claimed_row_is_not_a_parked_candidate(self):
+        r = self.row(status="claimed")
+        self.assertFalse(poll.is_handoff_parked(r))
+
+    def test_parked_openchamber_lane_is_never_candidate(self):
+        r = self.row(lane_id="8d133595-c60c-4dcb-8e82-59b7d0ac9b5a")
+        self.assertFalse(poll.is_handoff_parked(r))
+
+
 class TestParseLeaseMs(unittest.TestCase):
     def test_zulu_lease_parses(self):
         self.assertEqual(
@@ -297,33 +350,28 @@ class TestIsStuckBound(unittest.TestCase):
 
 
 class TestFetchClaimedRows(unittest.TestCase):
-    """Claimed rows come from the repo-queue binary (#5419 replaced
-    the broker-HTTP read this suite originally pinned when it was
-    written against the pre-#5419 poll.py). subprocess.run is
-    stubbed; no queue is touched. A queue that cannot be read
-    contributes no rows: fetch_claimed_rows returns [] on any CLI
+    """Claimed rows come from the queue-broker's rich /list (#7325:
+    the repo-queue binary's list verb prints a human table, and
+    json-parsing it read every queue as empty). _broker_post is
+    stubbed; no broker is touched. A queue that cannot be read
+    contributes no rows: fetch_claimed_rows returns [] on any broker
     or payload failure."""
 
-    class Result:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fetch(self, payload, returncode=0):
+    def fetch(self, payload, raises=None):
         captured = {}
 
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            captured["kwargs"] = kwargs
-            stdout = payload if isinstance(payload, str) else json.dumps(payload)
-            return self.Result(returncode, stdout)
+        def fake_post(path, body):
+            captured["path"] = path
+            captured["body"] = body
+            if raises is not None:
+                raise raises
+            return payload
 
-        with patch.object(poll.subprocess, "run", side_effect=fake_run):
+        with patch.object(poll, "_broker_post", side_effect=fake_post):
             rows = poll.fetch_claimed_rows("repo-health-code-pilot")
         return rows, captured
 
-    def test_cli_list_reads_claimed_rows_and_normalizes(self):
+    def test_broker_list_reads_claimed_rows_and_normalizes(self):
         raw = {
             "id": 42,
             "queue": "repo-health-code-pilot",
@@ -331,39 +379,74 @@ class TestFetchClaimedRows(unittest.TestCase):
             "worker_id": "repo-worker",
             "progress": {"lane": "opencode", "stage": "handed_off"},
         }
-        rows, captured = self.fetch({"rows": [raw]})
+        rows, captured = self.fetch({"ok": True, "rows": [raw]})
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["id"], 42)
         self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
-        cmd = [str(part) for part in captured["cmd"]]
+        self.assertEqual(captured["path"], "/list")
         self.assertEqual(
-            cmd[1:],
-            ["list", "--queue", "repo-health-code-pilot",
-             "--status", "claimed"],
+            captured["body"],
+            {"queue": "repo-health-code-pilot", "status": "claimed",
+             "rich": True, "limit": poll.LIST_LIMIT},
         )
 
     def test_flattened_row_gets_progress_synthesized(self):
-        rows, _ = self.fetch([{
+        rows, _ = self.fetch({"rows": [{
             "id": 7,
             "status": "claimed",
             "lane": "opencode",
             "stage": "handed_off",
             "session_id": None,
-        }])
+        }]})
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["progress"]["lane"], "opencode")
         self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
 
+    def test_stage_lifted_from_last_checkpoint(self):
+        # #7706: the checkpoint verb records the yield under
+        # progress.last_checkpoint.stage; the classifiers read
+        # progress.stage. The lifted row must classify as a candidate.
+        rows, _ = self.fetch({"rows": [{
+            "id": 9,
+            "status": "claimed",
+            "progress": {"lane": "opencode",
+                         "last_checkpoint": {"stage": "handed_off"}},
+        }]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+        self.assertTrue(poll.is_candidate(rows[0]))
+
+    def test_packet_lifted_from_payload(self):
+        packet = {"kind": "fix", "repo": "developing-today/code",
+                  "issue": 1234}
+        rows, _ = self.fetch({"rows": [{
+            "id": 11, "status": "claimed", "payload": packet,
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }]})
+        self.assertEqual(rows[0]["packet"], packet)
+        entry = poll._candidate_entry(rows[0], "repo-health-code-pilot")
+        self.assertEqual(entry["packet"], packet)
+
+    def test_packet_lifted_from_payload_string(self):
+        rows, _ = self.fetch({"rows": [{
+            "id": 12, "status": "claimed",
+            "payload": "{\"kind\": \"triage\"}",
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }]})
+        self.assertEqual(rows[0]["packet"], {"kind": "triage"})
+
     def test_empty_list_is_a_valid_empty_queue(self):
-        rows, _ = self.fetch({"rows": []})
+        rows, _ = self.fetch({"ok": True, "rows": []})
         self.assertEqual(rows, [])
 
-    def test_cli_failure_returns_no_rows(self):
-        rows, _ = self.fetch("", returncode=1)
+    def test_broker_failure_returns_no_rows(self):
+        rows, _ = self.fetch(None, raises=RuntimeError("broker down"))
         self.assertEqual(rows, [])
 
     def test_malformed_payload_returns_no_rows(self):
-        rows, _ = self.fetch("this is not json")
+        rows, _ = self.fetch({"ok": True, "rows": "not a list"})
+        self.assertEqual(rows, [])
+        rows, _ = self.fetch({"ok": True})
         self.assertEqual(rows, [])
 
     def test_non_dict_and_unclaimed_rows_are_skipped(self):

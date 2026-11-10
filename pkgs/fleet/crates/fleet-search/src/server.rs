@@ -203,11 +203,19 @@ pub struct ServeSettings {
     pub limits: RuntimeLimits,
 }
 
+fn home_dir() -> PathBuf {
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
+}
+
 pub fn default_service_config_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".local/state/atlas-search/service.json")
+    home_dir().join(".local/state/atlas-search/service.json")
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {

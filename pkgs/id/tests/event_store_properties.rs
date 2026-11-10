@@ -769,7 +769,7 @@ proptest! {
                     link: None,
                     checkpoint: None,
                     rotation: None,
-                    after: Vec::new(), tag: None, document: None, removes: None, chat: None,
+                    chat: None,
                 },
             )
             .encode();
