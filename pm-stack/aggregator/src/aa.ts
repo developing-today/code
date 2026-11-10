@@ -644,10 +644,15 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: null,
     note: "OpenAI plan quota — the fleet's final reserve, spent last by design.",
   },
-  "openai.alternate": {
+  "_openai.alt": {
     plan: "ChatGPT plan (student)",
     multiplier: null,
-    note: "Second ChatGPT account door; resolves through the fork's built-in catalog.",
+    note: "Second ChatGPT account door (popesdrew, self-contained _openai instance; renamed from openai.alternate 2026-11-10, code#8163).",
+  },
+  "_openai.main": {
+    plan: "ChatGPT plan",
+    multiplier: null,
+    note: "Main ChatGPT account door (drewrypope, self-contained _openai instance; renamed from openai.main 2026-11-10, code#8163).",
   },
   "_claude": {
     plan: "Claude plan",
