@@ -59,7 +59,7 @@ pub const DEFAULT_TURSO_URL: &str = "https://fleet-queue-dezren39.aws-us-east-1.
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, status, \
-    not_before, worker_id, claimed_at, lease_until, lane_id, attempts, max_attempts, \
+    not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
@@ -350,6 +350,21 @@ impl TursoBackend {
     pub fn ensure_schema(&self) -> Result<(), TErr> {
         let stmts: Vec<(&str, Vec<Arg>)> = SCHEMA.iter().map(|s| (*s, Vec::new())).collect();
         self.pipeline(&stmts)?;
+        // #8097 Rule 2: tasks.platform (the optional coarse platform
+        // selector) — databases created before the column landed
+        // gain it here. Existing rows read NULL (unset: either
+        // family may claim them); no backfill, nothing destructive.
+        let cols = self.query_objs(
+            "SELECT name FROM pragma_table_info('tasks')",
+            &[],
+            &[],
+        )?;
+        let has_platform = cols
+            .iter()
+            .any(|c| c.get("name").and_then(|v| v.as_str()) == Some("platform"));
+        if !has_platform {
+            self.exec("ALTER TABLE tasks ADD COLUMN platform TEXT", &[])?;
+        }
         Ok(())
     }
 }
@@ -373,7 +388,7 @@ const SCHEMA: [&str; 12] = [
         payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT, \
         priority INTEGER, status TEXT NOT NULL DEFAULT 'queued', \
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \
-        lane_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
+        lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
         max_attempts INTEGER NOT NULL DEFAULT 4, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
@@ -1308,7 +1323,22 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ),
         );
     }
-    let task = task_from_packet(&packet, &queue);
+    let mut task = task_from_packet(&packet, &queue);
+    // #8097 Rule 2: the optional coarse platform selector. The
+    // request field (CLI --platform) wins over the packet's own
+    // "platform"; absent both, the row stores NULL (unset — either
+    // family may claim it). The selector names a family, never a
+    // lane, and is never required.
+    let platform = match parse_platform(
+        req_str(req, "platform")
+            .or_else(|| packet.get("platform").and_then(|v| v.as_str())),
+    ) {
+        Ok(p) => p,
+        Err(e) => return fail(2, format!("enqueue: {e}")),
+    };
+    if let Some(obj) = task.as_object_mut() {
+        obj.insert("platform".to_string(), json!(platform));
+    }
     if req.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(false) {
         return ok(json!({"dry_run": true, "task": task, "warnings": warnings}));
     }
@@ -1333,8 +1363,8 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         }
         let ins = t.exec(
             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
-               status, not_before, max_attempts, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, '{}', '{}', ?, ?)",
+               status, not_before, max_attempts, platform, progress, result, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
                 arg_str(task.get("title").and_then(|v| v.as_str())),
@@ -1352,6 +1382,7 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .and_then(|v| v.as_i64())
                     .map(Arg::Int)
                     .unwrap_or(Arg::Int(4)),
+                arg_str(platform.as_deref()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
             ],
@@ -1597,6 +1628,54 @@ fn claim_lease_until(claimed_at_unix: i64, lease_seconds: i64) -> String {
     iso(claimed_at_unix + lease_seconds)
 }
 
+/// The coarse platform families a queue item may be restricted to
+/// (#8097 Rule 2): a task's `platform` is NULL (unset — either
+/// family may claim it) or exactly one of these. A platform names
+/// a FAMILY, never a specific lane.
+pub const PLATFORM_FAMILIES: [&str; 2] = ["openchamber", "muse"];
+
+/// Parse an optional platform selector (an enqueue request field,
+/// a packet field, or a claim's declared family). Missing/empty
+/// means unset; anything that is not one of PLATFORM_FAMILIES is
+/// an error, so a typo can never silently widen or narrow who may
+/// take an item.
+fn parse_platform(raw: Option<&str>) -> Result<Option<String>, String> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(p) if PLATFORM_FAMILIES.contains(&p) => Ok(Some(p.to_string())),
+        Some(p) => Err(format!(
+            "invalid platform {p:?} (expected \"openchamber\" or \"muse\")"
+        )),
+    }
+}
+
+/// Whether a claim declaring `family` may take a row whose
+/// platform selector is `row_platform`. Unset rows are open to
+/// every claim; a set row only to a claim declaring the same
+/// family. A claim that declares NO family therefore only ever
+/// takes unset rows, so pre-#8097 claimants keep exactly their
+/// old reach and selector items wait for their own family.
+fn platform_allows(row_platform: Option<&str>, family: Option<&str>) -> bool {
+    match row_platform {
+        None => true,
+        Some(p) => family == Some(p),
+    }
+}
+
+/// The SQL predicate mirroring is_parked_handoff, for the broker's
+/// no-id handoff pick (#8097 Rule 1): a parked recorded opencode
+/// handoff — progress lane opencode, a yield stage (the top-level
+/// stage, else the last checkpoint's), and no session binding.
+/// The park verb's default not_before timer is the handoff sink's
+/// bookkeeping, not a genuine wait, so the predicate deliberately
+/// ignores not_before.
+const PARKED_HANDOFF_SQL: &str = "status = 'parked' \
+    AND json_extract(progress, '$.lane') = 'opencode' \
+    AND json_extract(progress, '$.session_id') IS NULL \
+    AND COALESCE(json_extract(progress, '$.stage'), \
+                 json_extract(progress, '$.last_checkpoint.stage')) \
+        IN ('handed_off', 'launch_failed')";
+
 /// The yield stage a task's progress records: the top-level `stage`
 /// when present, else the last checkpoint's stage (the checkpoint
 /// verb records it under progress.last_checkpoint.stage, #7706 — the
@@ -1653,7 +1732,12 @@ fn is_parked_handoff(row: &Value) -> bool {
 /// so it does not gate the claimant collecting its own handoff.
 /// Anything else (claimed, blocked, a genuine wait park, a queued
 /// row parked into the future) is not claimable by id.
-fn by_id_claimable(row: &Value, now: &str) -> bool {
+fn by_id_claimable(row: &Value, now: &str, family: Option<&str>) -> bool {
+    // #8097 Rule 2: even the special-case by-id claim respects the
+    // item's platform selector.
+    if !platform_allows(row.get("platform").and_then(|v| v.as_str()), family) {
+        return false;
+    }
     match row.get("status").and_then(|v| v.as_str()) {
         Some("queued") => {
             let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1680,6 +1764,7 @@ fn claim_by_id(
     worker: &str,
     lane: &Option<String>,
     lease_seconds: i64,
+    family: Option<&str>,
 ) -> Result<Option<Value>, TErr> {
     let Some(row) = get_task(t, task_id)? else {
         return Ok(None);
@@ -1698,7 +1783,7 @@ fn claim_by_id(
         .to_string();
     let now_unix = now_unix();
     let now = iso(now_unix);
-    if !by_id_claimable(&row, &now) {
+    if !by_id_claimable(&row, &now, family) {
         return Ok(None);
     }
     let lease_until = claim_lease_until(now_unix, lease_seconds);
@@ -1767,7 +1852,7 @@ fn claim_by_id(
         &json!({
             "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
             "cleared_session_id": cleared, "lane_id": lane,
-            "by_id": true, "task_id": task_id,
+            "by_id": true, "task_id": task_id, "platform": family,
         }),
     )?;
     Ok(Some(row))
@@ -1778,6 +1863,24 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let queue = req_str(req, "queue").unwrap_or("").to_string();
     let lease_seconds = req_i64(req, "lease_seconds").unwrap_or(CLAIM_DEFAULT_LEASE_SECONDS);
     let lane = req_str(req, "lane").map(str::to_string);
+    // #8097 Rule 2: the claim's declared family. Only items whose
+    // platform selector is unset or equal to it may be claimed.
+    let family = match parse_platform(req_str(req, "platform")) {
+        Ok(f) => f,
+        Err(e) => return fail(2, format!("claim_repo_task: {e}")),
+    };
+    // #8097 Rule 1: pick mode. The default pick is the queue's next
+    // suitable item. "parked_handoff" restricts the pick to parked
+    // recorded opencode handoffs — the broker chooses the row, the
+    // caller names NO task id. Naming a task (task_id, below) stays
+    // the explicit special case.
+    let handoff_pick = match req_str(req, "pick") {
+        None => false,
+        Some("parked_handoff") => true,
+        Some(other) => {
+            return fail(2, format!("claim_repo_task: unknown pick mode {other:?}"));
+        }
+    };
     let work = (|| -> Result<Option<Value>, TErr> {
         if let Some(lane_id) = &lane {
             let lanes = t.query_objs(
@@ -1806,12 +1909,22 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         }
         expire_leases(t)?;
         quarantine_payload_missing(t, &queue)?;
-        // By-id claim: when the request names a task, take exactly
-        // that row (claim_by_id) instead of the pick. This is how
-        // the opencode claimant collects a recorded handoff out of
-        // the parked sink the handing-off lane left it in.
+        // By-id claim — the SPECIAL CASE (#8097 Rule 1): when the
+        // request names a task, take exactly that row (claim_by_id)
+        // instead of the pick. Reserved for one-off revivals of a
+        // specific row (e.g. a single parked handoff); the default
+        // flow never names a task — the claimant collects parked
+        // handoffs through the pick="parked_handoff" mode above.
         if let Some(want_id) = req_i64(req, "task_id") {
-            return claim_by_id(t, want_id, &queue, &worker, &lane, lease_seconds);
+            return claim_by_id(
+                t,
+                want_id,
+                &queue,
+                &worker,
+                &lane,
+                lease_seconds,
+                family.as_deref(),
+            );
         }
         let now_unix = now_unix();
         let now = iso(now_unix);
@@ -1844,45 +1957,67 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         // instant, so if a competing claim takes the picked row
         // first — or it is parked into the future in between — this
         // UPDATE affects 0 rows and the loop re-picks.
-        let pick = t.query_objs(
-            "SELECT id FROM tasks WHERE queue = ? \
-               AND payload IS NOT NULL AND payload <> '' AND payload <> '{}' AND ( \
-               (status = 'queued' AND attempts < max_attempts \
+        // #8097: the pick predicate is built per pick mode. Both
+        // modes carry the Rule 2 platform gate — an undeclared
+        // family is the empty string here, which no stored
+        // selector equals, so such claims only ever pick unset
+        // items. The default mode keeps the ordinary predicate
+        // (queued rows due; parked rows whose timer has passed).
+        // Handoff mode picks the next parked recorded opencode
+        // handoff (PARKED_HANDOFF_SQL) with no caller-named id
+        // and no not_before gating — Rule 1's default collection
+        // path for the claimant.
+        let pick_predicate = if handoff_pick {
+            PARKED_HANDOFF_SQL.to_string()
+        } else {
+            "(status = 'queued' AND attempts < max_attempts \
                  AND (not_before IS NULL OR not_before <= ?)) \
-               OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)) \
-             ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1",
-            &[
-                Arg::Text(queue.clone()),
-                Arg::Text(now.clone()),
-                Arg::Text(now.clone()),
-            ],
-            &[],
-        )?;
+               OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)"
+                .to_string()
+        };
+        let pick_sql = format!(
+            "SELECT id FROM tasks WHERE queue = ? \
+               AND payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
+               AND (platform IS NULL OR platform = ?) \
+               AND ( {pick_predicate} ) \
+             ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1"
+        );
+        let mut pick_args: Vec<Arg> = vec![
+            Arg::Text(queue.clone()),
+            Arg::Text(family.as_deref().unwrap_or("").to_string()),
+        ];
+        if !handoff_pick {
+            pick_args.push(Arg::Text(now.clone()));
+            pick_args.push(Arg::Text(now.clone()));
+        }
+        let pick = t.query_objs(&pick_sql, &pick_args, &[])?;
         let Some(picked) = pick.into_iter().next() else {
             return Ok(None);
         };
         let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let upd = t.exec(
+        let upd_sql = format!(
             "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
                lease_until = ?, \
                attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
                lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
                updated_at = ? \
-             WHERE id = ? AND ( \
-               (status = 'queued' AND attempts < max_attempts \
-                 AND (not_before IS NULL OR not_before <= ?)) \
-               OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?))",
-            &[
-                Arg::Text(worker.clone()),
-                Arg::Text(now.clone()),
-                Arg::Text(lease_until.clone()),
-                arg_str(lane.as_deref()),
-                Arg::Text(now.clone()),
-                Arg::Int(pick_id),
-                Arg::Text(now.clone()),
-                Arg::Text(now.clone()),
-            ],
-        )?;
+             WHERE id = ? AND (platform IS NULL OR platform = ?) \
+               AND ( {pick_predicate} )"
+        );
+        let mut upd_args: Vec<Arg> = vec![
+            Arg::Text(worker.clone()),
+            Arg::Text(now.clone()),
+            Arg::Text(lease_until.clone()),
+            arg_str(lane.as_deref()),
+            Arg::Text(now.clone()),
+            Arg::Int(pick_id),
+            Arg::Text(family.as_deref().unwrap_or("").to_string()),
+        ];
+        if !handoff_pick {
+            upd_args.push(Arg::Text(now.clone()));
+            upd_args.push(Arg::Text(now.clone()));
+        }
+        let upd = t.exec(&upd_sql, &upd_args)?;
         if upd.affected == 0 {
             // Lost the race for the picked row; re-pick.
             skipped += 1;
@@ -1949,6 +2084,8 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             &json!({
                 "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
                 "cleared_session_id": cleared, "lane_id": lane,
+                "platform": family,
+                "pick": if handoff_pick { "parked_handoff" } else { "default" },
             }),
         )?;
         Ok(Some(row))
@@ -2851,9 +2988,9 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let rich = req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false);
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
-         worker_id, lease_until, lane_id, attempts, max_attempts, progress, payload"
+         worker_id, lease_until, lane_id, platform, attempts, max_attempts, progress, payload"
     } else {
-        "id, queue, title, priority, status, dedupe_key, created_at, not_before"
+        "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
     };
     let mut sql = format!(
         "SELECT {select} FROM tasks WHERE queue = ?"
@@ -3478,14 +3615,14 @@ mod tests {
             }),
         );
         assert!(is_parked_handoff(&row));
-        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z"));
+        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z", None));
         // Top-level stage and the launch_failed recovery yield are
         // the same recorded handoff in their other spellings.
         let row2 = handoff_row(
             "parked",
             json!({"lane": "opencode", "stage": "launch_failed"}),
         );
-        assert!(by_id_claimable(&row2, "2026-11-09T23:20:00Z"));
+        assert!(by_id_claimable(&row2, "2026-11-09T23:20:00Z", None));
     }
 
     #[test]
@@ -3496,13 +3633,13 @@ mod tests {
             "parked",
             json!({"lane": "opencode", "stage": "parked", "gate": "#3801 OPEN"}),
         );
-        assert!(!by_id_claimable(&gated, "2026-11-09T23:20:00Z"));
+        assert!(!by_id_claimable(&gated, "2026-11-09T23:20:00Z", None));
         // A direct-lane yield is the direct lane's own business.
         let direct = handoff_row(
             "parked",
             json!({"lane": "direct", "stage": "handed_off"}),
         );
-        assert!(!by_id_claimable(&direct, "2026-11-09T23:20:00Z"));
+        assert!(!by_id_claimable(&direct, "2026-11-09T23:20:00Z", None));
         // A bound session id means a launch already happened; the
         // binding is supervision's, never a fresh claim's.
         let bound = handoff_row(
@@ -3512,13 +3649,61 @@ mod tests {
                 "session_id": "ses_abc",
             }),
         );
-        assert!(!by_id_claimable(&bound, "2026-11-09T23:20:00Z"));
+        assert!(!by_id_claimable(&bound, "2026-11-09T23:20:00Z", None));
         // A claimed row is owned; by-id never steals a live claim.
         let claimed = handoff_row(
             "claimed",
             json!({"lane": "opencode", "stage": "handed_off"}),
         );
-        assert!(!by_id_claimable(&claimed, "2026-11-09T23:20:00Z"));
+        assert!(!by_id_claimable(&claimed, "2026-11-09T23:20:00Z", None));
+    }
+
+    #[test]
+    fn platform_parse_accepts_only_the_two_families() {
+        // #8097 Rule 2: unset is absence; the only set values are
+        // the two coarse families; anything else errors.
+        assert_eq!(parse_platform(None), Ok(None));
+        assert_eq!(parse_platform(Some("")), Ok(None));
+        assert_eq!(
+            parse_platform(Some("openchamber")),
+            Ok(Some("openchamber".to_string()))
+        );
+        assert_eq!(
+            parse_platform(Some("muse")),
+            Ok(Some("muse".to_string()))
+        );
+        assert!(parse_platform(Some("code-a")).is_err());
+        assert!(parse_platform(Some("OpenChamber")).is_err());
+    }
+
+    #[test]
+    fn platform_allows_matrix() {
+        // Unset rows are open to every claim, family declared or not.
+        assert!(platform_allows(None, None));
+        assert!(platform_allows(None, Some("muse")));
+        assert!(platform_allows(None, Some("openchamber")));
+        // A set row answers only to its own family; an undeclared
+        // claim never takes a selector item.
+        assert!(platform_allows(Some("muse"), Some("muse")));
+        assert!(!platform_allows(Some("muse"), Some("openchamber")));
+        assert!(!platform_allows(Some("muse"), None));
+        assert!(platform_allows(Some("openchamber"), Some("openchamber")));
+        assert!(!platform_allows(Some("openchamber"), Some("muse")));
+        assert!(!platform_allows(Some("openchamber"), None));
+    }
+
+    #[test]
+    fn by_id_claim_respects_the_platform_selector() {
+        // #8097 Rule 2: the special-case by-id claim honors the
+        // selector too — a muse item is not claimable by an
+        // openchamber (or undeclared) by-id claim, and vice versa.
+        let mut row = handoff_row("queued", json!({}));
+        row["not_before"] = json!("2026-11-09T00:00:00Z");
+        row["platform"] = json!("muse");
+        let now = "2026-11-09T23:20:00Z";
+        assert!(by_id_claimable(&row, now, Some("muse")));
+        assert!(!by_id_claimable(&row, now, Some("openchamber")));
+        assert!(!by_id_claimable(&row, now, None));
     }
 
     #[test]
@@ -3526,15 +3711,15 @@ mod tests {
         // Queued + attempts left + not_before passed: claimable.
         let mut row = handoff_row("queued", json!({}));
         row["not_before"] = json!("2026-11-09T00:00:00Z");
-        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z"));
+        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z", None));
         // Queued but parked into the future: not claimable by id.
         let future = handoff_row("queued", json!({}));
-        assert!(!by_id_claimable(&future, "2026-11-09T23:20:00Z"));
+        assert!(!by_id_claimable(&future, "2026-11-09T23:20:00Z", None));
         // Queued at the attempts cap: not claimable by id.
         let mut capped = handoff_row("queued", json!({}));
         capped["not_before"] = json!("2026-11-09T00:00:00Z");
         capped["attempts"] = json!(4);
-        assert!(!by_id_claimable(&capped, "2026-11-09T23:20:00Z"));
+        assert!(!by_id_claimable(&capped, "2026-11-09T23:20:00Z", None));
     }
 
     #[test]

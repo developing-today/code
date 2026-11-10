@@ -152,6 +152,59 @@ class TestLaunchStep(unittest.TestCase):
         self.assertIn("777", bind_argv)
         self.assertIn("ses_new1", bind_argv)
 
+    def test_parked_candidate_is_collected_without_naming_its_id(self):
+        # #8097 Rule 1: a parked handoff candidate is collected via
+        # the broker-picked handoff claim — no argv ever names the
+        # task id — and then launches exactly like a claimed one.
+        binds = []
+        claims = []
+        base_fake = make_fake_run(binds)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "claim" in argv:
+                claims.append(argv)
+                return Result(0, json.dumps({"id": 888, "status": "claimed"}))
+            return base_fake(cmd, **kwargs)
+
+        parked = dict(CANDIDATE, id=888, status="parked",
+                      queue=claimant.QUEUES[0])
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": [dict(parked)]}), \
+             patch.object(claimant.subprocess, "run", fake_run):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 888)
+        self.assertEqual(len(claims), 1)
+        claim_argv = claims[0]
+        self.assertIn("--handoff", claim_argv)
+        self.assertIn("--platform", claim_argv)
+        self.assertIn("openchamber", claim_argv)
+        self.assertNotIn("--task", claim_argv)
+        self.assertNotIn("888", claim_argv)
+
+    def test_collect_parked_handoffs_drains_until_the_broker_has_none(self):
+        # The collection loop claims broker-picked handoffs until
+        # the broker answers {"task": null}; every claim is a
+        # no-id handoff claim under the openchamber family.
+        rows = [Result(0, json.dumps({"id": 501, "status": "claimed"})),
+                Result(0, json.dumps({"id": 502, "status": "claimed"})),
+                Result(0, json.dumps({"task": None}))]
+        argvs = []
+
+        def fake_run(cmd, **kwargs):
+            argvs.append([str(part) for part in cmd])
+            return rows[len(argvs) - 1]
+
+        with patch.object(claimant.subprocess, "run", fake_run):
+            collected = claimant._collect_parked_handoffs("q1", 5)
+        self.assertEqual(sorted(collected), [501, 502])
+        self.assertEqual(len(argvs), 3)
+        for argv in argvs:
+            self.assertIn("--handoff", argv)
+            self.assertNotIn("--task", argv)
+
     def test_vanished_candidate_is_a_recorded_skip(self):
         calls = {"n": 0}
 

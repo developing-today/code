@@ -440,72 +440,57 @@ def _send_prompt(session_id: str, prompt: str) -> bool:
 CLAIMANT_WORKER = "opencode-claimant"
 
 
-def _claim_parked_candidate(candidate: Dict) -> Optional[str]:
-    """Collect a parked handoff candidate: claim exactly that task
-    by id, as the claimant, so the bind below has a live claim to
-    attach to. Returns None on success (the candidate is updated in
-    place: status claimed, worker_id the claimant), else a skip
-    reason.
+def _collect_parked_handoffs(queue: str, want: int) -> Dict[int, Dict]:
+    """Collect up to `want` parked recorded handoffs from `queue`
+    WITHOUT naming a task id (#8097 Rule 1): each
+    `repo-queue claim --handoff` lets the BROKER pick the next
+    parked handoff (its ordinary pick order), claimed as the
+    claimant, so the launch flow below has a live claim to bind
+    against. Returns {task_id: claimed row}.
 
     The handing-off lane parks the task as its handoff sink, so
-    without this step the task is never in the claimed state the
+    without collection the task is never in the claimed state the
     launch flow binds against — it waited out the park timer, was
     re-claimed by the next shift wave, handed off, and parked again
-    (#7907/#6533). The by-id claim (claim --task) is the broker's
-    recorded-handoff path: it takes a parked row only when its
-    progress is an unbound opencode yield, and never steals a live
-    claim or a genuine wait park. A broker build without by-id
-    support (the PG fallback) ignores the task id and claims the
-    queue's top row instead; that row is parked straight back and
-    the mismatch is reported, never launched over."""
-    task_id = candidate["id"]
-    try:
-        result = subprocess.run(
-            [
-                str(REPO_QUEUE_CMD),
-                "claim",
-                "--queue", candidate["queue"],
-                "--worker", CLAIMANT_WORKER,
-                "--task", str(task_id),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        data = json.loads(result.stdout) if result.stdout.strip() else None
-    except Exception as e:
-        return f"parked_claim_error: {str(e)}"
-    # cmd_claim prints the claimed row itself ({"task": null} when
-    # nothing was claimed).
-    row = data if isinstance(data, dict) else None
-    claimed_id = row.get("id") if isinstance(row, dict) else None
-    if claimed_id == task_id:
-        candidate["status"] = "claimed"
-        candidate["worker_id"] = CLAIMANT_WORKER
-        return None
-    if claimed_id is not None:
-        # Wrong row claimed: this broker ignored --task. Restore the
-        # row to parked at once and report the mismatch; launching
-        # anything on a guessed claim is how double-execution starts.
+    (#7907/#6533). Collection used to name the task
+    (`claim --task <id>`); that by-id claim is now the special-case
+    verb (one-off revivals), and this default path does not depend
+    on it — the broker's handoff pick only ever returns a parked
+    recorded opencode handoff (unbound yield progress), never a
+    live claim or a genuine wait park.
+
+    The claim declares the claimant's family, --platform
+    openchamber (#8097 Rule 2): a parked handoff whose item
+    carries the `muse` selector is not the opencode claimant's
+    to collect.
+    """
+    collected: Dict[int, Dict] = {}
+    for _ in range(max(want, 0)):
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [
                     str(REPO_QUEUE_CMD),
-                    "park", str(claimed_id),
+                    "claim",
+                    "--queue", queue,
                     "--worker", CLAIMANT_WORKER,
-                    "--delay-seconds", "60",
-                    "--reason",
-                    "claimant by-id claim unsupported on this broker "
-                    "build; wrong-row claim restored to parked",
+                    "--platform", "openchamber",
+                    "--handoff",
                 ],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=15,
             )
+            data = json.loads(result.stdout) if result.stdout.strip() else None
         except Exception:
-            pass
-        return "parked_claim_mismatch_restored"
-    return "parked_claim_failed"
+            break
+        # cmd_claim prints the claimed row itself ({"task": null}
+        # when nothing was claimed).
+        row = data if isinstance(data, dict) else None
+        claimed_id = row.get("id") if isinstance(row, dict) else None
+        if claimed_id is None:
+            break
+        collected[claimed_id] = row
+    return collected
 
 
 def launch_step(mode: str, cap_room: int) -> List[Dict]:
@@ -563,6 +548,22 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             and c.get("stage") in ("handed_off", "launch_failed")
         ]
         
+        # Parked handoff sink (#8097 Rule 1): collect this fire's
+        # parked candidates' claims up front, grouped by queue,
+        # without naming any task id — one broker-picked handoff
+        # claim per discovered parked candidate. A parked
+        # candidate whose id is not in `collected` when its turn
+        # comes was not collected (its pick lost a race or the
+        # broker had nothing claimable) and is skipped below —
+        # the binding is never improvised.
+        parked_by_queue: Dict[str, int] = {}
+        for c in unbound_opencode:
+            if c.get("status") == "parked":
+                parked_by_queue[c["queue"]] = parked_by_queue.get(c["queue"], 0) + 1
+        collected: Dict[int, Dict] = {}
+        for queue_name, want in parked_by_queue.items():
+            collected.update(_collect_parked_handoffs(queue_name, want))
+
         for candidate in unbound_opencode:
             if cap_room <= 0:
                 skips.append({
@@ -578,20 +579,21 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
 
             # Parked handoff sink: the candidate was handed off and
             # then parked by its claiming lane, so no live claim
-            # exists to bind against. Collect the claim by id first
-            # (as the claimant; the launched session then works
-            # under the claimant's worker identity). A failed or
-            # mismatched collection skips the candidate — the
-            # binding is never improvised.
+            # existed to bind against until the collection above
+            # claimed it (as the claimant; the launched session
+            # then works under the claimant's worker identity). A
+            # candidate the collection did not claim is skipped —
+            # the binding is never improvised.
             if candidate.get("status") == "parked":
-                claim_skip = _claim_parked_candidate(candidate)
-                if claim_skip is not None:
+                if task_id not in collected:
                     skips.append({
                         "task_id": task_id,
-                        "reason": claim_skip
+                        "reason": "parked_claim_failed"
                     })
                     continue
-                worker_id = candidate.get("worker_id", CLAIMANT_WORKER)
+                candidate["status"] = "claimed"
+                candidate["worker_id"] = CLAIMANT_WORKER
+                worker_id = CLAIMANT_WORKER
 
             # Step 4a: Re-verify task state
             try:
