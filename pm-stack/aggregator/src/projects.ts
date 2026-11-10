@@ -9,7 +9,7 @@
 // This module is pure parsing/mapping (no I/O except fetchProjectSnapshot,
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
-import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolItem, RefKey } from "./model.ts";
+import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolEdgeDiagnostic, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refKey } from "./model.ts";
 import { isRecord, isTimestampNotFuture } from "./validate.ts";
 import { workItemRefSet } from "./work-items.ts";
@@ -82,8 +82,8 @@ interface GqlContent {
   /** Sub-issue parent (issues only; null when none). */
   parent?: GqlEdgeNode | null;
   /** "blocked by" / "blocks" dependency edges (issues only). */
-  blockedBy?: { nodes?: (GqlEdgeNode | null)[] } | null;
-  blocking?: { nodes?: (GqlEdgeNode | null)[] } | null;
+  blockedBy?: { nodes?: (GqlEdgeNode | null)[] | null } | null;
+  blocking?: { nodes?: (GqlEdgeNode | null)[] | null } | null;
 }
 interface GqlItem {
   id?: string;
@@ -137,18 +137,43 @@ function singleSelect(item: GqlItem, fieldName: string): string | null {
 }
 
 /** One edge endpoint (GraphQL parent/blockedBy/blocking node) as a
- * canonical ref, or null when the node is incomplete. */
-function edgeRef(n: GqlEdgeNode | null | undefined): RefKey | null {
-  if (typeof n?.number !== "number" || !n.repository?.nameWithOwner) return null;
-  return refKey({ repo: n.repository.nameWithOwner, number: n.number });
+ * canonical ref; incomplete or malformed endpoints are diagnosed and dropped. */
+function edgeRef(
+  n: GqlEdgeNode | null | undefined,
+  relation: ProjectPoolEdgeDiagnostic["relation"],
+  diagnostics: ProjectPoolEdgeDiagnostic[],
+): RefKey | null {
+  if (typeof n?.number !== "number" || !n.repository?.nameWithOwner) {
+    diagnostics.push({ relation, state: "unavailable", target: null });
+    return null;
+  }
+  const ref = refKey({ repo: n.repository.nameWithOwner, number: n.number });
+  if (!isValidRef(ref)) {
+    diagnostics.push({ relation, state: "malformed", target: ref });
+    return null;
+  }
+  return ref;
+}
+
+function edgeNodes(
+  connection: { nodes?: (GqlEdgeNode | null)[] | null } | null | undefined,
+  relation: "blockedBy" | "blocks",
+  diagnostics: ProjectPoolEdgeDiagnostic[],
+): (GqlEdgeNode | null)[] {
+  if (connection === undefined || connection === null || connection.nodes == null) {
+    diagnostics.push({ relation, state: "unavailable", target: null });
+    return [];
+  }
+  return connection.nodes;
 }
 
 /** Parse one GraphQL page (or a full response) into pool items.
  * Draft items / items without a linked issue/PR are skipped: they
  * have no ref the dashboard can resolve or link to. Edge fields
  * (parent/blockedBy/blocks) map only for issues — PRs and drafts
- * never carry them, and items whose issue has no edges parse with
- * the fields absent. Epic membership (epicRef) is NOT resolved here:
+ * never carry them. Explicit empty connections mean no edge; omitted
+ * queried edge fields are retained as unavailable diagnostics.
+ * Epic membership (epicRef) is NOT resolved here:
  * it needs the whole pool (parents may sit on other pages), so
  * resolveEpicRefs runs over the aggregate after all pages parse. */
 export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): ProjectPoolItem[] {
@@ -161,9 +186,22 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
     const repo = c.repository.nameWithOwner;
     const isPr = item.type === "PULL_REQUEST" || /\/pull\//.test(c.url);
     const rawState = (c.state ?? "OPEN").toUpperCase();
-    const parentRef = !isPr ? edgeRef(c.parent) : null;
-    const blockedBy = !isPr ? (c.blockedBy?.nodes ?? []).map(edgeRef).filter((x): x is RefKey => x !== null) : [];
-    const blocks = !isPr ? (c.blocking?.nodes ?? []).map(edgeRef).filter((x): x is RefKey => x !== null) : [];
+    const edgeDiagnostics: ProjectPoolEdgeDiagnostic[] = [];
+    let parentRef: RefKey | null = null;
+    if (!isPr) {
+      if (c.parent === undefined) edgeDiagnostics.push({ relation: "parent", state: "unavailable", target: null });
+      else if (c.parent) parentRef = edgeRef(c.parent, "parent", edgeDiagnostics);
+    }
+    const blockedBy = !isPr
+      ? edgeNodes(c.blockedBy, "blockedBy", edgeDiagnostics)
+          .map((n) => edgeRef(n, "blockedBy", edgeDiagnostics))
+          .filter((x): x is RefKey => x !== null)
+      : [];
+    const blocks = !isPr
+      ? edgeNodes(c.blocking, "blocks", edgeDiagnostics)
+          .map((n) => edgeRef(n, "blocks", edgeDiagnostics))
+          .filter((x): x is RefKey => x !== null)
+      : [];
     out.push({
       id: item.id,
       // Normalize the nullable GraphQL databaseId to the model's optional
@@ -192,6 +230,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       ...(parentRef ? { parentRef } : {}),
       ...(blockedBy.length ? { blockedBy } : {}),
       ...(blocks.length ? { blocks } : {}),
+      ...(edgeDiagnostics.length ? { edgeDiagnostics } : {}),
     });
   }
   return out;
@@ -453,7 +492,17 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.parentRef === undefined || isValidRef(p.parentRef)) &&
     (p.epicRef === undefined || isValidRef(p.epicRef)) &&
     (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every(isValidRef))) &&
-    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef)))
+    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef))) &&
+    (p.edgeDiagnostics === undefined ||
+      (Array.isArray(p.edgeDiagnostics) &&
+        p.edgeDiagnostics.every(
+          (d) =>
+            d !== null &&
+            typeof d === "object" &&
+            ["parent", "blockedBy", "blocks"].includes(d.relation) &&
+            ["unavailable", "malformed"].includes(d.state) &&
+            (d.target === null || typeof d.target === "string"),
+        )))
   );
 }
 

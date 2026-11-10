@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { epicGraph, epicSelector } from "../src/epic-graph.ts";
-import type { ProjectPoolItem, RefKey } from "../src/model.ts";
+import type { OrchestrationSection, ProjectPoolItem, RefKey, TierItem } from "../src/model.ts";
+import type { DashAction } from "../src/actions.ts";
+import { STANDING_IDENTITIES } from "../src/registry.ts";
 
 const R = (n: number): RefKey => `developing-today/code#${n}` as RefKey;
 
@@ -152,6 +154,9 @@ describe("epicGraph", () => {
     expect(g.nodes.map((n) => n.ref)).not.toContain(unsafe);
     expect(g.edges).toContainEqual({ from: R(2), to: R(3), type: "dependency" });
     expect(g.edges).toContainEqual({ from: R(4), to: R(2), type: "dependency" });
+    expect(g.edgeDiagnostics).toContainEqual({ sourceRef: R(2), relation: "blockedBy", state: "malformed", target: "812" });
+    expect(g.edgeDiagnostics).toContainEqual({ sourceRef: R(2), relation: "blocks", state: "malformed", target: unsafe });
+    expect(g.edgeDiagnostics.some((d) => d.target === R(99))).toBe(false);
     expect(g.rankedBlocked.find((r) => r.ref === R(2))?.blockers).toEqual([R(3)]);
 
     const html = renderWith(pool);
@@ -230,6 +235,92 @@ describe("epicGraph", () => {
     expect(g.status).toBe("ok");
     expect(g.nodes.length).toBe(3);
     expect(new Set(g.nodes.map((n) => n.row)).size).toBe(3);
+    expect(g.cycleGroups).toEqual([{ kind: "hierarchy", name: "Hierarchy cycle 1 (2 items)", members: [R(2), R(3)] }]);
+    expect(g.nodes.find((n) => n.ref === R(2))?.depth).toBe(g.nodes.find((n) => n.ref === R(3))?.depth);
+  });
+
+  test("dependency SCCs are named, stable, and not credited as positive unblock work", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
+      item({ number: 3, epicRef: R(1), blockedBy: [R(2)] }),
+      item({ number: 4, epicRef: R(1), blockedBy: [R(2)] }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.cycleGroups).toEqual([{ kind: "dependency", name: "Dependency cycle 1 (2 items)", members: [R(2), R(3)] }]);
+    expect(graph.rankedBlocked.some((row) => row.ref === R(2) || row.ref === R(3))).toBe(false);
+    expect(graph.rankedBlocked.find((row) => row.ref === R(4))?.downstreamCount).toBe(0);
+  });
+
+  test("full-pool dependency cycles that affect this epic are warned even beyond one hop", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
+      item({ number: 3, blockedBy: [R(4)] }),
+      item({ number: 4, blockedBy: [R(2)] }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(4));
+    expect(graph.cycleGroups).toEqual([{ kind: "dependency", name: "Dependency cycle 1 (3 items)", members: [R(2), R(3), R(4)] }]);
+    expect(graph.rankedBlocked.some((row) => row.ref === R(2))).toBe(false);
+  });
+
+  test("full-pool hierarchy cycles stay grouped when a member is beyond one hop", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), parentRef: R(3) }),
+      item({ number: 3, parentRef: R(4) }),
+      item({ number: 4, parentRef: R(2) }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(4));
+    expect(graph.cycleGroups).toContainEqual({
+      kind: "hierarchy",
+      name: "Hierarchy cycle 1 (3 items)",
+      members: [R(2), R(3), R(4)],
+    });
+    expect(graph.nodes.find((node) => node.ref === R(2))?.depth).toBe(graph.nodes.find((node) => node.ref === R(3))?.depth);
+  });
+
+  test("hierarchy cycles farther up a member's parent chain still produce warning groups", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), parentRef: R(3) }),
+      item({ number: 3, parentRef: R(4) }),
+      item({ number: 4, parentRef: R(5) }),
+      item({ number: 5, parentRef: R(4) }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(4));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(5));
+    expect(graph.cycleGroups).toContainEqual({
+      kind: "hierarchy",
+      name: "Hierarchy cycle 1 (2 items)",
+      members: [R(4), R(5)],
+    });
+  });
+
+  test("an acyclic dependency graph has no cycle warning groups", () => {
+    const graph = epicGraph(fixturePool(), R(1));
+    expect(graph.cycleGroups).toEqual([]);
+  });
+
+  test("unavailable edge diagnostics stay distinct from valid external refs", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({
+        number: 2,
+        epicRef: R(1),
+        blockedBy: [R(99)],
+        edgeDiagnostics: [{ relation: "blockedBy", state: "unavailable", target: null }],
+      }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.edgeDiagnostics).toEqual([
+      { sourceRef: R(2), relation: "blockedBy", state: "unavailable", target: null },
+    ]);
+    expect(graph.nodes.find((node) => node.ref === R(99))).toMatchObject({ unresolved: true, title: null, state: null });
+    expect(graph.externalCount).toBe(1);
   });
 
   test("members with no edges still return nodes (absence is data, not an error)", () => {
@@ -260,10 +351,10 @@ const PROV: Provenance = {
   aa: "x",
 };
 
-function renderWith(pool: ProjectPoolItem[]): string {
+function renderWith(pool: ProjectPoolItem[], graphActions?: Parameters<typeof renderProgramProject>[5]): string {
   const config = projectConfigById("pm-dashboard")!;
   const items = new Map<RefKey, GhItem>();
-  return renderProgramProject(buildProjectDetail(config, items, pool, []), items, PROV);
+  return renderProgramProject(buildProjectDetail(config, items, pool, []), items, PROV, undefined, pool, graphActions);
 }
 
 describe("renderProgramProject per-epic dependency graph (#3973)", () => {
@@ -280,6 +371,131 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain('stroke-dasharray="5 3"');
     expect(html).toContain("dashed amber lines are dependency edges");
     expect(html).toContain("Solid grey lines are sub-issue hierarchy");
+  });
+
+  test("cycle groups render member links and do not promise one member clears a cycle", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
+      item({ number: 3, epicRef: R(1), blockedBy: [R(2)] }),
+    ];
+    const html = renderWith(pool);
+    expect(html).toContain("Dependency cycle 1 (2 items)");
+    expect(html).toContain("Resolving one member alone does not clear this cycle");
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/2"');
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/3"');
+  });
+
+  test("hierarchy cycles render as warning groups rather than false roots", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), parentRef: R(3) }),
+      item({ number: 3, epicRef: R(1), parentRef: R(2) }),
+    ];
+    const html = renderWith(pool);
+    expect(html).toContain("Hierarchy cycle 1 (2 items)");
+    expect(html).toContain("not independent roots");
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/2"');
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/3"');
+  });
+
+  test("only published graph items get audited triage actions and existing feedback", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1) }),
+      item({ number: 3, epicRef: R(1) }),
+    ];
+    const proposalAt = new Date().toISOString();
+    const published: TierItem = {
+      id: "graph-task-2",
+      kind: "task",
+      title: "Published graph item",
+      source: "tracked",
+      reason: "Needs a decision",
+      since: "2026-11-08T00:00:00Z",
+      lastSeenAt: "2026-11-08T00:00:00Z",
+      ref: R(2),
+      whyUser: "decision",
+      delegation: {
+        mode: "first-pass",
+        status: "proposal-ready",
+        updatedAt: proposalAt,
+        runId: "proposal-run",
+        proposal: {
+          summary: "Published proposal summary",
+          detail: "Published proposal detail",
+          proposedChanges: ["Published proposal change"],
+          at: proposalAt,
+        },
+      },
+    };
+    const orchestration: OrchestrationSection = {
+      version: 1,
+      generatedAt: "2026-11-08T00:00:00Z",
+      runId: "orch-test",
+      provenance: { sources: ["test"] },
+      tiers: { needsDrew: [published], needsOrchestrator: [] },
+      dependencies: [],
+      goals: [],
+      actions: [],
+    };
+    const action = (over: Partial<DashAction>): DashAction => ({
+      id: "action-1",
+      clientToken: "token-1",
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef: `gh:${R(2)}`,
+      payload: {},
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      createdAt: "2026-11-08T00:00:00Z",
+      state: "new",
+      ...over,
+    });
+    const html = renderWith(pool, {
+      orchestration,
+      orchestrationState: "live",
+      identities: STANDING_IDENTITIES,
+      actionsByObject: new Map([
+        [
+          `gh:${R(2)}`,
+          [
+            action({}),
+            action({ id: "action-2", clientToken: "token-2", verb: "snooze", state: "rejected", resultNote: "Consumer declined" }),
+          ],
+        ],
+      ]),
+    });
+    expect(html).toContain('data-kind="triage"');
+    expect(html).toContain('data-object="gh:developing-today/code#2"');
+    expect(html).toContain('data-verb="acknowledge"');
+    expect(html).toContain("Acknowledge sent · pending");
+    expect(html).toContain("Consumer declined");
+    expect(html).toContain("Published proposal summary");
+    expect(html).toContain("Published proposal detail");
+    expect(html).toContain("Published proposal change");
+    expect(html).toContain('data-verb="approve-proposal"');
+    expect(html).toContain('data-verb="reject-proposal"');
+    expect(html.indexOf('class="propbox"')).toBeLessThan(html.indexOf('data-verb="approve-proposal"'));
+    expect(html).toContain('fetch("/api/actions"');
+    expect(html).toContain("No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.");
+    expect(html).not.toContain('data-object="gh:developing-today/code#3"');
+  });
+
+  test("malformed and unavailable relation data is explained separately from external refs", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({
+        number: 2,
+        epicRef: R(1),
+        blockedBy: ["not-a-ref", R(99)],
+        edgeDiagnostics: [{ relation: "blocks", state: "unavailable", target: null }],
+      }),
+    ];
+    const html = renderWith(pool);
+    expect(html).toContain("Malformed relation reference");
+    expect(html).toContain("Unavailable edge data");
+    expect(html).toContain("not in this pool / status unknown — unresolved");
+    expect(html).not.toContain("Malformed relation reference: <a href=\"https://github.com/developing-today/code/issues/99\"");
   });
 
   test("the vertical list names blockers and states as text, external refs as unknown", () => {

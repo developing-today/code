@@ -15,7 +15,7 @@
 // - an epic with no pool items, or an epic ref the pool does not
 //   hold, is "unavailable" — never an empty success.
 
-import type { ProjectPoolItem, RefKey } from "./model.ts";
+import type { ProjectPoolEdgeDiagnostic, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { effortWeight, modeOf } from "./weights.ts";
@@ -26,9 +26,10 @@ export const EPIC_GRAPH_DEFAULT_CAP = 120;
 function transitiveOpenEpicDescendants(
   ref: RefKey,
   byRef: Map<RefKey, ProjectPoolItem>,
+  cyclicRefs: ReadonlySet<RefKey>,
   visited: Set<RefKey> = new Set(),
 ): Set<RefKey> {
-  if (visited.has(ref)) return new Set();
+  if (visited.has(ref) || cyclicRefs.has(ref)) return new Set();
   visited.add(ref);
   
   const item = byRef.get(ref);
@@ -42,8 +43,8 @@ function transitiveOpenEpicDescendants(
   }
   
   // Recursively visit all blockers
-  for (const blockerRef of item.blockedBy ?? []) {
-    const blockers = transitiveOpenEpicDescendants(blockerRef, byRef, new Set(visited));
+  for (const blockerRef of safeRefs(item.blockedBy)) {
+    const blockers = transitiveOpenEpicDescendants(blockerRef, byRef, cyclicRefs, new Set(visited));
     for (const b of blockers) {
       result.add(b);
     }
@@ -57,9 +58,10 @@ function transitiveOpenEpicDescendants(
 function contributingDownstreamItems(
   blockerRef: RefKey,
   byRef: Map<RefKey, ProjectPoolItem>,
+  cyclicRefs: ReadonlySet<RefKey>,
   visited: Set<RefKey> = new Set(),
 ): Set<RefKey> {
-  if (visited.has(blockerRef)) return new Set();
+  if (visited.has(blockerRef) || cyclicRefs.has(blockerRef)) return new Set();
   visited.add(blockerRef);
   
   const blockerItem = byRef.get(blockerRef);
@@ -73,8 +75,8 @@ function contributingDownstreamItems(
   }
   
   // Recursively visit all blockers of this blocker
-  for (const upstreamBlockerRef of blockerItem.blockedBy ?? []) {
-    const contributors = contributingDownstreamItems(upstreamBlockerRef, byRef, new Set(visited));
+  for (const upstreamBlockerRef of safeRefs(blockerItem.blockedBy)) {
+    const contributors = contributingDownstreamItems(upstreamBlockerRef, byRef, cyclicRefs, new Set(visited));
     for (const c of contributors) {
       result.add(c);
     }
@@ -162,6 +164,17 @@ export interface EpicGraphEdge {
   type: EpicGraphEdgeType;
 }
 
+export interface EpicGraphCycleGroup {
+  kind: EpicGraphEdgeType;
+  /** Stable, user-facing warning label. */
+  name: string;
+  members: RefKey[];
+}
+
+export interface EpicGraphEdgeDiagnostic extends ProjectPoolEdgeDiagnostic {
+  sourceRef: RefKey;
+}
+
 export interface EpicGraph {
   status: "ok" | "unavailable";
   /** Why the graph is unavailable; null when status is "ok". */
@@ -169,6 +182,10 @@ export interface EpicGraph {
   epic: { ref: RefKey; number: number; title: string; issueUrl: string; state: string } | null;
   nodes: EpicGraphNode[];
   edges: EpicGraphEdge[];
+  /** Strongly connected components, grouped by relation type. */
+  cycleGroups: EpicGraphCycleGroup[];
+  /** Malformed or unavailable endpoints; valid external refs are not diagnostics. */
+  edgeDiagnostics: EpicGraphEdgeDiagnostic[];
   /** Nodes in the full (uncapped) graph. */
   totalNodes: number;
   /** Nodes left out by the cap (0 when everything is shown). */
@@ -207,6 +224,8 @@ function unavailable(reason: string): EpicGraph {
     epic: null,
     nodes: [],
     edges: [],
+    cycleGroups: [],
+    edgeDiagnostics: [],
     totalNodes: 0,
     truncated: 0,
     externalCount: 0,
@@ -215,6 +234,65 @@ function unavailable(reason: string): EpicGraph {
     rankedBlocked: [],
     maxDepth: 0,
   };
+}
+
+/** Tarjan SCCs, returned in stable canonical-ref order. */
+function stronglyConnectedComponents(
+  refs: Iterable<RefKey>,
+  edges: readonly EpicGraphEdge[],
+  kind: EpicGraphEdgeType,
+): RefKey[][] {
+  const orderedRefs = [...new Set(refs)].sort((a, b) => a.localeCompare(b));
+  const refSet = new Set(orderedRefs);
+  const children = new Map<RefKey, RefKey[]>(orderedRefs.map((ref) => [ref, []]));
+  for (const edge of edges) {
+    if (edge.type !== kind || !refSet.has(edge.from) || !refSet.has(edge.to)) continue;
+    children.get(edge.from)!.push(edge.to);
+  }
+  for (const targets of children.values()) targets.sort((a, b) => a.localeCompare(b));
+
+  let nextIndex = 0;
+  const indexByRef = new Map<RefKey, number>();
+  const lowByRef = new Map<RefKey, number>();
+  const stack: RefKey[] = [];
+  const onStack = new Set<RefKey>();
+  const components: RefKey[][] = [];
+  const visit = (ref: RefKey) => {
+    const index = nextIndex++;
+    indexByRef.set(ref, index);
+    lowByRef.set(ref, index);
+    stack.push(ref);
+    onStack.add(ref);
+    for (const child of children.get(ref) ?? []) {
+      if (!indexByRef.has(child)) {
+        visit(child);
+        lowByRef.set(ref, Math.min(lowByRef.get(ref)!, lowByRef.get(child)!));
+      } else if (onStack.has(child)) {
+        lowByRef.set(ref, Math.min(lowByRef.get(ref)!, indexByRef.get(child)!));
+      }
+    }
+    if (lowByRef.get(ref) !== indexByRef.get(ref)) return;
+    const component: RefKey[] = [];
+    while (stack.length) {
+      const member = stack.pop()!;
+      onStack.delete(member);
+      component.push(member);
+      if (member === ref) break;
+    }
+    component.sort((a, b) => a.localeCompare(b));
+    components.push(component);
+  };
+  for (const ref of orderedRefs) if (!indexByRef.has(ref)) visit(ref);
+  return components.sort((a, b) => a[0]!.localeCompare(b[0]!));
+}
+
+function cycleComponents(refs: Iterable<RefKey>, edges: readonly EpicGraphEdge[], kind: EpicGraphEdgeType): RefKey[][] {
+  const selfLoops = new Set(edges.filter((edge) => edge.type === kind && edge.from === edge.to).map((edge) => edge.from));
+  return stronglyConnectedComponents(refs, edges, kind).filter((component) => component.length > 1 || selfLoops.has(component[0]!));
+}
+
+function safeRefs(value: unknown): RefKey[] {
+  return Array.isArray(value) ? value.filter(isValidRef) : [];
 }
 
 /** Canonical issue URL for a ref ("owner/repo#123"). */
@@ -259,8 +337,8 @@ export function epicGraph(
   const collectRefs = (item: ProjectPoolItem) => {
     const targets = [
       ...(isValidRef(item.parentRef) ? [item.parentRef] : []),
-      ...(item.blockedBy ?? []).filter(isValidRef),
-      ...(item.blocks ?? []).filter(isValidRef),
+      ...safeRefs(item.blockedBy),
+      ...safeRefs(item.blocks),
     ];
     for (const target of targets) {
       if (memberSet.has(target)) continue;
@@ -283,79 +361,179 @@ export function epicGraph(
   const shown = ordered.slice(0, Math.max(0, cap));
   const shownRefs = new Set(shown.map((s) => s.ref));
 
-  // Edges among shown nodes only. Dependency edges point from the
+  // Build the full one-hop edge set first, then expose only shown edges.
+  // Dependency edges point from the
   // blocked item to its blocker (blockedBy) and from the blocked item
   // to the item a blocks[] entry names, so both native directions
   // land on the same item → blocker orientation; hierarchy edges
   // point parent → child. A pair joined by both keeps both edges.
+  const allRefs = new Set(ordered.map((entry) => entry.ref));
   const edgeKeys = new Set<string>();
-  const edges: EpicGraphEdge[] = [];
+  const allEdges: EpicGraphEdge[] = [];
   const addEdge = (from: RefKey, to: RefKey, type: EpicGraphEdgeType) => {
-    if (from === to || !shownRefs.has(from) || !shownRefs.has(to)) return;
+    if (!allRefs.has(from) || !allRefs.has(to)) return;
     const key = `${type}:${from}->${to}`;
     if (edgeKeys.has(key)) return;
     edgeKeys.add(key);
-    edges.push({ from, to, type });
+    allEdges.push({ from, to, type });
   };
-  for (const { item } of shown) {
+  for (const { item } of ordered) {
     if (!item) continue;
     if (isValidRef(item.parentRef)) addEdge(item.parentRef, item.ref, "hierarchy");
-    for (const blocker of item.blockedBy ?? []) {
-      if (isValidRef(blocker)) addEdge(item.ref, blocker, "dependency");
-    }
-    for (const blocked of item.blocks ?? []) {
-      if (isValidRef(blocked)) addEdge(blocked, item.ref, "dependency");
-    }
+    for (const blocker of safeRefs(item.blockedBy)) addEdge(item.ref, blocker, "dependency");
+    for (const blocked of safeRefs(item.blocks)) addEdge(blocked, item.ref, "dependency");
   }
+  const edges = allEdges.filter((edge) => shownRefs.has(edge.from) && shownRefs.has(edge.to));
 
-  // Hierarchy layout, same discipline as depthLayout: DFS from roots
-  // (parent absent or outside the shown set), children in ref order,
-  // parent cycles degrade to roots instead of looping.
-  const children = new Map<RefKey, RefKey[]>();
-  const hasShownParent = new Set<RefKey>();
-  for (const e of edges) {
-    if (e.type !== "hierarchy") continue;
-    const list = children.get(e.from) ?? [];
-    list.push(e.to);
-    children.set(e.from, list);
-    hasShownParent.add(e.to);
+  // Rank suppression and cycle warnings must use the same full-pool
+  // dependency SCCs. The one-hop graph still limits its nodes and edges,
+  // but a deeper cycle that affects this epic remains named and linked.
+  const poolDependencyEdges: EpicGraphEdge[] = [];
+  const poolHierarchyEdges: EpicGraphEdge[] = [];
+  for (const item of pool) {
+    if (isValidRef(item.parentRef) && byRef.has(item.parentRef)) {
+      poolHierarchyEdges.push({ from: item.parentRef, to: item.ref, type: "hierarchy" });
+    }
+    for (const blocker of safeRefs(item.blockedBy)) {
+      if (byRef.has(blocker)) poolDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
+    }
+    for (const blocked of safeRefs(item.blocks)) {
+      if (byRef.has(blocked)) poolDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
+    }
   }
-  for (const list of children.values()) list.sort(byRefOrder);
-  const roots = shown
-    .map((s) => s.ref)
-    .filter((ref) => !hasShownParent.has(ref))
-    .sort((a, b) => (a === epicRef ? -1 : b === epicRef ? 1 : byRefOrder(a, b)));
-  const layout = new Map<RefKey, { depth: number; row: number }>();
-  const visit = (ref: RefKey, depth: number) => {
-    if (layout.has(ref)) return;
-    layout.set(ref, { depth, row: layout.size });
-    for (const child of children.get(ref) ?? []) visit(child, depth + 1);
+  const fullDependencyCycles = cycleComponents(byRef.keys(), poolDependencyEdges, "dependency");
+  const cyclicDependencyRefs = new Set(fullDependencyCycles.flat());
+  const dependencyChildren = new Map<RefKey, RefKey[]>();
+  for (const edge of poolDependencyEdges) {
+    const children = dependencyChildren.get(edge.from) ?? [];
+    children.push(edge.to);
+    dependencyChildren.set(edge.from, children);
+  }
+  const dependencyReachable = new Set<RefKey>();
+  const stack = [...memberSet];
+  while (stack.length) {
+    const ref = stack.pop()!;
+    if (dependencyReachable.has(ref)) continue;
+    dependencyReachable.add(ref);
+    stack.push(...(dependencyChildren.get(ref) ?? []));
+  }
+  const relevantCycleRefs = new Set([...allRefs, ...dependencyReachable]);
+  const dependencyCycleGroups = fullDependencyCycles
+    .filter((members) => members.some((ref) => relevantCycleRefs.has(ref)))
+    .map((members, index) => ({
+      kind: "dependency" as const,
+      name: `Dependency cycle ${index + 1} (${members.length} items)`,
+      members,
+    }));
+  const fullHierarchyEdges = [...poolHierarchyEdges, ...allEdges.filter((edge) => edge.type === "hierarchy")];
+  const hierarchyRefs = new Set([...byRef.keys(), ...allRefs]);
+  const hierarchyRelevantRefs = new Set(allRefs);
+  const ancestorStack = [...allRefs];
+  while (ancestorStack.length) {
+    const item = byRef.get(ancestorStack.pop()!);
+    if (!item || !isValidRef(item.parentRef) || !byRef.has(item.parentRef) || hierarchyRelevantRefs.has(item.parentRef)) continue;
+    hierarchyRelevantRefs.add(item.parentRef);
+    ancestorStack.push(item.parentRef);
+  }
+  const hierarchyCycleGroups = cycleComponents(hierarchyRefs, fullHierarchyEdges, "hierarchy")
+    .filter((members) => members.some((ref) => hierarchyRelevantRefs.has(ref)))
+    .map((members, index) => ({
+      kind: "hierarchy" as const,
+      name: `Hierarchy cycle ${index + 1} (${members.length} items)`,
+      members,
+    }));
+  const cycleGroups: EpicGraphCycleGroup[] = [...dependencyCycleGroups, ...hierarchyCycleGroups];
+
+  const diagnosticRows: EpicGraphEdgeDiagnostic[] = [];
+  const diagnosticKeys = new Set<string>();
+  const addDiagnostic = (sourceRef: RefKey, diagnostic: ProjectPoolEdgeDiagnostic) => {
+    const key = `${sourceRef}:${diagnostic.relation}:${diagnostic.state}:${diagnostic.target ?? ""}`;
+    if (diagnosticKeys.has(key)) return;
+    diagnosticKeys.add(key);
+    diagnosticRows.push({ sourceRef, ...diagnostic });
   };
-  for (const root of roots) visit(root, 0);
-  for (const { ref } of shown) visit(ref, 0); // cycle leftovers become roots
+  for (const { item } of ordered) {
+    if (!item) continue;
+    for (const diagnostic of item.edgeDiagnostics ?? []) addDiagnostic(item.ref, diagnostic);
+    if (item.parentRef !== undefined && !isValidRef(item.parentRef)) {
+      addDiagnostic(item.ref, { relation: "parent", state: "malformed", target: String(item.parentRef) });
+    }
+    for (const [relation, raw] of [["blockedBy", item.blockedBy], ["blocks", item.blocks]] as const) {
+      if (raw === undefined) continue;
+      if (!Array.isArray(raw)) {
+        addDiagnostic(item.ref, { relation, state: "unavailable", target: null });
+        continue;
+      }
+      for (const target of raw) {
+        if (!isValidRef(target)) addDiagnostic(item.ref, { relation, state: "malformed", target: String(target) });
+      }
+    }
+  }
+  diagnosticRows.sort((a, b) =>
+    a.sourceRef.localeCompare(b.sourceRef) || a.relation.localeCompare(b.relation) || a.state.localeCompare(b.state) || (a.target ?? "").localeCompare(b.target ?? ""),
+  );
+
+  // Lay out the hierarchy condensation graph. A cycle is one layout group,
+  // not an arbitrary member presented as its root.
+  const hierarchyComponents = stronglyConnectedComponents(hierarchyRefs, fullHierarchyEdges, "hierarchy");
+  const componentOf = new Map<RefKey, number>();
+  hierarchyComponents.forEach((component, index) => component.forEach((ref) => componentOf.set(ref, index)));
+  const componentChildren = new Map<number, Set<number>>(hierarchyComponents.map((_, index) => [index, new Set()]));
+  const incoming = new Set<number>();
+  for (const e of fullHierarchyEdges) {
+    if (e.type !== "hierarchy") continue;
+    const parent = componentOf.get(e.from);
+    const child = componentOf.get(e.to);
+    if (parent === undefined || child === undefined || parent === child) continue;
+    componentChildren.get(parent)!.add(child);
+    incoming.add(child);
+  }
+  const componentKey = (index: number) => hierarchyComponents[index]![0]!;
+  const roots = hierarchyComponents
+    .map((_, index) => index)
+    .filter((index) => !incoming.has(index))
+    .sort((a, b) => {
+      const aHasEpic = hierarchyComponents[a]!.includes(epicRef);
+      const bHasEpic = hierarchyComponents[b]!.includes(epicRef);
+      return Number(bHasEpic) - Number(aHasEpic) || byRefOrder(componentKey(a), componentKey(b));
+    });
+  const layout = new Map<RefKey, { depth: number; row: number }>();
+  const visitedComponents = new Set<number>();
+  const visitComponent = (index: number, depth: number) => {
+    if (visitedComponents.has(index)) return;
+    visitedComponents.add(index);
+    for (const ref of hierarchyComponents[index]!) {
+      if (shownRefs.has(ref)) layout.set(ref, { depth, row: layout.size });
+    }
+    for (const child of [...componentChildren.get(index)!].sort((a, b) => byRefOrder(componentKey(a), componentKey(b)))) {
+      visitComponent(child, depth + 1);
+    }
+  };
+  for (const root of roots) visitComponent(root, 0);
+  for (let i = 0; i < hierarchyComponents.length; i++) visitComponent(i, 0);
 
   // Summaries cover the FULL member set, before the node cap: a member
   // hidden by the cap is still blocked, still counted, still ranked.
   const unresolvedBlockersOf = (item: ProjectPoolItem): RefKey[] =>
-    (item.blockedBy ?? []).filter(isValidRef).filter((b) => {
+    safeRefs(item.blockedBy).filter((b) => {
       const blocker = byRef.get(b);
       return blocker === undefined || blocker.state === "open";
     });
   const blockedCount = members.filter((m) => m.state === "open" && unresolvedBlockersOf(m).length > 0).length;
-  
+
   // Compute rankedBlocked with transitive downstream open work ranking
   const rankedBlocked = members
-    .filter((m) => m.ref !== epicRef && m.state === "open")
+    .filter((m) => m.ref !== epicRef && m.state === "open" && !cyclicDependencyRefs.has(m.ref))
     .map((m) => {
       const blockers = unresolvedBlockersOf(m);
       
       // For each blocker, compute its downstream open epic descendant count
       const blockerScores = blockers.map((blockerRef) => {
         // Count distinct open epic items in transitive blockedBy ancestry of this blocker
-        const downstream = transitiveOpenEpicDescendants(blockerRef, byRef);
+        const downstream = transitiveOpenEpicDescendants(blockerRef, byRef, cyclicDependencyRefs);
         
         // Compute contributing downstream items (open epics that are descendants of this blocker)
-        const contributing = contributingDownstreamItems(blockerRef, byRef);
+        const contributing = contributingDownstreamItems(blockerRef, byRef, cyclicDependencyRefs);
         
         // Get effort weight of the blocker
         const blockerItem = byRef.get(blockerRef);
@@ -432,8 +610,8 @@ export function epicGraph(
       unresolved: false,
       epic: item.kind === "Epic",
       mode: modeOf(item.labels),
-      blockers: (item.blockedBy ?? []).filter(isValidRef),
-      dependents: (item.blocks ?? []).filter(isValidRef),
+      blockers: safeRefs(item.blockedBy),
+      dependents: safeRefs(item.blocks),
       depth: pos.depth,
       row: pos.row,
     };
@@ -472,6 +650,8 @@ export function epicGraph(
     },
     nodes,
     edges,
+    cycleGroups,
+    edgeDiagnostics: diagnosticRows,
     totalNodes,
     truncated: totalNodes - shown.length,
     externalCount: externalRefs.size,

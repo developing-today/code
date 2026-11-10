@@ -1935,12 +1935,23 @@ async function handler(req: Request): Promise<Response> {
         404,
       );
     }
-    const [items, pool, rows] = await Promise.all([
+    const [items, pool, rows, orchestration, formOpts, actionsByObject] = await Promise.all([
       source.items(allProjectRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
+      source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
     ]);
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool));
+    const orchestrationState = source.diagnostics?.().orchestration.state;
+    return html(
+      renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, {
+        orchestration,
+        actionsByObject,
+        identities: formOpts.identities,
+        orchestrationState,
+      }),
+    );
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
