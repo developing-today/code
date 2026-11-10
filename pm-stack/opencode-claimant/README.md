@@ -51,6 +51,28 @@ Candidate discovery and system state reporting:
 - **get_active_root_session_count()**: Queries OpenCode server for active session count
 - Outputs JSON with candidates, stuck_bound list, and cap_room
 
+### launch_one.py
+
+Per-task launch trigger (#8187): performs claimant.py's launch
+sequence (prompt.md step 4) for ONE named task, immediately, instead
+of waiting for the next claimant fire.
+
+```bash
+# Read-only: is this task a launch candidate, and what would happen?
+python3 pm-stack/opencode-claimant/launch_one.py --preflight repo-health-code-pilot:12345
+
+# Live only (mode file must read `live`): collect a parked handoff's
+# claim by id if needed, create + verify + bind a session, checkpoint
+# launched, send the prompt, post the agent-note. Prints the bound
+# session_id; any failure exits non-zero and deletes a created
+# session it could not bind.
+python3 pm-stack/opencode-claimant/launch_one.py --launch repo-health-code-pilot:12345
+```
+
+Candidate discovery, the cap, the mode gate, and the OpenCode server
+transport are reused from poll.py / claimant.py; the repo-queue
+binary is `~/.local/bin/repo-queue` (override: `REPO_QUEUE_BIN`).
+
 ### Makefile
 
 Helper for setup:

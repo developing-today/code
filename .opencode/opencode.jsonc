@@ -427,6 +427,65 @@
             "context": 1000000,
             "output": 64000
           }
+        },
+        // 2026-11-10 (Drew, direct order): Claude Fable 5.2 joins the
+        // _claude catalog, same shape as the three models above. The
+        // door serves it today: the wire probe on the laptop's Claude
+        // Code credential returned "pong" for --model claude-fable-5-2
+        // (preceded by a [claude-code:unrecognized_model] notice from
+        // the CLI's local catalog, which the endpoint answered
+        // anyway). Seated as fable-plan's lead at #low in specialist,
+        // summit, and the new workhorse-last-resort stage (see those
+        // routes) - it draws the dedicated Fable quota (Drew,
+        // 2026-11-07), not the shared Claude Max allowance.
+        "claude-fable-5-2": {
+          "name": "Fable 5.2 (Claude Code)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 4096
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 8192
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 32768
+                }
+              }
+            },
+            "max": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 65536
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
         }
       }
     },
@@ -661,6 +720,18 @@
     "openai.main": {
       "instanceOf": "openai",
       "name": "OpenAI Main (drewrypope)"
+    },
+    // _openai (2026-11-10, Drew direct order, #8163): the self-contained
+    // main OpenAI door. Same drewrypope ChatGPT account as openai.main, but
+    // its credential is its own: seeded into the store without the
+    // externalRefresh stamp, refreshed in-process by the provider (the
+    // openai.alternate pattern, #8102). No Muse, no ~/.codex/auth.json
+    // read, no codex-sync in its path (the fork's CodexSync explicitly
+    // never targets it). Seated in openai-plan by the stage-2 change once
+    // proven with real route traffic; until then openai.main keeps the seat.
+    "_openai": {
+      "instanceOf": "openai",
+      "name": "OpenAI Self-Contained (drewrypope, no Codex)"
     },
     "opendesign": {
       "npm": "@ai-sdk/openai-compatible",
@@ -1939,9 +2010,18 @@
       // replacing the ordered alternate-first arrangement above - main
       // (fresh weekly window) carries the pair, alternate backs it.
       "openai-plan": {
-        "providers": ["openai.main", "openai.alternate"],
+        // 2026-11-10 (#8163, stage 2): the main seat moves from openai.main
+        // to _openai — the self-contained door that holds and refreshes its
+        // own credential in-process, with no Muse / codex-sync in its
+        // path. Same 2:1 main:alternate split. openai.main's provider
+        // definition stays in place above (unused by this plan); its
+        // Codex-sync dependency is retired for the main door. Proven with
+        // real route traffic under provider id _openai (auth accepted,
+        // QuotaExceeded only while the weekly wall lasts) plus an observed
+        // in-process refresh cycle — see #8163.
+        "providers": ["_openai", "openai.alternate"],
         "selection": "weighted",
-        "weights": { "openai.main": 2, "openai.alternate": 1 }
+        "weights": { "_openai": 2, "openai.alternate": 1 }
       },
       // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
       // provider route — vibe-direct attempted first on every dispatch
@@ -2199,6 +2279,22 @@
           "opencode-go-plans/deepseek-v4-pro": 3,
           "_commandcode/deepseek/deepseek-v4-pro": 0.5
         }
+      },
+      "fable-plan": {
+        "name": "Claude Fable - plan providers",
+        // NEW 2026-11-10 (Drew, direct order): the Fable plan route,
+        // mirroring opus-plan/sonnet-plan - the _claude door leads.
+        // Single-door by fact, not omission: no other enabled door
+        // serves claude-fable-5-2 (Antigravity's Claude bucket serves
+        // Sonnet/Opus only; the _commandcode catalog carries Fable 5.1
+        // and Fable 5, which are deliberately NOT this route's model).
+        // Seated at #low at the head of specialist and summit, and
+        // alone in workhorse-last-resort (see those routes).
+        "targets": [
+          "_claude/claude-fable-5-2"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "haiku-plan": {
         "name": "Claude Haiku - plan providers",
@@ -2855,7 +2951,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse": {
-        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
+        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
         // 2026-10-27 pool redesign (Drew's structure): incremental —
         // DeepSeek Flash #high is the primary every session tries first;
         // the weighted relief pool (workhorse-weighted) absorbs failover
@@ -2884,10 +2980,14 @@
         // 2026-11-03 (Drew): workhorse-ordered (deepseek-flash-plan
         // only, ordered) joins the chain IN FRONT of workhorse-primary.
         // deepseek-flash-plan is NOT removed from workhorse-primary.
+        // 2026-11-10 (Drew, direct order): workhorse-last-resort
+        // joins the chain as the FOURTH stage - reached only when
+        // every stage ahead of it yields nothing (see that route).
         "targets": [
           "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
-          "opencode-route/workhorse-weighted"
+          "opencode-route/workhorse-weighted",
+          "opencode-route/workhorse-last-resort"
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -2898,7 +2998,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Luna #xhigh, Spark contributor #high, Gemini 3.8 Flash #high, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
+        "name": "Workhorse weighted - Terra #low, Spark contributor #high, Gemini 3.8 Flash #medium, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -3003,15 +3103,25 @@
         // #medium (II 30) is the rung that matches the pool; #high
         // (II 41) sat above every other member. Same leaf, same
         // weight 10 — only the effort rung changes.
+        // 2026-11-10 (Drew, direct order): two seat changes in
+        // this stage. (1) The Luna #xhigh seat switches to Terra
+        // #low - openai-plan/gpt-6.1-terra#low at the same weight
+        // 10, on the same openai-plan door (openai.main +
+        // openai.alternate, 2:1). (2) The Gemini 3.8 Flash seat
+        // drops #high -> #medium - same leaf, same weight 10
+        // (AA from today's pool-intelligence pull: medium II 30.1
+        // vs high II 30.8 - same pool band, faster first token).
+        // The other two members (Spark contributor #high, Claude
+        // Sonnet 5.5 #medium) are untouched.
         "targets": [
-          "openai-plan/gpt-6-luna#xhigh",
+          "openai-plan/gpt-6.1-terra#low",
           "_muse/muse-spark-1.3-contributor#high",
-          "_antigravity/gemini-3.8-flash#high",
+          "_antigravity/gemini-3.8-flash#medium",
           "_antigravity/claude-sonnet-5-5#medium"
         ],
         "selection": "weighted",
         "weights": {
-          "openai-plan/gpt-6-luna": 10,
+          "openai-plan/gpt-6.1-terra": 10,
           "_muse/muse-spark-1.3-contributor": 10,
           "_antigravity/gemini-3.8-flash": 10,
           "_antigravity/claude-sonnet-5-5": 10
@@ -3023,8 +3133,48 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      "workhorse-last-resort": {
+        "name": "Workhorse last resort - Sonnet #medium from Claude first, then Fable #low, only if all else is down",
+        // NEW 2026-11-10 (Drew, direct order): the fourth and final
+        // stage of the workhorse chain, reached only when
+        // workhorse-ordered, workhorse-primary, and
+        // workhorse-weighted all yield nothing. Two members,
+        // ordered: FIRST the DIRECT real-Claude leaf
+        // _claude/claude-sonnet-5-5 at #medium (Drew confirmed
+        // direct, 2026-11-10 09:04 CST - NOT sonnet-plan and NOT
+        // the Antigravity leaf), THEN Fable #low on the same door
+        // (via fable-plan). Sonnet leads despite the lower score
+        // (AA v5 #medium II 30.8 vs Fable #low II 53.9 at
+        // $3.10/task, TTFT 6.4s): it is the cheaper everyday
+        // fallback and spends the shared Claude Max allowance,
+        // while Fable behind it draws the dedicated Fable quota
+        // (Drew, 2026-11-07) and is spent only when Sonnet also
+        // yields nothing. Both members are Drew's deliberate,
+        // named exception to his 2026-11-06 rule ("do not add
+        // Claude to workhorse") - this last-resort stage only,
+        // ordered by Drew explicitly today (2026-11-10). The burn
+        // case is the point: when every other pool is walled at
+        // once (the 2026-11-09/10 pattern, code#8086), workhorse
+        // sessions land here instead of dying on no-candidates.
+        "targets": [
+          "_claude/claude-sonnet-5-5#medium",
+          "opencode-route/fable-plan#low"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules",
+        // Same #7927 guard as the sibling stages: 60s sizes the
+        // deadline above observed leg maxima while still bounding
+        // a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
+      },
       "specialist": {
-        "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
+        "name": "Specialist - hard work: quality first, Fable #low head, then Claude Sonnet, Argon, Meta Spark, OpenAI",
+        // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
+        // _claude door) takes the HEAD of this chain. AA v5 #low
+        // II 53.9 tops every member it now leads (the former head,
+        // Sonnet #high, is II 41.5), and the seat draws the
+        // dedicated Fable quota (Drew, 2026-11-07), not the shared
+        // Claude Max allowance.
         // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): Sonnet #high II 41 / TTFT ~12s /
         // $1.64 per task (AA v5 costing),
         // Spark contributor #max / 42.0s / 176 t/s (single Meta door is the caveat), Sol
@@ -3048,6 +3198,7 @@
         // diversity (if Sol walls on quota, Terra walls too). DeepSeek Pro
         // tail REMOVED: its <=36 ceiling is below this tier's band.
         "targets": [
+          "opencode-route/fable-plan#low",
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
         // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
@@ -3058,7 +3209,12 @@
         "autonomy": "rules"
       },
       "summit": {
-        "name": "Summit - very complex design only, deliberate use",
+        "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Wonder, Sol",
+        // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
+        // _claude door) takes the HEAD of this chain. AA v5 #low
+        // II 53.9 tops the former head, Opus #high (II 51.8), and
+        // the seat draws the dedicated Fable quota (Drew,
+        // 2026-11-07), not the shared Claude Max allowance.
         // 2026-10-30: the Wonder leaf ran through muse-proxy
         // (provider "muse", muse/muse-wonder-1.0#max) — the direct
         // meta door is dead (attestation; see the "muse" provider
@@ -3077,6 +3233,7 @@
         // all; the previous order burned Sol ahead of Wonder, backwards
         // under the reserve rule.
         "targets": [
+          "opencode-route/fable-plan#low",
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
           "_muse/muse-wonder-1.0-contributor#xhigh",

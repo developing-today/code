@@ -1032,6 +1032,45 @@ fn platform_flag(v: &str) -> Result<String, String> {
     }
 }
 
+/// #8176: the claim-model stamp flags. The claiming session reports
+/// its own serving leaf — provider and model together (the leaf it
+/// read from its session surface, route_usage's lastServing,
+/// opencode#1891), variant optional. Naming either half alone is a
+/// usage error, mirroring the broker's parse: a half-stamp must
+/// never reach the wire.
+fn model_stamp_flags(
+    provider: Option<&str>,
+    model: Option<&str>,
+    variant: Option<&str>,
+) -> Result<Option<(String, String, Option<String>)>, String> {
+    fn clean<'a>(v: Option<&'a str>) -> Option<&'a str> {
+        v.map(str::trim).filter(|s| !s.is_empty())
+    }
+    match (clean(provider), clean(model)) {
+        (None, None) => {
+            if clean(variant).is_some() {
+                return Err(
+                    "--model-variant requires --model-provider and --model-id".to_string(),
+                );
+            }
+            Ok(None)
+        }
+        (Some(p), Some(m)) => Ok(Some((
+            p.to_string(),
+            m.to_string(),
+            clean(variant).map(str::to_string),
+        ))),
+        (Some(_), None) => Err(
+            "--model-provider requires --model-id (the claim stamp names the serving leaf, provider and model together)"
+                .to_string(),
+        ),
+        (None, Some(_)) => Err(
+            "--model-id requires --model-provider (the claim stamp names the serving leaf, provider and model together)"
+                .to_string(),
+        ),
+    }
+}
+
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -1270,7 +1309,19 @@ fn cmd_list(rest: &[String]) -> i32 {
 fn cmd_claim(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["queue", "worker", "lease-seconds", "lane", "task", "platform"],
+        &[
+            "queue",
+            "worker",
+            "lease-seconds",
+            "lane",
+            "task",
+            "from-session",
+            "platform",
+            "session-id",
+            "model-provider",
+            "model-id",
+            "model-variant",
+        ],
         &["handoff"],
     );
     reject_extra_pos("claim", &args, 0);
@@ -1283,15 +1334,41 @@ fn cmd_claim(rest: &[String]) -> i32 {
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
-    // --platform <family>: declare this claim's family (#8097
-    // Rule 2). The broker only hands this claim items whose
-    // platform selector is unset or equal to it. A claim that
-    // declares no family keeps its pre-#8097 reach (unset items).
+    // --platform <family>: declare this claim's platform MARK
+    // (#8097 Rule 2, demoted by #8187). The broker stamps it on
+    // the claimed row and the claimed event; it filters NOTHING —
+    // a mismatched or undeclared claim claims items all the same.
     if let Some(p) = args.get("platform") {
         match platform_flag(&p) {
             Ok(v) => body["platform"] = json!(v),
             Err(e) => die(2, &e),
         }
+    }
+    // --session-id: the claiming session's own id, recorded as a
+    // mark on the claimed event when the surface knows it (#8187).
+    if let Some(sid) = args.get("session-id") {
+        body["session_id"] = json!(sid);
+    }
+    // --model-provider/--model-id[/--model-variant]: the claiming
+    // session's own model, stamped on the task by the broker
+    // (#8176). The session reads its serving leaf from its own
+    // session surface (route_usage lastServing, opencode#1891)
+    // and passes it here; the broker stores it as the row's
+    // claim_provider / claim_model / claim_variant.
+    match model_stamp_flags(
+        args.get("model-provider").as_deref(),
+        args.get("model-id").as_deref(),
+        args.get("model-variant").as_deref(),
+    ) {
+        Ok(Some((provider, model, variant))) => {
+            body["model_provider"] = json!(provider);
+            body["model_id"] = json!(model);
+            if let Some(v) = variant {
+                body["model_variant"] = json!(v);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => die(2, &e),
     }
     // --handoff: the no-id collection of the next parked recorded
     // opencode handoff (#8097 Rule 1) — the claimant's default
@@ -1307,6 +1384,16 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // out of the parked sink; a plain claim never names a task.
     if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
+    }
+    // --from-session <ses>: with --task, a session-to-session
+    // TRANSFER (#8210) — claim exactly this task DIRECTLY from
+    // the session named, which must be the task's current holder
+    // (its session mark is the capability; a mismatch refuses and
+    // leaves the claim untouched). The task never passes through
+    // queued or parked. --session-id on the same claim binds the
+    // claiming session in the same operation.
+    if let Some(fs) = args.get("from-session") {
+        body["from_session"] = json!(fs);
     }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
     let (mut out, code) = claim_output(&resp);
@@ -1468,7 +1555,17 @@ fn claim_output(resp: &Value) -> (Value, i32) {
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["worker", "exclusion-reason"], &[]);
+    let args = parse_args(
+        rest,
+        &[
+            "worker",
+            "exclusion-reason",
+            "opencode-reason",
+            "limit-platform",
+            "limit-reason",
+        ],
+        &["clear-platform-limit"],
+    );
     reject_extra_pos("lane", &args, 1);
     let resp = unwrap_ok(call(
         "/lane",
@@ -1476,6 +1573,13 @@ fn cmd_lane(rest: &[String]) -> i32 {
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
             "exclusion_reason": args.get("exclusion-reason"),
+            "opencode_reason": args.get("opencode-reason"),
+            // #8210: a platform limitation — an exception that
+            // exists only with its recorded reason. The broker
+            // refuses a limitation with no --limit-reason.
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
+            "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
     print_json(&require_row(&resp, "assign_repo_task_lane"));
@@ -1597,6 +1701,22 @@ fn cmd_park(rest: &[String]) -> i32 {
     }
     let resp = unwrap_ok(call("/park", &body));
     row_or_ledger(&resp, "park_task");
+    0
+}
+
+/// wake (#8184): release a broker-held parked wait now that
+/// its condition is satisfied (e.g. the triage step finished
+/// triaging the item). The broker flips it back to queued.
+fn cmd_wake(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("wake", &args, 1);
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+    });
+    let resp = unwrap_ok(call("/wake", &body));
+    print_json(&require_row(&resp, "wake_task"));
     0
 }
 
@@ -1915,7 +2035,7 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|revive|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|wake|block|cancel|fail|complete|revive|health|signal|fallback> ...",
         );
         return 2;
     }
@@ -1934,6 +2054,7 @@ pub fn run(args: &[String]) -> i32 {
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
@@ -1953,6 +2074,34 @@ pub fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    #[test]
+    fn model_stamp_flags_require_provider_and_model_together() {
+        // #8176 oracle: the claim stamp names the serving leaf —
+        // provider and model together, variant optional. Either
+        // half alone (or a variant alone) is a usage error.
+        assert_eq!(
+            model_stamp_flags(Some("_claude"), Some("claude-sonnet-5-5"), Some("medium")),
+            Ok(Some((
+                "_claude".to_string(),
+                "claude-sonnet-5-5".to_string(),
+                Some("medium".to_string()),
+            )))
+        );
+        assert_eq!(
+            model_stamp_flags(Some("openai.main"), Some("gpt-6-luna"), None),
+            Ok(Some((
+                "openai.main".to_string(),
+                "gpt-6-luna".to_string(),
+                None,
+            )))
+        );
+        assert_eq!(model_stamp_flags(None, None, None), Ok(None));
+        assert!(model_stamp_flags(Some("_claude"), None, None).is_err());
+        assert!(model_stamp_flags(None, Some("claude-sonnet-5-5"), None).is_err());
+        assert!(model_stamp_flags(None, None, Some("medium")).is_err());
+    }
 
     #[test]
     fn platform_flag_accepts_only_the_two_families() {
