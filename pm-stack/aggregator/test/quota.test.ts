@@ -154,6 +154,16 @@ describe("quota extractors", () => {
     expect(p.windows).toEqual([]);
   });
 
+  test("main and alternate ChatGPT sections never cross-read, in either order (#8005)", () => {
+    const mainSection = "### ChatGPT — main account plans\n- 7-day 11% used, resets Oct 30, 18:01 UTC.\n";
+    const altSection = "### ChatGPT (Alternate)\n- 7-day 42% used.\n";
+    for (const view of ["\n" + altSection + "\n" + mainSection, "\n" + mainSection + "\n" + altSection]) {
+      const m = new Map(extractQuotaPools(view, NOW).map((p) => [p.id, p]));
+      expect(m.get("openai.main")!.windows[0].percent).toBe(11);
+      expect(m.get("openai.alternate")!.windows[0].percent).toBe(42);
+    }
+  });
+
   test("meta is walled until the weekly reset — and it is the only Meta pool", () => {
     const p = byId.get("meta")!;
     expect(p.state).toBe("walled");

@@ -57,6 +57,20 @@ import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../qu
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type AaFeedSection,
@@ -1069,7 +1083,7 @@ export function liveSource(
             actor: "aggregator",
             kind: "session-outcome",
             ref: `session:${r.source}:${r.id}`,
-            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+            summary: capUnits(`session ${r.label} (${r.agentLabel}) merged into the registry`, 500),
           });
         } catch (err) {
           console.error(
@@ -1634,7 +1648,7 @@ export function liveSource(
                 actor: "orchestrator",
                 kind: action.kind,
                 ref: orchestrationActionRef(action.target),
-                summary: action.summary.slice(0, 500),
+                summary: capUnits(action.summary, 500),
               });
             }
             if (lastOrchEventRunId !== null) {
@@ -1647,7 +1661,7 @@ export function liveSource(
                     actor: "orchestrator",
                     kind: "tier-change",
                     ref: id,
-                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
+                    summary: capUnits(`tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`, 500),
                   });
                 }
               }

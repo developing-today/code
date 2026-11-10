@@ -554,7 +554,7 @@ export const POOL_SPECS: PoolSpec[] = [
     id: "openai.main",
     provider: "OpenAI",
     plan: "ChatGPT (Main — drewrypope)",
-    heading: /^### ChatGPT/,
+    heading: /^### ChatGPT(?! \(Alternate\))/,
     extract: extractCodex,
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
   },

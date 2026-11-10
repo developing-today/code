@@ -18,7 +18,10 @@ exercises the real step logic with no server and no queue:
   changes before launch, and main() writes those skips into the
   fires.jsonl entry;
 - supervision_step recovers a bound task whose session is gone from
-  the server (error body, zero messages) via delete + recovery bind.
+  the server (error body, zero messages) via delete + recovery bind;
+- supervision_step treats an unreadable message read as UNKNOWN, not
+  zero: no delete, no rebind, and a session that does have messages
+  is never recovered; recovery also requires an expired lease (#3026).
 
 Negative control (#6865 acceptance): this suite fails against the
 pre-fix claimant.py (65beb42c1a, unimported requests/subprocess) and
@@ -50,15 +53,19 @@ class Result:
 
 
 def make_fake_run(binds, *, session_get="gone", messages="[]",
-                  prompt_rc=0, prompts=None):
+                  messages_rc=0, prompt_rc=0, prompts=None, deletes=None):
     """Build a subprocess.run stub dispatching on argv shape.
 
     binds: list collecting every repo-queue bind argv.
     session_get: "gone" -> the session GET returns an error body
     (what curl -s prints for a 404); "active" -> a live session.
+    messages: body of the message read (GET /message).
+    messages_rc: return code for the message read; non-zero models a
+    non-2xx body (curl -f fails, as the server's 404 did).
     prompt_rc: return code for the prompt POST (curl -f fails on
     HTTP errors, so 1 models a rejected prompt send).
     prompts: optional list collecting every prompt POST argv.
+    deletes: optional list collecting every session DELETE argv.
     """
 
     def fake_run(cmd, **kwargs):
@@ -68,9 +75,11 @@ def make_fake_run(binds, *, session_get="gone", messages="[]",
             binds.append(cmd)
             return Result(0, "{}")
         if argv[0] == "curl" and "-X" in argv and "DELETE" in argv:
+            if deletes is not None:
+                deletes.append(cmd)
             return Result(0, "")
-        if argv[0] == "curl" and joined.rstrip().endswith("/messages"):
-            return Result(0, messages)
+        if argv[0] == "curl" and joined.rstrip().endswith("/message"):
+            return Result(messages_rc, messages)
         if argv[0] == "curl" and joined.rstrip().endswith("/prompt"):
             if prompts is not None:
                 prompts.append(cmd)
@@ -96,6 +105,7 @@ BOUND_ROW = {
     "id": 4242,
     "attempts": 0,
     "max_attempts": 5,
+    "lease_until": "2020-01-01T00:00:00Z",
     "progress": {"lane": "opencode", "session_id": "ses_gone"},
 }
 
@@ -141,6 +151,59 @@ class TestLaunchStep(unittest.TestCase):
         self.assertTrue(all(isinstance(part, str) for part in bind_argv))
         self.assertIn("777", bind_argv)
         self.assertIn("ses_new1", bind_argv)
+
+    def test_parked_candidate_is_collected_without_naming_its_id(self):
+        # #8097 Rule 1: a parked handoff candidate is collected via
+        # the broker-picked handoff claim — no argv ever names the
+        # task id — and then launches exactly like a claimed one.
+        binds = []
+        claims = []
+        base_fake = make_fake_run(binds)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "claim" in argv:
+                claims.append(argv)
+                return Result(0, json.dumps({"id": 888, "status": "claimed"}))
+            return base_fake(cmd, **kwargs)
+
+        parked = dict(CANDIDATE, id=888, status="parked",
+                      queue=claimant.QUEUES[0])
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": [dict(parked)]}), \
+             patch.object(claimant.subprocess, "run", fake_run):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 888)
+        self.assertEqual(len(claims), 1)
+        claim_argv = claims[0]
+        self.assertIn("--handoff", claim_argv)
+        self.assertIn("--platform", claim_argv)
+        self.assertIn("openchamber", claim_argv)
+        self.assertNotIn("--task", claim_argv)
+        self.assertNotIn("888", claim_argv)
+
+    def test_collect_parked_handoffs_drains_until_the_broker_has_none(self):
+        # The collection loop claims broker-picked handoffs until
+        # the broker answers {"task": null}; every claim is a
+        # no-id handoff claim under the openchamber family.
+        rows = [Result(0, json.dumps({"id": 501, "status": "claimed"})),
+                Result(0, json.dumps({"id": 502, "status": "claimed"})),
+                Result(0, json.dumps({"task": None}))]
+        argvs = []
+
+        def fake_run(cmd, **kwargs):
+            argvs.append([str(part) for part in cmd])
+            return rows[len(argvs) - 1]
+
+        with patch.object(claimant.subprocess, "run", fake_run):
+            collected = claimant._collect_parked_handoffs("q1", 5)
+        self.assertEqual(sorted(collected), [501, 502])
+        self.assertEqual(len(argvs), 3)
+        for argv in argvs:
+            self.assertIn("--handoff", argv)
+            self.assertNotIn("--task", argv)
 
     def test_vanished_candidate_is_a_recorded_skip(self):
         calls = {"n": 0}
@@ -243,6 +306,80 @@ class TestSupervisionStep(unittest.TestCase):
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
 
+    def test_unreadable_messages_are_unknown_not_zero(self):
+        # #3026: the old endpoint 404s with an empty body, and the old
+        # read parsed that as []. Unknown must leave the task bound:
+        # no DELETE, no recovery bind, no candidate.
+        for rc, body in ((1, ""), (0, "")):
+            with self.subTest(returncode=rc, body=body):
+                binds = []
+                deletes = []
+                with stub_claimed_rows([BOUND_ROW]), \
+                     patch.object(claimant.subprocess, "run",
+                                  make_fake_run(binds, messages=body,
+                                                messages_rc=rc,
+                                                deletes=deletes)):
+                    recovered = claimant.supervision_step("live")
+                self.assertEqual(recovered, [])
+                self.assertEqual(binds, [])
+                self.assertEqual(deletes, [])
+
+    def test_wrapped_empty_message_list_is_recovered(self):
+        # The live 200 shape: {"data": [...], "cursor": {...}}. A
+        # dict wrapping a confirmed empty list is still zero messages.
+        binds = []
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds,
+                                        messages='{"data": [], "cursor": {}}')):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [{
+            "task_id": 4242,
+            "session_id": "ses_gone",
+            "reason": "zero_message",
+        }])
+        self.assertEqual(len(binds), 1)
+
+    def test_bound_session_with_messages_is_not_recovered(self):
+        binds = []
+        deletes = []
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, messages='[{"id": "m1"}]',
+                                        deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_unexpired_lease_is_not_recovered(self):
+        # A live lease is still owned by a worker: recovery would
+        # double-launch over it even when the session looks gone.
+        row = dict(BOUND_ROW, lease_until="2999-01-01T00:00:00Z")
+        binds = []
+        deletes = []
+        with stub_claimed_rows([row]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_unparseable_lease_is_not_recovered(self):
+        # A lease we cannot read is a fact we do not have; it never
+        # counts as expired.
+        row = dict(BOUND_ROW, lease_until="not-a-timestamp")
+        binds = []
+        deletes = []
+        with stub_claimed_rows([row]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
     def test_shadow_mode_recovers_nothing(self):
         with patch.object(claimant.subprocess, "run", make_fake_run([])):
             self.assertEqual(claimant.supervision_step("shadow"), [])
@@ -278,6 +415,27 @@ class TestMainFireLog(unittest.TestCase):
         self.assertEqual(entries[0]["sessions_launched"], [])
         self.assertEqual(entries[0]["skips"],
                          [{"task_id": 777, "reason": "task_state_changed"}])
+
+
+class TestGateExitFireLog(unittest.TestCase):
+    def test_gate_exit_logs_cap_room_null_not_zero(self):
+        # #7732: a fire that exits at the gate never ran cap_step, so
+        # its cap_room is unknown (null) - a hardcoded 0 would read as
+        # a saturated fleet in fires.jsonl.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with patch.object(claimant, "read_mode", return_value="shadow"), \
+                 patch.object(claimant, "run_poll",
+                              return_value={"candidates": []}), \
+                 patch.object(claimant, "STATE_DIR", state_dir), \
+                 patch.object(claimant, "FIRES_FILE", fires):
+                self.assertEqual(claimant.main(), 0)
+            entries = [json.loads(line)
+                       for line in fires.read_text().splitlines() if line]
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["cap_room"])
+        self.assertEqual(entries[0]["skips"], [{"reason": "no_candidates"}])
 
 
 if __name__ == "__main__":

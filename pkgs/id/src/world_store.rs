@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
-    WorldHandle, WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
+    WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -498,7 +498,12 @@ pub async fn open_world(
         },
     };
     report.sequence = restored.core.current_sequence();
-    let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
+    let handle = WorldHandle::spawn_durable_with_device_manifest(
+        restored.core,
+        program,
+        Some(Box::new(journal)),
+        Some(WorldHandle::host_device_manifest()),
+    );
     let service = service(handle).with_module_dir(modules).with_outbox(outbox);
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
@@ -2281,7 +2286,7 @@ mod tests {
             matches!(
                 entries[0],
                 JournalEntry::Created {
-                    version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                    version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                     ..
                 }
             ),
@@ -2327,7 +2332,7 @@ mod tests {
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -2335,7 +2340,7 @@ mod tests {
         assert!(matches!(
             on_disk[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
