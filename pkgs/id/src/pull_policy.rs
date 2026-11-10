@@ -20,7 +20,9 @@
 //!
 //! This is a config setting, not a protocol rule. The policy belongs with the world's policy. The
 //! server config's `[policy]` table parses it ([`crate::server_config::ServerConfig::pull_policy`]),
-//! but `id serve` does not read it yet, and no session builds a gate from config. Blobs are not
+//! and `id serve` builds its live event-sync gate from that value
+//! ([`crate::event_sync::gate`]); the node's own event store is not a world and has no membership
+//! source, so `members` there refuses every pull rather than serving open. Blobs are not
 //! governed here. The blob gate ([`crate::blob_gate`]) still requires membership to fetch, whatever
 //! this policy says. Authorized pull is advisory: it stops an honest server from serving a
 //! non-member. It does not stop re-serving, recall copies, or hide metadata.
