@@ -24,6 +24,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -36,7 +38,7 @@ use crate::world_session::{WorldService, module_hash};
 /// Append-only, fsynced JSON-lines journal.
 #[derive(Debug)]
 pub struct FileJournal {
-    file: File,
+    writer: JournalWriter,
     path: PathBuf,
     /// Set when a compaction left durability uncertain; appends then fail so
     /// no acknowledged event can be lost.
@@ -44,6 +46,92 @@ pub struct FileJournal {
     /// The version in the journal's `Created` header, kept in step with the
     /// bump-on-first-write contract (see `world::JOURNAL_VERSION`).
     version: u32,
+}
+
+#[derive(Debug)]
+struct JournalWriter {
+    sender: Option<Sender<JournalWriterRequest>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+enum JournalWriterRequest {
+    Append {
+        line: Vec<u8>,
+        reply: SyncSender<std::io::Result<()>>,
+    },
+    Replace {
+        file: File,
+        reply: SyncSender<()>,
+    },
+}
+
+impl JournalWriter {
+    fn new(file: File) -> Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("world-journal-writer".to_owned())
+            .spawn(move || journal_writer_loop(file, receiver))
+            .context("spawn world journal writer")?;
+        Ok(Self {
+            sender: Some(sender),
+            thread: Some(thread),
+        })
+    }
+
+    fn append(&self, line: Vec<u8>) -> Result<()> {
+        let (reply, result) = mpsc::sync_channel(0);
+        self.send(JournalWriterRequest::Append { line, reply })?;
+        result
+            .recv()
+            .context("world journal writer stopped before append completed")?
+            .context("write and sync world journal")
+    }
+
+    fn replace(&self, file: File) -> Result<()> {
+        let (reply, result) = mpsc::sync_channel(0);
+        self.send(JournalWriterRequest::Replace { file, reply })?;
+        result
+            .recv()
+            .context("world journal writer stopped before replacing its file")
+    }
+
+    fn send(&self, request: JournalWriterRequest) -> Result<()> {
+        self.sender
+            .as_ref()
+            .context("world journal writer is stopped")?
+            .send(request)
+            .context("world journal writer stopped")
+    }
+}
+
+impl Drop for JournalWriter {
+    fn drop(&mut self) {
+        // Closing the channel lets the writer finish any queued request and
+        // exit before its file descriptor is released.
+        drop(self.sender.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>) {
+    while let Ok(request) = receiver.recv() {
+        match request {
+            JournalWriterRequest::Append { line, reply } => {
+                let result = file.write_all(&line).and_then(|()| file.sync_data());
+                let _ = reply.send(result);
+            }
+            JournalWriterRequest::Replace {
+                file: replacement,
+                reply,
+            } => {
+                file = replacement;
+                let _ = reply.send(());
+            }
+        }
+    }
 }
 
 impl FileJournal {
@@ -133,7 +221,7 @@ impl FileJournal {
             _ => JOURNAL_VERSION,
         };
         let mut journal = Self {
-            file,
+            writer: JournalWriter::new(file)?,
             path: path.to_owned(),
             broken: false,
             version,
@@ -198,8 +286,7 @@ impl WorldJournal for FileJournal {
         }
         let mut line = serde_json::to_vec(entry).context("encode journal entry")?;
         line.push(b'\n');
-        self.file.write_all(&line).context("write world journal")?;
-        self.file.sync_data().context("sync world journal")?;
+        self.writer.append(line)?;
         Ok(())
     }
 
@@ -217,8 +304,53 @@ impl WorldJournal for FileJournal {
         })
     }
 
+    fn replication_snapshot_source(&mut self) -> Result<crate::world::JournalSnapshotSource> {
+        // Open a separate descriptor while the actor still owns the journal.
+        // It pins the current inode across compaction, and the captured length
+        // excludes appends that happen after the actor returns to its loop.
+        let file = File::open(&self.path)
+            .with_context(|| format!("open world journal snapshot {}", self.path.display()))?;
+        let byte_len = file
+            .metadata()
+            .with_context(|| format!("stat world journal snapshot {}", self.path.display()))?
+            .len();
+        Ok(crate::world::JournalSnapshotSource::from_reader(
+            self.version,
+            byte_len,
+            file,
+        ))
+    }
+
     fn replication_header_version(&self) -> Option<u32> {
         Some(self.version)
+    }
+
+    fn append_transaction(&mut self, transaction: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.broken,
+            "world journal is unusable after a failed compaction"
+        );
+        ensure!(!transaction.is_empty(), "empty world journal transaction");
+        let mut entries = read_journal_entries(&self.path)?;
+        ensure!(
+            matches!(entries.first(), Some(JournalEntry::Created { .. })),
+            "world journal {} has no header for transaction",
+            self.path.display()
+        );
+        let required = transaction
+            .iter()
+            .map(journal_version_required_by)
+            .max()
+            .unwrap_or(self.version)
+            .max(self.version);
+        if let Some(JournalEntry::Created { version, .. }) = entries.first_mut() {
+            *version = required;
+        }
+        entries.extend(transaction.iter().cloned());
+        // `compact` builds and syncs a complete sibling journal before a
+        // single rename, so a failed transaction leaves the previous journal
+        // intact and a crash sees either all entries or none of them.
+        self.compact(&entries)
     }
 
     fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
@@ -262,7 +394,10 @@ impl WorldJournal for FileJournal {
         // The new file is now the journal, and the open handle follows its
         // inode. If the directory entry cannot be made durable, a crash could
         // resurrect the old journal and lose later appends: refuse them.
-        self.file = file;
+        if let Err(error) = self.writer.replace(file) {
+            self.broken = true;
+            return Err(error.context("replace world journal writer file"));
+        }
         let synced = self.path.parent().map_or(Ok(()), |parent| {
             File::open(parent).and_then(|dir| dir.sync_all())
         });
@@ -453,12 +588,159 @@ pub async fn open_world(
         },
     };
     report.sequence = restored.core.current_sequence();
-    let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
+    let handle = WorldHandle::spawn_durable_with_device_manifest(
+        restored.core,
+        program,
+        Some(Box::new(journal)),
+        Some(WorldHandle::host_device_manifest()),
+    );
     let service = service(handle).with_module_dir(modules).with_outbox(outbox);
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
     }
     Ok((service, report))
+}
+
+/// Open a read-only replica world rooted at `dir` (F12.13 phase 4).
+///
+/// The replica directory holds the verified journal at
+/// `journal.jsonl` (written by [`crate::world::DurableReceiver`]), an
+/// optional `directory.jsonl` carrying the directory facts the replicated
+/// capabilities depend on (replayed without rewriting it), and an optional
+/// `modules/` store. Opening never invents history: the committed journal
+/// entries are re-validated and restored presence-preserving (no header
+/// bumps, no entry synthesis, no compaction), and the actor spawns
+/// read-only with no journal to append to — every local mutation and
+/// program side effect is refused while spectator reads serve over the
+/// existing session protocol.
+///
+/// Crash debris is recovered, not served: like the receiver, opening drops
+/// an interrupted tail append back to the last committed batch and ignores
+/// torn scratch files. Either way the last committed state is what serves.
+///
+/// # Errors
+///
+/// Fails when no committed replica journal exists yet, when the journal is
+/// not a well-formed chain for `world_id` under `pinned_source`, or when
+/// the directory facts do not apply. A module that cannot be loaded or
+/// replayed does **not** fail the open: like the writer path, the replica
+/// serves with the program marked unavailable (see
+/// [`OpenReport::program_error`]).
+pub async fn open_replica(
+    dir: &Path,
+    world_id: &str,
+    pinned_source: [u8; 32],
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+) -> Result<(WorldService, OpenReport, crate::world::ReplicaCursor)> {
+    use crate::world::{DurableReceiver, restore_replica_entries_with_runtime};
+
+    let dir_owned = dir.to_owned();
+    let id = world_id.to_owned();
+    let id_for_receiver = id.clone();
+    let (journal_bytes, committed) = tokio::task::spawn_blocking(move || {
+        let receiver = DurableReceiver::open(&dir_owned, &id_for_receiver, pinned_source)?;
+        let committed = receiver.committed_cursor();
+        let bytes = receiver.read_journal()?;
+        Ok::<_, crate::world::ReceiverError>((bytes, committed))
+    })
+    .await
+    .context("replica open task")??;
+    ensure!(
+        committed.is_some(),
+        "replica {world_id} has no committed journal yet"
+    );
+    let entries = crate::world::parse_replica_journal(&journal_bytes, world_id)?;
+    let journal_entries = entries.len();
+    let subjects = replica_subjects(&entries);
+    let directory_path = dir.join("directory.jsonl");
+    let restored = tokio::task::spawn_blocking({
+        let directory_path = directory_path.clone();
+        move || {
+            // Read-only replay: opening a replica must not truncate or
+            // rewrite the directory sidecar.
+            let directory = crate::directory::Directory::replay_read_only(&directory_path)
+                .context("directory open")?;
+            let restored = restore_replica_entries_with_runtime(
+                &id, limits, runtime, entries, &directory, &subjects,
+            )?;
+            Ok::<_, anyhow::Error>(restored)
+        }
+    })
+    .await
+    .context("replica restore task")??;
+    let core = restored.core;
+    // Petnames are explicitly outside F12.13's replication scope, and no
+    // local directory session can run in replica mode. Keep the default
+    // in-memory model instead of opening a mutating sidecar.
+    let cursor = restored.cursor;
+    let modules = ModuleDir::new(dir.join("modules"));
+    let mut report = OpenReport {
+        sequence: cursor.sequence,
+        journal_entries,
+        module_hash: restored.program.as_ref().map(|p| p.module_hash.clone()),
+        replayed_inputs: 0,
+        program_error: None,
+    };
+
+    let mut restored_module = None;
+    let program: Box<dyn WorldProgram> = match &restored.program {
+        None => Box::new(EmptyProgram),
+        Some(spec) => match restore_program(
+            &modules,
+            spec,
+            &restored.replay,
+            core.execution_profile().resolve(runtime)?,
+        )
+        .await
+        {
+            Ok((program, wasm)) => {
+                report.replayed_inputs = restored.replay.len();
+                restored_module = Some(wasm);
+                program
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                tracing::error!("replica {world_id}: could not restore program: {message}");
+                report.program_error = Some(message.clone());
+                Box::new(UnavailableProgram(message))
+            }
+        },
+    };
+    // No journal, no outbox: the replica appends nothing and queues nothing
+    // for other servers. Directory writes are refused by the read-only
+    // actor, so directory facts stay fixed to the local replica sidecar.
+    let handle = WorldHandle::spawn_read_only(core, program, restored.presence)?;
+    let mut service = service(handle).with_module_dir(modules);
+    // Replica sessions are spectator-only; a configured writer admin token,
+    // mail sender, compiler, outbox or blob uploader must not leak into the
+    // replica service. The actor remains the authoritative enforcement layer.
+    service.admin_token = None;
+    service.mail = None;
+    service.outbox = None;
+    service.compiler = None;
+    service.blobs = None;
+    if let Some(wasm) = restored_module {
+        service.adopt_module(wasm).await?;
+    }
+    Ok((service, report, cursor))
+}
+
+/// Every account appearing in a replica journal's capability chains: the
+/// subjects the replica's directory facts must cover for
+/// [`WorldCore::effective_scopes`](crate::world::WorldCore::effective_scopes).
+fn replica_subjects(entries: &[JournalEntry]) -> std::collections::BTreeSet<String> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            JournalEntry::Issued {
+                subject: Some(subject),
+                ..
+            } => Some(subject.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What a fork copies from one world into a new one (F12.2).
@@ -689,19 +971,26 @@ mod tests {
         .await
         .unwrap();
         let world = service.world();
-        let (world_id, first, mut first_updates) = world.replication_feed().await.unwrap();
-        let (second_world_id, second, mut second_updates) = world.replication_feed().await.unwrap();
+        let (world_id, first_source, mut first_updates) = world.replication_feed().await.unwrap();
+        let (second_world_id, second_source, mut second_updates) =
+            world.replication_feed().await.unwrap();
         let durable_bytes = std::fs::read(dir.path().join("journal.jsonl")).unwrap();
         assert_eq!(world_id, "lobby");
         assert_eq!(second_world_id, world_id);
-        assert_eq!(first, second);
-        assert_eq!(first.bytes, durable_bytes);
-        assert!(first.bytes.ends_with(b"\n"));
+        assert_eq!(first_source.header_version, second_source.header_version);
+        assert_eq!(first_source.byte_len, durable_bytes.len() as u64);
 
+        // The actor is free to append before the network materializes either
+        // source. The captured length still bounds both snapshots to this cut.
         world
             .set_isolation(Authority::Admin, Isolation::Unisolated)
             .await
             .unwrap();
+        let first = first_source.read().unwrap();
+        let second = second_source.read().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.bytes, durable_bytes);
+        assert!(first.bytes.ends_with(b"\n"));
         for update in [
             first_updates.recv().await.unwrap(),
             second_updates.recv().await.unwrap(),
@@ -726,6 +1015,351 @@ mod tests {
         world.shutdown().await.unwrap();
     }
 
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn verified_replica_opens_offline_and_matches_writer_records_without_mutating_journal() {
+        use crate::world::{
+            DurableReceiver, JOURNAL_VERSION, ReplicationEnvelope, SignedReplicationEnvelope,
+            frame_digest,
+        };
+        use ed25519_dalek::SigningKey;
+        use iroh_blobs::store::mem::MemStore;
+
+        let writer_dir = TempDir::new().unwrap();
+        let replica_dir = TempDir::new().unwrap();
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let (writer, _) = open_world(
+            writer_dir.path(),
+            "replica-offline",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            move |handle| {
+                WorldService::new(handle, Some("writer-admin".to_owned())).with_blob_store(blobs)
+            },
+        )
+        .await
+        .unwrap();
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        writer
+            .install_wasm(Some("writer-admin"), wasm, 42, &hash)
+            .await
+            .unwrap();
+        let (_, spectator) = writer
+            .world()
+            .issue("spectator", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            writer
+                .world()
+                .input(spectator.clone(), b"inc".to_vec())
+                .await
+                .unwrap();
+        }
+        let (writer_sequence, writer_records) = writer.world().records();
+        assert_eq!(writer_sequence, 4);
+        assert_eq!(
+            writer_records
+                .get("count")
+                .and_then(serde_json::Value::as_i64),
+            Some(3)
+        );
+
+        // Copy the active content-addressed module to the replica directory;
+        // the journal receiver verifies only the journal bytes in this phase.
+        let replica_modules = replica_dir.path().join("modules");
+        std::fs::create_dir_all(&replica_modules).unwrap();
+        std::fs::copy(
+            writer_dir
+                .path()
+                .join("modules")
+                .join(format!("{hash}.wasm")),
+            replica_modules.join(format!("{hash}.wasm")),
+        )
+        .unwrap();
+        let journal_bytes = std::fs::read(writer_dir.path().join("journal.jsonl")).unwrap();
+        let receiver_key = SigningKey::from_bytes(&[81; 32]);
+        let pinned_source = *receiver_key.verifying_key().as_bytes();
+        let nonce = [19; crate::world::SESSION_NONCE_BYTES];
+        let mut receiver =
+            DurableReceiver::open(replica_dir.path(), "replica-offline", pinned_source).unwrap();
+        receiver.begin_session(nonce);
+        let snapshot = ReplicationEnvelope::snapshot(
+            "replica-offline",
+            pinned_source,
+            receiver.header_version().unwrap_or(JOURNAL_VERSION),
+            nonce,
+            [0; 32],
+            journal_bytes.clone(),
+        )
+        .unwrap();
+        let snapshot_cursor = snapshot.cursor_after;
+        let snapshot_frame = SignedReplicationEnvelope::sign(snapshot, &receiver_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        let previous = frame_digest(&snapshot_frame);
+        receiver.accept_frame(&snapshot_frame).unwrap();
+        let terminal = ReplicationEnvelope::terminal(
+            "replica-offline",
+            pinned_source,
+            JOURNAL_VERSION,
+            nonce,
+            snapshot_cursor,
+            previous,
+        );
+        let terminal_frame = SignedReplicationEnvelope::sign(terminal, &receiver_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        receiver.accept_frame(&terminal_frame).unwrap();
+        drop(receiver);
+
+        let expected_bytes = std::fs::read(replica_dir.path().join("journal.jsonl")).unwrap();
+        assert_eq!(expected_bytes, journal_bytes);
+        // The writer is unreachable before replica open.
+        writer.world().shutdown().await.unwrap();
+        let (replica, report, cursor) = open_replica(
+            replica_dir.path(),
+            "replica-offline",
+            pinned_source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("must-be-stripped")),
+        )
+        .await
+        .unwrap();
+        assert!(replica.world().is_read_only());
+        assert_eq!(report.program_error, None);
+        assert_eq!(report.sequence, writer_sequence);
+        assert_eq!(cursor.sequence, writer_sequence);
+        assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
+        // PR #4708 Codex P2: the replica cleared its blob store, leaving
+        // the spectator module download with no source. The restored
+        // module is served read-only from the replica's module
+        // directory, while uploads stay refused (the writer admin token
+        // was stripped at replica open).
+        let expected_wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        assert_eq!(replica.module_bytes(&hash).await.unwrap(), expected_wasm);
+        assert!(
+            replica
+                .install_wasm(Some("must-be-stripped"), expected_wasm, 42, &hash)
+                .await
+                .is_err()
+        );
+        assert_eq!(report.replayed_inputs, 3);
+        let (replica_sequence, replica_records) = replica.world().records();
+        assert_eq!(replica_sequence, writer_sequence);
+        assert_eq!(*replica_records, *writer_records);
+        assert!(
+            replica
+                .world()
+                .input(spectator, b"no".to_vec())
+                .await
+                .is_err()
+        );
+        replica.world().shutdown().await.unwrap();
+        assert_eq!(
+            std::fs::read(replica_dir.path().join("journal.jsonl")).unwrap(),
+            expected_bytes,
+            "serving never mutates the verified journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_replica_serves_friend_delegation_from_directory_facts_without_writer() {
+        use crate::directory::Actor;
+        use crate::world::{
+            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
+            SignedReplicationEnvelope, WorldCore, frame_digest, journal_entry_line,
+        };
+        use ed25519_dalek::SigningKey;
+
+        let world_id = "replica-directory-offline";
+        let mut writer_core = WorldCore::new(world_id, WorldLimits::default()).unwrap();
+        let (ann_credential, _) = writer_core.directory_mut().sign_up("Ann").unwrap();
+        let ann = writer_core
+            .directory()
+            .account_for(&ann_credential)
+            .unwrap();
+        let (bo_credential, _) = writer_core.directory_mut().sign_up("Bo").unwrap();
+        let bo = writer_core.directory().account_for(&bo_credential).unwrap();
+        writer_core
+            .directory_mut()
+            .verify_account(Actor::Server, &ann)
+            .unwrap();
+        writer_core
+            .directory_mut()
+            .request_friend(&ann_credential, &bo, world_id, 1)
+            .unwrap();
+        writer_core
+            .directory_mut()
+            .accept_friend(&bo_credential, &ann, world_id, 2)
+            .unwrap();
+        let (owner, owner_token) = writer_core
+            .issue_for_account(
+                &ann_credential,
+                crate::world::WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let (spectator, spectator_token) = writer_core
+            .delegate_to_friend(
+                &owner_token,
+                &bo,
+                crate::world::WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo spectator",
+            )
+            .unwrap();
+        let subjects = std::collections::BTreeSet::from([ann, bo]);
+        let directory_facts = writer_core
+            .directory()
+            .replica_facts_for(&subjects)
+            .unwrap();
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            writer_core.issued_entry(owner.id).unwrap(),
+            writer_core.issued_entry(spectator.id).unwrap(),
+        ];
+        let journal_bytes: Vec<u8> = entries.iter().flat_map(journal_entry_line).collect();
+        drop(writer_core);
+
+        let replica_dir = TempDir::new().unwrap();
+        let directory_path = replica_dir.path().join("directory.jsonl");
+        let mut directory_bytes = Vec::new();
+        for entry in &directory_facts {
+            serde_json::to_writer(&mut directory_bytes, entry).unwrap();
+            directory_bytes.push(b'\n');
+        }
+        // A crash-debris fragment is ignored in memory and is not repaired by
+        // the replica's read-only open path.
+        directory_bytes.extend_from_slice(b"{\"torn\":");
+        std::fs::write(&directory_path, &directory_bytes).unwrap();
+
+        let source_key = SigningKey::from_bytes(&[82; 32]);
+        let source = *source_key.verifying_key().as_bytes();
+        let nonce = [21; crate::world::SESSION_NONCE_BYTES];
+        let mut receiver = DurableReceiver::open(replica_dir.path(), world_id, source).unwrap();
+        receiver.begin_session(nonce);
+        let snapshot = ReplicationEnvelope::snapshot(
+            world_id,
+            source,
+            JOURNAL_VERSION,
+            nonce,
+            [0; 32],
+            journal_bytes.clone(),
+        )
+        .unwrap();
+        let cursor = snapshot.cursor_after;
+        let snapshot_frame = SignedReplicationEnvelope::sign(snapshot, &source_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        let previous = frame_digest(&snapshot_frame);
+        receiver.accept_frame(&snapshot_frame).unwrap();
+        let terminal = ReplicationEnvelope::terminal(
+            world_id,
+            source,
+            JOURNAL_VERSION,
+            nonce,
+            cursor,
+            previous,
+        );
+        let terminal_frame = SignedReplicationEnvelope::sign(terminal, &source_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        receiver.accept_frame(&terminal_frame).unwrap();
+        drop(receiver);
+
+        // No writer world/handle is alive or reachable after this point.
+        let (replica, _, _) = open_replica(
+            replica_dir.path(),
+            world_id,
+            source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("writer-admin")),
+        )
+        .await
+        .unwrap();
+        let snapshot = replica
+            .world()
+            .snapshot(spectator_token.clone())
+            .await
+            .unwrap();
+        assert_eq!(snapshot.current_sequence, 0);
+        assert!(
+            replica
+                .world()
+                .chat(spectator_token, "read only")
+                .await
+                .is_err()
+        );
+        replica.world().shutdown().await.unwrap();
+        assert_eq!(
+            std::fs::read(&directory_path).unwrap(),
+            directory_bytes,
+            "read-only startup must not repair the directory sidecar"
+        );
+        assert_eq!(
+            std::fs::read(replica_dir.path().join("journal.jsonl")).unwrap(),
+            journal_bytes
+        );
+    }
+
+    #[test]
+    fn write_lease_entries_survive_jsonl_reopen_with_epoch_intact() {
+        // Design #2819 phase 2 (#3804): lease entries appended to a
+        // fresh (version 1) journal bump its header to version 7 on
+        // first write, and a reopen + replay rebuilds the same lease:
+        // holder, monotonic epoch, term, and transition history.
+        use crate::world::{
+            JOURNAL_VERSION_WRITE_LEASE, JournalEntry as Entry, WorldCore, WorldJournal,
+            WorldLimits,
+        };
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+        journal
+            .append(&Entry::LeaseHandedOff {
+                from: "do".to_owned(),
+                to: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: Some(30_000),
+            })
+            .unwrap();
+        journal
+            .append(&Entry::LeaseRenewed {
+                holder: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: 40_000,
+            })
+            .unwrap();
+        drop(journal);
+
+        let (_journal, entries) = FileJournal::open(&path, "w").unwrap();
+        assert!(matches!(
+            entries[0],
+            Entry::Created {
+                version: JOURNAL_VERSION_WRITE_LEASE,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-1"));
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(lease.expires_at_ms, Some(40_000));
+        assert_eq!(lease.transitions().count(), 2);
+    }
+
     #[test]
     fn replication_snapshot_repairs_an_unterminated_torn_tail() {
         let dir = TempDir::new().unwrap();
@@ -746,6 +1380,29 @@ mod tests {
         let snapshot = journal.replication_snapshot().unwrap();
         assert_eq!(snapshot.bytes, expected);
         assert_eq!(std::fs::read(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn replication_snapshot_source_is_pinned_and_reads_only_its_captured_length() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, entries) = FileJournal::open(&path, "lobby").unwrap();
+        journal
+            .append(&JournalEntry::Isolation {
+                isolation: Isolation::Unisolated,
+            })
+            .unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        let source = journal.replication_snapshot_source().unwrap();
+        assert_eq!(source.byte_len, expected.len() as u64);
+
+        // Replacing the path after capture must not redirect the reader to a
+        // compacted image; the source owns the old inode and captured length.
+        journal.compact(&entries).unwrap();
+        let snapshot = source.read().unwrap();
+        assert_eq!(snapshot.bytes, expected);
+        assert!(snapshot.bytes.ends_with(b"\n"));
+        assert_ne!(std::fs::read(&path).unwrap(), snapshot.bytes);
     }
 
     #[tokio::test]
@@ -1599,8 +2256,11 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             transfers: None,
+            lease: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
         });
         let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
         assert!(error.to_string().contains("checkpoint"), "{error:#}");
@@ -1716,7 +2376,7 @@ mod tests {
             matches!(
                 entries[0],
                 JournalEntry::Created {
-                    version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                    version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                     ..
                 }
             ),
@@ -1762,7 +2422,7 @@ mod tests {
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -1770,7 +2430,7 @@ mod tests {
         assert!(matches!(
             on_disk[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -1779,6 +2439,95 @@ mod tests {
             2,
             "no entry is lost in the bump: {on_disk:?}"
         );
+    }
+
+    #[test]
+    fn a_legacy_v1_journal_holding_builder_audit_is_bumped_on_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let legacy = [
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::BuilderInstalled {
+                by: 7,
+                module_hash: "module".to_owned(),
+                seed: 9,
+            },
+        ];
+        let text: String = legacy
+            .iter()
+            .map(|entry| format!("{}\n", serde_json::to_string(entry).unwrap()))
+            .collect();
+        std::fs::write(&path, text).unwrap();
+
+        let (_, entries) = FileJournal::open(&path, "w").unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        assert!(matches!(
+            entries[1],
+            JournalEntry::BuilderInstalled { by: 7, .. }
+        ));
+        assert_eq!(journal_entries(dir.path()), entries);
+    }
+
+    #[test]
+    fn install_event_and_builder_audit_are_one_journal_transaction() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let transaction = [
+            JournalEntry::Committed {
+                event: crate::world::WorldEvent {
+                    sequence: 1,
+                    participant_id: 0,
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash: "module".to_owned(),
+                        seed: 9,
+                        provenance: None,
+                        trust: None,
+                    },
+                },
+            },
+            JournalEntry::BuilderInstalled {
+                by: 7,
+                module_hash: "module".to_owned(),
+                seed: 9,
+            },
+        ];
+        let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+
+        // A staging-file failure happens before replacement, leaving the
+        // original complete journal and neither half of the transaction.
+        let staging_dir = path.with_extension("jsonl.tmp");
+        std::fs::create_dir(&staging_dir).unwrap();
+        assert!(journal.append_transaction(&transaction).is_err());
+        std::fs::remove_dir(&staging_dir).unwrap();
+        let unchanged = journal_entries(dir.path());
+        assert_eq!(unchanged.len(), 1, "failed transaction was not appended");
+        WorldCore::restore("w", WorldLimits::default(), unchanged).unwrap();
+
+        journal.append_transaction(&transaction).unwrap();
+        drop(journal);
+        let committed = journal_entries(dir.path());
+        assert!(matches!(
+            committed[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        assert!(matches!(committed[1], JournalEntry::Committed { .. }));
+        assert!(matches!(
+            committed[2],
+            JournalEntry::BuilderInstalled { by: 7, .. }
+        ));
+        WorldCore::restore("w", WorldLimits::default(), committed).unwrap();
     }
 
     #[cfg(feature = "sandbox")]

@@ -16,6 +16,7 @@ import {
   ownerKey,
   validateViewFilters,
   viewUrl,
+  type SavedView,
   type ViewItemLike,
 } from "../src/views.ts";
 
@@ -27,6 +28,20 @@ function tmpStore(): { dir: string; file: string; store: ViewsStore } {
   const dir = mkdtempSync(join(tmpdir(), "agg-views-"));
   const file = join(dir, "views.json");
   return { dir, file, store: new ViewsStore(file) };
+}
+
+function persistedView(overrides: Partial<SavedView> = {}): SavedView {
+  const now = new Date().toISOString();
+  return {
+    id: "vw-1",
+    name: "Alpha",
+    owner: drewKey,
+    filters: { repo: "a/b" },
+    isDefault: false,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
 }
 
 describe("views store (#1276)", () => {
@@ -139,6 +154,143 @@ describe("views store (#1276)", () => {
     });
   });
 
+  test("cross-row invariant violations are quarantined before ambiguous views can be removed", async () => {
+    const cases: Array<{ name: string; views: SavedView[] }> = [
+      {
+        name: "duplicate ids",
+        views: [persistedView({ id: "vw-dup", name: "Gamma" }), persistedView({ id: "vw-dup", name: "Delta" })],
+      },
+      {
+        name: "case-insensitive duplicate names per owner",
+        views: [persistedView({ id: "vw-a", name: "Alpha" }), persistedView({ id: "vw-b", name: "alpha" })],
+      },
+      {
+        name: "multiple defaults per owner",
+        views: [
+          persistedView({ id: "vw-a", isDefault: true }),
+          persistedView({ id: "vw-b", name: "Beta", isDefault: true }),
+        ],
+      },
+    ];
+
+    for (const { name, views } of cases) {
+      const { dir, file, store } = tmpStore();
+      const raw = JSON.stringify({ version: 1, views });
+      writeFileSync(file, raw);
+
+      expect(await store.all(), name).toEqual([]);
+      const quarantined = readdirSync(dir).filter((entry) => entry.startsWith("views.json.corrupt-"));
+      expect(quarantined, name).toHaveLength(1);
+      expect(readFileSync(join(dir, quarantined[0]), "utf8"), name).toBe(raw);
+      if (name === "duplicate ids") {
+        expect(await store.remove("vw-dup", drewKey)).toBe(false);
+        expect(await store.all()).toEqual([]);
+      }
+    }
+  });
+
+  test("whitespace-padded duplicate names are quarantined on load and refused on save/rename", async () => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [persistedView({ id: "vw-a", name: "Alpha" }), persistedView({ id: "vw-b", name: " Alpha" })],
+    });
+    writeFileSync(file, raw);
+    expect(await store.all()).toEqual([]);
+    expect(readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"))).toHaveLength(1);
+
+    const { store: live } = tmpStore();
+    await live.save({ owner: drewKey, name: "Alpha", filters: { repo: "a/b" } });
+    await expect(live.save({ owner: drewKey, name: " alpha ", filters: {} })).rejects.toThrow("already exists");
+    const other = await live.save({ owner: drewKey, name: "Beta", filters: {} });
+    await expect(live.rename(other.id, drewKey, "ALPHA ")).rejects.toThrow("already exists");
+  });
+
+  // PBT for the cross-row invariants (Codex P1, PR #4536). Oracle: an
+  // independent re-derivation of the three invariants over the raw
+  // rows — ids unique globally; trimmed, case-insensitive names
+  // unique per owner; at most one default per owner. Generated stores
+  // draw ids, names, owners, and default flags from small pools so
+  // collisions (including case/whitespace-only name differences) are
+  // frequent; the verdict must also be invariant under row order.
+  test("property: generated stores are accepted iff the oracle finds no cross-row violation", async () => {
+    function mulberry32(seed: number) {
+      return () => {
+        seed |= 0;
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    const owners = [drewKey, ownerKey(claude)];
+    const namePool = ["Alpha", "alpha", " Alpha ", "Beta", "BETA", "beta ", "Gamma", "Delta"];
+    const idPool = ["vw-1", "vw-2", "vw-3", "vw-4"];
+
+    function oracleValid(views: SavedView[]): boolean {
+      const ids = new Set<string>();
+      const namesByOwner = new Map<string, Set<string>>();
+      const defaults = new Set<string>();
+      for (const v of views) {
+        if (ids.has(v.id)) return false;
+        ids.add(v.id);
+        const key = v.name.trim().toLowerCase();
+        const names = namesByOwner.get(v.owner) ?? new Set<string>();
+        if (names.has(key)) return false;
+        names.add(key);
+        namesByOwner.set(v.owner, names);
+        if (v.isDefault) {
+          if (defaults.has(v.owner)) return false;
+          defaults.add(v.owner);
+        }
+      }
+      return true;
+    }
+
+    async function verdict(views: SavedView[]): Promise<{ accepted: boolean; raw: string }> {
+      const { dir, file, store } = tmpStore();
+      const raw = JSON.stringify({ version: 1, views });
+      writeFileSync(file, raw);
+      const loaded = await store.all();
+      const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
+      if (loaded.length === 0 && views.length > 0) {
+        expect(quarantined).toHaveLength(1);
+        expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
+        return { accepted: false, raw };
+      }
+      expect(quarantined).toHaveLength(0);
+      expect(loaded.map((v) => v.id).sort()).toEqual(views.map((v) => v.id).sort());
+      return { accepted: true, raw };
+    }
+
+    for (let seed = 1; seed <= 120; seed++) {
+      const rand = mulberry32(seed);
+      const n = Math.floor(rand() * 7);
+      const views: SavedView[] = [];
+      for (let i = 0; i < n; i++) {
+        views.push(
+          persistedView({
+            id: idPool[Math.floor(rand() * idPool.length)],
+            name: namePool[Math.floor(rand() * namePool.length)],
+            owner: owners[Math.floor(rand() * owners.length)],
+            isDefault: rand() < 0.35,
+          }),
+        );
+      }
+      const expected = oracleValid(views);
+      const first = await verdict(views);
+      expect(first.accepted, ).toBe(expected);
+      // Row-order invariance: a shuffled copy gets the same verdict.
+      const shuffled = [...views];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const second = await verdict(shuffled);
+      expect(second.accepted, ).toBe(expected);
+    }
+  });
+
   test("malformed default filters are quarantined instead of becoming a match-all view", async () => {
     const { dir, file, store } = tmpStore();
     const raw = JSON.stringify({
@@ -161,6 +313,61 @@ describe("views store (#1276)", () => {
     const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
     expect(quarantined).toHaveLength(1);
     expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
+  });
+
+  // #4979: Date.parse rolled day-overflow stamps over (2026-02-30 ->
+  // 2026-03-02) and accepted non-ISO strings; the store gate now uses
+  // the shared isIsoDate contract like every sibling store gate.
+  test.each([
+    ["impossible createdAt", { createdAt: "2026-02-30T10:00:00.000Z", updatedAt: "2026-03-01T10:00:00.000Z" }],
+    ["impossible updatedAt", { createdAt: "2026-03-01T10:00:00.000Z", updatedAt: "2026-04-31T10:00:00.000Z" }],
+    ["non-ISO createdAt", { createdAt: "March 2, 2026", updatedAt: "2026-03-01T10:00:00.000Z" }],
+    ["non-leap Feb 29 createdAt", { createdAt: "2026-02-29T10:00:00.000Z", updatedAt: "2026-03-01T10:00:00.000Z" }],
+  ])("a view with an %s stamp is quarantined on load", async (_label, stamps) => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [
+        {
+          id: "vw-1",
+          name: "Stamped",
+          owner: drewKey,
+          filters: { repo: "a/b" },
+          isDefault: false,
+          ...stamps,
+        },
+      ],
+    });
+    writeFileSync(file, raw);
+
+    expect(await store.all()).toEqual([]);
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
+  });
+
+  test("a view with a leap-date stamp loads normally", async () => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [
+        {
+          id: "vw-1",
+          name: "Leap",
+          owner: drewKey,
+          filters: { repo: "a/b" },
+          isDefault: false,
+          createdAt: "2024-02-29T10:00:00.000Z",
+          updatedAt: "2024-02-29T10:00:00.000Z",
+        },
+      ],
+    });
+    writeFileSync(file, raw);
+
+    const all = await store.all();
+    expect(all).toHaveLength(1);
+    expect(all[0].createdAt).toBe("2024-02-29T10:00:00.000Z");
+    expect(readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"))).toHaveLength(0);
   });
 });
 

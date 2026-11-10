@@ -196,6 +196,7 @@
         #};
         "news" = "dt.smol.pub";
         "zettel" = "developing-today.github.io";
+        "mcpx" = "developing-today.github.io"; # code#1943 prep, NOT applied: Pages claim + challenge TXT follow at cutover; terraform apply needs Drew explicit go-ahead (code#1860)
         # "zulip" = {
         #   "ALIAS" = "developing-today.zulipchat.com"; # alias needs a new resource type
         # };

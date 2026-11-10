@@ -1,11 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { applyScreenPatch, renderWorldSurface, type ScreenSurface } from "./world-surface";
+import screenCellParityCorpus from "./test-fixtures/screen-cell-parity.json";
 
 function makeScreen(cells: ScreenSurface["cells"]): ScreenSurface {
   return { kind: "screen", version: 1, width: cells.length, height: 1, cells };
 }
 
 describe("world screen presenter", () => {
+  it("matches the recorded Rust verdicts for the shared screen-cell corpus", () => {
+    for (const testCase of screenCellParityCorpus.cases) {
+      const surface: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: testCase.width,
+        height: testCase.height,
+        cells: testCase.cells,
+      };
+      expect(
+        renderWorldSurface(document.createElement("div"), surface),
+        `web screen presenter verdict for ${testCase.name}`,
+      ).toBe(testCase.expected_valid);
+    }
+  });
+
   it("applies revision-independent cell runs to the same validated surface as a full frame", () => {
     const previous: ScreenSurface = {
       kind: "screen",
@@ -24,11 +41,20 @@ describe("world screen presenter", () => {
       width: 4,
       height: 1,
       runs: [
-        { start: 0, cells: [{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }, { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 }] },
+        {
+          start: 0,
+          cells: [
+            { symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 },
+            { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+          ],
+        },
         { start: 3, cells: [{ symbol: "x", fg: 4, bg: 0, bold: true, columns: 1 }] },
       ],
     };
-    const full: ScreenSurface = { ...previous, cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells] };
+    const full: ScreenSurface = {
+      ...previous,
+      cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells],
+    };
     const applied = applyScreenPatch(previous, patch);
     expect(applied).toEqual(full);
     const root = document.createElement("div");
@@ -47,7 +73,15 @@ describe("world screen presenter", () => {
       height: 1,
       runs,
     });
-    expect(applyScreenPatch(previous, patch([{ start: 1, cells: [previous.cells[1]] }, { start: 1, cells: [previous.cells[0]] }]))).toBeNull();
+    expect(
+      applyScreenPatch(
+        previous,
+        patch([
+          { start: 1, cells: [previous.cells[1]] },
+          { start: 1, cells: [previous.cells[0]] },
+        ]),
+      ),
+    ).toBeNull();
     expect(applyScreenPatch(previous, patch([{ start: 2, cells: [previous.cells[0]] }]))).toBeNull();
     expect(
       applyScreenPatch(
@@ -117,6 +151,26 @@ describe("world screen presenter", () => {
     );
     expect(renderWorldSurface(root, makeScreen([{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }]))).toBe(false);
     expect(root.textContent).toBe("safe legacy view");
+  });
+
+  it("treats printable ASCII as one column and still refuses control bytes (fast path)", () => {
+    const root = document.createElement("div");
+    // Every printable ASCII code point is one grapheme and one column wide.
+    for (let code = 0x20; code <= 0x7e; code++) {
+      const symbol = String.fromCharCode(code);
+      const screen = makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]);
+      expect(renderWorldSurface(root, screen), `U+${code.toString(16)} at width 1`).toBe(true);
+      const wide = makeScreen([
+        { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+        { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+      ]);
+      expect(renderWorldSurface(root, wide), `U+${code.toString(16)} at width 2`).toBe(false);
+    }
+    // DEL and the C1 range remain rejected, as do C0 controls.
+    for (const code of [0x00, 0x1f, 0x7f, 0x9f]) {
+      const screen = makeScreen([{ symbol: String.fromCharCode(code), fg: 0, bg: 0, bold: false, columns: 1 }]);
+      expect(renderWorldSurface(root, screen), `U+${code.toString(16)} is a control`).toBe(false);
+    }
   });
 
   it("refuses grapheme count violations and mismatched symbol widths", () => {
@@ -247,9 +301,9 @@ describe("world screen presenter", () => {
     // validator.
     const longGrapheme = `e${"\u0301".repeat(17)}`;
     expect(longGrapheme.length).toBe(18);
-    expect(renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(
-      true,
-    );
+    expect(
+      renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }])),
+    ).toBe(true);
   });
 
   it("measures U+FE0E text-presentation sequences as width 1, like Rust unicode-width 0.2.2 (#1581)", () => {

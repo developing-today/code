@@ -1,0 +1,58 @@
+name: agent-backup tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Test verification for pkgs/agent-backup (#6178).
+#
+# backup.sh is inlined verbatim into the live systemd user service
+# agent-backup (home/common/default.nix, builtins.readFile) and runs
+# unattended on the laptop via a path watcher. Its regression suite
+# (pkgs/agent-backup/test-backup.sh) pins two data-loss regressions:
+# the same-second collision of closed #3340 (a rerun in the same
+# second must not delete the first run's snapshot or leave `latest`
+# dangling) and the future-dated snapshot regression of closed #4602
+# (a future-dated snapshot must neither become the dedup baseline nor
+# regress the `latest` pointer). The suite was run by no workflow,
+# flake check, or justfile recipe, so either behaviour could regress
+# silently and be discovered only at restore time.
+#
+# This workflow runs the suite on pushes to main that touch the
+# agent-backup package or the service unit, and on dispatch,
+# following the house pattern for test workflows
+# (openai-cred-watchdog-tests.yml). Main tier only: not a merge gate.
+#
+# The suite is fully offline and isolated (it stubs `date` and points
+# HOME/AGENT_BACKUP_DIR at a mktemp tree). The run step checks the
+# suite file exists and fails if it is missing, so a green run can
+# never be a silently skipped suite.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/agent-backup/**"
+      - "home/common/default.nix"
+      - ".github/workflows/agent-backup-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-backup-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agent-backup-tests:
+    name: "full (main tier): agent-backup tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the agent-backup regression suite
+        run: |
+          if [ ! -f pkgs/agent-backup/test-backup.sh ]; then
+            echo "::error::pkgs/agent-backup/test-backup.sh is missing — the suite was not run."
+            exit 1
+          fi
+          bash pkgs/agent-backup/test-backup.sh

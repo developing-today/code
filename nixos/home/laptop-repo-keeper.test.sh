@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercises the real keeper against temporary primary repos: tracked
 # residue must block snapshot commits, while clean trees still snapshot.
+# An untracked secret inside a wholly untracked directory (code#2268)
+# must never be swept into a snapshot (status collapses it to `?? dir/`).
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,6 +152,46 @@ grep -Fq -- 'detached HEAD without origin — skipped' "$TMP_ROOT/detached-dirty
   fail 'detached dirty case: report missing skip reason'
 ! grep -Fq -- 'PRIMARY ON  ' "$TMP_ROOT/detached-dirty.log" ||
   fail 'detached dirty case: report contains an empty branch name'
+
+# A secret inside a wholly untracked directory (code#2268) blocks the
+# snapshot: default porcelain collapses it to `?? config/`, while the
+# guard must inspect individual untracked paths.
+H7="$TMP_ROOT/untracked-secret-home"
+R7="$H7/code"
+new_repo "$R7"
+printf 'snapshot candidate\n' >>"$R7/tracked.txt"
+mkdir -p "$R7/config"
+printf 'synthetic fixture only; not a credential\n' >"$R7/config/credentials.json"
+run_keeper "$H7" "$TMP_ROOT/untracked-secret.log"
+
+check 'untracked-secret case: tracked snapshot is blocked' \
+  '1' "$(git -C "$R7" rev-list --count HEAD)"
+check 'untracked-secret case: tracked edit remains dirty' \
+  'tracked.txt' "$(git -C "$R7" diff --name-only)"
+check 'untracked-secret case: secret still untracked on disk' \
+  '?? config/' "$(git -C "$R7" status --porcelain -- config)"
+grep -Fq -- 'untracked file(s)' "$TMP_ROOT/untracked-secret.log" ||
+  fail 'untracked-secret case: report missing untracked count'
+grep -Fq -- 'secret-shaped path present' "$TMP_ROOT/untracked-secret.log" ||
+  fail 'untracked-secret case: report missing secret-shaped-path refusal'
+
+# An ordinary untracked directory does not trip the guard; the regular
+# tracked snapshot still succeeds, without adding untracked files.
+H8="$TMP_ROOT/untracked-ordinary-home"
+R8="$H8/code"
+new_repo "$R8"
+printf 'snapshot candidate\n' >>"$R8/tracked.txt"
+mkdir -p "$R8/notes"
+printf 'ordinary fixture\n' >"$R8/notes/readme.txt"
+run_keeper "$H8" "$TMP_ROOT/untracked-ordinary.log"
+check 'untracked-ordinary case: tracked snapshot committed' \
+  '2' "$(git -C "$R8" rev-list --count HEAD)"
+check 'untracked-ordinary case: snapshot includes tracked file only' \
+  'tracked.txt' "$(git -C "$R8" show HEAD --name-only --format='')"
+check 'untracked-ordinary case: ordinary file remains untracked' \
+  '?? notes/' "$(git -C "$R8" status --porcelain -- notes)"
+grep -Fq -- 'committed 1 tracked entries on main' "$TMP_ROOT/untracked-ordinary.log" ||
+  fail 'untracked-ordinary case: report missing successful snapshot'
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2

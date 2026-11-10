@@ -26,10 +26,14 @@ shellcheck-check
 shfmt-check
 statix-check
 taplo-check
+justfmt-check
 clippy-lint
+clippy-native-shell
 web-lint
 cargo-check
+prod-lines-check
 test-unit
+test-native-shell
 test-shard-0
 test-shard-1
 test-shard-2
@@ -43,4 +47,6 @@ crash-gate-sweep
 crash-gate-control
 crash-gate-ingest
 just-recipes-drift
+build-sh-test
+just-recipes-alias-admission
 doc

@@ -379,7 +379,7 @@ mod tests {
             group: Some(team),
             body: Body::Member(MemberOp::Remove {
                 member: key(2),
-                successor: None,
+                mode: crate::groups::RemoveMode::Revoke,
             }),
         };
         let projection = state.record(remove_bo).unwrap();

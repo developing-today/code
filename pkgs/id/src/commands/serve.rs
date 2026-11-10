@@ -50,8 +50,9 @@
 //! id serve --no-relay
 //! ```
 
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -71,7 +72,9 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
-use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
+use crate::chat_presence::{
+    HEARTBEAT_INTERVAL, PresenceHeartbeat, PresenceTable, decode_frame, encode_frame,
+};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     defaults, resolve_config,
@@ -83,6 +86,7 @@ use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
+use crate::waiting::AuthorKey;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
 /// Print a status line to stdout **without panicking** if stdout is gone.
@@ -278,6 +282,9 @@ pub async fn remove_serve_lock() -> Result<()> {
 pub struct ServeOptions {
     /// Use an in-memory store.
     pub ephemeral: bool,
+    /// Operator server config to load at startup (#5119 slice 1);
+    /// `None` reads no file and keeps today's behaviour exactly.
+    pub server_config: Option<PathBuf>,
     /// Group log for the group-warning watcher (the global
     /// `--groups-log` option); `None` reads the default
     /// `groups.jsonl`, exactly as the group commands resolve it.
@@ -375,14 +382,134 @@ pub struct ServeOptions {
     pub open_writes: bool,
 }
 
-/// One web listener in the bindings model (#2145).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a web listener serves: the content target of a binding
+/// (#2146 design, phase 1: the surface contract and compatibility
+/// layer). The design's phased plan adds this type and its validation
+/// first, defaulting every existing binding to `Explorer`; routing
+/// per target is the next phase and is not changed here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebContentTarget {
+    /// The World Explorer surface: the legacy `--web` behaviour.
+    Explorer,
+    /// A world-backed program surface: the program in the named
+    /// world is served as a website. The target selector is the
+    /// existing world name, spelled `program:<world-name>` (the
+    /// design's selector semantics); there is no separate program ID.
+    Program(String),
+}
+
+impl Default for WebContentTarget {
+    fn default() -> Self {
+        Self::Explorer
+    }
+}
+
+impl WebContentTarget {
+    /// Build a `Program` target, validating the world name the same
+    /// way the #2147 publication registry validates its world names:
+    /// non-empty once trimmed. The stored name is the trimmed one.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an empty or all-whitespace world name.
+    pub fn program(world: impl Into<String>) -> Result<Self> {
+        let world = world.into();
+        let world = world.trim();
+        ensure!(
+            !world.is_empty(),
+            "program target world name must not be empty (expected program:<world-name>)"
+        );
+        Ok(Self::Program(world.to_owned()))
+    }
+
+    /// Parse one target spec: `explorer` or `program:<world-name>`.
+    /// This is the grammar a target is expressed in wherever a
+    /// binding is written as text (the `[web_bindings]` lines in
+    /// `defaults.conf`), so a target always travels inside its own
+    /// binding's spec -- never as a separate repeated flag paired
+    /// with listener flags by position (the design forbids that).
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unknown spec or an empty program world name,
+    /// naming the spec.
+    pub fn parse(spec: &str) -> Result<Self> {
+        match spec {
+            "explorer" => Ok(Self::Explorer),
+            _ => match spec.strip_prefix("program:") {
+                Some(world) => Self::program(world)
+                    .map_err(|e| anyhow::anyhow!("invalid content target {spec:?}: {e}")),
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "unknown content target {spec:?} (expected `explorer` or `program:<world-name>`)"
+                    ));
+                }
+            },
+        }
+    }
+
+    /// The canonical spelling of this target: `explorer` or
+    /// `program:<world-name>`.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Explorer => "explorer".to_owned(),
+            Self::Program(world) => format!("program:{world}"),
+        }
+    }
+}
+
+/// One web listener in the bindings model (#2145), with its #2146
+/// content target (phase 1: carried and validated, not yet routed).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebBinding {
     /// Full socket address, including any IPv6 scope ID (port 0 = OS-assigned).
     pub addr: SocketAddr,
+    /// What this listener serves; `Explorer` for every binding the
+    /// pre-#2146 sources produce.
+    pub target: WebContentTarget,
 }
 
 impl WebBinding {
+    /// An Explorer binding on `addr` (the legacy surface).
+    #[must_use]
+    pub fn explorer(addr: SocketAddr) -> Self {
+        Self {
+            addr,
+            target: WebContentTarget::Explorer,
+        }
+    }
+
+    /// A program binding on `addr` serving the named world.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an empty or all-whitespace world name.
+    pub fn program(addr: SocketAddr, world: impl Into<String>) -> Result<Self> {
+        Ok(Self {
+            addr,
+            target: WebContentTarget::program(world)?,
+        })
+    }
+
+    /// What this binding serves.
+    #[must_use]
+    pub fn target(&self) -> &WebContentTarget {
+        &self.target
+    }
+
+    /// This binding's stable identity: its content target and socket
+    /// address, e.g. `explorer@127.0.0.1:3000` or
+    /// `program:arena@127.0.0.1:3001`. Content metadata attaches by
+    /// this identity, never by position in the binding list. A
+    /// port-0 binding's identity settles only once the OS assigns
+    /// the port at bind time; callers must form the identity from
+    /// the bound address (see `with_port`), not the requested one.
+    #[must_use]
+    pub fn identity(&self) -> String {
+        format!("{}@{}", self.target.describe(), self.addr)
+    }
+
     /// The socket address this binding listens on.
     #[must_use]
     pub fn socket_addr(&self) -> SocketAddr {
@@ -412,13 +539,18 @@ impl WebBinding {
 ///    Combining them with an explicitly-set `--bind` or `--port` is an
 ///    error naming the conflicting flag (clap defaults do not count).
 /// 2. Else the `[web_bindings]` section of `defaults.conf`, parsed here
-///    so a malformed line fails startup naming the line.
+///    so a malformed line fails startup naming the line. A config line
+///    is `IP:PORT` (an Explorer binding) or `IP:PORT <target>` with a
+///    #2146 content target (`explorer` / `program:<world-name>`); the
+///    target travels inside the binding's own line, never as a
+///    separate list paired by position.
 /// 3. Else one binding synthesized from the legacy `--bind`/`--port`.
 ///
 /// # Errors
 ///
 /// Fails on the `--web-listen`/`--bind`/`--port` conflict, or on a
-/// malformed `[web_bindings]` line (named in the error).
+/// malformed `[web_bindings]` line (named in the error), or a duplicate
+/// nonzero listener address in the selected source.
 pub fn resolve_web_bindings(
     web_listen: &[SocketAddr],
     bind_explicit: bool,
@@ -436,28 +568,78 @@ pub fn resolve_web_bindings(
             !port_explicit,
             "--web-listen cannot be combined with --port: pass listener              addresses with --web-listen only, or use --bind/--port for a              single listener"
         );
+        ensure_unique_web_listener_addresses(web_listen.iter().copied(), "--web-listen")?;
         return Ok(web_listen
             .iter()
-            .map(|addr| WebBinding { addr: *addr })
+            .map(|addr| WebBinding::explorer(*addr))
             .collect());
     }
     if !config_bindings.is_empty() {
-        return config_bindings
+        let bindings: Result<Vec<_>> = config_bindings
             .iter()
             .map(|line| {
-                line.parse::<SocketAddr>()
-                    .map(|addr| WebBinding { addr })
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "invalid [web_bindings] entry {line:?} in defaults.conf: {e}                              (expected IP:PORT, e.g. 127.0.0.1:3000)"
-                        )
-                    })
+                parse_web_binding_line(line).map_err(|e| {
+                    anyhow::anyhow!("invalid [web_bindings] entry {line:?} in defaults.conf: {e}")
+                })
             })
             .collect();
+        let bindings = bindings?;
+        ensure_unique_web_listener_addresses(
+            bindings.iter().map(WebBinding::socket_addr),
+            "[web_bindings] in defaults.conf",
+        )?;
+        return Ok(bindings);
     }
-    Ok(vec![WebBinding {
-        addr: SocketAddr::new(legacy_bind, legacy_port),
-    }])
+    Ok(vec![WebBinding::explorer(SocketAddr::new(
+        legacy_bind,
+        legacy_port,
+    ))])
+}
+
+/// Parse one `[web_bindings]` line: `IP:PORT` for an Explorer
+/// binding, or `IP:PORT <target>` with a #2146 content target (see
+/// [`WebContentTarget::parse`]).
+///
+/// # Errors
+///
+/// Fails naming the offending part: a malformed address, an unknown
+/// or invalid target, or extra trailing text on the line.
+pub fn parse_web_binding_line(line: &str) -> Result<WebBinding> {
+    let mut parts = line.split_whitespace();
+    let addr_part = parts.next().unwrap_or_default();
+    let addr: SocketAddr = addr_part.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "{e} (expected IP:PORT, e.g. 127.0.0.1:3000, optionally followed by a content target)"
+        )
+    })?;
+    let target = match parts.next() {
+        None => WebContentTarget::Explorer,
+        Some(spec) => WebContentTarget::parse(spec)?,
+    };
+    ensure!(
+        parts.next().is_none(),
+        "unexpected extra text in web binding line {line:?} (expected IP:PORT [target])"
+    );
+    Ok(WebBinding { addr, target })
+}
+
+fn ensure_unique_web_listener_addresses(
+    addresses: impl IntoIterator<Item = SocketAddr>,
+    source: &str,
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    for addr in addresses {
+        // Port 0 asks the OS for a fresh port on each bind, so repeated port-0
+        // entries do not resolve to the same listener address.
+        if addr.port() == 0 {
+            continue;
+        }
+        ensure!(
+            seen.insert(addr),
+            "duplicate web listener address {addr} from {source}"
+        );
+    }
+    Ok(())
 }
 
 fn validate_world_options(
@@ -598,12 +780,15 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
-/// The server's capability ceiling: the named capabilities, or the whole catalog
-/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+/// The server's capability ceiling: the named capabilities, or the default
+/// ceiling ([`crate::world_caps::default_ceiling_names`]) when no list is
+/// given — providers whose manifest default is `Excluded` do not join a
+/// server by registration alone (#838). Like a world ceiling, it names
+/// capabilities; `*` is refused.
 #[cfg(feature = "world")]
 fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
     match names {
-        None => Ok(crate::world_caps::catalog_names()),
+        None => Ok(crate::world_caps::default_ceiling_names()),
         Some(names) => {
             crate::world_caps::validate_ceiling_names(names)?;
             Ok(names.iter().cloned().collect())
@@ -712,7 +897,12 @@ impl ServeWorlds {
             "serve startup: records ready, building world service (#190 breadcrumb)"
         );
         let service = if self.ephemeral {
-            make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
+            make(WorldHandle::spawn_with_device_manifest(
+                WorldCore::new(name, limits)?,
+                Box::<crate::world::EmptyWorldProgram>::default(),
+                Some(WorldHandle::host_device_manifest()),
+            ))
+            .with_records_store(records)
         } else {
             let (service, report) =
                 crate::world_store::open_world(&dir, name, limits, runtime, make).await?;
@@ -838,9 +1028,83 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
+/// The loaded operator server config and the provisioning it ran
+/// (#5119 slice 1). Kept at startup scope so the later slices — the
+/// pull gate from `config.pull_policy()` and the freshness window in
+/// seitan admission — wire into live serving from this one load.
+#[cfg(feature = "world")]
+#[derive(Debug)]
+pub struct StartedServerConfig {
+    /// The parsed config.
+    pub config: crate::server_config::ServerConfig,
+    /// The accounts and group events provisioning applied.
+    pub provisioned: crate::server_config::Provisioned,
+    /// What the provisioning run created.
+    pub report: crate::server_config::Report,
+}
+
+/// Load the operator server config at `path` and run startup
+/// provisioning from it (#5119 slice 1).
+///
+/// # Errors
+///
+/// Fails when the file cannot be read or parses badly — the
+/// [`crate::server_config::ServerConfig::parse`] error is named, per
+/// that parser's startup-failing contract — or when provisioning is
+/// refused (for example a group creator the create rule does not
+/// allow).
+#[cfg(feature = "world")]
+pub fn start_server_config(path: &Path) -> Result<StartedServerConfig> {
+    let config = crate::server_config::ServerConfig::load(path)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    let mut provisioned = crate::server_config::Provisioned::new();
+    let report = provisioned
+        .apply(&config)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    Ok(StartedServerConfig {
+        config,
+        provisioned,
+        report,
+    })
+}
+
+/// The pull policy the live event-sync gate serves under (#5119): the server
+/// config's `[policy] pull_policy` when a config was loaded, else the code
+/// default ([`crate::pull_policy::PullPolicy::Open`]), so a `serve` without
+/// `--server-config` behaves exactly as before.
+#[cfg(feature = "world")]
+fn serve_pull_policy(started: Option<&StartedServerConfig>) -> crate::pull_policy::PullPolicy {
+    started.map_or(crate::pull_policy::PullPolicy::Open, |started| {
+        started.config.pull_policy()
+    })
+}
+
+/// The world protocol serve registers for a hub: the loaded operator
+/// config's #2247 budget policy when a server config was given, the
+/// coded defaults when none was. Before this wire, the budgets
+/// table was parsed and held at startup scope but never reached the
+/// protocol, so configured per-counterparty caps were inert in
+/// production.
+#[cfg(feature = "world")]
+fn world_protocol_for(
+    hub: crate::world_hub::WorldHub,
+    local_node: [u8; 32],
+    started: Option<&StartedServerConfig>,
+) -> crate::world_net::WorldProtocol {
+    match started {
+        Some(started) => crate::world_net::WorldProtocol::with_budgets(
+            hub,
+            local_node,
+            started.config.budgets().clone(),
+        ),
+        None => crate::world_net::WorldProtocol::with_local_node(hub, local_node),
+    }
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
+        server_config,
         groups_log,
         no_relay,
         no_gossip,
@@ -887,6 +1151,24 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
+    // Resolved early (not at the group-warning block below) so the gossip
+    // receive task can fold the same log for receipt-side membership scoping
+    // (#4363): a channel the receiver holds no fold for scopes to empty.
+    let groups_log = serve_groups_log_path(groups_log);
+    // A web request on a binary built without the `web` feature must
+    // fail loudly: the web startup block is compiled out in that build,
+    // so without this guard --web was accepted and silently served
+    // nothing (no listener bound, no `web:` status line) - the failure
+    // mode that left web-waiting integration tests to die on a startup
+    // timeout instead of hearing the real reason.
+    #[cfg(not(feature = "web"))]
+    if web || !web_listen.is_empty() || port_explicit || bind_explicit {
+        anyhow::bail!(
+            "the web interface was requested (--web/--web-listen/--port/--bind), \
+             but this id binary was built without the `web` feature; \
+             rebuild with `--features web` to serve it"
+        );
+    }
     validate_world_options(
         world,
         world_admin_token.as_deref(),
@@ -895,6 +1177,47 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_cap_policy,
         world_source_only,
     )?;
+    // #5119 slice 1: load the operator server config before any
+    // startup work, so a malformed file fails fast naming the parse
+    // error, and run startup provisioning from it. No flag = no file
+    // read and exactly today's behaviour. The loaded state stays in
+    // scope for the pull-gate and freshness slices that consume it.
+    #[cfg(not(feature = "world"))]
+    if server_config.is_some() {
+        anyhow::bail!(
+            "--server-config was given, but this id binary was built without \
+             the `world` feature, which owns the server config; \
+             rebuild with `--features world` to serve with one"
+        );
+    }
+    #[cfg(feature = "world")]
+    let started_server_config = match &server_config {
+        Some(path) => {
+            let started = start_server_config(path)?;
+            status!(
+                "server config: loaded {} (provisioned {} user(s), {} group(s), {} member(s))",
+                path.display(),
+                started.report.users_created,
+                started.report.groups_created,
+                started.report.members_added
+            );
+            Some(started)
+        }
+        None => None,
+    };
+    // #5119: the pull policy the live event-sync gate uses, resolved once from
+    // the same startup config load. No config keeps the code default (open).
+    #[cfg(feature = "web")]
+    let event_sync_policy = {
+        #[cfg(feature = "world")]
+        {
+            serve_pull_policy(_started_server_config.as_ref())
+        }
+        #[cfg(not(feature = "world"))]
+        {
+            crate::pull_policy::PullPolicy::Open
+        }
+    };
     // #2145: resolve the web listener set once, before any startup work,
     // so a flag conflict or a malformed [web_bindings] line fails fast.
     let web_bindings = resolve_web_bindings(
@@ -905,6 +1228,34 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         port,
         &defaults().web_bindings,
     )?;
+    // #2147 (slice 1): restore the persisted publication set at boot.
+    // The registry is the persisted half of dynamic publication: the
+    // set an operator published in an earlier run is read back here,
+    // named line by line so the restored set is inspectable in the
+    // startup log, and the boot shadow warnings the issue requires
+    // are re-issued for any persisted mount that shadows an Explorer
+    // route without an acknowledgement. Applying the set to live
+    // listeners is the next slice; a malformed registry fails startup
+    // loudly (in Registry::load) rather than restoring nothing
+    // silently.
+    let publications =
+        crate::publications::Registry::load(&crate::publications::publications_file())?;
+    if !publications.publications.is_empty() {
+        status!(
+            "publications: restoring {} persisted publication(s)",
+            publications.publications.len()
+        );
+        for publication in &publications.publications {
+            status!(
+                "publications: world {} at {}",
+                publication.world,
+                publication.placement.describe()
+            );
+        }
+        for warning in publications.boot_warnings(crate::publications::KNOWN_EXPLORER_ROUTES) {
+            status!("{warning}");
+        }
+    }
     let apps_root = std::env::var_os("ID_APPS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("apps"));
@@ -954,6 +1305,27 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     }
     let endpoint = builder.bind().await?;
 
+    // Do not announce readiness before the endpoint is reachable through
+    // its home relay (#3028). The wait is bounded and non-fatal: a dead
+    // relay entry must not hold startup, so on timeout we warn and carry on.
+    // With `--no-relay` no relay ever connects, so the wait is skipped.
+    if no_relay {
+        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    } else {
+        match crate::connectivity::await_home_relay(
+            &endpoint,
+            crate::connectivity::HOME_RELAY_DEADLINE,
+        )
+        .await
+        {
+            Ok(()) => info!("serve startup: home relay connected"),
+            Err(e) => warn!(
+                "serve startup: proceeding without a home relay after {:?}: {e:#}",
+                crate::connectivity::HOME_RELAY_DEADLINE,
+            ),
+        }
+    }
+
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
     let chat_presence = PresenceTable::new();
@@ -986,13 +1358,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Build router — gossip ALPN is always registered (needed by iroh-docs),
     // but peer discovery gossip topic only joins when gossip is enabled
-    let meta = MetaProtocol::new(
-        &store_handle,
-        Some(peer_discovery.clone()),
-        Arc::clone(&tag_store),
-        access.clone(),
-        node_id,
-    );
     // iroh-blobs rejects pushes unless an event handler enables them; this one
     // allows them only from nodes the access policy lets write.
     let blobs = BlobsProtocol::new(
@@ -1123,6 +1488,29 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(not(feature = "world"))]
     ensure!(!world, "this build has no world support (feature `world`)");
 
+    // The world protocol instance is shared between its ALPN registration and
+    // the meta protocol, which exposes its abuse counters (#4918).
+    #[cfg(feature = "world")]
+    let world_protocol = world_hub
+        .as_ref()
+        .map(|hub| world_protocol_for(hub.clone(), *node_id.as_bytes(), started_server_config.as_ref()));
+
+    #[cfg(feature = "world")]
+    let abuse_handle = world_protocol
+        .as_ref()
+        .map(crate::world_net::WorldProtocol::abuse_handle);
+    #[cfg(not(feature = "world"))]
+    let abuse_handle: Option<std::sync::Arc<std::sync::Mutex<crate::abuse::AbuseEvaluator>>> = None;
+
+    let meta = MetaProtocol::new(
+        &store_handle,
+        Some(peer_discovery.clone()),
+        Arc::clone(&tag_store),
+        access.clone(),
+        node_id,
+        abuse_handle,
+    );
+
     #[cfg(all(feature = "world", feature = "ssh"))]
     let (ssh_tunnel, ssh_tunnel_port) = crate::world_ssh::SshTunnelProtocol::deferred();
     let router_builder = Router::builder(endpoint)
@@ -1134,17 +1522,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let router_builder = match &event_events {
         Some(events) => router_builder.accept(
             crate::event_store::sync::ALPN,
-            crate::event_sync::EventSyncProtocol::new(Arc::clone(events)),
+            crate::event_sync::EventSyncProtocol::with_gate(
+                Arc::clone(events),
+                crate::event_sync::gate(event_sync_policy),
+            ),
         ),
         None => router_builder,
     };
     #[cfg(feature = "world")]
-    let router_builder = match &world_hub {
-        Some(hub) => router_builder
-            .accept(
-                crate::world_net::WORLD_ALPN,
-                crate::world_net::WorldProtocol::new(hub.clone()),
-            )
+    let router_builder = match (world_hub.as_ref(), world_protocol) {
+        (Some(hub), Some(world_protocol)) => router_builder
+            .accept(crate::world_net::WORLD_ALPN, world_protocol)
             .accept(
                 crate::world_replication_net::REPLICATION_ALPN,
                 crate::world_replication_net::WorldReplicationProtocol::new(
@@ -1164,7 +1552,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 crate::artifact::PULL_ALPN,
                 crate::artifact::ArtifactPullProtocol::new(hub.clone()),
             ),
-        None => router_builder,
+        _ => router_builder,
     };
     #[cfg(all(feature = "world", feature = "ssh"))]
     let router_builder = router_builder.accept(crate::world_ssh::SSH_TUNNEL_ALPN, ssh_tunnel);
@@ -1178,9 +1566,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let _event_sync_handle = event_events.clone().map(|events| {
         status!("event sync: /id-range-sync/1 enabled (the web event store)");
+        // #5119: the live pull gate reads the operator config's
+        // `[policy] pull_policy`. Without a config the policy is the code
+        // default (open), exactly as before. The local event store is not a
+        // world and has no membership source, so `members` fails closed —
+        // every pull is refused — and says so here rather than silently
+        // serving open.
+        let policy = event_sync_policy;
+        if policy == crate::pull_policy::PullPolicy::Members {
+            status!(
+                "event sync: [policy] pull_policy=members — the local event store has no \
+                 membership source, so every pull is refused (fail closed)"
+            );
+        }
         let endpoint = router.endpoint().clone();
         let discovery = peer_discovery.clone();
-        let gate = crate::event_sync::open_gate();
+        let gate = crate::event_sync::gate(policy);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(crate::event_sync::SYNC_INTERVAL).await;
@@ -1257,6 +1658,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
         let gossip_chat_presence = chat_presence.clone();
+        let gossip_groups_log = groups_log.clone();
         let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
@@ -1268,6 +1670,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 receiver,
                 gossip_peer_discovery,
                 gossip_chat_presence,
+                gossip_groups_log,
                 gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
@@ -1303,7 +1706,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[allow(unused_mut)] // web_binding_addrs is only mutated with the `web` feature
     let mut web_binding_addrs: Vec<String> = Vec::new();
     #[cfg(feature = "web")]
-    let web_listeners: Vec<(SocketAddr, tokio::net::TcpListener)> = if web {
+    let web_listeners: Vec<(SocketAddr, tokio::net::TcpListener, WebContentTarget)> = if web {
         info!("serve startup: binding web listener(s) (#190 breadcrumb)");
         let mut listeners = Vec::new();
         for binding in &web_bindings {
@@ -1315,13 +1718,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             let actual_addr = binding.with_port(actual_port);
             info!(
                 addr = %actual_addr,
+                target = %binding.target().describe(),
                 "serve startup: web listener bound (#190 breadcrumb)"
             );
             if web_port.is_none() {
                 web_port = Some(actual_port);
             }
             web_binding_addrs.push(actual_addr.to_string());
-            listeners.push((actual_addr, listener));
+            listeners.push((actual_addr, listener, binding.target().clone()));
         }
         listeners
     } else {
@@ -1398,8 +1802,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     }
 
     // Start the web servers now that the lock file is written: one
-    // serve task per bound listener (#2145), every listener serving the
-    // same Explorer router with its own per-bind security.
+    // serve task per bound listener (#2145), each listener serving
+    // the router for its #2146 content target (Explorer by default,
+    // a program-only surface for a `Program` binding) with its own
+    // per-bind security.
     #[cfg(feature = "web")]
     let _web_handles = {
         let mut handles = Vec::new();
@@ -1411,8 +1817,19 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             // when serving without the web interface.
             let securities: Vec<crate::web::WebSecurity> = web_listeners
                 .iter()
-                .map(|(listener_addr, _)| {
+                .map(|(listener_addr, _, _)| {
                     crate::web::WebSecurity::for_bind(listener_addr.ip(), web_token.clone(), &[])
+                })
+                .collect();
+            // Each listener's #2146 content target, parallel to
+            // `securities`: a Program binding gets the program-only
+            // router for its world (phase 2); Explorer is the legacy
+            // router.
+            let surfaces: Vec<Option<String>> = web_listeners
+                .iter()
+                .map(|(_, _, target)| match target {
+                    WebContentTarget::Explorer => None,
+                    WebContentTarget::Program(world) => Some(world.clone()),
                 })
                 .collect();
             let web_routers = crate::web::web_routers(
@@ -1426,9 +1843,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 world_hub.clone(),
                 web_cookie_secure,
                 event_events.as_ref().map(Arc::clone),
+                surfaces,
+                Some(groups_log.clone()),
             )
             .await?;
-            for ((listener_addr, listener), web_router) in
+            for ((listener_addr, listener, target), web_router) in
                 web_listeners.into_iter().zip(web_routers)
             {
                 let listener_ip = listener_addr.ip();
@@ -1461,10 +1880,20 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 }
                 #[cfg(feature = "world")]
                 if world {
-                    status!(
-                        "world: browser http://{shown_host}:{}/world",
-                        listener_addr.port()
-                    );
+                    match &target {
+                        WebContentTarget::Explorer => {
+                            status!(
+                                "world: browser http://{shown_host}:{}/world",
+                                listener_addr.port()
+                            );
+                        }
+                        WebContentTarget::Program(program_world) => {
+                            status!(
+                                "program {program_world}: browser http://{shown_host}:{}/",
+                                listener_addr.port()
+                            );
+                        }
+                    }
                 }
                 if !listener_ip.is_loopback() && web_token.is_none() {
                     status_err!(
@@ -1511,7 +1940,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // the CLI status output at startup; the spawned task then re-evaluates
     // as membership changes and writes fired warnings to the server log.
     let mut group_watcher = GroupWarningWatcher::new();
-    let groups_log = serve_groups_log_path(groups_log);
     for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
         status!("group warning: {}", warning.message());
     }
@@ -1831,10 +2259,70 @@ fn unix_now() -> u64 {
 
 const MAX_STALE_PROBES_PER_PASS: usize = 4;
 
+/// Verifies an incoming presence heartbeat and stores only the channels whose
+/// folded group membership contains the sender (#4363). Membership comes from
+/// the receiver's own group fold for the channel (the `GroupView` member
+/// set); a channel the receiver holds no fold for scopes to empty, because
+/// membership the receiver cannot see cannot be confirmed. If the local group
+/// log cannot be read or folded, the heartbeat is refused rather than
+/// accepted without its scope check. Signature verification is unchanged: a
+/// heartbeat whose signature by its claimed node does not verify is dropped.
+fn receive_presence_heartbeat(
+    table: &PresenceTable,
+    heartbeat: PresenceHeartbeat,
+    groups_log: &Path,
+) -> bool {
+    if !heartbeat.verify() {
+        debug!("presence heartbeat failed signature verification, dropped");
+        return false;
+    }
+
+    let log = match GroupLog::open(groups_log) {
+        Ok(log) => log,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot open groups log: {error}");
+            return false;
+        }
+    };
+    let projection = match log.projection() {
+        Ok(projection) => projection,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot fold groups log: {error}");
+            return false;
+        }
+    };
+
+    let node = heartbeat.node;
+    let channels = heartbeat.channels.len();
+    let accepted = table.update_scoped(heartbeat, &|sender: &AuthorKey, group: &Hash| {
+        projection
+            .group(group)
+            .is_some_and(|view| view.members.contains_key(sender))
+    });
+    if accepted {
+        debug!(
+            "presence heartbeat from {}: {channels} claimed channel(s)",
+            node.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
+    accepted
+}
+
+/// The presence-heartbeat period for the gossip loop: [`HEARTBEAT_INTERVAL`],
+/// the cadence `chat_presence` documents, as the single source (#4777).
+/// A function (not an inline constant at the call site) so a test can pin
+/// the wiring and the constant cannot silently go dead again.
+fn presence_heartbeat_period() -> std::time::Duration {
+    HEARTBEAT_INTERVAL
+}
+
 /// Background loop for gossip-based peer discovery.
 ///
 /// Runs three concurrent tasks:
-/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`]
+/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`],
+///    and a presence heartbeat every [`HEARTBEAT_INTERVAL`] on its own timer
 /// 2. **Receive**: Listens for incoming gossip events and updates the peer table
 /// 3. **Cleanup**: Periodically probes stale peers via `ListPeers` RPC — refreshes
 ///    their `last_seen` if reachable, removes them if not
@@ -1846,6 +2334,7 @@ async fn run_gossip_loop(
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
     chat_presence: PresenceTable,
+    groups_log: PathBuf,
     signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
@@ -1856,66 +2345,76 @@ async fn run_gossip_loop(
     let announce_store = store;
     let announce_node_id = node_id;
 
-    // Spawn announce task
+    // Spawn announce task: peer announcements and presence heartbeats run
+    // on independent timers in this one task. They used to share the
+    // announcement timer, so heartbeats actually went out every 30 s and
+    // the documented 25 s HEARTBEAT_INTERVAL cadence (and the TTL
+    // drop-resilience it promises) never happened (#4777).
     let announce_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut announce_interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut heartbeat_interval = tokio::time::interval(presence_heartbeat_period());
         loop {
-            interval.tick().await;
-            // Get blob count from tags
-            let blob_count = match announce_store.tags().list().await {
-                Ok(mut stream) => {
-                    let mut count = 0u64;
-                    while stream.next().await.is_some() {
-                        count += 1;
-                    }
-                    count
-                }
-                Err(_) => 0,
-            };
+            tokio::select! {
+                _ = announce_interval.tick() => {
+                    // Get blob count from tags
+                    let blob_count = match announce_store.tags().list().await {
+                        Ok(mut stream) => {
+                            let mut count = 0u64;
+                            while stream.next().await.is_some() {
+                                count += 1;
+                            }
+                            count
+                        }
+                        Err(_) => 0,
+                    };
 
-            let announcement = PeerAnnouncement {
-                node_id: announce_node_id,
-                name: None,
-                blob_count,
-                timestamp_secs: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            };
+                    let announcement = PeerAnnouncement {
+                        node_id: announce_node_id,
+                        name: None,
+                        blob_count,
+                        timestamp_secs: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    };
 
-            match SignedPeerAnnouncement::sign(announcement, &signing_key) {
-                Some(signed) => match signed.encode_frame() {
-                    Ok(bytes) => {
-                        if let Err(e) = sender.broadcast(bytes).await {
-                            debug!("gossip broadcast error: {}", e);
+                    match SignedPeerAnnouncement::sign(announcement, &signing_key) {
+                        Some(signed) => match signed.encode_frame() {
+                            Ok(bytes) => {
+                                if let Err(e) = sender.broadcast(bytes).await {
+                                    debug!("gossip broadcast error: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                debug!("gossip announcement serialization error: {}", e);
+                            }
+                        },
+                        None => {
+                            warn!(
+                                "could not sign peer announcement for endpoint {}",
+                                announce_node_id
+                            );
                         }
                     }
-                    Err(e) => {
-                        debug!("gossip announcement serialization error: {}", e);
-                    }
-                },
-                None => {
-                    warn!(
-                        "could not sign peer announcement for endpoint {}",
-                        announce_node_id
-                    );
-                }
-            }
 
-            // Presence rides the same gossip plane (#2809): an ephemeral
-            // heartbeat naming this node. Channel membership lives in the
-            // chat layer above serve, so this heartbeat names no channels;
-            // receivers scope and read it through PresenceTable.
-            let mut presence = PresenceHeartbeat::new(
-                *announce_node_id.as_bytes(),
-                Vec::new(),
-                Vec::new(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            );
-            presence.sign(&signing_key);
-            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
-                debug!("gossip presence broadcast error: {}", e);
+                }
+                _ = heartbeat_interval.tick() => {
+                    // Presence rides the same gossip plane (#2809): an ephemeral
+                    // heartbeat naming this node. Channel membership lives in the
+                    // chat layer above serve, so this heartbeat names no channels;
+                    // receivers scope and read it through PresenceTable.
+                    let mut presence = PresenceHeartbeat::new(
+                        *announce_node_id.as_bytes(),
+                        Vec::new(),
+                        Vec::new(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    );
+                    presence.sign(&signing_key);
+                    if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                        debug!("gossip presence broadcast error: {}", e);
+                    }
+                }
             }
         }
     });
@@ -1923,6 +2422,7 @@ async fn run_gossip_loop(
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
     let recv_presence = chat_presence.clone();
+    let recv_groups_log = groups_log;
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
@@ -1935,16 +2435,10 @@ async fn run_gossip_loop(
                             // heartbeat's signature by its claimed node
                             // verifies, so nobody can forge or suppress
                             // another node's presence (#2809 Codex review).
-                            if heartbeat.verify() {
-                                debug!(
-                                    "presence heartbeat from {}: {} channel(s)",
-                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                                    heartbeat.channels.len()
-                                );
-                                recv_presence.update(heartbeat);
-                            } else {
-                                debug!("presence heartbeat failed signature verification, dropped");
-                            }
+                            // The accepted heartbeat is then scoped to the
+                            // sender's membership in the receiver's group
+                            // fold (#4363).
+                            receive_presence_heartbeat(&recv_presence, heartbeat, &recv_groups_log);
                         } else if let Some(announcement) =
                             SignedPeerAnnouncement::decode_frame(&msg.content)
                         {
@@ -2020,7 +2514,7 @@ async fn run_gossip_loop(
                     send.write_all(&req).await?;
                     send.finish()?;
                     let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-                    let _resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+                    let _resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
                     conn.close(0u32.into(), b"probe");
                     anyhow::Ok(())
                 })
@@ -2098,6 +2592,23 @@ mod tests {
     }
 
     #[test]
+    fn presence_heartbeat_period_is_the_documented_interval() {
+        // #4777: HEARTBEAT_INTERVAL was defined and documented in
+        // chat_presence but never used; serve broadcast presence on the
+        // 30 s announcement timer instead. Pin the gossip loop period to
+        // the constant so it cannot silently go dead again.
+        assert_eq!(presence_heartbeat_period(), HEARTBEAT_INTERVAL);
+        assert_ne!(presence_heartbeat_period(), ANNOUNCE_INTERVAL);
+        // The documented TTL resilience: at least two heartbeats land
+        // inside one PRESENCE_TTL_SECS window, so a single dropped
+        // broadcast never flickers a live node stale.
+        assert!(
+            HEARTBEAT_INTERVAL.as_secs() * 2 < crate::chat_presence::PRESENCE_TTL_SECS,
+            "two heartbeats must land inside one TTL window"
+        );
+    }
+
+    #[test]
     fn stale_probe_batches_are_bounded_sorted_and_round_robin() {
         let mut peers: Vec<_> = (1..=5).map(stale_test_peer).collect();
         peers.reverse();
@@ -2168,6 +2679,53 @@ mod tests {
     }
 
     #[test]
+    fn received_presence_keeps_only_channels_the_sender_belongs_to() {
+        // #4363: the serve receipt path must scope an incoming heartbeat to
+        // the sender's membership in the receiver's group fold, not store the
+        // claimed channels unscoped.
+        use ed25519_dalek::SigningKey;
+
+        use crate::chat_presence::Liveness;
+        use crate::groups::Role;
+
+        let dir = serve_test_dir("presence-membership");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let member_channel = group_log_with_members_at(&path, 1);
+        let outsider_channel = Hash::digest(b"not-a-member");
+        let signing_key = SigningKey::from_bytes(&[2; 32]);
+        let node = signing_key.verifying_key().to_bytes();
+        // The sender genuinely belongs to `member_channel`: enrol the
+        // heartbeat key in the receiver's group fold. Nothing enrols it in
+        // `outsider_channel`, which the receiver holds no fold for.
+        {
+            let mut log = GroupLog::open(&path).unwrap();
+            log.add([1; 32], member_channel, node, Role::Read).unwrap();
+        }
+        let mut heartbeat = PresenceHeartbeat::new(
+            node,
+            vec![member_channel, outsider_channel],
+            vec![member_channel, outsider_channel],
+            unix_now(),
+        );
+        heartbeat.sign(&signing_key);
+        assert!(
+            heartbeat.verify(),
+            "fixture heartbeat must be authenticated"
+        );
+
+        let table = PresenceTable::new();
+        assert!(receive_presence_heartbeat(&table, heartbeat, &path));
+        assert_eq!(table.liveness(&node, &member_channel), Liveness::Live);
+        assert_eq!(table.liveness(&node, &outsider_channel), Liveness::Offline);
+        let now = unix_now();
+        let member_rows = table.roster_at(&member_channel, &[node], now);
+        assert!(member_rows.iter().any(|row| row.node == node && row.typing));
+        let outsider_rows = table.roster_at(&outsider_channel, &[node], now);
+        assert!(outsider_rows.iter().all(|row| !row.typing));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn serve_groups_log_path_honours_override_and_default() {
         // #2778: the group-warning watcher's log path must come
         // from the global --groups-log option (threaded through
@@ -2176,10 +2734,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -2381,7 +2936,8 @@ mod tests {
         // Removing the other account leaves the device authorized
         // through the author alone; the evaluation reconciles the
         // tracked grant owners with the fold. Not itself a re-add.
-        log.remove(author, group, other, None).unwrap();
+        log.remove(author, group, other, crate::groups::RemoveMode::Revoke)
+            .unwrap();
         assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
 
         // Four genuine revoke + re-add cycles by the remaining account,
@@ -2399,10 +2955,10 @@ mod tests {
 
     #[cfg(feature = "world")]
     #[test]
-    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+    fn test_the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
         assert_eq!(
             allowed_caps(None).unwrap(),
-            crate::world_caps::catalog_names()
+            crate::world_caps::default_ceiling_names()
         );
         let named = ["time.now".to_owned(), "chat.say".to_owned()];
         assert_eq!(
@@ -2554,7 +3110,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
@@ -2653,9 +3212,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             bindings,
-            vec![WebBinding {
-                addr: "127.0.0.1:3000".parse().unwrap()
-            }]
+            vec![WebBinding::explorer("127.0.0.1:3000".parse().unwrap())]
         );
     }
 
@@ -2665,7 +3222,7 @@ mod tests {
             "127.0.0.1:4001".parse().unwrap(),
             "[::1]:4002".parse().unwrap(),
         ];
-        let config = vec!["127.0.0.1:3000".to_owned()];
+        let config = vec!["127.0.0.1:3000".to_owned(), "127.0.0.1:3000".to_owned()];
         let bindings = resolve_web_bindings(
             &flags,
             false,
@@ -2687,6 +3244,23 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_web_bindings_rejects_duplicate_flags() {
+        let duplicate: SocketAddr = "127.0.0.1:4001".parse().unwrap();
+        let err = resolve_web_bindings(
+            &[duplicate, duplicate],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("127.0.0.1:4001"), "{err}");
+        assert!(err.contains("--web-listen"), "{err}");
+    }
+
+    #[test]
     fn test_resolve_web_bindings_config_only() {
         let config = vec!["127.0.0.1:3000".to_owned(), "192.0.2.10:3001".to_owned()];
         let bindings = resolve_web_bindings(
@@ -2700,6 +3274,51 @@ mod tests {
         .unwrap();
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings[1].socket_addr().port(), 3001);
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_rejects_duplicate_config() {
+        let config = vec!["127.0.0.1:3000".to_owned(), "127.0.0.1:3000".to_owned()];
+        let err = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("127.0.0.1:3000"), "{err}");
+        assert!(err.contains("[web_bindings]"), "{err}");
+        assert!(err.contains("defaults.conf"), "{err}");
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_allows_repeated_port_zero() {
+        let duplicate: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let from_flags = resolve_web_bindings(
+            &[duplicate, duplicate],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(from_flags.len(), 2);
+
+        let config = vec!["127.0.0.1:0".to_owned(), "127.0.0.1:0".to_owned()];
+        let from_config = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(from_config.len(), 2);
     }
 
     #[test]
@@ -2740,24 +3359,287 @@ mod tests {
     #[test]
     fn test_resolve_web_bindings_conflict_names_the_flag() {
         let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap()];
-        let err = resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--bind"), "{err}");
-        let err = resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--port"), "{err}");
+    }
+
+    #[test]
+    #[test]
+    fn test_web_content_target_program_rejects_empty_world() {
+        // #2146 phase 1: a program target is a world name; an empty
+        // one can never resolve, so it fails at construction/parse.
+        assert!(WebContentTarget::program("").is_err());
+        assert!(WebContentTarget::program("   ").is_err());
+        assert!(WebContentTarget::parse("program:").is_err());
+        assert!(WebContentTarget::parse("program:  ").is_err());
+        assert_eq!(
+            WebContentTarget::program(" arena ").unwrap(),
+            WebContentTarget::Program("arena".to_owned())
+        );
+        assert_eq!(
+            WebContentTarget::parse("program:arena").unwrap().describe(),
+            "program:arena"
+        );
+        assert_eq!(
+            WebContentTarget::parse("explorer").unwrap(),
+            WebContentTarget::Explorer
+        );
+        assert!(WebContentTarget::parse("document:readme").is_err());
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_config_program_target() {
+        // #2146 phase 1: a [web_bindings] line may carry its content
+        // target inside the line; plain lines stay Explorer, and the
+        // two surfaces at different addresses resolve independently.
+        let config = vec![
+            "127.0.0.1:3000".to_owned(),
+            "127.0.0.1:3001 program:arena".to_owned(),
+        ];
+        let bindings = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            9999,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].target(), &WebContentTarget::Explorer);
+        assert_eq!(
+            bindings[1].target(),
+            &WebContentTarget::Program("arena".to_owned())
+        );
+        // Stable identities differ by target as well as by address.
+        assert_eq!(bindings[0].identity(), "explorer@127.0.0.1:3000");
+        assert_eq!(bindings[1].identity(), "program:arena@127.0.0.1:3001");
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_config_rejects_bad_target() {
+        // #2146 phase 1: a malformed target fails startup naming the
+        // line, like a malformed address does.
+        for line in [
+            "127.0.0.1:3000 program:",
+            "127.0.0.1:3000 document:readme",
+            "127.0.0.1:3000 explorer extra",
+        ] {
+            let config = vec![line.to_owned()];
+            let err = resolve_web_bindings(
+                &[],
+                false,
+                false,
+                "127.0.0.1".parse().unwrap(),
+                3000,
+                &config,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("[web_bindings]"), "{err}");
+            assert!(err.contains("127.0.0.1:3000"), "{err}");
+        }
     }
 
     #[test]
     fn test_resolve_web_bindings_malformed_config_line_is_named() {
         let config = vec!["127.0.0.1:3000".to_owned(), "not-an-addr".to_owned()];
-        let err =
-            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
-                .unwrap_err();
+        let err = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
         assert!(err.to_string().contains("[web_bindings]"), "{err}");
     }
 
     // Integration tests for lock file functions require file system access
     // and are tested via the integration test suite
+
+    // #5119 slice 1: serve loads a ServerConfig through --server-config.
+
+    #[cfg(feature = "world")]
+    fn serve_config_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("id-serve-config-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn start_server_config_applies_provisioning() {
+        let dir = serve_config_dir("applies");
+        let path = dir.join("server.toml");
+        // Real Ed25519 public keys: the parser rejects byte patterns
+        // that are not valid Edwards points.
+        let id = |n: u8| {
+            ed25519_dalek::SigningKey::from_bytes(&[n; 32])
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n\n\
+                 [[groups]]\nkey = \"team\"\nname = \"Team\"\ncreator = \"ann\"\n\n\
+                 [[groups.members]]\nuser = \"bo\"\nrole = \"write\"\n",
+                id(1),
+                id(2)
+            ),
+        )
+        .unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(started.report.users_created, 2);
+        assert_eq!(started.report.groups_created, 1);
+        assert_eq!(started.report.members_added, 1);
+        // A second run over the same state creates nothing: the
+        // Provisioned value from the first run is what serve keeps.
+        let mut provisioned = started.provisioned;
+        let again = provisioned.apply(&started.config).unwrap();
+        assert_eq!(again, crate::server_config::Report::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn start_server_config_fails_startup_on_a_malformed_file() {
+        let dir = serve_config_dir("malformed");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[[users]]\nkey = \"ann\"\nid = \"not-hex\"\n").unwrap();
+        let err = start_server_config(&path).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("server config"), "{message}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn start_server_config_fails_startup_on_a_missing_file() {
+        let dir = serve_config_dir("missing");
+        let path = dir.join("absent.toml");
+        let err = start_server_config(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("server config"), "{err:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_pull_policy_defaults_to_open_without_a_config() {
+        assert_eq!(
+            serve_pull_policy(None),
+            crate::pull_policy::PullPolicy::Open
+        );
+    }
+
+    /// #5119: the live event-sync gate takes its policy from the loaded
+    /// config's `[policy] pull_policy`, not from the code default.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_pull_policy_reads_the_configured_policy_table() {
+        let dir = serve_config_dir("pull-policy");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[policy]\npull_policy = \"members\"\n").unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(
+            serve_pull_policy(Some(&started)),
+            crate::pull_policy::PullPolicy::Members
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // #2247: the loaded [budgets] must reach the world protocol serve
+    // registers, not just the parser.
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_enforces_configured_budgets() {
+        let dir = serve_config_dir("budgets");
+        let path = dir.join("server.toml");
+        let ann = ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+            .verifying_key()
+            .to_bytes();
+        let ann_hex = ann.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{ann_hex}\"\n\n[budgets]\nper_peer_bytes_per_hour = 1000\n\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 500\nwindow_seconds = 60\n"
+            ),
+        )
+        .unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_ne!(
+            *started.config.budgets(),
+            crate::abuse::BudgetPolicy::default()
+        );
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], Some(&started));
+        let handle = protocol.abuse_handle();
+        let mut evaluator = handle.lock().unwrap();
+        // The configured policy — not the default — is the evaluator's.
+        assert_eq!(evaluator.budgets(), Some(started.config.budgets()));
+        // Ann's counterparty row replaced her per-peer limits.
+        let limits = started.config.budgets().limits_for_peer(&ann);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].bytes_per_window, 500);
+        // A charge beyond the configured cap is refused as a budget
+        // refusal (the frame is dropped; the peer is not disconnected).
+        let refusal = evaluator
+            .check_budget(crate::abuse::Direction::Inbound, ann, None, 600, 1_000)
+            .unwrap_err();
+        assert_eq!(refusal.reason, crate::abuse::RefusalReason::BudgetExhausted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_defaults_budgets_without_config() {
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], None);
+        let handle = protocol.abuse_handle();
+        let evaluator = handle.lock().unwrap();
+        assert_eq!(
+            evaluator.budgets(),
+            Some(&crate::abuse::BudgetPolicy::default())
+        );
+    }
+
+    #[test]
+    fn serve_server_config_flag_defaults_to_none() {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from(["id", "serve"]).unwrap();
+        let Some(crate::cli::Command::Serve(args)) = cli.command else {
+            panic!("expected the serve command");
+        };
+        let crate::cli::ServeArgs { server_config, .. } = args;
+        assert!(server_config.is_none());
+        let cli = crate::cli::Cli::try_parse_from(["id", "serve", "--server-config", "ops.toml"])
+            .unwrap();
+        let Some(crate::cli::Command::Serve(args)) = cli.command else {
+            panic!("expected the serve command");
+        };
+        let crate::cli::ServeArgs { server_config, .. } = args;
+        assert_eq!(server_config, Some(PathBuf::from("ops.toml")));
+    }
 }

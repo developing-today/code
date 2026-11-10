@@ -17,7 +17,7 @@
 // orchestrator's own alerting and are out of scope here.
 //
 // Thresholds (documented here, at the derivation site, per #1148):
-// - fleet feed: age > 15 min is stale (FEED_STALE_MS, the same bound
+// - fleet feed: age >= 5 min is stale (FEED_STALE_MS, the same bound
 //   health.ts and live.ts apply to feed-backed facets).
 // - orchestration section: stale past 90 min (ORCHESTRATION_STALE_MS
 //   in feed.ts, applied by diagnoseOrchestrationSection), and the
@@ -26,22 +26,30 @@
 // - registry facet: stale past 1 h (WATCHDOG_REGISTRY_STALE_MS). The
 //   registry facet's age is the feed age of the records it merged
 //   (live.ts provenanceDetail), so this is the slower, second alarm
-//   behind the feed's own 15 min item: the feed item says collection
+//   behind the feed's own 5 min item: the feed item says collection
 //   stopped; the registry item says session identity data itself is
 //   now an hour old.
 // - service probes: a failed probe (ok === false) for Kaneo, Grist,
 //   or Pad breaches immediately; the probe cache (60 s, health.ts)
 //   is the debounce.
-import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, ORCHESTRATION_STALE_MS, type SectionDiagnosis } from "./feed.ts";
-import type { TierItem } from "./model.ts";
+import {
+  ageMsText,
+  FEED_STALE_MS,
+  GENERATED_AT_FUTURE_SKEW_MS,
+  ORCHESTRATION_STALE_MS,
+  type SectionDiagnosis,
+} from "./feed.ts";
+import type { ProjectAudit, TierItem } from "./model.ts";
 
 /** Feed freshness bound — mirrors health.ts / live.ts FEED_STALE_MS. */
-export const WATCHDOG_FEED_STALE_MS = 15 * 60_000;
+export const WATCHDOG_FEED_STALE_MS = FEED_STALE_MS;
 /** Orchestration staleness bound — the diagnosis applies it; named
  *  here so the watchdog's contract reads in one place. */
 export const WATCHDOG_ORCHESTRATION_STALE_MS = ORCHESTRATION_STALE_MS;
 /** Registry facet staleness bound (#1148): 1 h. */
 export const WATCHDOG_REGISTRY_STALE_MS = 60 * 60_000;
+/** Project #4 audit freshness bound: the collector runs every ~5 min. */
+export const WATCHDOG_PROJECT_AUDIT_STALE_MS = 24 * 60 * 60_000;
 /** The topology services whose probe failure is a watchdog breach. */
 export const WATCHDOG_PROBE_SERVICE_IDS: readonly string[] = ["kaneo", "grist", "pad"];
 
@@ -73,6 +81,8 @@ export interface WatchdogInputs {
   /** The orchestration section diagnosis (#1139), when the source
    *  provides one. */
   orchestration?: SectionDiagnosis;
+  /** Latest auditable Project #4 snapshot; null/absent means unavailable. */
+  projectAudit?: ProjectAudit | null;
   /** The registry facet's age (live.ts provenanceDetail), when known. */
   registryAgeMs?: number;
   /** Probe outcomes for the topology services; only the
@@ -110,7 +120,7 @@ function item(
  * Pure: the same inputs always produce the same items (ids, titles,
  * and — where the input carries its own timestamp — the same
  * `since`), so repeated derivations never duplicate or churn a card.
- * Returns items in input order: feed, orchestration, registry, then
+ * Returns items in input order: feed, orchestration, projects, registry, then
  * probes in WATCHDOG_PROBE_SERVICE_IDS order.
  */
 export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
@@ -122,8 +132,8 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
 
   // Fleet feed: future-dated (buildHealth's own failure diagnosis -
   // a generatedAt >60s ahead is never fresh, and its clamped age of 0
-  // must not suppress this alarm until the future time + 15m),
-  // stale past 15 min, or absent entirely.
+  // must not suppress this alarm until the future time + 5m),
+  // stale at 5 min, or absent entirely.
   const feedFutureMs = inputs.feedGeneratedAt ? Date.parse(inputs.feedGeneratedAt) - now : NaN;
   if (!Number.isNaN(feedFutureMs) && feedFutureMs > GENERATED_AT_FUTURE_SKEW_MS) {
     put(
@@ -149,14 +159,14 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "Check the fleet-feed collector (laptop user timer fleet-feed-collector) and the feed file it writes; the card clears itself when a readable feed lands.",
       ),
     );
-  } else if (inputs.feedAgeMs > WATCHDOG_FEED_STALE_MS) {
+  } else if (inputs.feedAgeMs >= WATCHDOG_FEED_STALE_MS) {
     const generatedMs = inputs.feedGeneratedAt ? Date.parse(inputs.feedGeneratedAt) : now - inputs.feedAgeMs;
     put(
       item(
         "fleet-feed",
         `Watchdog: fleet feed is stale — last collected ${ageMsText(inputs.feedAgeMs)} ago`,
         "watchdog: feed stale",
-        `Feed age ${ageMsText(inputs.feedAgeMs)} is past the 15m freshness threshold (#1148 watchdog); feed-backed facets are flipping stale over the dead feed.`,
+        `Feed age ${ageMsText(inputs.feedAgeMs)} is at or past the 5m freshness threshold (#1148 watchdog); feed-backed facets are flipping stale over the dead feed.`,
         (Number.isNaN(generatedMs) ? now - inputs.feedAgeMs : generatedMs) + WATCHDOG_FEED_STALE_MS,
         now,
         "Check the fleet-feed collector (laptop user timer fleet-feed-collector, ~5 min cadence); the card clears itself when the feed is fresh again.",
@@ -207,6 +217,73 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
     }
   }
 
+  // Project #4's export is a scheduled artifact (collector cadence ~5m).
+  // Missing/empty snapshots breach immediately; stale snapshots breach
+  // after 24h so repository readers never mistake an old export for live.
+  const audit = inputs.projectAudit;
+  if (!audit) {
+    put(
+      item(
+        "projects",
+        "Watchdog: Project #4 audit is absent — no auditable snapshot in the fleet feed",
+        "watchdog: projects absent",
+        "The latest collector feed carries no valid Project #4 audit snapshot (fields, views, item totals, and distributions); the export is unavailable to repository readers.",
+        now,
+        now,
+        "Check the fleet-feed collector's GitHub Project read and token scope; the card clears itself when a valid audit snapshot is published.",
+      ),
+    );
+  } else if (!Number.isInteger(audit.totalItems) || audit.totalItems < 0 || !Number.isFinite(Date.parse(audit.generatedAt))) {
+    put(
+      item(
+        "projects",
+        "Watchdog: Project #4 audit is invalid — total or timestamp is malformed",
+        "watchdog: projects invalid",
+        "The Project #4 audit snapshot is present but its total item count or generatedAt timestamp is invalid, so its counts cannot be trusted.",
+        now,
+        now,
+        "Inspect the projects audit section in the latest fleet feed and repair the collector output; the card clears itself when a valid snapshot publishes.",
+      ),
+    );
+  } else if (Date.parse(audit.generatedAt) - now > GENERATED_AT_FUTURE_SKEW_MS) {
+    put(
+      item(
+        "projects",
+        "Watchdog: Project #4 audit is future-dated — generatedAt is ahead of the aggregator clock",
+        "watchdog: projects future-dated",
+        "The Project #4 audit timestamp is more than the accepted clock skew in the future, so its age cannot be trusted.",
+        now,
+        now,
+        "Check the fleet-feed collector's clock and the audit timestamp it writes; the card clears itself when a sane snapshot publishes.",
+      ),
+    );
+  } else if (now - Date.parse(audit.generatedAt) > WATCHDOG_PROJECT_AUDIT_STALE_MS) {
+    const ageMs = now - Date.parse(audit.generatedAt);
+    put(
+      item(
+        "projects",
+        `Watchdog: Project #4 audit is stale — last snapshot ${ageMsText(ageMs)} ago`,
+        "watchdog: projects stale",
+        `The Project #4 audit is ${ageMsText(ageMs)} old, past its 24h freshness bound; repository readers may be looking at an outdated board schema or distribution.`,
+        Date.parse(audit.generatedAt) + WATCHDOG_PROJECT_AUDIT_STALE_MS,
+        now,
+        "Check the fleet-feed collector's timer and the Project read; the card clears itself when a fresh audit snapshot publishes.",
+      ),
+    );
+  } else if (audit.totalItems === 0) {
+    put(
+      item(
+        "projects",
+        "Watchdog: Project #4 is empty — the scheduled audit found zero items",
+        "watchdog: projects empty",
+        `The Project #4 audit snapshot at ${audit.generatedAt} reports zero items; fields and views are still published, but the empty board needs review.`,
+        Date.parse(audit.generatedAt),
+        now,
+        "Confirm whether Project #4 should be empty; the card clears itself when the next scheduled snapshot contains an item.",
+      ),
+    );
+  }
+
   // Registry facet: stale past 1 h.
   if (inputs.registryAgeMs !== undefined && inputs.registryAgeMs > WATCHDOG_REGISTRY_STALE_MS) {
     const generatedMs = inputs.feedGeneratedAt ? Date.parse(inputs.feedGeneratedAt) : now - inputs.registryAgeMs;
@@ -215,7 +292,7 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "registry",
         `Watchdog: registry facet is stale — session records ${ageMsText(inputs.registryAgeMs)} old`,
         "watchdog: registry stale",
-        `The identity registry's merged session records are ${ageMsText(inputs.registryAgeMs)} old — past the 1h registry threshold (#1148 watchdog) — so session identity/coverage data is decaying behind the feed's own 15m alarm.`,
+        `The identity registry's merged session records are ${ageMsText(inputs.registryAgeMs)} old — past the 1h registry threshold (#1148 watchdog) — so session identity/coverage data is decaying behind the feed's own 5m alarm.`,
         (Number.isNaN(generatedMs) ? now - inputs.registryAgeMs : generatedMs) + WATCHDOG_REGISTRY_STALE_MS,
         now,
         "Check the registry inputs (session launch records in the fleet feed); the card clears itself when fresh records merge.",
