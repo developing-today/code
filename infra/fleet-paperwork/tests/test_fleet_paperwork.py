@@ -193,7 +193,7 @@ class TestCreateReadback(unittest.TestCase):
         }
         readback.update(readback_overrides)
 
-        def fake_http(method, path, token, payload=None):
+        def fake_http(method, path, token, body=None, expect=dict):
             paths.append((method, path))
             if method == "POST":
                 return 200, created
@@ -239,6 +239,10 @@ class TestCreateReadback(unittest.TestCase):
         code, _ = self.run_create({"body": self.BODY.strip()})
         self.assertEqual(code, 1)
 
+    def test_non_string_body_readback_fails_cleanly(self):
+        code, _ = self.run_create({"body": 42})
+        self.assertEqual(code, 1)
+
     def test_closed_state_fails(self):
         code, _ = self.run_create({"state": "closed"})
         self.assertEqual(code, 1)
@@ -246,6 +250,10 @@ class TestCreateReadback(unittest.TestCase):
     def test_missing_labels_fail(self):
         """Labels were requested but the readback shows none applied."""
         code, _ = self.run_create({"labels": []}, labels=["kind/bug"])
+        self.assertEqual(code, 1)
+
+    def test_malformed_label_entry_fails_cleanly(self):
+        code, _ = self.run_create({"labels": [{"name": None}]}, labels=["kind/bug"])
         self.assertEqual(code, 1)
 
     def test_applied_labels_pass(self):

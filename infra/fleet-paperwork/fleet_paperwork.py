@@ -470,11 +470,16 @@ def cmd_create(args) -> int:
     _, got = http("GET", f"/repos/{args.repo}/issues/{number}", token)
     if got.get("title") != title or got.get("number") != number:
         die(f"readback mismatch for {args.repo}#{number}: title={got.get('title')!r}")
-    if got.get("body") != body:
+    readback_body = got.get("body")
+    if readback_body != body:
+        sent_chars = len(body) if isinstance(body, str) else "n/a"
+        readback_chars = (
+            len(readback_body) if isinstance(readback_body, str) else "n/a"
+        )
         die(
             f"readback mismatch for {args.repo}#{number}: body sent "
-            f"{len(body)} chars, read back {len(got.get('body') or '')} chars "
-            f"(body={_shape_name(got.get('body'))})"
+            f"{sent_chars} chars, read back {readback_chars} chars "
+            f"(body={_shape_name(readback_body)})"
         )
     if got.get("state") != "open":
         die(
@@ -482,16 +487,28 @@ def cmd_create(args) -> int:
             f"expected 'open' for a freshly created issue"
         )
     if args.label:
-        want = sorted(args.label)
-        have = sorted(
-            lbl.get("name") if isinstance(lbl, dict) else lbl
-            for lbl in (got.get("labels") or [])
-        )
-        missing = [name for name in want if name not in have]
+        readback_labels = got.get("labels", [])
+        if not isinstance(readback_labels, list):
+            die(
+                f"readback mismatch for {args.repo}#{number}: labels have invalid "
+                f"shape (expected array, got {_shape_name(readback_labels)})"
+            )
+        have = set()
+        for label in readback_labels:
+            name = label if isinstance(label, str) else (
+                label.get("name") if isinstance(label, dict) else None
+            )
+            if not isinstance(name, str):
+                die(
+                    f"readback mismatch for {args.repo}#{number}: label entry has "
+                    f"no string name (got {_shape_name(label)})"
+                )
+            have.add(name)
+        missing = sorted(set(args.label) - have)
         if missing:
             die(
                 f"readback mismatch for {args.repo}#{number}: labels not applied: "
-                f"{missing} (read back {have})"
+                f"{missing} (read back {sorted(have)})"
             )
     ledger_append("create", args.repo, str(number), title)
     print(f"created+verified: {args.repo}#{number} {created.get('html_url')}")
