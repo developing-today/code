@@ -17,7 +17,7 @@ done
 : >"${tmp}/work/tests/nested/main.rs"
 
 cat >"${tmp}/bin/cargo" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/sh
 printf 'cargo %s\n' "$*" >>"$CARGO_LOG"
 EOF
 chmod +x "${tmp}/bin/cargo"
