@@ -62,7 +62,7 @@ function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["provid
     (value.resetsAt === null || isIsoDate(value.resetsAt)) &&
     isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
-    (value.state === "ok" || value.state === "error")
+    (value.state === "ok" || value.state === "error" || value.state === "lapsed")
   );
 }
 
@@ -72,7 +72,7 @@ function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
     typeof value.providerId === "string" &&
     typeof value.providerName === "string" &&
     typeof value.serviceId === "string" &&
-    (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
+    (value.state === "ok" || value.state === "error" || value.state === "unconfigured" || value.state === "lapsed") &&
     isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
     (value.credentialWatch === undefined || typeof value.credentialWatch === "boolean") &&
@@ -148,6 +148,7 @@ function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
       ? "ok"
       : "stale";
   }
+  if (entry.state === "lapsed") return "lapsed";
   return "error";
 }
 
@@ -274,6 +275,15 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   pool.freshness = freshness;
   if (state === "error") {
     pool.state = "error";
+    adoptEntryWindows(pool, entry);
+    return false;
+  }
+  if (state === "lapsed") {
+    // #1161: a lapsed subscription is a terminal non-error state. The
+    // pool surfaces as lapsed with the entry's own (empty) windows
+    // adopted, so no stale percentages present as current, and the
+    // freshness carries no error text.
+    pool.state = "lapsed";
     adoptEntryWindows(pool, entry);
     return false;
   }

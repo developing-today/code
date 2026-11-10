@@ -919,7 +919,7 @@ describe("pool splits (#1331)", () => {
     ]);
   });
 
-  test("Go lapse: an errored drewrypope row splits as a pool error; unconfigured rows never split", () => {
+  test("Go lapse: a lapsed drewrypope row splits as a lapsed pool row; unconfigured rows never split", () => {
     const lapsed: QuotaProviderResult = {
       providerId: "opencode-go",
       providerName: "OpenCode Go",
@@ -944,8 +944,11 @@ describe("pool splits (#1331)", () => {
     const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
     expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_DREWRYPOPE_SERVICE_ID]);
     const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
-    expect(personal.state).toBe("error");
+    expect(personal.state).toBe("lapsed");
     expect(personal.error).toContain("No active OpenCode Go subscription");
+    // A configured Go failure that is not the lapse signal stays "error".
+    const other = entryFromResult({ ...lapsed, error: "Console request failed (HTTP 500)" }, TICK);
+    expect(other.state).toBe("error");
   });
 
   test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {

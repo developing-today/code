@@ -357,6 +357,28 @@ describe("parseQuotaCurrent", () => {
     expect(parseQuotaCurrent(doc)?.providers).toHaveLength(1);
   });
 
+  test("accepts a lapsed entry; the overlay surfaces a non-error lapsed pool (#1161)", () => {
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "meta",
+            state: "lapsed",
+            error: "No active OpenCode Go subscription on the selected Console account",
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers).toHaveLength(1);
+    expect(parsed?.providers[0].state).toBe("lapsed");
+    const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
+    const meta = out.pools.find((p) => p.id === "meta")!;
+    expect(meta.state).toBe("lapsed");
+    expect(meta.freshness?.state).toBe("lapsed");
+    expect(meta.freshness?.error).toBeUndefined();
+  });
+
   test("rejects garbage, wrong versions, and shapeless providers", () => {
     expect(parseQuotaCurrent(null)).toBeNull();
     expect(parseQuotaCurrent("nope")).toBeNull();

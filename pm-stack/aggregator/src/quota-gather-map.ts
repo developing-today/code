@@ -402,7 +402,23 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     const fetchedDate = new Date(result.fetchedAt);
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
-  const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  // #1161: a configured OpenCode Go result whose error is the lapse
+  // signal ("No active OpenCode Go subscription ...") is a terminal
+  // non-error state of its own — the workspace exists but its
+  // subscription has lapsed — not a gather failure.
+  const isLapse =
+    !result.ok &&
+    result.configured &&
+    canonicalProviderId(result.providerId) === "opencode-go" &&
+    typeof result.error === "string" &&
+    result.error.includes("No active OpenCode Go subscription");
+  const state: QuotaCurrentEntry["state"] = result.ok
+    ? "ok"
+    : !result.configured
+      ? "unconfigured"
+      : isLapse
+        ? "lapsed"
+        : "error";
   const providerId = canonicalProviderId(result.providerId);
   const entry: QuotaCurrentEntry = {
     providerId,
@@ -453,7 +469,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
       resetsAt: normalizeResetAt(raw?.resetAt),
       measuredAt,
       source: GATHERER_SOURCE,
-      state: result.ok ? "ok" : "error",
+      state: result.ok ? "ok" : isLapse ? "lapsed" : "error",
     });
   };
   const usageObj = result.usage;
