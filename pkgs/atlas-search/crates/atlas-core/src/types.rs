@@ -118,6 +118,9 @@ pub struct BranchQuery {
     /// Normalized (and possibly truncated) query vector.
     pub query_vector: Option<Vec<f32>>,
     pub pool: usize,
+    /// Independent query-time limits for sharded vector fan-out.
+    pub shard_top_k: usize,
+    pub global_top_k: usize,
     pub vector_backend: crate::VectorBackend,
 }
 
