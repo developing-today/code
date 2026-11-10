@@ -19,6 +19,7 @@
 //   a changed record under an existing (key, version).
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { withSnapshotStoreLock } from "./snapshots.ts";
 
 export type RollupWindowKind = "week" | "month";
 export type RollupScopeKind = "project" | "epic" | "unattributed";
@@ -170,9 +171,17 @@ export function buildSpendRollups(events: readonly SpendRollupEvent[], opts: Bui
     }
   }
   const coverageFor = (g: Group): RollupCoverage => {
-    const full = opts.coverage.some(
-      (s) => s.status === "ok" && s.from <= g.windowStart && s.to >= g.windowEnd,
-    );
+    // Compare coverage endpoints as instants, never as strings: ISO
+    // representations differ ("2026-11-02T00:00:00Z" vs ".000Z", offsets)
+    // for the same moment.
+    const ws = Date.parse(g.windowStart);
+    const we = Date.parse(g.windowEnd);
+    const full = opts.coverage.some((s) => {
+      if (s.status !== "ok") return false;
+      const from = Date.parse(s.from);
+      const to = Date.parse(s.to);
+      return Number.isFinite(from) && Number.isFinite(to) && from <= ws && to >= we;
+    });
     return full ? "complete" : "partial";
   };
   const out: SpendRollup[] = [];
@@ -225,8 +234,15 @@ export class SpendRollupStore {
 
   /** Append records. Re-appending an identical record is a no-op;
    * appending a changed record under an existing (key, version) throws —
-   * restate under a new attributionVersion instead. */
+   * restate under a new attributionVersion instead. The duplicate check
+   * and the append are serialized under the store lock (the same lock
+   * the snapshot store uses), so overlapping appends cannot both pass
+   * the check before either writes. */
   async append(records: readonly SpendRollup[]): Promise<{ appended: number; skippedIdentical: number }> {
+    return withSnapshotStoreLock(this.dir, () => this.appendLocked(records));
+  }
+
+  private async appendLocked(records: readonly SpendRollup[]): Promise<{ appended: number; skippedIdentical: number }> {
     for (const r of records) validateSpendRollup(r);
     const existing = new Map((await this.readAll()).map((r) => [rollupKey(r), r]));
     const lines: string[] = [];
@@ -253,17 +269,22 @@ export class SpendRollupStore {
   }
 }
 
-/** Reader view: for each (window, scope, unit, pool), the record from the
- * newest attributionVersion present (or the requested version only). Old
- * versions stay stored and inspectable; readers never see them silently
- * merged with the new. */
+/** Reader view: one CONSISTENT attribution version per window — the
+ * newest version that has any record for that window (or the requested
+ * version only). Selecting the newest version per key instead would
+ * mix versions inside one window: a restatement that moves spend from
+ * `unattributed` to a project would leave the old unattributed record
+ * in place next to the new project record, double-counting the window.
+ * Old versions stay stored and inspectable via an explicit version. */
 export function selectRollups(records: readonly SpendRollup[], version?: string): SpendRollup[] {
-  const byKey = new Map<string, SpendRollup>();
-  for (const r of records) {
-    if (version !== undefined && r.attributionVersion !== version) continue;
-    const k = [r.windowKind, r.windowStart, r.scopeKind, r.scopeId, r.unit, r.pool ?? ""].join("|");
-    const prev = byKey.get(k);
-    if (!prev || versionRank(r.attributionVersion) >= versionRank(prev.attributionVersion)) byKey.set(k, r);
+  const pool = version !== undefined ? records.filter((r) => r.attributionVersion === version) : records;
+  const newestByWindow = new Map<string, string>();
+  for (const r of pool) {
+    const w = [r.windowKind, r.windowStart].join("|");
+    const prev = newestByWindow.get(w);
+    if (prev === undefined || versionRank(r.attributionVersion) > versionRank(prev)) newestByWindow.set(w, r.attributionVersion);
   }
-  return [...byKey.values()].sort((a, b) => rollupKey(a).localeCompare(rollupKey(b)));
+  return pool
+    .filter((r) => r.attributionVersion === newestByWindow.get([r.windowKind, r.windowStart].join("|")))
+    .sort((a, b) => rollupKey(a).localeCompare(rollupKey(b)));
 }

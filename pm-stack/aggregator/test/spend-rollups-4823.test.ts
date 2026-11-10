@@ -135,6 +135,53 @@ describe("SpendRollupStore", () => {
     }
   });
 
+  test("reader uses one consistent version per window: restated scope moves do not double-count", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));
+    try {
+      const store = new SpendRollupStore(dir);
+      const v1 = buildSpendRollups(
+        [{ ts: "2026-11-04T10:00:00Z", projectId: null, epicRef: null, tokensByPool: { meta: 100 } }],
+        { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV },
+      );
+      const v2 = buildSpendRollups(
+        [{ ts: "2026-11-04T10:00:00Z", projectId: "proj-a", epicRef: null, tokensByPool: { meta: 100 } }],
+        { attributionVersion: "v2", coverageStart: COVERAGE_START, coverage: FULL_NOV },
+      );
+      await store.append(v1);
+      await store.append(v2);
+      const week = selectRollups(await store.readAll()).filter((r) => r.windowKind === "week" && r.unit === "tokens");
+      expect(week.length).toBe(1);
+      expect(week[0]).toMatchObject({ scopeKind: "project", scopeId: "proj-a", value: 100, attributionVersion: "v2" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("coverage endpoints compare as instants: non-millisecond ISO forms still count as complete", () => {
+    const out = buildSpendRollups(EVENTS, {
+      attributionVersion: "v1",
+      coverageStart: COVERAGE_START,
+      coverage: [{ from: "2026-11-01T00:00:00Z", to: "2026-12-01T00:00:00Z", status: "ok" }],
+    });
+    expect(out.length).toBeGreaterThan(0);
+    for (const r of out) expect(r.coverage).toBe("complete");
+  });
+
+  test("overlapping appends are serialized: a conflicting batch cannot slip past the check", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));
+    try {
+      const store = new SpendRollupStore(dir);
+      const [first] = buildSpendRollups(EVENTS, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+      const conflict = { ...first!, value: first!.value + 1 };
+      const results = await Promise.allSettled([store.append([first!]), store.append([conflict])]);
+      expect(results.filter((r) => r.status === "fulfilled").length).toBe(1);
+      expect(results.filter((r) => r.status === "rejected").length).toBe(1);
+      expect((await store.readAll()).length).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a synthetic merged cross-unit field is rejected by the schema", async () => {
     const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));
     try {
