@@ -2010,9 +2010,18 @@
       // replacing the ordered alternate-first arrangement above - main
       // (fresh weekly window) carries the pair, alternate backs it.
       "openai-plan": {
-        "providers": ["openai.main", "openai.alternate"],
+        // 2026-11-10 (#8163, stage 2): the main seat moves from openai.main
+        // to _openai — the self-contained door that holds and refreshes its
+        // own credential in-process, with no Muse / codex-sync in its
+        // path. Same 2:1 main:alternate split. openai.main's provider
+        // definition stays in place above (unused by this plan); its
+        // Codex-sync dependency is retired for the main door. Proven with
+        // real route traffic under provider id _openai (auth accepted,
+        // QuotaExceeded only while the weekly wall lasts) plus an observed
+        // in-process refresh cycle — see #8163.
+        "providers": ["_openai", "openai.alternate"],
         "selection": "weighted",
-        "weights": { "openai.main": 2, "openai.alternate": 1 }
+        "weights": { "_openai": 2, "openai.alternate": 1 }
       },
       // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
       // provider route — vibe-direct attempted first on every dispatch
