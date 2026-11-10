@@ -1752,8 +1752,22 @@ export function liveSource(
             await readFile(join(dirname(cfg.feedFile), "aa-batches", aaCacheFileName(batch)), "utf8"),
           );
           if (isAaBatchCacheEntry(parsed) && isAaSection(parsed.section) && parsed.section.status === "ok") {
-            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
-            return { ...parsed.section, batches: batchList };
+            // #3302: the collector marks a cache stale when the opencode config
+            // changed under it (configFingerprint mismatch) and rebuilds a few
+            // per tick. Serving such a payload as ordinary success would show
+            // the old catalog and coverage with no warning, so honour the
+            // index's cache-validity flag.
+            const staleCache = batchList.find((b) => b.importBatch === batch)?.cached === false;
+            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt}${staleCache ? " · awaiting rebuild" : ""})`;
+            return staleCache
+              ? {
+                  ...parsed.section,
+                  batches: batchList,
+                  stale: true,
+                  staleReason:
+                    "this version was built from a different opencode config — the collector is rebuilding it",
+                }
+              : { ...parsed.section, batches: batchList };
           }
         } catch {
           // No cache file yet — fall through to the honest absent form.

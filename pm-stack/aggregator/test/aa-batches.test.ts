@@ -274,4 +274,59 @@ describe("live AA batch selection", () => {
     expect(selected?.batches?.map((batch) => batch.importBatch)).toEqual([B1, B3]);
     expect((await source.aa("44444444-4444-4444-8444-444444444444"))?.status).toBe("absent");
   });
+
+  test("a cache invalidated by a config change is served stale, not as ordinary success", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aa-batch-stale-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const historical = { ...FIXTURE_AA, batch: B3 };
+    const summary = (importBatch: string, latest: boolean, cached: boolean) => ({
+      importBatch,
+      name: "workbook.xlsx",
+      importedAt: latest ? "2026-10-31T15:00:00Z" : "2026-10-21T10:00:00Z",
+      driveModifiedAt: null,
+      ranAt: null,
+      insertedCounts: null,
+      label: latest ? "2026-10-31 · workbook.xlsx" : "2026-10-21 · workbook.xlsx",
+      fingerprint: latest ? "latest" : "historical",
+      cached,
+      latest,
+    });
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        aa: {
+          ...FIXTURE_AA,
+          batch: B1,
+          // The collector rebuilt the index under a new config fingerprint and
+          // has not rebuilt B3's payload yet.
+          batches: [summary(B1, true, true), summary(B3, false, false)],
+        },
+      }),
+    );
+    const cacheDir = join(dir, "aa-batches");
+    await mkdir(cacheDir);
+    await writeFile(
+      join(cacheDir, aaCacheFileName(B3)),
+      JSON.stringify({
+        batch: B3,
+        configFingerprint: "old-config",
+        fingerprint: "historical",
+        builtAt: historical.generatedAt,
+        section: historical,
+      }),
+    );
+
+    const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
+    const selected = await source.aa(B3);
+    expect(selected?.status).toBe("ok");
+    expect(selected?.stale).toBe(true);
+    expect(selected?.staleReason).toContain("rebuilding");
+    const html = renderAa(selected ?? null, new Proxy({}, { get: () => "live" }) as Provenance);
+    expect(html).toContain("The latest collection failed");
+    expect(html).toContain("rebuilding");
+  });
 });
