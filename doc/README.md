@@ -46,6 +46,7 @@ Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`
 - [T3 Code V2 integration](2026-10-26T21-18-21Z_feature_t3code-v2-integration/main.md)
 - [PM stack forecasting: velocity, quota walls, and stall risk](2026-11-01T21-07-00Z_design_pm-stack_forecasting/2026-11-01T21-07-00Z_design_pm-stack_forecasting.md)
 - [Authenticated peer announcements and bounded discovery](2026-11-02T08-13-35Z_design_peer-announcement-authentication/2026-11-02T08-13-35Z_design_peer-announcement-authentication.md)
+- [Recurring and cross-world scheduled events](2026-11-03T01-31-11Z_design_recurring_cross_world_schedules/2026-11-03T01-31-11Z_design_recurring_cross_world_schedules.md)
 - [Graph-native currency event contracts](2026-11-07T03-55-49Z_feature_graph_currency_contracts/2026-11-07T03-55-49Z_feature_graph_currency_contracts.md) (first implementation slice for #5522; later v1 layers remain)
 - [OneNote import into the ID knowledge layer (#6438)](2026-11-08T08-53-12Z_design_onenote_importer/2026-11-08T08-53-12Z_design_onenote_importer.md)
 - [Self-hosting and interop stance](2026-11-08T09-12-27Z_design_id-self-hosting-interop-stance/2026-11-08T09-12-27Z_design_id-self-hosting-interop-stance.md) (decision record for #5975: the interop contract, supported self-hosting shapes, and what is not required of a self-hoster)
