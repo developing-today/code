@@ -141,6 +141,101 @@ When attempts exhausted:
 - **Session location verification**: Verify `location.directory` before binding
 - **Task state verification**: Re-verify task state before launch
 
+## The Session Contract (#4912)
+
+Phase 4 closing audit (issue #4916, 2026-11-10): every OpenCode-server
+call the claimant makes or prescribes, dispositioned against the
+contract below. This section is the contract's durable home — it
+survives prompt edits because `prompt.md` is regenerated and this
+README is not.
+
+### The three rules
+
+1. **Judge a session by its own record.** Any verdict about one
+   session (exists / gone / progressing / finished) comes from a
+   per-id read of that session or from a session list whose
+   completeness is proven. A truncated list is not evidence: at
+   page-size equality the read fails closed (rule 1's mechanism in
+   `poll.py` is the escalating-limit fetch — the first read below
+   its limit is the whole list by construction; all reads at their
+   limit means completeness is unprovable and the fetch returns
+   None).
+2. **Verify before bind.** A created session is bound to a task
+   only after a per-id read-back confirms the create took effect
+   as sent — including `location.directory` (#4870: the v2 API
+   ignored a top-level `directory`, so an unverified create landed
+   workers in /home/user). A create that cannot be verified is
+   deleted, never bound.
+3. **Every bound state is dispositioned.** Each state a bound
+   session can be in (table below) has exactly one named claimant
+   behavior. A state with no row in the table is a contract bug:
+   file it, do not improvise around it.
+
+### Bound-state table
+
+| Bound state (evidence) | Disposition |
+|---|---|
+| Present, recent activity, no terminal marker | Working. No action; never relaunch over it. |
+| Present, idle or terminal outcome recorded | Finished. No action; the worker session records its own terminal state. |
+| Present, no messages, silent > ACTIVE_WINDOW_MS, attempts remain | Never-prompted (#4758): verify zero messages per-id, DELETE per-id, reclaim the binding atomically; the task is unbound for a later fire. |
+| Present, no recent activity, no terminal marker, has messages | Stuck: named in the fire's `stuck_bound` supervision report. No relaunch, no reclaim. |
+| Absent, terminal state recorded | One relaunch attempt on a later fire (prompt.md step 1). |
+| Absent, no terminal state, attempts remain | Gone-session recovery (#4758): verify absence per-id, reclaim the binding atomically. |
+| Absent, attempts exhausted (either recovery class) | Fail the task terminally with the session id in the execution record. |
+| Session list or per-id read unavailable | Unknown. The claimant launches nothing and reclaims nothing — absence of evidence is never treated as a gone session. |
+
+### Server-call inventory (Phase 4, 2026-11-10)
+
+OpenCode-server calls in `poll.py`, `claimant.py`, `launch_one.py`,
+and every server read/write `prompt.md` steps 1–6 prescribe:
+
+| Call | Where | Disposition |
+|---|---|---|
+| `GET /api/session?limit=N`, N escalating 1000 → 10000 → 100000 | `poll.py` `fetch_sessions()` | Rule 1 mechanism: fail-closed at page-size equality (#4757). Compliant. |
+| `GET /api/session/active` | `poll.py` `fetch_active_ids()` | Id-keyed map; no list to truncate. Unreadable → None → cap counts UNKNOWN, never zero; claimant launches nothing (`summarize_cap`). Compliant. |
+| `GET /api/session/{id}` | `claimant.py` (existence / gone-session verification) | Per-id judging, rule 1. Compliant. |
+| `GET /api/session/{id}/message` | `claimant.py` (zero-message verification) | Per-id; recovery acts only on a verified empty result, and an unavailable/incomplete read is treated as not verified (#4758). Compliant. (README's Recovery Rules above say `/messages`; the implemented path is `/message`.) |
+| `DELETE /api/session/{id}` | `claimant.py` (recovery, created-but-unbindable cleanup) | Per-id only, after the per-id verification above it. Compliant. |
+| `POST /api/session` | `claimant.py`, via `launch_one.py` | Create is verified by per-id read-back incl. `location.directory` before bind (rule 2, #4870). Compliant. |
+| `POST /api/session/{id}/prompt` | `claimant.py` `_send_prompt`, via `launch_one.py` | Per-id write to the just-verified session; a failed POST is a launch failure, not a bind. Compliant. |
+| `GET /api/session` (supervision, cap count) | `prompt.md` steps 1–2 | Prescription routes through `poll.py`'s fail-closed fetch (same row as the first entry); the prompt names the endpoint, the mechanism is poll.py's. Compliant. |
+| `GET` session messages, `DELETE` per-id (recovery) | `prompt.md` step 1 recovery rule | Same calls as the claimant.py rows; prescribed per-id with verify-first ordering. Compliant. |
+
+`poll.py`'s `REPO_QUEUE_CMD` constant names the repo-queue binary
+path but is not itself a server call (no remaining call site) — it
+is recorded here so the inventory is complete, not because it needs
+a disposition.
+
+### Queue-read disposition: broker `/list` at `limit=500`
+
+`poll.py` reads claimed/parked rows from the **queue-broker's** rich
+`/list` (not PostgREST — that route died with the #5362 cutover;
+#7325/#7375 restored this one) with `LIST_LIMIT = 500`, the broker
+client's own maximum (`LIST_LIMIT_MAX` in the fleet client). The
+question posed by #4916 was whether this read needs the same
+fail-closed-at-equality rule as `/api/session`.
+
+**Disposition: exempt, with reasons, from evidence.**
+
+- Different service, different contract. The #4912 contract governs
+  verdicts about OpenCode *sessions*. The `/list` read renders no
+  session verdict; it enumerates task rows.
+- The failure direction is benign. A truncated `/list` page can
+  only *under*-report candidates and stuck-bound rows — a missed
+  launch or a missed stall report for one fire. It cannot invent a
+  candidate, and it cannot make a live session read as gone: every
+  launch and recovery decision is re-gated on the fail-closed
+  session reads above, so a short queue page can never cause a
+  wrongful launch or reclaim by itself.
+- The cap cannot be hit in current operation. Claimed rows across
+  the whole pilot queue numbered 62 at the 2026-11-10 fleet health
+  read — an order of magnitude under one page, across all queues
+  the claimant polls combined per queue (the limit is per queue
+  read). If a queue's claimed+parked population ever approaches
+  500, this disposition must be revisited and the read given the
+  escalating-limit treatment; the trigger is named here so the
+  exemption cannot silently outlive its evidence.
+
 ## Execution Flow
 
 ```
