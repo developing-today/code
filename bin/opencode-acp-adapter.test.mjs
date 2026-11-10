@@ -373,3 +373,89 @@ test('malformed credential state file warns on stderr and sends no auth header',
   await acp.waitFor(() => acp.stderr().includes('not valid JSON') || null, 'stderr warning');
   assert.ok(acp.stderr().includes(authFile), 'warning names the state file');
 });
+
+// ---------------------------------------------------------------------------
+// --server validation (#6939): bad values fail fast at startup with a
+// usage error on stderr naming --server, before any ACP traffic. The
+// helper spawns the adapter with the given argv and collects its exit.
+// ---------------------------------------------------------------------------
+function runAdapterRaw(args, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(binDir, 'opencode-acp-adapter.mjs'), ...args], {
+      env: {
+        ...process.env,
+        OPENCODE_SERVER_PASSWORD: '',
+        OPENCODE_AUTH_FILE: path.join(binDir, 'nonexistent-auth-fixture.json'),
+        ...env,
+      },
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.stdin.end();
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`adapter did not exit fast for argv ${JSON.stringify(args)}; stderr so far: ${stderr}`));
+    }, 5000);
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stderr });
+    });
+  });
+}
+
+test('#6939 trailing --server fails fast naming --server', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /usage error/);
+  assert.match(stderr, /--server/);
+});
+
+test('#6939 --server= (empty) fails fast naming --server', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server=']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /usage error/);
+  assert.match(stderr, /--server/);
+});
+
+test('#6939 --server "" (empty value) fails fast naming --server', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', '']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+});
+
+test('#6939 flag-like --server value fails fast naming the value', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', '--bogus-flag']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /--bogus-flag/);
+});
+
+test('#6939 non-URL --server value fails fast naming the value', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', 'notaurl']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /notaurl/);
+});
+
+test('#6939 non-http(s) --server value fails fast', async () => {
+  const { code, stderr } = await runAdapterRaw(['--server', 'ftp://example.invalid']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /http/);
+});
+
+test('#6939 a typo\'d flag fails fast instead of silently dialling the default', async () => {
+  const { code, stderr } = await runAdapterRaw(['--sever', 'http://127.0.0.1:9']);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /unknown argument/);
+  assert.match(stderr, /--sever/);
+});
+
+test('#6939 a non-URL OPENCODE_ACP_SERVER env value fails fast naming the env var', async () => {
+  const { code, stderr } = await runAdapterRaw([], { OPENCODE_ACP_SERVER: 'also-not-a-url' });
+  assert.notEqual(code, 0);
+  assert.match(stderr, /OPENCODE_ACP_SERVER/);
+});

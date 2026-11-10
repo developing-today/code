@@ -792,8 +792,18 @@ pub fn render_settings(node_id: &str) -> String {
     );
     html.push_str("    <div class=\"p-4\">\n");
 
-    // Display Name section (client identity)
-    html.push_str("        <h3>Display Name</h3>\n");
+    // Client Identity section (#1792): the client id is issued by the
+    // server at registration and persisted in localStorage by the web
+    // client, so it is stable across in-site navigation;
+    // initSettingsIdentity fills the element in.
+    html.push_str("        <h3>Client Identity</h3>\n");
+    html.push_str("        <p class=\"text-muted mb-4\">Your client ID identifies this browser to other clients.</p>\n");
+    html.push_str("        <code id=\"client-id-value\" class=\"font-mono text-base-content/40 break-all\">Not registered yet</code>\n");
+    html.push_str("        \n");
+
+    // Display Name section (client identity): shown under the client id,
+    // above theme selection (#1792).
+    html.push_str("        <h3 class=\"mt-8\">Display Name</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Set a name that appears on your cursor when collaborating.</p>\n");
     html.push_str("        <div class=\"flex gap-2 items-center\">\n");
     html.push_str("            <input type=\"text\" id=\"display-name-input\" aria-label=\"Display name\" class=\"input input-sm input-bordered w-48\" placeholder=\"Anonymous\" />\n");
@@ -816,9 +826,9 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3 class=\"mt-8\">Theme</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Choose your preferred visual theme.</p>\n");
     html.push_str("        <div class=\"flex gap-4\">\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\" aria-label=\"Sneak theme\">Sneak</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\" aria-label=\"Arch theme\">Arch</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\" aria-label=\"Mech theme\">Mech</button>\n");
+    html.push_str("            <button class=\"theme-btn theme-choice theme-choice-sneak\" data-theme=\"sneak\" aria-label=\"Sneak theme\" title=\"Sneak theme\"><span class=\"theme-dot\" aria-hidden=\"true\"></span><span class=\"theme-label\">Sneak</span></button>\n");
+    html.push_str("            <button class=\"theme-btn theme-choice theme-choice-arch\" data-theme=\"arch\" aria-label=\"Arch theme\" title=\"Arch theme\"><span class=\"theme-dot\" aria-hidden=\"true\"></span><span class=\"theme-label\">Arch</span></button>\n");
+    html.push_str("            <button class=\"theme-btn theme-choice theme-choice-mech\" data-theme=\"mech\" aria-label=\"Mech theme\" title=\"Mech theme\"><span class=\"theme-dot\" aria-hidden=\"true\"></span><span class=\"theme-label\">Mech</span></button>\n");
     html.push_str("        </div>\n");
     html.push_str("        \n");
     html.push_str("        <h3 class=\"mt-8\">Keyboard Shortcuts</h3>\n");
@@ -1101,6 +1111,19 @@ fn render_program_shell(title: &str, content: &str, assets: &AssetUrls) -> Strin
 pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
     let mut html = String::with_capacity(2048);
     html.push_str("<div id=\"peers-content\" data-auto-refresh=\"10\">\n");
+    html.push_str(&render_peers_content(peers));
+    html.push_str("</div>");
+    html
+}
+
+/// Render just the peers content (card) without the `#peers-content` wrapper.
+///
+/// This is the replaceable inner content of the peers page.
+/// Used by `/api/peers` for auto-refresh partial updates: the client's
+/// `fetchPartial` assigns the response as `innerHTML` of `#peers-content`,
+/// so the partial must not carry the wrapper itself (issue #6956).
+pub fn render_peers_content(peers: &[(String, String, u64, u64)]) -> String {
+    let mut html = String::with_capacity(2048);
     html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
     html.push_str("    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Discovered Peers</div>\n");
     html.push_str("    <div class=\"p-4\">\n");
@@ -1134,7 +1157,6 @@ pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
 
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
-    html.push_str("</div>");
 
     html
 }
@@ -1235,6 +1257,27 @@ mod tests {
 
     use crate::web::content_mode::MediaType;
     use crate::web::routes::FileInfo;
+
+    #[test]
+    fn test_render_settings_shows_client_id_and_theme_labels() {
+        // #1792: the settings page carries a client-id element (filled by
+        // initSettingsIdentity from the persisted identity), the display
+        // name section sits under it, and theme names render below their
+        // icons in per-theme colour classes — not as uniform text buttons.
+        let html = render_settings("node-123");
+        assert!(html.contains("id=\"client-id-value\""));
+        let client_pos = html.find("Client Identity").unwrap();
+        let name_pos = html.find("Display Name").unwrap();
+        let theme_pos = html.find("Theme").unwrap();
+        assert!(client_pos < name_pos && name_pos < theme_pos);
+        for theme in ["sneak", "arch", "mech"] {
+            assert!(html.contains(&format!("theme-choice-{theme}")));
+            assert!(html.contains(&format!("data-theme=\"{theme}\"")));
+        }
+        assert!(html.contains("class=\"theme-dot\""));
+        assert!(html.contains("class=\"theme-label\">Sneak</span>"));
+        assert!(!html.contains("btn-outline btn-primary\" data-theme"));
+    }
 
     #[test]
     fn test_html_escape() {
@@ -1538,6 +1581,33 @@ mod tests {
         assert!(html.contains("test-node"));
         assert!(html.contains("42"));
         assert!(html.contains("30s ago"));
+    }
+
+    #[test]
+    fn test_render_peers_content_has_no_wrapper() {
+        // Regression for #6956: the /api/peers partial is assigned as
+        // innerHTML of #peers-content, so the inner renderer must not
+        // carry the wrapper (duplicate id + data-auto-refresh nesting).
+        let peers = vec![(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            "test-node".to_owned(),
+            42,
+            30,
+        )];
+        for html in [render_peers_content(&[]), render_peers_content(&peers)] {
+            assert!(!html.contains("peers-content"), "inner partial must not contain #peers-content wrapper: {html}");
+            assert!(!html.contains("data-auto-refresh"), "inner partial must not contain data-auto-refresh: {html}");
+            assert!(html.contains("Discovered Peers"));
+        }
+        assert!(render_peers_content(&peers).contains("test-node"));
+        assert!(render_peers_content(&[]).contains("No peers discovered yet"));
+    }
+
+    #[test]
+    fn test_render_peers_wrapper_exactly_once() {
+        let html = render_peers(&[]);
+        assert_eq!(html.matches("id=\"peers-content\"").count(), 1);
+        assert_eq!(html.matches("data-auto-refresh").count(), 1);
     }
 
     #[test]

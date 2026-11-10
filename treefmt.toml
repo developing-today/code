@@ -8,6 +8,7 @@ excludes = [
   ".opencode/**",                                     # managed by opencode, may have permission issues
   "**/package-lock.json",                             # npm-generated; biome ignores it by default, so passing it in fails the run
   "pkgs/cold-store-reaper/worker/dist/**",            # esbuild bundle output; deployed as built, formatting it would rewrite the artifact
+  "pm-stack/aggregator/src/assets/app.css",          # Tailwind build output (bun run build:css from src/ui.css); committed because deploys run no build step, so biome-formatting it would rewrite the artifact and the next build would revert it
   "pkgs/mcpx/docs/parity.md",                         # generated; TestParityDocumentIsCurrent compares it byte-for-byte with the generator, so prettier's table padding can never be applied
   "pkgs/mcpx/docs/configuration.md",                  # generated section; TestTheDocumentationListsEverySetting compares it byte-for-byte with settings.Registry(), so prettier's table padding can never be applied
   "pkgs/mcpx/plugin/opencode/README.md",              # generated options table; TestThePluginReadmeListsEveryOption compares it byte-for-byte with settings.Registry(), so prettier's table padding can never be applied

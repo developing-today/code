@@ -41,6 +41,7 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+mod upgrade;
 mod util;
 
 #[cfg(test)]
@@ -70,6 +71,10 @@ pub use replication::{
 pub use replication_receiver::{
     DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
     ReceiverProgress,
+};
+pub use upgrade::{
+    MAX_PROGRAM_STATE_BYTES, MigrateExport, ProgramSnapshot, RunningProgram,
+    SNAPSHOT_FORMAT_CURRENT, SNAPSHOT_FORMAT_V1, SNAPSHOT_MAGIC, UpgradeOutcome, upgrade_program,
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
@@ -184,6 +189,16 @@ impl WorldScopes {
     /// [`Self::from_bits`] accepts these so a journaled builder or moderator
     /// capability round-trips, without widening [`Self::ALL`].
     const ALL_BITS: u8 = Self::ALL.0 | Self::BUILDER.0 | Self::MODERATOR.0;
+
+    /// Every recognized bit, including the admin authority bits. Used as
+    /// the seed for authority-aware effective-scope computation: unlike
+    /// [`Self::ALL`], this lets an admin-issued `BUILDER` / `MODERATOR`
+    /// bit survive the ancestor-chain intersection in
+    /// `WorldCore::authorize` (design #835 phase 2). It grants nothing on
+    /// its own — the chain intersection only ever removes bits.
+    pub(crate) const fn all_recognized() -> Self {
+        Self(Self::ALL_BITS)
+    }
 
     /// Whether this set includes the builder authority (install modules).
     #[must_use]
@@ -1567,8 +1582,9 @@ pub(crate) struct JournalAdminHistory {
 pub const JOURNAL_VERSION: u32 = 1;
 
 /// Header version of a journal that contains a
-/// [`JournalEntry::ExecutionProfile`]: the first entry kind a version-1
-/// binary cannot read. See the contract on [`JOURNAL_VERSION`].
+/// [`JournalEntry::ExecutionProfile`] or [`JournalEntry::BuilderInstalled`]:
+/// entry kinds a version-1 binary cannot read. See the contract on
+/// [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 
 /// Header version of a journal that contains a region-seam handoff entry
@@ -1678,6 +1694,7 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::ExecutionProfile { profile } => {
             JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
         }
+        JournalEntry::BuilderInstalled { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
         _ => JOURNAL_VERSION,
     }
 }
@@ -1715,6 +1732,18 @@ pub trait WorldJournal: Send + 'static {
     /// Current journal header version, when the implementation can report it.
     fn replication_header_version(&self) -> Option<u32> {
         None
+    }
+
+    /// Durably append a group of entries as one all-or-nothing transaction.
+    /// Journals that cannot guarantee atomicity must leave the default in
+    /// place; an install requiring paired event and audit records will then
+    /// fail closed instead of falling back to separate appends.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure, or if this journal does not support atomic groups.
+    fn append_transaction(&mut self, _entries: &[JournalEntry]) -> Result<()> {
+        bail!("this journal does not support atomic entry transactions")
     }
 
     /// Atomically replace the whole journal with `entries` (a header, the

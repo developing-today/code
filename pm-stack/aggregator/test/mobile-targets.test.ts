@@ -51,6 +51,8 @@ describe("tap targets are at least 40px tall (#1180)", () => {
     expect(renderSource).toMatch(/\.attention-card-header > strong \{[^}]*min-width: 0;/);
     expect(renderSource).toMatch(/\.item-session-records > \.session-record-line \{[^}]*max-width: 100%;/);
     expect(renderSource).toMatch(/\.item-session-records \.session-record-meta \{[^}]*overflow-wrap: anywhere;/);
+    expect(renderSource).toMatch(/\.item-session-records \.session-record-line \.badge \{[^}]*white-space: normal;/);
+    expect(renderSource).toMatch(/\.item-session-records \.session-record-line \.badge \{[^}]*overflow-wrap: anywhere;/);
     expect(renderSource).toContain('<div class="attention-card-header">');
     expect(renderSource).toContain('<div class="item-session-records">');
   });

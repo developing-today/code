@@ -1759,23 +1759,16 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 io.mark_authorized();
                 match service.world().caps_report().await {
                     Ok(report) => {
-                        if !send_json(
-                            service.frame_meter(),
-                            io,
-                            &ServerFrame::Caps { report },
-                        )
-                        .await
+                        if !send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
+                            .await
                         {
                             return;
                         }
                     }
                     Err(_) => {
-                        let _ = send_error(
-                            service.frame_meter(),
-                            io,
-                            "capability report unavailable",
-                        )
-                        .await;
+                        let _ =
+                            send_error(service.frame_meter(), io, "capability report unavailable")
+                                .await;
                         return;
                     }
                 }
@@ -1818,8 +1811,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                         }
                     }
                     Err(error) => {
-                        let _ =
-                            send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                         return;
                     }
                 }

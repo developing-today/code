@@ -171,11 +171,7 @@ fn region_hash(name: &str) -> u64 {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    if hash == 0 {
-        1
-    } else {
-        hash
-    }
+    if hash == 0 { 1 } else { hash }
 }
 
 /// All of one world's host metrics at snapshot time — the `metrics`
@@ -375,10 +371,7 @@ impl WorldMetrics {
     /// evaluate the window's sustained hotness (#2275). Called by
     /// [`WorldMetrics::snapshot`]; the window is fixed-size atomics,
     /// so retaining never allocates either.
-    fn retain_and_evaluate(
-        &self,
-        snapshot: &MetricsSnapshot,
-    ) -> super::hotness::HotnessReport {
+    fn retain_and_evaluate(&self, snapshot: &MetricsSnapshot) -> super::hotness::HotnessReport {
         use super::hotness::HotnessSample;
         let at_ms = u64::try_from(
             std::time::SystemTime::now()
@@ -392,7 +385,8 @@ impl WorldMetrics {
         slot.at_ms.store(sample.at_ms, Ordering::Relaxed);
         slot.commands_total
             .store(sample.commands_total, Ordering::Relaxed);
-        slot.queue_depth.store(sample.queue_depth, Ordering::Relaxed);
+        slot.queue_depth
+            .store(sample.queue_depth, Ordering::Relaxed);
         slot.command_count
             .store(snapshot.command_latency.count, Ordering::Relaxed);
         slot.command_p95_us
@@ -430,8 +424,7 @@ impl WorldMetrics {
             })
             .collect();
         retained.sort_by_key(|(slot_seq, _)| *slot_seq);
-        let samples: Vec<HotnessSample> =
-            retained.into_iter().map(|(_, sample)| sample).collect();
+        let samples: Vec<HotnessSample> = retained.into_iter().map(|(_, sample)| sample).collect();
         super::hotness::evaluate(&samples, &super::hotness::HotnessThresholds::default())
     }
 }

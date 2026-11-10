@@ -218,8 +218,29 @@ describe("server boots from fixtures", () => {
     expect(board.board.every((item) => !("notes" in item))).toBe(true);
     const quota = (await (await fetch(`http://127.0.0.1:${port}/api/quota.json`)).json()) as { pools: unknown[] };
     expect(quota.pools.length).toBeGreaterThan(0);
-    const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as unknown[];
+    const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as {
+      id?: string;
+      tier?: string;
+    }[];
     expect(attention.length).toBeGreaterThan(0);
+    expect(attention.some((entry) => entry.tier === "needs-drew")).toBe(true);
+  });
+
+  test("board JSON is the board's own bounded twin (#5082)", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/board.json`);
+    expect(res.status).toBe(200);
+    // Machine consumer: no pretty-print padding.
+    const raw = await res.text();
+    expect(raw).not.toContain("\n  \"board\"");
+    const body = JSON.parse(raw) as {
+      board: { links?: { ref: string }[]; status?: string }[];
+      items: { ref: string }[];
+    };
+    // Every shipped item resolves a link the shipped cards actually carry:
+    // the payload never carries an unreachable item closure.
+    const linked = new Set(body.board.flatMap((card) => (card.links ?? []).map((l) => l.ref)));
+    expect(body.items.length).toBeGreaterThan(0);
+    expect(body.items.every((item) => linked.has(item.ref))).toBe(true);
   });
 
   test("unknown project page is a styled 404; a known project stays 200 (#1186)", async () => {

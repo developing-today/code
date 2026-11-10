@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 const stale = `// Close stale issues in a repository.
@@ -431,5 +432,38 @@ func TestRenderValidatesAndEncodesDeclaredDefaults(t *testing.T) {
 				t.Errorf("Render output =\n%s\nwant it to contain %q", out, tc.want)
 			}
 		})
+	}
+}
+
+// Codex review on #2646 (4422039950): a TypeJSON placeholder accepts
+// any JSON value (arrays included), so FormSchema must not declare
+// "object" for it -- with broker-side schema validation (#1954) that
+// declaration refused answers the recipe renders fine.
+func TestFormSchemaJSONPlaceholderAcceptsAnyJSONValue(t *testing.T) {
+	schema := recipes.FormSchema([]recipes.Placeholder{
+		{Name: "items", Type: recipes.TypeJSON, Required: true},
+		{Name: "label", Type: recipes.TypeString, Required: true},
+	})
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		t.Fatalf("FormSchema output does not parse: %v", err)
+	}
+	if _, constrained := doc.Properties["items"]["type"]; constrained {
+		t.Errorf("TypeJSON property carries a type constraint: %v", doc.Properties["items"])
+	}
+	if got := doc.Properties["label"]["type"]; got != "string" {
+		t.Errorf("TypeString property type = %v, want string", got)
+	}
+	compiled, err := schemaval.Compile(schema)
+	if err != nil {
+		t.Fatalf("FormSchema output does not compile: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": [1, 2], "label": "x"}`)); err != nil {
+		t.Errorf("array answer for a TypeJSON placeholder refused: %v", err)
+	}
+	if err := compiled.ValidateJSON([]byte(`{"items": {"a": 1}, "label": "x"}`)); err != nil {
+		t.Errorf("object answer for a TypeJSON placeholder refused: %v", err)
 	}
 }

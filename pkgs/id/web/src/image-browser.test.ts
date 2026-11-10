@@ -27,6 +27,30 @@ function stubFetchImages(): void {
   );
 }
 
+/** Stub /api/images to return an arbitrary (possibly malformed) payload. */
+function stubFetchPayload(payload: unknown): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload,
+    })),
+  );
+}
+
+function gridText(): string {
+  return document.querySelector(".pm-image-browser-grid")?.textContent ?? "";
+}
+
+/** Open the browser and wait for the load-failure message in the grid. */
+async function openAndFail(view: EditorView): Promise<void> {
+  openImageBrowser(view, richSchema);
+  await vi.waitFor(() => {
+    expect(gridText()).toContain("Failed to load images");
+  });
+}
+
 /** Create an EditorView with a one-paragraph doc in a container div. */
 function createView(): { view: EditorView; container: HTMLElement } {
   const container = document.createElement("div");
@@ -308,4 +332,41 @@ describe("openImageBrowser", () => {
 
     expect(document.querySelector(".pm-image-browser-overlay")).toBeNull();
   });
+});
+
+// ── Malformed /api/images payloads (#7812) ─────────────────────────
+//
+// The /api/images contract (routes.rs images_list_handler) is a bare
+// array of { hash, name, url, size } entries. A wrong-shape 200 must
+// fail closed: no cards, Insert stays disabled, and a clean failure
+// message — never a raw TypeError, and never bogus cards built from
+// unvalidated elements. Validation is all-or-nothing: one bad element
+// rejects the whole payload instead of half-rendering the grid.
+
+describe("malformed /api/images payloads", () => {
+  const VALID = { hash: "abc123", name: "cat.png", url: "/api/images/abc123", size: 42 };
+
+  const cases: Array<[string, unknown]> = [
+    ["null body", null],
+    ["non-array object body", { images: [VALID] }],
+    ["string body", "abc"],
+    ["null element", [null]],
+    ["wrong-typed field", [{ ...VALID, hash: 123 }]],
+    ["missing field", [{ hash: "abc123", name: "cat.png", url: "/api/images/abc123" }]],
+    ["one bad element among valid ones", [VALID, null]],
+  ];
+
+  for (const [name, payload] of cases) {
+    it(`fails closed on ${name}`, async () => {
+      stubFetchPayload(payload);
+      const { view } = trackedView();
+      await openAndFail(view);
+
+      expect(document.querySelectorAll(".pm-image-browser-card")).toHaveLength(0);
+      expect(gridText()).not.toContain("TypeError");
+      expect(gridText()).not.toContain("undefined");
+      const insertBtn = document.querySelector<HTMLButtonElement>(".pm-image-browser-insert");
+      expect(insertBtn?.disabled).toBe(true);
+    });
+  }
 });

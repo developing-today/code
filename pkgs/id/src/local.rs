@@ -124,6 +124,7 @@ impl LocalNode {
                 Arc::clone(&tags),
                 AccessPolicy::open(),
                 node_id,
+                None,
             );
             // Nothing is in flight for an in-process node: a missing blob is missing.
             if let Some(inner) = Arc::get_mut(&mut m) {
@@ -200,6 +201,7 @@ impl LocalNode {
             Arc::clone(&self.tags),
             access.clone(),
             self.node_id,
+            None,
         );
         let blobs = BlobsProtocol::new(&self.blobs, Some(blobs_events(access)));
         Router::builder(self.endpoint.clone())

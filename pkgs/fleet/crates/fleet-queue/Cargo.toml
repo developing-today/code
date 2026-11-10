@@ -12,9 +12,9 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # without the client, and a client-only build is possible for the
 # standalone artifact.
 [features]
-client = []
-queue-broker = ["client", "dep:tiny_http", "dep:ureq", "dep:fleet-config"]
-secrets-broker = ["dep:tiny_http", "dep:fleet-config"]
+client = ["dep:fleet-config"]
+queue-broker = ["client", "dep:tiny_http", "dep:ureq", "dep:fleet-config", "dep:libc"]
+secrets-broker = ["dep:tiny_http", "dep:fleet-config", "dep:libc"]
 
 [dependencies]
 fleet-secrets = { workspace = true }
@@ -25,6 +25,8 @@ serde = { workspace = true }
 # built serde_json the same way).
 serde_json = { version = "1", features = ["preserve_order"] }
 tiny_http = { version = "0.12", optional = true }
+# uds_http's bind lock (flock) — #6515.
+libc = { version = "0.2", optional = true }
 ureq = { version = "3", features = ["rustls", "json"], optional = true }
 
 # Standalone artifacts — the migration's rollback inventory (design

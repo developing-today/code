@@ -637,10 +637,23 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
     }
     let body = frame.get("body").filter(|b| !b.is_null()).cloned();
     let port = parse_port(frame)?;
-    let token_file = frame
-        .get("token_file")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let token_file = match frame.get("token_file") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(path)) => Some(path.clone()),
+        Some(value) => {
+            let shape = match value {
+                serde_json::Value::Bool(_) => "boolean",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => "object",
+                serde_json::Value::Null => "null",
+                serde_json::Value::String(_) => "string",
+            };
+            return Err(format!(
+                "request \"token_file\" must be a string or null, got {shape}"
+            ));
+        }
+    };
     Ok(Request {
         method,
         path,
@@ -938,6 +951,76 @@ mod tests {
     }
 
     const PORT: u16 = 4799;
+
+    #[test]
+    fn parse_request_validates_token_file_shape() {
+        let mut absent = serde_json::json!({"method": "GET", "path": "/health"});
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::Value::Null;
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::json!("/tmp/request-token");
+        assert_eq!(
+            parse_request(&absent).unwrap().token_file.as_deref(),
+            Some("/tmp/request-token")
+        );
+
+        for (value, shape) in [
+            (serde_json::json!(123), "number"),
+            (serde_json::json!(true), "boolean"),
+            (serde_json::json!({"path": "token"}), "object"),
+            (serde_json::json!(["token"]), "array"),
+        ] {
+            let frame = serde_json::json!({
+                "method": "GET",
+                "path": "/health",
+                "token_file": value,
+            });
+            let error = parse_request(&frame).unwrap_err();
+            assert!(
+                error.contains(shape),
+                "expected token_file error to name {shape}, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_request_token_file_matches_the_shape_model_on_generated_values() {
+        use proptest::prelude::*;
+        // Oracle: the #6518 acceptance rules stated as a model over the
+        // JSON value. Absent and null yield None; an arbitrary string is
+        // preserved verbatim; every other shape -- numbers, floats,
+        // bools, containers -- is refused.
+        fn model(value: Option<&serde_json::Value>) -> Result<Option<String>, ()> {
+            match value {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+                Some(_) => Err(()),
+            }
+        }
+        let shapes = prop_oneof![
+            Just(None),
+            Just(Some(serde_json::Value::Null)),
+            any::<String>().prop_map(|s| Some(serde_json::json!(s))),
+            any::<i64>().prop_map(|n| Some(serde_json::json!(n))),
+            (-1e6f64..=1e6).prop_map(|f| Some(serde_json::json!(f))),
+            any::<bool>().prop_map(|b| Some(serde_json::json!(b))),
+            prop::collection::vec(any::<String>(), 0..4).prop_map(|v| Some(serde_json::json!(v))),
+            prop::collection::btree_map(any::<String>(), any::<String>(), 0..4)
+                .prop_map(|m| Some(serde_json::json!(m))),
+        ];
+        proptest!(|(value in shapes)| {
+            let mut frame = serde_json::json!({"method": "GET", "path": "/health"});
+            if let Some(v) = &value {
+                frame["token_file"] = v.clone();
+            }
+            let got = parse_request(&frame)
+                .map(|req| req.token_file)
+                .map_err(|_| ());
+            prop_assert_eq!(got, model(value.as_ref()), "token_file value: {:?}", value);
+        });
+    }
 
     #[test]
     fn checkout_grows_below_ceiling_then_reuses_idle() {

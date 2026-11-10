@@ -1502,3 +1502,41 @@ img.ProseMirror-separator {
   padding: 2em 1em;
   font-style: italic;
 }
+
+/* #1790: cursor tooltip modes — chrome, enlarged label, minimal segment */
+.collab-cursor-chrome {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.25rem 0;
+  font-size: 11px;
+}
+
+.collab-cursor-mode,
+.collab-cursor-restore {
+  cursor: pointer;
+}
+
+.collab-cursor-label-big {
+  font-size: 13px;
+  padding: 4px 8px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.collab-cursor-action {
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.collab-cursor-bar-segment-minimal {
+  min-width: 6px;
+  padding: 0 2px;
+}
+
+.collab-cursor-bar-segment-big {
+  font-size: 12px;
+  padding: 2px 6px;
+}

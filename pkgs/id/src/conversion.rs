@@ -96,6 +96,13 @@ pub enum ConvertError {
         /// Which leg: `"source"`, `"fee"`, or `"destination"`.
         leg: &'static str,
     },
+    /// A leg's ledger is zero. No account can exist on ledger 0
+    /// (the ledger layer's `LedgerMustNotBeZero`), so a batch built
+    /// on it could never post.
+    ZeroLedger {
+        /// Which ledger: `source` or `destination`.
+        leg: &'static str,
+    },
     /// A positive fee was computed but no fee account was supplied.
     MissingFeeAccount,
     /// The caller supplied the wrong number of transfer IDs.
@@ -139,6 +146,9 @@ impl std::fmt::Display for ConvertError {
             Self::Overflow => write!(f, "conversion result overflows u128"),
             Self::SameAccount { leg } => {
                 write!(f, "{leg} leg debits and credits the same account")
+            }
+            Self::ZeroLedger { leg } => {
+                write!(f, "{leg} ledger must not be zero")
             }
             Self::MissingFeeAccount => {
                 write!(f, "a positive fee requires a fee account")
@@ -421,8 +431,8 @@ pub struct ConversionAmounts {
 /// request with the typed reason. Pure: no ledger or store access.
 ///
 /// Validation order is fixed so callers see deterministic errors:
-/// amount bounds, rate/scale/fee terms, account shape, fee-account
-/// presence, then transfer-ID shape.
+/// amount bounds, rate/scale/fee terms, ledger and account shape,
+/// fee-account presence, then transfer-ID shape.
 ///
 /// # Errors
 ///
@@ -456,6 +466,12 @@ pub fn build_conversion_batch(
         Some(fee_bps) => fee_amount(request.amount_in, fee_bps)?,
         None => 0,
     };
+    if request.source_ledger == 0 {
+        return Err(ConvertError::ZeroLedger { leg: "source" });
+    }
+    if request.dest_ledger == 0 {
+        return Err(ConvertError::ZeroLedger { leg: "destination" });
+    }
     if request.caller_source == request.lp_source {
         return Err(ConvertError::SameAccount { leg: "source" });
     }
@@ -823,6 +839,33 @@ mod tests {
         assert!(legs[1].linked);
         assert_eq!(legs[2].id, 33);
         assert!(!legs[2].linked);
+    }
+
+    #[test]
+    fn batch_rejects_zero_ledgers_but_builds_for_sane_ledgers() {
+        // Oracle: the ledger layer itself — no account can exist on
+        // ledger 0 (LedgerMustNotBeZero), so a batch naming ledger 0
+        // for either side can never post and must be rejected here.
+        let mut req = request();
+        req.source_ledger = 0;
+        assert_eq!(
+            build_conversion_batch(&req),
+            Err(ConvertError::ZeroLedger { leg: "source" })
+        );
+
+        let mut req = request();
+        req.dest_ledger = 0;
+        assert_eq!(
+            build_conversion_batch(&req),
+            Err(ConvertError::ZeroLedger { leg: "destination" })
+        );
+
+        // Control: the sane 100/200 request builds the identical batch
+        // the happy-path test pins (ledgers copied onto the legs).
+        let (amounts, legs) = build_conversion_batch(&request()).expect("sane ledgers");
+        assert_eq!(amounts.amount_out, 1_500);
+        assert_eq!(legs[0].ledger, 100);
+        assert_eq!(legs[1].ledger, 200);
     }
 
     #[test]

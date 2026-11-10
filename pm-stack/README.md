@@ -10,8 +10,8 @@ forks of upstream projects.
 
 | Piece      | Image                                    | Notes                                                                                 |
 | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
-| Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` (pinned) | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
-| PostgreSQL | `postgres:16-alpine`                     | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
+| Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` + digest | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
+| PostgreSQL | `postgres:16-alpine` + digest             | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
 
 Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
@@ -394,11 +394,11 @@ developing-today/code` (dispatch).
   restart). Each Phase 2 subdirectory has the same `deploy.sh`
   contract (Pad, Grist); ready-for-agent refreshes via
   `ready-for-agent/install.sh`.
-- **Update Kaneo:** bump the pinned tag in `compose.yml` after reading
-  the upstream release notes, then `./deploy.sh`. Never float on
-  `:latest`. Same rule per component: Pad/Grist image pins (tag +
-  digest) in their `compose.yml`, ready-for-agent's `PINNED_VERSION`
-  in `ready-for-agent/install.sh`.
+- **Update Kaneo or PostgreSQL:** after reviewing the upstream release
+  notes, bump the tag and digest together in `compose.yml`, then
+  `./deploy.sh`. Never float on a mutable tag. Same rule per component:
+  Pad/Grist image pins (tag + digest) in their `compose.yml`,
+  ready-for-agent's `PINNED_VERSION` in `ready-for-agent/install.sh`.
 - **Pad API token:** expires 90 days after minting (current:
   2027-01-22) — re-mint, re-file (SOPS + both vaults), restart
   nothing (the token is used by external automation, not the

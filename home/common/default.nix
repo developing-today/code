@@ -633,6 +633,7 @@ in
         "%h/.config/opencode/opencode.jsonc"
         "%h/.local/share/t3code/userdata/settings.json"
         "%h/.claude.json"
+        "%h/.claude/.credentials.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
         "%h/.pi/agent/auth.json"
@@ -744,7 +745,9 @@ in
   # bin programs and the agyProxyPort/antigravityLsProxyPort lets from
   # git history, drop the session-variable removals below, and
   # re-point the plan seats in opencode.jsonc back from
-  # antigravity-direct.
+  # antigravity-direct. Before retiring any future provider door, run
+  # the retirement gate (scripts/check-provider-retirement-gate.sh, #5610)
+  # to verify zero active configuration references remain.
 
   # Design Code proxy removed (2026-11-03, Drew): its unit definition
   # stood here. Drew removed the design persona routes and the whole
@@ -1154,6 +1157,17 @@ in
   # "mistral") is its source — verified live 2026-11-06 (the leg
   # returns the API-budget 402, not an auth error, with the env var
   # absent).
+  # ANTIGRAVITY_OAUTH_CLIENT_SECRET for the same server: the
+  # _antigravity provider refreshes the agy keyring token with the agy
+  # installed-app client's secret, read from the process environment
+  # since fork commit 80d6b2f1f6 (2026-11-08) retired the runtime
+  # extraction from the agy binary. The value lives in the vault as
+  # google.antigravity-oauth-client-secret (one-time extraction from
+  # the installed agy binary, sanctioned by Drew 2026-11-09, code#8086)
+  # and the materializer below fetches it by name into the same
+  # EnvironmentFile at every server start — it is never stored in this
+  # repo or the Nix store. The quota gatherer reads the same file (see
+  # nixos/services/pm-stack) so its `opencode quota` refresh works too.
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-env-key-materialize" ''
@@ -1161,6 +1175,10 @@ in
         umask 077
         mkdir -p "$HOME/.local/state/opencode"
         printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        agy_client_secret="$("${fleetPkgs.fleet}/bin/fleet" secrets get google.antigravity-oauth-client-secret 2>/dev/null || true)"
+        if [ -n "$agy_client_secret" ]; then
+          printf 'ANTIGRAVITY_OAUTH_CLIENT_SECRET=%s\n' "$agy_client_secret" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        fi
       ''
     );
     EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
@@ -1749,6 +1767,11 @@ in
       with pkgs;
       [
         libnotify
+        # On-screen keyboard (wvkbd-mobintl) for touch use over the
+        # Sunshine/Moonlight stream: launched only while a stream is
+        # live, by Sunshine's global_prep_cmd (nixos/hosts/amd-sunshine.nix);
+        # SUPER+SHIFT+O re-shows it (bind in config/hypr/hyprland.lua).
+        wvkbd
         # Atlas search CLI + service binary (pkgs/atlas-search);
         # step-6 cutover (#5356): the Rust binary is the resolved
         # `atlas-search` (the Python CLI is kept as atlas-search-py).

@@ -632,7 +632,10 @@ func FormSchema(ps []Placeholder) json.RawMessage {
 	props := map[string]any{}
 	var required []string
 	for _, p := range ps {
-		f := map[string]any{"type": jsonType(p.Type)}
+		f := map[string]any{}
+		if jt := jsonType(p.Type); jt != "" {
+			f["type"] = jt
+		}
 		if p.Description != "" {
 			f["description"] = p.Description
 		}
@@ -662,7 +665,12 @@ func jsonType(t Type) string {
 	case TypeBoolean:
 		return "boolean"
 	case TypeJSON:
-		return "object"
+		// No type constraint: TypeJSON accepts any JSON value --
+		// an object, an array, a scalar -- and the renderer passes
+		// it through untouched. Declaring "object" here made the
+		// broker's schema validation refuse array answers the
+		// recipe would have rendered fine (code review on #2646).
+		return ""
 	}
 	return "string"
 }

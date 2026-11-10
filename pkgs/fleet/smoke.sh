@@ -219,14 +219,56 @@ else
 fi
 
 # init is a strict no-op against the running broker.
-PB_PID=$(pgrep -f "bin/fleet proxy serve" | head -1)
+PB_PID=$(pgrep -f "bin/fleet (proxy serve|serve proxy)" | head -1)
+# The manifest fixture is the hermetic vehicle for the init cases
+# (design #5687 §6 step 5): FLEET_HOST_CONFIG carries the sandbox
+# [host] section inline, newline-separated TOML.
+HOSTCFG_SANDBOX=$(printf 'location="sandbox"\ninit_mode="spawn"\n[roles]\nproxy={}')
 run "proxy: fleet init is a no-op when the broker runs" 0 "already running" \
-  proxy_env "$FULL_OUT/bin/fleet" init
-if [ -n "$PB_PID" ] && kill -0 "$PB_PID" 2>/dev/null && [ "$(pgrep -f 'bin/fleet proxy serve' | wc -l)" -eq 1 ]; then
+  proxy_env env FLEET_HOST_CONFIG="$HOSTCFG_SANDBOX" "$FULL_OUT/bin/fleet" init
+if [ -n "$PB_PID" ] && kill -0 "$PB_PID" 2>/dev/null && [ "$(pgrep -f 'bin/fleet (proxy serve|serve proxy)' | wc -l)" -eq 1 ]; then
   ok "proxy: init left the same single broker alive"
 else
   bad "proxy: init left the same single broker alive"
 fi
+
+echo "== location-aware init (#6770, design #5687 §§4-6) =="
+PXU="$TMP/init-location"
+mkdir -p "$PXU/home" "$PXU/state"
+printf '[proxy]\ndirect = true\n' >"$PXU/fleet.toml"
+# Unknown location: no manifest from any source (empty env values
+# count as unset) — report, exit 69, and no broker is spawned.
+run "init: unknown location reports and starts nothing" 69 "starting nothing" \
+  env HOME="$PXU/home" FLEET_CONFIG="$PXU/fleet.toml" \
+  FLEET_BROKER_SOCKET="$PXU/broker.sock" XDG_STATE_HOME="$PXU/state" \
+  FLEET_HOST_CONFIG= FLEET_LOCATION= \
+  "$FULL_OUT/bin/fleet" init
+if [ ! -e "$PXU/broker.sock" ]; then
+  ok "init: unknown location spawned no broker"
+else
+  bad "init: unknown location spawned no broker"
+fi
+# A laptop manifest on this host: systemd mode reports each role
+# and its unit state; nothing is detached-spawned, exit 0.
+HOSTCFG_LAPTOP=$(printf 'location="laptop"\ninit_mode="systemd"\n[roles]\nqueue-broker={}\nsecrets-broker={}\nsearch={}\nlaptop-agent={}')
+run "init: laptop manifest reports its location" 0 "location laptop" \
+  env HOME="$PXU/home" FLEET_CONFIG="$PXU/fleet.toml" \
+  FLEET_BROKER_SOCKET="$PXU/broker.sock" XDG_STATE_HOME="$PXU/state" \
+  FLEET_HOST_CONFIG="$HOSTCFG_LAPTOP" \
+  "$FULL_OUT/bin/fleet" init
+run "init: laptop manifest reports role lines" 0 "role queue-broker:" \
+  env HOME="$PXU/home" FLEET_CONFIG="$PXU/fleet.toml" \
+  FLEET_BROKER_SOCKET="$PXU/broker.sock" XDG_STATE_HOME="$PXU/state" \
+  FLEET_HOST_CONFIG="$HOSTCFG_LAPTOP" \
+  "$FULL_OUT/bin/fleet" init
+if [ ! -e "$PXU/broker.sock" ]; then
+  ok "init: laptop manifest spawned no broker"
+else
+  bad "init: laptop manifest spawned no broker"
+fi
+# The serve spelling of the proxy role routes (auto-start uses it).
+run "serve: fleet serve proxy --help prints the role usage" 0 "Usage: fleet serve proxy" \
+  "$FULL_OUT/bin/fleet" serve proxy --help
 
 # The connect variant speaks to the same broker and materializes its
 # own shims; it cannot serve (69), and neither can its init.
@@ -364,7 +406,7 @@ if [ ! -e "$PX/state/fleet/shims/repo-queue" ] && [ -L "$PX/state/fleet/shims/la
 else
   bad "proxy: stale shim removed when the map shrank"
 fi
-PB_PID=$(pgrep -f "bin/fleet proxy serve" | head -1)
+PB_PID=$(pgrep -f "bin/fleet (proxy serve|serve proxy)" | head -1)
 kill "$PB_PID" 2>/dev/null
 PB_PID=""
 

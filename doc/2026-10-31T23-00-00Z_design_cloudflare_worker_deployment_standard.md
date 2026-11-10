@@ -57,6 +57,29 @@ Rules carried from the #1828 ruling:
 - **State handling is deferrable.** No terraform/terranix in the pilot;
   the Worker's own config (`cloudflare.config.ts`, mirrored by
   `wrangler.jsonc` for dev/tests) is the resource declaration.
+- **Verify before reporting success.** After creating a deployment, read
+  the latest deployment and require the requested version to serve 100% of
+  traffic, then require the Worker `/healthz` endpoint to return a
+  successful response with body `ok`. A mismatch, non-OK response, bad
+  body, or failed request is an error. This is verification, not an
+  automatic rollback: inspect the deployment and manually deploy a known-
+  good version if needed.
+- **Secret onboarding and rotation.** Keep the account id in the encrypted
+  `secrets/sops/common/cloudflare.yaml`, edited with SOPS. Keep the
+  Cloudflare API token in Bitwarden Secrets Manager under
+  `cloudflare.api-token-day-to-day` (overridable with
+  `PKARR_CF_TOKEN_SECRET`); the BWS access token is loaded from the
+  encrypted common Bitwarden SOPS file. Add credentials through the secret
+  stores, never Git, command arguments, logs, or the Nix store. For
+  rotation, stage a replacement token under a temporary BWS name, deploy
+  with that name, update the stable BWS entry only after version and health
+  verification, then revoke the old Cloudflare token.
+- **Removal and data safety.** The cf versions flow is not a resource
+  reconciler and does not remove a Worker or external resource when config
+  entries disappear. Teardown is a separate reviewed manual operation;
+  never delete data-bearing KV, R2, D1, or Durable Object resources merely
+  because they are absent from config. Version rollback restores Worker
+  code/configuration, not storage data or external resources.
 
 ## The pilot
 
@@ -69,7 +92,9 @@ Rules carried from the #1828 ruling:
   account id, execs the deploy script.
 - `deploy.mjs` — resolves the token from Bitwarden by name
   (`cloudflare.api-token-day-to-day` by default), installs dev
-  dependencies on a fresh checkout, then runs the versions flow above.
+  dependencies on a fresh checkout, then runs the versions flow above and
+  verifies both the requested active version and `/healthz` before saying
+  the deployment is live.
 - `root.just` — the `deploy-pkarr` recipe (`[group('pkarr')]`).
 
 Precedent: the mail Worker (`nixos/services/id-mail/worker`) established

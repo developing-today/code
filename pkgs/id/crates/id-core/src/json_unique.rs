@@ -134,6 +134,7 @@ pub fn parse_json_without_duplicate_keys(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::parse_json_without_duplicate_keys;
 

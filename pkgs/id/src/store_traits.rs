@@ -806,6 +806,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

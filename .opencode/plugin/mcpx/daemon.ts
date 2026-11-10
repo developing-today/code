@@ -92,8 +92,12 @@ export const TUNING = {
  */
 export const goDurationMs = (v: string | undefined): number | undefined => {
   if (!v) return undefined;
-  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
-  const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, μs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  // Go's number grammar is digits[.digits*] or .digits, so ".5s" and
+  // "1.s" are whole components (#3490); Go also accepts both mu
+  // codepoints for microseconds -- U+00B5 (micro sign) and U+03BC
+  // (Greek small letter mu) -- so both are in the unit table and here.
+  const re = /((?:\d+(?:\.\d*)?|\.\d+))(ns|us|µs|μs|ms|s|m|h)/g;
   let total = 0;
   let matched = 0;
   let m: RegExpExecArray | null;
@@ -113,7 +117,7 @@ export const goDurationMs = (v: string | undefined): number | undefined => {
   // past the ceiling), and an infinite discovery cooldown silently
   // disabled daemon rediscovery for the whole session (#2309).
   // Unparseable-by-Go is this function's "treated as absent".
-  if (!Number.isFinite(total) || total > 9_223_372_036_854.776) return undefined;
+  if (!Number.isFinite(total) || total > 9_223_372_036_854.775) return undefined;
   return v.trim().startsWith("-") ? undefined : total;
 };
 
@@ -572,12 +576,19 @@ export class DaemonClient {
    *
    * @op exec
    */
-  async exec(source: string, session?: string): Promise<ExecResult | undefined> {
+  async exec(source: string, session?: string, signal?: AbortSignal): Promise<ExecResult | undefined> {
     try {
-      return (await this.ops.exec({
-        source,
-        options: { output: "structured", ...(session ? { session } : {}) },
-      })) as ExecResult;
+      return (await this.ops.exec(
+        {
+          source,
+          options: { output: "structured", ...(session ? { session } : {}) },
+        },
+        // PLG-38 (#1940): the host abort signal reaches the daemon request,
+        // so an aborted session cancels the in-flight exec instead of
+        // blocking to completion. The generated client already accepts a
+        // CallOptions.signal; this is the seam that finally passes one.
+        ...(signal ? [{ signal }] : []),
+      )) as ExecResult;
     } catch (err) {
       if (err instanceof OpError && err.status === 404) return undefined;
       throw err;
@@ -1038,6 +1049,12 @@ export const runBin = (
   opts: DiscoverOptions,
   argv: string[],
   timeoutMs = TUNING.cliTimeoutMs,
+  // PLG-38 (#1940): a host abort signal, when given, kills the child as
+  // soon as it fires -- the CLI fallback path honours the same abort the
+  // daemon path threads into its request. Aborted children resolve
+  // undefined (no answer arrived); callers that pass a signal check
+  // signal.aborted themselves to name what happened.
+  signal?: AbortSignal,
 ): Promise<string | undefined> => {
   const env = envOf(opts);
   const bin = opts.bin ?? env.MCPX_PLUGIN_BIN ?? TUNING.bin;
@@ -1048,7 +1065,13 @@ export const runBin = (
       execFile(
         bin,
         [...extra, ...argv],
-        { cwd: opts.directory, timeout: timeoutMs, encoding: "utf8", maxBuffer: TUNING.cliMaxOutput },
+        {
+          cwd: opts.directory,
+          timeout: timeoutMs,
+          encoding: "utf8",
+          maxBuffer: TUNING.cliMaxOutput,
+          ...(signal ? { signal } : {}),
+        },
         (err, stdout, stderr) => {
           const out = String(stdout ?? "").trim();
           const bad = String(stderr ?? "").trim();

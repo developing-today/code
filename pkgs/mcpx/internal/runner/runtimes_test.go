@@ -29,6 +29,37 @@ func TestNodeArgsUseTransformTypesNotStripTypes(t *testing.T) {
 	}
 }
 
+func TestNodeWithoutTransformTypesFailsActionablyAndAutoFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	node := filepath.Join(dir, "node")
+	bun := filepath.Join(dir, "bun")
+	if err := os.WriteFile(node, []byte("#!/bin/sh\necho 'Error [ERR_NO_TYPESCRIPT]: unsupported' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bun, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	_, err := Resolve("node", "all", Setup{})
+	if err == nil {
+		t.Fatal("explicit node without transform-types support resolved")
+	}
+	for _, want := range []string{"node runtime", "--experimental-transform-types", "bun (musl)", "deno", "ERR_NO_TYPESCRIPT"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	got, err := Resolve("auto", "all", Setup{Order: []string{"node", "bun"}})
+	if err != nil {
+		t.Fatalf("auto should skip unsupported node and choose bun: %v", err)
+	}
+	if got.Kind != KindBun {
+		t.Fatalf("auto chose %q, want bun", got.Kind)
+	}
+}
+
 // End-to-end guard for #263: a non-erasable TypeScript file must actually
 // run under the resolved node runtime. Skips when no suitable node is on
 // PATH (transform-types needs Node >= 22.6; older nodes reject the flag

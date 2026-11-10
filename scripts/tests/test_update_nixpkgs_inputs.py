@@ -14,6 +14,10 @@ drift this file exists to prevent:
 - The #598 exit-code contract is pinned for BOTH .py copies: exit 1
   after the summaries when any input update failed, 0 when all
   succeed / are already up-to-date.
+- The #6941 unmatched-ref contract is pinned for BOTH .py copies: a
+  requested ref matching no inputs exits 1 (typo-only, --help, and
+  mixed valid+unmatched runs), the unmatched refs stay named in the
+  output, and the no-argument zero-input run also exits 1.
 - The wrapper contract is pinned for BOTH .sh copies: fall back to
   python3 only when the script cannot be executed at all (126/127),
   propagate the exit status, and never re-run after a genuine failure
@@ -220,7 +224,11 @@ class ScriptTree:
     """
 
     def __init__(
-        self, src_dir: Path, nix_status: int, interpreter_missing: bool = False
+        self,
+        src_dir: Path,
+        nix_status: int,
+        interpreter_missing: bool = False,
+        lock_data=None,
     ):
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
@@ -229,7 +237,9 @@ class ScriptTree:
         scripts.mkdir(parents=True)
         shutil.copy2(src_dir / "update-nixpkgs-inputs.py", scripts)
         shutil.copy2(src_dir / "update-nixpkgs-inputs.sh", scripts)
-        (self.repo_dir / "flake.lock").write_text(json.dumps(FLAKE_LOCK))
+        (self.repo_dir / "flake.lock").write_text(
+            json.dumps(FLAKE_LOCK if lock_data is None else lock_data)
+        )
         self.bin = base / "bin"
         self.bin.mkdir()
         self.counter = base / "nix-calls"
@@ -275,11 +285,12 @@ class ScriptTree:
             return 0
         return len(self.counter.read_text().splitlines())
 
-    def run_py(self) -> subprocess.CompletedProcess:
+    def run_py(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [
                 sys.executable,
                 str(self.repo_dir / "scripts" / "update-nixpkgs-inputs.py"),
+                *args,
             ],
             env=self.env,
             capture_output=True,
@@ -314,6 +325,62 @@ class TestExitCodeContract(unittest.TestCase):
                 r = tree.run_py()
                 self.assertIn("Failed:  0", r.stdout)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            finally:
+                tree.cleanup()
+
+    def test_root_copy(self):
+        self._check_copy("root", COPIES["root"])
+
+    def test_pkgs_id_copy(self):
+        self._check_copy("pkgs/id", COPIES["pkgs/id"])
+
+
+class TestUnmatchedRefExitCodes(unittest.TestCase):
+    """#6941: a requested ref matching no inputs must exit non-zero."""
+
+    ZERO_INPUT_LOCK = {
+        "nodes": {"root": {"inputs": {}}},
+        "root": "root",
+        "version": 7,
+    }
+
+    def _check_copy(self, label: str, src_dir: Path):
+        with self.subTest(copy=label, case="typo-only ref exits 1, names the ref"):
+            tree = ScriptTree(src_dir, nix_status=0)
+            try:
+                r = tree.run_py("nixos-unstabl")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
+                self.assertIn("nixos-unstabl", r.stdout)
+                self.assertEqual(tree.nix_calls(), 0)
+            finally:
+                tree.cleanup()
+        with self.subTest(copy=label, case="--help is an unmatched ref, exits 1"):
+            tree = ScriptTree(src_dir, nix_status=0)
+            try:
+                r = tree.run_py("--help")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
+                self.assertIn("--help", r.stdout)
+                self.assertEqual(tree.nix_calls(), 0)
+            finally:
+                tree.cleanup()
+        with self.subTest(copy=label, case="mixed valid + unmatched exits 1"):
+            tree = ScriptTree(src_dir, nix_status=0)
+            try:
+                r = tree.run_py("master", "nixos-unstabl")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
+                self.assertIn("nixos-unstabl", r.stdout)
+                self.assertEqual(tree.nix_calls(), 1)
+            finally:
+                tree.cleanup()
+        with self.subTest(copy=label, case="no-arg zero-input run exits 1"):
+            tree = ScriptTree(src_dir, nix_status=0, lock_data=self.ZERO_INPUT_LOCK)
+            try:
+                r = tree.run_py()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("No inputs found for:", r.stdout)
             finally:
                 tree.cleanup()
 

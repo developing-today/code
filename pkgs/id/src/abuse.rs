@@ -538,12 +538,55 @@ pub struct Counters {
     pub bytes: u64,
 }
 
-/// One registry row: the counters plus the last time traffic was
-/// recorded for the pair, which is what [`CounterRegistry::prune`]
-/// ages out on.
+/// Counters split by the direction traffic crossed the evaluator in.
+///
+/// Traffic admitted through a check that knows its direction lands in
+/// `inbound` or `outbound`; traffic admitted through a check that does
+/// not (the pre-#4918 surfaces) lands in `unattributed` rather than
+/// being guessed at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirectionalCounters {
+    /// Frames and bytes admitted in the inbound direction.
+    pub inbound: Counters,
+    /// Frames and bytes admitted in the outbound direction.
+    pub outbound: Counters,
+    /// Frames and bytes admitted without a known direction.
+    pub unattributed: Counters,
+}
+
+impl DirectionalCounters {
+    /// The aggregate counters across every direction.
+    #[must_use]
+    pub fn total(&self) -> Counters {
+        Counters {
+            frames: self
+                .inbound
+                .frames
+                .saturating_add(self.outbound.frames)
+                .saturating_add(self.unattributed.frames),
+            bytes: self
+                .inbound
+                .bytes
+                .saturating_add(self.outbound.bytes)
+                .saturating_add(self.unattributed.bytes),
+        }
+    }
+
+    fn for_direction(&mut self, direction: Option<Direction>) -> &mut Counters {
+        match direction {
+            Some(Direction::Inbound) => &mut self.inbound,
+            Some(Direction::Outbound) => &mut self.outbound,
+            None => &mut self.unattributed,
+        }
+    }
+}
+
+/// One registry row: the per-direction counters plus the last time
+/// traffic was recorded for the pair, which is what
+/// [`CounterRegistry::prune`] ages out on.
 #[derive(Clone, Copy, Debug, Default)]
 struct CounterEntry {
-    counters: Counters,
+    counters: DirectionalCounters,
     last_seen_ms: u64,
 }
 
@@ -562,36 +605,65 @@ impl CounterRegistry {
 
     /// Records `frames` admitted frames and `bytes` admitted bytes
     /// for traffic between `local` and `remote`, stamped at
-    /// `now_ms` for pruning.
+    /// `now_ms` for pruning. `direction` names the direction the
+    /// traffic crossed in, or `None` when the admitting check cannot
+    /// tell; those charges are kept as `unattributed`.
     pub fn record(
         &mut self,
         local: NodeId,
         remote: EndpointId,
         frames: u64,
         bytes: u64,
+        direction: Option<Direction>,
         now_ms: u64,
     ) {
         let entry = self.counters.entry((local, remote)).or_default();
-        entry.counters.frames = entry.counters.frames.saturating_add(frames);
-        entry.counters.bytes = entry.counters.bytes.saturating_add(bytes);
+        let counters = entry.counters.for_direction(direction);
+        counters.frames = counters.frames.saturating_add(frames);
+        counters.bytes = counters.bytes.saturating_add(bytes);
         entry.last_seen_ms = entry.last_seen_ms.max(now_ms);
     }
 
-    /// The counters for one pair, if any traffic was recorded.
+    /// The aggregate counters for one pair — every direction summed —
+    /// if any traffic was recorded.
     #[must_use]
     pub fn get(&self, local: &NodeId, remote: &EndpointId) -> Option<Counters> {
-        self.counters.get(&(*local, *remote)).map(|e| e.counters)
+        self.counters
+            .get(&(*local, *remote))
+            .map(|e| e.counters.total())
     }
 
-    /// All counters, sorted by (local node, remote endpoint) so
-    /// snapshots are deterministic.
+    /// All counters aggregated across directions, sorted by (local
+    /// node, remote endpoint) so snapshots are deterministic.
     #[must_use]
     pub fn snapshot(&self) -> Vec<((NodeId, EndpointId), Counters)> {
         let mut rows: Vec<_> = self
             .counters
             .iter()
-            .map(|(k, e)| (*k, e.counters))
+            .map(|(k, e)| (*k, e.counters.total()))
             .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    }
+
+    /// All counters split by direction, copied without sorting.
+    ///
+    /// For callers holding a lock on the registry's owner who must keep
+    /// the hold short: copy under the lock, then sort the copy after
+    /// release (see [`CounterRegistry::snapshot_directional`]).
+    #[must_use]
+    pub fn copied_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
+        self.counters
+            .iter()
+            .map(|(k, e)| (*k, e.counters))
+            .collect()
+    }
+
+    /// All counters split by direction, sorted by (local node, remote
+    /// endpoint) so snapshots are deterministic.
+    #[must_use]
+    pub fn snapshot_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
+        let mut rows = self.copied_directional();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows
     }
@@ -919,8 +991,14 @@ impl AbuseEvaluator {
             debug_assert!(frame_taken && bytes_taken);
         }
         self.record_budget(direction, endpoint, direct_ip, bytes, now_ms);
-        self.registry
-            .record(self.local_node, endpoint, 1, bytes, now_ms);
+        self.registry.record(
+            self.local_node,
+            endpoint,
+            1,
+            bytes,
+            Some(direction),
+            now_ms,
+        );
         Ok(())
     }
 
@@ -1091,7 +1169,7 @@ impl AbuseEvaluator {
         };
         if bucket.try_take(1, now_ms) {
             self.registry
-                .record(self.local_node, endpoint, 1, 0, now_ms);
+                .record(self.local_node, endpoint, 1, 0, None, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(1, now_ms);
@@ -1123,7 +1201,7 @@ impl AbuseEvaluator {
         };
         if bucket.try_take(bytes, now_ms) {
             self.registry
-                .record(self.local_node, endpoint, 0, bytes, now_ms);
+                .record(self.local_node, endpoint, 0, bytes, None, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(bytes, now_ms);
@@ -1182,8 +1260,16 @@ impl AbuseEvaluator {
             debug_assert!(frame_taken && bytes_taken);
         }
         self.registry
-            .record(self.local_node, endpoint, 1, bytes, now_ms);
+            .record(self.local_node, endpoint, 1, bytes, None, now_ms);
         Ok(())
+    }
+
+    /// The configured abuse policy — the rate and burst the token
+    /// buckets enforce, shown alongside the counters on the operator
+    /// surface.
+    #[must_use]
+    pub fn policy(&self) -> &AbusePolicy {
+        &self.policy
     }
 
     /// The counter registry this evaluator records into.
@@ -1452,6 +1538,50 @@ mod tests {
         );
         // Nothing left to drop on a repeat prune at the same time.
         assert_eq!(eval.prune_counters(10_000, 5_000), 0);
+    }
+
+    #[test]
+    fn directional_counters_split_by_direction_and_aggregate() {
+        let mut eval = evaluator();
+        let ep = endpoint(25);
+        eval.registry.record([1; 32], ep, 1, 100, Some(Direction::Inbound), 0);
+        eval.registry
+            .record([1; 32], ep, 2, 300, Some(Direction::Outbound), 0);
+        eval.registry.record([1; 32], ep, 3, 500, None, 0);
+
+        let rows = eval.counters().snapshot_directional();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, ([1; 32], ep));
+        assert_eq!(
+            rows[0].1,
+            DirectionalCounters {
+                inbound: Counters {
+                    frames: 1,
+                    bytes: 100,
+                },
+                outbound: Counters {
+                    frames: 2,
+                    bytes: 300,
+                },
+                unattributed: Counters {
+                    frames: 3,
+                    bytes: 500,
+                },
+            }
+        );
+
+        let aggregate = Counters {
+            frames: 6,
+            bytes: 900,
+        };
+        assert_eq!(eval.counters().get(&[1; 32], &ep), Some(aggregate));
+        assert_eq!(eval.counters().snapshot(), vec![(([1; 32], ep), aggregate)]);
+    }
+
+    #[test]
+    fn directional_snapshot_is_empty_without_traffic() {
+        let eval = evaluator();
+        assert!(eval.counters().snapshot_directional().is_empty());
     }
 }
 

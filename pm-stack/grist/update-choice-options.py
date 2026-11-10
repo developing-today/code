@@ -30,7 +30,11 @@ Exit codes: 0 ok (including "nothing to add"), 1 API/verification
 failure, 2 usage error. A stored widgetOptions value with an
 unexpected shape (not a JSON object, or a ``choices`` that is not a
 list of strings) is an exit-1 failure reported on stderr -- it is
-never coerced, and no PATCH is sent (#6588).
+never coerced, and no PATCH is sent (#6588). The same contract covers
+the API envelope around it: a columns response with an unexpected
+shape, or a response body that is not JSON, is an exit-1 failure
+reported on stderr by name -- never a raw KeyError / TypeError /
+AttributeError / JSONDecodeError traceback (#6867).
 """
 
 from __future__ import annotations
@@ -51,6 +55,16 @@ class WidgetOptionsError(ValueError):
     A data problem, not a usage problem: run() reports it on stderr
     and exits 1, like an API/verification failure. It is raised before
     any PATCH is built, so a shape failure never writes anything.
+    """
+
+
+class ApiResponseError(ValueError):
+    """An API response body or envelope has an unexpected shape (#6867).
+
+    A data problem, not a usage problem: run() reports it on stderr
+    and exits 1, like an API/verification failure. It is raised before
+    any PATCH is built from the malformed response, so a shape failure
+    never writes anything based on it.
     """
 
 
@@ -130,16 +144,50 @@ def api(
         raise TimeoutError(
             f"API request timed out after {API_TIMEOUT_SECONDS}s ({method} {path})"
         ) from exc
-    return json.loads(raw) if raw and raw != "null" else None
+    if not raw or raw == "null":
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ApiResponseError(
+            f"API response for {method} {path} is not valid JSON: {exc}"
+        ) from exc
 
 
 def get_widget_options(base: str, key: str, doc: str, table: str, column: str) -> dict:
     data = api(base, key, "GET", f"/api/docs/{doc}/tables/{table}/columns")
-    for col in data["columns"]:  # type: ignore[index]
+    if not isinstance(data, dict):
+        raise ApiResponseError(
+            f"columns response for table {table!r} is not a JSON object "
+            f"(got {type(data).__name__}); refusing to read widgetOptions from it"
+        )
+    columns = data.get("columns")
+    if not isinstance(columns, list):
+        raise ApiResponseError(
+            f"columns response for table {table!r} has no 'columns' list "
+            f"(got {type(columns).__name__}); refusing to read widgetOptions from it"
+        )
+    for col in columns:
+        if not isinstance(col, dict) or not isinstance(col.get("id"), str):
+            raise ApiResponseError(
+                f"columns entry in table {table!r} is not an object with a "
+                f"string 'id' (got {col!r}); refusing to read widgetOptions from it"
+            )
         if col["id"] == column:
-            raw = col["fields"].get("widgetOptions") or ""
+            fields = col.get("fields")
+            if not isinstance(fields, dict):
+                raise ApiResponseError(
+                    f"column {column!r} in table {table!r} has no 'fields' object "
+                    f"(got {type(fields).__name__}); refusing to read widgetOptions from it"
+                )
+            raw = fields.get("widgetOptions") or ""
             if not raw:
                 return {}
+            if not isinstance(raw, str):
+                raise WidgetOptionsError(
+                    f"stored widgetOptions for column {column!r} is not a string "
+                    f"(got {type(raw).__name__}); refusing to merge choices into it"
+                )
             try:
                 parsed = json.loads(raw)
             except json.JSONDecodeError as exc:
@@ -222,6 +270,9 @@ def run(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     except WidgetOptionsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except ApiResponseError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

@@ -12,6 +12,7 @@ import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
+import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
@@ -450,6 +451,10 @@ function onMainSwapped(): void {
       .then((identity) => {
         if (identity) {
           currentIdentity = identity;
+          // Codex P2 on PR #7328: if this refresh re-registered (expired
+          // token), the settings page may already have rendered the old
+          // client id — refresh the displayed id to match the new identity.
+          refreshSettingsClientId();
         }
       })
       .catch(() => {
@@ -588,7 +593,25 @@ function initPeersAutoRefresh(): void {
  * Populate the display name input on the settings page (if present).
  * Reads the current name from the identity state and fills the input.
  */
+/**
+ * Render the settings page client id (#1792): the stable, server-issued
+ * client id. It persists across in-site navigation because the identity
+ * is kept in localStorage; fall back to the stored value when the
+ * in-memory identity has not been populated yet. Called both when the
+ * settings page initializes and when an async identity refresh completes
+ * (re-registration after token expiry changes the id under a page that
+ * already rendered the old one — Codex P2, PR #7328).
+ */
+function refreshSettingsClientId(): void {
+  const clientIdEl = document.getElementById("client-id-value");
+  if (clientIdEl) {
+    clientIdEl.textContent = clientIdForDisplay(currentIdentity?.clientId, getStoredIdentity()?.clientId);
+  }
+}
+
 function initSettingsIdentity(): void {
+  refreshSettingsClientId();
+
   const input = document.getElementById("display-name-input") as HTMLInputElement | null;
   if (!input) return; // Not on settings page
 
@@ -770,6 +793,7 @@ async function init(): Promise<void> {
         removeBtn.className = "tag-remove-btn";
         removeBtn.textContent = "\u00d7";
         removeBtn.title = "Remove tag";
+        removeBtn.setAttribute("aria-label", `Remove tag ${label}`);
         removeBtn.onclick = (e) => {
           e.preventDefault();
           if (filename) {

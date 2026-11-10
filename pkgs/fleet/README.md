@@ -28,8 +28,14 @@ crates/fleet-registry/      the FULL domain registry — every domain's
                             capability ids behind them. Compiled into
                             every variant, so --help is always complete.
 crates/fleet-config/        fleet.toml: [domains] switches, [proxy],
-                            [secrets], [dispatch]; path/ports/socket
-                            constants.
+                            [secrets], [queue-broker], [secrets-broker],
+                            [dispatch]; path/ports/socket constants.
+                            Role sockets (#6215, design #5699):
+                            env > [<role>] socket > $XDG_RUNTIME_DIR/
+                            fleet/<role>.sock > the $HOME default;
+                            [<role>] transport = "socket" | "tcp" is a
+                            preference between working routes (the
+                            search_via shape), never a disable lever.
 crates/fleet-secrets/       secrets by NAME only (broker first, then
                             `bws` fallback). Values never appear in
                             code, tests, errors or logs.
@@ -209,6 +215,41 @@ fleet queue fallback scan --repo developing-today/code   # JSON items, exit 0
 If the two installs ever disagree on source rev or verb list, the
 stale one is a bug: file it against this section (the #6728 shape)
 rather than working around it silently.
+
+## Location-aware init: provision before the binary flip (#5687, impl #6770)
+
+`fleet init` is location-aware: it resolves this machine's
+location and role set from the `[host]` section of `fleet.toml`
+(or `FLEET_HOST_CONFIG` / `FLEET_LOCATION`) and ensures exactly
+those roles — sandbox = the session proxy under `init_mode =
+"spawn"`; laptop/lab = the daemon roles under `init_mode =
+"systemd"`, reported via their `fleet-<role>.service` units and
+started only through `systemctl --user`. An unknown location
+reports state, starts nothing, and exits 69. The full design is
+issue #5687 §§1–6.
+
+**The deploy sequence is part of the feature** (§6): the
+location-aware binary has NO "no manifest ⇒ assume proxy"
+fallback — that guess is the bug the design removes. Before a
+location-aware build replaces either live install:
+
+1. Write the `[host]` section into that machine's `fleet.toml`
+   (sandbox: `location = "sandbox"`, `init_mode = "spawn"`,
+   `[host.roles] proxy = {}`).
+2. Pin the sandbox's `init-ensure.sh` call site to
+   `FLEET_LOCATION=sandbox fleet init` (belt-and-braces: the env
+   var makes the caller's assumption explicit and survives a
+   lost/truncated file location).
+3. Only then deploy the binary, and verify per the section
+   above: `fleet init` prints `location sandbox (source: …)`, a
+   second run is the strict no-op, exit 0 both times.
+
+**Rollback gotcha:** `fleet-config` parses with
+`deny_unknown_fields`, so a `fleet.toml` containing `[host]` is a
+**parse error to the pre-#6770 binary**. Rolling the binary back
+therefore requires removing the `[host]` section (or rolling
+config and binary back together) — never discover this during
+an incident.
 
 The connect variants carry the D7 size contract: **≤ 2 MiB hard
 gate** (target ≤ 1.5 MiB), enforced in `default.nix` postFixup

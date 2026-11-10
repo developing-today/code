@@ -57,6 +57,28 @@ timers — updates that registry in the same pass (same PR /
 same run). A schedule that exists on a surface but not in the registry
 is a defect.
 
+## Filing an issue outside a creator run
+
+**File and enqueue in the same pass.** Any lane that files a GitHub issue
+outside a creator run — a work lane filing a blocker mid-task, an audit
+lane, a hand filing — enqueues that issue's triage packet in the same
+pass, or records in the filing comment why it is deliberately not
+queued. An issue filed without a queue item is invisible to every worker
+lane: nothing dispositions it, and it sits open until someone notices by
+hand (#7016).
+
+```bash
+repo-queue enqueue <packet.json> --queue repo-health-<repo>-pilot
+```
+
+The standing backstop is the coverage reconciliation
+(`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
+must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
+in its own pilot queue. A `done` task is not coverage, and neither is a
+task in a `*-shadow` queue. When the reconciliation reports uncovered
+issues, the rule above was missed somewhere; fix the filing path, not
+just the import.
+
 ## Research, design and delivery workflow
 
 Use it when a request, from one sentence to pages of voice-transcribed notes, should become researched documents, designs, plans or parallel PRs. Contracts: [`planning/workflow/`](planning/workflow/README.md). Where documents go: [`planning/DOCUMENTATION_ARCHITECTURE.md`](planning/DOCUMENTATION_ARCHITECTURE.md). Tool: `python3 -I scripts/research_workflow.py` (`check`, `status`, `ready`).

@@ -58,6 +58,7 @@ use crate::frames::{Decoded, FrameBuffer, encode_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
+use crate::world_terminal::{PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -522,6 +523,10 @@ impl Handler for SshClient {
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
+        // A raw shell behind a PTY owns a terminal to probe. Command mode is
+        // line oriented, and an exec channel or PTY-less client gets no probe:
+        // its bytes must keep the existing JSON-lines behavior.
+        let probe_tty = first_resize.is_some() && !login.command_mode;
         self.input = Some(input);
         let mode = if login.command_mode {
             ShellMode::Command
@@ -548,10 +553,13 @@ impl Handler for SshClient {
             records_after: None,
             errored: false,
             previous_screen: None,
+            probe_tty,
+            probe: None,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
             io.enter_alt_screen().await;
+            io.start_terminal_probe().await;
             run_session(&hub, &mut io).await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
@@ -749,6 +757,18 @@ struct SshIo {
     /// Last screen successfully written to this shell's terminal. A missing
     /// value forces the next screen view to repaint the whole terminal.
     previous_screen: Option<crate::world_presentation::ScreenSurface>,
+    /// Whether this session owns an interactive PTY, so a startup terminal
+    /// probe is allowed. False for exec channels and PTY-less callers.
+    probe_tty: bool,
+    /// Bounded startup probe state while the reply window is open.
+    probe: Option<SshProbe>,
+}
+
+/// The one startup probe window of a raw SSH session.
+#[derive(Debug)]
+struct SshProbe {
+    demux: ProbeDemux,
+    deadline: tokio::time::Instant,
 }
 
 /// The notice shown to a viewer once [`INPUT_DROP_NOTICE_BYTES`] input bytes
@@ -823,6 +843,40 @@ impl SshIo {
         };
         let _ = self.handle.data(self.channel, text).await;
     }
+
+    /// Send the one startup probe burst, never retried per feature (F13.4).
+    ///
+    /// Only a raw shell behind a PTY probes. A failed write leaves the
+    /// session on the existing behavior with no probe window open, exactly
+    /// like a caller that never had a terminal.
+    async fn start_terminal_probe(&mut self) {
+        if !self.probe_tty || self.probe.is_some() {
+            return;
+        }
+        if self.handle.data(self.channel, PROBE_QUERIES).await.is_err() {
+            return;
+        }
+        self.probe = Some(SshProbe {
+            demux: ProbeDemux::new(),
+            deadline: tokio::time::Instant::now() + PROBE_TIMEOUT,
+        });
+    }
+
+    /// Close the probe window, returning any held bytes for replay.
+    ///
+    /// The selected tier is logged only: this slice enables the Tier 3 safe
+    /// fallback and leaves every richer presenter unreachable.
+    fn close_terminal_probe(&mut self) -> Vec<u8> {
+        let Some(mut probe) = self.probe.take() else {
+            return Vec::new();
+        };
+        let tier = probe.demux.tier();
+        tracing::debug!(
+            ?tier,
+            "terminal capability probe closed; Tier 3 fallback stays active"
+        );
+        probe.demux.expire()
+    }
 }
 
 impl SessionIo for SshIo {
@@ -835,11 +889,43 @@ impl SessionIo for SshIo {
             return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
         }
         match self.mode {
-            ShellMode::Raw => self
-                .frames
-                .recv()
-                .await
-                .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input))),
+            ShellMode::Raw => loop {
+                let Some(deadline) = self.probe.as_ref().map(|probe| probe.deadline) else {
+                    return self
+                        .frames
+                        .recv()
+                        .await
+                        .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input)));
+                };
+                // Cancel-safe: the probe stays in place across the await, and
+                // bytes received in an earlier call are held in its demux.
+                let received = tokio::select! {
+                    frame = self.frames.recv() => Some(frame),
+                    () = tokio::time::sleep_until(deadline) => None,
+                };
+                match received {
+                    Some(Some(SshInputFrame::Bytes(bytes))) => {
+                        let input = self
+                            .probe
+                            .as_mut()
+                            .map_or_else(Vec::new, |probe| probe.demux.push(&bytes));
+                        if !input.is_empty() {
+                            return Inbound::Text(raw_frame(&SshInputFrame::Bytes(input)));
+                        }
+                    }
+                    Some(Some(resize @ SshInputFrame::Resize(..))) => {
+                        self.previous_screen = None;
+                        return Inbound::Text(raw_frame(&resize));
+                    }
+                    Some(None) => return Inbound::Closed,
+                    None => {
+                        let held = self.close_terminal_probe();
+                        if !held.is_empty() {
+                            return Inbound::Text(raw_frame(&SshInputFrame::Bytes(held)));
+                        }
+                    }
+                }
+            },
             ShellMode::Command => loop {
                 if let Some(command) = self.commands.pop_front() {
                     if let Some(frame) = command_frame(&command, &self.capability) {
@@ -1071,11 +1157,7 @@ impl SessionIo for SshIo {
                         terminal_text("[records truncated: too much output]\n")
                     )
                 } else if let Some(notice) = notice {
-                    format!(
-                        "\r\n{}\r\n{}",
-                        terminal_text(&text),
-                        terminal_text(notice)
-                    )
+                    format!("\r\n{}\r\n{}", terminal_text(&text), terminal_text(notice))
                 } else {
                     format!("\r\n{}", terminal_text(&text))
                 }
@@ -2400,6 +2482,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_raw_shell_probes_once_and_keeps_probe_replies_out_of_world_input() {
+        let hub = lobby_hub();
+        let world = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .world()
+            .clone();
+        let mut events = world.subscribe();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-probe".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+
+        // The burst is written once, behind one deadline.
+        let queries = String::from_utf8_lossy(PROBE_QUERIES).into_owned();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while sequence_count(&bytes, &queries) == 0 {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the terminal probe");
+        assert_eq!(
+            sequence_count(&bytes, &queries),
+            1,
+            "probe burst must be written exactly once"
+        );
+
+        // Answer inside the window with user keys on both sides of replies.
+        let reply = [
+            b"j".as_slice(),
+            b"\x1bP1+r436F=323536\x1b\\",
+            b"k".as_slice(),
+            b"\x1b[12;40R",
+        ]
+        .concat();
+        channel.data(&reply[..]).await.unwrap();
+
+        let mut typed = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while typed.len() < 2 {
+                if let Ok(event) = events.recv().await
+                    && let crate::world::WorldEventKind::Input(bytes) = event.kind
+                {
+                    typed.extend_from_slice(&bytes);
+                }
+            }
+        })
+        .await
+        .expect("typed keys did not reach the world");
+        assert_eq!(
+            typed,
+            b"jk".to_vec(),
+            "only user keys belong in world input"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_shell_without_a_pty_sends_no_probe_bytes() {
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-no-pty".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        // No `request_pty`: the raw shell still works but owns no terminal.
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.request_shell(true).await.unwrap();
+
+        let queries = String::from_utf8_lossy(PROBE_QUERIES).into_owned();
+        let mut bytes = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(600), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            sequence_count(&bytes, &queries),
+            0,
+            "a TTY-less caller must receive no probe bytes"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn a_refused_raw_shell_leaves_the_alternate_screen_and_repeats_its_error() {
         let (port, server) = start(lobby_hub()).await;
         let session = connect(port, &"0".repeat(64)).await;
@@ -3297,16 +3497,12 @@ mod tests {
         // page ~18,700 times until the rendered-byte cap stopped it.
         // Oracle: the world_net records cursor contract (#6505/#6578)
         // — the cursor must be a string and must strictly advance.
-        let cursor = |value: serde_json::Value, produced_by: &str| {
-            records_cursor(Some(&value), produced_by)
-        };
+        let cursor =
+            |value: serde_json::Value, produced_by: &str| records_cursor(Some(&value), produced_by);
 
         // Absent and null both mean the host has no more pages.
         assert_eq!(records_cursor(None, ""), RecordsCursor::End);
-        assert_eq!(
-            cursor(serde_json::Value::Null, "k1"),
-            RecordsCursor::End
-        );
+        assert_eq!(cursor(serde_json::Value::Null, "k1"), RecordsCursor::End);
 
         // A normal multi-page drain: each cursor advances past the
         // one that produced the page, then the listing ends.
