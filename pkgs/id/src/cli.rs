@@ -33,6 +33,7 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
 //!
@@ -1325,6 +1326,32 @@ pub enum Command {
         /// The claim action to run.
         #[command(subcommand)]
         command: ClaimCommand,
+    },
+    /// Writer sets stored in the event store: show one, expand it, or discover
+    /// sets by scope (writer-set spec §§4–5; issue #6690).
+    ///
+    /// A writer set is a signed `idset.writer` event whose body the store
+    /// retains at ingest. `show` prints the stored object, `expand` runs the
+    /// view projection over the store's resolved group state at the set's own
+    /// publishing frontier, and `discover` lists every stored set for a scope
+    /// with the writers each expands to. `--resolution` names the resolution
+    /// snapshot the projection is pinned under; without one, the zero hash
+    /// names the store's current resolved state.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id writer-sets discover --scope metrics
+    /// id writer-sets expand EVENT --json
+    /// id writer-sets show EVENT
+    /// ```
+    WriterSets {
+        /// Print JSON instead of lines (one array for `discover`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The writer-set action to run.
+        #[command(subcommand)]
+        command: WriterSetCommand,
     },
     /// Migrate existing files to have name/file auto-tags.
     ///
@@ -2646,6 +2673,45 @@ pub enum DocCommand {
     },
 }
 
+/// The actions of `id writer-sets` (writer-set spec §§4–5; issue #6690).
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum WriterSetCommand {
+    /// Show one stored writer set: its ID, version, owner, scope, and the
+    /// counts of its admission entries and exclusions.
+    Show {
+        /// The publishing event's ID.
+        event: String,
+    },
+    /// Expand one stored writer set at its publishing frontier: whether the
+    /// expansion is public, and the explicit authors it admits after
+    /// exclusions.
+    Expand {
+        /// The publishing event's ID.
+        event: String,
+        /// The resolution snapshot to pin the projection under, as hex.
+        /// Without one, the zero hash names the store's current resolved
+        /// state.
+        #[arg(long)]
+        resolution: Option<String>,
+        /// Expand retroactively: only entries marked include-history
+        /// contribute (exclusions always apply).
+        #[arg(long)]
+        retro: bool,
+    },
+    /// Discover stored writer sets by scope: one row per set, with the
+    /// writers it expands to. Without `--scope`, every stored set matches.
+    Discover {
+        /// The scope (subject) to match, exactly.
+        #[arg(long)]
+        scope: Option<String>,
+        /// The resolution snapshot to pin each expansion under, as hex.
+        /// Without one, the zero hash names the store's current resolved
+        /// state.
+        #[arg(long)]
+        resolution: Option<String>,
+    },
+}
+
 /// Subcommands for `id claim`. A claim is the event that sets a tag on a subject.
 #[derive(Subcommand, Debug)]
 pub enum ClaimCommand {
@@ -2832,54 +2898,125 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    #[test]
-    fn test_command_lists_cover_all_clap_subcommands() {
-        let cmd = Cli::command();
-        let names: Vec<&str> = cmd
-            .get_subcommands()
-            .map(|s| s.get_name())
-            .filter(|n| *n != "help")
-            .collect();
-        assert!(
-            names.len() >= 20,
-            "expected the full command set, got {names:?}"
-        );
-
-        // The module-doc command list at the top of this file.
-        let source = include_str!("cli.rs");
+    /// Names in the module-doc command list (the text block under
+    /// `Commands:` at the top of this file): the first token of each
+    /// non-empty line.
+    fn module_doc_entries(source: &str) -> Vec<&str> {
         let doc_list = source
             .split("Commands:")
             .nth(1)
             .and_then(|rest| rest.split("```").next())
             .expect("module-doc command list present");
-        for name in &names {
-            assert!(
-                doc_list.lines().any(|line| line
-                    .trim_start_matches('/')
+        doc_list
+            .lines()
+            .filter_map(|line| {
+                line.trim_start_matches('/')
                     .trim_start_matches('!')
                     .trim()
                     .split_whitespace()
                     .next()
-                    == Some(name)),
-                "module-doc command list in cli.rs omits `{name}`"
-            );
-        }
+            })
+            .collect()
+    }
 
-        // The user-facing CLI Commands table in the README.
-        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
-            .expect("README readable");
+    /// Names in the README CLI Commands table: the backticked first
+    /// cell of each table row.
+    fn readme_table_entries(readme: &str) -> Vec<&str> {
         let table = readme
             .split("## CLI Commands")
             .nth(1)
             .and_then(|rest| rest.split("### ").next())
             .expect("README CLI Commands table present");
-        for name in &names {
-            let cell = format!("| `{name}`");
-            assert!(
-                table.lines().any(|line| line.starts_with(&cell)),
-                "README CLI Commands table omits `{name}`"
-            );
+        table
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `")?.split('`').next())
+            .collect()
+    }
+
+    /// Both hand-maintained command lists must match the live clap
+    /// subcommands in BOTH directions (#6976): every subcommand is
+    /// listed (the original #3715 direction), and every listed entry
+    /// is still a real subcommand — a renamed or removed subcommand
+    /// must not leave a stale entry behind with the guard green.
+    fn check_command_lists(
+        names: &[String],
+        doc_entries: &[&str],
+        readme_entries: &[&str],
+    ) -> Result<(), String> {
+        for name in names {
+            if !doc_entries.contains(&name.as_str()) {
+                return Err(format!("module-doc command list in cli.rs omits `{name}`"));
+            }
+            if !readme_entries.contains(&name.as_str()) {
+                return Err(format!("README CLI Commands table omits `{name}`"));
+            }
         }
+        for entry in doc_entries {
+            if !names.iter().any(|name| name == entry) {
+                return Err(format!(
+                    "module-doc command list in cli.rs lists `{entry}`, which is not a current clap subcommand"
+                ));
+            }
+        }
+        for entry in readme_entries {
+            if !names.iter().any(|name| name == entry) {
+                return Err(format!(
+                    "README CLI Commands table lists `{entry}`, which is not a current clap subcommand"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn clap_subcommand_names() -> Vec<String> {
+        let cmd = Cli::command();
+        cmd.get_subcommands()
+            .map(|s| s.get_name().to_owned())
+            .filter(|n| n != "help")
+            .collect()
+    }
+
+    #[test]
+    fn test_command_lists_cover_all_clap_subcommands() {
+        let names = clap_subcommand_names();
+        assert!(
+            names.len() >= 20,
+            "expected the full command set, got {names:?}"
+        );
+        let source = include_str!("cli.rs");
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+        check_command_lists(
+            &names,
+            &module_doc_entries(source),
+            &readme_table_entries(&readme),
+        )
+        .expect("command lists match the clap subcommands in both directions");
+    }
+
+    /// #6976 mutation check: adding a bogus entry to either list must
+    /// make the bidirectional guard fail — that is the drift class the
+    /// reverse direction exists to catch.
+    #[test]
+    fn test_command_lists_reject_stale_entries() {
+        let names = clap_subcommand_names();
+        let source = include_str!("cli.rs");
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+
+        let mut doc_entries = module_doc_entries(source);
+        doc_entries.push("bogus-command");
+        assert!(
+            check_command_lists(&names, &doc_entries, &readme_table_entries(&readme)).is_err(),
+            "guard accepted a stale module-doc entry"
+        );
+
+        let mut readme_entries = readme_table_entries(&readme);
+        readme_entries.push("bogus-command");
+        assert!(
+            check_command_lists(&names, &module_doc_entries(source), &readme_entries).is_err(),
+            "guard accepted a stale README table entry"
+        );
     }
 
     #[test]

@@ -166,10 +166,7 @@ function cleanupViewState(view: EditorView): void {
 // ============================================================================
 
 /** Mutable per-cursor display state, created at the resting default. */
-function getDisplayStateMut(
-  viewState: CursorViewState,
-  clientID: string | number,
-): CursorDisplayState {
+function getDisplayStateMut(viewState: CursorViewState, clientID: string | number): CursorDisplayState {
   let ds = viewState.displayStates.get(clientID);
   if (!ds) {
     ds = { ...DEFAULT_CURSOR_DISPLAY_STATE };
@@ -206,10 +203,7 @@ function updateCursorChrome(viewState: CursorViewState): void {
   chrome.appendChild(modeButton);
 
   if (pluginState) {
-    const { minimized } = partitionCursorsByMinimized(
-      [...pluginState.cursors.values()],
-      viewState.displayStates,
-    );
+    const { minimized } = partitionCursorsByMinimized([...pluginState.cursors.values()], viewState.displayStates);
     minimized.forEach((cursor) => {
       const restore = document.createElement("button");
       restore.className = "collab-cursor-restore";

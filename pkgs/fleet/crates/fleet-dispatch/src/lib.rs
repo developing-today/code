@@ -305,11 +305,22 @@ fn dechunked_len(body: &[u8]) -> Option<usize> {
         if size == 0 {
             return Some(total);
         }
-        if rest.len() < size + 2 {
+        // The chunk size is peer-declared and never trusted (#5579):
+        // every arithmetic step on it is checked, so a declared size
+        // near `usize::MAX` reads as "not complete" here instead of
+        // panicking in debug builds or wrapping the completeness guard
+        // and the slice index in release builds (#6512).
+        let Some(chunk_end) = size.checked_add(2) else {
+            return None;
+        };
+        if rest.len() < chunk_end {
             return None;
         }
-        total += size;
-        rest = &rest[size + 2..];
+        let Some(new_total) = total.checked_add(size) else {
+            return None;
+        };
+        total = new_total;
+        rest = &rest[chunk_end..];
     }
 }
 
@@ -980,14 +991,15 @@ mod tests {
         assert!(err.message().contains("--prompt-file"), "{}", err.message());
     }
 
-    /// Characterization test salvaged from archive PR #7524 (probe
-    /// worktree `probe-dispatch-dechunk-wt`, issue #6512): the
-    /// completeness checker does unchecked arithmetic on the
-    /// peer-declared chunk size, so the two largest `usize` values
-    /// overflow. Pinned here so the checked-arithmetic fix for #6512
-    /// trips this test and updates it deliberately.
+    /// Pins the #6512 fix: `dechunked_len` does checked arithmetic on
+    /// the peer-declared chunk size, so the two largest `usize` values
+    /// (and any size that cannot fit the buffered remainder) read as
+    /// "not complete" — no panic in debug builds, no wrapped verdict
+    /// in release builds. (This began as a characterization test
+    /// salvaged from archive PR #7524 that pinned the old
+    /// overflow-panic; the fix updates it deliberately.)
     #[test]
-    fn probe_dechunked_len_huge_chunk_size() {
+    fn dechunked_len_huge_chunk_size_is_not_complete() {
         // controls: the existing pins
         assert_eq!(
             dechunked_len(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"),
@@ -996,17 +1008,15 @@ mod tests {
         assert_eq!(dechunked_len(b"4\r\nWi"), None);
         // dechunk() itself guards the declared size before slicing:
         assert_eq!(dechunk(b"ffffffffffffffff\r\nXX"), Vec::<u8>::new());
-        // the completeness checker on the same peer-declared size:
-        let max = std::panic::catch_unwind(|| dechunked_len(b"ffffffffffffffff\r\nXX"));
-        assert!(
-            max.is_err(),
-            "dechunked_len must overflow-panic on usize::MAX until #6512 lands"
-        );
-        let max_minus_one = std::panic::catch_unwind(|| dechunked_len(b"fffffffffffffffe\r\nXX"));
-        assert!(
-            max_minus_one.is_err(),
-            "dechunked_len must overflow-panic on usize::MAX - 1 until #6512 lands"
-        );
+        // the two overflow sizes: not complete, and no panic — these
+        // are direct calls, so a panic fails the test outright.
+        assert_eq!(dechunked_len(b"ffffffffffffffff\r\nXX"), None);
+        assert_eq!(dechunked_len(b"fffffffffffffffe\r\nXX"), None);
+        // a huge declared size after a valid first chunk is the same:
+        assert_eq!(dechunked_len(b"4\r\nWiki\r\nffffffffffffffff\r\nXX"), None);
+        // a large-but-plausible size (16 MiB) with too few bytes
+        // buffered is simply not complete yet:
+        assert_eq!(dechunked_len(b"1000000\r\nshort"), None);
     }
 
     #[test]
