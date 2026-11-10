@@ -47,5 +47,6 @@ crash-gate-sweep
 crash-gate-control
 crash-gate-ingest
 just-recipes-drift
+build-sh-test
 just-recipes-alias-admission
 doc

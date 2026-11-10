@@ -21,6 +21,10 @@ class MemoryJournal {
       const latest = [...this.rows].sort((a, b) => b.step - a.step).slice(0, 1);
       return { toArray: () => latest.map((row) => ({ step: row.step, snapshot: row.snapshot })) };
     }
+    if (query.startsWith("SELECT step FROM journal")) {
+      const latest = [...this.rows].sort((a, b) => b.step - a.step).slice(0, 1);
+      return { toArray: () => latest.map((row) => ({ step: row.step })) };
+    }
     if (query.startsWith("INSERT INTO journal")) {
       const [step, participant, event, snapshot, view, records, snapshotHash] = params;
       this.rows.push({

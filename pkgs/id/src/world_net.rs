@@ -744,7 +744,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails if the host refuses another stream on this connection.
+    /// `open_bi` can fail if the transport cannot allocate a stream. The host
+    /// applies world and hub limits after it receives the first frame; those
+    /// refusals are returned on the opened stream, not from this method.
     pub async fn open_session(&self, world: Option<&str>) -> Result<Self> {
         let (send, recv) = self.conn.open_bi().await.context("open world session")?;
         Ok(Self {
@@ -763,7 +765,7 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails if the host refuses another stream on this connection.
+    /// See [`Self::open_session`] for how transport and host refusals surface.
     pub async fn fresh_session(&self) -> Result<Self> {
         self.open_session(self.world.as_deref()).await
     }
@@ -2293,29 +2295,44 @@ impl WorldClient {
     }
 }
 
+/// Opaque identity for one independently opened [`WorldSessions`] session.
+///
+/// Cloning a handle refers to the same session; opening the same world again
+/// creates a different handle and stream.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WorldSessionHandle(u64);
+
+static NEXT_WORLD_SESSION_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug)]
+struct CoordinatedSession {
+    endpoint_id: String,
+    client: WorldClient,
+}
+
 /// Client-side coordinator for concurrent world sessions (F13.8, #3845).
 ///
 /// [`WorldClient`] is the transport primitive for one server endpoint: one
 /// connection, and sessions as streams on it, each bound to one world for
 /// its lifetime. `WorldSessions` is the client-side owner above it: it
-/// keeps one root connection per distinct server endpoint and retains
-/// independently opened session handles keyed by (endpoint, world), so a
-/// single client can hold live sessions to several worlds — on one server
-/// or across servers — at once.
+/// keeps one root connection per distinct server endpoint and retains an
+/// independent opaque handle for every opened session, so a single client
+/// can hold multiple sessions to the same world, several worlds on one server,
+/// or sessions across servers at once.
 ///
 /// Boundaries (per the F13.8 design record): a connection never spans
 /// distinct servers (one root [`WorldClient`] per endpoint); hosting is
 /// never started implicitly; every session is opened through the existing
 /// capability-bearing `open_session` path, so per-world capability checks
-/// are unchanged; the sequential `open_session` and one-shot CLI paths are
-/// untouched.
+/// are unchanged; the sequential `WorldClient::open_session` and one-shot CLI
+/// paths are untouched.
 #[derive(Debug)]
 pub struct WorldSessions {
     endpoint: Endpoint,
     /// Root connections, keyed by endpoint id.
     roots: HashMap<String, WorldClient>,
-    /// Live sessions, keyed by (endpoint id, world name; `""` = host default).
-    sessions: HashMap<(String, String), WorldClient>,
+    /// Live streams, each retained under its own opaque session handle.
+    sessions: HashMap<WorldSessionHandle, CoordinatedSession>,
 }
 
 impl WorldSessions {
@@ -2329,11 +2346,22 @@ impl WorldSessions {
         }
     }
 
-    fn key(addr: &EndpointAddr, world: Option<&str>) -> (String, String) {
-        (addr.id.to_string(), world.unwrap_or_default().to_owned())
+    fn endpoint_id(addr: &EndpointAddr) -> String {
+        addr.id.to_string()
     }
 
-    /// Open the session for (`addr`, `world`), or return the live one.
+    fn allocate_session_handle(&self) -> Result<WorldSessionHandle> {
+        let id = NEXT_WORLD_SESSION_HANDLE
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| anyhow::anyhow!("world session handle space exhausted"))?;
+        Ok(WorldSessionHandle(id))
+    }
+
+    /// Open a new session for (`addr`, `world`) and return its independent
+    /// handle. Opening the same endpoint/world pair more than once creates a
+    /// new stream each time; use the returned handle for all later operations.
     ///
     /// The first session to an endpoint dials its root connection; later
     /// sessions to the same endpoint reuse it via
@@ -2342,55 +2370,62 @@ impl WorldSessions {
     ///
     /// # Errors
     ///
-    /// Fails if the endpoint is unreachable or the host refuses a session.
+    /// Fails if the endpoint is unreachable, the transport cannot allocate a
+    /// stream, or the session-handle space is exhausted. World and hub
+    /// refusals are returned on the opened session stream after its first
+    /// frame is sent.
     pub async fn open_session(
         &mut self,
         addr: EndpointAddr,
         world: Option<&str>,
-    ) -> Result<&mut WorldClient> {
-        let key = Self::key(&addr, world);
+    ) -> Result<WorldSessionHandle> {
+        let endpoint_id = Self::endpoint_id(&addr);
         // A root whose connection has closed (server disconnect or
         // restart) can never serve another stream, and every session
         // keyed to it rides that dead connection: evict both so this
         // endpoint redials on its own, instead of staying wedged until
         // `close_all` also drops healthy sessions on other servers.
-        if self.roots.get(&key.0).is_some_and(WorldClient::is_closed) {
-            self.roots.remove(&key.0);
+        if self
+            .roots
+            .get(&endpoint_id)
+            .is_some_and(WorldClient::is_closed)
+        {
+            self.roots.remove(&endpoint_id);
             self.sessions
-                .retain(|(endpoint_id, _), _| endpoint_id != &key.0);
+                .retain(|_, session| session.endpoint_id != endpoint_id);
         }
-        if !self.sessions.contains_key(&key) {
-            if !self.roots.contains_key(&key.0) {
-                let root = WorldClient::connect(&self.endpoint, addr).await?;
-                self.roots.insert(key.0.clone(), root);
-            }
-            let session = self
-                .roots
-                .get(&key.0)
-                .context("root inserted above")?
-                .open_session(world)
-                .await?;
-            self.sessions.insert(key.clone(), session);
+        if !self.roots.contains_key(&endpoint_id) {
+            let root = WorldClient::connect(&self.endpoint, addr).await?;
+            self.roots.insert(endpoint_id.clone(), root);
         }
-        Ok(self
-            .sessions
-            .get_mut(&key)
-            .context("session inserted above")?)
+        let session = self
+            .roots
+            .get(&endpoint_id)
+            .context("root inserted above")?
+            .open_session(world)
+            .await?;
+        let handle = self.allocate_session_handle()?;
+        self.sessions.insert(
+            handle,
+            CoordinatedSession {
+                endpoint_id,
+                client: session,
+            },
+        );
+        Ok(handle)
     }
 
-    /// The live session for (`addr`, `world`), if one is open.
-    pub fn session(
-        &mut self,
-        addr: &EndpointAddr,
-        world: Option<&str>,
-    ) -> Option<&mut WorldClient> {
-        self.sessions.get_mut(&Self::key(addr, world))
+    /// The live session for `handle`, if it has not been closed or evicted.
+    pub fn session(&mut self, handle: WorldSessionHandle) -> Option<&mut WorldClient> {
+        self.sessions
+            .get_mut(&handle)
+            .map(|session| &mut session.client)
     }
 
-    /// Whether a session for (`addr`, `world`) is currently open.
+    /// Whether `handle` currently names a live session.
     #[must_use]
-    pub fn has_session(&self, addr: &EndpointAddr, world: Option<&str>) -> bool {
-        self.sessions.contains_key(&Self::key(addr, world))
+    pub fn has_session(&self, handle: WorldSessionHandle) -> bool {
+        self.sessions.contains_key(&handle)
     }
 
     /// Number of distinct server endpoints with a root connection.
@@ -2405,11 +2440,11 @@ impl WorldSessions {
         self.sessions.len()
     }
 
-    /// Drop one session. Its stream closes; sibling sessions on the same
-    /// connection are unaffected (unlike [`WorldClient::close`], which
+    /// Drop one session by handle. Its stream closes; sibling sessions on the
+    /// same connection are unaffected (unlike [`WorldClient::close`], which
     /// closes the whole connection).
-    pub fn close_session(&mut self, addr: &EndpointAddr, world: Option<&str>) -> bool {
-        self.sessions.remove(&Self::key(addr, world)).is_some()
+    pub fn close_session(&mut self, handle: WorldSessionHandle) -> bool {
+        self.sessions.remove(&handle).is_some()
     }
 
     /// Drop every session and close every root connection.
@@ -4098,18 +4133,83 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn test_coordinator_surfaces_connection_session_limit_without_redialing() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let capability = invite_for(&client_ep, &host.addr, None, "ann").await;
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let mut handles = Vec::new();
+
+        // The coordinator's root WorldClient owns one stream itself, leaving
+        // MAX_SESSIONS_PER_CONNECTION - 1 streams for session handles.
+        for _ in 0..MAX_SESSIONS_PER_CONNECTION - 1 {
+            let handle = sessions
+                .open_session(host.addr.clone(), None)
+                .await
+                .unwrap();
+            let session = sessions.session(handle).unwrap();
+            session.send_json(&join(&capability, None)).await.unwrap();
+            assert_eq!(next(session).await.unwrap()["type"], "snapshot");
+            handles.push(handle);
+        }
+
+        let refused_handle = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        let refused = sessions.session(refused_handle).unwrap();
+        let send_result = refused.send_json(&join(&capability, None)).await;
+        if send_result.is_ok() {
+            let outcome =
+                tokio::time::timeout(std::time::Duration::from_secs(10), refused.recv_json())
+                    .await
+                    .expect("timed out waiting for the host's stream refusal");
+            assert!(
+                matches!(outcome, Ok(None) | Err(_)),
+                "the host accepted a session beyond its per-connection limit"
+            );
+        }
+        assert_eq!(
+            sessions.endpoint_count(),
+            1,
+            "capacity must not trigger redial"
+        );
+        assert_eq!(sessions.session_count(), MAX_SESSIONS_PER_CONNECTION);
+        assert!(sessions.close_session(refused_handle));
+
+        // A refused stream cannot close or replace the root used by siblings.
+        let surviving = sessions.session(handles[0]).unwrap();
+        surviving
+            .send_json(&serde_json::json!({"type": "chat", "text": "survived"}))
+            .await
+            .unwrap();
+        assert!(
+            next(surviving)
+                .await
+                .unwrap()
+                .to_string()
+                .contains("survived")
+        );
+
+        sessions.close_all();
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
     /// Host a multi-world hub (MemoryOpener) on one endpoint; returns the
     /// router, the hub, and the loopback address peers should dial.
     async fn hub_host() -> (Router, WorldHub, EndpointAddr, Endpoint) {
+        hub_host_with_limits(crate::world_hub::HubLimits::default()).await
+    }
+
+    async fn hub_host_with_limits(
+        limits: crate::world_hub::HubLimits,
+    ) -> (Router, WorldHub, EndpointAddr, Endpoint) {
         let ep = endpoint().await;
         let opener = crate::world_hub::testing::MemoryOpener::new(false);
         let dyn_opener: Arc<dyn crate::world_hub::WorldOpener> = opener;
-        let hub = WorldHub::new(
-            dyn_opener,
-            Some("admin".to_owned()),
-            "lobby",
-            crate::world_hub::HubLimits::default(),
-        );
+        let hub = WorldHub::new(dyn_opener, Some("admin".to_owned()), "lobby", limits);
         let router = Router::builder(ep.clone())
             .accept(WORLD_ALPN, WorldProtocol::new(hub.clone()))
             .spawn();
@@ -4125,6 +4225,47 @@ mod tests {
             }),
         );
         (router, hub, addr, ep)
+    }
+
+    #[tokio::test]
+    async fn test_coordinator_surfaces_world_hub_limit_without_redialing() {
+        let (router, hub, addr, host_ep) = hub_host_with_limits(crate::world_hub::HubLimits {
+            max_sessions: 1,
+            ..crate::world_hub::HubLimits::default()
+        })
+        .await;
+        let client_ep = endpoint().await;
+        let capability = invite_for(&client_ep, &addr, None, "ann").await;
+
+        // Occupy the only hub lease independently, then verify that the
+        // coordinator exposes the host's refusal on this session stream.
+        let held_lease =
+            tokio::time::timeout(Duration::from_secs(5), hub.lease(None, Some("admin")))
+                .await
+                .expect("timed out waiting for invite session lease release")
+                .unwrap();
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let refused_handle = sessions.open_session(addr.clone(), None).await.unwrap();
+        let refused = sessions.session(refused_handle).unwrap();
+        refused.send_json(&join(&capability, None)).await.unwrap();
+        let refusal = next(refused).await.unwrap();
+        assert_eq!(refusal["type"], "error");
+        assert_eq!(refusal["message"], "server is busy; try again shortly");
+        assert_eq!(sessions.endpoint_count(), 1);
+        assert_eq!(sessions.session_count(), 1);
+
+        drop(held_lease);
+        assert!(sessions.close_session(refused_handle));
+        let retry_handle = sessions.open_session(addr.clone(), None).await.unwrap();
+        let retry = sessions.session(retry_handle).unwrap();
+        retry.send_json(&join(&capability, None)).await.unwrap();
+        assert_eq!(next(retry).await.unwrap()["type"], "snapshot");
+        assert_eq!(sessions.endpoint_count(), 1, "retry must reuse the root");
+
+        sessions.close_all();
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        host_ep.close().await;
     }
 
     /// Mint a capability for `world` on `addr` through a throwaway client.
@@ -4190,7 +4331,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_holds_two_worlds_on_one_endpoint_concurrently() {
+    async fn test_coordinator_holds_two_worlds_on_one_endpoint_concurrently() {
         let (router, hub, addr, host_ep) = hub_host().await;
         let client_ep = endpoint().await;
         let cap_alpha = invite_for(&client_ep, &addr, Some("alpha"), "ann").await;
@@ -4198,14 +4339,26 @@ mod tests {
 
         let mut sessions = WorldSessions::new(client_ep.clone());
         // Join both worlds and keep both sessions live at once.
-        for (world, cap) in [("alpha", &cap_alpha), ("beta", &cap_beta)] {
-            let s = sessions
-                .open_session(addr.clone(), Some(world))
-                .await
-                .unwrap();
-            s.send_json(&join(cap, None)).await.unwrap();
+        let alpha_handle = sessions
+            .open_session(addr.clone(), Some("alpha"))
+            .await
+            .unwrap();
+        {
+            let s = sessions.session(alpha_handle).unwrap();
+            s.send_json(&join(&cap_alpha, None)).await.unwrap();
             assert_eq!(next(s).await.unwrap()["type"], "snapshot");
         }
+        let beta_handle = sessions
+            .open_session(addr.clone(), Some("beta"))
+            .await
+            .unwrap();
+        {
+            let s = sessions.session(beta_handle).unwrap();
+            s.send_json(&join(&cap_beta, None)).await.unwrap();
+            assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        }
+        assert!(sessions.has_session(alpha_handle));
+        assert!(sessions.has_session(beta_handle));
         assert_eq!(sessions.endpoint_count(), 1);
         assert_eq!(sessions.session_count(), 2);
         assert_eq!(hub.open_count(), 2);
@@ -4213,7 +4366,7 @@ mod tests {
         // Chat in alpha is delivered to the alpha session only: the beta
         // session stays silent, proving the two live sessions do not
         // cross-talk on the shared connection.
-        let alpha = sessions.session(&addr, Some("alpha")).unwrap();
+        let alpha = sessions.session(alpha_handle).unwrap();
         alpha
             .send_json(&serde_json::json!({"type": "chat", "text": "alpha only"}))
             .await
@@ -4221,7 +4374,7 @@ mod tests {
         let frame = next(alpha).await.unwrap();
         assert_eq!(frame["type"], "event");
         assert!(frame.to_string().contains("alpha only"));
-        let beta = sessions.session(&addr, Some("beta")).unwrap();
+        let beta = sessions.session(beta_handle).unwrap();
         let silent =
             tokio::time::timeout(std::time::Duration::from_millis(500), beta.recv_json()).await;
         assert!(
@@ -4229,19 +4382,36 @@ mod tests {
             "beta session received alpha's chat: {silent:?}"
         );
 
-        // Re-opening an already-live session returns it, not a new stream:
-        // the same joined session still chats and receives its own event.
-        let again = sessions
+        // Reopening the same endpoint/world creates a distinct handle and
+        // stream, rather than aliasing the existing joined session.
+        let second_alpha_handle = sessions
             .open_session(addr.clone(), Some("alpha"))
             .await
             .unwrap();
-        again
-            .send_json(&serde_json::json!({"type": "chat", "text": "still alpha"}))
+        assert_ne!(alpha_handle, second_alpha_handle);
+        assert!(sessions.has_session(second_alpha_handle));
+        assert_eq!(sessions.session_count(), 3);
+        assert!(sessions.close_session(second_alpha_handle));
+        assert!(!sessions.has_session(second_alpha_handle));
+        assert!(sessions.has_session(alpha_handle));
+        assert_eq!(sessions.session_count(), 2);
+
+        // A capability issued by alpha cannot join beta, even though both
+        // sessions share this endpoint and its root connection.
+        let wrong_world_handle = sessions
+            .open_session(addr.clone(), Some("beta"))
             .await
             .unwrap();
-        let frame = next(again).await.unwrap();
-        assert!(frame.to_string().contains("still alpha"));
-        assert_eq!(sessions.session_count(), 2);
+        let wrong_world = sessions.session(wrong_world_handle).unwrap();
+        wrong_world
+            .send_json(&join(&cap_alpha, None))
+            .await
+            .unwrap();
+        assert_eq!(next(wrong_world).await.unwrap()["message"], "join denied");
+        assert!(next(wrong_world).await.is_none());
+        assert!(sessions.close_session(wrong_world_handle));
+        assert!(sessions.has_session(alpha_handle));
+        assert!(sessions.has_session(beta_handle));
 
         sessions.close_all();
         client_ep.close().await;
@@ -4263,12 +4433,13 @@ mod tests {
         let cap_beta = invite_for(&client_ep, &addr, Some("beta"), "bob").await;
 
         let mut sessions = WorldSessions::new(client_ep.clone());
-        let s = sessions
+        let s_handle = sessions
             .open_session(addr.clone(), Some("alpha"))
             .await
             .unwrap();
         let mut prekeyed = join(&cap_alpha, None);
         prekeyed["world"] = serde_json::json!("beta");
+        let s = sessions.session(s_handle).unwrap();
         s.send_json(&prekeyed).await.unwrap();
         assert_eq!(
             next(s).await.unwrap()["type"],
@@ -4277,20 +4448,21 @@ mod tests {
         );
 
         // A genuine beta session joins beta; alpha's chat stays in alpha.
-        let b = sessions
+        let b_handle = sessions
             .open_session(addr.clone(), Some("beta"))
             .await
             .unwrap();
+        let b = sessions.session(b_handle).unwrap();
         b.send_json(&join(&cap_beta, None)).await.unwrap();
         assert_eq!(next(b).await.unwrap()["type"], "snapshot");
-        let alpha = sessions.session(&addr, Some("alpha")).unwrap();
+        let alpha = sessions.session(s_handle).unwrap();
         alpha
             .send_json(&serde_json::json!({"type": "chat", "text": "alpha only"}))
             .await
             .unwrap();
         let frame = next(alpha).await.unwrap();
         assert!(frame.to_string().contains("alpha only"));
-        let beta = sessions.session(&addr, Some("beta")).unwrap();
+        let beta = sessions.session(b_handle).unwrap();
         let silent =
             tokio::time::timeout(std::time::Duration::from_millis(500), beta.recv_json()).await;
         assert!(
@@ -4305,32 +4477,150 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_spans_distinct_server_endpoints() {
+    async fn test_coordinator_keeps_same_world_sessions_independent_by_handle() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let cap_ann = invite_for(&client_ep, &host.addr, None, "ann").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let ann_handle = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        let bob_handle = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        assert_ne!(ann_handle, bob_handle);
+        assert_eq!(sessions.endpoint_count(), 1);
+        assert_eq!(sessions.session_count(), 2);
+
+        for handle in [ann_handle, bob_handle] {
+            let session = sessions.session(handle).unwrap();
+            session.send_json(&join(&cap_ann, None)).await.unwrap();
+            assert_eq!(next(session).await.unwrap()["type"], "snapshot");
+        }
+
+        // A records request/reply stays on the originating stream even when
+        // the sibling has the same endpoint, world, and participant.
+        let ann = sessions.session(ann_handle).unwrap();
+        assert!(ann.records(&cap_ann, None).await.unwrap().is_empty());
+        let second_ann = sessions.session(bob_handle).unwrap();
+        let stray = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            second_ann.recv_json(),
+        )
+        .await;
+        assert!(
+            stray.is_err(),
+            "same-participant sibling session received Ann's records reply: {stray:?}"
+        );
+
+        // Each handle still names a live stream after the other is closed.
+        let second_ann = sessions.session(bob_handle).unwrap();
+        second_ann
+            .send_json(&serde_json::json!({"type": "chat", "text": "second session before close"}))
+            .await
+            .unwrap();
+        let frame = next(second_ann).await.unwrap();
+        assert!(frame.to_string().contains("second session before close"));
+
+        assert!(sessions.close_session(ann_handle));
+        assert!(!sessions.has_session(ann_handle));
+        assert!(sessions.has_session(bob_handle));
+        assert_eq!(sessions.session_count(), 1);
+        let second_ann = sessions.session(bob_handle).unwrap();
+        second_ann
+            .send_json(&serde_json::json!({
+                "type": "chat",
+                "text": "second session after close"
+            }))
+            .await
+            .unwrap();
+        let second_ann = sessions.session(bob_handle).unwrap();
+        let frame = next(second_ann).await.unwrap();
+        assert!(frame.to_string().contains("second session after close"));
+
+        sessions.close_all();
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_coordinator_spans_distinct_server_endpoints() {
         let host_a = host(Some("admin")).await;
         let host_b = host(Some("admin")).await;
         let client_ep = endpoint().await;
 
         let mut sessions = WorldSessions::new(client_ep.clone());
+        let mut handles = Vec::new();
+        let mut capabilities = Vec::new();
         for host in [&host_a, &host_b] {
             let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
-            let s = sessions
+            let handle = sessions
                 .open_session(host.addr.clone(), None)
                 .await
                 .unwrap();
+            let s = sessions.session(handle).unwrap();
             s.send_json(&join(&cap, None)).await.unwrap();
             assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+            handles.push(handle);
+            capabilities.push(cap);
         }
         // Distinct servers: two root connections, never one shared.
         assert_eq!(sessions.endpoint_count(), 2);
         assert_eq!(sessions.session_count(), 2);
 
         // A chat on server A reaches only server A's session.
-        let a = sessions.session(&host_a.addr, None).unwrap();
+        let a = sessions.session(handles[0]).unwrap();
         a.send_json(&serde_json::json!({"type": "chat", "text": "on a"}))
             .await
             .unwrap();
         let frame = next(a).await.unwrap();
         assert!(frame.to_string().contains("on a"));
+        let b = sessions.session(handles[1]).unwrap();
+        let silent =
+            tokio::time::timeout(std::time::Duration::from_millis(500), b.recv_json()).await;
+        assert!(
+            silent.is_err(),
+            "server B received server A's chat: {silent:?}"
+        );
+
+        // Request/reply operations stay on their originating stream too.
+        let a = sessions.session(handles[0]).unwrap();
+        assert!(a.records(&capabilities[0], None).await.unwrap().is_empty());
+        let b = sessions.session(handles[1]).unwrap();
+        let silent =
+            tokio::time::timeout(std::time::Duration::from_millis(500), b.recv_json()).await;
+        assert!(
+            silent.is_err(),
+            "server A's records reply crossed to B: {silent:?}"
+        );
+
+        // Same-named worlds at distinct endpoints still have distinct
+        // capability authorities.
+        let wrong_endpoint_handle = sessions
+            .open_session(host_b.addr.clone(), None)
+            .await
+            .unwrap();
+        let wrong_endpoint = sessions.session(wrong_endpoint_handle).unwrap();
+        wrong_endpoint
+            .send_json(&join(&capabilities[0], None))
+            .await
+            .unwrap();
+        assert_eq!(
+            next(wrong_endpoint).await.unwrap()["message"],
+            "join denied"
+        );
+        assert!(next(wrong_endpoint).await.is_none());
+        assert!(sessions.close_session(wrong_endpoint_handle));
+
+        // A rejected sibling stream does not disturb the valid B session.
+        let b = sessions.session(handles[1]).unwrap();
+        b.send_json(&serde_json::json!({"type": "chat", "text": "still on b"}))
+            .await
+            .unwrap();
+        assert!(next(b).await.unwrap().to_string().contains("still on b"));
 
         sessions.close_all();
         client_ep.close().await;
@@ -4354,10 +4644,11 @@ mod tests {
         let (records_gen_before, _) = host.world.records();
 
         let mut sessions = WorldSessions::new(client_ep.clone());
-        let first = sessions
+        let first_handle = sessions
             .open_session(host.addr.clone(), None)
             .await
             .unwrap();
+        let first = sessions.session(first_handle).unwrap();
         first.send_json(&join(&cap, None)).await.unwrap();
         assert_eq!(next(first).await.unwrap()["type"], "snapshot");
 
@@ -4394,10 +4685,11 @@ mod tests {
         let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
 
         let mut sessions = WorldSessions::new(client_ep.clone());
-        let s = sessions
+        let first_handle = sessions
             .open_session(host.addr.clone(), None)
             .await
             .unwrap();
+        let s = sessions.session(first_handle).unwrap();
         s.send_json(&join(&cap, None)).await.unwrap();
         assert_eq!(next(s).await.unwrap()["type"], "snapshot");
 
@@ -4415,11 +4707,12 @@ mod tests {
         // The caller drops the failed session and reopens: the coordinator
         // must redial a fresh root for this endpoint, not reuse the closed
         // connection (which would wedge this endpoint until close_all).
-        assert!(sessions.close_session(&host.addr, None));
-        let s = sessions
+        assert!(sessions.close_session(first_handle));
+        let handle = sessions
             .open_session(host.addr.clone(), None)
             .await
             .unwrap();
+        let s = sessions.session(handle).unwrap();
         s.send_json(&join(&cap, None)).await.unwrap();
         assert_eq!(next(s).await.unwrap()["type"], "snapshot");
         assert_eq!(sessions.endpoint_count(), 1);

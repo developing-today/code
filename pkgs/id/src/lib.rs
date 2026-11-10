@@ -195,6 +195,7 @@ pub mod envelope_outbox;
 pub mod event_store;
 pub mod event_sync;
 pub mod fileops;
+pub mod foreign_libsql;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
