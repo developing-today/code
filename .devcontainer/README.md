@@ -14,13 +14,26 @@ Default machine: **2-core** (GitHub Pro includes 180 core-hours/month =
 
 ## How it works
 
-- The image (Dockerfile) is thin: Ubuntu + direnv + single-user Nix with
-  flakes enabled. The repo's own flakes provide the real toolchain via
-  `.envrc`, exactly as on the laptop.
+- The image is the fleet's published
+  `ghcr.io/developing-today/fleet-build:full` — pinned Nix and Go,
+  direnv, and the GitHub CLI — published by dezren39/fleet's
+  fleet-build variant, which gates publication on the fleet repos'
+  submodule pins being fresh. This repo's `fleet` dev-shell closure
+  is one of the closures pre-warmed into the image. The repo's own
+  flakes provide the real toolchain via `.envrc`, exactly as on the
+  laptop.
 - `postCreateCommand` warms the `./src/id` dev shell (Rust/web tooling)
   and verifies the image-provided tools. Go 1.25 comes from a devcontainer
   feature — the repo's flakes do not provide Go; on the laptop it comes
   from home-manager.
+- History: the pilot (PR #855) built a thin local Dockerfile —
+  Ubuntu + direnv + an unpinned single-user Nix install. A fresh
+  create paid the full local image build plus dev-shell realization
+  (~27 min cold start in the pilot's first run), and the unpinned Nix
+  drifted from the fleet's pinned toolchain. Superseded 2026-11-03
+  by the published image above: with prebuilds unavailable on the
+  org's Free plan (below), the published image is the fast cold
+  start.
 - **Prebuilds are NOT available for this repo** (verified 2026-10-25):
   the repo is owned by the `developing-today` organization, repository
   Codespaces/prebuild settings require an organization Team/Enterprise
@@ -28,8 +41,8 @@ Default machine: **2-core** (GitHub Pro includes 180 core-hours/month =
   Codespaces themselves bill to the personal Pro account (user
   ownership). Until that changes, the pattern is: keep one codespace per
   active repo, **stop it instead of deleting it** between sessions
-  (restart is fast; a fresh create pays the full image build + dev-shell
-  realization, ~27 min in the pilot's first run), and delete it when the
+  (restart is fast; a fresh create pays the published-image pull +
+  dev-shell realization, mostly pre-warmed), and delete it when the
   workstream ends.
 
 ## Rules of the house

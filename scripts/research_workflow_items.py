@@ -949,15 +949,46 @@ def item_set_status(args, root, config, package):
     return edit(package, apply)
 
 
+def manifest_segments(manifest):
+    """Return the validated segments list from a package.json manifest.
+
+    The manifest is shape-checked before use: the top level must be a
+    JSON object and segments (when present) a list of objects each
+    with a string id. Any violation — including a manifest that is
+    not JSON at all — fails via fail() naming package.json and the
+    field/expectation, never a bare Attribute/Key/Type error.
+    """
+    if not manifest.is_file():
+        return []
+    try:
+        data = json.loads(manifest.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        fail(
+            "package.json: manifest is not valid JSON; "
+            "expected a JSON object with a segments list"
+        )
+    if not isinstance(data, dict):
+        fail(
+            "package.json: manifest must be a JSON object; "
+            "expected an object with a segments list"
+        )
+    segments = data.get("segments", [])
+    if not isinstance(segments, list):
+        fail("package.json: segments must be a list of objects each with a string id")
+    for segment in segments:
+        if not isinstance(segment, dict) or not isinstance(segment.get("id"), str):
+            fail(
+                "package.json: segments entries must be objects "
+                "each with a string id"
+            )
+    return segments
+
+
 def list_ids(args, root, config, package):
     state, main, _ = load(package)
     items = parse_items(main, concept_ids(state), state.get("created_at"))
     manifest = package / "package.json"
-    segments = (
-        json.loads(manifest.read_text()).get("segments", [])
-        if manifest.is_file()
-        else []
-    )
+    segments = manifest_segments(manifest)
     return {
         "package": str(package),
         "concepts": [

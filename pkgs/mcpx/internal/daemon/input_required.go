@@ -81,7 +81,7 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 
-	res, err := p.Call(withRequestedCallTimeout(ctx), rs, effTool, effArgs)
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "reporting")
 
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
@@ -127,7 +127,13 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
 			callCtx := withCallSettings(withRun(ctx, run), s.callSettings(r))
-			res, err := s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
+			var res json.RawMessage
+			var err error
+			if syn, ok := s.dryRunResult(callCtx, req.Server, req.Tool); ok {
+				res = syn
+			} else {
+				res, err = s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
+			}
 			// This path returns before handleCall's own reporting, so
 			// report the completed call here: an exec run whose calls
 			// ask questions is still a run whose calls belong in its

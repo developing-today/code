@@ -12,7 +12,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{future::IntoFuture, sync::Arc, time::Duration};
+use std::sync::Arc;
+
+mod common;
+
+use common::within;
 
 use id::{
     access::AccessPolicy,
@@ -34,9 +38,6 @@ use iroh_blobs::{
     BlobsProtocol, Hash as BlobHash, api::Store, get::request::get_blob, store::mem::MemStore,
 };
 use p2panda_core::{Hash, SeqNum, SigningKey};
-
-/// Every network step must finish within this, so a stuck request fails the test.
-const TIMEOUT: Duration = Duration::from_secs(20);
 
 const BODY: &[u8] = b"# Minutes\n\nThe plan is agreed.";
 
@@ -97,6 +98,10 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         document: Some(doc.clone()),
         removes: None,
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -113,6 +118,10 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         document: None,
         removes: None,
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -125,6 +134,10 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         document: None,
         removes: Some(target),
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -213,13 +226,6 @@ async fn provider(store: &Store, graph: Graph) -> (Router, EndpointAddr) {
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))
         .spawn();
     (router, addr)
-}
-
-/// Waits for `fut`, failing the test if it takes longer than [`TIMEOUT`].
-async fn within<T>(fut: impl IntoFuture<Output = T>) -> T {
-    tokio::time::timeout(TIMEOUT, fut.into_future())
-        .await
-        .expect("the request must finish within the timeout")
 }
 
 /// Fetches `hash` from `server`: the bytes, or the error text.

@@ -1,39 +1,62 @@
 #!/usr/bin/env bun
-// Quota gatherer (Stage 2, #1151): the PM stack's 15-minute quota
-// tick. Deployed on the LAPTOP (systemd user timer, units in
-// pm-stack/systemd/, installed by install.sh) beside the aggregator
-// and the snapshot store. Two input families:
+// Quota gatherer (Stage 2, #1151; single-source rewire #6127): the PM
+// stack's 15-minute quota tick. Deployed on the LAPTOP (systemd user
+// timer, units in pm-stack/systemd/, installed by install.sh) beside
+// the aggregator and the snapshot store.
 //
-//   1. The OpenChamber quota module, imported in-process from the
-//      laptop's OpenChamber checkout, fetching every configured
-//      provider per credential. Credentials come from a DIRECT read
-//      of OpenCode's own credential store (the `credential` table of
-//      opencode.db, opened read-only) instead of the OpenCode server
-//      API, so a stopped server cannot zero the tick (the CLI's
-//      wholesale "Transport: fetch failed" failure mode, #1251).
-//      The read is the OpenChamber module's own
-//      openCodeLocalCredentialSource — the same shared implementation
-//      the quota CLI falls back to (#2490 phase 3) — so its
-//      projection (rows ordered (active, time_created, id), the last
-//      row per integration selected, unreadable rows surfaced rather
-//      than silently dropped) is the one every surface gets.
-//      Environment-variable keys are not store rows and never appear
-//      here — stored credentials win, which is the order OpenCode
-//      itself uses.
-//   3. The Turso org usage API (#1049): usage + subscription over
-//      the verified route, token from Bitwarden by name.
-//   2. File exports (the Meta Phase-1 convention, #1301): producers
-//      the module cannot reach write latest.json documents on the
-//      laptop (v1: Meta, ~/atlas/meta-quota-export/latest.json);
-//      the gatherer ingests them in the same tick. A document older
-//      than 30 minutes means the producer is unreachable — an error
-//      entry, never zeros.
+// THE SINGLE SOURCE (Drew's order, 2026-11-05, #6125): every quota
+// reading in this tick comes from ONE producer — the opencode fork's
+// quota subcommand, `opencode quota --json`, whose per-provider quota
+// functions live in the providers that own the credentials
+// (developing-today-forks/opencode#1718). The gatherer invokes the
+// subcommand; it never fetches a provider itself. What the tick does
+// around that single read:
+//
+//   1. The OpenDesign session keeper (src/opendesign-renewal.ts,
+//      Drew's 2026-11-05 provider browser-auth auto-renewal rule):
+//      OpenDesign's quota function rides on a Better Auth session in
+//      a managed credential store (the one credential in the system
+//      that is a browser session rather than a token). Before the
+//      subcommand runs each tick, the keeper reads the stored
+//      session (authenticated reads slide its expiry), records the
+//      horizon in opendesign-renewal.json beside quota-current.json,
+//      re-captures the cookie from the standing laptop Helium over
+//      CDP when the stored session fails or its horizon runs low
+//      (validating the candidate before it is stored), and raises an
+//      alert in that state file while days remain when renewal
+//      cannot complete. The keeper maintains a CREDENTIAL; it is not
+//      a quota source. Fail-soft: a keeper error never fails the tick.
+//      (Its credential-store accessors live in the OpenChamber lib
+//      the store was born in — store plumbing, not a reading path.)
+//   1b. The Meta session keeper (src/meta-renewal.ts, same rule):
+//      Meta's quota functions ride the laptop Helium profile's
+//      dev.meta.ai session — no stored credential exists to
+//      maintain — so the keeper watches the meta-quota-export probe
+//      document each tick, re-arms the exporter units if they were
+//      renamed away (the 2026-11-01 failure), takes a fresh probe,
+//      and records the verdict in meta-renewal.json with an alert
+//      from the first bad tick when the session is truly logged
+//      out. Fail-soft like the OpenDesign keeper.
+//   2. The subcommand, twice: the configured listing
+//      (`opencode quota --json`) and the explicit ask
+//      (`opencode quota --json meta command-code`) — providers whose
+//      routing doors are disabled in the opencode config but whose
+//      pools are live are always fetched when named, the same
+//      discipline the gatherer's out-of-band asks kept before the
+//      rewire. An explicit-ask result replaces a listing result for
+//      the same provider + credential. The subcommand exits non-zero
+//      when a requested provider produced no successful result; that
+//      is a per-provider failure, not a tick failure — stdout still
+//      carries the results, and only an unparseable/empty stdout
+//      fails the tick (loudly; the previous quota-current.json
+//      stands, #1268).
 //
 // Outputs:
 //   - quota-current.json — the latest-state contract (model.ts
 //     QuotaCurrentFile) in the deployed aggregator dir, beside
-//     fleet-feed.json. (Aggregator pickup of this file is the
-//     remaining hop; see the README's quota-gatherer section.)
+//     fleet-feed.json. Its `source` is "opencode-quota"
+//     (GATHERER_SOURCE): readings are the subcommand's, and the file
+//     says so.
 //   - quota-gatherer-heartbeat.json — the tick's health record
 //     (also embedded in quota-current.json).
 //   - §4 snapshot records for windows whose value moved since the
@@ -41,58 +64,74 @@
 //     snapshot store (SnapshotStore.append dedupes). Setting
 //     USAGE_SNAPSHOT_OUTBOX_PATH switches the sink to the writers'
 //     outbox JSONL instead (the sandbox collector's drain path).
+//   - Turso agent_quota_records rows (fleet-platform), one per pool
+//     entry per tick, source "opencode-quota" — Drew's rule that all
+//     quota info lands in the quota ledger on a regular basis in
+//     addition to the dashboard. (The previous writer of pool rows,
+//     source "pm-pool", died 2026-10-29; this sink replaces it. The
+//     sink targeted Supabase agent.quota_records until the 2026-11-06
+//     Wave 3 cutover, code#5690.) Fail-soft: a sink failure is logged
+//     and never fails the tick — quota-current.json is already written
+//     by then.
 //
-// Fail-soft contract: if the module import fails or the credential
-// store cannot be read, the tick writes a heartbeat carrying the
-// error and exits non-zero WITHOUT touching quota-current.json. A
-// single provider failing or exceeding its cap degrades only its own
-// rows; the tick still succeeds. A provider whose run errors keeps
-// its last-known ok entries from the previous tick's
-// quota-current.json (#1268) — retained verbatim, so their original
-// measuredAt makes the hub classify them stale instead of the fresh
-// error rows replacing the last good data.
+// Fail-soft contract: if the subcommand cannot be run or its output
+// cannot be parsed, the tick writes a heartbeat carrying the error
+// and exits non-zero WITHOUT touching quota-current.json. A single
+// provider failing degrades only its own rows; the tick still
+// succeeds. A provider whose run errors keeps its last-known ok
+// entries from the previous tick's quota-current.json (#1268) —
+// retained verbatim, so their original measuredAt makes the hub
+// classify them stale instead of the fresh error rows replacing the
+// last good data.
 //
 // Usage: bun run scripts/gather-quota.ts
-// Env: OPENCHAMBER_LIB_DIR (default: first of ~/git/devtoday-
-//      openchamber, ~/git/openchamber-fork containing the module),
-//      OPENCODE_DB_PATH (~/.local/share/opencode/opencode.db),
+// Env: QUOTA_SUBCOMMAND (full command override, e.g. a fork-built
+//      binary path + args, shell-split on spaces; default:
+//      "opencode quota --json" / the explicit ask appends provider
+//      ids), QUOTA_SUBCOMMAND_TIMEOUT_MS (240000 — the whole-exec
+//      cap; the subcommand self-limits per provider),
 //      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH,
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
-//      USAGE_SNAPSHOT_OUTBOX_PATH, META_QUOTA_EXPORT_PATH,
-//      QUOTA_GATHER_TIMEOUT_MS (15000),
-//      QUOTA_GATHER_CONCURRENCY (6), TURSO_API_TOKEN (else the
-//      Bitwarden secret turso.platform-api-token-muse-cli, resolved
-//      by name via ~/tools/bws-env conventions — BWS_BIN and
-//      BWS_ACCESS_TOKEN_FILE override its plumbing),
-//      TURSO_ORG_SLUG (dezren39), TURSO_API_BASE
-//      (https://api.turso.tech).
+//      USAGE_SNAPSHOT_OUTBOX_PATH,
+//      QUOTA_GATHER_CONCURRENCY (retained for interface stability;
+//      the subcommand owns fetch concurrency now),
+//      OPENCHAMBER_LIB_DIR (ONLY the OpenDesign keeper's credential
+//      store accessors resolve from here; no quota reading does),
+//      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
+//      disables the Turso sink (default on; token resolved by name
+//      via the resolveBwsSecret plumbing:
+//      turso.fleet-platform-rw-token).
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { access, appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
+  entriesWithPoolSplits,
   entryFromResult,
-  entryFromFileExport,
-  entryFromTurso,
+  entryHasMeasuredWindow,
   lastKnownEntries,
-  mapWithConcurrency,
   markRetained,
   recordsFromEntries,
-  type FileExportDoc,
   type QuotaProviderResult,
-  type TursoSubscriptionDoc,
-  type TursoUsageDoc,
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
+import { safeProviderReason } from "../src/credential-lifecycle.ts";
+import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
+import { renewMetaSession } from "../src/meta-renewal.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
+/** The OpenDesign keeper's credential-store accessors live in the
+ * OpenChamber lib (the managed store's home). Store plumbing for ONE
+ * credential the keeper maintains — never a quota reading path: all
+ * readings come from the subcommand (see the header). */
 function resolveLibDir(): string {
   const candidates = [
     process.env.OPENCHAMBER_LIB_DIR,
@@ -105,41 +144,29 @@ function resolveLibDir(): string {
   return candidates[0];
 }
 const libDir = resolveLibDir();
-const dbPath = process.env.OPENCODE_DB_PATH ?? join(HOME, ".local/share/opencode/opencode.db");
 const currentPath = process.env.QUOTA_CURRENT_PATH ?? join(PKG, "quota-current.json");
 const heartbeatPath = process.env.QUOTA_HEARTBEAT_PATH ?? join(PKG, "quota-gatherer-heartbeat.json");
 const statePath = process.env.QUOTA_GATHERER_STATE_PATH ?? join(PKG, "quota-gatherer-state.json");
 const snapshotsDir = process.env.QUOTA_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? null;
-const timeoutMs = Number(process.env.QUOTA_GATHER_TIMEOUT_MS ?? 15_000);
-const gatherConcurrency = Number(process.env.QUOTA_GATHER_CONCURRENCY ?? 6);
+const subcommandTimeoutMs = Number(process.env.QUOTA_SUBCOMMAND_TIMEOUT_MS ?? 240_000);
 const OBSERVED_BY = "quota-gatherer";
 
-/** File-export producers ingested each tick (the #1301 convention). */
-const FILE_EXPORTS = [
-  {
-    key: "meta",
-    path: process.env.META_QUOTA_EXPORT_PATH ?? join(HOME, "atlas/meta-quota-export/latest.json"),
-    staleMs: 30 * 60_000,
-  },
-];
-
-interface QuotaModule {
-  listConfiguredQuotaProviders: (opts?: { includeDisabled?: boolean }) => Promise<string[]>;
-  fetchQuotaForProviderInstances: (providerId: string) => Promise<QuotaProviderResult[]>;
-}
-interface AuthModule {
-  configureOpenCodeCredentials: (source: unknown) => void;
-  // The shared direct credential-store read from lib/opencode/auth.js
-  // (#2490 phase 3): same projection and failure semantics as the CLI
-  // fallback — it throws when the store is missing or holds rows but
-  // none are readable, and that throw reaches main()'s failTick via
-  // listConfiguredQuotaProviders, so a bad store fails the tick loudly
-  // instead of producing an empty "not configured" tick. It has no
-  // listEnvironmentKeys: stored credentials are the whole story for
-  // this reader, as before.
-  openCodeLocalCredentialSource: (opts: { dbPath: string }) => unknown;
-}
+/** Providers always asked explicitly, by name, every tick: their
+ * routing doors are disabled in the opencode config (definitions
+ * kept, flipped off), so a listing can omit them even though their
+ * credentials and plans are live pools. A named ask always fetches.
+ * (Meta: route-only pool, #6079. Command Code: disabled door, live
+ * plan — its read is the PLAN read; see keepCommandCodePlanWindows.
+ * DeepSeek: named ask resolves it but the subcommand's listing
+ * currently omits it — opencode#1729; remove it here when the
+ * listing and the named ask agree on the configured set.
+ * Mistral: its console budget read is CDP-backed and exceeds the
+ * subcommand's 30s per-provider cap under the full listing's
+ * concurrency (opencode#1729); the small explicit ask gives it
+ * room, and its result replaces the listing's timed-out one.
+ * Remove it here when the cap is raised.) */
+const EXPLICIT_ASK_PROVIDERS = ["meta", "_commandcode", "deepseek", "mistral"];
 
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -158,28 +185,12 @@ async function failTick(tickAt: string, started: number, error: string): Promise
     ok: false,
     durationMs: Date.now() - started,
     perProvider: {},
-    error,
+    error: safeProviderReason(error),
   };
   await writeHeartbeat(hb).catch(() => {});
-  console.error(`quota-gatherer: tick failed before providers ran: ${error}`);
+  console.error(`quota-gatherer: tick failed before providers ran: ${safeProviderReason(error)}`);
   return 1;
 }
-
-async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
-  try {
-    return await Promise.race([p, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Bitwarden secret NAME for the Turso platform token (#1049).
- * The value is resolved at tick time and never logged or stored. */
-const TURSO_SECRET_NAME = "turso.platform-api-token-muse-cli";
 
 /**
  * Resolve one Bitwarden Secrets Manager secret by key, without ever
@@ -251,66 +262,87 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
   }
 }
 
+/** Managed-credential accessors for the OpenDesign keeper (libDir). */
+interface OpenDesignCredentialsModule {
+  readManagedCredential: (providerId: string) => OpenDesignCredentialLike | null;
+  writeManagedCredential: (providerId: string, value: OpenDesignCredentialLike) => unknown;
+}
+interface OpenDesignProviderModule {
+  fetchOpenDesignQuota: (credential: OpenDesignCredentialLike) => Promise<unknown>;
+}
+
 /**
- * Turso org usage (#1049): usage + subscription reads over the
- * verified org route, mapped by entryFromTurso. Any failure (no
- * token, HTTP error, timeout) degrades to this run's error entry —
- * per-provider fail-soft like every other source; never zeros.
+ * The OpenDesign session keeper run. Runs before the subcommand so a
+ * credential renewed this tick is the one the tick's OpenDesign read
+ * uses. The validate step performs a quota fetch with the candidate
+ * credential purely to prove the credential works before it is
+ * stored — a credential check, not a quota reading (no value from it
+ * reaches any output). Fail-soft: any error is logged and the tick
+ * proceeds with the stored credential as-is.
  */
-async function runTurso(tickIso: string): Promise<ProviderRun> {
-  const t0 = Date.now();
-  const done = (entry: QuotaCurrentEntry): ProviderRun => ({
-    id: "turso",
-    state: entry.state === "ok" ? "ok" : "error",
-    ms: Date.now() - t0,
-    entries: [entry],
-    ...(entry.error ? { error: entry.error } : {}),
-  });
-  const token = process.env.TURSO_API_TOKEN?.trim() || (await resolveBwsSecret(TURSO_SECRET_NAME));
-  if (!token) {
-    return done(
-      entryFromTurso(null, null, {
-        measuredAt: tickIso,
-        error: `turso token unavailable (Bitwarden secret ${TURSO_SECRET_NAME})`,
-      }),
+async function runOpenDesignRenewal(tickAt: string): Promise<void> {
+  if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
+  try {
+    const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
+    const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
+    const state = await renewOpenDesignSession({
+      readCredential: () => credentials.readManagedCredential("opendesign"),
+      writeCredential: (value) => {
+        credentials.writeManagedCredential("opendesign", value);
+      },
+      validateCredential: async (credential) => {
+        await provider.fetchOpenDesignQuota(credential);
+      },
+      cdpUrl: process.env.OPENDESIGN_CDP_URL ?? "http://127.0.0.1:19222",
+      statePath: process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+      forceCapture: process.env.OPENDESIGN_RENEWAL_FORCE_CAPTURE === "1",
+      now: () => new Date(tickAt),
+      log: (line) => console.log(`quota-gatherer: ${line}`),
+    });
+    if (state.status === "attention") {
+      console.log(`quota-gatherer: opendesign-renewal ATTENTION ${state.alert ?? ""}`);
+    }
+  } catch (err) {
+    console.log(
+      `quota-gatherer: opendesign-renewal failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
-  const base = process.env.TURSO_API_BASE ?? "https://api.turso.tech";
-  const slug = process.env.TURSO_ORG_SLUG ?? "dezren39";
+}
+
+/**
+ * The Meta session keeper run (src/meta-renewal.ts, Drew's
+ * 2026-11-05 auto-renewal rule). Meta's quota functions ride the
+ * laptop Helium profile's dev.meta.ai session — no stored credential
+ * exists for a keeper to maintain, so this keeper watches the
+ * meta-quota-export probe document instead: fresh + ok = session
+ * valid; expired or silent = re-arm the exporter units if they were
+ * renamed away, take a fresh probe, and if the session is truly
+ * logged out raise an alert in meta-renewal.json from the first bad
+ * tick (re-login is a human step — Meta emails a code). Fail-soft,
+ * same contract as the OpenDesign keeper.
+ */
+async function runMetaRenewal(tickAt: string): Promise<void> {
+  if (process.env.META_RENEWAL_DISABLED === "1") return;
   try {
-    const get = async (path: string): Promise<unknown> => {
-      // Fetch AND body parse inside the timeout, with an abort
-      // signal: a body that stalls after prompt headers must not
-      // hang the tick (Codex review, PR #2366).
-      return withTimeout(
-        (async () => {
-          const res = await fetch(`${base}/v1/organizations/${slug}${path}`, {
-            headers: { Authorization: `Bearer ${token}` },
-            signal: AbortSignal.timeout(timeoutMs),
-          });
-          if (!res.ok) throw new Error(`turso ${path} HTTP ${res.status}`);
-          return res.json();
-        })(),
-        timeoutMs,
-        `turso ${path}`,
-      );
-    };
-    const usage = (await get("/usage")) as TursoUsageDoc;
-    const subscription = (await get("/subscription")) as TursoSubscriptionDoc;
-    return done(entryFromTurso(usage, subscription, { measuredAt: tickIso }));
+    const state = await renewMetaSession({
+      statePath: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
+      ...(process.env.META_EXPORTER_LATEST_PATH ? { latestPath: process.env.META_EXPORTER_LATEST_PATH } : {}),
+      now: () => new Date(tickAt),
+      log: (line) => console.log(`quota-gatherer: ${line}`),
+    });
+    if (state.status === "attention") {
+      console.log(`quota-gatherer: meta-renewal ATTENTION ${state.alert ?? ""}`);
+    }
   } catch (err) {
-    return done(
-      entryFromTurso(null, null, {
-        measuredAt: tickIso,
-        error: err instanceof Error ? err.message : String(err),
-      }),
+    console.log(
+      `quota-gatherer: meta-renewal failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
 }
 
 interface ProviderRun {
   id: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
   ms: number;
   entries: QuotaCurrentEntry[];
   error?: string;
@@ -318,60 +350,68 @@ interface ProviderRun {
   retained?: boolean;
 }
 
-async function runProvider(quota: QuotaModule, id: string, tickIso: string): Promise<ProviderRun> {
-  const t0 = Date.now();
-  try {
-    const results = await withTimeout(quota.fetchQuotaForProviderInstances(id), timeoutMs, id);
-    const entries = results.map((r) => entryFromResult(r, tickIso));
-    // A provider is ok when at least one credential row answered;
-    // a failing row (e.g. Codex's token-sharing login, which OpenAI
-    // refuses by design) keeps its error on its own entry.
-    const anyOk = entries.some((e) => e.state === "ok");
-    const firstBad = entries.find((e) => e.state !== "ok");
-    return {
-      id,
-      state: anyOk ? "ok" : "error",
-      ms: Date.now() - t0,
-      entries,
-      ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
-    };
-  } catch (err) {
-    return {
-      id,
-      state: "error",
-      ms: Date.now() - t0,
-      entries: [],
-      error: err instanceof Error ? err.message : String(err),
-    };
+/**
+ * Build a run from mapped entries, with the ok-but-null downgrade.
+ * A run whose entries are all "ok" yet carry NO measured window
+ * (every pctOfLimit null — Meta's active-but-no-subs_usage shape
+ * since 2026-11-03) is not a successful read: previously it passed
+ * as ok, so #1268 retention (which only fires on error runs) never
+ * engaged and quota-current.json published fresh null rows over the
+ * last good percentages. Downgrade it to an error run carrying the
+ * mapper's no-data reason, flip its entries to error so retention
+ * can replace them with last-known rows, and let the heartbeat say
+ * why. The entries' failureClass / lastSuccessAt (when the provider
+ * provides them) ride along in the reason.
+ */
+function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): ProviderRun {
+  const anyOk = entries.some((e) => e.state === "ok");
+  const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
+  if (anyOk && !anyMeasured) {
+    const reason =
+      entries.find((e) => e.error)?.error ??
+      "no-data: provider reported ok but no window carried a percentage";
+    for (const e of entries) {
+      if (e.state === "ok") e.state = "error";
+      if (!e.error) e.error = reason;
+    }
+    return { id, state: "error", ms: Date.now() - t0, entries, error: reason };
   }
+  const firstFailure = entries.find((e) => e.state !== "ok" && e.state !== "lapsed");
+  // A run whose only non-ok rows are planned lapses is terminal, not
+  // failed: reporting it as "error" would trip #1268 retention and
+  // replace the lapsed rows with last-known ok readings, hiding the
+  // lapse the hub must show.
+  const onlyLapsed = entries.length > 0 && entries.every((e) => e.state === "lapsed");
+  return {
+    id,
+    state: anyOk ? "ok" : onlyLapsed ? "lapsed" : "error",
+    ms: Date.now() - t0,
+    entries,
+    // A partially-failed run still surfaces its first failure: a
+    // folded provider (codex answers one row per OpenAI credential)
+    // must not let one credential's ok row hide a sibling credential's
+    // error from the heartbeat — 2026-11-10 the codex run read "ok"
+    // with no error while the openai.main and _openai credentials were
+    // both failing token_expired at the provider.
+    ...(firstFailure?.error ? { error: firstFailure.error } : {}),
+  };
 }
 
-/** Ingest one file-export document into a quota-current entry. */
-async function runFileExport(fx: (typeof FILE_EXPORTS)[number]): Promise<ProviderRun> {
-  const t0 = Date.now();
-  let entry: QuotaCurrentEntry;
-  try {
-    const st = await stat(fx.path);
-    let doc: FileExportDoc | null = null;
-    try {
-      doc = JSON.parse(await readFile(fx.path, "utf8")) as FileExportDoc;
-    } catch {
-      doc = null;
-    }
-    entry = entryFromFileExport(doc, {
-      fileMtimeIso: st.mtime.toISOString(),
-      stale: Date.now() - st.mtimeMs > fx.staleMs,
-    });
-  } catch {
-    entry = entryFromFileExport(null, { fileMtimeIso: null, stale: false });
+/** Command Code plan windows (Drew's rule, 2026-11-01: Command Code
+ *  reads use PLAN, not BALANCE). The provider also returns balance
+ *  windows (purchased_credits / free_credits: label-only, no
+ *  percentage); those are balances, never quota, so they are stripped
+ *  from the entry's windows — the raw payload stays on entry.usage —
+ *  and no consumer or snapshot writer can mistake a balance for a
+ *  plan reading or read the plan windows as "empty" because the
+ *  first window is a balance. This is a mapping rule over the single
+ *  source's output, not a second read. */
+const COMMAND_CODE_PLAN_WINDOWS = new Set(["5h", "weekly", "monthly"]);
+function keepCommandCodePlanWindows(run: ProviderRun): ProviderRun {
+  for (const entry of run.entries) {
+    entry.windows = entry.windows.filter((w) => COMMAND_CODE_PLAN_WINDOWS.has(w.name));
   }
-  return {
-    id: fx.key,
-    state: entry.state === "ok" ? "ok" : "error",
-    ms: Date.now() - t0,
-    entries: [entry],
-    ...(entry.error ? { error: entry.error } : {}),
-  };
+  return run;
 }
 
 /** The previous tick's quota-current entries, for #1268 last-known
@@ -400,53 +440,298 @@ async function readState(): Promise<Map<string, string>> {
   return new Map();
 }
 
+/** The subcommand invocation: QUOTA_SUBCOMMAND overrides the whole
+ *  command (interim fork builds, tests); the default is the deployed
+ *  opencode binary's quota subcommand. Explicit provider ids are
+ *  appended as positional args. */
+function subcommandArgv(extraArgs: string[]): string[] {
+  const override = process.env.QUOTA_SUBCOMMAND?.trim();
+  const base = override ? override.split(/\s+/) : ["opencode", "quota", "--json"];
+  return [...base, ...extraArgs];
+}
+
+/** Run the subcommand once. A non-zero exit WITH stdout is a
+ *  per-provider failure signal, not an exec failure — the results on
+ *  stdout stand. An exec failure (spawn error, timeout, no stdout)
+ *  rejects. */
+function execSubcommand(argv: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      argv[0],
+      argv.slice(1),
+      {
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: subcommandTimeoutMs,
+        env: {
+          ...process.env,
+          // The standing runtime config is the CLI's fast,
+          // deterministic config resolution. Interactive shells on
+          // this host carry OPENCODE_CONFIG_PATH; the systemd unit
+          // does not, and without it the CLI's default discovery
+          // takes minutes (project scan) — the first production
+          // ticks died on exactly that (opencode#1729). Respect an
+          // explicitly set value; otherwise name the standing file.
+          OPENCODE_CONFIG_PATH:
+            process.env.OPENCODE_CONFIG_PATH ?? join(HOME, ".local/state/opencode/opencode-runtime.jsonc"),
+        },
+        // Neutral cwd (the state dir): quota is a machine-level read,
+        // not a project read. From the aggregator's repo cwd the CLI
+        // does project discovery over the code repo's worktrees —
+        // minutes of CPU, and the first production tick died on it
+        // (240s exec cap, truncated stdout, #6127).
+        cwd: dirname(currentPath),
+      },
+      (err, stdout) => {
+        if (err && !stdout) {
+          reject(err);
+          return;
+        }
+        resolve(stdout ?? "");
+      },
+    );
+  });
+}
+
+/** Parse one subcommand run's stdout into provider results. The
+ *  contract (opencode#1718): --json emits an array of result objects,
+ *  one per credential instance; an object keyed by providerId is
+ *  also accepted. Anything else is a tick-failing defect — a silent
+ *  empty tick is exactly what the single-source rule exists to
+ *  prevent. */
+function parseSubcommandResults(stdout: string, label: string): QuotaProviderResult[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error(`opencode quota (${label}): unparseable output (${stdout.length} bytes)`);
+  }
+  const arr = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === "object" && parsed !== null
+      ? Object.values(parsed as Record<string, unknown>)
+      : null;
+  if (!arr) throw new Error(`opencode quota (${label}): output is not a result set`);
+  const results = arr.filter(
+    (r): r is QuotaProviderResult =>
+      typeof r === "object" && r !== null && typeof (r as QuotaProviderResult).providerId === "string",
+  );
+  if (results.length === 0) throw new Error(`opencode quota (${label}): no provider results`);
+  return results;
+}
+
+/**
+ * THE tick's only quota read: the subcommand's configured listing,
+ * plus the explicit ask for the route-disabled live pools
+ * (EXPLICIT_ASK_PROVIDERS). Explicit results replace listing results
+ * for the same provider + credential. Results are grouped into one
+ * run per provider id, mapped through the unchanged quota-gather-map
+ * contract.
+ */
+async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
+  const listingT0 = Date.now();
+  const listingStdout = await execSubcommand(subcommandArgv([]));
+  const listing = parseSubcommandResults(listingStdout, "listing");
+  const listingMs = Date.now() - listingT0;
+
+  const askT0 = Date.now();
+  const askStdout = await execSubcommand(subcommandArgv(EXPLICIT_ASK_PROVIDERS));
+  const asked = parseSubcommandResults(askStdout, "explicit ask");
+  const askMs = Date.now() - askT0;
+
+  // Per-provider group choice, the pre-rewire discipline generalized:
+  // a listing group with an ok row wins (the ask is not consulted for
+  // it); otherwise a fresher ask group with an ok row replaces it;
+  // otherwise the ask group (fresher error) stands over the listing's.
+  // The two invocations key credentials differently (the listing
+  // enumerates stored credentials; a named ask may answer with a
+  // credential-less result), so merging per-credential would publish
+  // the same pool twice — once as each invocation saw it.
+  const groupByProvider = (results: QuotaProviderResult[], ms: number) => {
+    const groups = new Map<string, { results: QuotaProviderResult[]; ms: number }>();
+    for (const result of results) {
+      const group = groups.get(result.providerId) ?? { results: [], ms };
+      group.results.push(result);
+      groups.set(result.providerId, group);
+    }
+    return groups;
+  };
+  const listingGroups = groupByProvider(listing, listingMs);
+  const askGroups = groupByProvider(asked, askMs);
+  const byProvider = new Map<string, { results: QuotaProviderResult[]; ms: number }>();
+  for (const [id, group] of listingGroups) byProvider.set(id, group);
+  for (const [id, askGroup] of askGroups) {
+    const listed = byProvider.get(id);
+    if (!listed) {
+      byProvider.set(id, askGroup);
+      continue;
+    }
+    const listedOk = listed.results.some((r) => r.ok);
+    const askOk = askGroup.results.some((r) => r.ok);
+    if (!listedOk) byProvider.set(id, askGroup);
+    else if (!askOk) {
+      console.log(`quota-gatherer: ${id} ok via listing — explicit ask's error row dropped`);
+    }
+    // Both ok: the listing group stands — it is the canonical,
+    // credential-keyed enumeration; the ask exists to rescue a
+    // missing or errored listing group, not to override a good one.
+  }
+
+  const runs: ProviderRun[] = [];
+  for (const [id, group] of byProvider) {
+    const t0 = Date.now() - group.ms;
+    const entries = group.results.map((r) => entryFromResult(r, tickAt));
+    let run = finalizeRun(id, entries, t0);
+    if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
+    runs.push(run);
+  }
+  return runs;
+}
+
+const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
+const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
+
+function sqlString(v: string): string {
+  return `'${v.replace(/'/g, "''")}'`;
+}
+
+/**
+ * The Turso sink: one agent_quota_records row per pool entry that
+ * carries a reading (at least one window), in the shape the retired
+ * "pm-pool" writer used (payload = {id, ts, plan, state, source,
+ * windows[{name, percent, resetsAt}], provider}), with source =
+ * GATHERER_SOURCE naming the single source. Runs AFTER
+ * quota-current.json is written; fail-soft by contract (a sink
+ * failure is logged, never fails the tick, never zeroes a row).
+ * Until the 2026-11-06 Wave 3 cutover (code#5690) this wrote to
+ * Supabase agent.quota_records (muse-dev2) via the Management API;
+ * the table now lives in Turso fleet-platform and is written through
+ * the libsql HTTP pipeline with INSERT OR IGNORE on the
+ * (source, id, ts) PK.
+ */
+async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): Promise<void> {
+  if (process.env.TURSO_QUOTA_SINK === "0" || process.env.SUPABASE_QUOTA_SINK === "0") return;
+  try {
+    const token = await resolveBwsSecret(TURSO_TOKEN_NAME);
+    if (!token) {
+      console.log("quota-gatherer: turso sink skipped \u2014 token unresolved by name");
+      return;
+    }
+    const readable = entries.filter((e) => e.windows.length > 0);
+    if (!readable.length) {
+      console.log("quota-gatherer: turso sink \u2014 no entries with windows this tick");
+      return;
+    }
+    const values = readable.map((e) => {
+      const weekly = e.windows.find((w) => w.name === "weekly");
+      const payload = {
+        id: e.serviceId,
+        ts: e.measuredAt,
+        plan: e.planLabel ?? null,
+        state: e.state,
+        source: GATHERER_SOURCE,
+        windows: e.windows.map((w) => ({ name: w.name, percent: w.pctOfLimit, resetsAt: w.resetsAt })),
+        provider: e.providerName,
+      };
+      const id = `${e.serviceId}:${tickAt}`;
+      return `(${sqlString(id)}, ${sqlString(GATHERER_SOURCE)}, ${sqlString(e.measuredAt)}, ${
+        e.planLabel ? sqlString(e.planLabel) : "NULL"
+      }, ${weekly?.pctOfLimit ?? "NULL"}, ${weekly?.resetsAt ? sqlString(weekly.resetsAt) : "NULL"}, ${sqlString(
+        JSON.stringify(payload),
+      )}, ${sqlString(tickAt)})`;
+    });
+    const query =
+      "insert or ignore into agent_quota_records (id, source, ts, plan, weekly_percent, resets, payload, inserted_at) values " +
+      values.join(", ") +
+      ";";
+    const res = await fetch(`${TURSO_URL}/v2/pipeline`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: [
+          { type: "execute", stmt: { sql: query } },
+          { type: "close" },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      console.log(`quota-gatherer: turso sink failed-soft: HTTP ${res.status}`);
+      return;
+    }
+    const out = (await res.json()) as { results?: { type: string; error?: { message?: string } }[] };
+    const failed = (out.results ?? []).find((r) => r.type === "error");
+    if (failed) {
+      console.log(`quota-gatherer: turso sink failed-soft: ${failed.error?.message ?? "pipeline error"}`);
+      return;
+    }
+    console.log(`quota-gatherer: turso sink wrote ${readable.length} quota_records rows (source=${GATHERER_SOURCE})`);
+  } catch (err) {
+    console.log(
+      `quota-gatherer: turso sink failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+}
+
 async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
 
-  let quota: QuotaModule;
-  try {
-    const auth = (await import(join(libDir, "opencode/auth.js"))) as unknown as AuthModule;
-    auth.configureOpenCodeCredentials(auth.openCodeLocalCredentialSource({ dbPath }));
-    quota = (await import(join(libDir, "quota/index.js"))) as unknown as QuotaModule;
-  } catch (err) {
-    return failTick(tickAt, started, `quota module import failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // The OpenDesign keeper runs first: a session renewed this tick is
+  // the one the subcommand's OpenDesign read uses.
+  await runOpenDesignRenewal(tickAt);
+  await runMetaRenewal(tickAt);
 
-  let providerIds: string[];
+  // The single source: every reading this tick comes from the
+  // opencode quota subcommand. A failure to run it, or output that
+  // cannot be parsed, fails the tick loudly and the previous
+  // quota-current.json stands.
+  let runs: ProviderRun[];
   try {
-    providerIds = await quota.listConfiguredQuotaProviders();
+    runs = await collectRuns(tickAt);
   } catch (err) {
     return failTick(
       tickAt,
       started,
-      `credential store read failed: ${err instanceof Error ? err.message : String(err)}`,
+      `opencode quota subcommand failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-
-  // #1268: bounded provider concurrency (default 6, matching the
-  // OpenChamber CLI) instead of one Promise.all over the catalogue.
-  const runs = await mapWithConcurrency(providerIds, gatherConcurrency, (id) => runProvider(quota, id, tickAt));
-  for (const fx of FILE_EXPORTS) runs.push(await runFileExport(fx));
-  runs.push(await runTurso(tickAt));
 
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
-  // whole-fetch timeout). The heartbeat below still reports the run
-  // as an error, with its reason and the retained row count.
+  // whole-fetch timeout). Preserve confirmed lapse rows alongside
+  // retained siblings: retention must never erase a terminal state
+  // reported by this tick.
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
       if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
-        run.entries = markRetained(retained, tickAt);
-        run.retained = true;
+        const lapsed = run.entries.filter((e) => e.state === "lapsed");
+        // Do not retain the previous ok reading for the same credential
+        // that has just reported a lapse. Other credentials in the same
+        // provider run may still retain their last-known readings.
+        const retainedSiblings = retained.filter(
+          (previous) =>
+            !lapsed.some((current) =>
+              (current.credentialId && previous.credentialId === current.credentialId) ||
+              (current.credentialLabel &&
+                previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+            ),
+        );
+        run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
+        run.retained = retainedSiblings.length > 0;
       }
     }
   }
-  const entries = runs.flatMap((r) => r.entries);
+  // #1331: file the split pool rows (Go per-workspace, Antigravity
+  // per-pool) alongside the combined rows, so the overlay maps them
+  // onto the four split hub pools and the snapshot writer continues
+  // the pool-level series.
+  const entries = entriesWithPoolSplits(runs.flatMap((r) => r.entries));
+  for (const entry of entries) {
+    if (entry.error) entry.error = safeProviderReason(entry.error);
+  }
 
   const perProvider: QuotaGatherHeartbeat["perProvider"] = {};
   for (const run of runs) {
@@ -454,10 +739,10 @@ async function main(): Promise<number> {
       state: run.state,
       ms: run.ms,
       rows: run.entries.length,
-      ...(run.error ? { error: run.error } : {}),
+      ...(run.error ? { error: safeProviderReason(run.error) } : {}),
     };
     console.log(
-      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${run.error.slice(0, 140)}` : ""}`,
+      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${safeProviderReason(run.error).slice(0, 140)}` : ""}`,
     );
   }
 
@@ -467,12 +752,24 @@ async function main(): Promise<number> {
     durationMs: Date.now() - started,
     perProvider,
   };
+  // #6671: embed the keeper alert projection so the board/readout
+  // surfaces a dying provider session within one gather cycle. The
+  // keepers ran earlier this tick; reading their state files back
+  // also covers a keeper that failed before writing (missing/stale
+  // project as "keeper not reporting", never silence). Fail-soft:
+  // the reader never throws.
+  const providerAuth = await readProviderAuthAlerts({
+    opendesign:
+      process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+    meta: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
+  });
   const file: QuotaCurrentFile = {
     version: 1,
     generatedAt: tickAt,
     source: GATHERER_SOURCE,
     heartbeat,
     providers: entries,
+    providerAuth,
   };
   await writeAtomic(currentPath, JSON.stringify(file, null, 2) + "\n");
   await writeHeartbeat(heartbeat);
@@ -501,6 +798,11 @@ async function main(): Promise<number> {
       console.error(`quota-gatherer: state write failed (${err}); next tick may re-append`),
     );
   }
+
+  // Turso: the same readings land in agent_quota_records on the
+  // same tick (Drew's regular-basis rule). Fail-soft, after the file.
+  await writeTursoRecords(entries, tickAt);
+
   const okCount = runs.filter((r) => r.state === "ok").length;
   console.log(
     `quota-gatherer: tick ${tickAt} providers=${runs.length} ok=${okCount} records=+${fresh.length} durationMs=${heartbeat.durationMs} -> ${currentPath}`,

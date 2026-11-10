@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -168,7 +169,7 @@ function effectiveProperties(node) {
   return [...latest.values()].sort((left, right) => left.keyStart - right.keyStart);
 }
 
-function isMeteredModel(value) {
+export function isMeteredModel(value) {
   if (typeof value !== 'string') return false;
   const provider = value.split('/', 1)[0];
   return provider === 'deepseek' || provider.startsWith('cloudflare-');
@@ -344,7 +345,19 @@ export function checkConfig(source) {
 }
 
 async function main() {
-  const configPath = resolve(process.argv[2] ?? DEFAULT_CONFIG);
+  // Exactly one optional config path: anything beyond it (a second
+  // config, an unknown flag) was previously ignored silently, so an
+  // invocation that looked like it checked two configs checked one
+  // (#7751). Fail fast with a usage error, before any file is read.
+  const args = process.argv.slice(2);
+  if (args.length > 1) {
+    console.error(
+      `Metered-provider config guard: unexpected extra argument '${args[1]}' — expected at most one config path`,
+    );
+    process.exitCode = 2;
+    return;
+  }
+  const configPath = resolve(args[0] ?? DEFAULT_CONFIG);
   const source = await readFile(configPath, 'utf8');
   const issues = checkConfig(source);
   if (issues.length) {
@@ -356,6 +369,22 @@ async function main() {
   console.log(`Metered-provider config guard passed: ${configPath}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Entry-point check: compare realpaths, not the raw strings (#4694;
+// same pattern as proxy-supervise.mjs / #2083 and
+// provider-catalog-sync.mjs / #2235). process.argv[1] keeps the path
+// exactly as invoked (e.g. through a file or directory symlink) while
+// import.meta.url is the resolved module URL, so a resolve() string
+// compare silently never matches and main() never runs via a symlink --
+// the guard exited 0 without checking anything.
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   await main();
 }

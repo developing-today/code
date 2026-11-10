@@ -30,6 +30,26 @@ pub struct Mail {
     pub body: String,
 }
 
+impl Mail {
+    /// Validate fields that sinks serialize into mail headers.
+    fn validate_header_fields(&self) -> Result<()> {
+        ensure!(
+            self.to.is_ascii(),
+            "cannot mail {}: it is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the message was not sent",
+            self.to
+        );
+        ensure!(
+            plain_address(&self.to),
+            "the recipient is not a plain address"
+        );
+        ensure!(
+            !self.subject.chars().any(char::is_control),
+            "the subject has a line break or control character"
+        );
+        Ok(())
+    }
+}
+
 /// Something that takes a message out of the world.
 pub trait MailSink: Debug + Send + Sync {
     /// Hand the message off.
@@ -57,6 +77,7 @@ impl OutboxSink {
 
 impl MailSink for OutboxSink {
     fn send(&self, mail: &Mail) -> Result<()> {
+        mail.validate_header_fields()?;
         use std::os::unix::fs::OpenOptionsExt as _;
         let mut name = [0_u8; 8];
         rand::rng().fill(&mut name);
@@ -111,6 +132,7 @@ impl CommandSink {
     }
 
     fn send_with_timeout(&self, mail: &Mail, timeout: Duration) -> Result<()> {
+        mail.validate_header_fields()?;
         let mut command = Command::new(&self.program);
         command
             .args(&self.args)
@@ -233,19 +255,7 @@ impl SmtpSink {
 
 impl SmtpSink {
     fn send_with_timeout(&self, mail: &Mail, timeout: Duration) -> Result<()> {
-        ensure!(
-            mail.to.is_ascii(),
-            "cannot mail {}: it is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the message was not sent",
-            mail.to
-        );
-        ensure!(
-            plain_address(&mail.to),
-            "the recipient is not a plain address"
-        );
-        ensure!(
-            !mail.subject.chars().any(char::is_control),
-            "the subject has a line break or control character"
-        );
+        mail.validate_header_fields()?;
         let deadline = Instant::now() + timeout;
         let stream = TcpStream::connect_timeout(&self.relay, RELAY_TIMEOUT)
             .context("connect to the mail relay")?;
@@ -293,8 +303,19 @@ impl MailSink for SmtpSink {
 }
 
 /// A bare address with no spaces, control characters or SMTP syntax in it.
+///
+/// Deliberately narrower than `directory::normalize_email`: this gate only
+/// shapes an address for the local relay — it does not trim, lowercase, or
+/// require a dotted domain — but it does require exactly one `@` with
+/// non-empty local and domain sides, so `@`, `a@`, `@b` and `a@@b.c` are
+/// refused here, before any connection is attempted.
 fn plain_address(text: &str) -> bool {
-    text.contains('@')
+    let Some((local, domain)) = text.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && !domain.contains('@')
         && text
             .chars()
             .all(|c| c.is_ascii_graphic() && !matches!(c, '<' | '>' | ',' | ';' | '"' | '\\'))
@@ -459,6 +480,28 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn assert_outbox_refuses_without_file(mail: &Mail, expected_error: &str) {
+        let dir = scratch("outbox-invalid");
+        let error = OutboxSink::new(dir.clone()).send(mail).unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error:#}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_outbox_refuses_subject_header_injection_before_creating_file() {
+        let mut mail = sample();
+        mail.subject = "Your code\nBcc: attacker@evil.example".to_owned();
+        assert_outbox_refuses_without_file(&mail, "subject");
+    }
+
+    #[test]
+    fn the_outbox_refuses_crlf_recipient_before_creating_file() {
+        let mut mail = sample();
+        mail.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
+        assert_outbox_refuses_without_file(&mail, "recipient");
+    }
+
     #[test]
     fn the_command_sink_passes_the_message_in_the_environment() {
         let dir = scratch("command");
@@ -475,6 +518,32 @@ mod tests {
             "a@b.co|Your code|Code 123456"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn assert_command_sink_refuses_without_running(mail: &Mail, expected_error: &str) {
+        let dir = scratch("command-invalid");
+        let out = dir.join("out.txt");
+        let script = format!("printf ran > {}", out.display());
+        let error = CommandSink::new(PathBuf::from("/bin/sh"), vec!["-c".to_owned(), script])
+            .send(mail)
+            .unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error:#}");
+        assert!(!out.exists(), "the program must never be invoked");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_command_sink_refuses_subject_header_injection_before_spawning() {
+        let mut mail = sample();
+        mail.subject = "Your code\nBcc: attacker@evil.example".to_owned();
+        assert_command_sink_refuses_without_running(&mail, "subject");
+    }
+
+    #[test]
+    fn the_command_sink_refuses_crlf_recipient_before_spawning() {
+        let mut mail = sample();
+        mail.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
+        assert_command_sink_refuses_without_running(&mail, "recipient");
     }
 
     #[test]
@@ -720,6 +789,35 @@ mod tests {
         assert!(!plain_address("john@bücher.example"));
         assert!(!plain_address("john@example.test "));
         assert!(!plain_address("no-at-sign"));
+        assert!(!plain_address("@"));
+        assert!(!plain_address("a@"));
+        assert!(!plain_address("@b"));
+        assert!(!plain_address("a@@b.c"));
+        assert!(!plain_address("a@b@c.d"));
+    }
+
+    #[test]
+    fn a_malformed_sender_or_recipient_is_refused_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        for from in ["@", "a@", "@b", "a@@b.c", "a@b@c.d"] {
+            let error = SmtpSink::new(relay, from.to_owned())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("sender"), "{error}");
+        }
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        for to in ["@", "a@", "@b", "a@@b.c", "a@b@c.d"] {
+            let mut mail = sample();
+            mail.to = to.to_owned();
+            let error = sink.send(&mail).unwrap_err().to_string();
+            assert!(error.contains("recipient"), "{error}");
+        }
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "a refused message opened a connection to the relay"
+        );
     }
 
     #[test]

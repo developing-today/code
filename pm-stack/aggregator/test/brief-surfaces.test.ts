@@ -118,7 +118,6 @@ describe("derived briefs on attention cards", () => {
       "Roadmap task",
       roadmapRow.subject,
       roadmapRow.links,
-      [],
       new Map(),
       [],
       provenance,

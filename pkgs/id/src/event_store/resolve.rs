@@ -44,9 +44,10 @@ use redb::ReadableTable;
 
 use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
 use crate::chain::Event;
+use crate::chat::CHAT_MESSAGE_KIND;
 use crate::groups::{
-    Body as GroupBody, Create as GroupCreate, Event as GroupEvent, MemberOp, Policy, Projection,
-    Role as GroupRole, Template,
+    Body as GroupBody, Create as GroupCreate, DeviceOp, Event as GroupEvent, MemberOp, Policy,
+    Projection, Role as GroupRole, Template,
 };
 use crate::membership::{AuthId, CausalEvent, Membership, Role};
 use crate::rejection::Reason;
@@ -57,6 +58,11 @@ use crate::waiting::AuthorKey;
 pub(super) struct Stored {
     pub event: Event,
     pub action: Option<GroupAction<AuthId, ()>>,
+    /// The device operation the event's `group.event` body carries, with the group the body
+    /// names, when one was recorded at ingest (issue #5656). A device operation has no
+    /// membership action: the body codec does not carry it, so it reaches the fold only
+    /// through this channel.
+    pub device: Option<(DeviceOp, Option<Hash>)>,
 }
 
 /// The applied state of a set of events.
@@ -76,9 +82,17 @@ struct Node {
     group: Option<Hash>,
     after: Vec<Hash>,
     action: Option<GroupAction<AuthId, ()>>,
+    /// The device operation the event's body carries, with the group the body names.
+    device: Option<(DeviceOp, Option<Hash>)>,
     /// True for a fork proof header, and for an event at or above its author's fork point. Such a
     /// node never applies.
     excluded: bool,
+    /// True for a `chat.message.v1` event: chat content is membership-gated at its causal
+    /// position (see [`content_applies`]).
+    chat: bool,
+    /// The author's own previous event, from the header backlink. A chat event's
+    /// membership position includes it: a first message may name its group only here.
+    backlink: Option<Hash>,
 }
 
 /// The author of an event.
@@ -112,7 +126,10 @@ pub(super) fn resolve(
             group: event.header.extensions.group,
             after: event.header.extensions.after.clone(),
             action: item.action.clone(),
+            device: item.device.clone(),
             excluded,
+            chat: event.header.extensions.kind == CHAT_MESSAGE_KIND,
+            backlink: event.header.backlink,
         });
     }
     for header in proof_headers {
@@ -126,7 +143,10 @@ pub(super) fn resolve(
             group: header.header.extensions.group,
             after: header.header.extensions.after.clone(),
             action: None,
+            device: None,
             excluded: true,
+            chat: header.header.extensions.kind == CHAT_MESSAGE_KIND,
+            backlink: header.header.backlink,
         });
     }
 
@@ -162,11 +182,20 @@ pub(super) fn resolve(
     if let Some(layer) = membership.as_mut() {
         for &index in &order {
             let node = &nodes[index];
+            // The layer's causal graph is the full one: an event also follows its
+            // author's previous event (the header backlink), not only the frontier
+            // its `after` names. Without the backlink edges, a position reached
+            // only through an author's own chain — a chat message whose past runs
+            // through the author's non-chat events, say — cannot be judged, and
+            // membership at that position reads as absent (Codex P1 on PR #3965).
             let after: Vec<Hash> = node
                 .after
                 .iter()
+                .chain(node.backlink.iter())
                 .filter(|dep| position.contains_key(dep))
                 .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
                 .collect();
             let role = match (&node.action, node.excluded) {
                 (Some(action), false) if !voided.contains(&node.id) => Role::Auth {
@@ -231,6 +260,43 @@ pub(super) fn resolve(
 /// be in its set. A fold that cannot judge the set (it reports an error) gates nothing: the
 /// membership verdict stands rather than the store refusing every event it holds.
 fn fold_projection(nodes: &[Node]) -> Option<Projection> {
+    match fold_projection_checked(nodes) {
+        Ok(projection) => projection,
+        Err(error) => {
+            // #6979: a fold error is NOT an empty bridged set. The empty set
+            // (no operation bridged) returns Ok(None) and stays silent; a set
+            // that bridged and then failed to fold must be observable,
+            // because the policy gate in `resolve` is skipped for it and the
+            // membership verdict stands in its place. Surface the error at
+            // error level, then keep the documented fallback.
+            tracing::error!(
+                "groups fold failed for a bridged set; the group policy gate \
+                 is skipped and the membership verdict stands: {error}"
+            );
+            None
+        }
+    }
+}
+
+/// The fold over the bridged operations, with the fold's error kept:
+/// `Ok(None)` when no operation bridged (the empty bridged set),
+/// `Ok(Some(_))` when the fold judged the set, and `Err(_)` when the bridged
+/// set could not be folded.
+///
+/// Reachability of the error through [`resolve`]: `resolve` runs
+/// [`causal_order`] over the stored nodes before calling
+/// [`fold_projection`], and that rejects dependency cycles and absent
+/// dependencies in the stored graph; the bridged map dedupes event IDs, and
+/// [`bridged_after`] only names bridged events that are in the set. The pure
+/// set-shape `FoldError` cases (cycle, missing dependency, duplicate ID)
+/// are therefore not known to reach the fold through `resolve` today; they
+/// ARE reachable at this function's own boundary, because bridged `after`
+/// links are a contraction of the stored graph — pass-through nodes
+/// (excluded ones included) can make a bridged event name itself, as the
+/// regression test demonstrates. The membership-internal and unsettled
+/// cases are excluded by no check `resolve` runs. In every case the error
+/// must not be silently conflated with the empty bridged set.
+fn fold_projection_checked(nodes: &[Node]) -> Result<Option<Projection>, crate::groups::FoldError> {
     let position: HashMap<Hash, usize> = nodes
         .iter()
         .enumerate()
@@ -246,7 +312,7 @@ fn fold_projection(nodes: &[Node]) -> Option<Projection> {
         }
     }
     if bridged.is_empty() {
-        return None;
+        return Ok(None);
     }
     let bridged_ids: HashSet<Hash> = bridged.keys().copied().collect();
     let mut events: Vec<GroupEvent> = Vec::with_capacity(bridged.len());
@@ -257,7 +323,7 @@ fn fold_projection(nodes: &[Node]) -> Option<Projection> {
         event.after = bridged_after(node, nodes, &position, &bridged_ids);
         events.push(event);
     }
-    crate::groups::fold(&events).ok()
+    crate::groups::fold(&events).map(Some)
 }
 
 /// The bridged operations `node` causally follows: walk its `after` links through every stored
@@ -290,6 +356,19 @@ fn bridged_after(
 
 /// One stored group operation as a group event, or `None` when it has no group-event form.
 fn bridge(node: &Node) -> Option<GroupEvent> {
+    // A device operation bridges from its recorded body, not from a membership action: the
+    // group the body names is the group the operation was made in, and the header's group
+    // stands when the body names none (issue #5656).
+    if let Some((op, body_group)) = &node.device {
+        let group = body_group.or(node.group)?;
+        return Some(GroupEvent {
+            id: node.id,
+            author: node.author,
+            after: Vec::new(),
+            group: Some(group),
+            body: GroupBody::Device(*op),
+        });
+    }
     let action = node.action.as_ref()?;
     let body = match action {
         GroupAction::Create { initial_members } => {
@@ -335,7 +414,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
         }),
         GroupAction::Remove { member } => GroupBody::Member(MemberOp::Remove {
             member: member_key(member)?,
-            successor: None,
+            mode: crate::groups::RemoveMode::Revoke,
         }),
         GroupAction::Promote { member, access } | GroupAction::Demote { member, access } => {
             GroupBody::Member(MemberOp::SetRole {
@@ -380,18 +459,36 @@ fn role_of(access: &p2panda_auth::Access<()>) -> GroupRole {
 }
 
 /// Whether content applies. It applies unless it names a voided event and its author is not a
-/// member of its group at its position.
+/// member of its group at its position. A chat message is judged by the same membership rule
+/// whether or not it names a voided event (Codex P1 on PR #3965): the local `send_chat` check
+/// only governs cooperative senders, so a `chat.message.v1` event an outsider signed and
+/// delivered through ingest or sync must not apply — and so never reach a member's timeline —
+/// unless its author was a member of the group at the event's causal position. That position
+/// includes the author's backlink, because a member's first message in a group may name the
+/// group only through it.
 fn content_applies(
     node: &Node,
     applied: &HashSet<Hash>,
     membership: Option<&mut Membership>,
 ) -> Result<bool, StoreError> {
     let names_voided = node.after.iter().any(|dep| !applied.contains(dep));
-    let (Some(group), Some(layer), true) = (node.group, membership, names_voided) else {
+    let gated = names_voided || node.chat;
+    let (Some(group), Some(layer), true) = (node.group, membership, gated) else {
         return Ok(true);
     };
     if !layer.has_group(group) {
         return Ok(true);
+    }
+    if node.chat {
+        let mut position = node.after.clone();
+        if let Some(backlink) = node.backlink
+            && !position.contains(&backlink)
+        {
+            position.push(backlink);
+        }
+        return layer
+            .is_member_at(node.author, group, &position)
+            .map_err(|err| corrupt(format!("the membership layer: {err}")));
     }
     layer
         .is_member_at(node.author, group, &node.after)
@@ -463,6 +560,7 @@ pub(super) type Loaded = (Vec<Stored>, HashMap<AuthorKey, SeqNum>, Vec<Event>);
 pub(super) fn load<T>(
     events: &T,
     actions: &T,
+    device_ops: &T,
     forks: &T,
     proof_headers: &T,
 ) -> Result<Loaded, StoreError>
@@ -477,7 +575,15 @@ where
             Some(row) => Some(decode_action(row.value())?),
             None => None,
         };
-        stored.push(Stored { event, action });
+        let device = match device_ops.get(event.id.as_bytes().as_slice())? {
+            Some(row) => Some(decode_device_op(row.value())?),
+            None => None,
+        };
+        stored.push(Stored {
+            event,
+            action,
+            device,
+        });
     }
     // An author has a row at each point it has forked at. Its fork point is the lowest of them.
     let mut fork_points: HashMap<AuthorKey, SeqNum> = HashMap::new();
@@ -501,6 +607,50 @@ pub(super) fn encode_action(action: &GroupAction<AuthId, ()>) -> Result<Vec<u8>,
     let value = cbor_core::Value::serialized(action)
         .map_err(|err| corrupt(format!("a group action does not encode: {err}")))?;
     Ok(value.encode())
+}
+
+/// Encodes a device operation and the group its body names for its table, as the CBOR
+/// array `[op, group]`, where `group` is the group's bytes or null. Mirrors
+/// [`encode_action`]; the group travels with the op because the bridged fold event names
+/// the group the operation was made in, which the event header alone may not carry.
+pub(super) fn encode_device_op(op: &DeviceOp, group: Option<&Hash>) -> Result<Vec<u8>, StoreError> {
+    let op_value = cbor_core::Value::serialized(op)
+        .map_err(|err| corrupt(format!("a device operation does not encode: {err}")))?;
+    let group_value = match group {
+        Some(group) => cbor_core::Value::ByteString(group.as_bytes().to_vec().into()),
+        None => cbor_core::Value::null(),
+    };
+    Ok(cbor_core::Value::Array(vec![op_value, group_value]).encode())
+}
+
+/// Decodes a device operation and the group its body names from its table.
+pub(super) fn decode_device_op(bytes: &[u8]) -> Result<(DeviceOp, Option<Hash>), StoreError> {
+    let value = cbor_core::Value::decode(bytes)
+        .map_err(|err| corrupt(format!("a device operation row is not CBOR: {err}")))?;
+    let cbor_core::Value::Array(items) = value else {
+        return Err(corrupt("a device operation row is not an array".to_owned()));
+    };
+    let [op_value, group_value] = items.try_into().map_err(|_| {
+        corrupt("a device operation row does not hold an op and a group".to_owned())
+    })?;
+    let op: DeviceOp = op_value
+        .deserialized()
+        .map_err(|err| corrupt(format!("a device operation row does not decode: {err}")))?;
+    let group = match group_value {
+        value if value.encode() == cbor_core::Value::null().encode() => None,
+        cbor_core::Value::ByteString(bytes) => {
+            let bytes: [u8; 32] = bytes.as_ref().try_into().map_err(|_| {
+                corrupt("a device operation row's group is not 32 bytes".to_owned())
+            })?;
+            Some(Hash::from_bytes(bytes))
+        }
+        _ => {
+            return Err(corrupt(
+                "a device operation row's group is neither bytes nor null".to_owned(),
+            ));
+        }
+    };
+    Ok((op, group))
 }
 
 /// Decodes a group action from its table.
@@ -552,7 +702,10 @@ mod tests {
             group: None,
             after: after.iter().map(|a| Hash::digest([*a])).collect(),
             action: None,
+            device: None,
             excluded: false,
+            chat: false,
+            backlink: None,
         }
     }
 
@@ -572,7 +725,10 @@ mod tests {
                     group: None,
                     after: base[i].after.clone(),
                     action: None,
+                    device: None,
                     excluded: false,
+                    chat: false,
+                    backlink: None,
                 })
                 .collect();
             let position: HashMap<Hash, usize> = nodes
@@ -594,8 +750,8 @@ mod tests {
         }
         // The concurrent roots come out smallest-ID first.
         let ids = reference.unwrap();
-        let smaller_first = (Hash::digest([11]) < Hash::digest([12]))
-            == (ids[0] == Hash::digest([11]));
+        let smaller_first =
+            (Hash::digest([11]) < Hash::digest([12])) == (ids[0] == Hash::digest([11]));
         assert!(smaller_first);
     }
 
@@ -620,5 +776,130 @@ mod tests {
         let expected: Vec<Hash> = (0..64u8).map(|n| Hash::digest([n])).collect();
         assert_eq!(ids, expected);
     }
-}
 
+    /// A bridged create whose only causal path back to a bridged event runs
+    /// through a pass-through node that names the create itself: the bridged
+    /// contraction makes the create name itself as its own dependency, and
+    /// the fold refuses the set with a cycle (#6979 fixture).
+    fn self_naming_bridged_set() -> Vec<Node> {
+        let author: AuthorKey = [9; 32];
+        let create = Node {
+            id: Hash::digest([41]),
+            author,
+            group: None,
+            after: vec![Hash::digest([42])],
+            action: Some(GroupAction::Create {
+                initial_members: vec![(
+                    GroupMember::Individual(AuthId::Key(author)),
+                    p2panda_auth::Access::manage(),
+                )],
+            }),
+            device: None,
+            excluded: false,
+            chat: false,
+            backlink: None,
+        };
+        let pass_through = Node {
+            id: Hash::digest([42]),
+            author,
+            group: None,
+            after: vec![Hash::digest([41])],
+            action: None,
+            device: None,
+            excluded: true,
+            chat: false,
+            backlink: None,
+        };
+        vec![create, pass_through]
+    }
+
+    /// #6979: an empty bridged set, a foldable bridged set, and a bridged set
+    /// the fold refuses are three distinguishable outcomes at the checked
+    /// boundary — the error is not folded into the empty-set `None`.
+    #[test]
+    fn test_fold_projection_checked_distinguishes_error_from_empty() {
+        // No operation bridges: the empty bridged set.
+        let empty = [node(1, &[]), node(2, &[1])];
+        assert_eq!(fold_projection_checked(&empty), Ok(None));
+
+        // A lone bridged create folds.
+        let author: AuthorKey = [9; 32];
+        let create = Node {
+            id: Hash::digest([43]),
+            author,
+            group: None,
+            after: Vec::new(),
+            action: Some(GroupAction::Create {
+                initial_members: vec![(
+                    GroupMember::Individual(AuthId::Key(author)),
+                    p2panda_auth::Access::manage(),
+                )],
+            }),
+            device: None,
+            excluded: false,
+            chat: false,
+            backlink: None,
+        };
+        assert!(matches!(fold_projection_checked(&[create]), Ok(Some(_))));
+
+        // The self-naming bridged set makes the fold report its error.
+        assert_eq!(
+            fold_projection_checked(&self_naming_bridged_set()),
+            Err(crate::groups::FoldError::Cycle)
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufferWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn captured_fold_log(nodes: &[Node]) -> String {
+        use tracing_subscriber::layer::SubscriberExt;
+        let writer = BufferWriter::default();
+        let buffer = writer.0.clone();
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = fold_projection(nodes);
+        });
+        String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+    }
+
+    /// #6979: the observable signal. A fold error logs at error level naming
+    /// the failure; the empty bridged set — the case the error used to be
+    /// conflated with — logs nothing.
+    #[test]
+    fn test_fold_projection_logs_fold_errors_but_not_the_empty_set() {
+        let log = captured_fold_log(&self_naming_bridged_set());
+        assert!(
+            log.contains("groups fold failed") && log.contains("cycle"),
+            "fold error must be surfaced in the log, got: {log}"
+        );
+
+        let empty = [node(1, &[]), node(2, &[1])];
+        let log = captured_fold_log(&empty);
+        assert!(
+            !log.contains("groups fold failed"),
+            "the empty bridged set must stay silent, got: {log}"
+        );
+    }
+}

@@ -1,0 +1,13 @@
+diff --git a/pkgs/id/src/tag_claims.rs b/pkgs/id/src/tag_claims.rs
+index cb0a69c142..076b3f64d3 100644
+--- a/pkgs/id/src/tag_claims.rs
++++ b/pkgs/id/src/tag_claims.rs
+@@ -343,7 +343,7 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
+             .get(&event.id)
+             .map(|named| causal_past(named, parents))
+             .unwrap_or_default();
+-        removed.extend(claims.iter().filter(|claim| seen.contains(claim)));
++        removed.extend(claims.iter().filter(|claim| !seen.contains(claim)));
+     }
+     sets.into_values()
+         .filter(|claim| !removed.contains(&claim.id))

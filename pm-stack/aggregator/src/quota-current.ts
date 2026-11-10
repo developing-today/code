@@ -19,6 +19,8 @@
 //   fresh ok entry wins over an error entry; otherwise the newest
 //   entry decides the surfaced state.
 import { poolState } from "./derive.ts";
+import { isProviderAuthAlert, reevaluateProviderAuth } from "./provider-auth-alerts.ts";
+import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
 import { computeChoices } from "./quota-guidance.ts";
 import type {
   GathererSummary,
@@ -58,9 +60,9 @@ function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["provid
     (value.valueLabel === null || typeof value.valueLabel === "string") &&
     finiteOrNull(value.windowSeconds) &&
     (value.resetsAt === null || isIsoDate(value.resetsAt)) &&
-    typeof value.measuredAt === "string" &&
+    isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
-    (value.state === "ok" || value.state === "error")
+    (value.state === "ok" || value.state === "error" || value.state === "lapsed")
   );
 }
 
@@ -70,9 +72,17 @@ function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
     typeof value.providerId === "string" &&
     typeof value.providerName === "string" &&
     typeof value.serviceId === "string" &&
-    (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
-    typeof value.measuredAt === "string" &&
+    (value.state === "ok" || value.state === "error" || value.state === "lapsed" || value.state === "unconfigured") &&
+    isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
+    (value.credentialWatch === undefined || typeof value.credentialWatch === "boolean") &&
+    (value.error === undefined || typeof value.error === "string") &&
+    (value.credentialExpiresAt === undefined ||
+      (typeof value.credentialExpiresAt === "string" && isIsoDate(value.credentialExpiresAt))) &&
+    (value.credentialSource === undefined ||
+      value.credentialSource === "claude-code" ||
+      value.credentialSource === "opencode" ||
+      value.credentialSource === "environment") &&
     Array.isArray(value.windows)
   );
 }
@@ -104,11 +114,23 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
         windows: windows.values,
       };
     }
-    return { ...provider, windows: windows.values };
+    return {
+      ...provider,
+      ...(typeof provider.error === "string" ? { error: safeProviderReason(provider.error) } : {}),
+      windows: windows.values,
+    };
   });
+  // #6671: the optional providerAuth section is isolated at this
+  // boundary like the provider list — a non-array value is dropped
+  // and malformed rows are filtered, so one bad section can never
+  // throw in the overlay and suppress the unrelated quota data.
+  const providerAuth = Array.isArray(doc.providerAuth)
+    ? doc.providerAuth.filter(isProviderAuthAlert)
+    : undefined;
   return {
     ...doc,
     providers: validProviders,
+    providerAuth,
     sanitized: { droppedProviders: providers.dropped, droppedWindows },
   } as unknown as QuotaCurrentFile;
 }
@@ -116,6 +138,7 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
 type FreshState = PoolFreshness["state"];
 
 function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
+  if (entry.state === "lapsed") return "lapsed";
   if (entry.state === "ok") {
     // #1268: retained last-known entries are stale by definition —
     // the provider's latest run failed, however recent the retained
@@ -189,21 +212,121 @@ function pctWindows(entry: QuotaCurrentEntry): QuotaWindow[] {
     }));
 }
 
-function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState): boolean {
+/**
+ * The gatherer leg error for an entry's provider, from the tick's
+ * heartbeat (#6942): a retained entry is preserved verbatim with no
+ * error field (markRetained in quota-gather-map.ts), so when the leg
+ * that produced it errored, the heartbeat's perProvider record —
+ * keyed by run id, matched here on the entry's providerId with its
+ * serviceId as fallback — is the only place the error text survives.
+ */
+function legErrorFor(file: QuotaCurrentFile, entry: QuotaCurrentEntry): string | undefined {
+  const perProvider = file.heartbeat?.perProvider;
+  if (!perProvider) return undefined;
+  const leg = perProvider[entry.providerId] ?? perProvider[entry.serviceId];
+  return leg && leg.state === "error" && leg.error ? safeProviderReason(leg.error) : undefined;
+}
+
+/**
+ * #6942: a pool with no windows of its own (a shell pool — its dated
+ * windows exist only in the read entry) takes the entry's dated
+ * windows on the stale/error path, percentages identical to the
+ * read. A pool carrying its own dated windows is untouched: those
+ * win over the gatherer entry's, as pinned for spec pools. The
+ * shell pool's "no read" note is written against a read that never
+ * landed; when the entry does carry a dated read, the note
+ * contradicts the read and is suppressed.
+ */
+function adoptEntryWindows(pool: QuotaPool, entry: QuotaCurrentEntry): void {
+  if (pool.windows.length > 0) return;
+  const windows = pctWindows(entry);
+  if (windows.length === 0) return;
+  pool.windows = windows;
+  if (pool.note && /no (dated|current) read/i.test(pool.note)) delete pool.note;
+}
+
+/**
+ * #7033: are the pool's own windows all dead relative to a read —
+ * every window carries a reset at or before the read's measuredAt?
+ * Such windows describe a period that had already ended when the
+ * read was taken, so they cannot be the pool's standing dated read.
+ * A window with no reset (or an unparseable one) is never dead: the
+ * dated read it belongs to may still be the pool's standing values.
+ */
+function baseWindowsExpired(pool: QuotaPool, entry: QuotaCurrentEntry): boolean {
+  if (pool.windows.length === 0) return false;
+  const readAt = Date.parse(entry.measuredAt);
+  if (!Number.isFinite(readAt)) return false;
+  return pool.windows.every((w) => {
+    if (!w.resetsAt) return false;
+    const reset = Date.parse(w.resetsAt);
+    return Number.isFinite(reset) && reset <= readAt;
+  });
+}
+
+function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState, legError?: string): boolean {
   // Returns true when the pool's windows were replaced by a fresh read.
   const freshness: PoolFreshness = {
     measuredAt: entry.measuredAt,
     source: entry.source,
     state,
   };
-  if (state === "error") freshness.error = errorText(entry);
+  if (state === "error") freshness.error = !entry.error && legError ? legError : errorText(entry);
+  if (state === "lapsed") freshness.error = errorText(entry);
   pool.freshness = freshness;
   if (state === "error") {
     pool.state = "error";
+    adoptEntryWindows(pool, entry);
     return false;
   }
+  if (state === "lapsed") {
+    // A known subscription lapse is not a provider failure. The dated
+    // quota has no current meaning, so clear it instead of leaving old
+    // percentages beside a terminal lapsed badge.
+    pool.state = "lapsed";
+    pool.windows = [];
+    delete pool.wallLiftsAt;
+    return true;
+  }
   if (state === "stale") {
+    // #6942: a retained entry whose gatherer leg errored is that
+    // read error surfacing, not mere staleness — but only a pool
+    // with no dated windows of its own changes rendering for it.
+    // Spec pools keep the #1268 stale classification and their
+    // base dated windows exactly as pinned.
+    if (legError && entry.retainedFromFailedTick && pool.windows.length === 0) {
+      freshness.state = "error";
+      freshness.error = legError;
+      pool.freshness = freshness;
+      pool.state = "error";
+      adoptEntryWindows(pool, entry);
+      return false;
+    }
+    // #7033: the same leg-error surfacing applies to a pool whose
+    // base windows are all dead — every window's reset is at or
+    // before the retained read's measuredAt, so the base row
+    // describes a period that had already ended when the read was
+    // taken (claude's quota-view weekly row, reset 2026-10-28,
+    // against the read's dated fallback @2026-11-07). That row is
+    // not the pool's dated read standing; it is an older
+    // transcription substituting for the read. The read's dated
+    // fallback windows stand, percentages identical, and the note
+    // written against the substituted row is dropped. A pool with
+    // any live or undated base window keeps the #1268 pin above.
+    if (legError && entry.retainedFromFailedTick && baseWindowsExpired(pool, entry)) {
+      freshness.state = "error";
+      freshness.error = legError;
+      pool.freshness = freshness;
+      pool.state = "error";
+      const windows = pctWindows(entry);
+      if (windows.length > 0) {
+        pool.windows = windows;
+        delete pool.note;
+      }
+      return false;
+    }
     pool.state = "stale";
+    adoptEntryWindows(pool, entry);
     return false;
   }
   const windows = pctWindows(entry);
@@ -211,6 +334,14 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   pool.windows = windows;
   pool.state = poolState(pool);
   delete pool.wallLiftsAt;
+  // Pass-through (Drew, 2026-11-03): the displayed numbers are now the
+  // live read's, so the base pool's note — dated steward prose written
+  // against older numbers — must not ride along and outrank the read.
+  // The read carries no prose note of its own; its planLabel shows as
+  // the pool's plan and its freshness stamps the measurement. A pool
+  // whose read did NOT land (error/stale/balance-only) keeps its dated
+  // note, which still describes the dated values on display.
+  delete pool.note;
   return true;
 }
 
@@ -267,7 +398,7 @@ function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCrede
   const rows: QuotaCredentialRow[] = [...byCred.values()].map((e) => {
     const state = entryState(e, nowMs);
     const freshness: PoolFreshness = { measuredAt: e.measuredAt, source: e.source, state };
-    if (state === "error") freshness.error = errorText(e);
+    if (state === "error" || state === "lapsed") freshness.error = errorText(e);
     return {
       label: e.credentialLabel ?? e.providerName ?? e.providerId,
       ...(e.credentialId ? { credentialId: e.credentialId } : {}),
@@ -295,11 +426,25 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
         source: e.source,
       };
       if (e.credentialLabel) s.credentialLabel = e.credentialLabel;
-      if (s.state === "error") s.error = errorText(e);
+      if (s.state === "error" || s.state === "lapsed") s.error = errorText(e);
       return s;
     }),
   };
 }
+
+/**
+ * Gatherer serviceIds that never become quota pools of their own:
+ * "turso" is a SaaS usage row (its display surface is the SaaS cards,
+ * via overlayTursoUsage), and "antigravity" / "opencode-go" are the
+ * COMBINED account rows whose pool-level rendering is their split
+ * rows (_antigravity.gemini / _antigravity.claude-gpt — pre-rename:
+ * antigravity-direct.gemini / antigravity-direct.claude-gpt — and
+ * opencode-go.drewrypope / opencode-go.popesdrew, produced by
+ * entriesWithPoolSplits in quota-gather-map.ts). Synthesizing pools
+ * for them would double-render the same read. Every OTHER serviceId
+ * the read reports renders as a pool — see the synthesis below.
+ */
+const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "_antigravity", "opencode-go"]);
 
 /**
  * Overlay a parsed quota-current document onto a quota view. Pure:
@@ -314,25 +459,69 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     else byService.set(e.serviceId, [e]);
   }
 
-  let anyFreshWindows = false;
+  let recomputeChoices = false;
   const pools = view.pools.map((orig) => {
     const entries = byService.get(orig.id);
     if (!entries || entries.length === 0) return orig;
     const pool: QuotaPool = { ...orig, windows: [...orig.windows] };
     const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
-      if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      if (applyEntry(pool, freshOk[0], "ok")) recomputeChoices = true;
       const rows = credentialRows(entries, nowMs);
       if (rows) pool.credentials = rows;
       return pool;
     }
     const newest = [...entries].sort(newestFirst(nowMs))[0];
-    applyEntry(pool, newest, entryState(newest, nowMs));
+    if (applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest))) recomputeChoices = true;
     return pool;
   });
 
-  const out: QuotaView = { ...view, pools, gatherer: summarize(file, nowMs) };
-  if (anyFreshWindows) out.choices = computeChoices(pools, nowMs);
+  // Unmapped-pool pass-through (Drew, 2026-11-03 — "the dashboard
+  // should not be doing any of that"): a gatherer entry whose
+  // serviceId matches no pool in the base view used to be silently
+  // dropped here — that key mismatch is how the OpenDesign read
+  // vanished in the morning of 2026-11-03, and the commandcode read
+  // (serviceId "command-code" until quota-gather-map learned the
+  // config name) never landed at all. The board is a straight display
+  // of the OpenCode quota read: any reported pool the base view does
+  // not know renders under the id the read reported, with the read's
+  // own provider/plan labels and freshness. Only the documented
+  // non-pool rows (NON_POOL_SERVICE_IDS) are exempt.
+  const knownIds = new Set(pools.map((p) => p.id));
+  const synthesized: QuotaPool[] = [];
+  for (const serviceId of [...byService.keys()].sort()) {
+    if (knownIds.has(serviceId) || NON_POOL_SERVICE_IDS.has(serviceId)) continue;
+    const entries = byService.get(serviceId)!;
+    const newest = [...entries].sort(newestFirst(nowMs))[0];
+    const pool: QuotaPool = {
+      id: serviceId,
+      provider: newest.providerName,
+      plan: newest.planLabel ?? "",
+      state: "healthy",
+      windows: [],
+    };
+    const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
+    if (freshOk.length > 0) {
+      if (applyEntry(pool, freshOk[0], "ok")) recomputeChoices = true;
+      const rows = credentialRows(entries, nowMs);
+      if (rows) pool.credentials = rows;
+    } else {
+      if (applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest))) recomputeChoices = true;
+    }
+    synthesized.push(pool);
+  }
+  const allPools = [...pools, ...synthesized];
+
+  const out: QuotaView = { ...view, pools: allPools, gatherer: summarize(file, nowMs) };
+  // #6671: keeper alerts ride the same overlay; malformed rows are
+  // dropped at this boundary like every other gatherer field.
+  if (Array.isArray(file.providerAuth))
+    out.providerAuth = reevaluateProviderAuth(file.providerAuth.filter(isProviderAuthAlert), now);
+  const credentialLifecycle = file.providers
+    .filter((entry) => entry.credentialWatch === true)
+    .map((entry) => lifecycleForEntry(entry, now));
+  if (credentialLifecycle.length) out.credentialLifecycle = credentialLifecycle;
+  if (recomputeChoices) out.choices = computeChoices(allPools, nowMs);
   return out;
 }
 
@@ -349,7 +538,9 @@ const TURSO_WINDOW_META: Record<string, { label: string; unit: UsageUnit; limit:
  * Apply the gatherer's Turso entry (#1049) to the SaaS services —
  * the usage() counterpart of overlayQuotaCurrent, with the same
  * semantics: a fresh ok read replaces the Turso card's metrics,
- * measuredAt, and cycle end; an error or stale read leaves the
+ * measuredAt, and cycle end — except metrics the fresh read does
+ * not carry, which stay as stale-marked dated values (#6227); an
+ * error or stale read leaves the
  * card's dated values standing and adds a dated conflict flag, so
  * the failure is loud without faking a fresh zero. Services without
  * a Turso card, and files without a Turso entry, pass through
@@ -382,6 +573,19 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
       });
     }
     if (metrics.length === 0) return services;
+    // A partial fresh read must not silently erase the card's last
+    // dated values (#6227): metrics the fresh entry does not carry
+    // stay on the card, marked stale with the stamp they were read
+    // at, instead of vanishing until a complete read returns. They
+    // are evidence of the last measured state, never of recovery.
+    const freshIds = new Set(metrics.map((m) => m.id));
+    for (const m of svc.metrics) {
+      if (freshIds.has(m.id)) continue;
+      metrics.push({
+        ...m,
+        note: `stale: last measured ${svc.measuredAt}; absent from the fresh gatherer read at ${entry.measuredAt}`,
+      });
+    }
     const resetsAt = entry.windows.find((w) => w.resetsAt)?.resetsAt ?? null;
     out[idx] = {
       ...svc,

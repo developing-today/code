@@ -27,9 +27,19 @@ use futures_lite::StreamExt;
 use iroh_blobs::{Hash, api::Store};
 use thiserror::Error;
 
-use crate::tags::{TagStore, now_unix};
+use crate::tags::{TagStore, TagValue, now_unix};
 
-const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 3] = [b"name", b"file", b"path"];
+const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
+    b"name",
+    b"file",
+    b"path",
+    // Archive references describe the live file's archives, so they
+    // stay on the live name when its other metadata moves onto an
+    // archive. Letting one travel onto the archive subject orphans
+    // every earlier archive from the live file's delete (#4574).
+    b"archive.rename",
+    b"archive.replace",
+];
 
 /// Errors from file operations, distinguishable so callers can map them to
 /// protocol errors or HTTP status codes.
@@ -41,6 +51,9 @@ pub enum FileOpError {
     /// The name is rooted or contains a traversal component.
     #[error("name must be a safe relative path: {0}")]
     InvalidName(String),
+    /// The name collides with the namespace used for system archives.
+    #[error("name is reserved for archives: {0}")]
+    ReservedArchiveName(String),
     /// Source and destination are the same name.
     #[error("new name must differ from the current name")]
     SameName,
@@ -94,11 +107,15 @@ pub struct DeleteOutcome {
 }
 
 /// File operations over a blob [`Store`] and a [`TagStore`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FileOps<'a> {
     store: &'a Store,
     tags: &'a TagStore,
     blob_wait: Duration,
+    /// Node that originated a write, stamped as the file's `origin` tag
+    /// (#4973). `None` when the caller does not know its node id: no
+    /// origin is stamped and listings show the file's origin as unknown.
+    origin: Option<String>,
 }
 
 /// Serialises archive-name resolve+claim within this process (#2462).
@@ -165,6 +182,36 @@ pub(crate) async fn claim_archive_name(
     Ok(candidate)
 }
 
+/// Provenance metadata keys recorded at a file's first write (#4973):
+/// the origin node and the upload (`created`) timestamp. Listings read
+/// a file's origin and upload time from these tags on its own name.
+pub(crate) const PROVENANCE_TAG_KEYS: [&[u8]; 2] = [b"origin", b"created"];
+
+/// Snapshot `from`'s recorded provenance tags onto `to` (#5383).
+///
+/// An archive alias points at the same blob as its source but lives
+/// under a new name, so without this copy a listing reports the
+/// archive's origin as unknown and origin filtering misses it. Tags
+/// are copied by content hash so the recorded values are preserved
+/// exactly; a source with no recorded provenance leaves `to` with
+/// none — unknown stays unknown, provenance is never invented.
+pub(crate) async fn snapshot_provenance_tags(tags: &TagStore, from: &str, to: &str) -> Result<()> {
+    for key in PROVENANCE_TAG_KEYS {
+        for tag in tags.get_by_key(&tags.global, from.as_bytes(), key).await? {
+            tags.set_tag_hash(
+                &tags.global,
+                to.as_bytes(),
+                &tag.key,
+                tag.value.as_ref().map(TagValue::as_bytes),
+                tag.hash,
+                tag.len,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 impl<'a> FileOps<'a> {
     /// Create file operations over the given stores.
     pub const fn new(store: &'a Store, tags: &'a TagStore) -> Self {
@@ -172,6 +219,7 @@ impl<'a> FileOps<'a> {
             store,
             tags,
             blob_wait: Duration::ZERO,
+            origin: None,
         }
     }
 
@@ -185,6 +233,16 @@ impl<'a> FileOps<'a> {
     #[must_use]
     pub const fn with_blob_wait(mut self, wait: Duration) -> Self {
         self.blob_wait = wait;
+        self
+    }
+
+    /// Stamp writes with `origin` (a node id) as the file's origin node
+    /// (#4973). The stamp is set-if-absent: the node that first wrote a
+    /// file stays its origin across later writes and renames, and files
+    /// written before origin stamping existed simply have no origin tag.
+    #[must_use]
+    pub fn with_origin(mut self, origin: String) -> Self {
+        self.origin = Some(origin);
         self
     }
 
@@ -208,6 +266,14 @@ impl<'a> FileOps<'a> {
         }
     }
 
+    /// The single canonical-name rule for every FileOps entry point.
+    ///
+    /// A name is stored exactly as given, so any name that cannot be
+    /// re-specified identically is refused rather than stored under a
+    /// look-alike: leading or trailing padding, empty components
+    /// (`a//b`, `a/`, `a\`), rooted names, drive prefixes, and `.`/`..`
+    /// components all fail with [`FileOpError::InvalidName`]. Forgiving
+    /// surfaces (CLI, REPL, web) trim user input before calling in.
     fn validate_name(name: &str) -> Result<(), FileOpError> {
         if name.trim().is_empty() {
             return Err(FileOpError::EmptyName);
@@ -215,20 +281,26 @@ impl<'a> FileOps<'a> {
         let bytes = name.as_bytes();
         let has_windows_drive_prefix =
             bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
-        if name.starts_with('/')
+        if name != name.trim()
+            || name.starts_with('/')
             || name.starts_with('\\')
             || has_windows_drive_prefix
             || name
                 .split(['/', '\\'])
-                .any(|component| matches!(component, "." | ".."))
+                .any(|component| component.is_empty() || matches!(component, "." | ".."))
         {
             return Err(FileOpError::InvalidName(name.to_owned()));
+        }
+        if is_archive_tag_name(name) {
+            return Err(FileOpError::ReservedArchiveName(name.to_owned()));
         }
         Ok(())
     }
 
+    /// Validate a rename/copy target without normalising it: the target is
+    /// stored verbatim, so trimming here would create the padded-value twins
+    /// the canonical-name rule exists to prevent.
     fn validate_target(from: &str, to: &str) -> Result<String, FileOpError> {
-        let to = to.trim();
         Self::validate_name(to)?;
         if from == to {
             return Err(FileOpError::SameName);
@@ -241,6 +313,24 @@ impl<'a> FileOps<'a> {
         let Some(existing) = self.store.tags().get(name).await? else {
             return Ok(None);
         };
+        // Archive references belong to the live file: they name the
+        // archives a future delete of this file must also remove. The
+        // transfer below discards them from this name (and the
+        // exclusion list keeps them off the archive), so snapshot them
+        // here and restore them onto the live name afterwards -
+        // otherwise each replacement orphans every earlier archive.
+        let mut archive_refs = Vec::new();
+        for key in [&b"archive.rename"[..], &b"archive.replace"[..]] {
+            for tag in self
+                .tags
+                .get_by_key(&self.tags.global, name.as_bytes(), key)
+                .await?
+            {
+                if let Some(value) = tag.value.as_ref().and_then(|value| value.as_str()) {
+                    archive_refs.push((key, value.to_owned()));
+                }
+            }
+        }
         let archive = claim_archive_name(self.store, name, ts, existing.hash)
             .await
             .with_context(|| format!("archiving replaced file {name}"))?;
@@ -257,13 +347,29 @@ impl<'a> FileOps<'a> {
             .refresh_identity_tags(&self.tags.global, archive.as_bytes())
             .await
             .with_context(|| format!("refreshing identity for archive {archive}"))?;
+        for (key, value) in &archive_refs {
+            self.tags
+                .set_tag(
+                    &self.tags.global,
+                    name.as_bytes(),
+                    key,
+                    Some(value.as_bytes()),
+                    b"",
+                )
+                .await
+                .with_context(|| format!("restoring archive references for {name}"))?;
+        }
         Ok(Some(archive))
     }
 
     /// Name `hash` as `name`, after verifying the blob is complete in the store.
     ///
     /// Sets the `created` tag only if absent and always refreshes `modified`,
-    /// then auto-tags `name`/`file`.
+    /// stamps the `origin` node on a genuine first write (no `created` tag
+    /// recorded yet) if one is configured, then auto-tags `name`/`file`.
+    /// A legacy file that predates origin stamping keeps an unknown origin
+    /// when it is overwritten: absence of an `origin` tag alone does not
+    /// prove this write is the file's first.
     pub async fn put(&self, name: &str, hash: Hash) -> Result<(), FileOpError> {
         Self::validate_name(name)?;
         if !self.blob_present(hash).await? {
@@ -286,6 +392,15 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         let now = now_unix().to_string();
         let subject = name.as_bytes();
+        // Origin is stamped only for a genuine first write: a name with a
+        // `created` tag but no `origin` tag is a legacy file whose true
+        // origin is unknown and must stay unknown (Codex review, PR #5191).
+        let first_write = self
+            .tags
+            .get_by_key(ns, subject, b"created")
+            .await
+            .map(|existing| existing.is_empty())
+            .unwrap_or(false);
         let created = if reset_created {
             self.tags
                 .set_singleton(ns, subject, b"created", Some(now.as_bytes()), b"")
@@ -305,6 +420,15 @@ impl<'a> FileOps<'a> {
             .await
         {
             tracing::warn!("failed to set modified tag for {name}: {e:#}");
+        }
+        if first_write
+            && let Some(origin) = &self.origin
+            && let Err(e) = self
+                .tags
+                .set_if_absent(ns, subject, b"origin", Some(origin.as_bytes()), b"")
+                .await
+        {
+            tracing::warn!("failed to set origin tag for {name}: {e:#}");
         }
         if let Err(e) = self.tags.auto_tag(ns, subject, None).await {
             tracing::warn!("failed to auto-tag {name}: {e:#}");
@@ -350,6 +474,15 @@ impl<'a> FileOps<'a> {
         } else {
             None
         };
+
+        // The archive alias keeps the source's recorded provenance
+        // (#5383): snapshot it now, before the transfer below moves
+        // (and deletes) the source name's tags onto `to`.
+        if let Some(archive_name) = &archived_original
+            && let Err(e) = snapshot_provenance_tags(self.tags, from, archive_name).await
+        {
+            tracing::warn!("failed to snapshot provenance {from} -> {archive_name}: {e:#}");
+        }
 
         self.store
             .tags()
@@ -422,7 +555,12 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         if let Err(e) = self
             .tags
-            .copy_all_tags(ns, from.as_bytes(), to.as_bytes())
+            .copy_all_tags_except(
+                ns,
+                from.as_bytes(),
+                to.as_bytes(),
+                &[b"archive.rename", b"archive.replace"],
+            )
             .await
         {
             tracing::warn!("failed to copy tags {from} -> {to}: {e:#}");
@@ -556,6 +694,24 @@ mod archive_name_tests {
 
     fn hash(byte: u8) -> Hash {
         Hash::from([byte; 32])
+    }
+
+    #[test]
+    fn fileops_rejects_archive_shaped_names_but_allows_lookalikes() {
+        for name in [
+            "report.archive.0",
+            "report.archive.1700000000",
+            "report.archive.18446744073709551616",
+        ] {
+            assert!(matches!(
+                FileOps::validate_name(name),
+                Err(FileOpError::ReservedArchiveName(found)) if found == name
+            ));
+        }
+
+        for name in ["a.archive.notes", "a.archive.+1", "a.archive.١"] {
+            assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
+        }
     }
 
     /// Two replaces of one name within the same second must not share an
@@ -781,6 +937,39 @@ mod replacement_metadata_tests {
     }
 
     #[tokio::test]
+    async fn rename_with_archive_preserves_source_provenance_on_archive_alias() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "before.txt", b"original").await;
+        set_singleton(&node, "before.txt", "origin", "node-alpha").await;
+        set_singleton(&node, "before.txt", "created", "1700000000").await;
+
+        // The source's recorded provenance, exactly as stored.
+        let source_tags = tags_of(&node, "before.txt").await;
+        assert_single_value(&source_tags, "origin", "node-alpha");
+        let source_created = values(&source_tags, "created");
+        assert!(!source_created.is_empty(), "{source_tags:?}");
+
+        let rename = node
+            .ops()
+            .rename("before.txt", "after.txt", true)
+            .await
+            .unwrap();
+        let archive = rename.archived_original.unwrap();
+
+        // #5383: the archive alias carries the source's recorded
+        // provenance, not an unknown origin.
+        let archive_tags = tags_of(&node, &archive).await;
+        assert_single_value(&archive_tags, "origin", "node-alpha");
+        assert_eq!(values(&archive_tags, "created"), source_created);
+
+        // The live name keeps its provenance too (tags move with it).
+        let live_tags = tags_of(&node, "after.txt").await;
+        assert_single_value(&live_tags, "origin", "node-alpha");
+        assert_eq!(values(&live_tags, "created"), source_created);
+
+        node.shutdown().await.unwrap();
+    }
+
     async fn rename_onto_existing_moves_replaced_metadata_and_refreshes_archive_identity() {
         let node = LocalNode::open(true).await.unwrap();
         seed_replacement_pair(&node).await;
@@ -886,6 +1075,74 @@ mod replacement_metadata_tests {
         assert!(
             has_tag(&source, "source-only", "source-metadata"),
             "{source:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    /// A copy must not become a second owner of the source's archives
+    /// (#4761): deleting the copy must leave the source's archives intact.
+    #[tokio::test]
+    async fn copy_does_not_inherit_source_archive_refs() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source.txt", b"source content").await;
+        put(&node, "other.txt", b"other content").await;
+        // Renaming onto source.txt with archiving enabled adds both
+        // archive.rename and archive.replace refs to the live source.
+        let rename_outcome = node
+            .ops()
+            .rename("other.txt", "source.txt", true)
+            .await
+            .unwrap();
+        let source_archives = [
+            rename_outcome
+                .archived_original
+                .expect("original source archived"),
+            rename_outcome
+                .archived_replaced
+                .expect("replaced source archived"),
+        ];
+        let source_before = tags_of(&node, "source.txt").await;
+        assert!(
+            has_tag(&source_before, "archive.rename", &source_archives[0]),
+            "{source_before:?}"
+        );
+        assert!(
+            has_tag(&source_before, "archive.replace", &source_archives[1]),
+            "{source_before:?}"
+        );
+
+        node.ops().copy("source.txt", "copy.txt").await.unwrap();
+        let copy_tags = tags_of(&node, "copy.txt").await;
+        assert!(
+            values(&copy_tags, "archive.rename").is_empty(),
+            "copy inherited archive.rename refs: {copy_tags:?}"
+        );
+        assert!(
+            values(&copy_tags, "archive.replace").is_empty(),
+            "copy inherited archive.replace refs: {copy_tags:?}"
+        );
+
+        // Deleting the copy must not touch the source's archive.
+        let delete_outcome = node.ops().delete("copy.txt").await.unwrap();
+        assert_eq!(
+            delete_outcome.archives_removed, 0,
+            "copy delete removed archives"
+        );
+        for archive in &source_archives {
+            assert!(
+                !tags_of(&node, archive).await.is_empty(),
+                "source archive {archive} removed by copy delete"
+            );
+        }
+        let source_after = tags_of(&node, "source.txt").await;
+        assert!(
+            has_tag(&source_after, "archive.rename", &source_archives[0]),
+            "source lost its archive.rename ref: {source_after:?}"
+        );
+        assert!(
+            has_tag(&source_after, "archive.replace", &source_archives[1]),
+            "source lost its archive ref: {source_after:?}"
         );
 
         node.shutdown().await.unwrap();
@@ -1025,6 +1282,178 @@ mod delete_tests {
         assert_eq!(deleted.archives_removed, 2);
         assert!(node.blobs().tags().get(&first).await.unwrap().is_none());
         assert!(node.blobs().tags().get(&second).await.unwrap().is_none());
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod name_rule_tests {
+    use crate::local::LocalNode;
+
+    use super::*;
+
+    async fn put(node: &LocalNode, name: &str, data: &[u8]) {
+        let guard = node
+            .blobs()
+            .add_bytes(data.to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.ops().put(name, guard.hash()).await.unwrap();
+    }
+
+    fn assert_invalid(name: &str) {
+        assert!(
+            matches!(
+                FileOps::validate_name(name),
+                Err(FileOpError::InvalidName(_))
+            ),
+            "{name:?} must be refused as InvalidName"
+        );
+    }
+
+    /// Padding and empty components are refused by the one canonical rule
+    /// (#4102 / design #4766 Phase 3), so a name can never be stored in a
+    /// form that rename/copy would normalise away.
+    #[test]
+    fn refuses_padding_and_empty_components() {
+        for name in [
+            " report.txt",
+            "report.txt ",
+            "\treport.txt",
+            "report.txt\n",
+            "a//b",
+            "a/",
+            "a\\",
+            "a//b/c",
+            "a/b/",
+        ] {
+            assert_invalid(name);
+        }
+    }
+
+    /// The pre-existing refusals stay in place: rooted names, drive
+    /// prefixes, and `.`/`..` traversal components.
+    #[test]
+    fn preserves_traversal_refusals() {
+        for name in [
+            "/etc/passwd",
+            "\\windows",
+            "C:file.txt",
+            ".",
+            "..",
+            "a/./b",
+            "a/../b",
+        ] {
+            assert_invalid(name);
+        }
+        assert!(matches!(
+            FileOps::validate_name("   "),
+            Err(FileOpError::EmptyName)
+        ));
+        // Padding is a refusal, but interior spaces in a name are not.
+        assert!(FileOps::validate_name("my report.txt").is_ok());
+        assert!(FileOps::validate_name("a/b").is_ok());
+    }
+
+    /// A padded `put` cannot create an untargetable twin, and a padded
+    /// rename/copy target is refused instead of being silently trimmed.
+    #[tokio::test]
+    async fn padded_names_cannot_create_twins() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "report.txt", b"report").await;
+
+        let guard = node
+            .blobs()
+            .add_bytes(b"report".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        assert!(matches!(
+            node.ops().put(" report.txt", guard.hash()).await,
+            Err(FileOpError::InvalidName(_))
+        ));
+        assert!(
+            node.blobs()
+                .tags()
+                .get(" report.txt")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            node.blobs()
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        assert!(matches!(
+            node.ops().rename("report.txt", "other.txt ", false).await,
+            Err(FileOpError::InvalidName(_))
+        ));
+        assert!(
+            node.blobs()
+                .tags()
+                .get("other.txt")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        assert!(matches!(
+            node.ops().copy("report.txt", " copy.txt").await,
+            Err(FileOpError::InvalidName(_))
+        ));
+        assert!(
+            node.blobs()
+                .tags()
+                .get(" copy.txt")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(node.blobs().tags().get("copy.txt").await.unwrap().is_none());
+
+        node.shutdown().await.unwrap();
+    }
+
+    /// Empty components are refused at put and at rename/copy targets alike.
+    #[tokio::test]
+    async fn empty_components_refused_across_put_rename_copy() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "a/b", b"body").await;
+
+        let guard = node
+            .blobs()
+            .add_bytes(b"body".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        for name in ["a//b", "a/", "a\\"] {
+            assert!(matches!(
+                node.ops().put(name, guard.hash()).await,
+                Err(FileOpError::InvalidName(_))
+            ));
+            assert!(matches!(
+                node.ops().rename("a/b", name, false).await,
+                Err(FileOpError::InvalidName(_))
+            ));
+            assert!(matches!(
+                node.ops().copy("a/b", name).await,
+                Err(FileOpError::InvalidName(_))
+            ));
+            assert!(node.blobs().tags().get(name).await.unwrap().is_none());
+        }
+
+        // The canonical source is untouched and ordinary names still work.
+        assert!(node.blobs().tags().get("a/b").await.unwrap().is_some());
+        node.ops().copy("a/b", "a/c").await.unwrap();
+        assert!(node.blobs().tags().get("a/c").await.unwrap().is_some());
+
         node.shutdown().await.unwrap();
     }
 }

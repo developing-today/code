@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use iroh_blobs::api::{Store, TempTag};
@@ -8,8 +9,8 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, WorldEvent, WorldHandle, WorldMetrics,
-    WorldPolicy, WorldSnapshot,
+    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, SessionId, WorldEvent, WorldHandle,
+    WorldMetrics, WorldPolicy, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
@@ -122,6 +123,10 @@ pub(crate) enum ClientFrame {
         admin_token: String,
         module_hash: String,
     },
+    /// Admin: export the bounded ordered history, including host events.
+    EventHistoryAdmin {
+        admin_token: String,
+    },
     Invite {
         admin_token: String,
         display_name: String,
@@ -134,6 +139,14 @@ pub(crate) enum ClientFrame {
         #[serde(default)]
         role: Option<String>,
     },
+    /// Public: list the worlds this server hosts, as the browsable
+    /// directory (#812). No admin token: the reply carries directory
+    /// metadata only — world names, loaded state, the default, and a
+    /// per-world presence *count*. It never names who is present, and
+    /// it neither creates nor opens any world. The admin `ListWorlds`
+    /// frame remains for operators; this is the deliberate public
+    /// boundary for the directory feed.
+    Directory {},
     /// Admin: list the worlds this server hosts.
     ListWorlds {
         admin_token: String,
@@ -347,6 +360,18 @@ pub(crate) enum ServerFrame<'a> {
     ModuleEnd {
         module_hash: String,
     },
+    /// Starts an admin-only ordered event-history transfer.
+    EventHistoryBegin {
+        world_id: String,
+        module_hash: Option<String>,
+        current_sequence: u64,
+        complete: bool,
+        event_count: usize,
+    },
+    /// One sequenced or host-originated event in journal order.
+    EventHistoryEvent {
+        event: &'a WorldEvent,
+    },
     Invite(&'a InviteResponse),
     /// The worlds this server hosts.
     Worlds {
@@ -530,6 +555,8 @@ pub struct WorldService {
     /// The world's host metrics registry (F11.7), shared with the actor:
     /// the session layer records the frame bytes it sends into it.
     pub(crate) metrics: WorldMetrics,
+    /// Monotonic, process-local IDs for live connections to this service.
+    pub(crate) next_session_id: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for WorldService {

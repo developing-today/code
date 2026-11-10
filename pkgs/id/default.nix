@@ -68,7 +68,7 @@ in
 
     meta = with pkgs.lib; {
       description = "A peer-to-peer file sharing CLI built with Iroh";
-      homepage = "https://github.com/example/id";
+      homepage = "https://github.com/developing-today/code";
       license = with licenses; [
         mit
         asl20

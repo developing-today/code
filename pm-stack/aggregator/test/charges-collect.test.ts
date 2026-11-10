@@ -3,7 +3,13 @@
 // and the packet's replay acceptance (one row per charge, rerun
 // adds nothing and re-surfaces nothing).
 import { describe, expect, test } from "bun:test";
-import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates, unmatchedKey } from "../src/charges-collect.ts";
+import {
+  filterNewUnmatched,
+  mergeChargeRows,
+  parseChargeCandidates,
+  unmatchedKey,
+  extractCardMask,
+} from "../src/charges-collect.ts";
 import { matchCharges, type ChargeCandidate } from "../src/charges-match.ts";
 import type { ChargeRow } from "../src/model.ts";
 
@@ -67,8 +73,10 @@ describe("mergeChargeRows canonical-label dedupe", () => {
   // the whole-token "Meta" spelling so it still matches the hand-fed
   // "Meta PAYG spill" row for the same charge.
   test("a canonicalized auto row still dedupes the merchant-spelled hand-fed row", () => {
-    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20 }];
-    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20 }];
+    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20, method: "card", source: "Plaid" }];
+    const handFed = [
+      { at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20, method: "card", source: "Gmail card alert" },
+    ];
     expect(mergeChargeRows(auto, handFed)).toEqual(auto);
   });
 
@@ -77,8 +85,10 @@ describe("mergeChargeRows canonical-label dedupe", () => {
     ["AI", "RAILWAY"],
   ]) {
     test(`a short label does not match inside unrelated merchant token ${autoLabel}`, () => {
-      const auto = [{ at: "2026-10-01", label: autoLabel, amountUsd: 20 }];
-      const handFed = [{ at: "2026-10-01", label: handFedLabel, amountUsd: 20 }];
+      const auto = [{ at: "2026-10-01", label: autoLabel, amountUsd: 20, method: "card", source: "Plaid" }];
+      const handFed = [
+        { at: "2026-10-01", label: handFedLabel, amountUsd: 20, method: "card", source: "Gmail card alert" },
+      ];
       expect(
         mergeChargeRows(auto, handFed)
           .map((row) => row.label)
@@ -88,14 +98,18 @@ describe("mergeChargeRows canonical-label dedupe", () => {
   }
 
   test("Meta PAYG spill still dedupes against the METAPAY merchant alias", () => {
-    const auto = [{ at: "2026-10-01", label: "METAPAY", amountUsd: 20 }];
-    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20 }];
+    const auto = [{ at: "2026-10-01", label: "METAPAY", amountUsd: 20, method: "card", source: "Plaid" }];
+    const handFed = [
+      { at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20, method: "card", source: "Gmail card alert" },
+    ];
     expect(mergeChargeRows(auto, handFed)).toEqual(auto);
   });
 
   test("a different amount under the same provider still keeps both rows", () => {
-    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20 }];
-    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 25 }];
+    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20, method: "card", source: "Plaid" }];
+    const handFed = [
+      { at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 25, method: "card", source: "Gmail card alert" },
+    ];
     expect(mergeChargeRows(auto, handFed)).toHaveLength(2);
   });
 });
@@ -120,6 +134,65 @@ describe("mergeChargeRows", () => {
     // amount, and the auto METAPAY alias group shares the whole-token
     // "Meta" spelling with the hand-fed row (date order out).
     expect(mergeChargeRows(auto, handFed)).toEqual([auto[1], auto[0]]);
+  });
+
+  test("a hand-fed row with a conflicting card mask is kept as distinct evidence (#3123)", () => {
+    const handFed: ChargeRow[] = [
+      {
+        at: "2026-10-25",
+        label: "Meta PAYG spill",
+        amountUsd: 20,
+        method: "Visa •9545",
+        source: "Gmail card alert (registry billing incidents)",
+      },
+    ];
+    // auto[0] has Visa •7535, handFed has Visa •9545. Even with matching
+    // amount, dates within window, and matching merchant label, conflicting
+    // card masks identify distinct charges and must both be preserved.
+    const merged = mergeChargeRows(auto, handFed);
+    expect(merged).toContainEqual(handFed[0]);
+    expect(merged).toContainEqual(auto[0]);
+  });
+
+  test("same-charge merging still works when masks agree or either row lacks a method (#3123)", () => {
+    // Both masks agree: Visa •7535 vs Visa •7535 -> handFed dropped
+    const handFedAgree: ChargeRow[] = [
+      {
+        at: "2026-10-25",
+        label: "Meta PAYG spill",
+        amountUsd: 20,
+        method: "Visa •7535",
+        source: "Gmail card alert",
+      },
+    ];
+    expect(mergeChargeRows(auto, handFedAgree)).not.toContainEqual(handFedAgree[0]);
+
+    // handFed lacks mask: method is "card" -> merges/drops handFed
+    const handFedNoMask: ChargeRow[] = [
+      {
+        at: "2026-10-25",
+        label: "Meta PAYG spill",
+        amountUsd: 20,
+        method: "card",
+        source: "Gmail card alert",
+      },
+    ];
+    expect(mergeChargeRows(auto, handFedNoMask)).not.toContainEqual(handFedNoMask[0]);
+
+    // auto lacks mask -> merges/drops handFed
+    const autoNoMask: ChargeRow[] = [
+      { at: "2026-10-28", label: "METAPAY*UC5DPA22Y4 US", amountUsd: 20, method: "card", source: "Plaid" },
+    ];
+    const handFedWithMask: ChargeRow[] = [
+      {
+        at: "2026-10-25",
+        label: "Meta PAYG spill",
+        amountUsd: 20,
+        method: "Visa •7535",
+        source: "Gmail card alert",
+      },
+    ];
+    expect(mergeChargeRows(autoNoMask, handFedWithMask)).not.toContainEqual(handFedWithMask[0]);
   });
 
   test("a hand-fed row outside the window or for another charge is kept", () => {
@@ -206,5 +279,27 @@ describe("period replay (packet acceptance)", () => {
     expect(second.feed).toEqual(first.feed);
     expect(first.fresh).toHaveLength(2);
     expect(second.fresh).toEqual([]);
+  });
+});
+
+describe("extractCardMask", () => {
+  test("extracts last digits from various payment method formats", () => {
+    expect(extractCardMask("Visa •7535")).toBe("7535");
+    expect(extractCardMask("Visa •9545")).toBe("9545");
+    expect(extractCardMask("Visa • 7535")).toBe("7535");
+    expect(extractCardMask("•7535")).toBe("7535");
+    expect(extractCardMask("Visa ending 7535")).toBe("7535");
+    expect(extractCardMask("Mastercard •1234")).toBe("1234");
+    expect(extractCardMask("Amex •1002")).toBe("1002");
+    expect(extractCardMask("card •5678")).toBe("5678");
+  });
+
+  test("returns undefined when no card mask is present", () => {
+    expect(extractCardMask("card")).toBeUndefined();
+    expect(extractCardMask("Link")).toBeUndefined();
+    expect(extractCardMask("")).toBeUndefined();
+    expect(extractCardMask("   ")).toBeUndefined();
+    expect(extractCardMask(undefined)).toBeUndefined();
+    expect(extractCardMask(null)).toBeUndefined();
   });
 });
