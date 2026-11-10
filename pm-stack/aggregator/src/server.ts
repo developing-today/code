@@ -139,6 +139,7 @@ import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
+import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
 import { ItemHistoryStore } from "./item-history.ts";
 import {
   FORECAST_CONTRACT_VERSION,
@@ -464,6 +465,16 @@ async function discussTitle(objectRef: string): Promise<{ title: string; githubR
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+/** Same response shape as {@link json} without the 2-space pretty-print:
+ *  the board JSON legitimately carries seconds of data and the pretty
+ *  form adds ~10% bytes for nothing a machine consumer reads (#5082). */
+function jsonCompact(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
@@ -1990,17 +2001,25 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
+    const showAllDone = url.searchParams.get("done") === "all";
     const resolved = await resolveView(url);
-    if (!resolved) return json({ board, items: [...items.values()] });
+    if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    // Filter the policy-eligible board against the full item lookup
+    // BEFORE the done-strip limit (#8058): limiting first dropped a
+    // view's matching done cards outside the global newest 100.
+    // boardJsonViewBody then applies the limit and restricts the
+    // shipped items to the selected cards, so the response stays
+    // bounded as #5082 requires — the full closure is only a lookup.
+    const bounded = boardJsonViewBody(
+      board,
+      items,
+      (b) =>
+        linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      { showAllDone },
     );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
-    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
