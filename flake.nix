@@ -23,8 +23,10 @@ rec {
       lib.make-id
       lib.make-mcpx-overlay
       lib.make-mcpx-modules
+      lib.make-pm-stack
       lib.make-laptop-backups-checks
       lib.make-fleet
+      lib.make-deploy
     ];
   inputs = {
     nixgl = {

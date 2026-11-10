@@ -15,10 +15,17 @@ name: org-run (generic dispatch runner)
 # (blacksmith-4vcpu-ubuntu-2404). See docs/placement.md in
 # developing-today/fleet.
 #
+# Setup runner (2026-11-06): the setup job has its own
+# `setup_runner` input, defaulting to Blacksmith, so matrix
+# expansion is never gated by the GitHub-hosted queue (in the
+# Blacksmith evaluation an org-run setup job on ubuntu-24.04
+# waited 34.6 minutes and was never assigned a runner). The
+# legs still follow the `runner` input below.
+#
 # Single-shot — one repo, one command:
 #
 #   gh workflow run org-run.yml --repo developing-today/code \
-#     -f repo=developing-today/openchamber -f command='nix build .#openchamber'
+#     -f repo=developing-today-forks/openchamber -f command='nix build .#openchamber'
 #
 # Matrix — the `jobs` input is a JSON array of entries; the setup
 # job flattens the entries into legs and the legs run in parallel
@@ -29,11 +36,11 @@ name: org-run (generic dispatch runner)
 #
 #   {"command": "nix flake check",
 #    "repos": [{"repo": "developing-today/code"},
-#              {"repo": "developing-today/openchamber", "ref": "main"}]}
+#              {"repo": "developing-today-forks/openchamber", "ref": "main"}]}
 #
 # Flat sugar — exactly one leg:
 #
-#   {"repo": "developing-today/openchamber",
+#   {"repo": "developing-today-forks/openchamber",
 #    "command": "nix build .#openchamber"}
 #
 # Together — ONE command with several repos cloned side-by-side in
@@ -42,7 +49,7 @@ name: org-run (generic dispatch runner)
 #
 #   {"command": "diff -r code/pkgs opencode/pkgs",
 #    "together": [{"repo": "developing-today/code"},
-#                 {"repo": "developing-today/opencode", "ref": "main"}]}
+#                 {"repo": "developing-today-forks/opencode", "ref": "main"}]}
 #
 # A together entry is exactly one leg regardless of repo count
 # (it needs at least two repos — one repo is the flat form). Its
@@ -110,8 +117,8 @@ on:
         required: true
         options:
           - developing-today/code
-          - developing-today/opencode
-          - developing-today/openchamber
+          - developing-today-forks/opencode
+          - developing-today-forks/openchamber
           - developing-today/.github
           - developing-today/hardware-doc
           - developing-today/zulip-archive
@@ -143,6 +150,14 @@ on:
         options:
           - github
           - blacksmith
+      setup_runner:
+        description: "Runner provider for the setup job: blacksmith (default; keeps matrix expansion off the GitHub-hosted queue) or github (ubuntu-24.04)"
+        type: choice
+        required: false
+        default: "blacksmith"
+        options:
+          - blacksmith
+          - github
 
 permissions:
   contents: read
@@ -154,7 +169,7 @@ defaults:
 jobs:
   setup:
     name: setup
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.setup_runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
@@ -174,7 +189,7 @@ jobs:
             exit 1
           }
 
-          allowlist='["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "developing-today/.github", "developing-today/hardware-doc", "developing-today/zulip-archive"]'
+          allowlist='["developing-today/code", "developing-today-forks/opencode", "developing-today-forks/openchamber", "developing-today/.github", "developing-today/hardware-doc", "developing-today/zulip-archive"]'
 
           if [ -n "$(tr -d '[:space:]' <<<"$JOBS_INPUT")" ]; then
             raw="$JOBS_INPUT"
@@ -320,7 +335,7 @@ jobs:
             exit 1
           fi
       - name: Check out the target repo (automation-token repos)
-        if: ${{ matrix.mode == 'single' && contains(fromJSON('["developing-today/code", "developing-today/opencode", "developing-today/openchamber"]'), matrix.repo) }}
+        if: ${{ matrix.mode == 'single' && contains(fromJSON('["developing-today/code", "developing-today-forks/opencode", "developing-today-forks/openchamber"]'), matrix.repo) }}
         uses: actions/checkout@v4
         with:
           repository: ${{ matrix.repo }}
@@ -329,7 +344,7 @@ jobs:
           token: ${{ secrets.REPO_AUTOMATION_TOKEN }}
           path: target
       - name: Check out the target repo (public repos, anonymous)
-        if: ${{ matrix.mode == 'single' && !contains(fromJSON('["developing-today/code", "developing-today/opencode", "developing-today/openchamber"]'), matrix.repo) }}
+        if: ${{ matrix.mode == 'single' && !contains(fromJSON('["developing-today/code", "developing-today-forks/opencode", "developing-today-forks/openchamber"]'), matrix.repo) }}
         env:
           TARGET_REPO: ${{ matrix.repo }}
           TARGET_REF: ${{ matrix.ref }}
@@ -367,7 +382,7 @@ jobs:
               clone_args+=(--branch "$ref")
             fi
             case "$repo" in
-              developing-today/code|developing-today/opencode|developing-today/openchamber)
+              developing-today/code|developing-today-forks/opencode|developing-today-forks/openchamber)
                 url="https://x-access-token:${CLONE_TOKEN}@github.com/${repo}.git" ;;
               *)
                 url="https://github.com/${repo}.git" ;;

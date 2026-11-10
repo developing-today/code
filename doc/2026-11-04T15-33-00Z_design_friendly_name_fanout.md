@@ -37,7 +37,7 @@ never silently picked.
    testable, and two viewers with the same store set see the same list.
 3. **Provenance per candidate.** Each candidate keeps the store that answered
    (`Provenance.store`, alongside the claim author). A target held by two stores
-   appears once per store: duplicates are *shown*, never silently deduplicated,
+   appears once per store: duplicates are _shown_, never silently deduplicated,
    because telling duplicates apart is the author's decision, taken with provenance
    in front of them.
 4. **Contested is cross-store.** For the exact tiers, the claimant set is the union
@@ -54,7 +54,7 @@ never silently picked.
 6. **Viewer-relative visibility.** Each store's index is scoped to the viewer before
    fan-out: their petnames, and the targets they may not see are hidden
    (`LocalIndex::hide`). A hidden target yields no candidate, is excluded from
-   claimant unions (so its *existence* cannot leak via a contested flag on a
+   claimant unions (so its _existence_ cannot leak via a contested flag on a
    visible target's surface), and renders `Unresolved` with only the stored
    surface — the #2259 no-leak rule, extended across stores.
 
@@ -63,7 +63,7 @@ never silently picked.
 - **Locator fetch:** following a stored reference's locator hints to fetch/render a
   target that lives in another store, including renamed/cleared/unresolved render
   states across the boundary. This slice's contribution is that stored references
-  now *record* complete locator hints (every holding store).
+  now _record_ complete locator hints (every holding store).
 - **Hosted-store search:** the hosted counterpart of the local index. A hosted
   store joins the fan-out by producing a viewer-scoped `LocalIndex`-equivalent
   answer set under the same contract; no contract change is expected.
@@ -79,5 +79,48 @@ never silently picked.
   non-deterministic across configurations, and silently picks among contested
   surfaces.
 - **Deduplicate replicated targets in the candidate list:** rejected for display
-  (provenance is information), accepted for *choice*: ambiguity is counted in
+  (provenance is information), accepted for _choice_: ambiguity is counted in
   distinct targets, not in candidate rows.
+
+## Locator fetch (second slice, #5927)
+
+Implemented in `pkgs/id/src/references.rs` (`FanOut::fetch_located` /
+`FanOut::render_located`), queue task 9828.
+
+- **Hints are the locator contract.** When a stored reference records locator
+  hints, only those stores are consulted, in hint order; the first hinted store
+  holding the target for the viewer decides — resolved, renamed, or cleared. A
+  tombstone in the first holding store is an answer, not an absence to skip
+  past. A reference with no hints (the markdown degradation carries none) is
+  fetched against the viewer's store set in fan-out order.
+- **States stay distinct across the boundary.** Resolved / renamed / cleared
+  mean exactly what the single-store `render` means; the fourth state,
+  unresolved-for-viewer, covers both "no hinted store holds it" and "a hinted
+  store holds it but this viewer may not see it" — deliberately
+  indistinguishable, rendered from the stored surface alone, naming no store,
+  so an inaccessible target leaks no candidate, claimant, or existence
+  information (fan-out contract rule 6, extended to fetch).
+- **Pins are unaffected.** The fetch follows the stable logical ID; an
+  exact-revision pin stays on the reference and does not change which object
+  is fetched (the per-store indexes hold the logical object, not its revision
+  chain).
+
+## Hosted-store search + live-store wiring (third slice, #5178 remainder)
+
+Implemented in `pkgs/id/src/references.rs` (`StoreView` / `StoreId::hosted` /
+`FanOut::from_views`), queue task 13938.
+
+- **Hosted search is an answer set, not a protocol.** A hosted store joins the
+  fan-out by producing a viewer-scoped `StoreView` — its identity, the hosted
+  rows the viewer may see as `IndexedObject`s, the IDs hidden from this viewer —
+  which folds into a `LocalIndex`-equivalent answer set under the same
+  `MatchKind` tiers. The fan-out contract is unchanged by the boundary:
+  tier-first merge, per-candidate provenance, cross-store contested state, and
+  the no-leak rule for hidden targets all hold across local/hosted exactly as
+  among local stores. A hosted view carries no petnames (the viewer's petnames
+  live in their local index only).
+- **Live wiring is `FanOut::from_views`.** Production adapters snapshot one
+  `StoreView` per store per viewer — local notes/documents rows, hosted rows —
+  instead of hand-built in-memory indexes. The merge, the claimant union, and
+  the locator fetch all operate on the folded indexes, so where the rows come
+  from never changes what the fan-out decides.

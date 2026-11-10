@@ -51,9 +51,14 @@ pub fn via_env() -> bool {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"))
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
 }
 
 /// The service config path whose *existence* marks the serving
@@ -296,6 +301,7 @@ fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result
     let mut envelope: Option<Json> = None;
     let mut results: Vec<Json> = Vec::new();
     let mut cursor: Option<String> = None;
+    let mut seen_cursors: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
         if Instant::now() >= deadline {
             return Err("service job results did not finish paging within 330 seconds".to_string());
@@ -327,7 +333,8 @@ fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result
             envelope = Some(page.envelope.clone());
         }
         let page_len = page.results.len();
-        results.extend(page.results.iter().cloned());
+        let remaining = request.k.saturating_sub(results.len());
+        results.extend(page.results.iter().take(remaining).cloned());
         if results.len() >= request.k || page.next_cursor.is_none() {
             break;
         }
@@ -345,6 +352,15 @@ fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result
         if cursor.as_deref() == Some(next_cursor.as_str()) {
             return Err(format!(
                 "service at {base} sent a malformed results page: next_cursor did not advance (repeats the cursor just used)"
+            ));
+        }
+        // A cycle with period >= 2 (A -> B -> A) passes the immediate-repeat
+        // check above on every page: the ranking still never advances, so
+        // any cursor already followed in this session is equally malformed
+        // (#5654).
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(format!(
+                "service at {base} sent a malformed results page: next_cursor did not advance (repeats a cursor already seen in this paging session)"
             ));
         }
         cursor = Some(next_cursor);
@@ -380,9 +396,11 @@ mod tests {
 
     #[derive(Clone, Copy, PartialEq)]
     enum StubMode {
+        CyclingCursor,
         RepeatingCursor,
         EmptyPage,
         HappyPath,
+        OversizedPage,
     }
 
     fn respond(stream: &mut TcpStream, status: &str, body: &str) {
@@ -441,8 +459,18 @@ mod tests {
                 } else if first.contains("/results") {
                     let has_cursor = first.contains("cursor=");
                     let (results, next): (&str, &str) = match mode {
+                        StubMode::CyclingCursor => {
+                            if first.contains("cursor=cursor-B") {
+                                (r#"[{"id":1}]"#, r#""cursor-A""#)
+                            } else {
+                                (r#"[{"id":1}]"#, r#""cursor-B""#)
+                            }
+                        }
                         StubMode::RepeatingCursor => (r#"[{"id":1}]"#, r#""same-cursor""#),
                         StubMode::EmptyPage => (r#"[]"#, r#""some-cursor""#),
+                        StubMode::OversizedPage => {
+                            (r#"[{"id":1},{"id":2},{"id":3}]"#, r#""more-cursor""#)
+                        }
                         StubMode::HappyPath => {
                             if has_cursor {
                                 (r#"[{"id":2}]"#, "null")
@@ -492,6 +520,20 @@ mod tests {
     }
 
     #[test]
+    fn search_cycling_cursor_returns_err_promptly() {
+        // #5654: a period-2 cycle (A -> B -> A) passes the immediate-repeat
+        // check on every page; the seen-cursor set must reject it promptly.
+        let base = start_stub(StubMode::CyclingCursor);
+        let started = Instant::now();
+        let err = search_with_token(&base, &request_k(100_000), "test-token").unwrap_err();
+        assert!(err.contains("already seen"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "cycling cursor was not rejected promptly"
+        );
+    }
+
+    #[test]
     fn search_empty_page_with_cursor_returns_err() {
         let base = start_stub(StubMode::EmptyPage);
         let err = search_with_token(&base, &request_k(10), "test-token").unwrap_err();
@@ -504,6 +546,36 @@ mod tests {
         // the stub service's ranking, in order — [1, 2].
         let base = start_stub(StubMode::HappyPath);
         let out = search_with_token(&base, &request_k(10), "test-token").unwrap();
+        let results = out
+            .get("results")
+            .and_then(Json::as_array)
+            .expect("envelope carries a results array");
+        let ids: Vec<i64> = results
+            .iter()
+            .filter_map(|r| r.get("id")?.as_i64())
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn search_multi_page_stops_at_requested_k() {
+        let base = start_stub(StubMode::HappyPath);
+        let out = search_with_token(&base, &request_k(2), "test-token").unwrap();
+        let results = out
+            .get("results")
+            .and_then(Json::as_array)
+            .expect("envelope carries a results array");
+        let ids: Vec<i64> = results
+            .iter()
+            .filter_map(|r| r.get("id")?.as_i64())
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn search_truncates_oversized_single_page_to_requested_k() {
+        let base = start_stub(StubMode::OversizedPage);
+        let out = search_with_token(&base, &request_k(2), "test-token").unwrap();
         let results = out
             .get("results")
             .and_then(Json::as_array)

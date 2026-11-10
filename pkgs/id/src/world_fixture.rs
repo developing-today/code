@@ -18,6 +18,7 @@ use crate::sandbox::Sandbox;
 use crate::world::WorldProgram;
 use crate::world::{Records, WorldEvent, WorldEventKind, parse_records};
 use crate::world_net::WorldClient;
+use crate::world_session::parse_json_without_duplicate_keys;
 use crate::world_session::{decode_hex, encode_hex, module_hash};
 
 /// The only fixture version this build writes or reads.
@@ -390,7 +391,7 @@ pub fn replay(
     let verdict = verdict(
         header,
         records.as_deref(),
-        final_epoch_covered(&fixture.events),
+        final_epoch_covered(header, &fixture.events),
     )?;
     Ok(Replayed {
         records,
@@ -477,7 +478,7 @@ fn replay_collecting(
     let verdict = verdict(
         header,
         records.as_deref(),
-        final_epoch_covered(&fixture.events),
+        final_epoch_covered(header, &fixture.events),
     )?;
     let final_records = match records.as_deref() {
         Some(text) => parse_records(text).context("the replayed records")?,
@@ -566,7 +567,10 @@ fn json_text(text: &str) -> String {
 }
 
 fn decode_header(line: &str) -> Result<FixtureHeader> {
-    let value: Value = serde_json::from_str(line).context("the fixture header is not JSON")?;
+    // A duplicate key is a parse error (#6474): `check_keys` and the version
+    // gate must see the line as written, never a last-wins collapse of it.
+    let value: Value =
+        parse_json_without_duplicate_keys(line).context("the fixture header is not JSON")?;
     let object = value
         .as_object()
         .context("the fixture header is not an object")?;
@@ -612,7 +616,9 @@ fn decode_header(line: &str) -> Result<FixtureHeader> {
 
 fn decode_event(line: &str) -> Result<FixtureEvent> {
     ensure!(!line.is_empty(), "the line is blank");
-    let value: Value = serde_json::from_str(line).context("the event is not JSON")?;
+    // A duplicate key is a parse error (#6474): the window check must see the
+    // sequence as written, never a last-wins collapse of it.
+    let value: Value = parse_json_without_duplicate_keys(line).context("the event is not JSON")?;
     let object = value.as_object().context("the event is not an object")?;
     let sequence = u64_field(object, "sequence")?;
     match string_field(object, "kind")? {
@@ -772,8 +778,14 @@ fn segments(events: &[FixtureEvent]) -> Result<Vec<&[FixtureEvent]>> {
 /// its install, so replaying the final segment is a complete replay of
 /// that epoch and its records can be compared with the header's.
 #[cfg(feature = "sandbox")]
-fn final_epoch_covered(events: &[FixtureEvent]) -> bool {
-    events.iter().any(is_install)
+fn final_epoch_covered(header: &FixtureHeader, events: &[FixtureEvent]) -> bool {
+    let has_install = events.iter().any(is_install);
+    let reaches_head = events
+        .iter()
+        .rev()
+        .find(|event| event.sequence() != 0)
+        .is_some_and(|event| event.sequence() == header.current_sequence);
+    has_install && reaches_head
 }
 
 /// The event a replay feeds the program, or `None` for events it never sees.
@@ -955,6 +967,44 @@ mod tests {
             let text = format!("{head}{line}\n");
             assert!(decode(&text).is_err(), "accepted {line:?}");
         }
+    }
+
+    #[test]
+    fn decode_refuses_duplicate_fields_in_the_header_and_events() {
+        // #6474: a duplicate key is a parse error. Before the fix the `Value`
+        // parse collapsed each pair last-wins, so `check_keys`, the version
+        // gate and the window check only ever saw the surviving value.
+        let head = encode(&header(1, true), &[]);
+        let cases = [
+            // Two worlds named; the second used to win.
+            head.replace(r#""world":"lobby""#, r#""world":"first","world":"second""#),
+            // An unsupported version hidden behind a supported one.
+            head.replace("\"fixture\":1", "\"fixture\":99,\"fixture\":1"),
+            // A repeated record key inside the header's records object.
+            head.replace(r#""records":{}"#, r#""records":{"board":"a","board":"b"}"#),
+        ];
+        for (index, text) in cases.iter().enumerate() {
+            assert_ne!(&head, text, "case {index} did not change the header");
+            let error = format!("{:#}", decode(text).unwrap_err());
+            assert!(
+                error.contains("duplicate"),
+                "header case {index} was not refused for duplication: {error}"
+            );
+        }
+
+        // An out-of-window sequence hidden behind an in-window one.
+        let event = r#"{"sequence":99,"sequence":1,"participant_id":1,"kind":"input","hex":"61"}"#;
+        let text = format!("{head}{event}\n");
+        let error = format!("{:#}", decode(&text).unwrap_err());
+        assert!(error.contains("duplicate"), "{error}");
+        assert!(error.contains("fixture line 2"), "{error}");
+
+        // The control still decodes.
+        let control = format!(
+            "{head}{}\n",
+            r#"{"sequence":1,"participant_id":1,"kind":"input","hex":"61"}"#
+        );
+        assert!(decode(&control).is_ok());
     }
 
     #[test]
@@ -1311,9 +1361,8 @@ mod tests {
         #[test]
         fn partial_fixture_covering_the_final_epoch_is_compared() {
             let (runner, base) = checked_in_game();
-            // A partial window that still contains the last install covers
-            // the final epoch in full, so its records compare with the
-            // header's instead of reporting NotCompared.
+            // A front-truncated partial window still reaches the head and
+            // contains the last install, so its records remain comparable.
             let mut live = runner.instantiate(7).unwrap();
             live.update(2, b"3").unwrap();
             live.update(1, b"4").unwrap();
@@ -1327,17 +1376,36 @@ mod tests {
                     records: Some(records),
                     ..base.header
                 },
-                events: vec![
-                    install(1),
-                    input(2, 1, "0"),
-                    install(3),
-                    input(4, 2, "3"),
-                    input(5, 1, "4"),
-                ],
+                events: vec![install(3), input(4, 2, "3"), input(5, 1, "4")],
             };
             assert!(replay(&runner, 7, &partial, false).is_err());
             let replayed = replay(&runner, 7, &partial, true).unwrap();
             assert_eq!(replayed.verdict, Verdict::Match);
+        }
+
+        #[test]
+        fn partial_fixture_ending_before_header_sequence_is_not_compared() {
+            let (runner, base) = checked_in_game();
+            let mut live = runner.instantiate(7).unwrap();
+            live.update(2, b"3").unwrap();
+            live.update(1, b"4").unwrap();
+            let records =
+                parse_records(&String::from_utf8(live.records().unwrap().unwrap()).unwrap())
+                    .unwrap();
+            let partial = Fixture {
+                header: FixtureHeader {
+                    current_sequence: 5,
+                    complete: false,
+                    records: Some(records),
+                    ..base.header
+                },
+                // The retained window contains the final install, but ends
+                // before the head sequence recorded in the header.
+                events: vec![install(3), input(4, 2, "3")],
+            };
+
+            let replayed = replay(&runner, 7, &partial, true).unwrap();
+            assert_eq!(replayed.verdict, Verdict::NotCompared("partial history"));
         }
 
         #[test]
