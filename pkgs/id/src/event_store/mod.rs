@@ -70,11 +70,13 @@ pub mod range;
 mod resolve;
 pub mod sync;
 mod waiting_rows;
+mod writer_set;
 
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use ingest::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
+pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
 /// The store's file name in its directory.
 pub const FILE_NAME: &str = "events.redb";
@@ -109,10 +111,26 @@ const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
 const BLOCKS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("blocks");
+/// Each writer-set or rescind event's retained body, by event ID (writer-set
+/// spec §§4–5; issue #6690). Headers commit to bodies by hash but are stored
+/// without them; this table is the one place a body is kept, so a stored
+/// writer-set object can be read back and checked against its header. Written
+/// only from the ingest path, after the body has been verified against the
+/// header's payload commitment.
+const WRITER_SET_BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("writer_set_bodies");
 /// Each group operation's encoded action, by event ID. Written when the event arrives, held or
 /// stored, so a release reads it back without the caller. The resolution reads it again.
 const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("actions");
+/// Each device operation's encoded op and the group its body names, by event ID (P8.3,
+/// issue #5656). A device operation travels as a `group.event` body, which the membership
+/// body codec does not carry, so it has no [`ACTIONS`] row; this table is its storage
+/// channel to the resolution, whose bridge folds it as a group device event. Written only
+/// from the ingest path, after the body has been verified against the header's payload
+/// commitment and the body's author checked against the event's signer.
+const DEVICE_OPS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("device_ops");
 /// The IDs of the applied events, with an empty value. Written by the resolution.
 const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("applied");
@@ -647,12 +665,14 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        // The blocks table is additive: stores created before it gain it here,
-        // on the write every open already performs, instead of a format change
-        // that would refuse them.
+        // The blocks, writer-set-bodies and device-ops tables are additive:
+        // stores created before them gain them here, on the write every open
+        // already performs, instead of a format change that would refuse them.
         {
             let txn = db.begin_write()?;
             txn.open_table(BLOCKS)?;
+            txn.open_table(WRITER_SET_BODIES)?;
+            txn.open_table(DEVICE_OPS)?;
             txn.commit()?;
         }
         let mut store = Self {
@@ -739,9 +759,10 @@ impl EventStore {
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
             let actions = txn.open_table(ACTIONS)?;
+            let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &forks, &proof_headers)?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
         Ok(resolve::roster_of(&resolved, group))
@@ -966,6 +987,7 @@ impl EventStore {
             let mut hashes_table = txn.open_table(HASHES)?;
             let mut groups_table = txn.open_multimap_table(GROUPS)?;
             let mut actions_table = txn.open_table(ACTIONS)?;
+            let mut device_ops_table = txn.open_table(DEVICE_OPS)?;
             let mut applied_table = txn.open_table(APPLIED)?;
 
             for id in &to_prune {
@@ -980,6 +1002,7 @@ impl EventStore {
                     if meta.has_action {
                         actions_table.remove(id.as_bytes().as_slice())?;
                     }
+                    device_ops_table.remove(id.as_bytes().as_slice())?;
                     applied_table.remove(id.as_bytes().as_slice())?;
                 }
             }

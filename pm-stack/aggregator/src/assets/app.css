@@ -4323,6 +4323,12 @@ a {
     max-width: 100%;
     overflow-wrap: anywhere;
   }
+  .item-session-records .session-record-line .badge {
+    box-sizing: border-box;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 .badge {
   display: inline-block;

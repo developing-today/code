@@ -1025,3 +1025,57 @@ func TestOpenWithRetentionPreservesLegacyRowUntilStoredTTLDeadline(t *testing.T)
 		t.Errorf("control: legacy-keep survived plain Open with the built-in 1h maxAge; the seeded row does not reproduce the pre-fix loss")
 	}
 }
+
+// #6249: the maxAge ceiling must not override a deadline task's
+// two-poll-interval retention floor when retention is armed. Oracle:
+// with PollInterval 400ms and maxAge 100ms (the issue's shape --
+// maxAge below one poll interval), a finished backing task's expiry
+// is at least terminal+800ms and its result is still collectable
+// past the 100ms ceiling, while a plain task under the same maxAge
+// keeps the exact 100ms ceiling (maxAge remains a hard bound for
+// ordinary tasks, per TestTaskMaxAgeStartsAtTerminalTransition...).
+func TestAMaxAgeClampCannotOverrideDeadlineRetentionFloor(t *testing.T) {
+	st := tasks.New()
+	st.PollInterval = 400 * time.Millisecond
+	st.Configure(time.Minute, 100*time.Millisecond)
+	task, err := st.StartWithDeadline(tasks.Caller("asker"), 60000, time.Minute, func(ctx context.Context) (any, *tasks.Fault) {
+		return "the answer", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	res, fault, err := st.Result(context.Background(), task.TaskID)
+	if err != nil || fault != nil || res != "the answer" {
+		t.Fatalf("result: %v %v %v", res, fault, err)
+	}
+	snap, ok := st.Get(task.TaskID)
+	if !ok || snap.ExpiresAt == nil {
+		t.Fatalf("finished deadline task missing expiry: %+v", snap)
+	}
+	if floor := snap.LastUpdatedAt.Add(800 * time.Millisecond); snap.ExpiresAt.Before(floor) {
+		t.Fatalf("maxAge clamped a deadline task below its retention floor: expiry %v, floor %v", snap.ExpiresAt, floor)
+	}
+	// Past the 100ms maxAge ceiling, inside the 800ms floor: the
+	// wrapper's next poll still collects the result.
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Fatal("the finished deadline task expired at the maxAge ceiling inside its collection window")
+	}
+
+	plain, err := st.Start(tasks.Caller("asker"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("start plain: %v", err)
+	}
+	if _, _, err := st.Result(context.Background(), plain.TaskID); err != nil {
+		t.Fatalf("plain result: %v", err)
+	}
+	psnap, ok := st.Get(plain.TaskID)
+	if !ok || psnap.ExpiresAt == nil {
+		t.Fatalf("plain task missing expiry: %+v", psnap)
+	}
+	if ceiling := psnap.LastUpdatedAt.Add(100 * time.Millisecond); psnap.ExpiresAt.After(ceiling) {
+		t.Fatalf("a plain task's retention exceeded the maxAge ceiling: expiry %v, ceiling %v", psnap.ExpiresAt, ceiling)
+	}
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=Queue coverage reconciliation: open issues vs live pilot-queue tasks (#7016)
+After=network-online.target
+After=queue-broker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Observe-only by default, like the sweeper's revalidator (C3,
+# doc/fleet/agent-events-turso.md): the first cycles are reviewed on
+# #7016 before import is switched on. Flip it live by writing
+# "import" to ~/.config/queue-reconcile/mode.
+ExecStart=/usr/bin/env bash -c '\
+  mode="observe"; \
+  if [ -f "$HOME/.config/queue-reconcile/mode" ]; then \
+    mode="$(cat "$HOME/.config/queue-reconcile/mode")"; \
+  fi; \
+  if [ "$mode" = "import" ]; then flag="--import"; else flag="--observe"; fi; \
+  exec /usr/bin/env python3 %h/git/code/scripts/fleet/queue-reconcile/check_coverage.py $flag'
+WorkingDirectory=%h/git/code

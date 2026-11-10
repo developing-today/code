@@ -8,6 +8,11 @@
 //! socket); on the laptop itself, a direct HTTP connection selected
 //! by REPO_QUEUE_BROKER_URL or ~/.config/repo-queue/broker-url (the
 //! opencode claimant and the worker sessions it launches use this).
+//! Without a configured URL, the direct path is probe-selected
+//! (#6218): fleet-config's transport choice for the queue-broker
+//! role picks the broker's Unix socket when it answers; an absent
+//! or stale socket keeps the session-proxy route, and a failed
+//! UDS attempt falls back to it within the same call.
 //! No Bitwarden fetch, no direct Supabase access. Exit 3 means the
 //! broker path itself is unavailable.
 //!
@@ -53,7 +58,14 @@ fn print_json(v: &Value) {
 // ---------------------------------------------------------------------------
 
 fn broker_sock() -> String {
-    broker_sock_from_home(Some(&home())).unwrap_or_else(|error| die(3, error))
+    // #6218: ask fleet-config instead of hardcoding the path --
+    // env beats the config file beats the compiled-in default,
+    // which is the same path broker_sock_from_home builds. A
+    // config load error falls back to the home-anchored default.
+    match fleet_config::Config::load() {
+        Ok(cfg) => cfg.broker_socket().to_string_lossy().into_owned(),
+        Err(_) => broker_sock_from_home(Some(&home())).unwrap_or_else(|error| die(3, error)),
+    }
 }
 
 fn broker_sock_from_home(home_dir: Option<&str>) -> Result<String, &'static str> {
@@ -88,35 +100,60 @@ fn direct_broker_url() -> Option<String> {
     None
 }
 
-fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or("broker URL must be http://host:port")?;
-    let hostport = rest.trim_end_matches('/');
-    if hostport.is_empty() || hostport.contains('/') {
-        return Err(format!("bad broker URL {url:?}"));
+/// The direct route to the queue-broker (#6218): its TCP
+/// listener, or its Unix socket (the broker dual-binds both,
+/// #6216). Selected by [`direct_route`].
+#[derive(Debug, PartialEq, Eq)]
+enum DirectRoute {
+    Tcp(String),
+    Unix(std::path::PathBuf),
+}
+
+/// Parse a configured broker URL into a route: `unix://<path>`
+/// selects the socket; anything else keeps the historical
+/// `http://host:port` TCP reading (validated in the TCP leg).
+fn route_from_configured_url(url: &str) -> Result<DirectRoute, String> {
+    if let Some(p) = url.strip_prefix("unix://") {
+        if p.is_empty() {
+            return Err(format!("bad broker URL {url:?}"));
+        }
+        return Ok(DirectRoute::Unix(std::path::PathBuf::from(p)));
     }
+    Ok(DirectRoute::Tcp(url.to_string()))
+}
+
+/// Which direct route, if any (#6218): an explicitly configured
+/// URL (env or broker-url file) wins; otherwise fleet-config's
+/// probe-based choice for the queue-broker role -- a live role
+/// socket selects UDS, the TCP choice keeps today's behavior
+/// (None: the session-proxy route below IS the sandbox's TCP
+/// route, and sandbox consumers are untouched by design).
+fn direct_route() -> Option<DirectRoute> {
+    if let Some(url) = direct_broker_url() {
+        return match route_from_configured_url(&url) {
+            Ok(route) => Some(route),
+            Err(e) => die(3, &e),
+        };
+    }
+    let cfg = fleet_config::Config::load().unwrap_or_default();
+    match cfg.role_transport_choice("queue-broker") {
+        Some(fleet_config::RoleTransport::Socket(socket)) => Some(DirectRoute::Unix(socket)),
+        _ => None,
+    }
+}
+
+fn direct_token() -> Result<String, String> {
     let token_file_env = std::env::var("REPO_QUEUE_TOKEN_FILE").ok();
     let home_env = std::env::var("HOME").ok();
     let token_file = token_file_from_env(token_file_env.as_deref(), home_env.as_deref())
         .unwrap_or_else(|error| die(3, error));
     let token = crate::token_file::load_token_file(&token_file)?;
-    let token = token.trim();
-    let payload = serde_json::to_vec(body).unwrap();
-    let mut s = TcpStream::connect(hostport)
-        .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
-    s.set_read_timeout(Some(Duration::from_secs(300))).ok();
-    s.set_write_timeout(Some(Duration::from_secs(60))).ok();
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        payload.len()
-    );
-    s.write_all(head.as_bytes())
-        .and_then(|_| s.write_all(&payload))
-        .map_err(|e| format!("queue-broker write failed: {e}"))?;
-    let mut raw = Vec::new();
-    s.read_to_end(&mut raw)
-        .map_err(|e| format!("queue-broker read failed: {e}"))?;
+    Ok(token.trim().to_string())
+}
+
+/// The response handling both direct legs share: status line,
+/// JSON body, 401 and >=400 die with exit 3 exactly as before.
+fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -142,9 +179,76 @@ fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String
     Ok(resp_body)
 }
 
+fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("broker URL must be http://host:port")?;
+    let hostport = rest.trim_end_matches('/');
+    if hostport.is_empty() || hostport.contains('/') {
+        return Err(format!("bad broker URL {url:?}"));
+    }
+    let token = direct_token()?;
+    let payload = serde_json::to_vec(body).unwrap();
+    let mut s = TcpStream::connect(hostport)
+        .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
+    s.set_read_timeout(Some(Duration::from_secs(300))).ok();
+    s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    s.write_all(head.as_bytes())
+        .and_then(|_| s.write_all(&payload))
+        .map_err(|e| format!("queue-broker write failed: {e}"))?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw)
+        .map_err(|e| format!("queue-broker read failed: {e}"))?;
+    finish_direct_response(&raw)
+}
+
+/// The UDS leg of the direct path (#6218): the same HTTP/1.1
+/// exchange over the queue-broker's Unix socket. The broker's
+/// handler is transport-agnostic (uds_http), so the wire surface
+/// -- routes, token auth, JSON envelope -- is identical.
+fn direct_uds_roundtrip(
+    socket: &std::path::Path,
+    path: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let token = direct_token()?;
+    let payload = serde_json::to_vec(body).unwrap();
+    let mut s = UnixStream::connect(socket).map_err(|e| {
+        format!(
+            "cannot connect to queue-broker at unix://{}: {e}",
+            socket.display()
+        )
+    })?;
+    s.set_read_timeout(Some(Duration::from_secs(300))).ok();
+    s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    s.write_all(head.as_bytes())
+        .and_then(|_| s.write_all(&payload))
+        .map_err(|e| format!("queue-broker write failed: {e}"))?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw)
+        .map_err(|e| format!("queue-broker read failed: {e}"))?;
+    finish_direct_response(&raw)
+}
+
 fn broker_roundtrip(path: &str, body: &Value) -> Result<Value, String> {
-    if let Some(url) = direct_broker_url() {
-        return direct_roundtrip(&url, path, body);
+    match direct_route() {
+        Some(DirectRoute::Tcp(url)) => return direct_tcp_roundtrip(&url, path, body),
+        Some(DirectRoute::Unix(socket)) => match direct_uds_roundtrip(&socket, path, body) {
+            Ok(v) => return Ok(v),
+            // #6218 acceptance: a failed socket attempt falls back
+            // to TCP within the same connection attempt -- here the
+            // session-proxy route below, the sandbox's TCP route.
+            Err(_) => {}
+        },
+        None => {}
     }
     let payload = json!({
         "method": "POST",
@@ -916,6 +1020,57 @@ fn validate_via_broker(packet: &Value, quiet: bool) -> Vec<String> {
 // Subcommands
 // ---------------------------------------------------------------------------
 
+/// #8097 Rule 2: a --platform value is a coarse FAMILY selector,
+/// never a lane name: exactly "openchamber" or "muse". Shared by
+/// the enqueue and claim verbs so both spell the rule once.
+fn platform_flag(v: &str) -> Result<String, String> {
+    match v {
+        "openchamber" | "muse" => Ok(v.to_string()),
+        other => Err(format!(
+            "invalid --platform {other:?} (expected \"openchamber\" or \"muse\")"
+        )),
+    }
+}
+
+/// #8176: the claim-model stamp flags. The claiming session reports
+/// its own serving leaf — provider and model together (the leaf it
+/// read from its session surface, route_usage's lastServing,
+/// opencode#1891), variant optional. Naming either half alone is a
+/// usage error, mirroring the broker's parse: a half-stamp must
+/// never reach the wire.
+fn model_stamp_flags(
+    provider: Option<&str>,
+    model: Option<&str>,
+    variant: Option<&str>,
+) -> Result<Option<(String, String, Option<String>)>, String> {
+    fn clean<'a>(v: Option<&'a str>) -> Option<&'a str> {
+        v.map(str::trim).filter(|s| !s.is_empty())
+    }
+    match (clean(provider), clean(model)) {
+        (None, None) => {
+            if clean(variant).is_some() {
+                return Err(
+                    "--model-variant requires --model-provider and --model-id".to_string(),
+                );
+            }
+            Ok(None)
+        }
+        (Some(p), Some(m)) => Ok(Some((
+            p.to_string(),
+            m.to_string(),
+            clean(variant).map(str::to_string),
+        ))),
+        (Some(_), None) => Err(
+            "--model-provider requires --model-id (the claim stamp names the serving leaf, provider and model together)"
+                .to_string(),
+        ),
+        (None, Some(_)) => Err(
+            "--model-id requires --model-provider (the claim stamp names the serving leaf, provider and model together)"
+                .to_string(),
+        ),
+    }
+}
+
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -966,7 +1121,7 @@ fn resolve_enqueue_queue(
 }
 
 fn cmd_enqueue(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &["dry-run", "shadow-intent"]);
+    let args = parse_args(rest, &["queue", "platform"], &["dry-run", "shadow-intent"]);
     reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
@@ -985,6 +1140,15 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         Ok(q) => q,
         Err(e) => die(2, &e),
     };
+    // #8097 Rule 2: the platform selector is optional; when given
+    // it restricts the item to that family. Absent = unset.
+    let platform = match args.get("platform") {
+        None => None,
+        Some(p) => match platform_flag(&p) {
+            Ok(v) => Some(v),
+            Err(e) => die(2, &e),
+        },
+    };
     let shadow_intent = args.has("shadow-intent");
     if queue.ends_with("-shadow") && !shadow_intent {
         die(
@@ -1000,7 +1164,7 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         "/enqueue",
         &json!({
             "packet": packet, "queue": queue, "dry_run": dry_run,
-            "shadow_intent": shadow_intent,
+            "shadow_intent": shadow_intent, "platform": platform,
         }),
     );
     let resp = unwrap_ok(resp);
@@ -1143,7 +1307,24 @@ fn cmd_list(rest: &[String]) -> i32 {
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane"], &[]);
+    let args = parse_args(
+        rest,
+        &[
+            "queue",
+            "worker",
+            "lease-seconds",
+            "lane",
+            "task",
+            "count",
+            "from-session",
+            "platform",
+            "session-id",
+            "model-provider",
+            "model-id",
+            "model-variant",
+        ],
+        &["handoff"],
+    );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
@@ -1154,7 +1335,82 @@ fn cmd_claim(rest: &[String]) -> i32 {
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
+    // --platform <family>: declare this claim's platform MARK
+    // (#8097 Rule 2, demoted by #8187). The broker stamps it on
+    // the claimed row and the claimed event; it filters NOTHING —
+    // a mismatched or undeclared claim claims items all the same.
+    if let Some(p) = args.get("platform") {
+        match platform_flag(&p) {
+            Ok(v) => body["platform"] = json!(v),
+            Err(e) => die(2, &e),
+        }
+    }
+    // --session-id: the claiming session's own id, recorded as a
+    // mark on the claimed event when the surface knows it (#8187).
+    if let Some(sid) = args.get("session-id") {
+        body["session_id"] = json!(sid);
+    }
+    // --model-provider/--model-id[/--model-variant]: the claiming
+    // session's own model, stamped on the task by the broker
+    // (#8176). The session reads its serving leaf from its own
+    // session surface (route_usage lastServing, opencode#1891)
+    // and passes it here; the broker stores it as the row's
+    // claim_provider / claim_model / claim_variant.
+    match model_stamp_flags(
+        args.get("model-provider").as_deref(),
+        args.get("model-id").as_deref(),
+        args.get("model-variant").as_deref(),
+    ) {
+        Ok(Some((provider, model, variant))) => {
+            body["model_provider"] = json!(provider);
+            body["model_id"] = json!(model);
+            if let Some(v) = variant {
+                body["model_variant"] = json!(v);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => die(2, &e),
+    }
+    // --handoff: the no-id collection of the next recorded
+    // opencode handoff from the sink (status 'handed_off', #8234;
+    // #8097 Rule 1) — the claimant's default handoff path. The
+    // BROKER picks the row; the caller names no task id. (--task
+    // remains the special-case claim.)
+    if args.has("handoff") {
+        body["pick"] = json!("handed_off");
+    }
+    // --task <id>: by-id claim — take exactly that row when the
+    // broker's by-id predicate allows it (a queued row under the
+    // ordinary predicate, or a sink row). The opencode claimant
+    // uses this to collect handed-off tasks out of the sink; a
+    // plain claim never names a task.
+    if let Some(task) = args.get_i64("task") {
+        body["task_id"] = json!(task);
+    }
+    // --count <n> (#8217): batch claim — the broker runs the same
+    // atomic pick n times and answers with every claimed row. The
+    // cap is enforced here (local, instant) and broker-side.
+    let count = match batch_count_flag(args.get_i64("count")) {
+        Ok(c) => c,
+        Err(e) => die(2, &e),
+    };
+    if count > 1 {
+        body["count"] = json!(count);
+    }
+    // --from-session <ses>: with --task, a session-to-session
+    // TRANSFER (#8210) — claim exactly this task DIRECTLY from
+    // the session named, which must be the task's current holder
+    // (its session mark is the capability; a mismatch refuses and
+    // leaves the claim untouched). The task never passes through
+    // queued or parked. --session-id on the same claim binds the
+    // claiming session in the same operation.
+    if let Some(fs) = args.get("from-session") {
+        body["from_session"] = json!(fs);
+    }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
+    if count > 1 {
+        return claim_batch_output(&resp, &worker, count);
+    }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
         eprint("repo-queue: no claimable task");
@@ -1263,6 +1519,138 @@ enum GuardOutcome {
     Unchecked(String),
 }
 
+/// #8217: --count validation for the batch claim. Absent or 1 is
+/// the ordinary single claim; 2..=BATCH_CLAIM_MAX is a batch;
+/// anything else is a usage error, checked locally so the failure
+/// is instant (the broker enforces the same bound).
+fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
+    match n {
+        None => Ok(1),
+        Some(n) if n == 1 => Ok(1),
+        Some(n) if (2..=crate::turso_queue::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
+        Some(n) => Err(format!(
+            "claim --count {n} is out of range: a batch claim takes \
+             1..={} items (#8217)",
+            crate::turso_queue::BATCH_CLAIM_MAX
+        )),
+    }
+}
+
+/// The batch claim's response handling (#8217): the broker ran the
+/// pick repeatedly and returned every claimed row. Each row goes
+/// through the SAME per-item post-claim handling as a single
+/// claim — the payload defense in depth and the #6741
+/// no-double-serve guard (a fallback-held row is blocked back,
+/// never served) — then prints one verdict:
+/// {"tasks": [...], "claimed": k, "requested": n, "guard_held": [...]}.
+/// Zero served rows is the usual no-claim verdict (NO_CLAIM_EXIT).
+fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
+    let rows = resp
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut tasks: Vec<Value> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+    for row in rows {
+        // Payload defense in depth, as in claim_output (#5444): a
+        // well-formed claim never carries a null or {} payload.
+        if let Some(payload) = row.get("payload") {
+            if payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty()) {
+                continue;
+            }
+        }
+        match fallback_guard(&row, worker) {
+            GuardOutcome::HeldBy(holder) => {
+                let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let (repo, issue) = task_issue(&row);
+                let blocker = format!(
+                    "issue {repo}#{issue} is held in the GitHub fallback by {holder}; \
+                     primary-store claim auto-blocked to prevent double-serve (#6741)"
+                );
+                let resp = call(
+                    "/block",
+                    &json!({
+                        "task_id": task_id,
+                        "worker": worker,
+                        "reason_class": "fallback_held",
+                        "blocker": blocker,
+                        "progress": {},
+                    }),
+                );
+                if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                    eprint(
+                        "repo-queue: WARNING: fallback guard block failed; \
+                         the task stays claimed under its lease",
+                    );
+                }
+                held.push(json!({
+                    "task": task_id,
+                    "held_by": holder,
+                    "repo": repo,
+                    "issue": issue,
+                }));
+            }
+            GuardOutcome::Unchecked(e) => {
+                let mut row = row;
+                if let Some(o) = row.as_object_mut() {
+                    o.insert(
+                        "guard_warning".to_string(),
+                        json!(format!(
+                            "fallback double-serve guard could not check GitHub: {e}"
+                        )),
+                    );
+                }
+                tasks.push(row);
+            }
+            GuardOutcome::Serve => tasks.push(row),
+        }
+    }
+    let claimed = tasks.len();
+    print_json(&json!({
+        "tasks": tasks,
+        "claimed": claimed,
+        "requested": requested,
+        "guard_held": held,
+    }));
+    if claimed == 0 {
+        eprint("repo-queue: no claimable task");
+        return NO_CLAIM_EXIT;
+    }
+    0
+}
+
+/// Release a claimed task straight back to the queue (#8217):
+/// `release <task_id> --worker <w> --reason <text>`. The broker
+/// returns the row to `queued`, immediately claimable, and records
+/// the reason on a `released` event. Dispatch uses it for an item
+/// whose sub-task failed to launch or bind: the item goes back to
+/// the pool in the same touch instead of sitting claimed and idle
+/// until its lease expires.
+fn cmd_release(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("release", &args, 1);
+    let Some(reason) = args.get("reason") else {
+        die(
+            2,
+            "release requires --reason \"<why this task goes back to the pool>\" (#8217)",
+        );
+    };
+    if reason.trim().is_empty() {
+        die(2, "release requires a non-empty --reason (#8217)");
+    }
+    let resp = unwrap_ok(call(
+        "/release",
+        &json!({
+            "task_id": args.pos_i64(0, "task_id"),
+            "worker": opt_worker(&args),
+            "reason": reason,
+        }),
+    ));
+    print_json(&require_row(&resp, "release_repo_task"));
+    0
+}
+
 fn fallback_guard(row: &Value, my_worker: &str) -> GuardOutcome {
     let (repo, issue) = task_issue(row);
     if repo.is_empty() || issue <= 0 {
@@ -1301,8 +1689,7 @@ fn claim_output(resp: &Value) -> (Value, i32) {
     // payload-less packet — never print it as a claimed task. Rows
     // without a payload field keep the #5486 verbatim contract.
     if let Some(payload) = row.get("payload") {
-        let missing = payload.is_null()
-            || payload.as_object().is_some_and(|o| o.is_empty());
+        let missing = payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty());
         if missing {
             eprint(&format!(
                 "repo-queue: claim skipped: task {} arrived payload-less (#5444); treating as no claim",
@@ -1315,7 +1702,17 @@ fn claim_output(resp: &Value) -> (Value, i32) {
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["worker", "exclusion-reason"], &[]);
+    let args = parse_args(
+        rest,
+        &[
+            "worker",
+            "exclusion-reason",
+            "opencode-reason",
+            "limit-platform",
+            "limit-reason",
+        ],
+        &["clear-platform-limit"],
+    );
     reject_extra_pos("lane", &args, 1);
     let resp = unwrap_ok(call(
         "/lane",
@@ -1323,6 +1720,13 @@ fn cmd_lane(rest: &[String]) -> i32 {
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
             "exclusion_reason": args.get("exclusion-reason"),
+            "opencode_reason": args.get("opencode-reason"),
+            // #8210: a platform limitation — an exception that
+            // exists only with its recorded reason. The broker
+            // refuses a limitation with no --limit-reason.
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
+            "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
     print_json(&require_row(&resp, "assign_repo_task_lane"));
@@ -1444,6 +1848,22 @@ fn cmd_park(rest: &[String]) -> i32 {
     }
     let resp = unwrap_ok(call("/park", &body));
     row_or_ledger(&resp, "park_task");
+    0
+}
+
+/// wake (#8184): release a broker-held parked wait now that
+/// its condition is satisfied (e.g. the triage step finished
+/// triaging the item). The broker flips it back to queued.
+fn cmd_wake(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("wake", &args, 1);
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+    });
+    let resp = unwrap_ok(call("/wake", &body));
+    print_json(&require_row(&resp, "wake_task"));
     0
 }
 
@@ -1762,7 +2182,7 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|revive|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|cancel|fail|complete|revive|health|signal|fallback> ...",
         );
         return 2;
     }
@@ -1776,11 +2196,13 @@ pub fn run(args: &[String]) -> i32 {
         "enqueue" => cmd_enqueue(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
+        "release" => cmd_release(rest),
         "lane" => cmd_lane(rest),
         "bind" => cmd_bind(rest),
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
@@ -1800,6 +2222,60 @@ pub fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    #[test]
+    fn model_stamp_flags_require_provider_and_model_together() {
+        // #8176 oracle: the claim stamp names the serving leaf —
+        // provider and model together, variant optional. Either
+        // half alone (or a variant alone) is a usage error.
+        assert_eq!(
+            model_stamp_flags(Some("_claude"), Some("claude-sonnet-5-5"), Some("medium")),
+            Ok(Some((
+                "_claude".to_string(),
+                "claude-sonnet-5-5".to_string(),
+                Some("medium".to_string()),
+            )))
+        );
+        assert_eq!(
+            model_stamp_flags(Some("openai.main"), Some("gpt-6-luna"), None),
+            Ok(Some((
+                "openai.main".to_string(),
+                "gpt-6-luna".to_string(),
+                None,
+            )))
+        );
+        assert_eq!(model_stamp_flags(None, None, None), Ok(None));
+        assert!(model_stamp_flags(Some("_claude"), None, None).is_err());
+        assert!(model_stamp_flags(None, Some("claude-sonnet-5-5"), None).is_err());
+        assert!(model_stamp_flags(None, None, Some("medium")).is_err());
+    }
+
+    #[test]
+    fn platform_flag_accepts_only_the_two_families() {
+        // #8097 Rule 2: the selector is a coarse family, never a
+        // lane name — a lane id as --platform is a usage error.
+        assert_eq!(platform_flag("openchamber"), Ok("openchamber".to_string()));
+        assert_eq!(platform_flag("muse"), Ok("muse".to_string()));
+        assert!(platform_flag("code-a").is_err());
+        assert!(platform_flag("").is_err());
+    }
+
+    #[test]
+    fn batch_count_flag_bounds_8217() {
+        // #8217: absent/1 = the single claim; 2..=cap = a batch;
+        // anything else is a usage error naming the cap.
+        assert_eq!(batch_count_flag(None), Ok(1));
+        assert_eq!(batch_count_flag(Some(1)), Ok(1));
+        assert_eq!(batch_count_flag(Some(2)), Ok(2));
+        assert_eq!(
+            batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX)),
+            Ok(crate::turso_queue::BATCH_CLAIM_MAX)
+        );
+        assert!(batch_count_flag(Some(0)).is_err());
+        assert!(batch_count_flag(Some(-3)).is_err());
+        assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+    }
 
     #[test]
     fn fallback_switch_json_shape() {
@@ -1843,7 +2319,10 @@ mod tests {
     #[test]
     fn task_issue_reads_payload_identity() {
         let row = json!({"payload": {"repo": "developing-today/code", "issue": {"number": 6741}}});
-        assert_eq!(task_issue(&row), ("developing-today/code".to_string(), 6741));
+        assert_eq!(
+            task_issue(&row),
+            ("developing-today/code".to_string(), 6741)
+        );
         assert_eq!(task_issue(&json!({"payload": {}})), (String::new(), 0));
     }
 
@@ -1873,8 +2352,7 @@ mod tests {
         // loudly — it never resolves to the shadow default.
         let packet = json!({"queue": "repo-health-code-pilot"});
         assert_eq!(
-            resolve_enqueue_queue(Some("repo-health-nix-pilot"), &packet, Some("env-q"))
-                .unwrap(),
+            resolve_enqueue_queue(Some("repo-health-nix-pilot"), &packet, Some("env-q")).unwrap(),
             "repo-health-nix-pilot"
         );
         assert_eq!(
@@ -1900,6 +2378,34 @@ mod tests {
             |value| signal_path_from_env(value, Some(home_dir)).unwrap(),
             &default,
         );
+    }
+
+    #[test]
+    fn configured_url_routes_unix_and_http_forms() {
+        // #6218: unix:// selects the socket route; the historical
+        // http:// form stays TCP; an empty unix path is rejected.
+        assert_eq!(
+            route_from_configured_url("unix:///run/fleet/queue-broker.sock"),
+            Ok(DirectRoute::Unix(std::path::PathBuf::from(
+                "/run/fleet/queue-broker.sock"
+            )))
+        );
+        assert_eq!(
+            route_from_configured_url("http://100.99.113.103:4801"),
+            Ok(DirectRoute::Tcp("http://100.99.113.103:4801".to_string()))
+        );
+        assert!(route_from_configured_url("unix://").is_err());
+    }
+
+    #[test]
+    fn finish_direct_response_parses_status_and_body() {
+        // #6218: both direct legs share this response handling.
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
+        assert_eq!(
+            finish_direct_response(ok).expect("200 parses"),
+            json!({"ok": true})
+        );
+        assert!(finish_direct_response(b"no header split").is_err());
     }
 
     #[test]
