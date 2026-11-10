@@ -136,6 +136,7 @@ fn signed_body_round_trip(kind: &str, body: &[u8]) {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         },
     )
     .expect("sign body");
