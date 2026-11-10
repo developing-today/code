@@ -1,6 +1,10 @@
 name: atlas-search
 
 # CI tier policy: see .github/ci-policy.md
+#
+# No `cargo fmt --check` step: the policy is that formatting is not a
+# merge gate (formatting is auto-fixed on main by auto-format.yml), so
+# this basic-tier job runs tests only.
 
 on:
   pull_request:
