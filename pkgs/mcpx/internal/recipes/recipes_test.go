@@ -467,3 +467,23 @@ func TestFormSchemaJSONPlaceholderAcceptsAnyJSONValue(t *testing.T) {
 		t.Errorf("object answer for a TypeJSON placeholder refused: %v", err)
 	}
 }
+
+// Oracle: the rendered script stays valid in its own language (PR #8317,
+// #1933 slice 2). Render consumes an @param declaration line by keeping
+// it as a comment; a #-style declaration (Python/shell) must keep its #
+// marker -- rewriting it with // produced "//# @param ..." as the first
+// line, which is a syntax error in Python.
+func TestRenderKeepsHashCommentMarkerOnConsumedDeclarations(t *testing.T) {
+	r := recipes.Parse("greet", "/tmp/greet.py", "# @param name:string   who to greet\nprint(\"hello \" + @name)\n")
+	out, err := r.Render(map[string]any{"name": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, _ := strings.Cut(out, "\n")
+	if !strings.HasPrefix(first, "#") || strings.Contains(first, "//") {
+		t.Errorf("the consumed declaration must stay a # comment, got %q", first)
+	}
+	if !strings.Contains(out, `print("hello " + "world")`) {
+		t.Errorf("the placeholder must be substituted as a JSON literal:\n%s", out)
+	}
+}

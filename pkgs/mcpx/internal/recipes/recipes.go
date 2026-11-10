@@ -502,8 +502,19 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 		if declLine.MatchString(line) {
 			// The declaration is consumed. Leaving it in would be harmless
 			// but the rendered script is what a diagnostic reports line
-			// numbers against, and they should match what ran.
-			b.WriteString("//" + strings.TrimPrefix(strings.TrimSpace(line), "//") + "\n")
+			// numbers against, and they should match what ran. The
+			// consumed line keeps the declaration's own comment marker:
+			// rewriting a #-style (Python/shell) declaration with //
+			// produced a line that is not a comment in that language
+			// and broke the rendered script (PR #8317, #1933 slice 2).
+			trimmed := strings.TrimSpace(line)
+			marker := "//"
+			if strings.HasPrefix(trimmed, "#") {
+				marker = "#"
+			} else if strings.HasPrefix(trimmed, "*") {
+				marker = "*"
+			}
+			b.WriteString(marker + strings.TrimPrefix(trimmed, marker) + "\n")
 			offset += len(line) + 1
 			continue
 		}

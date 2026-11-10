@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
@@ -72,7 +73,7 @@ func scriptViewTool(name string, tv config.ToolView) mcpclient.Tool {
 // as text. A program that exits non-zero is a result with isError set, carrying
 // its exit status and stderr. Only a call that cannot run, times out or is
 // cancelled is an error.
-func (r *Registry) runScriptView(ctx context.Context, tool string, tv *config.ToolView, args any, session string) (json.RawMessage, error) {
+func (r *Registry) runScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.ToolView, args any, session string) (json.RawMessage, error) {
 	if tv.File != "" {
 		r.mu.RLock()
 		run := r.scriptRun
@@ -106,10 +107,10 @@ func (r *Registry) runScriptView(ctx context.Context, tool string, tv *config.To
 		}
 		return run(ctx, tool, *tv, values, session)
 	}
-	return callScriptView(ctx, tool, tv, args)
+	return callScriptView(ctx, pl, tool, tv, args)
 }
 
-func callScriptView(ctx context.Context, tool string, tv *config.ToolView, args any) (json.RawMessage, error) {
+func callScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.ToolView, args any) (json.RawMessage, error) {
 	ctx = withRequestedCallTimeout(ctx)
 	payload, err := json.Marshal(args)
 	if err != nil {
@@ -128,7 +129,18 @@ func callScriptView(ctx context.Context, tool string, tv *config.ToolView, args 
 		}
 	}
 
+	// An undeclared timeout inherits the pool's resolved call timeout
+	// -- the same budget upstream calls get -- not the package default:
+	// the declaration documents empty as "the pool's call timeout", and
+	// falling back to DefaultCallTimeout ignored daemon/server budgets
+	// in both directions (Codex P2 on PR #8317). The per-call request
+	// lowering below still applies on top.
 	timeout := config.DefaultCallTimeout
+	if pl != nil {
+		if resolved := pl.CallTimeout(ctx); resolved > 0 {
+			timeout = resolved
+		}
+	}
 	if d, err := time.ParseDuration(tv.Timeout); err == nil && d > 0 {
 		timeout = d
 	}
@@ -144,6 +156,7 @@ func callScriptView(ctx context.Context, tool string, tv *config.ToolView, args 
 	stderr := &cappedBuffer{max: defaults.ExecStderrLimit}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = scriptWaitDelay
+	mcpclient.NoteToolCallDispatched(ctx)
 	runErr := cmd.Run()
 	if errors.Is(runErr, exec.ErrWaitDelay) {
 		// The program exited and only its inherited pipes were still open.
@@ -210,6 +223,10 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	opts := execsvc.Options{
 		Output:  execsvc.OutputStructured,
 		Session: session,
+		// The session is the caller's, borrowed for this one tool
+		// call: the run must not release the caller's session-scoped
+		// instances when it ends (Codex P1 on PR #8317).
+		BorrowSession: session != "",
 		// Relative imports and data files beside the script work from
 		// the directory somebody put it in, not from the daemon's cwd.
 		Cwd: filepath.Dir(view.Path),
@@ -217,15 +234,30 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	if view.Timeout != "" {
 		opts.Timeout = view.Timeout
 	}
-	res, runErr := s.ExecService().Run(ctx, execsvc.Request{Source: rendered, Opts: opts}, nil)
+	// SourceName carries the declared script name as language evidence:
+	// the runner executes Source (the rendered body), but ScriptLanguage
+	// reads the shebang from the source and otherwise the file
+	// extension, so without it a .py declaration with no shebang was
+	// misrouted to the TypeScript runtime (Codex P2 on PR #8317).
+	// Passing it as File instead would execute the unrendered file.
+	mcpclient.NoteToolCallDispatched(ctx)
+	res, runErr := s.ExecService().Run(ctx, execsvc.Request{Source: rendered, SourceName: view.Path, Opts: opts}, nil)
 	if runErr != nil && res == nil {
 		return nil, fmt.Errorf("tool %q: %w", tool, runErr)
 	}
 	if res == nil {
 		return nil, fmt.Errorf("tool %q: the script produced no result", tool)
 	}
+	// The tool result carries what the script emitted as well as what
+	// it printed: emit(...) values land in res.Emits, not Stdout, and
+	// dropping them made an emit-only script return empty content
+	// despite succeeding (Codex P2 on PR #8317).
+	content := []map[string]string{{"type": "text", "text": res.Stdout}}
+	for _, e := range res.Emits {
+		content = append(content, map[string]string{"type": "text", "text": string(e)})
+	}
 	out := map[string]any{
-		"content": []map[string]string{{"type": "text", "text": res.Stdout}},
+		"content": content,
 	}
 	if res.ExitCode != 0 || res.Error != "" {
 		out["isError"] = true
@@ -240,4 +272,25 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 		return nil, err
 	}
 	return b, nil
+}
+
+// callScriptWithLedger runs a script-backed view under the same
+// write-ledger discipline as an upstream call (Codex P1 on PR #8317):
+// the script branches used to return runScriptView's error directly,
+// so a non-read-only script that timed out or lost its caller left no
+// unknown-outcome record and the ledger preflight could not block a
+// retry -- the same side effect could run twice. Dispatch is noted by
+// the execution paths themselves (NoteToolCallDispatched) at the
+// moment the program starts; an error before that point, or a
+// conclusive validation error, records nothing.
+func (r *Registry) callScriptWithLedger(ctx context.Context, pl *pool.Pool, server, tool string, tv *config.ToolView, args any, session, surface string) (json.RawMessage, error) {
+	var dispatched atomic.Bool
+	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
+	res, err := r.runScriptView(callCtx, pl, tool, tv, args, session)
+	var invalid *mcpclient.InvalidParamsError
+	if err != nil && dispatched.Load() && !tv.ReadOnly && r.writeLedger != nil &&
+		!mcpclient.IsConclusiveUpstreamError(err) && !errors.As(err, &invalid) {
+		return nil, r.recordUnknownOutcome(pl, server, tool, args, surface)
+	}
+	return res, err
 }

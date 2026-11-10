@@ -79,7 +79,7 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 		return nil, err
 	}
 	if script != nil {
-		return r.runScriptView(ctx, effTool, script, effArgs, cc.SessionID)
+		return r.callScriptWithLedger(ctx, p, server, effTool, script, effArgs, cc.SessionID, "reporting")
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)

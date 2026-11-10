@@ -117,18 +117,25 @@ type Options struct {
 	// (flag aliases, env, config) and forwards the result, so a remote
 	// run honours the caller's policy instead of silently substituting
 	// the daemon's.
-	CwdPolicy    string            `json:"cwdPolicy,omitempty"`
-	Timeout      string            `json:"timeout,omitempty"`
-	Permissions  string            `json:"permissions,omitempty"`
-	Placeholders map[string]any    `json:"placeholders,omitempty"`
-	Session      string            `json:"session,omitempty"`
-	Cwd          string            `json:"cwd,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	Stdin        string            `json:"stdin,omitempty"`
-	Output       string            `json:"output,omitempty"`
-	Capabilities []string          `json:"capabilities,omitempty"`
-	Artifacts    *ArtifactOptions  `json:"artifacts,omitempty"`
-	Task         *TaskOptions      `json:"task,omitempty"`
+	CwdPolicy    string         `json:"cwdPolicy,omitempty"`
+	Timeout      string         `json:"timeout,omitempty"`
+	Permissions  string         `json:"permissions,omitempty"`
+	Placeholders map[string]any `json:"placeholders,omitempty"`
+	// BorrowSession marks Session as borrowed from a still-running
+	// caller: this run may use the session's instances but must not
+	// release them when it ends -- the caller owns their lifetime and
+	// may use them again after this run returns (a nested file-backed
+	// tool call inside an outer exec run, #1933 slice 2). A run that
+	// owns its session leaves it false and releases as before.
+	BorrowSession bool              `json:"borrowSession,omitempty"`
+	Session       string            `json:"session,omitempty"`
+	Cwd           string            `json:"cwd,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Stdin         string            `json:"stdin,omitempty"`
+	Output        string            `json:"output,omitempty"`
+	Capabilities  []string          `json:"capabilities,omitempty"`
+	Artifacts     *ArtifactOptions  `json:"artifacts,omitempty"`
+	Task          *TaskOptions      `json:"task,omitempty"`
 	// DryRun runs the script with every tool call intercepted
 	// (#1927 rung: dry run): no call reaches a server, each returns a
 	// schema-valid synthetic result, and the calls that would have
@@ -634,7 +641,11 @@ type Request struct {
 	// Source is inline TypeScript; File is a path. Exactly one.
 	Source string
 	File   string
-	Opts   Options
+	// SourceName is the name of the file Source was rendered from, when
+	// the caller rendered a declared file itself. Language evidence
+	// only (see runner.Options.SourceName); never an execution target.
+	SourceName string
+	Opts       Options
 	// RunID, when set, is used instead of a fresh one: the daemon registers
 	// a script's run for question correlation before the script starts.
 	RunID string
@@ -736,7 +747,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	// runner will treat as Python is exactly the request that fetches the
 	// Python client.
 	clients := map[string]runner.Client{}
-	if runner.ScriptLanguage(req.File, req.Source) == codegen.Python.Name {
+	if runner.ScriptLanguage(firstNonEmpty(req.File, req.SourceName), req.Source) == codegen.Python.Name {
 		if module, pyGlobals, cerr := s.Src.ClientModuleFor(ctx, codegen.Python.Name, opts.NS); cerr == nil {
 			clients[codegen.Python.Name] = runner.Client{Module: module, Globals: pyGlobals}
 		}
@@ -749,6 +760,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	ropts := runner.Options{
 		Source:                 req.Source,
 		File:                   req.File,
+		SourceName:             req.SourceName,
 		ClientSource:           clientSrc,
 		GlobalsSource:          globals,
 		Clients:                clients,
@@ -1056,7 +1068,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// servers the script used -- or start ones that this release must also
 	// stop. One closure, called on every exit path below.
 	release := func() {
-		if s.Release != nil && session != "" {
+		if s.Release != nil && session != "" && !opts.BorrowSession {
 			relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), defaults.ShutdownGrace)
 			_ = s.Release(relCtx, session)
 			relCancel()

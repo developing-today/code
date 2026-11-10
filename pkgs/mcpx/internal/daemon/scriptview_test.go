@@ -251,7 +251,7 @@ func TestScriptViewNonZeroExitIsAResultNotAnError(t *testing.T) {
 func TestScriptViewIsBoundedByItsTimeout(t *testing.T) {
 	r := scriptRegistry(t, map[string]*config.Server{
 		"slow": {Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
-			"wait": {Command: "sleep", Args: []string{"5"}, Description: "waits", Timeout: "100ms"},
+			"wait": {Command: "sleep", Args: []string{"5"}, Description: "waits", Timeout: "100ms", ReadOnly: true},
 		}}},
 	})
 	start := time.Now()
@@ -439,5 +439,154 @@ func TestScriptFileHintsGovernTheWritePolicy(t *testing.T) {
 				t.Fatalf("an undeclared script must be refused by deny, got %v", err)
 			}
 		})
+	}
+}
+
+// Oracle: the pool's resolved CallTimeout (Codex P2 on PR #8317). A
+// command-backed view that declares no timeout of its own inherits the
+// pool budget its server was configured with -- here 100ms -- not the
+// package default, so a 5s sleep is cut at the pool's bound.
+func TestScriptViewInheritsPoolCallTimeout(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"slow": {Mcpx: &config.Extras{CallTimeout: "100ms", ToolViews: map[string]config.ToolView{
+			"wait": {Command: "sleep", Args: []string{"5"}, Description: "waits", ReadOnly: true},
+		}}},
+	})
+	start := time.Now()
+	_, err := r.Call(scriptCtx(t), "slow", "wait", config.CallContext{}, map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "did not finish within 100ms") {
+		t.Fatalf("want the inherited pool budget to bound the call, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Errorf("the call ran %s past its inherited 100ms budget", elapsed)
+	}
+}
+
+// Oracle: the declared file's language (Codex P2 on PR #8317). A .py
+// script with no shebang is Python because its declaration names a .py
+// file; routing it to the TypeScript runtime would fail on print().
+// The rendered body must round-trip through the Python runtime.
+func TestScriptFileToolPythonWithoutShebangRunsAsPython(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "greet.py")
+	body := "# @param name:string   who to greet\nprint(\"hello \" + @name)\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"greet": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "greet", config.CallContext{}, map[string]any{"name": "world"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a clean Python run is not an error: %s", raw)
+	}
+	if got := strings.TrimSpace(res.Content[0].Text); got != "hello world" {
+		t.Errorf("script output = %q, want the rendered @name from Python", got)
+	}
+}
+
+// Oracle: the script result contract (Codex P2 on PR #8317). Values a
+// file-backed script passes to emit(...) are part of its tool result,
+// not only its stdout: an emit-only script returns the emitted value.
+func TestScriptFileToolResultIncludesEmits(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "answer.ts")
+	body := "// @param name:string   who to greet\nemit({ greeted: @name });\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"answer": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "answer", config.CallContext{}, map[string]any{"name": "world"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a clean emit-only run is not an error: %s", raw)
+	}
+	joined := ""
+	for _, c := range res.Content {
+		joined += c.Text
+	}
+	if !strings.Contains(joined, `"greeted"`) || !strings.Contains(joined, `"world"`) {
+		t.Errorf("the emitted value must appear in the tool result: %s", raw)
+	}
+}
+
+// Oracle: the write ledger (Codex P1 on PR #8317). A non-read-only
+// script tool whose call times out has an unknown outcome -- the side
+// effect may have happened -- so the call records it: the caller sees
+// ErrUnknownOutcome, the ledger holds the record, and a retry is
+// refused by the preflight instead of running the script again.
+func TestScriptViewTimeoutRecordsUnknownOutcome(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"slow": {Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"wait": {Command: "sleep", Args: []string{"5"}, Description: "waits", Timeout: "100ms"},
+		}}},
+	})
+	if r.writeLedger == nil {
+		t.Fatal("the test registry must carry a write ledger")
+	}
+	_, err := r.Call(scriptCtx(t), "slow", "wait", config.CallContext{}, map[string]any{})
+	var unknown ErrUnknownOutcome
+	if !errors.As(err, &unknown) {
+		t.Fatalf("a timed-out write must surface as an unknown outcome, got %v", err)
+	}
+	if _, blocked := r.writeLedger.Lookup("slow"); !blocked {
+		t.Fatal("the ledger must hold the unknown-outcome record for the server")
+	}
+	_, err = r.Call(scriptCtx(t), "slow", "wait", config.CallContext{}, map[string]any{})
+	if !errors.As(err, &unknown) {
+		t.Fatalf("a retry must be refused while the outcome is unknown, got %v", err)
+	}
+}
+
+// Oracle: the same ledger discipline exempts a declared read-only
+// script -- its timeout cannot have performed a write, so nothing is
+// recorded and the caller sees the plain timeout.
+func TestScriptViewReadOnlyTimeoutRecordsNothing(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"slow": {Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"wait": {Command: "sleep", Args: []string{"5"}, Description: "waits", Timeout: "100ms", ReadOnly: true},
+		}}},
+	})
+	_, err := r.Call(scriptCtx(t), "slow", "wait", config.CallContext{}, map[string]any{})
+	var unknown ErrUnknownOutcome
+	if errors.As(err, &unknown) {
+		t.Fatalf("a read-only timeout must not record an unknown outcome, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not finish within 100ms") {
+		t.Fatalf("want the plain timeout error, got %v", err)
+	}
+	if _, blocked := r.writeLedger.Lookup("slow"); blocked {
+		t.Fatal("a read-only call must not write the ledger")
 	}
 }
