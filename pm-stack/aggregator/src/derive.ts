@@ -1,7 +1,9 @@
 // Pure derivations from the read model: the execution strip, the roadmap
 // timeline lanes, and the unified comment stream. No I/O here.
 import type { SectionDiagnosis } from "./feed.ts";
-import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
+import type { Comment, GhItem, Link, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
+import { validateRoadmapHorizon } from "./roadmap-horizon.ts";
+import { summarizeWipLanes, type WipLaneSummary } from "./wip-limits.ts";
 import { parseIsoDate } from "./validate.ts";
 
 export interface ExecutionStrip {
@@ -63,7 +65,7 @@ export interface Lane {
 }
 
 const QUARTER = /^Q([1-4])\s+(\d{4})$/i;
-const DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -85,17 +87,21 @@ export function isCalendarDate(year: number, month: number, day: number): boolea
  * "Ongoing", "Unscheduled" and anything else sort after every quarter.
  */
 export function laneFor(horizon: string): Lane {
-  const h = horizon.trim();
+  const validation = validateRoadmapHorizon(horizon);
+  const h = validation.valid ? validation.canonical : horizon.trim();
   const q = QUARTER.exec(h);
   if (q) return quarterLane(Number(q[2]), Number(q[1]));
   const d = DATE.exec(h);
   if (d && isCalendarDate(Number(d[1]), Number(d[2]), Number(d[3])))
     return quarterLane(Number(d[1]), Math.floor((Number(d[2]) - 1) / 3) + 1);
-  if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 };
+  if (/^now$/i.test(h)) return { key: "now", label: "Now", order: 1e6 };
+  if (/^next$/i.test(h)) return { key: "next", label: "Next", order: 1e6 + 1 };
+  if (/^later$/i.test(h)) return { key: "later", label: "Later", order: 1e6 + 2 };
+  if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 + 3 };
   if (h === "" || /^unscheduled$/i.test(h)) {
-    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 2 };
+    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 5 };
   }
-  return { key: `other:${h}`, label: h, order: 1e6 + 1 };
+  return { key: `other:${h}`, label: h, order: 1e6 + 4 };
 }
 
 function quarterLane(year: number, quarter: number): Lane {
@@ -327,12 +333,18 @@ export interface SectionMatch {
  */
 export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): TieredEntry {
   if (match && e.state !== "in-motion") {
-    if (match.tier === "needs-drew") return { ...e, tier: "needs-drew", drewReason: match.item.reason };
+    if (match.tier === "needs-drew")
+      return { ...e, tier: "needs-drew", tierSince: match.item.since, drewReason: match.item.reason };
     const next = match.item.recommendedAction ? ` Next: ${match.item.recommendedAction}` : "";
     return { ...e, tier: "needs-orchestrator", orchestratorNote: `${match.item.reason}${next}` };
   }
   if (e.state !== "in-motion" && e.supervisionNote && ESCALATION_NOTE.test(e.supervisionNote)) {
-    return { ...e, tier: "needs-drew", drewReason: `Keeper escalated this session — ${e.supervisionNote}` };
+    return {
+      ...e,
+      tier: "needs-drew",
+      tierSince: e.lastActivityAt ?? undefined,
+      drewReason: `Keeper escalated this session — ${e.supervisionNote}`,
+    };
   }
   if (e.state !== "in-motion" && e.awaitingQuestion) {
     const q = e.awaitingQuestion;
@@ -341,6 +353,7 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
         return {
           ...e,
           tier: "needs-drew",
+          tierSince: e.lastActivityAt ?? undefined,
           drewReason: `A session is asking permission for something destructive — ${q}`,
         };
       }
@@ -349,13 +362,19 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
       // Jules questions are the keeper's to answer (it replies with the
       // standard proceed/feedback messages) — they never need Drew
       // unless the orchestration job escalates them explicitly.
-      return { ...e, tier: "needs-drew", drewReason: `Waiting on your decision — ${q}` };
+      return {
+        ...e,
+        tier: "needs-drew",
+        tierSince: e.lastActivityAt ?? undefined,
+        drewReason: `Waiting on your decision — ${q}`,
+      };
     }
   }
   if (e.state !== "in-motion" && e.lastTurnError && CREDENTIAL_ERR.test(e.lastTurnError)) {
     return {
       ...e,
       tier: "needs-drew",
+      tierSince: e.lastActivityAt ?? undefined,
       drewReason: `Blocked on a sign-in only you can complete — ${e.lastTurnError}`,
     };
   }
@@ -395,6 +414,32 @@ export interface AttentionView {
   expiredCount: number;
   /** The tier source's diagnosis (#1139); drives the banner + counts. */
   tierSource: TierSourceInfo;
+}
+
+/** Digest landing filter (#7193 Codex): the alert digest links to
+ * /attention?refs=<objectRefs>; keep only the entries those refs name.
+ * Ref forms mirror NotificationCandidate.objectRef: session:<id>,
+ * item:<id>, a bare session/item id, a GitHub ref (owner/repo#n), or
+ * gh:<ref>. Quota/health refs name no attention entries (their own
+ * pages carry them), so they simply match nothing here. */
+export function filterAttentionViewByRefs(view: AttentionView, refs: string[]): AttentionView {
+  const wanted = new Set(refs.map((ref) => ref.trim()).filter(Boolean));
+  if (wanted.size === 0) return view;
+  const matchEntry = (e: TieredEntry) => wanted.has(`session:${e.sessionId}`) || wanted.has(e.sessionId);
+  const matchItem = (item: TierItem) =>
+    wanted.has(`item:${item.id}`) ||
+    wanted.has(item.id) ||
+    (item.sessionId ? wanted.has(`session:${item.sessionId}`) || wanted.has(item.sessionId) : false) ||
+    (item.ref ? wanted.has(item.ref) || wanted.has(`gh:${item.ref}`) : false);
+  return {
+    ...view,
+    drew: view.drew.filter(matchEntry),
+    orchestrator: view.orchestrator.filter(matchEntry),
+    drewExtra: view.drewExtra.filter(matchItem),
+    orchestratorExtra: view.orchestratorExtra.filter(matchItem),
+    watchdog: view.watchdog.filter(matchItem),
+    all: view.all.filter(matchEntry),
+  };
 }
 
 /** Classify, expire, and tier a raw session feed in one pass. */
@@ -571,7 +616,9 @@ export type RoadmapGrain = "quarter" | "month" | "week" | "3d" | "today";
 
 /** The row's calendar date when its Horizon is an ISO date, else null. */
 export function rowDate(row: RoadmapRow): string | null {
-  const m = YMD.exec(row.horizon.trim());
+  const validation = validateRoadmapHorizon(row.horizon);
+  if (!validation.valid || !/^\d{4}-\d{2}-\d{2}$/.test(validation.canonical)) return null;
+  const m = YMD.exec(validation.canonical);
   if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return null;
   return `${m[1]}-${m[2]}-${m[3]}`;
 }
@@ -586,6 +633,7 @@ export interface DayGrain {
   lanes: DayLane[];
   /** Dated rows outside the window. */
   outside: number;
+  outsideRows: RoadmapRow[];
   /** Rows with no calendar date (quarter grain, ongoing, unscheduled). */
   coarse: RoadmapRow[];
 }
@@ -601,7 +649,7 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
         : Array.from({ length: 7 }, (_, i) => addDaysYmd(weekStartYmd(today), i));
   const inWindow = new Set(days);
   const lanes = new Map(days.map((d) => [d, [] as RoadmapRow[]]));
-  let outside = 0;
+  const outsideRows: RoadmapRow[] = [];
   const coarse: RoadmapRow[] = [];
   for (const row of rows) {
     const d = rowDate(row);
@@ -610,7 +658,7 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
     } else if (inWindow.has(d)) {
       lanes.get(d)?.push(row);
     } else {
-      outside++;
+      outsideRows.push(row);
     }
   }
   return {
@@ -619,7 +667,8 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
       label: d === today ? `${ymdLabel(d)} · today` : ymdLabel(d),
       rows: lanes.get(d) ?? [],
     })),
-    outside,
+    outside: outsideRows.length,
+    outsideRows,
     coarse,
   };
 }
@@ -682,6 +731,8 @@ export interface ProjectMomentum {
 export interface TodayView {
   objectives: TodayObjective[];
   momentum: ProjectMomentum[];
+  /** The board's configured lane/project/epic caps, also returned by the JSON twin. */
+  wipLanes?: WipLaneSummary[];
   /** True when rendered from the #899 orchestration section. */
   fromOrchestrator: boolean;
   generatedAt?: string;
@@ -766,9 +817,11 @@ export function deriveToday(
   section: OrchestrationSection | null,
   now = new Date(),
   diagnosis?: SectionDiagnosis,
+  projectPool: ProjectPoolItem[] = [],
 ): TodayView {
   if (section) {
     const view = todayFromSection(section);
+    view.wipLanes = summarizeWipLanes(board, projectPool);
     view.sectionDiagnosis = diagnosis ?? {
       state: "live",
       runId: section.runId,
@@ -833,7 +886,13 @@ export function deriveToday(
       detail: inProgress ? undefined : "nothing in progress on the board",
     });
   }
-  return { fromOrchestrator: false, objectives, momentum, sectionDiagnosis: diagnosis ?? { state: "absent" } };
+  return {
+    fromOrchestrator: false,
+    objectives,
+    momentum,
+    wipLanes: summarizeWipLanes(board, projectPool),
+    sectionDiagnosis: diagnosis ?? { state: "absent" },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,7 +1097,12 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
     if (Number.isFinite(candidate.getTime())) projectedExhaustionAt = candidate.toISOString();
   }
   let projectedPercentAtReset: number | null = null;
-  if (last.resetsAt) {
+  // Same out-of-domain guard as projectedExhaustionAt above (#6316):
+  // a negative last pct cannot support a percent-at-reset projection
+  // either -- the unguarded extrapolation rendered absurd values
+  // (e.g. -999999995.5) for poisoned series whose last record carried
+  // a future resetsAt. Slope and points are still reported.
+  if (lastVal >= 0 && last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;
     if (toReset > 0) projectedPercentAtReset = Math.round((lastVal + slope * toReset) * 10) / 10;
   }

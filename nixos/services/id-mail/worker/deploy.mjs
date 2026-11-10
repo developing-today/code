@@ -22,8 +22,13 @@ const PLACEHOLDER = "{code}";
 const args = process.argv.slice(2);
 const unknownArgs = args.filter((arg) => arg !== "--dry-run");
 if (args.length > 1 || unknownArgs.length > 0) {
-  const offenders = unknownArgs.length > 0 ? unknownArgs : args;
-  console.error(`unrecognized argument(s): ${offenders.join(" ")}\nusage: deploy.mjs [--dry-run]`);
+  // unknownArgs empty on this branch means every arg was --dry-run, so a
+  // length failure is a duplicate, not an unrecognized argument (#7855).
+  const message =
+    unknownArgs.length > 0
+      ? `unrecognized argument(s): ${unknownArgs.join(" ")}`
+      : `duplicate argument(s): ${[...new Set(args)].join(" ")}`;
+  console.error(`${message}\nusage: deploy.mjs [--dry-run]`);
   process.exit(2);
 }
 const dryRun = args.includes("--dry-run");

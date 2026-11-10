@@ -821,6 +821,41 @@ func TestCancelGraceExpiryWinsOverLateResult(t *testing.T) {
 	}
 }
 
+func TestCancelGraceExpiryReleasesResultWaiters(t *testing.T) {
+	// Regression for #6897: grace expiry records Cancelled, so Result()
+	// waiters must be released with the cancelled fault even when the
+	// work itself never returns. Before the fix, expireCancellation
+	// never closed done, so this Result call hung until its own
+	// context expired; releasing the work afterwards also exercises
+	// the once-only close (the late worker return must not re-close).
+	st := tasks.New()
+	st.CancelGrace = 15 * time.Millisecond
+	release := make(chan struct{})
+	task, err := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
+		<-release
+		return "late result", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer close(release)
+	if _, ok := st.CancelWithReason(task.TaskID, "grace expiry releases waiters"); !ok {
+		t.Fatal("cancel lost the task")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, fault, err := st.Result(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("grace expiry did not release the Result waiter: %v", err)
+	}
+	if fault == nil || fault.Message != "the task was cancelled" {
+		t.Fatalf("waiter should get the cancelled fault, got %v", fault)
+	}
+	if got, _ := st.Get(task.TaskID); got.Status != tasks.Cancelled {
+		t.Fatalf("status = %q, want cancelled", got.Status)
+	}
+}
+
 func TestFaultWithinCancelGraceKeepsItsFailure(t *testing.T) {
 	st := tasks.New()
 	st.CancelGrace = time.Second
@@ -988,5 +1023,59 @@ func TestOpenWithRetentionPreservesLegacyRowUntilStoredTTLDeadline(t *testing.T)
 	defer func() { _ = plain.Close() }()
 	if _, ok := plain.Get("legacy-keep"); ok {
 		t.Errorf("control: legacy-keep survived plain Open with the built-in 1h maxAge; the seeded row does not reproduce the pre-fix loss")
+	}
+}
+
+// #6249: the maxAge ceiling must not override a deadline task's
+// two-poll-interval retention floor when retention is armed. Oracle:
+// with PollInterval 400ms and maxAge 100ms (the issue's shape --
+// maxAge below one poll interval), a finished backing task's expiry
+// is at least terminal+800ms and its result is still collectable
+// past the 100ms ceiling, while a plain task under the same maxAge
+// keeps the exact 100ms ceiling (maxAge remains a hard bound for
+// ordinary tasks, per TestTaskMaxAgeStartsAtTerminalTransition...).
+func TestAMaxAgeClampCannotOverrideDeadlineRetentionFloor(t *testing.T) {
+	st := tasks.New()
+	st.PollInterval = 400 * time.Millisecond
+	st.Configure(time.Minute, 100*time.Millisecond)
+	task, err := st.StartWithDeadline(tasks.Caller("asker"), 60000, time.Minute, func(ctx context.Context) (any, *tasks.Fault) {
+		return "the answer", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	res, fault, err := st.Result(context.Background(), task.TaskID)
+	if err != nil || fault != nil || res != "the answer" {
+		t.Fatalf("result: %v %v %v", res, fault, err)
+	}
+	snap, ok := st.Get(task.TaskID)
+	if !ok || snap.ExpiresAt == nil {
+		t.Fatalf("finished deadline task missing expiry: %+v", snap)
+	}
+	if floor := snap.LastUpdatedAt.Add(800 * time.Millisecond); snap.ExpiresAt.Before(floor) {
+		t.Fatalf("maxAge clamped a deadline task below its retention floor: expiry %v, floor %v", snap.ExpiresAt, floor)
+	}
+	// Past the 100ms maxAge ceiling, inside the 800ms floor: the
+	// wrapper's next poll still collects the result.
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Fatal("the finished deadline task expired at the maxAge ceiling inside its collection window")
+	}
+
+	plain, err := st.Start(tasks.Caller("asker"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("start plain: %v", err)
+	}
+	if _, _, err := st.Result(context.Background(), plain.TaskID); err != nil {
+		t.Fatalf("plain result: %v", err)
+	}
+	psnap, ok := st.Get(plain.TaskID)
+	if !ok || psnap.ExpiresAt == nil {
+		t.Fatalf("plain task missing expiry: %+v", psnap)
+	}
+	if ceiling := psnap.LastUpdatedAt.Add(100 * time.Millisecond); psnap.ExpiresAt.After(ceiling) {
+		t.Fatalf("a plain task's retention exceeded the maxAge ceiling: expiry %v, ceiling %v", psnap.ExpiresAt, ceiling)
 	}
 }
