@@ -3504,8 +3504,8 @@ mod tests {
     // registers, not just the parser.
 
     #[cfg(feature = "world")]
-    #[test]
-    fn serve_world_protocol_enforces_configured_budgets() {
+    #[tokio::test]
+    async fn serve_world_protocol_enforces_configured_budgets() {
         let dir = serve_config_dir("budgets");
         let path = dir.join("server.toml");
         let ann = ed25519_dalek::SigningKey::from_bytes(&[1; 32])
@@ -3534,7 +3534,7 @@ mod tests {
         // The configured policy — not the default — is the evaluator's.
         assert_eq!(evaluator.budgets(), Some(started.config.budgets()));
         // Ann's counterparty row replaced her per-peer limits.
-        let limits = evaluator.limits_for_peer(&ann);
+        let limits = started.config.budgets().limits_for_peer(&ann);
         assert_eq!(limits.len(), 1);
         assert_eq!(limits[0].bytes_per_window, 500);
         // A charge beyond the configured cap is refused as a budget
@@ -3547,8 +3547,8 @@ mod tests {
     }
 
     #[cfg(feature = "world")]
-    #[test]
-    fn serve_world_protocol_defaults_budgets_without_config() {
+    #[tokio::test]
+    async fn serve_world_protocol_defaults_budgets_without_config() {
         let world = crate::world::WorldHandle::spawn(
             crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
         );
