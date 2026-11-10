@@ -1026,25 +1026,75 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #1116: a laptop leg's health, tracked per state file so the
+  // attention provenance can say which legs are dead instead of the
+  // failure staying silent. Before this, the OpenChamber-managed
+  // server's state file went stale on 2026-10-29 and the leg died
+  // unnoticed for days, leaving attention single-legged.
+  const laptopLegs: { standing: boolean | null; openchamber: boolean | null } = {
+    standing: null,
+    openchamber: null,
+  };
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
-    const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
-      port?: number;
-      password?: string;
-    };
-    if (!state.port || !state.password) return null;
-    const mapped = await mapServerSessions(
-      {
-        baseUrl: `http://127.0.0.1:${state.port}`,
-        password: state.password,
-      },
-      Date.now(),
-      { source: "opencode-laptop" },
-    );
-    if (!mapped) return null;
-    laptopCache = { value: mapped, at: Date.now() };
-    return mapped;
+    // Leg 1: the standing OpenCode server (opencode.service) — its own
+    // state file carries the current url + password and is rewritten
+    // on every restart, so this leg survives the restart churn that
+    // emptied the collector feed in the 2026-11-10 fixture incident.
+    try {
+      const state = JSON.parse(await readFile(cfg.opencodeServerStateFile, "utf8")) as {
+        url?: string;
+        password?: string;
+      };
+      if (state.url && state.password) {
+        const mapped = await mapServerSessions(
+          { baseUrl: state.url, password: state.password },
+          Date.now(),
+          { source: "opencode-laptop" },
+        );
+        laptopLegs.standing = mapped !== null;
+        if (mapped) {
+          laptopCache = { value: mapped, at: Date.now() };
+          return mapped;
+        }
+      } else {
+        laptopLegs.standing = false;
+      }
+    } catch {
+      laptopLegs.standing = false;
+      /* this leg fails soft; the OpenChamber leg is tried next */
+    }
+    // Leg 2: the OpenChamber-managed server, when one is running.
+    try {
+      const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
+        port?: number;
+        password?: string;
+      };
+      if (!state.port || !state.password) {
+        laptopLegs.openchamber = false;
+        return null;
+      }
+      const mapped = await mapServerSessions(
+        { baseUrl: "http://127.0.0.1:" + state.port, password: state.password },
+        Date.now(),
+        { source: "opencode-laptop" },
+      );
+      laptopLegs.openchamber = mapped !== null;
+      if (!mapped) return null;
+      laptopCache = { value: mapped, at: Date.now() };
+      return mapped;
+    } catch {
+      laptopLegs.openchamber = false;
+      return null;
+    }
   }
+  function laptopLegsNote(): string {
+    const bits: string[] = [];
+    if (laptopLegs.standing === false) bits.push("standing-server leg down");
+    if (laptopLegs.openchamber === false) bits.push("openchamber leg down");
+    return bits.length ? " [laptop legs: " + bits.join(", ") + "]" : "";
+  }
+
   async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
     const mapped = await laptopMapped();
     return mapped ? mapped.entries : null;
@@ -1596,11 +1646,27 @@ export function liveSource(
       }
 
       if (byId.size > 0) {
-        provenance.attention = `live (${parts.join(" + ")})`;
+        provenance.attention = "live (" + parts.join(" + ") + ")" + laptopLegsNote();
         return [...byId.values()];
       }
-      provenance.attention = "fixtures (no live attention source reachable)";
-      return fix.attention();
+      // #1116 (2026-11-10): production attention must never serve the
+      // demo fixtures. Both live legs being empty/down is an outage
+      // state, not content: serve an empty list with the cause named
+      // in provenance (and logged), so consumers see "no data" rather
+      // than a plausible fake fleet whose synthetic session IDs 404
+      // against the real server. The incident: OpenCode server
+      // restarts emptied the collector feed for two runs and this
+      // branch served FIXTURE_ATTENTION for ~10 minutes.
+      console.error(
+        "[attention] no live attention source reachable (feed " +
+          (feed ? "present, " + feed.attention.length + " entries" : "unreadable") +
+          ";" +
+          (laptopLegsNote() || " laptop legs untested") +
+          ") — serving empty, NOT fixtures",
+      );
+      provenance.attention =
+        "unavailable (no live attention source reachable; fixtures withheld in live mode)" + laptopLegsNote();
+      return [];
     },
     async orchestration(): Promise<OrchestrationSection | null> {
       // #899: the orchestration section rides the fleet feed, embedded
