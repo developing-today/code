@@ -61,17 +61,59 @@ const debug = (...args) => {
   }
 };
 
+// Strict argv (#6939, umbrella #3352): --server is this adapter's one
+// operator flag, and every value for it is validated HERE, at startup,
+// before the event stream or any ACP traffic — a bad value used to be
+// silently dropped (trailing --server), silently dialled forever in a
+// per-request "Failed to parse URL" reconnect loop (--server=, a
+// flag-like or non-URL value), or silently ignored (a typo'd flag
+// falling back to the default serve). All of those now fail fast: a
+// usage error on stderr naming the flag and the offending value, and
+// a non-zero exit.
+function usageError(message) {
+  process.stderr.write(`[${AGENT_NAME}] usage error: ${message}\n`);
+  process.stderr.write(`usage: ${AGENT_NAME} [--server <http(s)://host:port>]\n`);
+  process.exit(2);
+}
+
+function validateServerValue(value, source) {
+  if (!value) {
+    usageError(`${source} requires a non-empty URL value (got an empty value)`);
+  }
+  if (value.startsWith('--')) {
+    usageError(`${source} requires a URL value, not another flag (got "${value}")`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    usageError(`${source} value is not a parseable URL (got "${value}")`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    usageError(`${source} value must be an http: or https: URL (got "${value}")`);
+  }
+  return value.replace(/\/+$/, '');
+}
+
 function parseServerUrl(argv) {
   let server = process.env.OPENCODE_ACP_SERVER || 'http://127.0.0.1:13420';
+  let source = 'OPENCODE_ACP_SERVER';
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--server' && argv[i + 1]) {
+    if (argv[i] === '--server') {
+      if (i + 1 >= argv.length) {
+        usageError('--server requires a URL value (got end of arguments)');
+      }
       server = argv[i + 1];
+      source = '--server';
       i += 1;
     } else if (argv[i].startsWith('--server=')) {
       server = argv[i].slice('--server='.length);
+      source = '--server';
+    } else {
+      usageError(`unknown argument "${argv[i]}" (the only supported flag is --server)`);
     }
   }
-  return server.replace(/\/+$/, '');
+  return validateServerValue(server, source);
 }
 
 const serverBase = parseServerUrl(process.argv.slice(2));

@@ -26,6 +26,13 @@ export function computeChoices(pools: QuotaPool[], now = Date.now()): QuotaView[
 
   for (const p of pools) {
     if (p.windows.length === 0) continue; // no current read — no guidance
+    // #6942 (Codex finding on PR #7067): a pool whose gatherer read is
+    // stale or errored must not generate actionable guidance from its
+    // last-known windows — they stand for display only, and advertising
+    // a failed pool's retained 0% as headroom would route new sessions
+    // onto a pool whose card reports an error. Pools with no freshness
+    // stamp (dated-view rows) keep the historic behaviour.
+    if (p.freshness && p.freshness.state !== "ok") continue;
     const state = poolState(p);
     if (state === "walled" || state === "near") {
       doNotStart.push(p);

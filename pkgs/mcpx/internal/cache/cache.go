@@ -66,7 +66,7 @@ const leasePrefix = ".lease-"
 func Key(parts ...[]byte) string {
 	h := sha256.New()
 	for _, p := range parts {
-		fmt.Fprintf(h, "%d:", len(p))
+		_, _ = fmt.Fprintf(h, "%d:", len(p))
 		h.Write(p)
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -167,7 +167,7 @@ func (c *Cache) Put(kind, key string, lim Limits, fill func(dir string) error) (
 	if err != nil {
 		return "", false, err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	if err := fill(tmp); err != nil {
 		return "", false, err
 	}

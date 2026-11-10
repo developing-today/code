@@ -4,7 +4,9 @@ How the three services this flake keeps running are started, replaced on a
 switch, checked and debugged on this Mac. This page describes mechanisms, which
 change only when the code does. Point-in-time findings, with their dates, are in
 [`2026-10-19-reliability-review.md`](2026-10-19-reliability-review.md); the MCP
-servers behind mcpx are in [`mcp.md`](mcp.md).
+servers behind mcpx are in [`mcp.md`](mcp.md). The fleet's remote databases are
+Turso; their creation rule, inventory and conversion debt are in
+[`turso-databases.md`](turso-databases.md).
 
 Written 2026-10-19. Upstream file:line references are to the revisions pinned in
 `flake.lock` then: developing-today/openchamber `94b7e56f9`, developing-today/opencode
@@ -47,7 +49,11 @@ first terminal client starts it detached, in its own process group with no
 terminal, so closing that terminal does not stop it; it is reparented to launchd
 and has no idle exit (dezren39/nix#669).
 Both open the one database `~/.local/share/opencode/opencode.db` (`OPENCODE_DB`,
-forced by the wrapper in `flake.nix`).
+forced by the wrapper in `flake.nix`). The fleet's *remote* databases are Turso
+ones; before creating or converting any of them, read
+[`turso-databases.md`](turso-databases.md) — every new fleet Turso database must
+be created with `--tursodb` at birth, and libsql databases cannot be converted in
+place.
 
 **Which OpenCode config is live.** `~/.config/opencode` links through
 `~/nix/.opencode` and `~/Documents/.opencode` to `~/.opencode`, so every OpenCode

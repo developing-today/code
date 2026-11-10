@@ -62,6 +62,7 @@ CANDIDATES=(
   "$HOME/.config/cloudflare/gateway-id"
   "$HOME/.config/cloudflare/ai-inference-token"
   "$HOME/.claude/settings.json"
+  "$HOME/.claude/.credentials.json"
   "$HOME/.claude.json"
   "$HOME/.codex/config.toml"
   "$HOME/.codex/auth.json"

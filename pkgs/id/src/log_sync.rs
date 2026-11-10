@@ -414,6 +414,19 @@ async fn send_message<T: Serialize>(send: &mut SendStream, message: &T) -> Resul
         .map_err(|error| SyncError::Stream(format!("{error:#}")))
 }
 
+/// Decodes one postcard message and refuses bytes after its encoding.
+fn decode_full_message<T: DeserializeOwned>(frame: &[u8]) -> Result<T, SyncError> {
+    let (message, remainder) =
+        postcard::take_from_bytes(frame).map_err(|error| SyncError::Frame(error.to_string()))?;
+    if !remainder.is_empty() {
+        return Err(SyncError::Frame(format!(
+            "the postcard payload left {} trailing bytes",
+            remainder.len()
+        )));
+    }
+    Ok(message)
+}
+
 /// Reads one handshake message from the raw stream. A first frame that does not decode
 /// as the expected message is a [`SyncError::Frame`]: the session is refused, never
 /// reinterpreted as another protocol.
@@ -422,7 +435,7 @@ async fn next_message<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T, S
         .await
         .map_err(|error| SyncError::Stream(format!("{error:#}")))?
         .ok_or_else(|| SyncError::Stream("the stream ended during the handshake".to_owned()))?;
-    postcard::from_bytes(&frame).map_err(|error| SyncError::Frame(error.to_string()))
+    decode_full_message(&frame)
 }
 
 /// Ends our side of a raw stream pair, then reads to the peer's end, so nothing sent is
@@ -467,8 +480,7 @@ async fn run_log_sync(
         let arrivals = &arrivals_tx;
         async move {
             let frame = frame.map_err(SyncError::Stream)?;
-            let message: LogSyncMessage<ChainLog> = postcard::from_bytes(&frame)
-                .map_err(|error| SyncError::Frame(error.to_string()))?;
+            let message: LogSyncMessage<ChainLog> = decode_full_message(&frame)?;
             if let LogSyncMessage::Operation((header, body)) = &message {
                 // Events carry no body here, and a body is not stored, so a body is refused.
                 let arrival = if body.is_some() {
@@ -671,6 +683,7 @@ mod tests {
     use iroh::endpoint::{Connection, RelayMode, presets};
     use iroh::protocol::Router;
     use p2panda_core::{SeqNum, SigningKey};
+    use proptest::prelude::*;
 
     use super::*;
     use crate::chain::{Event, sign};
@@ -683,6 +696,15 @@ mod tests {
     // Keep test sessions aligned with production; CI can run the bulk page-transfer test under
     // substantially more contention than a focused local invocation.
     const DEADLINE: Duration = SESSION_DEADLINE;
+
+    /// The bulk page-transfer test moves 210 events (three chains of 70) across four 64-event
+    /// pages, so its session does several times the work the production deadline is sized for.
+    /// Unloaded it takes ~39 s against `SESSION_DEADLINE` — 1.5x headroom — and under heavy
+    /// parallel load (load average ~30-43) the session once got no scheduler time at all before
+    /// the deadline expired, failing the test with zero events accepted (#4057). Scale the
+    /// deadline to this test's work instead of the machine's mood: 3x production leaves ~4.6x
+    /// headroom over the unloaded runtime, and a genuine hang still fails the test in minutes.
+    const BULK_DEADLINE: Duration = Duration::from_secs(SESSION_DEADLINE.as_secs() * 3);
 
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
@@ -717,6 +739,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -799,6 +822,7 @@ mod tests {
         support: Arc<dyn SyncSupport>,
         gate: PullGate,
         results: mpsc::UnboundedSender<Result<Outcome, SyncError>>,
+        deadline: Duration,
     }
 
     impl ProtocolHandler for Capture {
@@ -811,7 +835,7 @@ mod tests {
                     conn.remote_id(),
                     send,
                     recv,
-                    DEADLINE,
+                    self.deadline,
                 )
                 .await;
                 let _ = self.results.send(result);
@@ -832,6 +856,32 @@ mod tests {
         responder_gated(store, testing::open_gate()).await
     }
 
+    /// Serves `store` on loopback with both sides of each session bounded by `deadline`. Only the
+    /// bulk page-transfer test needs this: it outruns [`DEADLINE`] under suite-wide contention
+    /// (#4057), so it scales the deadline to its own work size.
+    async fn responder_with_deadline(
+        store: &SharedEventStore,
+        deadline: Duration,
+    ) -> (
+        Endpoint,
+        Router,
+        mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) {
+        let ep = endpoint().await;
+        let (results, rx) = mpsc::unbounded_channel();
+        let handler = Capture {
+            store: store.clone(),
+            support: Arc::new(LogSyncOnly),
+            gate: testing::open_gate(),
+            results,
+            deadline,
+        };
+        let router = Router::builder(ep.clone())
+            .accept(SYNC_ALPN, handler)
+            .spawn();
+        (ep, router, rx)
+    }
+
     /// Serves `store` on loopback under `gate`.
     async fn responder_gated(
         store: &SharedEventStore,
@@ -848,6 +898,7 @@ mod tests {
             support: Arc::new(LogSyncOnly),
             gate,
             results,
+            deadline: DEADLINE,
         };
         let router = Router::builder(ep.clone())
             .accept(SYNC_ALPN, handler)
@@ -871,6 +922,7 @@ mod tests {
             support,
             gate: testing::open_gate(),
             results,
+            deadline: DEADLINE,
         };
         let router = Router::builder(ep.clone())
             .accept(SYNC_ALPN, handler)
@@ -975,6 +1027,8 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
+                chat: None,
             }
         }
         let create_body = encode_body(&GroupAction::Create {
@@ -984,15 +1038,36 @@ mod tests {
                 .collect(),
         })
         .unwrap();
-        let create = sign(&key(b'A'), 0, None, Some(&create_body), ext(None, Vec::new(), "group.op")).unwrap();
+        let create = sign(
+            &key(b'A'),
+            0,
+            None,
+            Some(&create_body),
+            ext(None, Vec::new(), "group.op"),
+        )
+        .unwrap();
         let grp = create.id;
         let op_body = encode_body(&GroupAction::Add {
             member: GroupMember::Individual(gauth(b'E')),
             access: Access::manage(),
         })
         .unwrap();
-        let op = sign(&key(b'D'), 0, None, Some(&op_body), ext(Some(grp), vec![grp], "group.op")).unwrap();
-        let target = sign(&key(b'D'), 1, Some(op.id), None, ext(Some(grp), vec![op.id], "message")).unwrap();
+        let op = sign(
+            &key(b'D'),
+            0,
+            None,
+            Some(&op_body),
+            ext(Some(grp), vec![grp], "group.op"),
+        )
+        .unwrap();
+        let target = sign(
+            &key(b'D'),
+            1,
+            Some(op.id),
+            None,
+            ext(Some(grp), vec![op.id], "message"),
+        )
+        .unwrap();
 
         let (_da, store_a) = open();
         let (_db, store_b) = open();
@@ -1029,7 +1104,11 @@ mod tests {
 
         assert_eq!(outcome.method, SyncMethod::Range);
         assert_eq!(answered.method, SyncMethod::Range);
-        assert_eq!(outcome.received.voided, 1, "B stores the target without applying it: {:?}", outcome.received);
+        assert_eq!(
+            outcome.received.voided, 1,
+            "B stores the target without applying it: {:?}",
+            outcome.received
+        );
         assert_eq!(outcome.received.accepted, 0, "{:?}", outcome.received);
         assert_eq!(outcome.received.refused, 0, "{:?}", outcome.received);
         assert_eq!(answered.received.voided, 0, "{:?}", answered.received);
@@ -1070,7 +1149,8 @@ mod tests {
         let mut attempt = 0;
         let (outcome, answered) = loop {
             attempt += 1;
-            let (server, router, mut results) = responder(&store_a).await;
+            let (server, router, mut results) =
+                responder_with_deadline(&store_a, BULK_DEADLINE).await;
             let client = endpoint().await;
             match sync_with(
                 &client,
@@ -1078,7 +1158,7 @@ mod tests {
                 &store_b,
                 topic,
                 &bootstrap(),
-                DEADLINE,
+                BULK_DEADLINE,
             )
             .await
             {
@@ -1310,6 +1390,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1657,6 +1738,129 @@ mod tests {
             matches!(answered, Err(SyncError::Frame(_))),
             "a foreign first frame is a frame error, got {answered:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_a_first_request_with_trailing_bytes_is_refused() {
+        let (_d, store) = open();
+        let (server, _router, mut results) = responder(&store).await;
+        let client = endpoint().await;
+        let conn = connect(&client, loopback(&server), SYNC_ALPN)
+            .await
+            .unwrap();
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        let request = Request {
+            topic: group(16),
+            method: SyncMethod::Log,
+        };
+        let mut frame = postcard::to_allocvec(&request).unwrap();
+        frame.push(0x00);
+        write_frame(&mut send, &frame).await.unwrap();
+        send.finish().unwrap();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(answered, Err(SyncError::Frame(_))),
+            "a padded Request is a frame error, got {answered:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct PaddedLogSyncPeer {
+        inbound_frames: Vec<Vec<u8>>,
+    }
+
+    impl ProtocolHandler for PaddedLogSyncPeer {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                return Ok(());
+            };
+            if !matches!(read_frame(&mut recv).await, Ok(Some(_))) {
+                return Ok(());
+            }
+            let answer = postcard::to_allocvec(&Answer::Agree(SyncMethod::Log)).unwrap();
+            write_frame(&mut send, &answer).await.unwrap();
+            for frame in &self.inbound_frames {
+                write_frame(&mut send, frame).await.unwrap();
+            }
+            conn.closed().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_padded_log_sync_operation_errors_before_ingest() {
+        let topic = group(17);
+        let signer = key(17);
+        let operation = chain_of(&signer, 1, topic).remove(0);
+        let header = operation.bytes;
+
+        let mut have = p2panda_core::logs::LogHeights::new();
+        have.entry(signer.verifying_key())
+            .or_default()
+            .insert(ChainLog, 1);
+        let have = postcard::to_allocvec(&LogSyncMessage::<ChainLog>::Have(have)).unwrap();
+        let presync = postcard::to_allocvec(&LogSyncMessage::<ChainLog>::PreSync {
+            total_operations: 1,
+            total_bytes: u32::try_from(header.len()).unwrap(),
+        })
+        .unwrap();
+        let mut padded_operation =
+            postcard::to_allocvec(&LogSyncMessage::<ChainLog>::Operation((header, None))).unwrap();
+        padded_operation.push(0xde);
+
+        let server = endpoint().await;
+        let peer = PaddedLogSyncPeer {
+            inbound_frames: vec![have, presync, padded_operation],
+        };
+        let _router = Router::builder(server.clone())
+            .accept(SYNC_ALPN, peer)
+            .spawn();
+        let (_d, store) = open();
+        let before = applied(&store, &[&signer], 0);
+        let client = endpoint().await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&error, SyncError::LogSync(message) if message.contains("Frame")),
+            "the session reports its malformed message-stream error, got {error:#}"
+        );
+        assert_eq!(
+            applied(&store, &[&signer], 0),
+            before,
+            "the padded operation never reaches the ingest worker"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn test_full_postcard_messages_reject_any_nonempty_suffix(
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            // Oracle: a clean postcard encoding round-trips; any generated nonempty suffix
+            // violates full frame consumption and must be refused.
+            let request = Request { topic: group(18), method: SyncMethod::Log };
+            let frame = postcard::to_allocvec(&request).unwrap();
+            prop_assert_eq!(decode_full_message::<Request>(&frame).unwrap(), request);
+
+            let mut padded = frame;
+            padded.extend_from_slice(&suffix);
+            prop_assert!(matches!(
+                decode_full_message::<Request>(&padded),
+                Err(SyncError::Frame(_))
+            ));
+        }
     }
 
     /// P6.5: open pull is today's behaviour. A stranger pulls every event of the topic.

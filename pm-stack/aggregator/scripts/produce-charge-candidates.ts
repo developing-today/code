@@ -108,6 +108,47 @@ export function stagedManifestPeriod(manifest: { start?: unknown; end?: unknown 
 /** Plaid categories that are money movement, not merchant charges. */
 const EXCLUDED_CATEGORIES = new Set(["Transfer", "Payment", "Interest", "Bank Fees"]);
 
+const USAGE = "usage: bun run scripts/produce-charge-candidates.ts [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]";
+
+// Reject unknown, misspelled, joined, duplicated, or positional
+// arguments BEFORE any connector call, staged-file read, or file
+// write (#7302): argv used to be probed token-by-token only
+// (argValue indexOf, the --skip-gmail includes check in main), so a
+// typo --skip-gmial silently ran the Gmail read the operator meant
+// to skip, and a typo or joined (--start=...) --start silently fell
+// back to the default current-month period. Mirrors rejectUnknownArgs
+// in generate-digest.ts (#7097) / collect-github-billing.ts (#7254).
+// Called at the top of main() rather than at module scope because
+// unit tests import this module pure helpers; main() only runs as
+// the entry point, and its first action is still this check, before
+// any I/O. Value validation itself stays in argValue/main (#3333).
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (token === "--start" || token === "--end" || token === "--out") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      i++; // skip the value; argValue validates it
+      continue;
+    }
+    if (token === "--skip-gmail") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      continue;
+    }
+    console.error("producer: unknown argument " + JSON.stringify(token) + " (" + USAGE + ")");
+    process.exit(2);
+  }
+}
+
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
   if (i < 0) return undefined;
@@ -410,6 +451,7 @@ async function gmailCandidates(
 }
 
 async function main(): Promise<void> {
+  rejectUnknownArgs();
   // Parse values before any connector call or file write. Staged periods
   // come from their manifest, so --start/--end remain ignored there.
   const outArg = argValue("--out");

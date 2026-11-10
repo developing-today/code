@@ -318,7 +318,10 @@ mod tests {
             crate::world_session::WorldService::new(world.clone(), None),
         ));
         (
-            super::super::routes::create_router(state),
+            super::super::routes::create_router(
+                state,
+                super::super::security::WebSecurity::default(),
+            ),
             store,
             tags,
             temp,
