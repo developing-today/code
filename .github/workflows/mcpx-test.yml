@@ -10,6 +10,11 @@ name: mcpx test
 # measurement table. Nothing in the matrix is hand-maintained: adding or
 # renaming a test re-deals the shards on the next run.
 #
+# Restored 2026-11-10 (#7795): the push/pull_request triggers removed in
+# 5a94833ea3 are back, matching .github/ci-policy.md (PR tier for non-draft
+# PRs + the same full sharded suite on push to main); the workflow was also
+# re-enabled from disabled_manually the same day.
+#
 # #1994: shards are dealt by measured time, not by test count.
 # pkgs/mcpx/scripts/ci/e2e-shard-packer.py reads the committed seed
 # pkgs/mcpx/scripts/ci/e2e-timings.json (test -> seconds), gives
@@ -36,6 +41,21 @@ name: mcpx test
 # vendorHash repair.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      - "!pkgs/mcpx/testdata/seeds/**"
+      - ".github/workflows/mcpx-test.yml"
+  pull_request:
+    # ready_for_review is explicit: the default activity types
+    # (opened/synchronize/reopened) would leave a draft-turned-ready
+    # PR with every job draft-skipped and no run at all (Codex P2).
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "pkgs/mcpx/**"
+      - "!pkgs/mcpx/testdata/seeds/**"
+      - ".github/workflows/mcpx-test.yml"
   workflow_dispatch:
 
 concurrency:
@@ -142,7 +162,7 @@ jobs:
 
   plugin-ts:
     name: "basic: mcpx-test plugin-ts"
-    if: github.event_name != pull_request || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
