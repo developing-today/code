@@ -5,6 +5,7 @@ export type CredentialLifecycleState =
   | "ok"
   | "expiring"
   | "expired"
+  | "lapsed"
   | "rejected"
   | "provider-error"
   | "not-configured"
@@ -58,7 +59,8 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
   const error = entry.error ? safeProviderReason(entry.error) : undefined;
   let state: CredentialLifecycleState;
 
-  if (entry.state === "unconfigured") state = "not-configured";
+  if (entry.state === "lapsed") state = "lapsed";
+  else if (entry.state === "unconfigured") state = "not-configured";
   else if (entry.state === "error" && /\bClaude session expired\b/i.test(error ?? "")) state = "expired";
   else if (
     entry.state === "error" &&
@@ -107,6 +109,7 @@ export function isCredentialLifecycleRow(value: unknown): value is CredentialLif
     "ok",
     "expiring",
     "expired",
+    "lapsed",
     "rejected",
     "provider-error",
     "not-configured",

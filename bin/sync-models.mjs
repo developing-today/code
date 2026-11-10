@@ -35,7 +35,17 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v');
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
-const HOME_DIR = process.env.HOME || '/home/user';
+// Home-resolution contract (issues #5762 / #5763): a non-empty HOME
+// is the only home resolution. The old `|| '/home/user'` fallback was
+// a hardcoded-user substitute directory; unset/empty HOME now fails
+// loudly naming HOME instead of syncing another user's config/state.
+const HOME_DIR = process.env.HOME;
+if (!HOME_DIR) {
+  console.error(
+    '[sync-models] Error: HOME is not set or is empty: sync-models requires a non-empty HOME to resolve its config/state paths (home-resolution contract, issues #5762/#5763)',
+  );
+  process.exit(2);
+}
 // Config resolution (#591, #4544): the model catalogs this script maintains
 // live in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc),
 // which the OpenCode server layers over the tracked configured default via
