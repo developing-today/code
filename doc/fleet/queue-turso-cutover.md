@@ -361,3 +361,86 @@ moved or dropped by #6741.
   Functions hosting (the `github-ci` receiver above). Re-home
   that function first; nothing else needs moving — these stay
   in the decommissioned project, unused, like everything else.
+
+
+## Amendment 2026-11-10 — claim-model stamp columns (#8176)
+
+Drew's order (2026-11-10 10:53 CST): a session picking up an item
+provides its own model to the queue. `tasks` gains three additive
+columns — `claim_provider`, `claim_model`, `claim_variant` — the
+claiming session's serving leaf at claim time, read by the session
+from its own `route_usage` lastServing surface (opencode#1891) and
+passed on the claim (`repo-queue claim --model-provider/--model-id
+[--model-variant]`; broker request fields `model_provider` /
+`model_id` / `model_variant`). `ensure_schema` adds the columns to
+pre-existing databases exactly like `platform` (#8097); existing
+rows read NULL (the claim carried no model). The `claimed` event
+detail carries the same three fields. Non-session claimants (Muse
+lanes) stamp the distinct provider marker `muse-lane` rather than
+a model. Claim-time semantics: a later failover changes the
+serving leaf but never rewrites the stamp.
+
+
+## Amendment 2026-11-10 — broker-owned waits (#8184)
+
+Drew's order (2026-11-10): the park churn ends — "the system can
+lock a item and drop it after done or some ttl". Lane shifts were
+spending most bundle slots re-discovering unchanged waits: a
+20-task bundle measured 9 handoffs + 8 triage parks + 3
+CI/dependency parks + 1 completion, with 395 of 398 queued tasks
+at their attempt cap. The broker now owns waiting:
+
+- **Claim eligibility.** The default (lane) pick's parked branch
+  excludes recorded opencode handoffs (`NOT (PARKED_HANDOFF_SQL)`):
+  a handed-off row is claimant-owned and is collected only
+  through the `parked_handoff` pick or by id. Serving it to a
+  lane re-ran the claim → handoff → park cycle for zero work.
+- **Wait TTL floors.** `verb_park` classifies the wait — a park
+  whose recorded stage is `awaiting_triage` is a triage wait
+  (`wait_kind = 'triage'`; the condition mapping gains the
+  `triage` kind) — and floors `not_before` broker-side: triage
+  6h, ci 1h, capacity 1h. Timer/review/external parks keep the
+  caller's delay.
+- **Wake verb.** `POST /wake` (`fleet queue wake <task_id>`)
+  releases a parked wait to `queued` immediately when its
+  condition is satisfied — the triage step waking an item it
+  just triaged is the canonical caller. The TTL floor is the
+  backstop, not the wake path.
+- **Handoff expiry sink.** `expire_leases` returns an expired
+  claim whose progress is a recorded handoff to the parked
+  handoff sink instead of `queued`. Attempts burn only on a
+  claim from `queued`; the claimed → expired → queued interlude
+  was the one place bookkeeping cycles consumed attempts (task
+  10501 reached 24/24 on handoff cycles alone). Direct claims
+  and bound sessions mid-work still return to `queued`.
+
+## Amendment — the sink gets its own status (#8234, 2026-11-10)
+
+The section above describes the #8184 landing as built; two of
+its mechanisms were superseded the same day, first by #8187
+(lanes DO collect sink rows through the default pick and flip
+them direct — the `NOT (PARKED_HANDOFF_SQL)` exclusion is gone)
+and then by #8234, Drew's ruling "sink gets its own status, drop
+the fake timer":
+
+- The handoff sink is status **`handed_off`**, not `parked`.
+  `parked` now means only a genuine broker-owned wait
+  (`wait_kind` + `ready_condition` + floored `not_before`).
+- The park verb classifies its own landing: a park whose merged
+  progress is a recorded opencode handoff with no caller-declared
+  genuine wait lands in `handed_off` with every wait field NULL.
+  A caller-attached real condition always wins — that park is a
+  genuine wait even on a handoff-shaped row.
+- `expire_leases` returns an expired sink-shaped claim to
+  `handed_off` with `not_before = NULL` and NO ready_condition —
+  the +1200s fake timer the sink pick never read is deleted.
+- Sink membership is the status, on both sides of the wire:
+  neither the broker's pick SQL nor the claimant's poll reads a
+  progress stage to decide it (the broker and poll once read
+  different stage sources and disagreed — #8192, folded in).
+- The wake verb refuses `handed_off` rows (not a wait; already
+  claimable), and `fleet queue health` reports `handed_off` as
+  its own bucket. Existing sink-shaped `parked` rows were moved
+  by one auditable migration (event kind
+  `handoff_status_migration`); rows carrying a genuine wait
+  stayed `parked`.

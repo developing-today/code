@@ -153,15 +153,23 @@ impl Resolver {
         Resolver { sources }
     }
 
-    /// The default chain for a resolved fleet config.
+    /// The default chain for a resolved fleet config. On a host
+    /// where the secrets-broker's own socket answers (the laptop,
+    /// #6218), the direct source comes first: there is no session
+    /// broker there. On the sandbox the probe selects TCP, no
+    /// direct source is inserted, and the chain is exactly the
+    /// historical broker-protocol-then-`bws` shape.
     pub fn default_chain(config: &fleet_config::Config) -> Resolver {
-        Resolver::new(vec![
-            Box::new(BrokerSource {
-                broker_socket: config.broker_socket(),
-                token_file: config.secrets_token_file(),
-            }),
-            Box::new(BwsSource::new()),
-        ])
+        let mut sources: Vec<Box<dyn SecretSource>> = Vec::new();
+        if let Some(direct) = DirectBrokerSource::from_config(config) {
+            sources.push(Box::new(direct));
+        }
+        sources.push(Box::new(BrokerSource {
+            broker_socket: config.broker_socket(),
+            token_file: config.secrets_token_file(),
+        }));
+        sources.push(Box::new(BwsSource::new()));
+        Resolver::new(sources)
     }
 
     pub fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
@@ -304,6 +312,162 @@ impl SecretSource for BrokerSource {
                         name: name.to_string(),
                         detail: "200 response without a string \"value\" field".to_string(),
                     })?;
+                if value.is_empty() {
+                    return Err(SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response with an empty \"value\"".to_string(),
+                    });
+                }
+                Ok(SecretValue(value.to_string()))
+            }
+            404 => Err(SecretError::NotFound {
+                source: "secrets-broker",
+                name: name.to_string(),
+            }),
+            status => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: name.to_string(),
+                detail: format!("secrets-broker answered HTTP {status}"),
+            }),
+        }
+    }
+}
+
+/// The secrets-broker token file for direct (laptop-local)
+/// connections: the broker's own config dir, sibling of its socket
+/// and of the queue client's direct token default (#6218).
+pub const DIRECT_SECRETS_TOKEN_FILE: &str = ".config/secrets-broker/token";
+
+/// Source 1b: the secrets-broker protocol, direct over the
+/// broker's own Unix socket (#6218) -- the laptop-local path. On
+/// the laptop there is no session broker; the secrets broker
+/// dual-binds its role socket (#6216) with the same handler, so
+/// the exchange is a plain HTTP/1.1 GET. Unlike [`BrokerSource`],
+/// which only *names* the token file for the session proxy, this
+/// source reads the token file itself -- the value goes into the
+/// request header and nowhere else.
+pub struct DirectBrokerSource {
+    pub socket: PathBuf,
+    pub token_file: PathBuf,
+}
+
+impl DirectBrokerSource {
+    /// The direct source for a resolved config, when fleet-config's
+    /// probe-based choice for the secrets-broker role selects the
+    /// socket (#6218). `None` on the TCP choice (the sandbox): the
+    /// caller keeps the session-broker source.
+    pub fn from_config(config: &fleet_config::Config) -> Option<DirectBrokerSource> {
+        match config.role_transport_choice("secrets-broker") {
+            Some(fleet_config::RoleTransport::Socket(socket)) => Some(DirectBrokerSource {
+                socket,
+                token_file: fleet_config::Config::home_dir().join(DIRECT_SECRETS_TOKEN_FILE),
+            }),
+            _ => None,
+        }
+    }
+
+    /// One GET exchange over the broker socket: status + JSON body.
+    fn get(&self, path: &str, name: &str) -> Result<(u16, serde_json::Value), SecretError> {
+        use std::io::{Read, Write};
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "secrets-broker",
+            name: name.to_string(),
+            detail,
+        };
+        let token = std::fs::read_to_string(&self.token_file).map_err(|e| {
+            unavailable(format!(
+                "secrets-broker token file {}: {}",
+                self.token_file.display(),
+                e.kind()
+            ))
+        })?;
+        let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
+            unavailable(format!(
+                "secrets-broker socket {}: {}",
+                self.socket.display(),
+                e.kind()
+            ))
+        })?;
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\nConnection: close\r\n\r\n",
+            token.trim()
+        );
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| unavailable(e.to_string()))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|e| unavailable(e.to_string()))?;
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let mut parts = text.splitn(2, "\r\n\r\n");
+        let head = parts.next().unwrap_or("");
+        let status: u16 = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .ok_or_else(|| unavailable("secrets-broker bad reply".to_string()))?;
+        let body: serde_json::Value =
+            serde_json::from_str(parts.next().unwrap_or("")).unwrap_or(serde_json::Value::Null);
+        Ok((status, body))
+    }
+
+    /// The broker's names listing over the direct socket -- the
+    /// same `GET /secrets` route [`BrokerSource::list_names`]
+    /// reads through the session broker. Names only.
+    pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
+        let name = "names";
+        let (status, body) = self.get("/secrets", name)?;
+        match status {
+            200 => {
+                let names = body
+                    .get("names")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response without a \"names\" array".to_string(),
+                    })?;
+                names
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| SecretError::Unavailable {
+                                source: "secrets-broker",
+                                name: name.to_string(),
+                                detail: "\"names\" array holds a non-string entry".to_string(),
+                            })
+                    })
+                    .collect()
+            }
+            status => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: name.to_string(),
+                detail: format!("secrets-broker answered HTTP {status}"),
+            }),
+        }
+    }
+}
+
+impl SecretSource for DirectBrokerSource {
+    fn source_name(&self) -> &'static str {
+        "secrets-broker"
+    }
+
+    fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+        validate_name(name)?;
+        let (status, body) = self.get(&format!("/secret/{name}"), name)?;
+        match status {
+            200 => {
+                let value = body.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                    SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response without a string \"value\" field".to_string(),
+                    }
+                })?;
                 if value.is_empty() {
                     return Err(SecretError::Unavailable {
                         source: "secrets-broker",
@@ -667,6 +831,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v.expose(), "fixture-value-not-a-secret");
+    }
+
+    #[test]
+    fn direct_broker_source_roundtrip_over_a_temp_socket() {
+        // #6218: the laptop-local source speaks plain HTTP over
+        // the broker's own socket, reading its token from the file.
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir =
+            std::env::temp_dir().join(format!("fleet-secrets-direct-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("secrets.sock");
+        let token_file = dir.join("token");
+        std::fs::write(&token_file, "test-token\n").unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                assert!(req.contains("X-Agent-Token: test-token"), "req: {req}");
+                let body = if req.starts_with("GET /secrets") {
+                    "{\"names\":[\"a.name\",\"b.name\"]}"
+                } else {
+                    assert!(req.starts_with("GET /secret/wanted.name"), "req: {req}");
+                    "{\"value\":\"direct-value\"}"
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        let source = DirectBrokerSource {
+            socket: sock,
+            token_file,
+        };
+        let value = source.resolve("wanted.name").unwrap();
+        assert_eq!(value.expose(), "direct-value");
+        let names = source.list_names().unwrap();
+        assert_eq!(names, vec!["a.name".to_string(), "b.name".to_string()]);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn direct_broker_source_404_is_notfound() {
+        // #6218: the direct leg maps statuses like the proxied one.
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir =
+            std::env::temp_dir().join(format!("fleet-secrets-direct-404-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("secrets.sock");
+        let token_file = dir.join("token");
+        std::fs::write(&token_file, "test-token\n").unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .unwrap();
+        });
+        let source = DirectBrokerSource {
+            socket: sock,
+            token_file,
+        };
+        assert!(matches!(
+            source.resolve("missing.name"),
+            Err(SecretError::NotFound { .. })
+        ));
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

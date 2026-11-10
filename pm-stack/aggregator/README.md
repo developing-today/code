@@ -426,6 +426,76 @@ The contract's existing embodiment is `src/token-adapter.ts` (#1153):
 it validates its document once at the boundary and rejects-and-retains
 on failure, and new boundaries are written to its standard.
 
+## Parsed-shape contract (#3068)
+
+Sibling to the ingest contract above, stated here by reference: the
+parsed-shape contract from design #3068 — *parsed is not validated* —
+applies at every JSON trust boundary in this repo (`bin/`, `scripts/`,
+`pkgs/` tools, pm-stack's non-aggregator handlers, and id web), not
+only at aggregator ingest. Its recorded terms:
+
+- A successful parse proves syntax, never shape. Before a parsed
+  value is dereferenced, its relied-on shape is checked once, at the
+  boundary, in the surface's own error vocabulary — a wrong shape is
+  a named shape error, never a raw `TypeError`, never a silently
+  half-applied value, and never fabricated data.
+- The vocabulary is exact: a plain object is not an array, an array
+  is not a catalogue, and a present-but-wrong-typed field is a shape
+  error — coercion is not validation.
+- Absence is not emptiness: a missing field, section, or collection
+  is *absent* (the boundary's recorded outcome for absence applies),
+  never silently rewritten as an empty object or array that later
+  reads as a measured empty result.
+- Each surface records its own outcome for a shape failure (refuse
+  the run, drop the element and count it, reject and retain), chosen
+  per boundary as in the ingest contract above.
+
+The closing inventory audit for this contract, with the per-surface
+dispositions, is recorded on #3069; the design and its decisions are
+#3068.
+
+## Measurement grammar (#3005)
+
+A measurement string is a **plain decimal**. Everywhere the PM stack
+turns a string into a measurement — a coercion gate in this app or in
+the laptop exporters — exactly two forms exist:
+
+- **Field form** (a value that IS the measurement — API fields, sheet
+  cells): an optional sign where the gate's domain already admits
+  negatives, digits, and an optional single fraction
+  (`/^[+-]?[0-9]+(\.[0-9]+)?$/`, narrowed per gate — counts are
+  unsigned integers; kind rules stay with their gates). Everything
+  else — empty, whitespace-padded, radix-prefixed (`0x10`),
+  scientific (`1e2`), thousands separators in a field value — is
+  *not a measurement*: the gate returns its existing not-measured
+  outcome (`null` here; the exporters' fail-closed error), never a
+  reinterpreted number.
+- **Prose form** (a count embedded in a human-written bullet): the
+  extraction captures the grouped form (`[\d,]+`, strip commas —
+  the idiom in `src/dns.ts` `parsePriceUsd` and
+  `src/snapshot-records.ts`). A bare `\d+` adjacent to a count noun
+  is a defect; where a grouped figure cannot match, the metric is
+  absent — never truncated, never a partial-group match.
+
+Pins: scientific spellings are **refused** in both forms (no source
+emits them; the landed meta-exporter gate refuses them); whitespace
+padding is **refused** (padding is drift, not a spelling); grouping
+well-formedness is **stripped, not validated** (`1,2,3` parses as
+123 — strict grouping was considered and rejected). Already-typed
+numbers are untouched: a `typeof number` input keeps each gate's
+existing finite check — the grammar governs strings only.
+
+The grammar lives as **per-app copies with one shared probe matrix**
+(these apps deploy independently): `"12"`/`"12.5"` measure;
+`"1,234"` + noun reads 1234 in prose form and is not a measurement
+in field form; `""`, `"0x10"`, `"1e2"`, `" 12 "`, `"12abc"` are not
+measured. Embodiments: `src/aa.ts` `num()` (#2985),
+`src/saas-extract.ts` count patterns (#2997, #3000),
+cloudflare-export and supabase-export gates (#2791, #2743),
+meta-exporter's `parseSubscriptionQuota` (#2789 — drift found by
+the closing audit: the #6333 re-home restored the pre-#2789 bare
+coercion; restoration is filed as #7880). Closing audit: issue #3006.
+
 ## First-class requirements (from the design record)
 
 1. **Cross-repo links.** Any board card or roadmap row links any GitHub

@@ -76,12 +76,29 @@
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
-import { aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
+import {
+  disabledProvidersFromConfig,
+  aaAbsent,
+  aaSectionFromSupabase,
+  isAaSection,
+  type AaRawPayload,
+} from "../src/aa.ts";
+import { AA_BATCH_INDEX_SQL, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
+import {
+  aaBatchFingerprint,
+  aaCacheFileName,
+  aaPricesFingerprint,
+  isAaBatchCacheEntry,
+  parseBatchIndex,
+  summarizeBatches,
+  type AaBatchCacheEntry,
+  type AaBatchIndexRow,
+} from "../src/aa-batches.ts";
 import {
   feedSectionStatus,
   normalizeOrchestrationSection,
@@ -93,6 +110,7 @@ import {
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import type {
+  AaBatchSummary,
   AaFeedSection,
   AaSection,
   DnsSection,
@@ -130,7 +148,7 @@ import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { fetchProjectSnapshot } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
-import type { RepoCensus } from "../src/coverage.ts";
+import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
@@ -414,86 +432,10 @@ async function resolveProjectToken(): Promise<string | null> {
 // Test_Runs data rides as raw rows; src/aa.ts maps them by
 // their own header row and computes pool/catalog coverage.
 
-const AA_SQL = `
-select jsonb_build_object(
-  'batch', (select import_batch::text from ainventory.v_latest_import_batch),
-  'sources', coalesce((
-    select jsonb_agg(jsonb_build_object(
-      'name', name, 'kind', kind, 'importedAt', imported_at, 'driveModifiedAt', drive_modified_at
-    ) order by id)
-    from ainventory.sources
-    where import_batch = (select import_batch from ainventory.v_latest_import_batch)
-  ), '[]'::jsonb),
-  'rankings', coalesce((
-    select jsonb_agg(jsonb_build_object(
-      'rowIndex', row_index, 'testRunKey', test_run_key, 'modelVariantKey', model_variant_key,
-      'family', family, 'creator', creator, 'effort', effort,
-      'benchmarkVersionKey', benchmark_version_key, 'rawScore', raw_score,
-      'adjustedScore', adjusted_score, 'costTask', cost_task, 'timeTaskSec', time_task_sec,
-      'speedTps', speed_tps, 'qualStatus', qual_status, 'availability', availability,
-      'eligible', (eligible = 1), 'intelEffPerUsd', intel_eff_per_usd,
-      'usdPerUsableUnit', usd_per_usable_unit, 'pointsPerDollar', points_per_dollar,
-      'pointsPerSecond', points_per_second, 'balancedValue', balanced_value,
-      'smartValue', smart_value, 'speedValue', speed_value, 'rankBalanced', rank_balanced,
-      'rankSmart', rank_smart, 'rankSpeed', rank_speed, 'rankIntelligence', rank_intelligence,
-      'rankLowCost', rank_low_cost
-    ) order by rank_balanced nulls last, row_index)
-    from ainventory.v_rankings
-  ), '[]'::jsonb),
-  'thresholds', coalesce((
-    select jsonb_agg(jsonb_build_object(
-      'testRunKey', test_run_key, 'target', target, 'usable', (usable = 1),
-      'levelledScore', levelled_score, 'costTask', cost_task, 'timeMin', time_min,
-      'usdPerUsablePoint', usd_per_usable_point
-    ) order by test_run_key, target)
-    from ainventory.v_threshold_metrics
-  ), '[]'::jsonb),
-  'configs', coalesce((
-    select jsonb_agg(jsonb_build_object(
-      'modelName', model_name, 'benchmark', benchmark, 'effort', effort,
-      'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', speed_tps
-    ) order by model_name, effort)
-    from ainventory.benchmark_results br
-    where br.import_batch = (select import_batch from ainventory.v_latest_import_batch)
-      and br.benchmark like 'AA Intelligence Index%'
-      and br.metric = 'intelligence_index'
-  ), '[]'::jsonb),
-  'testRunRows', coalesce((
-    select jsonb_agg(jsonb_build_object('rowIndex', row_index, 'cells', data->'cells') order by row_index)
-    from ainventory.sheet_rows sr
-    where sr.import_batch = (select import_batch from ainventory.v_latest_import_batch)
-      and sr.sheet_name = 'Test_Runs'
-  ), '[]'::jsonb),
-  'cai', coalesce((
-    select jsonb_agg(jsonb_build_object(
-      'modelName', model_name, 'effort', effort, 'version', raw->>'benchmark_version',
-      'score', value_num, 'cost', cost_per_task_usd,
-      'wallSec', nullif(raw->>'time_per_task_seconds', '')::numeric,
-      'tokensPerTask', nullif(raw->>'token_usage_per_task', '')::numeric,
-      'harness', raw->>'agent_harness',
-      'creatorSlug', split_part(raw->>'observation_key', '|', 3),
-      'deepSwe', nullif(raw->>'deep_swe_v1_1_pct', '')::numeric,
-      'terminalBench', nullif(raw->>'terminal_bench_4_0_pct', '')::numeric,
-      'sweAtlas', nullif(raw->>'swe_atlas_qna_pct', '')::numeric,
-      'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
-    ) order by value_num desc nulls last, model_name)
-    from ainventory.benchmark_results br
-    where br.import_batch = (select import_batch from ainventory.v_latest_import_batch)
-      and br.benchmark like 'Artificial Analysis Coding Agent Index%'
-      and br.metric = 'cai_index_score'
-  ), '[]'::jsonb),
-  'prices', coalesce((
-    select jsonb_agg(jsonb_build_object(
-      'modelName', model_name, 'inputPer1M', input_usd_per_1m, 'outputPer1M', output_usd_per_1m,
-      'cacheReadPer1M', cached_input_usd_per_1m, 'cacheWritePer1M', cache_write_usd_per_1m,
-      'contextMinTokens', context_min_tokens, 'contextMaxTokens', context_max_tokens,
-      'windowKind', window_kind
-    ) order by model_name, context_min_tokens nulls first)
-    from ainventory.v_current_prices
-  ), '[]'::jsonb)
-) as aa`;
-
-const AA_BATCH_SQL = `select import_batch::text as batch from ainventory.v_latest_import_batch`;
+// The AA payload SQL is generated per selected batch by src/aa-batch-sql.ts
+// (#3302): the v_rankings / v_threshold_metrics bodies are copied verbatim
+// from ainventory with only their latest-batch CTE parameterized, so the
+// default (latest) query returns exactly what it did before.
 
 /**
  * The last-good AA section store (code#3332): kept beside the feed so a
@@ -503,10 +445,18 @@ const AA_BATCH_SQL = `select import_batch::text as batch from ainventory.v_lates
  * changes and reused untouched while neither does.
  */
 const aaLastGoodPath = join(dirname(outPath), "aa-last-good.json");
+/** Per-batch payload cache (#3302), beside the feed. */
+const aaBatchDir = join(dirname(outPath), "aa-batches");
+/** How many missing historical payloads one tick may build. The latest is
+ * always fresh; history fills in over ticks so no single run storms the
+ * Management API (#3332). */
+const AA_HISTORICAL_BUILDS_PER_TICK = 2;
 
 interface AaLastGood {
   batch: string;
   configFingerprint: string;
+  /** sha256 of the batch-bound semantic data (aa-batches.ts). */
+  fingerprint?: string;
   section: AaSection;
 }
 
@@ -515,7 +465,12 @@ async function readAaLastGood(): Promise<AaLastGood | null> {
     const parsed = JSON.parse(await readFile(aaLastGoodPath, "utf8")) as Partial<AaLastGood>;
     if (typeof parsed.batch !== "string" || typeof parsed.configFingerprint !== "string") return null;
     if (!isAaSection(parsed.section) || parsed.section.status !== "ok") return null;
-    return { batch: parsed.batch, configFingerprint: parsed.configFingerprint, section: parsed.section };
+    return {
+      batch: parsed.batch,
+      configFingerprint: parsed.configFingerprint,
+      fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : undefined,
+      section: parsed.section,
+    };
   } catch {
     return null;
   }
@@ -528,6 +483,31 @@ async function writeAaLastGood(entry: AaLastGood): Promise<void> {
     await rename(tmp, aaLastGoodPath);
   } catch (err) {
     console.error(`collector: AA last-good store write failed (${err instanceof Error ? err.message : "error"})`);
+  }
+}
+
+async function readAaBatchCache(batch: string): Promise<AaBatchCacheEntry | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(join(aaBatchDir, aaCacheFileName(batch)), "utf8"));
+    if (!isAaBatchCacheEntry(parsed) || parsed.batch !== batch) return null;
+    if (!isAaSection(parsed.section) || parsed.section.status !== "ok") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function writeAaBatchCache(entry: AaBatchCacheEntry): Promise<boolean> {
+  try {
+    await mkdir(aaBatchDir, { recursive: true });
+    const path = join(aaBatchDir, aaCacheFileName(entry.batch));
+    const tmp = `${path}.tmp`;
+    await writeFile(tmp, JSON.stringify(entry));
+    await rename(tmp, path);
+    return true;
+  } catch (err) {
+    console.error(`collector: AA batch cache write failed (${err instanceof Error ? err.message : "error"})`);
+    return false;
   }
 }
 
@@ -553,53 +533,36 @@ async function supabaseQuery(token: string, ref: string, sql: string): Promise<u
   return res.json();
 }
 
+function aaRawFromRows(rows: unknown): AaRawPayload | null {
+  if (!Array.isArray(rows) || typeof rows[0]?.aa !== "object" || rows[0].aa === null) return null;
+  return rows[0].aa as AaRawPayload;
+}
+
+/** Fetch one batch payload (a uuid; null is the latest fallback). */
+async function fetchAaPayload(token: string, ref: string, batch: string | null): Promise<AaRawPayload> {
+  const raw = aaRawFromRows(await supabaseQuery(token, ref, aaPayloadSql(batch)));
+  if (!raw) throw new Error("Supabase returned no AA payload");
+  return raw;
+}
+
 /**
  * Build the AA feed section. Fail-soft like every other section: a
  * failed build degrades to the last good payload with a stale marker
  * (code#3332), or to the absent form when no good payload exists yet,
  * so the dashboard explains the gap. The management token is only ever
  * sent to api.supabase.com and is never logged or written to the feed.
+ *
+ * #3302: the index comes from ainventory.sources (complete); each batch
+ * payload is cached under aa-batches/. The latest batch is refreshed
+ * every tick, history fills in at a bounded rate, and the default
+ * section is byte-compatible with the pre-#3302 latest payload.
  */
 async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   const lastGood = await readAaLastGood();
+  const fingerprint = await opencodeConfigFingerprint();
   const degrade = (reason: string): AaFeedSection =>
     lastGood ? { ...lastGood.section, stale: true, staleReason: reason } : aaAbsent(reason, generatedAt);
-  const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
-  if (!token) return degrade("no Supabase management token available (bws)");
-  // Project ref: env override, else the Bitwarden supabase.muse-dev2.project-ref
-  // secret (the same resolve-by-name discipline as the token), else the
-  // muse-dev2 project — never the retired muse-dev project.
-  const ref =
-    process.env.SUPABASE_PROJECT_REF ??
-    (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ??
-    "keihfchslgjetkmnmzra";
-  const fingerprint = await opencodeConfigFingerprint();
-  // Cheap batch probe first (code#3332): the payload only changes on a
-  // new import or a config change, so most ticks reuse the last good
-  // section instead of re-running the full payload query — the query
-  // pressure was itself causing intermittent Management API 403s.
-  try {
-    const rows = (await supabaseQuery(token, ref, AA_BATCH_SQL)) as { batch?: unknown }[];
-    const batchNow = Array.isArray(rows) && typeof rows[0]?.batch === "string" ? rows[0].batch : null;
-    if (batchNow && lastGood && batchNow === lastGood.batch && fingerprint === lastGood.configFingerprint) {
-      console.error("collector: AA section reused (import batch + config unchanged)");
-      return lastGood.section;
-    }
-  } catch {
-    // Probe failed — fall through to the full query, which produces
-    // the authoritative result or the degrade reason.
-  }
-  let raw: AaRawPayload;
-  try {
-    const rows = (await supabaseQuery(token, ref, AA_SQL)) as { aa?: unknown }[];
-    if (!Array.isArray(rows) || typeof rows[0]?.aa !== "object" || rows[0].aa === null) {
-      return degrade("Supabase returned no AA payload");
-    }
-    raw = rows[0].aa as AaRawPayload;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "error";
-    return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
-  }
+  // Batch-independent config reads, done once for every assembly.
   let configText: string | null = null;
   try {
     configText = await readFile(opencodeConfigPath, "utf8");
@@ -614,10 +577,147 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     runtimeText = null;
   }
-  const section = aaSectionFromSupabase(raw, configText, generatedAt, runtimeText);
-  if (!section) return degrade("Supabase payload failed its structural check");
-  await writeAaLastGood({ batch: section.batch, configFingerprint: fingerprint, section });
-  return section;
+
+  const cacheMeta = new Map<string, { fingerprint: string | null; cached: boolean }>();
+  const assemble = async (raw: AaRawPayload): Promise<AaSection | null> => {
+    const section = aaSectionFromSupabase(raw, configText, generatedAt, runtimeText);
+    if (!section) return null;
+    const contentFingerprint = aaBatchFingerprint(raw);
+    const cached = await writeAaBatchCache({
+      batch: section.batch,
+      configFingerprint: fingerprint,
+      fingerprint: contentFingerprint,
+      pricesFingerprint: aaPricesFingerprint(section.prices ?? []),
+      builtAt: generatedAt,
+      section,
+    });
+    cacheMeta.set(section.batch, { fingerprint: contentFingerprint, cached });
+    return section;
+  };
+
+  const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
+  if (!token) return degrade("no Supabase management token available (bws)");
+  // Project ref: env override, else the Bitwarden supabase.muse-dev2.project-ref
+  // secret (the same resolve-by-name discipline as the token), else the
+  // muse-dev2 project — never the retired muse-dev project.
+  const ref =
+    process.env.SUPABASE_PROJECT_REF ??
+    (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ??
+    "keihfchslgjetkmnmzra";
+
+  // The workbook index is the complete sources register; ingest_batches is
+  // optional metadata and a missing join row does not hide a batch.
+  let index: AaBatchIndexRow[];
+  try {
+    const rows = (await supabaseQuery(token, ref, AA_BATCH_INDEX_SQL)) as { batches?: unknown }[];
+    index = parseBatchIndex(Array.isArray(rows) ? rows[0]?.batches : null);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
+  }
+  if (index.length === 0) return degrade("no workbook batches in ainventory.sources");
+
+  // The current-price overlay, hashed once per tick: it is the
+  // validity key for every cached section's prices and price-derived
+  // catalog (#3302 review). A price-only change — no new workbook,
+  // no config change — must still rebuild the caches, because the
+  // page presents these prices as current.
+  let currentPricesFingerprint: string;
+  try {
+    const rows = (await supabaseQuery(token, ref, AA_PRICES_SQL)) as { prices?: unknown }[];
+    currentPricesFingerprint = aaPricesFingerprint(Array.isArray(rows) ? rows[0]?.prices : null);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
+  }
+
+  // Read every batch cache once; a changed config — or a changed
+  // current-price overlay — invalidates all of them.
+  const cachedSections = new Map<string, AaSection>();
+  for (const row of index) {
+    const cached = await readAaBatchCache(row.importBatch);
+    if (
+      cached &&
+      cached.configFingerprint === fingerprint &&
+      (cached.pricesFingerprint ?? null) === currentPricesFingerprint
+    ) {
+      cacheMeta.set(row.importBatch, { fingerprint: cached.fingerprint, cached: true });
+      cachedSections.set(row.importBatch, cached.section);
+    } else {
+      cacheMeta.set(row.importBatch, { fingerprint: cached?.fingerprint ?? null, cached: false });
+    }
+  }
+  const latestBatch = index[0]?.importBatch ?? null;
+
+  let latestSection: AaSection | null = null;
+  if (latestBatch && cachedSections.has(latestBatch)) {
+    latestSection = cachedSections.get(latestBatch) ?? null;
+  } else if (
+    latestBatch &&
+    lastGood &&
+    lastGood.batch === latestBatch &&
+    lastGood.configFingerprint === fingerprint &&
+    lastGood.fingerprint
+  ) {
+    // Reuse the last good latest section without re-running the full query.
+    latestSection = lastGood.section;
+    const cached = await writeAaBatchCache({
+      batch: latestBatch,
+      configFingerprint: fingerprint,
+      fingerprint: lastGood.fingerprint,
+      pricesFingerprint: aaPricesFingerprint(lastGood.section.prices ?? []),
+      builtAt: latestSection.generatedAt,
+      section: latestSection,
+    });
+    cacheMeta.set(latestBatch, { fingerprint: lastGood.fingerprint, cached });
+  } else if (latestBatch) {
+    try {
+      latestSection = await assemble(await fetchAaPayload(token, ref, latestBatch));
+      if (!latestSection) return degrade("Supabase payload failed its structural check");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "error";
+      return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
+    }
+  }
+  if (!latestSection) return degrade("no AA payload for the latest workbook batch");
+
+  await writeAaLastGood({
+    batch: latestSection.batch,
+    configFingerprint: fingerprint,
+    fingerprint: cacheMeta.get(latestSection.batch)?.fingerprint ?? undefined,
+    section: latestSection,
+  });
+
+  // Build a bounded number of missing historical payloads per tick. The
+  // budget is consumed before each fetch, so a failing or unassemblable
+  // batch still counts against the tick limit — an upstream outage can
+  // never turn this loop into an unbounded run of 60 s queries.
+  let attempts = 0;
+  for (const row of index) {
+    if (attempts >= AA_HISTORICAL_BUILDS_PER_TICK) break;
+    if (row.importBatch === latestSection.batch) continue;
+    if (cacheMeta.get(row.importBatch)?.cached) continue;
+    attempts++;
+    try {
+      await assemble(await fetchAaPayload(token, ref, row.importBatch));
+    } catch (err) {
+      console.error(`collector: AA historical batch build failed (${err instanceof Error ? err.message : "error"})`);
+    }
+  }
+
+  const batches: AaBatchSummary[] = summarizeBatches(index, cacheMeta);
+  const withIndex: AaSection = { ...latestSection, batches };
+  // #3302 review: the last-good payload must carry the selector index.
+  // Re-writing it after the index exists means a later transient failure
+  // degrades to a page that still offers every cached version, instead
+  // of silently losing the picker until the next successful collection.
+  await writeAaLastGood({
+    batch: withIndex.batch,
+    configFingerprint: fingerprint,
+    fingerprint: cacheMeta.get(withIndex.batch)?.fingerprint ?? undefined,
+    section: withIndex,
+  });
+  return withIndex;
 }
 
 async function main(): Promise<void> {
@@ -918,28 +1018,39 @@ async function main(): Promise<void> {
         return body.total_count as number;
       };
       const rows: RepoCensus[] = [];
-      let failedRepos = 0;
+      const failedRepos = new Set<string>();
       for (const repo of REPOS) {
+        let staleOpenIssues: number | null = null;
+        let staleIssuesError: string | null = null;
+        let staleIssuesCollectedAt: string;
+        try {
+          staleOpenIssues = await count(staleIssueSearchQuery(repo, new Date()));
+          staleIssuesCollectedAt = new Date().toISOString();
+        } catch (err) {
+          failedRepos.add(repo);
+          staleIssuesCollectedAt = new Date().toISOString();
+          staleIssuesError = sanitizeCollectionError(err);
+          console.error(`collector: stale-issue census failed for ${repo} (${staleIssuesError})`);
+        }
+        let openIssues: number | null = null;
+        let gateNow: number | null = null;
+        let gateNext: number | null = null;
         try {
           const base = `repo:${repo} is:issue is:open`;
-          rows.push({
-            repo,
-            openIssues: await count(base),
-            gateNow: await count(`${base} label:now`),
-            gateNext: await count(`${base} label:next`),
-          });
+          openIssues = await count(base);
+          gateNow = await count(`${base} label:now`);
+          gateNext = await count(`${base} label:next`);
         } catch (err) {
-          failedRepos++;
-          console.error(
-            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); repo omitted`,
-          );
+          failedRepos.add(repo);
+          console.error(`collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`);
         }
+        rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
       }
       if (rows.length) coverage = rows;
-      if (failedRepos === REPOS.length && REPOS.length > 0) {
+      if (failedRepos.size === REPOS.length && REPOS.length > 0) {
         markSection("coverage", "error", "all repository census reads failed");
-      } else if (failedRepos > 0) {
-        markSection("coverage", "error", `${failedRepos} repository census reads failed`);
+      } else if (failedRepos.size > 0) {
+        markSection("coverage", "error", `${failedRepos.size} repository census reads failed`);
       } else {
         markSection("coverage", "ok");
       }

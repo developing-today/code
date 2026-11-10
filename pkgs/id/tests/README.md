@@ -49,8 +49,15 @@ suites cannot silently pass a broken implementation.
     they exercise authority voiding through the event store (membership
     adds and content) and have no delegation-grant coverage, so they
     never reach `Engine::void`; the plant moved to the exercised path.
-    Delegation-grant voiding scenarios remain an open gap, separate
-    from this check.
+    The delegation-grant gap was closed by #7071: see the
+    `delegation-voiding` plant below.
+  - `delegation-voiding.patch`: the strong-removal gate at
+    `Engine::void` (`src/groups/delegation.rs`) is inverted, so a grant
+    concurrent with its grantor's removal stands under strong remove and
+    is voided under weak remove. Caught by `delegation_voiding_scenarios`
+    (#7071), which judge a grant, its grantor's concurrent removal, and
+    the grantee's onward operation through the groups fold — the
+    delegation-grant coverage the voiding suites never had.
   - `frontier-mapping.patch`: a group operation no longer contributes
     itself to the auth frontier (the mapping test in
     `CausalIndex::combine`, `crates/id-core/src/membership/frontier.rs`).
