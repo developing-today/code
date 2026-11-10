@@ -30,9 +30,10 @@
 # tiny-budget demo gates whatever the dispatch ran.
 # ────────────────────────────────────────────────────────────────────
 name: mcpx
+# CI tier policy: see .github/ci-policy.md
 
-# Builds mcpx on every change to it, and repairs the one thing a dependency
-# bot cannot: the Nix vendorHash.
+# Builds mcpx for package and dogfood-plugin changes, and repairs the one
+# thing a dependency bot cannot: the Nix vendorHash.
 #
 # Renovate updates go.mod and go.sum correctly. It has no way to know the hash
 # of the vendored module tree, so every Go dependency bump it opens leaves the
@@ -52,6 +53,23 @@ name: mcpx
 # (#297).
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      # The seed store is data the collector bot files (#1953): its
+      # commits must never re-trigger this workflow (the collector
+      # also marks its commits [skip ci] — both addendum fixes).
+      - "!pkgs/mcpx/testdata/seeds/**"
+      - ".opencode/plugin/**"
+      # Keep the workflow self-tested, including this trigger restoration.
+      - ".github/workflows/mcpx.yml"
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - "!pkgs/mcpx/testdata/seeds/**"
+      - ".opencode/plugin/**"
+      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"
