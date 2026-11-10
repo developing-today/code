@@ -345,11 +345,16 @@ export default (async ({ directory, worktree, project, client }, options) => {
       throw err;
     }
   };
-  const viaCLI = async (argv: string[]): Promise<string> => {
+  const viaCLI = async (argv: string[], signal?: AbortSignal): Promise<string> => {
+    // PLG-38 (#1940): an already-aborted host session never spawns the
+    // binary, and an abort mid-run kills the child (the runBin signal)
+    // and is named here instead of surfacing as a missing binary.
+    if (signal?.aborted) return "mcpx: aborted by the host before the binary ran.";
     if (settings.backend === "v1") {
       return "mcpx: no daemon is reachable, and backend=v1 forbids running the binary.";
     }
-    const out = await runBin(ladderOptions(), argv);
+    const out = await runBin(ladderOptions(), argv, undefined, signal);
+    if (signal?.aborted) return "mcpx: aborted by the host while the binary was running.";
     if (out === undefined) {
       return (
         "mcpx: no daemon is reachable and no mcpx binary could be run. " +
@@ -604,8 +609,22 @@ export default (async ({ directory, worktree, project, client }, options) => {
         // The session goes with the script: the daemon leases one pooled
         // instance per session, so state set by one mcpx_exec is there for
         // the next one in the same opencode session.
-        const out = await viaDaemon((c) => c.exec(args.source, context?.sessionID));
-        const body = out === undefined ? await viaCLI(["exec", args.source]) : renderExec(out);
+        // PLG-38 (#1940): the host abort signal (ToolContext.abort) is
+        // threaded into both paths -- the daemon request via the
+        // DaemonClient exec call and the CLI fallback via viaCLI/runBin
+        // -- so aborting the session cancels the in-flight call instead
+        // of blocking on it to completion.
+        const signal = context?.abort;
+        let out: Awaited<ReturnType<DaemonClient["exec"]>>;
+        try {
+          out = await viaDaemon((c) => c.exec(args.source, context?.sessionID, signal));
+        } catch (err) {
+          if (signal?.aborted) {
+            return "mcpx: exec aborted by the host while the daemon call was in flight." + (await annotation());
+          }
+          throw err;
+        }
+        const body = out === undefined ? await viaCLI(["exec", args.source], signal) : renderExec(out);
         return body + (await annotation());
       },
     }),
