@@ -117,7 +117,7 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			}
 			body["kind"] = "exec"
 			body["source"] = e.Source
-			body["options"] = mcpBackend{app: d.app}.execOptions(ctx, e.TimeoutSec)
+			body["options"] = mcpBackend(d).execOptions(ctx, e.TimeoutSec)
 			break
 		}
 		if p.Name != "mcpx_call" {
@@ -388,9 +388,9 @@ func (l *lazyMCP) fingerprint() string {
 	for _, key := range []string{"paths.adapters", "paths.apis"} {
 		for _, p := range splitPathList(l.app.Settings().String(key)) {
 			b, err := os.ReadFile(p)
-			fmt.Fprintf(h, "%s\x00", p)
+			_, _ = fmt.Fprintf(h, "%s\x00", p)
 			if err != nil {
-				fmt.Fprintf(h, "err:%v\x00", err)
+				_, _ = fmt.Fprintf(h, "err:%v\x00", err)
 				continue
 			}
 			h.Write(b)
@@ -466,7 +466,7 @@ func (d daemonAsker) passTool(ctx context.Context, name string) string {
 		return ns
 	}
 	for _, ns := range d.app.passNS() {
-		tools, err := mcpBackend{app: d.app}.UpstreamTools(ctx, ns)
+		tools, err := mcpBackend(d).UpstreamTools(ctx, ns)
 		if err != nil {
 			continue
 		}

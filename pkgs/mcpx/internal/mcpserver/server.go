@@ -1397,7 +1397,6 @@ func malformedMeta(req request) *response {
 	return nil
 }
 
-// negotiate picks a protocol version.
 // Supported are the protocol versions mcpx actually implements, newest first.
 //
 // Both eras. The legacy revisions negotiate once through an initialize
@@ -1412,6 +1411,7 @@ func malformedMeta(req request) *response {
 // 2025-03-26 replaced it, and 2026-07-28 says new implementations SHOULD NOT
 // adopt it. A 2024-11-05 client speaking Streamable HTTP is served; one that
 // only knows HTTP+SSE is not.
+// negotiate picks a protocol version.
 var Supported = spec.Revisions
 
 // ModernLatest is the newest per-request-metadata revision mcpx serves.
@@ -2287,7 +2287,7 @@ func (s *Server) sessionFor(r *http.Request, req request) (*Conn, string) {
 		// A modern request is never bound to a legacy session: 2026-07-28
 		// has no sessions and says to ignore the header, and binding it
 		// would hand it that client's pending questions and version.
-		if c, ok := s.session(id); ok && !(modern && c.legacy) {
+		if c, ok := s.session(id); ok && (!modern || !c.legacy) {
 			return c, ""
 		}
 	}

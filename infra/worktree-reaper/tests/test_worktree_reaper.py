@@ -27,6 +27,7 @@ Run on the laptop:  python3 tests/test_worktree_reaper.py
 """
 
 import contextlib
+import fcntl
 import importlib.util
 import io
 import json
@@ -424,6 +425,191 @@ class ProcScanFailClosedTests(unittest.TestCase):
             self.assertIn("WARNING", out.getvalue())
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+
+class FdOccupancyTests(unittest.TestCase):
+    """#6898: occupancy must see open fds and cmdline paths, not only cwds."""
+
+    def _wait_occupied(self, root, want=True):
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if wr.tree_occupied(root) == want:
+                return True
+            time.sleep(0.1)
+        return wr.tree_occupied(root) == want
+
+    def test_open_fd_in_tree_occupies_with_cwd_outside(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-fd-")
+        holder = None
+        try:
+            held = os.path.join(root, "held.txt")
+            with open(held, "w") as fh:
+                fh.write("x")
+            # The path reaches the child via the environment, so its
+            # cmdline carries no reference to the tree: only the open
+            # fd can give it away. Its cwd is outside the tree.
+            holder = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)"],
+                cwd="/", env={**os.environ, "WR_HELD": held})
+            self.assertTrue(self._wait_occupied(root),
+                            "a process holding an open file in the tree must occupy it")
+        finally:
+            if holder is not None:
+                holder.terminate()
+                holder.wait(timeout=10)
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_cmdline_path_in_tree_occupies(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-cmdline-")
+        holder = None
+        try:
+            target = os.path.join(root, "mentioned.txt")
+            # The child never opens the file; the tree path appears
+            # only as an argv token in its cmdline.
+            holder = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)", target],
+                cwd="/")
+            self.assertTrue(self._wait_occupied(root),
+                            "a cmdline path inside the tree must occupy it")
+        finally:
+            if holder is not None:
+                holder.terminate()
+                holder.wait(timeout=10)
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_reap_tree_recheck_sees_fd_holder(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-fd-reap-")
+        holder = None
+        try:
+            held = os.path.join(root, "held.txt")
+            with open(held, "w") as fh:
+                fh.write("x")
+            holder = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)"],
+                cwd="/", env={**os.environ, "WR_HELD": held})
+            self.assertTrue(self._wait_occupied(root))
+            rec = {"tree": root, "branch": "queue/test", "action": "candidate"}
+            git_calls = []
+
+            def fake_run_git(*args, **kwargs):
+                git_calls.append(args)
+                return 0, "", ""
+
+            with mock.patch.object(wr, "run_git", fake_run_git), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                result = wr.reap_tree("/nonexistent-primary", rec, {})
+            self.assertFalse(result)
+            self.assertEqual(rec["reason"], "occupied-at-removal")
+            self.assertEqual(git_calls, [], "no git call may run while an fd holder lives")
+            self.assertTrue(os.path.isdir(root), "candidate tree must be retained")
+        finally:
+            if holder is not None:
+                holder.terminate()
+                holder.wait(timeout=10)
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class RemovalRecheckTests(unittest.TestCase):
+    """#6899: reap_tree re-verifies QUIET and PUSHED immediately before
+    removal. Oracle: a tree whose gates changed after evaluation —
+    a fresh commit (tip unpushed), or fresh activity on a pushed tip —
+    must still exist, branch included, after reap_tree runs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="wtreaper-recheck-")
+        cls.repo = SyntheticRepo(cls.tmp)
+        cls.state = os.path.join(cls.tmp, "state")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _cfg(self, quiet_hours=0):
+        return {
+            "git_root": self.repo.git_root,
+            "state_dir": self.state,
+            "quiet_hours": quiet_hours,
+            "max_removals": 100,
+            "deny_paths": [], "deny_prefixes": [], "deny_names": [],
+            "generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
+            "generated_dirt_files": ["fleet-feed.json"],
+            "ignored_dirt_prefixes": ["target/", "node_modules/"],
+            "ignored_dirt_files": [],
+            "fetch": False,
+        }
+
+    def _candidate(self, branch):
+        tree = self.repo.branch_tree(branch, push=True)
+        wt = next(w for w in wr.list_worktrees(self.repo.primary)
+                  if w["path"] == tree)
+        rec = wr.evaluate_tree(self.repo.primary, wt, self._cfg(),
+                               time.time(), [])
+        self.assertEqual(rec["action"], "candidate", rec)
+        return tree, rec
+
+    def test_commit_between_evaluation_and_removal_keeps_tree(self):
+        tree, rec = self._candidate("t/late-commit")
+        # The agent resumes and commits after evaluation; the working
+        # tree stays clean, so only the PUSHED re-verification can
+        # see that the tip moved and is no longer proven on origin.
+        self.repo.write(tree, "late.txt", "new work\n")
+        git(tree, "add", ".")
+        git(tree, "commit", "--quiet", "-m", "late commit")
+        self.assertFalse(wr.reap_tree(self.repo.primary, rec, self._cfg()))
+        self.assertEqual(rec["action"], "keep")
+        self.assertEqual(rec["reason"], "unpushed-at-removal")
+        self.assertTrue(os.path.isdir(tree))
+        self.assertTrue(self.repo.branch_exists("t/late-commit"))
+
+    def test_pushed_but_active_at_removal_keeps_tree(self):
+        tree, rec = self._candidate("t/pushed-active")
+        # Commit AND push after evaluation: PUSHED still holds at
+        # removal, so only the QUIET re-verification can retain it.
+        self.repo.write(tree, "more.txt", "more work\n")
+        git(tree, "add", ".")
+        git(tree, "commit", "--quiet", "-m", "pushed follow-up")
+        git(tree, "push", "--quiet", "origin", "t/pushed-active")
+        cfg = self._cfg(quiet_hours=100000)
+        self.assertFalse(wr.reap_tree(self.repo.primary, rec, cfg))
+        self.assertEqual(rec["action"], "keep")
+        self.assertEqual(rec["reason"], "active-at-removal")
+        self.assertTrue(os.path.isdir(tree))
+
+
+class SingleInstanceLockTests(unittest.TestCase):
+    """#6899: a held flock in the state dir makes a run a no-op.
+    Oracle: while the test holds the lock, main() writes no run log
+    and the candidate tree survives; after release, the same run
+    reaps it — the lock was the only blocker."""
+
+    def test_held_lock_makes_second_run_noop(self):
+        tmp = tempfile.mkdtemp(prefix="wtreaper-lock-")
+        try:
+            repo = SyntheticRepo(tmp)
+            state = os.path.join(tmp, "state")
+            runner = ReaperRun(repo, state)
+            tree = repo.branch_tree("t/lock-held", push=True)
+            decisions = runner.run(dry_run=True)
+            self.assertEqual(decisions[tree]["action"], "would-reap")
+            lock_path = os.path.join(state, wr.LOCK_FILENAME)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                decisions = runner.run()
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            self.assertEqual(decisions, {}, "locked run must not even evaluate")
+            self.assertTrue(os.path.isdir(tree), "locked run must remove nothing")
+            decisions = runner.run()
+            self.assertFalse(os.path.isdir(tree),
+                             "after the lock is released the run must reap")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

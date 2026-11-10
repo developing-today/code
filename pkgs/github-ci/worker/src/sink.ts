@@ -77,6 +77,10 @@ export async function appendAgentEvent(
  * (fleet-queue, the #5693 home for PG agent.repo_snapshots).
  * Mirrors the Edge Function: side-branch pushes never move head;
  * a missing row is inserted minimal (the fetcher fills the rest).
+ * An unknown (NULL) default_branch never counts as a match (#6945):
+ * the caller passes the push payload's repository.default_branch so
+ * the default can be resolved even when the stored row does not know
+ * it yet; with no known default, head_sha is never written.
  * Returns true when a snapshot row was written.
  */
 export async function advanceSnapshot(
@@ -85,24 +89,26 @@ export async function advanceSnapshot(
   after: string,
   ref: string,
   nowIso: string,
+  payloadDefaultBranch?: string | null,
 ): Promise<boolean> {
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
   const existing = await q.queryText(
     "SELECT repo FROM agent_repo_snapshots WHERE repo = ?",
     [tArg(repo)],
   );
-  const defBranch = existing
+  const storedDef = existing
     ? await q.queryText("SELECT default_branch FROM agent_repo_snapshots WHERE repo = ?", [
         tArg(repo),
       ])
     : null;
+  // #6945: an unknown (NULL) default_branch is NOT every branch. Resolve
+  // the default from the stored row first, then the push payload's
+  // repository.default_branch; when neither is known, no push may move
+  // head_sha, and a missing row is seeded (minimal insert) without a head.
+  const defBranch = storedDef || payloadDefaultBranch || null;
   const zeroSha = /^0+$/.test(after);
   let head: string | null = null;
-  if (existing) {
-    if (!zeroSha && (!defBranch || ref === `refs/heads/${defBranch}`)) head = after;
-  } else if (!zeroSha && ref.startsWith("refs/heads/")) {
-    head = after;
-  }
+  if (!zeroSha && defBranch && ref === `refs/heads/${defBranch}`) head = after;
   if (!head && existing) return false;
   if (head) {
     await q.execute(

@@ -48,9 +48,14 @@ pub fn via_env() -> bool {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"))
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
 }
 
 /// Resolve this client's bearer token. The value is a secret: it
@@ -86,9 +91,22 @@ pub fn client_token() -> Result<String, String> {
 }
 
 fn agent() -> ureq::Agent {
+    agent_with_proxy(ureq::Proxy::try_from_env())
+}
+
+/// Build the via-service agent. `proxy` comes from the process
+/// environment in production (`Proxy::try_from_env`: ALL_PROXY /
+/// HTTPS_PROXY / http_proxy and friends, with NO_PROXY bypasses),
+/// so hosts that can only reach the tailnet through an HTTP CONNECT
+/// proxy (sandbox, codespaces, CI) can use the service path instead
+/// of always falling back to standalone (#5597). With no proxy set
+/// the agent connects directly, exactly as before. Tests inject an
+/// explicit proxy to run against a stub CONNECT proxy.
+fn agent_with_proxy(proxy: Option<ureq::Proxy>) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(CLIENT_DEADLINE))
         .timeout_connect(Some(Duration::from_secs(5)))
+        .proxy(proxy)
         .http_status_as_error(false)
         .build()
         .into()
@@ -121,7 +139,15 @@ pub fn search(base: &str, request: &SearchRequest) -> Result<Json, String> {
 }
 
 fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result<Json, String> {
-    let agent = agent();
+    search_with_agent(base, request, token, agent())
+}
+
+fn search_with_agent(
+    base: &str,
+    request: &SearchRequest,
+    token: &str,
+    agent: ureq::Agent,
+) -> Result<Json, String> {
     let auth = format!("Bearer {token}");
 
     // Submit.
@@ -270,6 +296,7 @@ pub fn get_chunk_fallback_detail(base: &str) -> String {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(2)))
         .timeout_connect(Some(Duration::from_secs(1)))
+        .proxy(ureq::Proxy::try_from_env())
         .http_status_as_error(false)
         .build()
         .into();
@@ -479,5 +506,95 @@ mod tests {
             .filter_map(|r| r.get("id")?.as_i64())
             .collect();
         assert_eq!(ids, vec![1, 2]);
+    }
+
+    /// A stub HTTP CONNECT proxy: records every CONNECT target it
+    /// is asked for (the test's oracle), answers 200, then relays
+    /// bytes between the client and the real target both ways.
+    fn start_connect_proxy() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::sync::{Arc, Mutex};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connects: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&connects);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut client) = stream else { continue };
+                let recorded = Arc::clone(&recorded);
+                thread::spawn(move || {
+                    // Read the CONNECT request head.
+                    let mut head: Vec<u8> = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        let n = client.read(&mut chunk).unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        head.extend_from_slice(&chunk[..n]);
+                        if head.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&head).to_string();
+                    let target = head
+                        .lines()
+                        .next()
+                        .and_then(|l| l.strip_prefix("CONNECT "))
+                        .and_then(|l| l.split_whitespace().next())
+                        .unwrap_or("")
+                        .to_string();
+                    recorded.lock().unwrap().push(target.clone());
+                    let Ok(mut upstream) = TcpStream::connect(&target) else {
+                        let _ = client
+                            .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+                        return;
+                    };
+                    let _ = client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n");
+                    let _ = client.set_nodelay(true);
+                    let _ = upstream.set_nodelay(true);
+                    let mut up_read = upstream.try_clone().unwrap();
+                    let mut client_read = client.try_clone().unwrap();
+                    let relay = thread::spawn(move || {
+                        let _ = std::io::copy(&mut up_read, &mut client);
+                    });
+                    let _ = std::io::copy(&mut client_read, &mut upstream);
+                    let _ = relay.join();
+                });
+            }
+        });
+        (format!("http://{addr}"), connects)
+    }
+
+    #[test]
+    fn search_via_connect_proxy_tunnels_to_service() {
+        // Oracle: the stub proxy's CONNECT log. If the client ignored
+        // the configured proxy and connected directly, the search
+        // would still succeed (the stub service is on loopback) but
+        // no CONNECT would ever be recorded.
+        let base = start_stub(StubMode::HappyPath);
+        let (proxy_url, connects) = start_connect_proxy();
+        let proxy = ureq::Proxy::new(&proxy_url).unwrap();
+        let agent = agent_with_proxy(Some(proxy));
+        let out = search_with_agent(&base, &request_k(10), "test-token", agent).unwrap();
+        let results = out
+            .get("results")
+            .and_then(Json::as_array)
+            .expect("envelope carries a results array");
+        assert_eq!(results.len(), 2);
+        let authority = base.strip_prefix("http://").unwrap();
+        let recorded = connects.lock().unwrap();
+        assert!(
+            !recorded.is_empty() && recorded.iter().all(|t| t == authority),
+            "expected every request tunnelled via CONNECT to {authority}, got {recorded:?}"
+        );
+    }
+
+    #[test]
+    fn agent_with_no_proxy_connects_directly() {
+        // No proxy configured: the pre-#5597 behaviour, unchanged.
+        let base = start_stub(StubMode::HappyPath);
+        let agent = agent_with_proxy(None);
+        let out = search_with_agent(&base, &request_k(10), "test-token", agent).unwrap();
+        assert!(out.get("results").and_then(Json::as_array).is_some());
     }
 }

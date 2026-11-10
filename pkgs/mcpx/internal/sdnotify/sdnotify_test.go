@@ -17,7 +17,7 @@ func listen(t *testing.T, name string) *net.UnixConn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 

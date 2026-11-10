@@ -45,22 +45,39 @@ ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
 never become merge requirements.
 
-## Merge queue (pilot, 2026-10-29)
+## No merge queue (Drew ruling, 2026-11-08)
 
-`main` runs a merge queue (ruleset `main: merge queue pilot`):
-merge method MERGE (merge commits only), grouping HEADGREEN
-(only the group's combined head must pass the required checks),
-min entries to merge 1 with a 1-minute wait (a lone PR is never
-held for a batch), max entries to merge 100, max entries to build
-100, check response timeout 30 minutes. The queue enforces the
-same required check as branch protection — `basic: proxy port
-fallbacks` — which is why the dedicated
-`.github/workflows/proxy-port-fallbacks.yml` runs on both
-`pull_request` and `merge_group` events. The queue validates the
-combined merge-group head, never the PR head alone. Operationally:
-`gh pr merge` now ENQUEUES a
-PR instead of merging it; "in the merge queue" is merge-pending,
-not a failure.
+`main` has **no merge queue**: merges land as direct merge commits,
+and no workflow declares a `merge_group` trigger. A "merge queue
+pilot" section stood here from 2026-10-29 describing a ruleset
+(`main: merge queue pilot`) that was never actually configured on
+the repo — verified 2026-11-07 on #5149: no ruleset on `main`, no
+merge-queue configuration in branch protection, and zero
+`merge_group` runs had ever occurred. Drew ruled it closed on
+2026-11-08 ("no merge queue"): rather than leave the triggers
+configured-but-unexercised, the `merge_group` triggers were removed
+from every workflow (`proxy-port-fallbacks`, `workflow-lint`,
+`opencode-config-guard`, `fleet-search-parity-guard`) — the two
+guards that ran *only* on `merge_group` now run on `pull_request`
+instead — and this policy was updated to match. The PR-tier required
+check stays `basic: proxy port fallbacks`, which the dedicated
+`.github/workflows/proxy-port-fallbacks.yml` runs on `pull_request`
+events. `gh pr merge` merges a PR directly; there is no
+merge-pending queue state.
+
+## Deploy flake checks (#7322)
+
+`.github/workflows/deploy-flake-checks.yml` is a **basic-tier** check
+(job `basic: deploy flake checks (deploy-list + deploy-list-malformed)`):
+on pull requests touching `pkgs/deploy/**`, `lib/default.nix`, or the
+workflow itself, it builds exactly the two root flake checks
+`checks.x86_64-linux.deploy-list` and
+`checks.x86_64-linux.deploy-list-malformed`. Before #7322 those checks
+ran only in the full flake check on main / the nix-ci schedule, so the
+deploy registry validation was unenforced at the merge gate. This is a
+targeted build of two `runCommandLocal` checks — never a full flake
+check on a PR (class 4 above). No `merge_group` trigger: main has no
+merge queue (ruling above).
 
 ## mcpx fix-test guard (#1969)
 
@@ -122,6 +139,13 @@ selections, top-level defaults, and agent model/fallback fields. Disabled
 providers are still checked: disabling a seat today must not make a later
 re-enable silently restore metered exposure.
 
+It also runs the `opencode-go.*` seating-guard regression fixtures
+(`bin/check-opencode-go-seating.test.mjs`) on pull requests using Node 24.
+Those fixtures use a synthetic SQLite store and pin the exact-id credential
+and post-config-change successful-attempt assertions; CI never attempts to
+read the laptop's live OpenCode database. The live-store check is the hourly
+`opencode-go-seating-guard.timer` on the laptop.
+
 An explicitly approved one-off use must carry a standalone comment directly
 above that specific selection, with a non-empty reason:
 
@@ -155,16 +179,86 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 
 | workflow                                                       | PR tier                                                                                             | main tier                                                                                           | nightly                                                          |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| nix ci                                                         | — (PR and merge-group proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
-| proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request` and `merge_group`                                   | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
-| workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) and `merge_group` | — | — |
+| nix ci                                                         | — (PR proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
+| proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request`                                                          | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
+| atlas-search                                                   | `basic: atlas-search Rust checks` on pull requests touching `pkgs/atlas-search/**`                 | —                                                                                                   | —                                                                |
+| deploy-flake-checks | `basic: deploy flake checks (deploy-list + deploy-list-malformed)` on `pull_request` (paths `pkgs/deploy/**`, `lib/default.nix`, the workflow itself) | full flake check in nix ci | — |
+| workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) | — | — |
 | id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                                        | — (main covers it)                                               |
 | id bench                                                       | — (removed)                                                                                         | yes                                                                                                 | —                                                                |
 | go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                                               | —                                                                |
+| container images                                               | Nix-build mcpx, identity and Lab Ops Hub images on their package/flake paths                        | same path-gated image build on push to main                                                          | —                                                                |
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                                        | —                                                                |
 | mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                                             | — (main covers it)                                               |
 | mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                                            | —                                                                |
+| production-line guard (#1411)                                  | `basic: production line limit (2500)` on `pull_request`                                             | —                                                                                                   | —                                                                |
+
+## CI-policy agreement contract (#7089, Phase 1)
+
+For every workflow in this contract's scope, three records must
+agree: the tier this policy assigns, the triggers the workflow
+declares, and the Actions enablement state. A disagreement in any
+leg is a defect with exactly one recorded disposition — **re-arm**
+(triggers restored to the mapping + venue enabled + a completed run
+on main as proof), **fold** (the check moves into a named venue that
+satisfies the contract), or **retire** (workflow, policy row, and
+header promises removed in the same change) — never a state that
+persists by default. "Dispatch-only and nobody dispatches" is not a
+disposition.
+
+**Tier → trigger mapping** (the checker below enforces exactly
+this):
+
+| tier             | satisfied by                                                                 |
+| ---------------- | ---------------------------------------------------------------------------- |
+| PR (basic) tier  | a `pull_request` trigger (with the workflow's path gate where one exists)    |
+| main tier        | a `push` trigger on `branches: [main]` (path gates as before), or a named equivalent main-tier venue running the same check |
+| nightly tier     | a `schedule` trigger                                                         |
+
+A `workflow_dispatch:`-only block satisfies **no** tier, and
+`merge_group` satisfies no tier either: there is no merge queue
+(Drew ruling, 2026-11-08, above), which supersedes the #7089
+design's original merge_group pin for basic-tier guards — the
+guards that ran only on `merge_group` now run on `pull_request`,
+and this contract's mapping follows that ruling.
+
+**Scope.** The guard/build workflows this policy names outside the
+test-suite estate (#6185's registry owns suite venues):
+`workflow-lint`, `proxy-port-fallbacks`, and
+`fleet-search-parity-guard` (the conforming basic-tier guards),
+`opencode-config-guard`, `mcpx-fix-test-guard`,
+`production-line-guard`, and the build set `go-modules-build`,
+`identity-build`, `map-build`, `mcpx-nixbuild`. Phase 4 of #7089
+inventories widening this scope to every workflow this policy
+names.
+
+**Checking.** `.github/scripts/check-ci-policy-agreement.sh`
+compares each in-scope workflow's tier assignment against its
+declared triggers in the tree and runs in `workflow-lint`; shell
+contract tests live in
+`.github/scripts/check-ci-policy-agreement.test.sh` (oracle: for
+every in-scope workflow, tier, declared triggers, and the recorded
+waiver set must agree). Enablement is not visible from the tree:
+it is audited from the Actions API on the #6187 recurring cadence,
+and a disabled in-scope venue is reported with its disposition.
+At Phase 1 landing, the disabled in-scope venues are exactly the
+waiver set below (opencode-config-guard and the #6981 build set
+are `disabled_manually`).
+
+**Waivers — the recorded Phase 2–3 disagreement set.** Each waiver
+names its phase issue and awaits Drew's re-arm-vs-dispatch-only
+ruling on #7089; a waiver is a record, not a disposition. When a
+phase lands or is ruled, the waiver is deleted in the same PR that
+changes the triggers or strikes the tier — the checker fails on a
+stale waiver whose leg now agrees.
+
+| workflow                                          | missing leg(s)                                          | phase issue |
+| ------------------------------------------------- | ------------------------------------------------------- | ----------- |
+| opencode-config-guard                             | main tier (`push`); venue `disabled_manually`           | Phase 2 — #6953 |
+| mcpx-fix-test-guard                               | PR tier (`pull_request`) and main tier (`push`)         | Phase 2 — #6929 |
+| production-line-guard                             | PR tier (`pull_request`)                                | Phase 3 — #6959 |
+| go-modules-build, identity-build, map-build, mcpx-nixbuild | PR tier (`pull_request`) and main tier (`push`); venues `disabled_manually` | Phase 3 — #6981 |
 
 ## Coverage rule
 
@@ -175,6 +269,35 @@ nightly twice over (id-check schedule, id-e2e-nightly). For nix ci
 the flake-check job runs on main and on the nix-ci nightly
 schedule. mcpx conformance legs run on every mcpx-touching merge
 to main.
+
+## Test-suite coverage contract (#6185, Phase 1 #6186)
+
+The machine-readable inventory is
+[`.github/test-suite-registry.json`](./test-suite-registry.json). A
+suite counts as covered only when all five conditions hold:
+
+1. **Registered:** exactly one registry entry names the suite's files,
+   venue, and invocation; adding a suite without an entry is incomplete.
+2. **Real venue:** the venue is enabled and dispatchable in GitHub Actions,
+   or is a flake check that actually runs. A disabled Actions workflow is
+   not a venue that runs the suite.
+3. **Proven run:** the venue names the suite files explicitly and asserts
+   they exist first; a reported `SKIP` fails coverage. Build, vet, and
+   typecheck steps do not count as running a test suite.
+4. **Runnable and hermetic:** the suite passes from a clean checkout with
+   networking disabled; tests use mock seams and do not rely on
+   import-time side effects or a mismatched lockfile/runner.
+5. **Ratcheted:** a check compares the on-disk suite inventory, registry,
+   and venue contents. Workflow enablement is external state and must be
+   audited through the Actions API by the recurring check, not inferred
+   from files in this repository.
+
+This phase does not add or change workflow triggers. Under the dispatch-only
+coverage ruling in #6185, an enabled workflow is not evidence that a suite
+ran: a suite without an observed, successful run is **not run**, not green.
+The registry records current venues and API enablement state; it does not
+infer execution from either. Phase 2 wiring, Phase 3 venue dispositions,
+and the Phase 4 ratchet remain separate work.
 
 ## Dedup rule
 

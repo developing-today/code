@@ -64,6 +64,7 @@ var ExecFlagExemptions = map[string]string{
 	"permissions": "a denial is observable only through a per-runtime permission error whose shape differs across deno/bun/node; the rows assert runtime-stable output",
 	"prompt":      "synthesizes the script through a configured model; the e2e env has no model, so there is no run to probe",
 	"remote":      "probed by construction: every probe row runs twice, and the second half leads with --remote on the daemon path (#192)",
+	"remote-file": "its effect exists only for a named script on a search path, and the guard's rows pass inline source — which --remote-file refuses by design — so a with/without inline row can observe only the refusal, never the daemon-side resolution; the resolution itself is covered in internal/scriptresolve and on the daemon path in internal/execsvc (resolve_test.go) and internal/daemon",
 	"repair":      "model-backed repair of a failing script; the e2e env has no model, so a repaired run cannot be produced",
 	"dry-run":     "call interception lives in the daemon's call path against the shared run registry; the probe rows' local half runs a service with no shared registry, so a with/without row cannot observe it -- the behaviour is covered at the daemon level (internal/daemon dry-run tests) and in internal/execsvc",
 	"runtime":     "the without half is environment-dependent — auto picks the first installed runtime, so the same row would assert different outcomes on different machines",

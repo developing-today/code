@@ -37,6 +37,31 @@ function usageError(message: string): never {
 // incident literally titled "--body", and a trailing `--severity`
 // silently fell back to the critical default. Same settled guard as
 // collect-github-billing.ts / record-claude-launch.ts.
+// Unknown or duplicated arguments are usage errors, never silently
+// ignored (#7289): argv is probed token-by-token by arg() below, so a
+// typo'd --severty fell through to the critical severity default and
+// posted a warning incident as critical, a joined --severity=warning
+// did the same, and a typo'd --bodi silently dropped the body — all
+// exit 0. Mirrors rejectUnknownArgs in generate-digest.ts (#7097) /
+// collect-github-billing.ts (#7254). Runs before any token is
+// resolved or any fetch is made.
+const VALUE_FLAGS = ["--source", "--key", "--severity", "--title", "--body"];
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (VALUE_FLAGS.includes(token)) {
+      if (seen.has(token)) usageError(`duplicate ${token}`);
+      seen.add(token);
+      i++; // skip the value; arg() validates it
+      continue;
+    }
+    usageError(`unknown argument ${JSON.stringify(token)}`);
+  }
+}
+rejectUnknownArgs();
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   if (i < 0) return undefined;

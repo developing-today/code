@@ -108,6 +108,34 @@ test("--bogus-flag aborts with a usage error before any external call", async ()
   assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
 });
 
+test("a stray positional aborts with a usage error before any external call (#7855)", async () => {
+  const sb = makeSandbox();
+  const result = await runDeploy(sb, ["extra"]);
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /unrecognized argument\(s\): extra/);
+  assert.match(result.stderr, /usage: deploy\.mjs \[--dry-run\]/);
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
+});
+
+test("duplicate --dry-run is named as a duplicate, not unrecognized (#7855)", async () => {
+  const sb = makeSandbox();
+  const result = await runDeploy(sb, ["--dry-run", "--dry-run"]);
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /duplicate argument\(s\): --dry-run/);
+  assert.doesNotMatch(result.stderr, /unrecognized argument/);
+  assert.match(result.stderr, /usage: deploy\.mjs \[--dry-run\]/);
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
+});
+
+test("--dry-run with a bogus flag aborts with a usage error before any external call (#7855)", async () => {
+  const sb = makeSandbox();
+  const result = await runDeploy(sb, ["--dry-run", "--bogus-flag"]);
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /unrecognized argument\(s\): --bogus-flag/);
+  assert.match(result.stderr, /usage: deploy\.mjs \[--dry-run\]/);
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
+});
+
 test("null and non-object config entries are validation errors, not TypeErrors (#6947)", async () => {
   const cases = [
     ["null", /config must be a JSON object/],

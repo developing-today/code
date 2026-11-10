@@ -20,7 +20,7 @@ func openStore(t *testing.T) *eventstore.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
 
@@ -40,7 +40,7 @@ const callSchema = `{
 func TestWriteRejectsUndeclaredKind(t *testing.T) {
 	st := openStore(t)
 	_, err := st.Write(eventstore.Event{
-		TsUnixMs: 1, Kind: "mcp.call", Source: "mcpx",
+		TSUnixMs: 1, Kind: "mcp.call", Source: "mcpx",
 		Data: json.RawMessage(`{"server":"fff","tool":"search","ok":true}`),
 	})
 	if !errors.Is(err, eventstore.ErrUndeclaredKind) {
@@ -70,7 +70,7 @@ func TestKindSchemaIsEnforced(t *testing.T) {
 	}
 	// Data missing a required field is rejected with the named error.
 	_, err := st.Write(eventstore.Event{
-		TsUnixMs: 1, Kind: "mcp.call", Source: "mcpx",
+		TSUnixMs: 1, Kind: "mcp.call", Source: "mcpx",
 		Data: json.RawMessage(`{"server":"fff"}`),
 	})
 	if !errors.Is(err, eventstore.ErrInvalidData) {
@@ -78,7 +78,7 @@ func TestKindSchemaIsEnforced(t *testing.T) {
 	}
 	// Conforming data is accepted.
 	if _, err := st.Write(eventstore.Event{
-		TsUnixMs: 2, Kind: "mcp.call", Source: "mcpx", Value: f64(10),
+		TSUnixMs: 2, Kind: "mcp.call", Source: "mcpx", Value: f64(10),
 		Data: json.RawMessage(`{"server":"fff","tool":"search","ok":true}`),
 	}); err != nil {
 		t.Fatalf("conforming write failed: %v", err)
@@ -131,7 +131,7 @@ func TestWriterInternsTracePairs(t *testing.T) {
 	ids := [][]string{{"session", "s1"}, {"parent", "p1"}, {"worktree", "/w"}}
 	for i := range 2 {
 		if _, err := st.Write(eventstore.Event{
-			TsUnixMs: int64(i + 1), Kind: "session.start", Source: "mcpx", IDs: ids,
+			TSUnixMs: int64(i + 1), Kind: "session.start", Source: "mcpx", IDs: ids,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -196,7 +196,7 @@ func TestCallStatsAgreeWithLogstore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ls.Close()
+	defer func() { _ = ls.Close() }()
 	if _, err := ls.Ingest(); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestCallStatsAgreeWithLogstore(t *testing.T) {
 	for i, c := range calls {
 		data, _ := json.Marshal(map[string]any{"server": c.server, "tool": c.tool, "ok": c.ok})
 		if _, err := st.Write(eventstore.Event{
-			TsUnixMs: base.Add(time.Duration(i) * time.Second).UnixMilli(),
+			TSUnixMs: base.Add(time.Duration(i) * time.Second).UnixMilli(),
 			Kind:     "mcp.call", Source: "mcpx", Value: f64(c.dur), Data: data,
 			IDs: [][]string{{"session", "s1"}},
 		}); err != nil {
@@ -304,12 +304,12 @@ func TestRegisterKindConcurrentAcrossStores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st1.Close()
+	defer func() { _ = st1.Close() }()
 	st2, err := eventstore.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	stores := []*eventstore.Store{st1, st2}
 
 	// Identical definitions registered concurrently from two Store
