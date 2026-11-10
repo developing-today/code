@@ -3,7 +3,7 @@
  * socket and -- when the Go suite hands one over in OPS_LIVE_SOCKET -- against
  * a real daemon.
  *
- *   bun test plugin/opencode/mcpx/ops.test.ts
+ *   bun test plugin/core/ops.test.ts
  *
  * The fake half proves the request shapes: that a path parameter is escaped,
  * a raw body arrives as bytes, a bare-document route receives the document.

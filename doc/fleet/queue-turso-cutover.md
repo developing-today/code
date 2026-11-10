@@ -413,3 +413,34 @@ at their attempt cap. The broker now owns waiting:
   was the one place bookkeeping cycles consumed attempts (task
   10501 reached 24/24 on handoff cycles alone). Direct claims
   and bound sessions mid-work still return to `queued`.
+
+## Amendment — the sink gets its own status (#8234, 2026-11-10)
+
+The section above describes the #8184 landing as built; two of
+its mechanisms were superseded the same day, first by #8187
+(lanes DO collect sink rows through the default pick and flip
+them direct — the `NOT (PARKED_HANDOFF_SQL)` exclusion is gone)
+and then by #8234, Drew's ruling "sink gets its own status, drop
+the fake timer":
+
+- The handoff sink is status **`handed_off`**, not `parked`.
+  `parked` now means only a genuine broker-owned wait
+  (`wait_kind` + `ready_condition` + floored `not_before`).
+- The park verb classifies its own landing: a park whose merged
+  progress is a recorded opencode handoff with no caller-declared
+  genuine wait lands in `handed_off` with every wait field NULL.
+  A caller-attached real condition always wins — that park is a
+  genuine wait even on a handoff-shaped row.
+- `expire_leases` returns an expired sink-shaped claim to
+  `handed_off` with `not_before = NULL` and NO ready_condition —
+  the +1200s fake timer the sink pick never read is deleted.
+- Sink membership is the status, on both sides of the wire:
+  neither the broker's pick SQL nor the claimant's poll reads a
+  progress stage to decide it (the broker and poll once read
+  different stage sources and disagreed — #8192, folded in).
+- The wake verb refuses `handed_off` rows (not a wait; already
+  claimable), and `fleet queue health` reports `handed_off` as
+  its own bucket. Existing sink-shaped `parked` rows were moved
+  by one auditable migration (event kind
+  `handoff_status_migration`); rows carrying a genuine wait
+  stayed `parked`.

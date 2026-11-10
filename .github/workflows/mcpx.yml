@@ -119,6 +119,7 @@ jobs:
       - name: Check the dogfood plugin copy is in sync
         run: |
           diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff -r pkgs/mcpx/plugin/core .opencode/plugin/core
           diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
 
   seed:
@@ -196,6 +197,7 @@ jobs:
       - name: Check the dogfood plugin copy is in sync
         run: |
           diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff -r pkgs/mcpx/plugin/core .opencode/plugin/core
           diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
 
       - uses: actions/setup-go@v7
@@ -310,7 +312,7 @@ jobs:
       # test fails CI instead of never running (#1978).
       - name: Plugin tests (bun)
         working-directory: pkgs/mcpx
-        run: bun test plugin/opencode/mcpx/
+        run: bun test plugin/opencode/mcpx/ plugin/core/
 
       - name: Upload runtime feature coverage ledger
         if: always()
@@ -448,7 +450,7 @@ jobs:
 
       - name: bun test
         working-directory: pkgs/mcpx
-        run: bun test plugin/opencode/mcpx/
+        run: bun test plugin/opencode/mcpx/ plugin/core/
 
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)

@@ -17,7 +17,7 @@
  * pinned Context supports (picker.ts records the evidence).
  * The v1 tree stays beside this one, untouched, until v2 is what runs.
  */
-import { targetKey, type Target } from "../mcpx/daemon.ts";
+import { targetKey, type Target } from "../../core/daemon.ts";
 import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
 import { wirePermissionGate, type PermissionDomainLike } from "./permission.ts";

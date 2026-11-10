@@ -1068,6 +1068,39 @@ pub fn start_server_config(path: &Path) -> Result<StartedServerConfig> {
     })
 }
 
+/// The pull policy the live event-sync gate serves under (#5119): the server
+/// config's `[policy] pull_policy` when a config was loaded, else the code
+/// default ([`crate::pull_policy::PullPolicy::Open`]), so a `serve` without
+/// `--server-config` behaves exactly as before.
+#[cfg(feature = "world")]
+fn serve_pull_policy(started: Option<&StartedServerConfig>) -> crate::pull_policy::PullPolicy {
+    started.map_or(crate::pull_policy::PullPolicy::Open, |started| {
+        started.config.pull_policy()
+    })
+}
+
+/// The world protocol serve registers for a hub: the loaded operator
+/// config's #2247 budget policy when a server config was given, the
+/// coded defaults when none was. Before this wire, the budgets
+/// table was parsed and held at startup scope but never reached the
+/// protocol, so configured per-counterparty caps were inert in
+/// production.
+#[cfg(feature = "world")]
+fn world_protocol_for(
+    hub: crate::world_hub::WorldHub,
+    local_node: [u8; 32],
+    started: Option<&StartedServerConfig>,
+) -> crate::world_net::WorldProtocol {
+    match started {
+        Some(started) => crate::world_net::WorldProtocol::with_budgets(
+            hub,
+            local_node,
+            started.config.budgets().clone(),
+        ),
+        None => crate::world_net::WorldProtocol::with_local_node(hub, local_node),
+    }
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -1158,7 +1191,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         );
     }
     #[cfg(feature = "world")]
-    let _started_server_config = match &server_config {
+    let started_server_config = match &server_config {
         Some(path) => {
             let started = start_server_config(path)?;
             status!(
@@ -1171,6 +1204,19 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             Some(started)
         }
         None => None,
+    };
+    // #5119: the pull policy the live event-sync gate uses, resolved once from
+    // the same startup config load. No config keeps the code default (open).
+    #[cfg(feature = "web")]
+    let event_sync_policy = {
+        #[cfg(feature = "world")]
+        {
+            serve_pull_policy(_started_server_config.as_ref())
+        }
+        #[cfg(not(feature = "world"))]
+        {
+            crate::pull_policy::PullPolicy::Open
+        }
     };
     // #2145: resolve the web listener set once, before any startup work,
     // so a flag conflict or a malformed [web_bindings] line fails fast.
@@ -1447,7 +1493,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     let world_protocol = world_hub
         .as_ref()
-        .map(|hub| crate::world_net::WorldProtocol::with_local_node(hub.clone(), *node_id.as_bytes()));
+        .map(|hub| world_protocol_for(hub.clone(), *node_id.as_bytes(), started_server_config.as_ref()));
 
     #[cfg(feature = "world")]
     let abuse_handle = world_protocol
@@ -1476,7 +1522,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let router_builder = match &event_events {
         Some(events) => router_builder.accept(
             crate::event_store::sync::ALPN,
-            crate::event_sync::EventSyncProtocol::new(Arc::clone(events)),
+            crate::event_sync::EventSyncProtocol::with_gate(
+                Arc::clone(events),
+                crate::event_sync::gate(event_sync_policy),
+            ),
         ),
         None => router_builder,
     };
@@ -1517,9 +1566,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let _event_sync_handle = event_events.clone().map(|events| {
         status!("event sync: /id-range-sync/1 enabled (the web event store)");
+        // #5119: the live pull gate reads the operator config's
+        // `[policy] pull_policy`. Without a config the policy is the code
+        // default (open), exactly as before. The local event store is not a
+        // world and has no membership source, so `members` fails closed —
+        // every pull is refused — and says so here rather than silently
+        // serving open.
+        let policy = event_sync_policy;
+        if policy == crate::pull_policy::PullPolicy::Members {
+            status!(
+                "event sync: [policy] pull_policy=members — the local event store has no \
+                 membership source, so every pull is refused (fail closed)"
+            );
+        }
         let endpoint = router.endpoint().clone();
         let discovery = peer_discovery.clone();
-        let gate = crate::event_sync::open_gate();
+        let gate = crate::event_sync::gate(policy);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(crate::event_sync::SYNC_INTERVAL).await;
@@ -3474,6 +3536,93 @@ mod tests {
         let err = start_server_config(&path).unwrap_err();
         assert!(format!("{err:#}").contains("server config"), "{err:#}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_pull_policy_defaults_to_open_without_a_config() {
+        assert_eq!(
+            serve_pull_policy(None),
+            crate::pull_policy::PullPolicy::Open
+        );
+    }
+
+    /// #5119: the live event-sync gate takes its policy from the loaded
+    /// config's `[policy] pull_policy`, not from the code default.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_pull_policy_reads_the_configured_policy_table() {
+        let dir = serve_config_dir("pull-policy");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[policy]\npull_policy = \"members\"\n").unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(
+            serve_pull_policy(Some(&started)),
+            crate::pull_policy::PullPolicy::Members
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // #2247: the loaded [budgets] must reach the world protocol serve
+    // registers, not just the parser.
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_enforces_configured_budgets() {
+        let dir = serve_config_dir("budgets");
+        let path = dir.join("server.toml");
+        let ann = ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+            .verifying_key()
+            .to_bytes();
+        let ann_hex = ann.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{ann_hex}\"\n\n[budgets]\nper_peer_bytes_per_hour = 1000\n\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 500\nwindow_seconds = 60\n"
+            ),
+        )
+        .unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_ne!(
+            *started.config.budgets(),
+            crate::abuse::BudgetPolicy::default()
+        );
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], Some(&started));
+        let handle = protocol.abuse_handle();
+        let mut evaluator = handle.lock().unwrap();
+        // The configured policy — not the default — is the evaluator's.
+        assert_eq!(evaluator.budgets(), Some(started.config.budgets()));
+        // Ann's counterparty row replaced her per-peer limits.
+        let limits = started.config.budgets().limits_for_peer(&ann);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].bytes_per_window, 500);
+        // A charge beyond the configured cap is refused as a budget
+        // refusal (the frame is dropped; the peer is not disconnected).
+        let refusal = evaluator
+            .check_budget(crate::abuse::Direction::Inbound, ann, None, 600, 1_000)
+            .unwrap_err();
+        assert_eq!(refusal.reason, crate::abuse::RefusalReason::BudgetExhausted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_defaults_budgets_without_config() {
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], None);
+        let handle = protocol.abuse_handle();
+        let evaluator = handle.lock().unwrap();
+        assert_eq!(
+            evaluator.budgets(),
+            Some(&crate::abuse::BudgetPolicy::default())
+        );
     }
 
     #[test]

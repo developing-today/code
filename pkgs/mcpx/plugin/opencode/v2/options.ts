@@ -13,7 +13,7 @@
  * and these are reads, not sets. (An earlier draft listed the names in
  * a quoted array and failed that test on all twelve.)
  */
-import { goDurationMs, splitArgs } from "../mcpx/daemon.ts";
+import { goDurationMs, splitArgs } from "../../core/daemon.ts";
 
 export type Options = {
   /** A daemon named outright. `unix:///path` or `http://host:port`. */

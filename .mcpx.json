@@ -60,7 +60,8 @@
     },
     "gopls-mcp-server": {
       "command": "go",
-      "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"]
+      "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"],
+      "mcpx": { "scope": "worktree" }
     },
     "codebase-memory": {
       "command": "npx",

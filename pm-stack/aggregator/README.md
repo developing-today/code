@@ -381,6 +381,20 @@ alerts-intake-token`, resolved by name at runtime
   within 24 hours. A class under 10% acted-on over the rolling
   four-week window renders as a default-off _proposal_ — display
   only; the page never changes a preference or a default.
+- **Preferences**: `/alerts/preferences` (#3318) is the
+  per-class subscription page: toggles for every class in
+  `NOTIFICATION_CLASS_DEFAULTS`, quiet-hours editing, this
+  browser's subscription state, and a send-test button per class
+  (`POST /api/push/test-class`). Saving writes through the same
+  subscription upsert; the engine reads the stored classes/quiet
+  on its next tick, and a per-class test honours the toggle (a
+  class that is off receives no test). Test landings follow the
+  design §3 deep-link contract (`notificationTestLanding`): a real
+  candidate's own URL when one is supplied, otherwise the class's
+  own view — never the origin root; the digest test is the only
+  list-shaped landing (attention filtered to its refs). The JSON
+  twin is `/api/alerts/preferences.json`. `/notifications` stays
+  the read-only #3319 measurement page.
 - **Ack surface**: `/alerts` lists open incidents with Ack/Close.
   Ack is exactly-once: only the open→acked transition writes an
   event (and stamps the sends' `acted_on_at`); a repeat ack returns
