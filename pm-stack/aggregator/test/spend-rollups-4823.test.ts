@@ -103,6 +103,105 @@ describe("buildSpendRollups", () => {
   });
 });
 
+describe("generated invariants (seeded, deterministic)", () => {
+  // Oracle: an independent naive summation over the generated events,
+  // written separately from buildSpendRollups' grouping code. The
+  // generator is a fixed-seed LCG so failures reproduce exactly.
+  function lcg(seed: number) {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 2 ** 32;
+    };
+  }
+
+  test("conservation per pool/unit/window holds for generated event sets", () => {
+    const rand = lcg(4823);
+    const pools = ["meta", "openai", "deepseek"];
+    const projects = ["proj-a", "proj-b", null];
+    // Epic-free events: project/unattributed then form an exact partition
+    // of the spend, which is what makes conservation checkable. (An event
+    // with both a project and an epic legitimately appears in both
+    // scopes' rollups — those are separate views, not a partition.)
+    const epics = [null];
+    for (let trial = 0; trial < 25; trial++) {
+      const events: SpendRollupEvent[] = [];
+      const n = 1 + Math.floor(rand() * 12);
+      for (let i = 0; i < n; i++) {
+        const pool = pools[Math.floor(rand() * pools.length)]!;
+        const day = 1 + Math.floor(rand() * 28);
+        events.push({
+          ts: `2026-11-${String(day).padStart(2, "0")}T10:00:00Z`,
+          projectId: projects[Math.floor(rand() * projects.length)]!,
+          epicRef: epics[Math.floor(rand() * epics.length)]!,
+          tokensByPool: { [pool]: Math.floor(rand() * 500) },
+          paygUsd: Math.floor(rand() * 20),
+        });
+      }
+      const built = buildSpendRollups(events, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+      // Oracle for the month window, tokens, project+unattributed scopes:
+      // every event contributes its tokens to exactly one of those scopes.
+      const oracle = new Map<string, number>();
+      for (const e of events) {
+        const scope = e.projectId ? `project|${e.projectId}` : "unattributed|unattributed";
+        for (const [pool, v] of Object.entries(e.tokensByPool ?? {}))
+          oracle.set(`${scope}|${pool}`, (oracle.get(`${scope}|${pool}`) ?? 0) + v);
+      }
+      const got = new Map<string, number>();
+      for (const r of built) {
+        if (r.windowKind !== "month" || r.unit !== "tokens" || r.scopeKind === "epic") continue;
+        const k = `${r.scopeKind}|${r.scopeId}|${r.pool}`;
+        got.set(k, (got.get(k) ?? 0) + r.value);
+      }
+      expect(got).toEqual(oracle);
+      // USD conservation for the same scopes (all events carry paygUsd).
+      const usdOracle = new Map<string, number>();
+      for (const e of events) {
+        const scope = e.projectId ? `project|${e.projectId}` : "unattributed|unattributed";
+        usdOracle.set(scope, (usdOracle.get(scope) ?? 0) + (e.paygUsd ?? 0));
+      }
+      for (const r of built) {
+        if (r.windowKind !== "month" || r.unit !== "usd" || r.scopeKind === "epic") continue;
+        expect(r.value).toBe(usdOracle.get(`${r.scopeKind}|${r.scopeId}`) ?? 0);
+      }
+    }
+  });
+
+  test("generated append/restatement sequences match a store model", async () => {
+    const rand = lcg(13832);
+    const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));
+    try {
+      const store = new SpendRollupStore(dir);
+      // Model: key -> record for accepted appends; a conflicting append
+      // under an existing (key, version) must reject and change nothing.
+      const model = new Map<string, string>();
+      for (let step = 0; step < 30; step++) {
+        const version = rand() < 0.5 ? "v1" : "v2";
+        const bump = Math.floor(rand() * 3);
+        const events: SpendRollupEvent[] = [
+          { ts: "2026-11-04T10:00:00Z", projectId: "proj-a", epicRef: null, tokensByPool: { meta: 100 + bump } },
+        ];
+        const records = buildSpendRollups(events, { attributionVersion: version, coverageStart: COVERAGE_START, coverage: FULL_NOV });
+        const key = `week|proj-a|${version}`;
+        const fingerprint = JSON.stringify(records.map((r) => [r.scopeKind, r.unit, r.value]));
+        if (model.has(key) && model.get(key) !== fingerprint) {
+          await expect(store.append(records)).rejects.toThrow(/immutable per attributionVersion/);
+        } else {
+          await store.append(records);
+          model.set(key, fingerprint);
+        }
+      }
+      const stored = await store.readAll();
+      // Stored (window, scope, version) groups correspond 1:1 to model keys
+      // for the week window the generator exercised.
+      const weekVersions = new Set(stored.filter((r) => r.windowKind === "week").map((r) => r.attributionVersion));
+      expect(weekVersions.size).toBe(model.size);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("SpendRollupStore", () => {
   test("append/read round-trip, idempotent re-append, immutability, restatement coexistence", async () => {
     const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));

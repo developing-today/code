@@ -219,8 +219,13 @@ export class SpendRollupStore {
     let text: string;
     try {
       text = await readFile(this.file, "utf8");
-    } catch {
-      return [];
+    } catch (e) {
+      // Only a missing ledger is an empty store. Any other read failure
+      // must propagate: append's duplicate/conflict check runs against
+      // this history, and silently treating an unreadable ledger as
+      // empty would defeat the immutability guarantee.
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw e;
     }
     const out: SpendRollup[] = [];
     for (const line of text.split("\n")) {
