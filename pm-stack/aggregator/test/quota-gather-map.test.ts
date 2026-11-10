@@ -12,7 +12,7 @@ import {
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
-  codexPoolServiceId,
+  openaiPoolServiceId,
   goPoolServiceId,
   lastKnownEntries,
   mapWithConcurrency,
@@ -1233,7 +1233,7 @@ describe("canonicalProviderId (config-id alignment, #1823)", () => {
   });
 });
 
-describe("codexPoolServiceId — folded codex rows file under their own OpenAI pool", () => {
+describe("openaiPoolServiceId — folded _openai rows file under their own OpenAI pool", () => {
   const TICK = "2026-11-10T21:30:00.000Z";
   const win = (usedPercent: number, windowSeconds: number) => ({
     usedPercent,
@@ -1279,9 +1279,9 @@ describe("codexPoolServiceId — folded codex rows file under their own OpenAI p
     expect(self.serviceId).toBe(OPENAI_SELF_SERVICE_ID);
   });
 
-  test("unmatched folded rows keep the historical openai.main fallback; codexPoolServiceId is null", () => {
-    expect(codexPoolServiceId({ credentialLabel: undefined, providerName: "Codex" })).toBeNull();
-    expect(codexPoolServiceId({ credentialLabel: "some future account", providerName: "Codex" })).toBeNull();
+  test("unmatched folded rows keep the historical openai.main fallback; openaiPoolServiceId is null", () => {
+    expect(openaiPoolServiceId({ credentialLabel: undefined, providerName: "Codex" })).toBeNull();
+    expect(openaiPoolServiceId({ credentialLabel: "some future account", providerName: "Codex" })).toBeNull();
     const bare = entryFromResult(codexResult(undefined, "Codex", { weekly: win(10, 604_800) }), TICK);
     expect(bare.serviceId).toBe("openai.main");
   });

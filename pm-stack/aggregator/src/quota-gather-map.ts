@@ -91,7 +91,8 @@ export function serviceIdFor(providerId: string): string {
     case "claude":
     case "_claude":
       return "anthropic:claude-pro";
-    case "codex":
+    case "_openai":
+    case "codex": // legacy fork quota id (renamed to _openai, fork PR #2261); accepted while gatherer and fork pins transition
       return "openai.main";
     case "cline-pass":
       return "cline-pass";
@@ -167,11 +168,11 @@ export const OPENAI_ALTERNATE_SERVICE_ID = "openai.alternate";
 export const OPENAI_SELF_SERVICE_ID = "_openai";
 
 /**
- * Which OpenAI pool a folded `codex` entry belongs to, from the
+ * Which OpenAI pool a folded `_openai` entry belongs to, from the
  * credential's human label / the instance name the fork stamps on the
- * folded result. The fork's codex provider folds every OpenAI instance
+ * folded result. The fork's _openai provider folds every OpenAI instance
  * credential (openai.main, openai.alternate, _openai) into its
- * per-credential answer under the bare provider id "codex"
+ * per-credential answer under the bare provider id "_openai"
  * (foldInstanceCredentials), and serviceIdFor historically filed ALL
  * of those rows under "openai.main" — so the alternate account's 5h
  * window landed in the snapshot store as openai.main|5h (its values
@@ -185,7 +186,7 @@ export const OPENAI_SELF_SERVICE_ID = "_openai";
  * historical fallback (serviceIdFor: openai.main, the base provider's
  * own pool) — never a fabricated pool row.
  */
-export function codexPoolServiceId(entry: {
+export function openaiPoolServiceId(entry: {
   credentialLabel?: string | null;
   providerName?: string | null;
 }): string | null {
@@ -462,13 +463,13 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
         ? "error"
         : "unconfigured";
   const providerId = canonicalProviderId(result.providerId);
-  // Folded codex rows carry one credential per OpenAI instance; file
-  // each under its own pool (codexPoolServiceId) instead of the base
+  // Folded _openai rows carry one credential per OpenAI instance; file
+  // each under its own pool (openaiPoolServiceId) instead of the base
   // provider's pool, or a sibling account's windows contaminate
   // openai.main's rows and snapshot series.
   const serviceId =
-    providerId === "codex"
-      ? (codexPoolServiceId({ credentialLabel: result.credentialLabel, providerName: result.providerName }) ??
+    providerId === "_openai" || providerId === "codex" // "codex": legacy fork quota id, see serviceIdFor
+      ? (openaiPoolServiceId({ credentialLabel: result.credentialLabel, providerName: result.providerName }) ??
         serviceIdFor(providerId))
       : serviceIdFor(providerId);
   const entry: QuotaCurrentEntry = {
