@@ -2286,7 +2286,7 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|cancel|fail|complete|revive|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback> ...",
         );
         return 2;
     }
