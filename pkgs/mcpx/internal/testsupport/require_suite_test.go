@@ -15,6 +15,6 @@ import (
 // even when no individual test names it.
 func TestRequiredBinariesAreOnPath(t *testing.T) {
 	if missing := MissingRequiredBinaries(); len(missing) > 0 {
-		t.Fatalf("MCPX_TEST_REQUIRE lists binaries that are not on PATH: %s", strings.Join(missing, ", "))
+		t.Fatalf("MCPX_TEST_REQUIRE lists entries that are not available (on PATH or under MCPX_REAL_SERVERS_DIR): %s", strings.Join(missing, ", "))
 	}
 }

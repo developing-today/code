@@ -1,6 +1,7 @@
 package testsupport
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -136,5 +137,25 @@ func TestMissingRequiredBinariesIsTheSuiteLevelCheck(t *testing.T) {
 	t.Setenv("MCPX_TEST_REQUIRE", "")
 	if got := MissingRequiredBinaries(); len(got) != 0 {
 		t.Errorf("with MCPX_TEST_REQUIRE unset nothing is missing, got %v", got)
+	}
+}
+
+// TestMissingRequiredBinariesHonorsRealServersDir pins the other half of
+// the availability rule: an entry naming a real server is satisfied by
+// the server resolving under MCPX_REAL_SERVERS_DIR, because RealServer
+// looks there, not on PATH. Only an entry available in neither place is
+// missing.
+func TestMissingRequiredBinariesHonorsRealServersDir(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, filepath.Join(dir, "bin", "mcp-server-time"))
+	t.Setenv("MCPX_REAL_SERVERS_DIR", dir)
+	t.Setenv("MCPX_TEST_REQUIRE", "mcp-server-time,mcp-server-absent-5584")
+	got := MissingRequiredBinaries()
+	if len(got) != 1 || got[0] != "mcp-server-absent-5584" {
+		t.Errorf("want only the server available in neither place named, got %v", got)
+	}
+	t.Setenv("MCPX_REAL_SERVERS_DIR", "")
+	if got := MissingRequiredBinaries(); len(got) != 2 {
+		t.Errorf("with no servers dir both entries are missing, got %v", got)
 	}
 }

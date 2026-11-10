@@ -76,20 +76,41 @@ func RequiredBinaries() map[string]bool {
 	return out
 }
 
-// MissingRequiredBinaries returns the required binaries that are not on
-// PATH, sorted. It is the suite-level check (#6904): per-test enforcement
-// only covers entries that some test happens to pass to RequireBinary, so
-// an entry with no consumer -- python3 in CI's list -- would otherwise be
-// enforced by nothing and narrow the run silently.
+// MissingRequiredBinaries returns the required entries that are not
+// available, sorted. It is the suite-level check (#6904): per-test
+// enforcement only covers entries that some test happens to pass to
+// RequireBinary, so an entry with no consumer -- python3 in CI's list --
+// would otherwise be enforced by nothing and narrow the run silently.
+//
+// An entry is available when it is on PATH, or when it names a real
+// server that resolves under MCPX_REAL_SERVERS_DIR: entries name real
+// servers as well as runtime binaries (see requireList), and RealServer
+// resolves those from the configured directory, not from PATH, so
+// demanding PATH presence for them would reject a valid configuration.
 func MissingRequiredBinaries() []string {
 	var missing []string
 	for name := range RequiredBinaries() {
-		if _, err := exec.LookPath(name); err != nil {
+		if !requiredEntryAvailable(name) {
 			missing = append(missing, name)
 		}
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// requiredEntryAvailable reports whether a required entry can be
+// satisfied in this environment: on PATH as a runtime binary, or under
+// MCPX_REAL_SERVERS_DIR as a real server (realServerPath's layouts).
+func requiredEntryAvailable(name string) bool {
+	if _, err := exec.LookPath(name); err == nil {
+		return true
+	}
+	if dir := os.Getenv("MCPX_REAL_SERVERS_DIR"); dir != "" {
+		if _, ok := realServerPath(dir, name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // MissingRequired reports whether name is missing from PATH while
