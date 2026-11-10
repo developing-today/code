@@ -179,10 +179,11 @@ class TestLaunchStep(unittest.TestCase):
         self.assertIn("777", bind_argv)
         self.assertIn("ses_new1", bind_argv)
 
-    def test_parked_candidate_is_collected_without_naming_its_id(self):
-        # #8097 Rule 1: a parked handoff candidate is collected via
-        # the broker-picked handoff claim — no argv ever names the
-        # task id — and then launches exactly like a claimed one.
+    def test_sink_candidate_is_collected_without_naming_its_id(self):
+        # #8097 Rule 1: a sink (status 'handed_off', #8234)
+        # candidate is collected via the broker-picked handoff
+        # claim — no argv ever names the task id — and then
+        # launches exactly like a claimed one.
         binds = []
         claims = []
         base_fake = make_fake_run(binds)
@@ -194,7 +195,7 @@ class TestLaunchStep(unittest.TestCase):
                 return Result(0, json.dumps({"id": 888, "status": "claimed"}))
             return base_fake(cmd, **kwargs)
 
-        parked = dict(CANDIDATE, id=888, status="parked",
+        parked = dict(CANDIDATE, id=888, status="handed_off",
                       queue=claimant.QUEUES[0])
         with patch.object(claimant, "run_poll",
                           return_value={"candidates": [dict(parked)]}), \
@@ -211,7 +212,7 @@ class TestLaunchStep(unittest.TestCase):
         self.assertNotIn("--task", claim_argv)
         self.assertNotIn("888", claim_argv)
 
-    def test_collect_parked_handoffs_drains_until_the_broker_has_none(self):
+    def test_collect_handed_offs_drains_until_the_broker_has_none(self):
         # The collection loop claims broker-picked handoffs until
         # the broker answers {"task": null}; every claim is a
         # no-id handoff claim under the openchamber family.
@@ -225,7 +226,7 @@ class TestLaunchStep(unittest.TestCase):
             return rows[len(argvs) - 1]
 
         with patch.object(claimant.subprocess, "run", fake_run):
-            collected = claimant._collect_parked_handoffs("q1", 5)
+            collected = claimant._collect_handed_offs("q1", 5)
         self.assertEqual(sorted(collected), [501, 502])
         self.assertEqual(len(argvs), 3)
         for argv in argvs:

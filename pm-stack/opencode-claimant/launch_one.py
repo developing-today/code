@@ -5,7 +5,7 @@ The standing claimant (claimant.py) is a single-shot script fired by an
 OpenChamber cron every few minutes: it discovers every candidate and
 launches under the fleet cap. It has no per-task trigger, so a handoff
 that should launch *now* ("handoff = immediate launch", #8187) waits
-for the next fire — and a parked handoff sink can loop unlaunched.
+for the next fire — and a handoff sink can loop unlaunched.
 This tool performs exactly the claimant's launch sequence (prompt.md
 step 4) for ONE named task:
 
@@ -13,9 +13,9 @@ step 4) for ONE named task:
     python3 -I launch_one.py --launch <queue>:<task_id>
 
 --preflight is read-only and always allowed: it reports whether the
-task is a launch candidate (claimed, or a parked recorded handoff —
-progress.lane == "opencode", no session_id, stage handed_off /
-launch_failed), what blocks it if anything (attempts exhausted, held
+task is a launch candidate (claimed with a recorded yield, or a
+sink row — status "handed_off" (#8234), progress.lane ==
+"opencode", no session_id), what blocks it if anything (attempts exhausted, held
 labels, cap saturated, mode not live), and the exact steps a launch
 would take. It mutates nothing: no claim, no session, no journal.
 
@@ -24,21 +24,22 @@ mode file (~/.local/state/opencode-claimant/mode, claimant.py's gate)
 reads "live":
 
   1. re-verify the candidate through poll.py's classifiers
-     (is_candidate for claimed rows, is_handoff_parked for parked
+     (is_candidate for claimed rows, is_handoff_waiting for sink
      rows — the query logic lives in poll.py, not here);
   2. fail closed on exhausted attempts and on held labels
      (held / user/owned / do-not-merge / do-not-auto-edit, read live
      through `gh`; an unreadable label set is a refusal, not a pass);
   3. check the concurrency cap through claimant.py's cap_step
      (unknown cap room launches nothing);
-  4. a PARKED handoff has no live claim to bind against, so collect
-     its claim first with the broker's by-id special-case verb
+  4. a sink row (status "handed_off") has no live claim to bind
+     against, so collect its claim first with the broker's by-id
+     special-case verb
      (`repo-queue claim --task <id> --worker opencode-claimant
      --platform openchamber`; prompt.md reserves the by-id claim for
      one-off revivals, which is exactly what a named per-task launch
      is — the claimant's default no-id `--handoff` collection cannot
      promise the broker picks THIS task). The session then works
-     under --worker opencode-claimant, as in claimant.py's parked
+     under --worker opencode-claimant, as in claimant.py's sink
      path;
   5. create the worker session on the OpenCode server through
      claimant.py's verified transport, journal its id to
@@ -70,7 +71,7 @@ an override in the REPO_QUEUE_BIN (or REPO_QUEUE_CMD) env var.
 This file supersedes the state-dir helper of the same name
 (~/.local/state/opencode-claimant/launch_one.py), which broke when
 poll.fetch_claimed was replaced by fetch_claimed_rows /
-fetch_parked_rows and its REPO_QUEUE path went stale.
+fetch_handed_off_rows and its REPO_QUEUE path went stale.
 """
 
 import importlib.util
@@ -145,9 +146,12 @@ def queue(*args, timeout=120):
 # --- Candidate discovery (delegated to poll.py) ---------------------
 
 def explain_not_candidate(row):
-    """Why poll.is_candidate / is_handoff_parked said no, in words a
+    """Why poll.is_candidate / is_handoff_waiting said no, in words a
     coordinator can act on. Mirrors the classifiers' checks; the
-    classifiers themselves stay the verdict."""
+    classifiers themselves stay the verdict. (The stage line speaks
+    to the CLAIMED-row classifier — sink rows are not stage-gated
+    since #8234/#8192 — but it is harmless context for a sink row
+    too: the classifiers, not this text, decide.)"""
     prog = row.get("progress") or {}
     reasons = []
     if prog.get("lane") != "opencode":
@@ -161,7 +165,7 @@ def explain_not_candidate(row):
     lane_id = row.get("lane_id")
     if lane_id and poll.UUID_LANE.match(str(lane_id)):
         reasons.append(f"claiming lane {lane_id} is an OpenChamber scheduled lane")
-    if row.get("status") not in (None, "claimed", "parked"):
+    if row.get("status") not in (None, "claimed", "handed_off"):
         reasons.append(f"status is {row.get('status')!r}")
     return reasons or ["not a candidate"]
 
@@ -169,18 +173,18 @@ def explain_not_candidate(row):
 def find_row(queue_name, task_id):
     """(row, status, candidate, reasons) for one task, read through
     poll.py's broker fetch helpers: claimed rows first, then the
-    parked handoff sink. (None, None, False, [...]) when the task is
-    in neither set for this queue."""
+    handoff sink (status 'handed_off'). (None, None, False, [...])
+    when the task is in neither set for this queue."""
     for row in poll.fetch_claimed_rows(queue_name):
         if row.get("id") == task_id:
             if poll.is_candidate(row):
                 return row, "claimed", True, []
             return row, "claimed", False, explain_not_candidate(row)
-    for row in poll.fetch_parked_rows(queue_name):
+    for row in poll.fetch_handed_off_rows(queue_name):
         if row.get("id") == task_id:
-            if poll.is_handoff_parked(row):
-                return row, "parked", True, []
-            return row, "parked", False, explain_not_candidate(row)
+            if poll.is_handoff_waiting(row):
+                return row, "handed_off", True, []
+            return row, "handed_off", False, explain_not_candidate(row)
     return None, None, False, [f"task {task_id} not found in queue {queue_name}"]
 
 
@@ -359,12 +363,12 @@ def post_agent_note(row, ref, repo, sid):
 
 # --- The launch sequence ----------------------------------------------
 
-def collect_parked_claim(queue_name, task_id):
-    """Claim THIS parked handoff by id, as the claimant. Returns
-    (claimed_row, None) or (None, error). The claim output is the
-    claimed row itself, a {"task": row} wrapper, or {"task": null}
-    when the broker would not hand it over; only a row whose id is
-    the requested task counts."""
+def collect_sink_claim(queue_name, task_id):
+    """Claim THIS sink row (status 'handed_off') by id, as the
+    claimant. Returns (claimed_row, None) or (None, error). The
+    claim output is the claimed row itself, a {"task": row}
+    wrapper, or {"task": null} when the broker would not hand it
+    over; only a row whose id is the requested task counts."""
     try:
         rc, out, err = queue("claim", "--queue", queue_name,
                              "--worker", CLAIMANT_WORKER,
@@ -417,16 +421,17 @@ def launch(queue_name, task_id):
                 "reason": "cap_saturated", "cap_room": cap_room}
 
     worker_id = row.get("worker_id")
-    if status == "parked":
+    if status == "handed_off":
         # No live claim exists to bind/checkpoint against: collect
         # this task's claim first. The successful by-id claim is the
-        # broker's own verification that the row is a parked recorded
-        # opencode handoff; the session then works as the claimant,
-        # exactly as in claimant.py's parked path.
-        claimed, claim_err = collect_parked_claim(queue_name, task_id)
+        # broker's own verification that the row is a sink row
+        # (status 'handed_off', recorded opencode handoff); the
+        # session then works as the claimant, exactly as in
+        # claimant.py's sink path.
+        claimed, claim_err = collect_sink_claim(queue_name, task_id)
         if claimed is None:
             return {"task": task_id, "queue": queue_name, "ok": False,
-                    "reason": "parked_claim_failed", "detail": claim_err}
+                    "reason": "sink_claim_failed", "detail": claim_err}
         worker_id = CLAIMANT_WORKER
     else:
         # Re-verify immediately before creating anything (claimant
@@ -539,9 +544,9 @@ def would_steps(queue_name, row, status, worker_id):
     directory = REPOS[queue_name][1]
     prov, mdl = route_for(row)
     steps = []
-    if status == "parked":
+    if status == "handed_off":
         steps.append(
-            f"collect the parked handoff's claim by id: repo-queue claim "
+            f"collect the sink row's claim by id: repo-queue claim "
             f"--queue {queue_name} --worker {CLAIMANT_WORKER} "
             f"--platform openchamber --task {row.get('id')}")
     steps += [
@@ -583,7 +588,7 @@ def preflight(queue_name, task_id):
     if mode != "live":
         blockers.append(f"mode_not_live: mode file reads {mode!r}; --launch would refuse")
     worker_id = row.get("worker_id") or (
-        CLAIMANT_WORKER if status == "parked" else None)
+        CLAIMANT_WORKER if status == "handed_off" else None)
     return {
         "task": task_id, "queue": queue_name, "candidate": candidate,
         "ok": candidate and not blockers,

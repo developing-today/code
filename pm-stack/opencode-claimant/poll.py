@@ -13,11 +13,10 @@ Prints one JSON object:
                                               # "opencode", stage
                                               # handed_off/launch_failed,
                                               # no session_id; status
-                                              # "claimed", or "parked"
-                                              # for a handed-off task
-                                              # the handing-off lane
-                                              # parked as its sink
-                                              # (is_handoff_parked)
+                                              # "claimed", or "handed_off"
+                                              # for a task resting in
+                                              # the handoff sink (#8234;
+                                              # is_handoff_waiting)
     "stuck_bound": [ {id, queue, ..., session_id, session_updated} ... ],
                                               # bound tasks whose session
                                               # looks never-prompted and
@@ -374,26 +373,41 @@ def fetch_claimed_rows(queue):
     return _fetch_rows(queue, "claimed")
 
 
-def fetch_parked_rows(queue):
-    """Parked rows for one queue (handoff-sink candidates)."""
-    return _fetch_rows(queue, "parked")
+def fetch_handed_off_rows(queue):
+    """Handed_off rows for one queue (handoff-sink candidates)."""
+    return _fetch_rows(queue, "handed_off")
 
 
-def is_handoff_parked(row):
-    """A parked row is a claimant candidate iff it is a recorded
-    opencode handoff that was parked as the handing-off lane's sink:
-    the same yield contract as a claimed candidate (is_candidate —
-    lane opencode, recorded handed_off/launch_failed yield, no
-    session bound, non-UUID claiming lane), read off a parked row.
-    The lane's park is not a wait: verb_park stamps the default
-    +20-minute timer and clears the claim, so a handed-off task sits
-    parked, invisible to claimed-only discovery, until a later shift
-    wave re-claims it and parks it again (#7907/#6533 looped for
-    days this way). A genuine wait park never satisfies the yield
-    contract: its stage is the park/gate itself, not a handoff."""
-    if row.get("status") not in (None, "parked"):
+def is_handoff_waiting(row):
+    """A handed_off (sink) row is a claimant candidate iff it is a
+    recorded opencode handoff resting in the handoff sink: status
+    'handed_off' (#8234), lane opencode, no session bound, and the
+    claiming lane is not itself an OpenChamber scheduled lane (the
+    same double-execution guard as is_candidate).
+
+    Deliberately NO stage test. Sink membership is the STATUS —
+    written once by the broker's park classification, the
+    lease-expiry sink return, or the #8234 migration — so this
+    reader must not reconstruct it from a stage, and in particular
+    must not care whether progress.stage or
+    progress.last_checkpoint.stage carries the yield: the broker
+    and this poll once read different sources and disagreed about
+    a resting row (#8192). For CLAIMED rows the stage test in
+    is_candidate stays — there it is the launch-safety contract
+    (a lane mid-work must never be launched into); a sink row has
+    no lane working it by construction. Historically the sink sat
+    in status 'parked' under the park verb's default timer, and
+    tasks looped claim -> handoff -> park -> re-claim for days
+    (#7907/#6533)."""
+    if row.get("status") not in (None, "handed_off"):
         return False
-    return is_candidate(row)
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    lane_id = row.get("lane_id")
+    if lane_id and UUID_LANE.match(lane_id):
+        return False
+    return True
 
 
 def normalize_row(row):
@@ -485,9 +499,9 @@ def get_candidates(rows):
     return [r for r in rows if is_candidate(r)]
 
 
-def get_parked_candidates(rows):
-    """Unbound opencode-lane candidates from parked handoff rows."""
-    return [r for r in rows if is_handoff_parked(r)]
+def get_handed_off_candidates(rows):
+    """Unbound opencode-lane candidates from handoff-sink rows."""
+    return [r for r in rows if is_handoff_waiting(r)]
 
 
 def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
@@ -532,9 +546,9 @@ def main():
     for q in QUEUES:
         rows = fetch_claimed_rows(q)
         cands = [_candidate_entry(r, q) for r in get_candidates(rows)]
-        parked_rows = fetch_parked_rows(q)
+        handed_off_rows = fetch_handed_off_rows(q)
         cands.extend(
-            _candidate_entry(r, q) for r in get_parked_candidates(parked_rows)
+            _candidate_entry(r, q) for r in get_handed_off_candidates(handed_off_rows)
         )
         stuck = [
             _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
@@ -542,7 +556,7 @@ def main():
         ]
         out["queues"][q] = {
             "claimed": len(rows),
-            "parked": len(parked_rows),
+            "handed_off": len(handed_off_rows),
             "candidates": cands,
             "stuck_bound": stuck,
         }
