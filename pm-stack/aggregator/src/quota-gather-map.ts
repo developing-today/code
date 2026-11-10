@@ -162,6 +162,41 @@ export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
 export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
 export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
+export const OPENAI_MAIN_SERVICE_ID = "openai.main";
+export const OPENAI_ALTERNATE_SERVICE_ID = "openai.alternate";
+export const OPENAI_SELF_SERVICE_ID = "_openai";
+
+/**
+ * Which OpenAI pool a folded `codex` entry belongs to, from the
+ * credential's human label / the instance name the fork stamps on the
+ * folded result. The fork's codex provider folds every OpenAI instance
+ * credential (openai.main, openai.alternate, _openai) into its
+ * per-credential answer under the bare provider id "codex"
+ * (foldInstanceCredentials), and serviceIdFor historically filed ALL
+ * of those rows under "openai.main" — so the alternate account's 5h
+ * window landed in the snapshot store as openai.main|5h (its values
+ * mirror openai.alternate|5h tick-for-tick in usage-2026-11.jsonl)
+ * and its weekly competed under main's key in the #1624 max-collapse
+ * (2026-11-04: main|weekly published 100 with the ALTERNATE window's
+ * reset label while main's own read was ~17). Like goPoolServiceId,
+ * the label is the only stable gatherer-side signal: instance ids are
+ * config names, credential ids are opaque row ids the mapping would
+ * have to hardcode. Unmatched entries yield null and keep the
+ * historical fallback (serviceIdFor: openai.main, the base provider's
+ * own pool) — never a fabricated pool row.
+ */
+export function codexPoolServiceId(entry: {
+  credentialLabel?: string | null;
+  providerName?: string | null;
+}): string | null {
+  const text = `${entry.credentialLabel ?? ""} ${entry.providerName ?? ""}`.toLowerCase();
+  if (text.includes("alternate")) return OPENAI_ALTERNATE_SERVICE_ID;
+  if (text.includes("_openai") || text.includes("self-contained") || text.includes("self contained"))
+    return OPENAI_SELF_SERVICE_ID;
+  if (text.includes("main")) return OPENAI_MAIN_SERVICE_ID;
+  return null;
+}
+
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
  * credential's human label. OpenCode credential labels are user-set; on
@@ -427,10 +462,19 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
         ? "error"
         : "unconfigured";
   const providerId = canonicalProviderId(result.providerId);
+  // Folded codex rows carry one credential per OpenAI instance; file
+  // each under its own pool (codexPoolServiceId) instead of the base
+  // provider's pool, or a sibling account's windows contaminate
+  // openai.main's rows and snapshot series.
+  const serviceId =
+    providerId === "codex"
+      ? (codexPoolServiceId({ credentialLabel: result.credentialLabel, providerName: result.providerName }) ??
+        serviceIdFor(providerId))
+      : serviceIdFor(providerId);
   const entry: QuotaCurrentEntry = {
     providerId,
     providerName: result.providerName ?? providerId,
-    serviceId: serviceIdFor(providerId),
+    serviceId,
     state,
     measuredAt,
     source: GATHERER_SOURCE,

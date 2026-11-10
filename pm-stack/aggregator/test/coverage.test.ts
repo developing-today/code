@@ -74,6 +74,96 @@ describe("isRepoCensus", () => {
     }
   });
 
+  test("accepts null counts: the partial-failure row #3992 emits (#8193)", () => {
+    // Oracle: the RepoCensus type itself - each count is a non-negative
+    // integer or null ("unavailable, not zero").
+    expect(isRepoCensus({ repo: "a/b", openIssues: null, gateNow: null, gateNext: null })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: null, gateNow: 3, gateNext: 2 })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: 10, gateNow: null, gateNext: null })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: 10, gateNow: 3, gateNext: null })).toBe(true);
+    // The stale-issue fields already treat a failed query this way.
+    expect(
+      isRepoCensus({
+        repo: "a/b",
+        openIssues: null,
+        gateNow: null,
+        gateNext: null,
+        staleOpenIssues: 4,
+        staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  test("still rejects impossible rows when nulls are in play (#8193)", () => {
+    for (const counts of [
+      { openIssues: null, gateNow: -1, gateNext: 0 },
+      { openIssues: null, gateNow: 0, gateNext: 1.5 },
+      { openIssues: -1, gateNow: null, gateNext: null },
+      { openIssues: "10", gateNow: null, gateNext: null },
+      { openIssues: null, gateNow: true, gateNext: null },
+      { openIssues: 5, gateNow: 6, gateNext: null },
+      { openIssues: 5, gateNow: null, gateNext: 6 },
+    ]) {
+      expect(isRepoCensus({ repo: "a/b", ...counts })).toBe(false);
+    }
+  });
+
+  test("agrees with an independent acceptance oracle on generated rows (#8193 Codex P1)", () => {
+    // Oracle: the RepoCensus contract restated here independently of
+    // the implementation - each count is a non-negative integer or
+    // null; the gate-vs-total ordering binds only when both sides are
+    // numbers; the stale fields follow their pre-existing rules.
+    const countOk = (v: unknown) =>
+      v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
+    const oracle = (row: Record<string, unknown>): boolean => {
+      if (row.repo !== "a/b") return false;
+      if (!countOk(row.openIssues) || !countOk(row.gateNow) || !countOk(row.gateNext)) return false;
+      const le = (gate: unknown, total: unknown) =>
+        gate === null || total === null || (gate as number) <= (total as number);
+      if (!le(row.gateNow, row.openIssues) || !le(row.gateNext, row.openIssues)) return false;
+      const stale = row.staleOpenIssues;
+      if (!(stale === undefined || countOk(stale))) return false;
+      const at = row.staleIssuesCollectedAt;
+      if (
+        !(
+          at === undefined ||
+          at === null ||
+          (typeof at === "string" && Number.isFinite(Date.parse(at)))
+        )
+      )
+        return false;
+      const err = row.staleIssuesError;
+      if (!(err === undefined || err === null || typeof err === "string")) return false;
+      return true;
+    };
+    // Deterministic LCG so the generated cases are reproducible.
+    let seed = 8193;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+    const pick = <T,>(xs: readonly T[]): T => xs[next() % xs.length];
+    const counts: unknown[] = [
+      null, 0, 1, 2, 5, 10, 999, -1, -100, 1.5, 0.5, "3", "0", "", true, false,
+      undefined, NaN, Infinity, [], {},
+    ];
+    const staleCounts: unknown[] = [undefined, null, 0, 4, 90, -1, 1.5, "4", true];
+    const stamps: unknown[] = [
+      undefined, null, "2026-11-01T11:59:00.000Z", "2025-02-28T00:00:00Z", "not-a-date", 7, {},
+    ];
+    const errors: unknown[] = [undefined, null, "search failed", "", 7, false, []];
+    const repos: unknown[] = ["a/b", "a/b", "a/b", "ab", "", "a/", "/b", "a/b/c", 7, null];
+    for (let i = 0; i < 900; i++) {
+      const row: Record<string, unknown> = {
+        repo: pick(repos),
+        openIssues: pick(counts),
+        gateNow: pick(counts),
+        gateNext: pick(counts),
+      };
+      if (next() % 2) row.staleOpenIssues = pick(staleCounts);
+      if (next() % 2) row.staleIssuesCollectedAt = pick(stamps);
+      if (next() % 2) row.staleIssuesError = pick(errors);
+      expect(isRepoCensus(row)).toBe(oracle(row));
+    }
+  });
+
   test("requires exactly one valid owner/name repository ref", () => {
     for (const repo of [
       "",
@@ -100,6 +190,28 @@ describe("coverageFromFeed duplicate census rows", () => {
         ],
       }),
     ).toBeNull();
+  });
+});
+
+describe("coverageFromFeed null census rows (#8193)", () => {
+  test("a null-count row survives the feed gate into the coverage report", () => {
+    const rows = coverageFromFeed({
+      coverage: [
+        { repo: "a/b", openIssues: null, gateNow: null, gateNext: null, staleOpenIssues: 4 },
+        { repo: "c/d", openIssues: 5, gateNow: 1, gateNext: 1 },
+      ],
+    });
+    // The null-count row passes the feed gate with its counts still
+    // null - not silently dropped, not zero-filled.
+    expect(rows?.map((r) => r.repo)).toEqual(["a/b", "c/d"]);
+    expect(rows?.[0]).toMatchObject({ openIssues: null, gateNow: null, gateNext: null, staleOpenIssues: 4 });
+    // And it reaches the coverage report as unavailable counts.
+    const report = computeCoverage(rows ?? [], null, NOW);
+    const ab = report.repos.find((r) => r.repo === "a/b");
+    expect(ab?.openIssues).toBeNull();
+    expect(ab?.gateNow).toBeNull();
+    expect(ab?.gateNext).toBeNull();
+    expect(ab?.staleOpenIssues).toBe(4);
   });
 });
 

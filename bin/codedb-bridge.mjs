@@ -138,10 +138,45 @@ export const CODEDB_TOOLS = [
   ),
 ];
 
+// Keys the bridge rejects with a dedicated message when set (handled
+// rejection keys, #3352): `project` on every tool, plus the daemon-less
+// modes per tool. These stay accepted by the allowlist below so their
+// existing by-name rejection messages are unchanged; anything else
+// outside the tool's schema is refused before it can be silently dropped
+// (#4216).
+const HANDLED_REJECTION_KEYS = {
+  codedb_tree: ['project'],
+  codedb_outline: ['project', 'compact'],
+  codedb_symbol: ['project'],
+  codedb_search: ['project', 'regex', 'scope', 'compact'],
+  codedb_word: ['project'],
+  codedb_hot: ['project'],
+  codedb_deps: ['project'],
+};
+
+// The accepted argument names for a tool: its advertised schema
+// properties plus its handled rejection keys. Returns null for unknown
+// tools (the switch in routeForTool still owns that error).
+const acceptedArgsFor = (name) => {
+  const declared = CODEDB_TOOLS.find((t) => t.name === name);
+  if (!declared) return null;
+  return new Set([...Object.keys(declared.inputSchema.properties), ...(HANDLED_REJECTION_KEYS[name] ?? [])]);
+};
+
 // Map a tool call to the daemon route. Throws an Error naming the exact
 // problem for unknown tools, missing required arguments, and arguments
 // the daemon cannot honour — nothing is silently dropped (#3352).
 export const routeForTool = (name, args = {}) => {
+  const accepted = acceptedArgsFor(name);
+  if (accepted !== null) {
+    for (const key of Object.keys(args)) {
+      if (!accepted.has(key)) {
+        throw new Error(
+          `argument "${key}": not a valid argument for ${name} (valid: ${[...accepted].sort().join(', ') || '(none)'}); it would be silently ignored by the codedb daemon route`
+        );
+      }
+    }
+  }
   const rejectProject = () => {
     if (args.project !== undefined) throw new Error(`argument "project": ${PROJECT_ARG_NOTE}`);
   };

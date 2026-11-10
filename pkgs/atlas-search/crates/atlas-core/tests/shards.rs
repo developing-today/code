@@ -130,6 +130,7 @@ fn write_shard(dir: &Path, name: &str, chunks: &[Chunk]) {
             ("part", &part.to_string()),
             ("expected_chunks", &chunks.len().to_string()),
             ("metric", "cosine"),
+            ("embedding_model", "snowflake-arctic-embed-m-v2.0"),
             ("engine", "tursodb"),
         ],
     );
@@ -429,6 +430,72 @@ fn integrity_failures_abort_unless_lenient() {
         .err()
         .unwrap();
     assert!(err.to_string().contains("not cosine"), "{err}");
+}
+
+#[test]
+fn manifest_round_trip_carries_embedding_model() {
+    // Oracle (#7646): the manifest key round-trips — a pairs map with
+    // the key parses into the field, and one without it parses as
+    // None (refusal is discovery's job, not the parser's).
+    let mut pairs = std::collections::BTreeMap::new();
+    for (k, v) in [
+        ("shard", "atlas-core-internal-misc-01"),
+        ("tier", "internal"),
+        ("topic", "misc"),
+        ("metric", "cosine"),
+        ("embedding_model", "snowflake-arctic-embed-m-v2.0"),
+    ] {
+        pairs.insert(k.to_string(), v.to_string());
+    }
+    let m = atlas_core::shards::Manifest::from_pairs(&pairs).unwrap();
+    assert_eq!(
+        m.embedding_model.as_deref(),
+        Some(atlas_core::shards::EMBEDDING_MODEL_ID)
+    );
+    pairs.remove("embedding_model");
+    let m = atlas_core::shards::Manifest::from_pairs(&pairs).unwrap();
+    assert_eq!(m.embedding_model, None);
+}
+
+#[test]
+fn discovery_refuses_missing_and_mismatched_embedding_model() {
+    // Oracle (#7646, M1/M2): a shard whose atlas_manifest lacks the
+    // embedding_model key, or records a different model, is refused
+    // at discovery with an error naming the shard and both model
+    // identities; the uniform corpus (fixture-stamped with the
+    // mandated id) discovers cleanly — see the other tests.
+    let c = corpus("embedmodel", 31);
+
+    // Missing key.
+    let con = rusqlite::Connection::open(c.dir.join("atlas-core-internal-misc-01.db")).unwrap();
+    con.execute("DELETE FROM atlas_manifest WHERE \"key\" = 'embedding_model'", [])
+        .unwrap();
+    drop(con);
+    let err = c
+        .discover(&LogConnector::new(vec![]), Tier::Internal)
+        .err()
+        .unwrap();
+    let msg = err.to_string();
+    assert!(msg.contains("atlas-core-internal-misc-01"), "{msg}");
+    assert!(msg.contains("embedding_model"), "{msg}");
+    assert!(msg.contains("snowflake-arctic-embed-m-v2.0"), "{msg}");
+
+    // Mismatched key.
+    let con = rusqlite::Connection::open(c.dir.join("atlas-core-internal-misc-01.db")).unwrap();
+    con.execute(
+        "INSERT OR REPLACE INTO atlas_manifest VALUES ('embedding_model', 'some-other-model-v9')",
+        [],
+    )
+    .unwrap();
+    drop(con);
+    let err = c
+        .discover(&LogConnector::new(vec![]), Tier::Internal)
+        .err()
+        .unwrap();
+    let msg = err.to_string();
+    assert!(msg.contains("atlas-core-internal-misc-01"), "{msg}");
+    assert!(msg.contains("some-other-model-v9"), "{msg}");
+    assert!(msg.contains("snowflake-arctic-embed-m-v2.0"), "{msg}");
 }
 
 #[test]
@@ -856,6 +923,103 @@ fn sharded_backend_takes_vector_from_shards_and_fts_from_the_monolith() {
         )
         .unwrap();
     assert!(pools.vector.is_empty() && pools.fts.len() == 1);
+}
+
+#[test]
+fn sharded_backend_routes_filtered_queries_to_the_monolith() {
+    // #6665: a query carrying session-level filters must not die in
+    // the fan-out (scan shards carry no sessions/labels): BOTH
+    // branches come from the wrapped monolith, and the fallback is
+    // reported as a diagnostic note.
+    let c = corpus("backend-filtered", 97);
+    let set = Arc::new(
+        c.discover(&LogConnector::new(vec![Tier::Secret]), Tier::Internal)
+            .unwrap(),
+    );
+    let be = ShardedBackend::new(
+        Monolith {
+            seen: Mutex::new(vec![]),
+        },
+        set,
+    );
+    let q = Rng(5).vec();
+    let f = Filters::new(
+        vec!["code".to_string()],
+        vec![],
+        vec![],
+        vec![],
+        "personal",
+        None,
+        None,
+    )
+    .unwrap();
+    // fanout_scan itself still refuses the same filters loudly.
+    assert!(
+        fanout_scan(
+            be.shard_set(),
+            &FanoutQuery {
+                qvec: &q,
+                shard_top_k: 10,
+                global_top_k: 10,
+                filters: &f,
+                topics: None,
+                ceiling: TierCeiling(Tier::Internal),
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("does not support classification/date filters")
+    );
+    let pools = be
+        .branch_pools(
+            &BranchQuery {
+                match_expr: Some("nix".into()),
+                query_vector: Some(q.clone()),
+                pool: 10,
+                shard_top_k: 10,
+                global_top_k: 10,
+                vector_backend: VectorBackend::Scan,
+            },
+            &f,
+        )
+        .unwrap();
+    assert_eq!(pools.fts[0].chunk_id, 999);
+    assert_eq!(
+        pools.vector.iter().map(|h| h.chunk_id).collect::<Vec<_>>(),
+        vec![888],
+        "filtered vector pool comes from the monolith, not the shards"
+    );
+    // The monolith saw exactly one call, carrying both branches.
+    assert_eq!(
+        *be.inner().seen.lock().unwrap(),
+        vec![(Some("nix".to_string()), true)]
+    );
+    // The diagnostic names the filters and the reason.
+    let notes = be.notes();
+    assert!(
+        notes.iter().any(|n| {
+            n.contains("served by the wrapped monolith")
+                && n.contains("no sessions or labels")
+                && n.contains("\"kind\"")
+        }),
+        "{notes:?}"
+    );
+    // Vector-only filtered queries fall back the same way.
+    let pools = be
+        .branch_pools(
+            &BranchQuery {
+                match_expr: None,
+                query_vector: Some(q),
+                pool: 10,
+                shard_top_k: 10,
+                global_top_k: 10,
+                vector_backend: VectorBackend::Scan,
+            },
+            &f,
+        )
+        .unwrap();
+    assert_eq!(pools.vector[0].chunk_id, 888);
+    assert!(pools.fts.is_empty());
 }
 
 fn be_inner_seen(

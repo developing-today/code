@@ -109,6 +109,16 @@ function isRepositoryRef(value: string): boolean {
   );
 }
 
+/**
+ * One census count as the collector emits it (#3992): a non-negative
+ * integer, or null when that count's query failed ("unavailable, not
+ * zero"). Anything else - negative, fractional, a numeric string, a
+ * boolean - is an impossible row and stays rejected.
+ */
+function isCensusCount(v: unknown): v is number | null {
+  return v === null || (Number.isInteger(v) && (v as number) >= 0);
+}
+
 /** Structural gate for one census row, shared by the feed reader. */
 export function isRepoCensus(v: unknown): v is RepoCensus {
   if (!v || typeof v !== "object") return false;
@@ -116,14 +126,16 @@ export function isRepoCensus(v: unknown): v is RepoCensus {
   return (
     typeof r.repo === "string" &&
     isRepositoryRef(r.repo) &&
-    Number.isInteger(r.openIssues) &&
-    (r.openIssues as number) >= 0 &&
-    Number.isInteger(r.gateNow) &&
-    (r.gateNow as number) >= 0 &&
-    Number.isInteger(r.gateNext) &&
-    (r.gateNext as number) >= 0 &&
-    (r.gateNow as number) <= (r.openIssues as number) &&
-    (r.gateNext as number) <= (r.openIssues as number) &&
+    isCensusCount(r.openIssues) &&
+    isCensusCount(r.gateNow) &&
+    isCensusCount(r.gateNext) &&
+    // The gate-vs-total ordering is only decidable when both sides
+    // were actually counted; a null on either side is the partial-
+    // failure row #3992 emits, not an impossible one.
+    (r.gateNow === null || r.openIssues === null ||
+      (r.gateNow as number) <= (r.openIssues as number)) &&
+    (r.gateNext === null || r.openIssues === null ||
+      (r.gateNext as number) <= (r.openIssues as number)) &&
     (r.staleOpenIssues === undefined || r.staleOpenIssues === null ||
       (Number.isInteger(r.staleOpenIssues) && (r.staleOpenIssues as number) >= 0)) &&
     (r.staleIssuesCollectedAt === undefined || r.staleIssuesCollectedAt === null ||
