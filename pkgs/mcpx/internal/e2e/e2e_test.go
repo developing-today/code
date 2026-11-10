@@ -3281,6 +3281,18 @@ func guardedMain(m *testing.M) int {
 			strings.Join(before, " "), strings.Join(after, " "))
 		return 1
 	}
+	// The feature coverage ledger is written here, at the end of the
+	// one guarded main flow: a test package gets exactly one TestMain,
+	// and this is it (the ledger write used to live in a second
+	// TestMain in feature_coverage_test.go, which broke the build
+	// when the guard landed — #8333).
+	path := featureCoverageLedgerPath()
+	rows := featureCoverageSnapshot()
+	if err := writeFeatureCoverageLedger(path, rows); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("feature coverage ledger: %s (%d rows)\n", path, len(rows))
 	return code
 }
 
