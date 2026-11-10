@@ -62,14 +62,21 @@ const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, 
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
     claim_provider, claim_model, claim_variant, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
-    last_checked_at, check_outcome, created_at, updated_at, completed_at";
+    last_checked_at, check_outcome, created_at, updated_at, completed_at, \
+    blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
     exclusion_reason, opencode_reason, platform_limit, platform_limit_reason, \
     assigned_by, session_id, fallback_reason, \
     assigned_at, executed_at, updated_at";
 /// Task columns whose stored TEXT is JSON (PG jsonb) — parsed back
 /// into values so the wire shape matches the Postgres broker's.
-const TASK_JSON_COLS: [&str; 4] = ["payload", "progress", "result", "ready_condition"];
+const TASK_JSON_COLS: [&str; 5] = [
+    "payload",
+    "progress",
+    "result",
+    "ready_condition",
+    "blocked_deps",
+];
 
 // ---------------------------------------------------------------------------
 // Time (no chrono in this crate: ISO-8601 UTC strings, lexicographic
@@ -179,10 +186,272 @@ fn cell_to_json(cell: &Value) -> Value {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Dependency blocking (#8276): a block declared ONCE, structurally,
+// and watched by the broker — lanes never re-verify gates by hand.
+//
+// A task blocked WITH deps carries them on the row: blocked_deps
+// (a JSON array), dep_next_recheck_at (when the broker next
+// looks), dep_blocked_until (the max-TTL deadline), and
+// dep_recheck_seconds. A block WITHOUT deps is the classic
+// free-text block (an escalation, a human decision): the
+// rechecker never touches it, and it never auto-clears.
+//
+// Clearance per dep kind:
+//   task  — the dep task reaches a terminal state. done clears;
+//           cancelled/failed release too (the dependent's lane
+//           re-evaluates instead of waiting forever), with the
+//           dep's outcome named in the event evidence.
+//   issue — the GitHub issue is CLOSED.
+//   pr    — the GitHub PR is MERGED or CLOSED.
+//   ci    — the Actions run is completed, any conclusion (the
+//           claiming lane evaluates success/failure; a failed
+//           run must not hold the dependent hostage).
+// A reference that cannot be resolved at all (GitHub 404, unknown
+// task id) is BROKEN: it releases at that recheck, with the reason
+// in the event — a typo'd gate is not a life sentence. A check
+// that FAILS (rate limit, token down, network) is neither
+// clearance nor expiry: it reschedules the recheck, and only the
+// block's max TTL can release the task from a broken checker.
+// ---------------------------------------------------------------------------
+
+pub const DEP_RECHECK_DEFAULT_SECONDS: i64 = 900; // 15 min
+pub const DEP_RECHECK_MIN_SECONDS: i64 = 300;
+pub const DEP_RECHECK_MAX_SECONDS: i64 = 3600;
+pub const DEP_TTL_DEFAULT_SECONDS: i64 = 259_200; // 3 days
+pub const DEP_TTL_MIN_SECONDS: i64 = 60;
+pub const DEP_TTL_MAX_SECONDS: i64 = 604_800; // 7 days
+
+pub fn clamp_dep_recheck_seconds(v: Option<i64>) -> i64 {
+    v.unwrap_or(DEP_RECHECK_DEFAULT_SECONDS)
+        .clamp(DEP_RECHECK_MIN_SECONDS, DEP_RECHECK_MAX_SECONDS)
+}
+
+pub fn clamp_dep_ttl_seconds(v: Option<i64>) -> i64 {
+    v.unwrap_or(DEP_TTL_DEFAULT_SECONDS)
+        .clamp(DEP_TTL_MIN_SECONDS, DEP_TTL_MAX_SECONDS)
+}
+
+/// One dependency observation: from the store (task deps) or from
+/// GitHub via a DepProbe. The string is the human evidence that
+/// lands on the dep record and in the audit event ("pr merged",
+/// "run completed: failure", "github http 403").
+#[derive(Clone, Debug, PartialEq)]
+pub enum DepObs {
+    /// Still open; the gate holds.
+    Open(String),
+    /// The blocking condition is satisfied; the dep releases.
+    Cleared(String),
+    /// The reference does not resolve (404 / unknown task); the
+    /// dep releases, with the breakage named.
+    Broken(String),
+    /// The check itself could not be performed; nothing is
+    /// inferred from it and the dep stays open.
+    Failed(String),
+}
+
+/// The broker's GitHub window for dep checks (#8276). The
+/// production implementation lives in queue_broker.rs, which owns
+/// the secrets Resolver; tests inject fixtures. Implementations
+/// must map every transport/auth problem to DepObs::Failed: a
+/// broken checker never clears a gate.
+pub trait DepProbe: Send + Sync {
+    fn probe_issue(&self, repo: &str, number: i64) -> DepObs;
+    fn probe_pr(&self, repo: &str, number: i64) -> DepObs;
+    fn probe_ci(&self, repo: &str, run_id: i64) -> DepObs;
+}
+
+/// Stable identity of a dep, used for per-pass probe caching and
+/// in event details: "pr:owner/repo#12", "task:123", ...
+pub fn dep_key(dep: &Value) -> String {
+    let kind = dep.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+    match kind {
+        "pr" | "issue" => format!(
+            "{kind}:{}#{}",
+            dep.get("repo").and_then(|v| v.as_str()).unwrap_or("?"),
+            dep.get("number").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+        "ci" => format!(
+            "ci:{}#{}",
+            dep.get("repo").and_then(|v| v.as_str()).unwrap_or("?"),
+            dep.get("run_id").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+        "task" => format!(
+            "task:{}",
+            dep.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+        _ => format!("{kind}:?"),
+    }
+}
+
+/// Map a dep task's stored status to an observation (pure).
+pub fn task_dep_obs(status: Option<&str>, dep_id: i64) -> DepObs {
+    match status {
+        None => DepObs::Broken(format!("task {dep_id} not found")),
+        Some("done") => DepObs::Cleared("dep task done".to_string()),
+        Some("cancelled") => DepObs::Cleared(
+            "dep task cancelled; dependent released for re-evaluation".to_string(),
+        ),
+        Some("failed") => DepObs::Cleared(
+            "dep task failed; dependent released for re-evaluation".to_string(),
+        ),
+        Some(s) => DepObs::Open(format!("dep task status {s}")),
+    }
+}
+
+/// Apply one observation to one dep record (pure). Returns the
+/// transition to audit ("cleared" / "broken"), or None when
+/// nothing transitioned — still open, or the check failed.
+/// No-change rechecks write no events, so the audit log carries
+/// transitions, not polls.
+pub fn apply_dep_obs(dep: &mut Value, obs: &DepObs, now: &str) -> Option<&'static str> {
+    let obj = dep.as_object_mut()?;
+    if obj.get("state").and_then(|v| v.as_str()).unwrap_or("open") != "open" {
+        return None;
+    }
+    obj.insert("last_checked_at".to_string(), json!(now));
+    match obs {
+        DepObs::Open(ev) | DepObs::Failed(ev) => {
+            obj.insert("last_observed".to_string(), json!(ev));
+            None
+        }
+        DepObs::Cleared(ev) => {
+            obj.insert("state".to_string(), json!("cleared"));
+            obj.insert("cleared_at".to_string(), json!(now));
+            obj.insert("last_observed".to_string(), json!(ev));
+            Some("cleared")
+        }
+        DepObs::Broken(ev) => {
+            obj.insert("state".to_string(), json!("broken"));
+            obj.insert("cleared_at".to_string(), json!(now));
+            obj.insert("last_observed".to_string(), json!(ev));
+            Some("broken")
+        }
+    }
+}
+
+/// A dep-block holds until EVERY dep has resolved (cleared or
+/// broken); one open dep is enough to keep the task blocked.
+pub fn deps_all_resolved(deps: &[Value]) -> bool {
+    !deps.is_empty()
+        && deps.iter().all(|d| {
+            matches!(
+                d.get("state").and_then(|v| v.as_str()),
+                Some("cleared") | Some("broken")
+            )
+        })
+}
+
+/// The dep records of a task row, tolerant of the stored shape
+/// (parsed JSON array on the read surface, raw TEXT, or absent).
+pub fn deps_of(row: &Value) -> Vec<Value> {
+    match row.get("blocked_deps") {
+        Some(Value::Array(a)) => a.clone(),
+        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// True when the row carries a live dep-block record.
+pub fn dep_block_active(row: &Value) -> bool {
+    !deps_of(row).is_empty()
+}
+
+fn valid_dep_repo(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(a), Some(b), None) if !a.is_empty() && !b.is_empty()
+    ) && !repo.contains(char::is_whitespace)
+}
+
+/// Validate and normalize the deps array of a block request
+/// (#8276). Ok(None) when the request carries no deps — the
+/// classic free-text block, unchanged. A dep the broker cannot
+/// watch is a usage error at block time, never a silent prose
+/// block: refs are strict (owner/repo#N, a positive task id, a
+/// positive run id).
+pub fn parse_block_deps(
+    req: &Value,
+    worker: &str,
+    now: &str,
+) -> Result<Option<Vec<Value>>, String> {
+    let Some(raw) = req.get("deps") else {
+        return Ok(None);
+    };
+    let Some(arr) = raw.as_array() else {
+        return Err("block: deps must be an array".to_string());
+    };
+    if arr.is_empty() {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    for d in arr {
+        let kind = d.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let reason = d
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut dep = json!({
+            "kind": kind, "state": "open", "reason": reason,
+            "recorded_by": worker, "recorded_at": now,
+            "last_checked_at": Value::Null, "last_observed": Value::Null,
+        });
+        let obj = dep.as_object_mut().expect("dep object");
+        match kind {
+            "pr" | "issue" | "ci" => {
+                let repo = d.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+                if !valid_dep_repo(repo) {
+                    return Err(format!(
+                        "block: dep repo must be owner/name, got '{repo}'"
+                    ));
+                }
+                obj.insert("repo".to_string(), json!(repo));
+                if kind == "ci" {
+                    let run_id = d.get("run_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if run_id <= 0 {
+                        return Err("block: ci dep needs a positive run_id".to_string());
+                    }
+                    obj.insert("run_id".to_string(), json!(run_id));
+                } else {
+                    let number = d.get("number").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if number <= 0 {
+                        return Err(format!(
+                            "block: {kind} dep needs a positive number"
+                        ));
+                    }
+                    obj.insert("number".to_string(), json!(number));
+                }
+            }
+            "task" => {
+                let task_id = d.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                if task_id <= 0 {
+                    return Err("block: task dep needs a positive task_id".to_string());
+                }
+                obj.insert("task_id".to_string(), json!(task_id));
+            }
+            _ => {
+                return Err(format!(
+                    "block: unknown dep kind '{kind}' (pr|issue|task|ci)"
+                ))
+            }
+        }
+        out.push(dep);
+    }
+    Ok(Some(out))
+}
+
 pub struct TursoBackend {
     url: String,
     token: String,
     agent: ureq::Agent,
+    /// #8276: the GitHub dep probe, installed by the broker shell
+    /// at startup (queue_broker.rs owns the secrets Resolver).
+    /// None in tests and embedders: GitHub dep checks then report
+    /// Failed, and only a block's max TTL can release it.
+    gh_probe: Option<std::sync::Arc<dyn DepProbe>>,
 }
 
 type TErr = String;
@@ -193,7 +462,18 @@ impl TursoBackend {
             url: url.trim_end_matches('/').to_string(),
             token,
             agent,
+            gh_probe: None,
         }
+    }
+
+    /// #8276: install the GitHub dep probe used by the dep
+    /// rechecker for pr/issue/ci deps.
+    pub fn set_gh_probe(&mut self, probe: std::sync::Arc<dyn DepProbe>) {
+        self.gh_probe = Some(probe);
+    }
+
+    fn gh_probe(&self) -> Option<&dyn DepProbe> {
+        self.gh_probe.as_deref()
     }
 
     pub fn url(&self) -> &str {
@@ -367,6 +647,27 @@ impl TursoBackend {
                 self.exec(&format!("ALTER TABLE tasks ADD COLUMN {col} TEXT"), &[])?;
             }
         }
+        // #8276: the dependency-block columns (blocked_deps JSON,
+        // dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds)
+        // land the same additive way for task tables created before
+        // them. No backfill: existing rows read NULL, which the
+        // rechecker reads as "not a dep-block" and never touches.
+        for (col, ty) in [
+            ("blocked_deps", "TEXT"),
+            ("dep_next_recheck_at", "TEXT"),
+            ("dep_blocked_until", "TEXT"),
+            ("dep_recheck_seconds", "INTEGER"),
+        ] {
+            let has = cols
+                .iter()
+                .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
+            if !has {
+                self.exec(
+                    &format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"),
+                    &[],
+                )?;
+            }
+        }
         // #8187: the ledger's opencode_reason column (the recorded
         // specific reason an opencode assignment exists at all) lands
         // the same additive way for ledgers created before it.
@@ -431,7 +732,9 @@ const SCHEMA: [&str; 12] = [
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
         last_checked_at TEXT, check_outcome TEXT, \
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
-        completed_at TEXT)",
+        completed_at TEXT, \
+        blocked_deps TEXT, dep_next_recheck_at TEXT, dep_blocked_until TEXT, \
+        dep_recheck_seconds INTEGER)",
     // NOT unique: the PG data itself carries duplicate (queue, dedupe_key)
     // pairs from before dedupe was enforced, and the backup load must
     // accept them as-is; enqueue dedupe is a read-then-insert check.
@@ -971,7 +1274,25 @@ fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
             let (deleted, cutoff) = prune_events(t, req_i64(req, "keep_days").unwrap_or(30))?;
             out["prune"] = json!({"deleted": deleted, "cutoff": cutoff});
         }
-        if expired > 0 || do_revalidate || do_prune {
+        // #8276: the dep rechecker rides the sweep — the
+        // fleet-queue-expire timer already POSTs /sweep every
+        // minute, so dep-blocked tasks are re-examined on their
+        // own dep_next_recheck_at schedule with no new service
+        // and no lane awake. Opt out per call: dep_recheck=false.
+        let dep_summary = if req_bool(req, "dep_recheck").unwrap_or(true) {
+            Some(run_dep_rechecks(t, req_i64(req, "dep_limit").unwrap_or(200))?)
+        } else {
+            None
+        };
+        let dep_checked = dep_summary
+            .as_ref()
+            .and_then(|s| s.get("checked"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = dep_summary {
+            out["dep_recheck"] = s;
+        }
+        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
         }
         Ok(out)
@@ -3767,6 +4088,18 @@ fn verb_wake(t: &TursoBackend, req: &Value) -> Value {
             .get("wait_kind")
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        if status == "blocked" && dep_block_active(&row) {
+            // #8276: wake on a dep-blocked task forces an immediate
+            // recheck of that task — the only honest answer to
+            // "is the gate clear yet?" is the broker's own check.
+            // The recheck unblocks iff every dep has resolved; the
+            // row returned is the post-recheck state either way.
+            let mut cache = std::collections::HashMap::new();
+            dep_recheck_one(t, &row, &mut cache, now_unix()).map_err(|e| e)?;
+            return get_task(t, task_id)
+                .map(|r| r.unwrap_or(Value::Null))
+                .map_err(|e| e);
+        }
         wake_eligible(&status).map_err(|e| format!("wake_task: task {task_id}: {e}"))?;
         t.exec(
             "UPDATE tasks SET status = 'queued', not_before = NULL, \
@@ -3823,13 +4156,47 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
         &row.get("result").cloned().unwrap_or(json!({})),
         &json!({"blocker": blocker, "reason_class": reason_class}),
     );
+    // #8276: typed deps, when the request carries them — the block
+    // becomes data the broker watches (see run_dep_rechecks). The
+    // first recheck is due immediately, so a dep that is already
+    // satisfied (an already-merged PR) clears within one sweep.
+    // A dep-less block NULLs the dep columns: a stale record can
+    // never outlive the block that owned it.
+    let now_unix_v = now_unix();
+    let deps = match parse_block_deps(req, &worker, &iso(now_unix_v)) {
+        Ok(d) => d,
+        Err(e) => return fail(2, e),
+    };
+    let (dep_json, dep_next, dep_until, dep_rs, dep_event) = match &deps {
+        Some(ds) => {
+            let rs = clamp_dep_recheck_seconds(req_i64(req, "dep_recheck_seconds"));
+            let ttl = clamp_dep_ttl_seconds(req_i64(req, "dep_max_ttl_seconds"));
+            let until = iso(now_unix_v + ttl);
+            (
+                Some(json!(ds).to_string()),
+                Some(iso(now_unix_v)),
+                Some(until.clone()),
+                Some(rs),
+                json!({
+                    "deps": ds, "dep_blocked_until": until,
+                    "dep_recheck_seconds": rs,
+                }),
+            )
+        }
+        None => (None, None, None, None, json!({})),
+    };
     let work = (|| -> Result<Value, TErr> {
         t.exec(
             "UPDATE tasks SET status = 'blocked', worker_id = NULL, lease_until = NULL, \
-               progress = ?, result = ?, updated_at = ? WHERE id = ?",
+               progress = ?, result = ?, blocked_deps = ?, dep_next_recheck_at = ?, \
+               dep_blocked_until = ?, dep_recheck_seconds = ?, updated_at = ? WHERE id = ?",
             &[
                 Arg::Text(progress.to_string()),
                 Arg::Text(result.to_string()),
+                arg_str(dep_json.as_deref()),
+                arg_str(dep_next.as_deref()),
+                arg_str(dep_until.as_deref()),
+                dep_rs.map(Arg::Int).unwrap_or(Arg::Null),
                 Arg::Text(now_iso()),
                 Arg::Int(task_id),
             ],
@@ -3840,12 +4207,332 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "blocked",
-            &json!({"blocker": blocker, "reason_class": reason_class}),
+            &merge_obj(
+                &json!({"blocker": blocker, "reason_class": reason_class}),
+                &dep_event,
+            ),
         )?;
         get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
     })();
     match work {
         Ok(row) => ok(json!({"row": row})),
+        Err(e) => terr(e),
+    }
+}
+
+
+fn emit_dep_transitions(
+    t: &TursoBackend,
+    task_id: i64,
+    row: &Value,
+    transitions: &[Value],
+) -> Result<(), TErr> {
+    for tr in transitions {
+        let kind = if tr.get("transition").and_then(|v| v.as_str()) == Some("broken") {
+            "dep_broken"
+        } else {
+            "dep_cleared"
+        };
+        event(
+            t,
+            Some("dep-rechecker"),
+            Some(task_id),
+            kind,
+            &with_marks(
+                &json!({
+                    "dep": tr.get("dep").cloned().unwrap_or(Value::Null),
+                    "evidence": tr.get("evidence").cloned().unwrap_or(Value::Null),
+                    "via": "dep_recheck",
+                }),
+                row,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// One dep-blocked task's recheck (#8276). The max-TTL deadline
+/// is checked before any probing: an expired block releases
+/// without consulting GitHub, so a dead checker cannot stretch a
+/// block past its TTL. Otherwise each open dep gets one
+/// observation (task deps from the store, GitHub deps through the
+/// probe, refs shared across the pass via `cache`), transitions
+/// are audited, and the task either unblocks (every dep resolved)
+/// or reschedules at its recheck interval. Returns the outcome
+/// tag ("unblocked" / "ttl_expired" / "still_blocked" /
+/// "not_dep_blocked") and the number of failed checks seen.
+fn dep_recheck_one(
+    t: &TursoBackend,
+    row: &Value,
+    cache: &mut std::collections::HashMap<String, DepObs>,
+    now_unix_v: i64,
+) -> Result<(&'static str, i64), TErr> {
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let now = iso(now_unix_v);
+    let deps = deps_of(row);
+    if deps.is_empty() {
+        return Ok(("not_dep_blocked", 0));
+    }
+    if let Some(until) = row.get("dep_blocked_until").and_then(|v| v.as_str()) {
+        if until <= now.as_str() {
+            let cleared = t.exec(
+                "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
+                   dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
+                   dep_recheck_seconds = NULL, updated_at = ? \
+                 WHERE id = ? AND status = 'blocked'",
+                &[Arg::Text(now.clone()), Arg::Int(task_id)],
+            )?;
+            if cleared.affected > 0 {
+                event(
+                    t,
+                    Some("dep-rechecker"),
+                    Some(task_id),
+                    "dep_ttl_expired",
+                    &with_marks(
+                        &json!({
+                            "deps": deps, "dep_blocked_until": until,
+                            "via": "dep_recheck",
+                        }),
+                        row,
+                    ),
+                )?;
+                return Ok(("ttl_expired", 0));
+            }
+            return Ok(("still_blocked", 0));
+        }
+    }
+    let recheck_seconds = row
+        .get("dep_recheck_seconds")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(DEP_RECHECK_DEFAULT_SECONDS);
+    let mut new_deps = deps.clone();
+    let mut failures = 0i64;
+    let mut transitions: Vec<Value> = Vec::new();
+    for dep in new_deps.iter_mut() {
+        if dep.get("state").and_then(|v| v.as_str()).unwrap_or("open") != "open" {
+            continue;
+        }
+        let kind = dep
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let obs = match kind.as_str() {
+            "task" => {
+                let dep_id = dep.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let st = get_task(t, dep_id)?.and_then(|r| {
+                    r.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                });
+                task_dep_obs(st.as_deref(), dep_id)
+            }
+            "issue" | "pr" | "ci" => {
+                let key = dep_key(dep);
+                if let Some(o) = cache.get(&key) {
+                    o.clone()
+                } else {
+                    let repo = dep.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+                    let num = |k: &str| dep.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+                    let o = match (t.gh_probe(), kind.as_str()) {
+                        (Some(p), "issue") => p.probe_issue(repo, num("number")),
+                        (Some(p), "pr") => p.probe_pr(repo, num("number")),
+                        (Some(p), "ci") => p.probe_ci(repo, num("run_id")),
+                        _ => DepObs::Failed(
+                            "no github probe configured on this broker".to_string(),
+                        ),
+                    };
+                    cache.insert(key, o.clone());
+                    o
+                }
+            }
+            _ => DepObs::Broken(format!("unknown dep kind '{kind}'")),
+        };
+        if matches!(obs, DepObs::Failed(_)) {
+            failures += 1;
+        }
+        if let Some(tr) = apply_dep_obs(dep, &obs, &now) {
+            transitions.push(json!({
+                "dep": dep_key(dep), "transition": tr,
+                "evidence": dep.get("last_observed").cloned().unwrap_or(Value::Null),
+            }));
+        }
+    }
+    if deps_all_resolved(&new_deps) {
+        let cleared = t.exec(
+            "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
+               dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
+               dep_recheck_seconds = NULL, updated_at = ? \
+             WHERE id = ? AND status = 'blocked'",
+            &[Arg::Text(now.clone()), Arg::Int(task_id)],
+        )?;
+        if cleared.affected == 0 {
+            // Lost a race with a manual unblock or a re-block;
+            // that transition owns the audit trail.
+            return Ok(("still_blocked", failures));
+        }
+        emit_dep_transitions(t, task_id, row, &transitions)?;
+        event(
+            t,
+            Some("dep-rechecker"),
+            Some(task_id),
+            "dep_unblocked",
+            &with_marks(
+                &json!({
+                    "deps": new_deps, "transitions": transitions,
+                    "via": "dep_recheck",
+                }),
+                row,
+            ),
+        )?;
+        return Ok(("unblocked", failures));
+    }
+    t.exec(
+        "UPDATE tasks SET blocked_deps = ?, dep_next_recheck_at = ?, updated_at = ? \
+         WHERE id = ? AND status = 'blocked'",
+        &[
+            Arg::Text(json!(new_deps).to_string()),
+            Arg::Text(iso(now_unix_v + recheck_seconds)),
+            Arg::Text(now.clone()),
+            Arg::Int(task_id),
+        ],
+    )?;
+    emit_dep_transitions(t, task_id, row, &transitions)?;
+    Ok(("still_blocked", failures))
+}
+
+/// The dep recheck pass (#8276): every dep-blocked task whose
+/// recheck time has arrived, examined once, GitHub refs shared
+/// across tasks through a per-pass cache. Driven by verb_sweep
+/// (the fleet-queue-expire timer fires /sweep every minute, so
+/// this runs with no lane awake), by /dep-recheck directly, and
+/// per-task by wake.
+pub fn run_dep_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
+    let now_unix_v = now_unix();
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE status = 'blocked' \
+             AND blocked_deps IS NOT NULL \
+             AND (dep_next_recheck_at IS NULL OR dep_next_recheck_at <= ?) \
+             ORDER BY dep_next_recheck_at ASC LIMIT {limit}"
+        ),
+        &[Arg::Text(iso(now_unix_v))],
+        &TASK_JSON_COLS,
+    )?;
+    let mut cache: std::collections::HashMap<String, DepObs> =
+        std::collections::HashMap::new();
+    let (mut checked, mut unblocked, mut ttl_expired, mut still_blocked, mut failures) =
+        (0i64, 0i64, 0i64, 0i64, 0i64);
+    for row in &rows {
+        let (outcome, f) = dep_recheck_one(t, row, &mut cache, now_unix_v)?;
+        checked += 1;
+        failures += f;
+        match outcome {
+            "unblocked" => unblocked += 1,
+            "ttl_expired" => ttl_expired += 1,
+            _ => still_blocked += 1,
+        }
+    }
+    Ok(json!({
+        "checked": checked, "unblocked": unblocked,
+        "ttl_expired": ttl_expired, "still_blocked": still_blocked,
+        "check_failures": failures,
+    }))
+}
+
+/// /dep-recheck (#8276): run the due pass, or — with a task_id —
+/// force one dep-blocked task's recheck right now, schedule or
+/// no schedule. The manual trigger lanes and the monitor use to
+/// prove the machinery; production cadence is the sweep's.
+fn verb_dep_recheck(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        if let Some(task_id) = req_i64(req, "task_id") {
+            let Some(row) = get_task(t, task_id)? else {
+                return Ok(json!({"task_id": task_id, "outcome": "no_such_task"}));
+            };
+            if row.get("status").and_then(|v| v.as_str()) != Some("blocked")
+                || !dep_block_active(&row)
+            {
+                return Ok(json!({"task_id": task_id, "outcome": "not_dep_blocked"}));
+            }
+            let mut cache = std::collections::HashMap::new();
+            let (outcome, failures) = dep_recheck_one(t, &row, &mut cache, now_unix())?;
+            let after = get_task(t, task_id)?.unwrap_or(Value::Null);
+            return Ok(json!({
+                "task_id": task_id, "outcome": outcome,
+                "check_failures": failures, "row": after,
+            }));
+        }
+        run_dep_rechecks(t, req_i64(req, "limit").unwrap_or(200))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// /unblock (#8276): the manual override. A lane or the monitor
+/// releases a blocked task now — dep-blocked or classic — and
+/// the event names who overrode and what was discarded. The
+/// rechecker's automatic paths never impersonate this: an
+/// override is a human/agent decision, audited as one.
+fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id").unwrap_or(0);
+    let worker = req_str(req, "worker").unwrap_or("").to_string();
+    let reason = req_str(req, "reason").unwrap_or("").to_string();
+    let work = (|| -> Result<Value, String> {
+        let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
+            return Err(format!("unblock_task: task {task_id} does not exist"));
+        };
+        let status = row
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if status != "blocked" {
+            return Err(format!(
+                "unblock_task: task {task_id} is {status}, not blocked"
+            ));
+        }
+        let prev_deps = deps_of(&row);
+        t.exec(
+            "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
+               dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
+               dep_recheck_seconds = NULL, updated_at = ? \
+             WHERE id = ? AND status = 'blocked'",
+            &[Arg::Text(now_iso()), Arg::Int(task_id)],
+        )
+        .map_err(|e| e)?;
+        let (kind, detail) = if prev_deps.is_empty() {
+            (
+                "unblocked",
+                json!({"reason": reason, "via": "unblock_task_turso"}),
+            )
+        } else {
+            (
+                "dep_unblock_override",
+                json!({
+                    "reason": reason, "discarded_deps": prev_deps,
+                    "via": "unblock_task_turso",
+                }),
+            )
+        };
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            kind,
+            &with_marks(&detail, &row),
+        )
+        .map_err(|e| e)?;
+        get_task(t, task_id)
+            .map(|r| r.unwrap_or(Value::Null))
+            .map_err(|e| e)
+    })();
+    match work {
+        Ok(row) if !row.is_null() => ok(json!({"row": row})),
+        Ok(_) => fail(5, format!("unblock_task: task {task_id} does not exist")),
+        Err(e) if e.starts_with("unblock_task:") => fail(5, e),
         Err(e) => terr(e),
     }
 }
@@ -4296,7 +4983,8 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, lease_until, lane_id, platform, attempts, max_attempts, \
-         claim_provider, claim_model, claim_variant, progress, payload"
+         claim_provider, claim_model, claim_variant, progress, payload, \
+         blocked_deps, dep_next_recheck_at, dep_blocked_until"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
     };
@@ -4321,7 +5009,11 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         args.push(Arg::Text(nb.to_string()));
     }
     sql += &format!(" ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}");
-    let json_cols: &[&str] = if rich { &["progress", "payload"] } else { &[] };
+    let json_cols: &[&str] = if rich {
+        &["progress", "payload", "blocked_deps"]
+    } else {
+        &[]
+    };
     match t.query_objs(&sql, &args, json_cols) {
         Ok(rows) => ok(json!({"rows": rows})),
         Err(e) => terr(e),
@@ -4334,7 +5026,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
 fn health_entry(queue: &str) -> Value {
     json!({
         "queue": queue, "queued": 0, "at_cap_queued": 0, "claimed": 0,
-        "parked": 0, "handed_off": 0, "blocked": 0, "done": 0, "cancelled": 0,
+        "parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
         "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
         "terminal_events_24h": 0, "terminal_events_7d": 0,
     })
@@ -4353,6 +5045,21 @@ fn apply_at_cap_queued(by_queue: &mut Map<String, Value>, rows: &[Value]) {
         let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
         if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
             obj.insert("at_cap_queued".to_string(), json!(n));
+        }
+    }
+}
+
+/// Fold per-queue dep-blocked counts (#8276) into health
+/// entries: blocked tasks carrying a structured dep record are a
+/// different operational animal from classic blocks (escalations
+/// wait for a human; dep-blocks wait for the broker's rechecker),
+/// so health names them separately.
+fn apply_dep_blocked(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    for r in rows {
+        let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+        let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
+        if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
+            obj.insert("dep_blocked".to_string(), json!(n));
         }
     }
 }
@@ -4415,6 +5122,20 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         asql += " GROUP BY queue";
         let arows = t.query_objs(&asql, &aargs, &[])?;
         apply_at_cap_queued(&mut by_queue, &arows);
+        // Dep-blocked counts (#8276): same separate-query shape as
+        // at-cap — the status GROUP BY cannot express "carries a
+        // dep record".
+        let mut dsql = "SELECT queue, COUNT(*) AS n FROM tasks \
+             WHERE status = 'blocked' AND blocked_deps IS NOT NULL"
+            .to_string();
+        let mut dargs: Vec<Arg> = Vec::new();
+        if let Some(q) = &queue_filter {
+            dsql += " AND queue = ?";
+            dargs.push(Arg::Text(q.clone()));
+        }
+        dsql += " GROUP BY queue";
+        let drows = t.query_objs(&dsql, &dargs, &[])?;
+        apply_dep_blocked(&mut by_queue, &drows);
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
@@ -4523,6 +5244,8 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/release" => verb_release(t, req),
         "/wake" => verb_wake(t, req),
         "/block" => verb_block(t, req),
+        "/unblock" => verb_unblock(t, req),
+        "/dep-recheck" => verb_dep_recheck(t, req),
         "/cancel" => verb_cancel(t, req),
         "/fail" => verb_fail(t, req),
         "/complete" => verb_complete(t, req),
@@ -5301,6 +6024,198 @@ mod tests {
         assert!(revive_eligible("claimed", 4, 4).is_err());
         assert!(revive_eligible("done", 4, 4).is_err());
         assert!(revive_eligible("cancelled", 4, 4).is_err());
+    }
+
+    // ---- #8276 dependency blocking --------------------------------------
+
+    #[test]
+    fn dep_clamps_match_broker_policy_8276() {
+        // Recheck: default 15 min, clamped to [5 min, 1 h].
+        assert_eq!(clamp_dep_recheck_seconds(None), 900);
+        assert_eq!(clamp_dep_recheck_seconds(Some(10)), 300);
+        assert_eq!(clamp_dep_recheck_seconds(Some(1800)), 1800);
+        assert_eq!(clamp_dep_recheck_seconds(Some(7200)), 3600);
+        // Max TTL: default 3 days, floor 60 s (the live-demo
+        // range), ceiling 7 days — nothing sits blocked forever.
+        assert_eq!(clamp_dep_ttl_seconds(None), 259_200);
+        assert_eq!(clamp_dep_ttl_seconds(Some(5)), 60);
+        assert_eq!(clamp_dep_ttl_seconds(Some(3600)), 3600);
+        assert_eq!(clamp_dep_ttl_seconds(Some(999_999_999)), 604_800);
+    }
+
+    #[test]
+    fn dep_parse_validates_refs_8276() {
+        let now = "2026-11-10T21:00:00Z";
+        // No deps key (or an empty array) is the classic block.
+        assert_eq!(parse_block_deps(&json!({}), "w", now).unwrap(), None);
+        assert_eq!(
+            parse_block_deps(&json!({"deps": []}), "w", now).unwrap(),
+            None
+        );
+        let deps = parse_block_deps(
+            &json!({"deps": [
+                {"kind": "pr", "repo": "developing-today/code", "number": 3931, "reason": "gate"},
+                {"kind": "issue", "repo": "developing-today/code", "number": 3901},
+                {"kind": "task", "task_id": 5865},
+                {"kind": "ci", "repo": "developing-today/code", "run_id": 12345},
+            ]}),
+            "lane-x",
+            now,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(deps.len(), 4);
+        assert_eq!(deps[0]["state"], json!("open"));
+        assert_eq!(deps[0]["recorded_by"], json!("lane-x"));
+        assert_eq!(deps[0]["reason"], json!("gate"));
+        assert_eq!(dep_key(&deps[0]), "pr:developing-today/code#3931");
+        assert_eq!(dep_key(&deps[1]), "issue:developing-today/code#3901");
+        assert_eq!(dep_key(&deps[2]), "task:5865");
+        assert_eq!(dep_key(&deps[3]), "ci:developing-today/code#12345");
+        // A dep the broker cannot watch is a block-time error.
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "pr", "repo": "noslash", "number": 1}]}),
+            "w", now,
+        )
+        .is_err());
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "pr", "repo": "a/b", "number": 0}]}),
+            "w", now,
+        )
+        .is_err());
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "task", "task_id": -3}]}),
+            "w", now,
+        )
+        .is_err());
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "ci", "repo": "a/b"}]}),
+            "w", now,
+        )
+        .is_err());
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "milestone", "number": 1}]}),
+            "w", now,
+        )
+        .is_err());
+        assert!(parse_block_deps(&json!({"deps": "pr"}), "w", now).is_err());
+    }
+
+    #[test]
+    fn task_dep_obs_matrix_8276() {
+        // done clears; cancelled/failed release with the outcome
+        // named; anything live holds; a missing task is broken.
+        assert_eq!(
+            task_dep_obs(Some("done"), 5),
+            DepObs::Cleared("dep task done".to_string())
+        );
+        assert!(
+            matches!(task_dep_obs(Some("cancelled"), 5), DepObs::Cleared(ref e) if e.contains("cancelled"))
+        );
+        assert!(
+            matches!(task_dep_obs(Some("failed"), 5), DepObs::Cleared(ref e) if e.contains("failed"))
+        );
+        assert!(matches!(task_dep_obs(Some("claimed"), 5), DepObs::Open(_)));
+        assert!(matches!(task_dep_obs(Some("queued"), 5), DepObs::Open(_)));
+        assert!(matches!(task_dep_obs(Some("blocked"), 5), DepObs::Open(_)));
+        assert!(matches!(task_dep_obs(None, 5), DepObs::Broken(_)));
+    }
+
+    #[test]
+    fn dep_obs_transitions_and_all_must_clear_8276() {
+        let now = "2026-11-10T21:00:00Z";
+        let mut d = json!({"kind": "pr", "state": "open"});
+        // A failed check (rate limit, token down) is NOT
+        // clearance: no transition, dep stays open, the failure
+        // is recorded as the last observation.
+        assert_eq!(
+            apply_dep_obs(&mut d, &DepObs::Failed("github http 403".to_string()), now),
+            None
+        );
+        assert_eq!(d["state"], json!("open"));
+        assert_eq!(d["last_observed"], json!("github http 403"));
+        // Still-open observation: no transition either.
+        assert_eq!(
+            apply_dep_obs(&mut d, &DepObs::Open("pr open".to_string()), now),
+            None
+        );
+        assert_eq!(d["state"], json!("open"));
+        // Cleared transitions exactly once; a resolved dep is
+        // terminal — later observations are no-ops.
+        assert_eq!(
+            apply_dep_obs(&mut d, &DepObs::Cleared("pr merged".to_string()), now),
+            Some("cleared")
+        );
+        assert_eq!(d["state"], json!("cleared"));
+        assert_eq!(
+            apply_dep_obs(&mut d, &DepObs::Open("pr open".to_string()), now),
+            None
+        );
+        assert_eq!(d["state"], json!("cleared"));
+        // Broken releases too — a typo'd gate is not a life
+        // sentence.
+        let mut b = json!({"kind": "issue", "state": "open"});
+        assert_eq!(
+            apply_dep_obs(&mut b, &DepObs::Broken("github 404".to_string()), now),
+            Some("broken")
+        );
+        // All-must-clear: one open dep holds the whole block.
+        assert!(deps_all_resolved(&[d.clone(), b.clone()]));
+        let mut held = vec![d.clone(), b.clone()];
+        held.push(json!({"kind": "task", "state": "open"}));
+        assert!(!deps_all_resolved(&held));
+        assert!(!deps_all_resolved(&[]));
+    }
+
+    #[test]
+    fn dep_wiring_oracles_8276() {
+        // Schema, read surface, additive migration.
+        assert!(TASK_COLS.contains("blocked_deps"));
+        assert!(TASK_COLS.contains("dep_blocked_until"));
+        assert!(TASK_COLS.contains("dep_next_recheck_at"));
+        assert!(TASK_JSON_COLS.iter().any(|c| *c == "blocked_deps"));
+        let schema = SCHEMA.join(" ");
+        assert!(schema.contains("blocked_deps TEXT"));
+        assert!(schema.contains("dep_recheck_seconds INTEGER"));
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("ALTER TABLE tasks ADD COLUMN {col} {ty}"));
+        // Routes, sweep ride, audit kinds, health bucket.
+        assert!(impl_src.contains("\"/dep-recheck\" => verb_dep_recheck"));
+        assert!(impl_src.contains("\"/unblock\" => verb_unblock"));
+        assert!(impl_src.contains("run_dep_rechecks(t, req_i64(req, \"dep_limit\")"));
+        assert!(impl_src.contains("\"dep_ttl_expired\""));
+        assert!(impl_src.contains("\"dep_unblocked\""));
+        assert!(impl_src.contains("\"dep_unblock_override\""));
+        assert!(impl_src.contains("\"dep_blocked\": 0"));
+        // The default pick has no blocked branch: dep-blocked
+        // tasks (status 'blocked') are invisible to claims, so
+        // no lane ever re-verifies a gate by claiming the item.
+        let pred = default_pick_predicate();
+        assert!(
+            !pred.contains("blocked"),
+            "pick must exclude blocked: {pred}"
+        );
+        // Client surface.
+        let client_src = include_str!("client.rs");
+        for f in [
+            "blocked-by-pr",
+            "blocked-by-issue",
+            "blocked-by-task",
+            "blocked-by-ci",
+            "dep-recheck-seconds",
+            "dep-max-ttl-seconds",
+        ] {
+            assert!(client_src.contains(f), "client flag {f}");
+        }
+        assert!(client_src.contains("\"dep-recheck\" => cmd_dep_recheck"));
+        assert!(client_src.contains("\"unblock\" => cmd_unblock"));
+        // The production probe is wired where the broker builds
+        // its Turso backend, authenticated by secret name.
+        let broker_src = include_str!("queue_broker.rs");
+        assert!(broker_src.contains("GhDepProbe"));
+        assert!(broker_src.contains("set_gh_probe"));
+        assert!(broker_src.contains("github.developing-today-code-automation"));
     }
 
     #[test]
