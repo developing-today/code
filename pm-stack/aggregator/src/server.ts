@@ -147,6 +147,20 @@ import {
   type ForecastContract,
 } from "./forecast-contract.ts";
 
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
@@ -1319,13 +1333,14 @@ async function handler(req: Request): Promise<Response> {
         // Fire-and-forget: the response never waits on, and is never
         // failed by, the event append.
         recordStreamEvent({
-          actor: updated.appliedByRun ?? body.byRun.slice(0, 200),
+          actor: updated.appliedByRun ?? capUnits(body.byRun, 200),
           kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
           ref: updated.objectRef,
-          summary: (
+          summary: capUnits(
             `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
-            (typeof body.note === "string" && body.note ? ` — ${body.note}` : "")
-          ).slice(0, 500),
+              (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+            500,
+          ),
         });
       }
       const updated = result?.action;
