@@ -199,9 +199,10 @@ impl EventStore {
         let (stored, forks, headers) = {
             let events = txn.open_table(super::EVENTS)?;
             let actions = txn.open_table(super::ACTIONS)?;
+            let device_ops = txn.open_table(super::DEVICE_OPS)?;
             let forks = txn.open_table(super::FORKS)?;
             let proof_headers = txn.open_table(super::PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &forks, &proof_headers)?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
         let members: BTreeMap<AuthorKey, Role> = resolved
