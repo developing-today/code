@@ -74,6 +74,40 @@ describe("isRepoCensus", () => {
     }
   });
 
+  test("accepts null counts: the partial-failure row #3992 emits (#8193)", () => {
+    // Oracle: the RepoCensus type itself - each count is a non-negative
+    // integer or null ("unavailable, not zero").
+    expect(isRepoCensus({ repo: "a/b", openIssues: null, gateNow: null, gateNext: null })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: null, gateNow: 3, gateNext: 2 })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: 10, gateNow: null, gateNext: null })).toBe(true);
+    expect(isRepoCensus({ repo: "a/b", openIssues: 10, gateNow: 3, gateNext: null })).toBe(true);
+    // The stale-issue fields already treat a failed query this way.
+    expect(
+      isRepoCensus({
+        repo: "a/b",
+        openIssues: null,
+        gateNow: null,
+        gateNext: null,
+        staleOpenIssues: 4,
+        staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  test("still rejects impossible rows when nulls are in play (#8193)", () => {
+    for (const counts of [
+      { openIssues: null, gateNow: -1, gateNext: 0 },
+      { openIssues: null, gateNow: 0, gateNext: 1.5 },
+      { openIssues: -1, gateNow: null, gateNext: null },
+      { openIssues: "10", gateNow: null, gateNext: null },
+      { openIssues: null, gateNow: true, gateNext: null },
+      { openIssues: 5, gateNow: 6, gateNext: null },
+      { openIssues: 5, gateNow: null, gateNext: 6 },
+    ]) {
+      expect(isRepoCensus({ repo: "a/b", ...counts })).toBe(false);
+    }
+  });
+
   test("requires exactly one valid owner/name repository ref", () => {
     for (const repo of [
       "",
@@ -100,6 +134,28 @@ describe("coverageFromFeed duplicate census rows", () => {
         ],
       }),
     ).toBeNull();
+  });
+});
+
+describe("coverageFromFeed null census rows (#8193)", () => {
+  test("a null-count row survives the feed gate into the coverage report", () => {
+    const rows = coverageFromFeed({
+      coverage: [
+        { repo: "a/b", openIssues: null, gateNow: null, gateNext: null, staleOpenIssues: 4 },
+        { repo: "c/d", openIssues: 5, gateNow: 1, gateNext: 1 },
+      ],
+    });
+    // The null-count row passes the feed gate with its counts still
+    // null - not silently dropped, not zero-filled.
+    expect(rows?.map((r) => r.repo)).toEqual(["a/b", "c/d"]);
+    expect(rows?.[0]).toMatchObject({ openIssues: null, gateNow: null, gateNext: null, staleOpenIssues: 4 });
+    // And it reaches the coverage report as unavailable counts.
+    const report = computeCoverage(rows ?? [], null, NOW);
+    const ab = report.repos.find((r) => r.repo === "a/b");
+    expect(ab?.openIssues).toBeNull();
+    expect(ab?.gateNow).toBeNull();
+    expect(ab?.gateNext).toBeNull();
+    expect(ab?.staleOpenIssues).toBe(4);
   });
 });
 
