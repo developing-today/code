@@ -487,6 +487,35 @@ function validateConfigShape(config, configPath) {
   }
 }
 
+// Provider renames (#7333): when a provider is renamed, the tracked config
+// and this script's target list move to the new id, but the runtime overlay
+// can still carry the catalog under the legacy id. A target section absent
+// from the overlay must never be silently skipped while its catalog sits
+// orphaned under a legacy id: migrate the legacy section onto the target id
+// (the instance repair applied by hand on 2026-11-07), and when no legacy
+// section exists either, report the provider as absent so the run names it
+// as skipped instead of in sync.
+const LEGACY_PROVIDER_IDS = {
+  _antigravity: ['antigravity-direct', 'antigravity'],
+};
+
+// Decide what run() should do about one sync target. Mutates `config` only
+// on the migrated path (the legacy section moves onto the target id).
+// Returns { outcome: 'present' }, { outcome: 'migrated', from, section },
+// or { outcome: 'absent' }.
+function resolveTargetProvider(config, targetProvider) {
+  if (config.provider?.[targetProvider]) return { outcome: 'present' };
+  for (const legacyId of LEGACY_PROVIDER_IDS[targetProvider] || []) {
+    const legacy = config.provider?.[legacyId];
+    if (legacy) {
+      defineValue(config.provider, targetProvider, legacy);
+      delete config.provider[legacyId];
+      return { outcome: 'migrated', from: legacyId, section: legacy };
+    }
+  }
+  return { outcome: 'absent' };
+}
+
 // -----------------------------------------------------------------------------
 // Main Sync Runner
 // -----------------------------------------------------------------------------
@@ -513,6 +542,7 @@ async function run() {
   let totalAdded = 0;
   let totalUpdated = 0;
   let totalRemoved = 0;
+  const skippedProviders = [];
   // Every change is recorded here and applied to the text at the end, so the
   // file keeps its comments and formatting.
   const edits = [];
@@ -566,7 +596,22 @@ async function run() {
     };
 
     for (const targetProvider of ['_antigravity']) {
-      if (!config.provider?.[targetProvider]) continue;
+      const resolution = resolveTargetProvider(config, targetProvider);
+      if (resolution.outcome === 'absent') {
+        skippedProviders.push(targetProvider);
+        console.warn(
+          `[sync-models] ! Skipping ${targetProvider}: no section in the runtime overlay and no legacy section to migrate - provider NOT in sync (#7333)`,
+        );
+        continue;
+      }
+      if (resolution.outcome === 'migrated') {
+        console.log(
+          `[sync-models] ! Migrated provider section '${resolution.from}' -> '${targetProvider}' (renamed provider; its catalog was orphaned under the legacy id, #7333)`,
+        );
+        edits.push({ set: ['provider', targetProvider], value: resolution.section });
+        edits.push({ remove: ['provider', resolution.from] });
+        totalUpdated++;
+      }
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};
       const modelsPath = ['provider', targetProvider, 'models'];
@@ -668,7 +713,17 @@ async function run() {
 
   console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ${totalRemoved} models removed.`);
 
+  if (skippedProviders.length > 0) {
+    console.warn(
+      `[sync-models] Providers skipped (section absent, no legacy section to migrate): ${skippedProviders.join(', ')} - NOT in sync.`,
+    );
+  }
+
   if (totalAdded === 0 && totalUpdated === 0 && totalRemoved === 0) {
+    if (skippedProviders.length > 0) {
+      console.error('[sync-models] Failed: skipped providers above were not synced.');
+      process.exit(2);
+    }
     console.log('[sync-models] All providers are already up-to-date!');
     return;
   }
@@ -685,6 +740,10 @@ async function run() {
 
   if (DRY_RUN) {
     console.log('[sync-models] Dry run complete. No files written.');
+    if (skippedProviders.length > 0) {
+      console.error('[sync-models] Failed: skipped providers above were not synced.');
+      process.exit(2);
+    }
     return;
   }
 
@@ -700,6 +759,11 @@ async function run() {
     console.log('[sync-models] Triggered opencode configuration reload.');
   } catch {
     // Ignored if OpenCode background service is not running
+  }
+
+  if (skippedProviders.length > 0) {
+    console.error('[sync-models] Failed: skipped providers above were not synced.');
+    process.exit(2);
   }
 }
 
