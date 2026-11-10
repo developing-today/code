@@ -33,7 +33,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream
+    mode: "ok", // ok | rate | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
     last: null,
     hits: 0,
     server: null,
@@ -118,6 +118,63 @@ const makeLeaf = (name, expectedKey) => {
             ],
             ...(usage ? { usage } : {}),
           })}\n\n`;
+        if (leaf.mode === "big-first-event") {
+          // One valid first content event larger than the relay's
+          // 64 KiB preface window, delivered in slices so the parser
+          // buffer crosses the window mid-event (#5558 Codex P2).
+          const big = "A".repeat(96 * 1024);
+          const event = `data: ${JSON.stringify({
+            id: "chatcmpl-x",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    { index: 0, function: { name: "f", arguments: big } },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })}\n\n`;
+          let off = 0;
+          const step = () => {
+            if (off < event.length) {
+              res.write(event.slice(off, off + 8192));
+              off += 8192;
+              return setTimeout(step, 1);
+            }
+            res.write(
+              chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+            );
+            return res.end("data: [DONE]\n\n");
+          };
+          return step();
+        }
+        if (leaf.mode === "preface-flood") {
+          // A non-content preface past the relay's pre-content
+          // limit, then the response stays open: the relay must
+          // fail over AND cancel this stream (#5558 Codex P2).
+          // Cancellation is observable here as the socket closing
+          // before the response ever ended.
+          leaf.prefaceAborted = false;
+          res.on("close", () => {
+            if (!res.writableEnded) leaf.prefaceAborted = true;
+          });
+          res.write(": preface\n\n");
+          let sent = 0;
+          const step = () => {
+            if (res.destroyed || res.writableEnded) return;
+            res.write(`: ${"p".repeat(4096)}\n\n`);
+            sent += 4096;
+            if (sent < 192 * 1024) return setTimeout(step, 1);
+            // Hold the response open; only the relay's cancel ends it.
+          };
+          return step();
+        }
         if (leaf.mode === "delayed-stream") {
           res.write(chunk({ role: "assistant" }));
           return setTimeout(() => {
@@ -624,6 +681,55 @@ test("stream errors after content do not fail over", async () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].outcome, "failure");
     assert.equal(rows[0].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a first content event larger than the preface window is relayed, not rejected (#5558)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "big-first-event";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("A".repeat(1024)), "large first event must reach the client");
+    assert.ok(text.includes("[DONE]"));
+    assert.equal(p.leafB.hits, 0);
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content preface overflow fails over and cancels the rejected stream (#5558)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "preface-flood";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(rows[1].outcome, "success");
+    // The rejected leaf's stream was cancelled, not left generating.
+    for (let i = 0; i < 50 && !p.leafA.prefaceAborted; i++)
+      await new Promise((r) => setTimeout(r, 100));
+    assert.equal(p.leafA.prefaceAborted, true);
   } finally {
     await p.cleanup();
   }

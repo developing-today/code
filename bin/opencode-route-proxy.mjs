@@ -949,7 +949,12 @@ const inspectSseBytes = (value, state, headers, flush = false) => {
   const decoded = flush
     ? state.decoder.decode()
     : state.decoder.decode(value, { stream: true });
-  state.tail = (state.tail + decoded).slice(-STREAM_PREFACE_MAX_BYTES);
+  state.tail += decoded;
+  // Parse every complete event BEFORE bounding the buffer: trimming
+  // first would cut the head off an event larger than the preface
+  // window (a large tool-call argument delta is a single event),
+  // removing its data: prefix so it is never recognised as content
+  // (Codex P2 on PR #5558).
   const separator = /\r?\n\r?\n/g;
   let match;
   let start = 0;
@@ -958,6 +963,20 @@ const inspectSseBytes = (value, state, headers, flush = false) => {
     start = separator.lastIndex;
   }
   state.tail = state.tail.slice(start);
+  if (state.tail.length > STREAM_PREFACE_MAX_BYTES) {
+    // The tail is now a single partial event. Distinguish a large
+    // content event from a non-content preface: everything from the
+    // event's first data: line on is its payload and stays whole,
+    // however large — the preface limits are enforced on raw bytes
+    // by the callers (prepare/relay byte counts), not by mangling
+    // this buffer. With no data: line yet, nothing here can be
+    // recognised as content, so keep only the newest window.
+    const dataStart = state.tail.search(/^data:/m);
+    state.tail =
+      dataStart === -1
+        ? state.tail.slice(-STREAM_PREFACE_MAX_BYTES)
+        : state.tail.slice(dataStart);
+  }
   if (flush && state.tail.trim()) {
     inspectSseEvent(state.tail, state, headers);
     state.tail = "";
@@ -1429,12 +1448,21 @@ const relayStream = async (prepared, res, headers) => {
     if (!state.contentStarted) {
       preContent.push(value);
       preContentBytes += value.byteLength;
-      if (preContentBytes > STREAM_PREFACE_MAX_BYTES)
-        return precommitFailure(
-          new LeafError("leaf stream preface exceeded the pre-content limit", {
-            tag: "ProviderInternal",
-          }),
+      if (preContentBytes > STREAM_PREFACE_MAX_BYTES) {
+        const err = new LeafError(
+          "leaf stream preface exceeded the pre-content limit",
+          { tag: "ProviderInternal" },
         );
+        // Cancel the rejected upstream before failing over (Codex
+        // P2 on PR #5558): without this, a successful replacement
+        // clears the shared deadline timer and the rejected response
+        // is left generating with no cancellation path — the
+        // adjacent pre-content SSE-error path above already cancels.
+        try {
+          void reader.cancel(err).catch(() => {});
+        } catch {}
+        return precommitFailure(err);
+      }
       continue;
     }
     for (const chunk of preContent) write(chunk);
