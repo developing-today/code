@@ -56,7 +56,7 @@ No gRPC or external message-broker handler was found in the package inventory. I
 
 ### Fixed initial fixture profiles and boundary values
 
-These are bounded, reproducible initial gate profiles, not claims about production throughput. All use an isolated fixture, fixed seed, 30-second attack phase, and a 30-second recovery window. The open-loop generator offers 128 operations/stream-open attempts per second; the canary offers 1 valid operation per second. Where an interface has an explicit cap, the fixture also tests exactly cap and cap+1; where it does not, the profile is a fixed 64 concurrent clients and the missing production bound is recorded as a contract gap. A profile is rejected at setup if its configured limit or unit is absent.
+These are bounded, reproducible initial gate profiles, not claims about production throughput. All use an isolated fixture, fixed seed, 30-second attack phase, and a 30-second recovery window. Deadline-bound scenarios are exempt from that fixed attack duration (see "Deadline-bound scenarios" below): a scenario whose pass condition requires observing a configured deadline expiry runs until that deadline elapses, or exercises the expiry through a supported test-only deadline override, instead of fitting inside the 30-second profile. The open-loop generator offers 128 operations/stream-open attempts per second; the canary offers 1 valid operation per second. Where an interface has an explicit cap, the fixture also tests exactly cap and cap+1; where it does not, the profile is a fixed 64 concurrent clients and the missing production bound is recorded as a contract gap. A profile is rejected at setup if its configured limit or unit is absent.
 
 - **Iroh metadata `/iroh-meta/3`:** 64 concurrent peers, 128 request streams/s; test `MAX_REQUEST_BYTES - 1`, exact `MAX_REQUEST_BYTES` (1 MiB), and `MAX_REQUEST_BYTES + 1`; malformed postcard and truncated request at 1 in 10 offered inputs. The request cap is `pkgs/id/src/protocol.rs:264,839`; over-cap must be rejected before unbounded allocation, and valid metadata canary must still complete.
 - **Built-in Iroh blobs/docs/gossip:** 64 concurrent peers, 128 stream/message attempts/s; exercise each upstream handler's configured request/message boundary and one-byte-over input, with 1 in 10 invalid inputs. Record the exact upstream limit in the fixture manifest; no Rust-package limit is presumed. Healthy blob/doc/gossip canary operation must remain usable.
@@ -69,6 +69,17 @@ These are bounded, reproducible initial gate profiles, not claims about producti
 - **Optional SSH / SSH-over-Iroh:** test 64 concurrent TCP sessions and rejection at 65 (`world_ssh.rs:70–73`), 16 tunnel streams and rejection at 17 (`:90`), and packet sizes 32 KiB−1 / 32 KiB / 32 KiB+1 (`:70`). Over-cap opens/packets are refused/closed; a valid shell/exec canary completes after recovery.
 - **Hosted Cloudflare Worker:** 64 concurrent requests, 128 forwarded requests/s for 30 s; invalid binding IDs and jurisdictions are 1 in 10; verify rejected input is not forwarded and valid Durable Object requests remain routable. This profile is separate from Iroh and uses the Worker route contract in `hosted-worker/src/routing.ts:29–83`.
 - **Outbound mail path:** drive 128 mail-triggering ingress operations/s for 30 s in a loopback-only SMTP fixture; each sink operation remains under its implemented 10-second deadline and bounded reply-line/count limits. No live SMTP service is contacted.
+
+### Deadline-bound scenarios (exemption from the fixed 30-second profile)
+
+Some scenarios cannot, by construction, fit the fixed 30-second attack phase plus 30-second recovery window above: their pass condition is the expiry of a configured deadline `D_time` that is longer than 30 seconds. The concrete case in this catalogue is scenario 4 (slow/incomplete input) applied to the optional SSH interface: `pkgs/id/src/world_ssh.rs` configures a ten-minute inactivity timeout (`INACTIVITY_TIMEOUT`, wired as the session `inactivity_timeout`), so holding an incomplete input through the deadline cannot be observed in 30 seconds, and closing the attacking clients at 30 seconds would test client cleanup instead of server expiry.
+
+Decision (issue #8064, resolving the Codex finding on PR #7738): deadline-bound scenarios are explicitly exempt from the fixed attack duration. For such a scenario the fixture must do one of the following, and record which in its manifest:
+
+- **Extended profile (soak tier):** the attack phase runs until the configured deadline elapses (for SSH, ten minutes plus the recovery window), in the scheduled/soak tier rather than the fast gate; or
+- **Deadline override:** the fixture configures a supported test-only clock/deadline override that shortens `D_time` for the test (for SSH, a shortened inactivity timeout), with the production deadline value recorded alongside, so the expiry assertion is exercised against the same code path at a test-scale duration.
+
+A deadline-bound scenario is never satisfied by ending the fixture before the deadline, and its recovery window starts at deadline expiry, not at the 30-second mark.
 
 ### Concrete scenarios (per interface)
 
