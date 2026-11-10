@@ -63,7 +63,10 @@ org itself issued and owns) is unaffected.
   extended by two classes this record adds because they spend other
   people's trust: **changing consent or escrow contents**, and **any
   raw-value reveal** under D3. Break-glass use always requires step-up and
-  never rides a window granted for anything else.
+  never rides a window granted for anything else; its step-up is
+  satisfied through the independent emergency path in D7, not the
+  IdP path below, precisely so it remains usable when the IdP is
+  the thing that is down.
 - The **factor class** names what satisfies the gate: a second factor
   distinct from the factor that opened the session, drawn from the org's
   IdP factors (WebAuthn/passkey preferred; TOTP acceptable; SMS never
@@ -196,6 +199,18 @@ against, and is rejected here by construction.
 - The only bypass is the parent's break-glass capability (§6.5):
   separate opt-in, named role, always stepped-up (D1), logged loudly,
   and surfaced to admins and to the affected user (D6).
+- **Break-glass authentication is independent of the IdP.** Because
+  the outage break-glass exists for includes the IdP itself, its
+  step-up cannot ride the IdP factor path: the named role holds a
+  pre-enrolled, hardware-bound emergency credential that the server
+  verifies locally. Enrolment happens in advance (itself a stepped-up,
+  per-use-consented admin action), the credential is usable only for
+  break-glass, and its use is possible exactly when the IdP path is
+  unavailable. Rotation and revocation of emergency credentials are
+  declaration-stated procedures, audited like escrow administration
+  (D5). An implementation whose break-glass still depends on the IdP
+  does not satisfy §6.5 for the IdP-down case and must say so
+  explicitly rather than claim the coverage.
 
 ## Invariants implementation must hold
 
