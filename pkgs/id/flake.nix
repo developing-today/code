@@ -420,6 +420,14 @@
           # green on any correctly regenerated file.
           just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
 
+          # Regression pins for scripts/build.sh variant handling (#6869):
+          # the fixture suite stubs cargo and exercises every variant, so a
+          # variant-specific regression fails here instead of in a just recipe.
+          build-sh-test = mkCheckWith {
+            name = "build-sh-test";
+            checkCommand = "bash scripts/build-sh-test.sh";
+          };
+
           # Exercise the same alias-admission function used by apps against
           # synthetic recipes/aliases, including dangling targets and names
           # that would shadow recipe or manual apps.
