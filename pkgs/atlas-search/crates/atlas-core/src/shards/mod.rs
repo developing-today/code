@@ -385,6 +385,14 @@ impl ShardConnector for StdConnector {
 
 // ----------------------------------------------------------- manifest ---
 
+/// The embedding model + pipeline identity that produced every
+/// shard's vectors (#6060 decision record, contract points M1/M2,
+/// #7646): one embedding model for every Atlas tier. Recorded per
+/// shard in the manifest's `embedding_model` key and checked before
+/// fan-out, so vectors embedded by different models are never merged
+/// as if they were comparable.
+pub const EMBEDDING_MODEL_ID: &str = "snowflake-arctic-embed-m-v2.0";
+
 /// A shard's `atlas_manifest` (key/value self-description).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
@@ -394,6 +402,11 @@ pub struct Manifest {
     pub part: Option<u32>,
     pub expected_chunks: Option<u64>,
     pub metric: String,
+    /// The `embedding_model` key: model + pipeline identity of the
+    /// shard's vectors. `None` when the key is absent (a shard
+    /// written before the key existed); discovery refuses `None`
+    /// in strict mode (#7646).
+    pub embedding_model: Option<String>,
 }
 
 impl Manifest {
@@ -414,6 +427,7 @@ impl Manifest {
             part: pairs.get("part").and_then(|p| p.parse().ok()),
             expected_chunks: pairs.get("expected_chunks").and_then(|p| p.parse().ok()),
             metric: need("metric")?,
+            embedding_model: pairs.get("embedding_model").cloned(),
         })
     }
 
@@ -444,6 +458,8 @@ pub struct ShardInfo {
     pub topic: String,
     pub part: u32,
     pub expected_chunks: Option<u64>,
+    /// The shard's validated `embedding_model` identity (#7646).
+    pub embedding_model: String,
     /// `count(*)` of `chunks` at discovery time.
     pub chunks: u64,
     pub endpoint: ShardEndpoint,
@@ -540,6 +556,10 @@ pub struct DiscoveryOptions {
     /// The service's maximum tier. Shards above it are never
     /// connected.
     pub ceiling: TierCeiling,
+    /// The embedding-model identity this consumer embeds queries
+    /// with; shards recording a different (or no) identity are
+    /// refused at probe (#7646). Defaults to the mandated model.
+    pub embedding_model: String,
     pub vec_table: String,
     /// Integrity failures (unreadable manifest, manifest disagreeing
     /// with the shard name, wrong metric) normally abort discovery
@@ -552,6 +572,7 @@ impl DiscoveryOptions {
     pub fn new(ceiling: TierCeiling) -> DiscoveryOptions {
         DiscoveryOptions {
             ceiling,
+            embedding_model: EMBEDDING_MODEL_ID.to_string(),
             vec_table: crate::types::DEFAULT_VEC_TABLE.to_string(),
             lenient: false,
         }
@@ -568,6 +589,7 @@ struct Candidate {
 fn probe(
     connector: &dyn ShardConnector,
     c: &Candidate,
+    expected_embedding_model: &str,
 ) -> Result<(ShardInfo, Arc<dyn ShardTransport>)> {
     let t = connector.connect(&c.endpoint, c.tier)?;
     let m = Manifest::read(t.as_ref())
@@ -593,6 +615,25 @@ fn probe(
             c.endpoint.name, m.metric
         )));
     }
+    // M1/M2 (#7646): the shard's vectors must have been embedded by
+    // the same model + pipeline as this consumer's query vectors.
+    // A missing key is a refusal too — provenance unknown is not
+    // provenance shared. Errors name the shard and both identities.
+    match &m.embedding_model {
+        None => {
+            return Err(Error::fatal(format!(
+                "shard {}: atlas_manifest has no `embedding_model` key; this consumer embeds with `{expected_embedding_model}` and a shard of unknown embedding provenance must not be scanned",
+                c.endpoint.name
+            )));
+        }
+        Some(got) if got != expected_embedding_model => {
+            return Err(Error::fatal(format!(
+                "shard {}: embedding_model `{got}` does not match this consumer's `{expected_embedding_model}`; vectors from different embedding models are not comparable",
+                c.endpoint.name
+            )));
+        }
+        _ => {}
+    }
     let n = t
         .pipeline(&[Stmt::new("SELECT COUNT(*) AS n FROM chunks", vec![])])?
         .into_iter()
@@ -609,6 +650,7 @@ fn probe(
             topic: c.topic.clone(),
             part: m.part.unwrap_or(c.part),
             expected_chunks: m.expected_chunks,
+            embedding_model: m.embedding_model.clone().unwrap_or_default(),
             chunks: n.max(0) as u64,
             endpoint: c.endpoint.clone(),
         },
@@ -683,7 +725,7 @@ pub fn discover(
     let probed: Vec<Result<(ShardInfo, Arc<dyn ShardTransport>)>> = std::thread::scope(|scope| {
         let handles: Vec<_> = candidates
             .iter()
-            .map(|c| scope.spawn(move || probe(connector, c)))
+            .map(|c| scope.spawn(move || probe(connector, c, &opts.embedding_model)))
             .collect();
         handles
             .into_iter()
