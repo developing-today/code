@@ -13,7 +13,8 @@
 //! - `ID_LOG_FORMAT` — `text` (default) or `json`. `json` emits one
 //!   JSON object per line (JSON-lines) including the event's fields and,
 //!   for events inside a span, the current span's name and fields as
-//!   trace context.
+//!   trace context. An unrecognized value falls back to `text` and the
+//!   caller warns about the fallback (as `ID_LOG_TZ` does).
 //! - `ID_LOG_FILE` — path of a second destination. Events are appended
 //!   to the file in the same format as the console destination, without
 //!   ANSI escapes.
@@ -128,7 +129,9 @@ pub fn resolve_zone(spec: Option<&str>) -> TzResolution {
     match spec.map(str::trim) {
         None | Some("") => ok(LogZone::Local),
         Some(value) if value.eq_ignore_ascii_case("local") => ok(LogZone::Local),
-        Some(value) if value.eq_ignore_ascii_case("utc") || value == "Z" => ok(LogZone::Utc),
+        Some(value) if value.eq_ignore_ascii_case("utc") || value.eq_ignore_ascii_case("z") => {
+            ok(LogZone::Utc)
+        }
         Some(value) => {
             if let Ok(tz) = value.parse::<chrono_tz::Tz>() {
                 ok(LogZone::Named(tz))
@@ -151,7 +154,17 @@ fn parse_fixed_offset(value: &str) -> Option<FixedOffset> {
         b'-' => (-1, &value[1..]),
         _ => return None,
     };
-    let digits: String = rest.chars().filter(|c| *c != ':').collect();
+    // Accept only `HHMM` or `HH:MM`: a colon is valid solely as the single
+    // separator between the hour and minute pairs (#5369). Stripping every
+    // colon first let malformed shapes such as `+05::30` and `+0:5:30`
+    // silently resolve as `+05:30`.
+    let digits: String = if rest.len() == 4 {
+        rest.to_string()
+    } else if rest.len() == 5 && rest.as_bytes()[2] == b':' {
+        format!("{}{}", &rest[..2], &rest[3..])
+    } else {
+        return None;
+    };
     if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -172,10 +185,7 @@ pub struct Rfc3339TzTimer {
 }
 
 impl FormatTime for Rfc3339TzTimer {
-    fn format_time(
-        &self,
-        writer: &mut Writer<'_>,
-    ) -> std::fmt::Result {
+    fn format_time(&self, writer: &mut Writer<'_>) -> std::fmt::Result {
         write!(writer, "{}", self.zone.format_timestamp(SystemTime::now()))
     }
 }
@@ -195,6 +205,10 @@ pub struct LogConfig {
     pub zone: LogZone,
     /// True when `ID_LOG_TZ` was set but unrecognized (zone is UTC).
     pub tz_fell_back: bool,
+    /// True when `ID_LOG_FORMAT` was set to a non-empty value that is
+    /// neither `text` nor `json` (format is `Text`); the caller warns
+    /// about the fallback, mirroring `tz_fell_back`.
+    pub format_fell_back: bool,
 }
 
 impl LogConfig {
@@ -210,6 +224,10 @@ impl LogConfig {
         let tz = resolve_zone(tz);
         Self {
             format: LogFormat::parse(format),
+            format_fell_back: format.is_some_and(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                !value.is_empty() && value != "text" && value != "json"
+            }),
             file: file
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -333,6 +351,7 @@ mod tests {
         assert_eq!(config.file_filter, None);
         assert_eq!(config.zone, LogZone::Local);
         assert!(!config.tz_fell_back);
+        assert!(!config.format_fell_back);
     }
 
     #[test]
@@ -342,6 +361,32 @@ mod tests {
         assert_eq!(LogFormat::parse(Some("text")), LogFormat::Text);
         assert_eq!(LogFormat::parse(Some("yaml")), LogFormat::Text);
         assert_eq!(LogFormat::parse(None), LogFormat::Text);
+    }
+
+    #[test]
+    fn test_structured_logging_unrecognized_format_falls_back_with_flag() {
+        // An unrecognized ID_LOG_FORMAT still resolves to Text (the
+        // lenient parse is unchanged), but the config now records the
+        // fallback so the caller can warn — mirroring tz_fell_back.
+        for spec in ["josn", "yaml", "jsonl", "structured"] {
+            let config = LogConfig::resolve(Some(spec), None, None, None);
+            assert_eq!(config.format, LogFormat::Text, "spec {spec:?}");
+            assert!(config.format_fell_back, "spec {spec:?}");
+        }
+        // Recognized values (any case, padded) and unset/blank values
+        // never set the flag.
+        for spec in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("text"),
+            Some("Text"),
+            Some("json"),
+            Some(" JSON "),
+        ] {
+            let config = LogConfig::resolve(spec, None, None, None);
+            assert!(!config.format_fell_back, "spec {spec:?}");
+        }
     }
 
     #[test]
@@ -378,6 +423,25 @@ mod tests {
     }
 
     #[test]
+    fn test_structured_logging_malformed_fixed_offset_falls_back_to_utc() {
+        // #5369: only signed `HHMM` or `HH:MM` are valid fixed offsets.
+        // Doubled, shifted, or trailing colons (and out-of-range parts)
+        // are malformed and must fall back to UTC with the flag set.
+        for spec in [
+            "+05::30", "+0:5:30", "+0530:", "+05:300", "+5:30", "+24:00", "+05:60",
+        ] {
+            let zone = resolve_zone(Some(spec));
+            assert!(zone.fell_back_to_utc, "spec {spec:?}");
+            assert_eq!(zone.zone, LogZone::Utc, "spec {spec:?}");
+        }
+        // Valid controls keep resolving without the fallback flag.
+        for spec in ["+05:30", "-0400", "+0000"] {
+            let zone = resolve_zone(Some(spec));
+            assert!(!zone.fell_back_to_utc, "spec {spec:?}");
+        }
+    }
+
+    #[test]
     fn structured_logging_bad_zone_falls_back_to_utc_with_flag() {
         let zone = resolve_zone(Some("Mars/Olympus_Mons"));
         assert!(zone.fell_back_to_utc);
@@ -390,6 +454,23 @@ mod tests {
         let local = resolve_zone(Some("local"));
         assert!(!local.fell_back_to_utc);
         assert_eq!(local.zone, LogZone::Local);
+    }
+
+    #[test]
+    fn structured_logging_lowercase_z_is_utc_without_fallback() {
+        // RFC 3339 allows the lowercase designator, and the neighbouring
+        // recognized words are already case-insensitive, so `z` resolves
+        // to UTC without the fallback flag that warns the operator (#5395).
+        for spec in ["z", "Z", "utc", "Utc", "UTC"] {
+            let zone = resolve_zone(Some(spec));
+            assert_eq!(zone.zone, LogZone::Utc, "spec {spec:?}");
+            assert!(!zone.fell_back_to_utc, "spec {spec:?}");
+        }
+        for spec in ["local", "Local", "LOCAL"] {
+            let zone = resolve_zone(Some(spec));
+            assert_eq!(zone.zone, LogZone::Local, "spec {spec:?}");
+            assert!(!zone.fell_back_to_utc, "spec {spec:?}");
+        }
     }
 
     #[test]

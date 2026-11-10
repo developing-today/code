@@ -58,6 +58,7 @@ use crate::frames::{Decoded, FrameBuffer, encode_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
+use crate::world_terminal::{PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -522,6 +523,10 @@ impl Handler for SshClient {
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
+        // A raw shell behind a PTY owns a terminal to probe. Command mode is
+        // line oriented, and an exec channel or PTY-less client gets no probe:
+        // its bytes must keep the existing JSON-lines behavior.
+        let probe_tty = first_resize.is_some() && !login.command_mode;
         self.input = Some(input);
         let mode = if login.command_mode {
             ShellMode::Command
@@ -545,12 +550,16 @@ impl Handler for SshClient {
             commands: VecDeque::new(),
             records_prefix: None,
             records_drained: 0,
+            records_after: None,
             errored: false,
             previous_screen: None,
+            probe_tty,
+            probe: None,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
             io.enter_alt_screen().await;
+            io.start_terminal_probe().await;
             run_session(&hub, &mut io).await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
@@ -740,10 +749,26 @@ struct SshIo {
     /// Cumulative bytes already rendered for the current `/records` drain, so a
     /// large world's records are bounded across pages, not just per page.
     records_drained: usize,
+    /// Cursor that produced the in-flight records page (`None` before the
+    /// first page, whose request sends `after: null`); the page's
+    /// `next_after` must strictly advance past it (#6615).
+    records_after: Option<String>,
     errored: bool,
     /// Last screen successfully written to this shell's terminal. A missing
     /// value forces the next screen view to repaint the whole terminal.
     previous_screen: Option<crate::world_presentation::ScreenSurface>,
+    /// Whether this session owns an interactive PTY, so a startup terminal
+    /// probe is allowed. False for exec channels and PTY-less callers.
+    probe_tty: bool,
+    /// Bounded startup probe state while the reply window is open.
+    probe: Option<SshProbe>,
+}
+
+/// The one startup probe window of a raw SSH session.
+#[derive(Debug)]
+struct SshProbe {
+    demux: ProbeDemux,
+    deadline: tokio::time::Instant,
 }
 
 /// The notice shown to a viewer once [`INPUT_DROP_NOTICE_BYTES`] input bytes
@@ -818,6 +843,40 @@ impl SshIo {
         };
         let _ = self.handle.data(self.channel, text).await;
     }
+
+    /// Send the one startup probe burst, never retried per feature (F13.4).
+    ///
+    /// Only a raw shell behind a PTY probes. A failed write leaves the
+    /// session on the existing behavior with no probe window open, exactly
+    /// like a caller that never had a terminal.
+    async fn start_terminal_probe(&mut self) {
+        if !self.probe_tty || self.probe.is_some() {
+            return;
+        }
+        if self.handle.data(self.channel, PROBE_QUERIES).await.is_err() {
+            return;
+        }
+        self.probe = Some(SshProbe {
+            demux: ProbeDemux::new(),
+            deadline: tokio::time::Instant::now() + PROBE_TIMEOUT,
+        });
+    }
+
+    /// Close the probe window, returning any held bytes for replay.
+    ///
+    /// The selected tier is logged only: this slice enables the Tier 3 safe
+    /// fallback and leaves every richer presenter unreachable.
+    fn close_terminal_probe(&mut self) -> Vec<u8> {
+        let Some(mut probe) = self.probe.take() else {
+            return Vec::new();
+        };
+        let tier = probe.demux.tier();
+        tracing::debug!(
+            ?tier,
+            "terminal capability probe closed; Tier 3 fallback stays active"
+        );
+        probe.demux.expire()
+    }
 }
 
 impl SessionIo for SshIo {
@@ -830,17 +889,50 @@ impl SessionIo for SshIo {
             return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
         }
         match self.mode {
-            ShellMode::Raw => self
-                .frames
-                .recv()
-                .await
-                .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input))),
+            ShellMode::Raw => loop {
+                let Some(deadline) = self.probe.as_ref().map(|probe| probe.deadline) else {
+                    return self
+                        .frames
+                        .recv()
+                        .await
+                        .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input)));
+                };
+                // Cancel-safe: the probe stays in place across the await, and
+                // bytes received in an earlier call are held in its demux.
+                let received = tokio::select! {
+                    frame = self.frames.recv() => Some(frame),
+                    () = tokio::time::sleep_until(deadline) => None,
+                };
+                match received {
+                    Some(Some(SshInputFrame::Bytes(bytes))) => {
+                        let input = self
+                            .probe
+                            .as_mut()
+                            .map_or_else(Vec::new, |probe| probe.demux.push(&bytes));
+                        if !input.is_empty() {
+                            return Inbound::Text(raw_frame(&SshInputFrame::Bytes(input)));
+                        }
+                    }
+                    Some(Some(resize @ SshInputFrame::Resize(..))) => {
+                        self.previous_screen = None;
+                        return Inbound::Text(raw_frame(&resize));
+                    }
+                    Some(None) => return Inbound::Closed,
+                    None => {
+                        let held = self.close_terminal_probe();
+                        if !held.is_empty() {
+                            return Inbound::Text(raw_frame(&SshInputFrame::Bytes(held)));
+                        }
+                    }
+                }
+            },
             ShellMode::Command => loop {
                 if let Some(command) = self.commands.pop_front() {
                     if let Some(frame) = command_frame(&command, &self.capability) {
                         if let WorldCommand::Records { prefix } = &command {
                             self.records_prefix = Some(prefix.clone());
                             self.records_drained = 0;
+                            self.records_after = None;
                         }
                         return Inbound::Text(frame);
                     }
@@ -1004,6 +1096,7 @@ impl SessionIo for SshIo {
             Some("error") => {
                 self.errored = true;
                 self.records_prefix = None;
+                self.records_after = None;
                 let message = value["message"].as_str().unwrap_or("error");
                 self.last_error = Some(format!("\r\n{}\r\n", terminal_text(message)));
                 self.last_error.clone().unwrap_or_default()
@@ -1011,7 +1104,31 @@ impl SessionIo for SshIo {
             Some("records") => {
                 let records = value["records"].as_object();
                 let sequence = value["sequence"].as_u64().unwrap_or_default();
-                let after = value["next_after"].as_str().map(str::to_owned);
+                // Validate the cursor before trusting it (#6615): a
+                // present-but-non-string `next_after` is a malformed page,
+                // not a clean end-of-pages, and a cursor that does not
+                // strictly advance past the one that produced this page
+                // would re-request the same page until the byte cap stops
+                // the drain (~18,700 re-requests in the filing's probe).
+                // The advance rule is also why no page-count bound is
+                // needed beside the byte bound below: every continuation
+                // moves the cursor forward through the host's key space,
+                // so pages cannot repeat, and the rendered-byte total
+                // still caps the drain's size. Oracle: the `world_net`
+                // records cursor contract (#6505/#6578).
+                let produced_by = self.records_after.clone().unwrap_or_default();
+                let (after, notice) = match records_cursor(value.get("next_after"), &produced_by) {
+                    RecordsCursor::Advance(next) => (Some(next), None),
+                    RecordsCursor::End => (None, None),
+                    RecordsCursor::Malformed => (
+                        None,
+                        Some("[records truncated: host sent a malformed next-page cursor]\n"),
+                    ),
+                    RecordsCursor::Stalled => (
+                        None,
+                        Some("[records truncated: host cursor did not advance]\n"),
+                    ),
+                };
                 let text = render_records_value(records, sequence, after.as_deref());
                 // Bound the whole drain, not just each page: a world with many
                 // records would otherwise keep fetching pages without limit.
@@ -1026,10 +1143,12 @@ impl SessionIo for SshIo {
                 };
                 let truncated = after.is_some() && self.records_drained >= MAX_RECORDS_TOTAL_BYTES;
                 if let Some((prefix, after)) = next {
+                    self.records_after = Some(after.clone());
                     self.commands
                         .push_back(WorldCommand::RecordsContinue { prefix, after });
                 } else {
                     self.records_prefix = None;
+                    self.records_after = None;
                 }
                 if truncated {
                     format!(
@@ -1037,6 +1156,8 @@ impl SessionIo for SshIo {
                         terminal_text(&text),
                         terminal_text("[records truncated: too much output]\n")
                     )
+                } else if let Some(notice) = notice {
+                    format!("\r\n{}\r\n{}", terminal_text(&text), terminal_text(notice))
                 } else {
                     format!("\r\n{}", terminal_text(&text))
                 }
@@ -1453,6 +1574,37 @@ fn render_records_value(
         output.push_str("more records; fetching next page\n");
     }
     output
+}
+
+/// What a records page's `next_after` means for the drain, judged
+/// against `produced_by` — the cursor that produced this page (the
+/// empty string before the first page, whose request sends
+/// `after: null`). Factored out of the `records` frame arm so the
+/// contract can be unit-tested without a live session (#6615).
+#[derive(Debug, PartialEq, Eq)]
+enum RecordsCursor {
+    /// No cursor (absent or null): the listing is complete.
+    End,
+    /// A cursor that strictly advances: fetch the next page after it.
+    Advance(String),
+    /// A present, non-string cursor: a malformed page, never a clean
+    /// end-of-pages.
+    Malformed,
+    /// A cursor that does not advance past `produced_by` (a repeat,
+    /// a step backwards, or the empty cursor at the start): following
+    /// it would re-request the page just rendered.
+    Stalled,
+}
+
+fn records_cursor(next_after: Option<&serde_json::Value>, produced_by: &str) -> RecordsCursor {
+    match next_after {
+        None | Some(serde_json::Value::Null) => RecordsCursor::End,
+        Some(serde_json::Value::String(cursor)) if cursor.as_str() > produced_by => {
+            RecordsCursor::Advance(cursor.clone())
+        }
+        Some(serde_json::Value::String(_)) => RecordsCursor::Stalled,
+        Some(_) => RecordsCursor::Malformed,
+    }
 }
 
 #[cfg(test)]
@@ -2326,6 +2478,124 @@ mod tests {
 
         drop(channel);
         drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_raw_shell_probes_once_and_keeps_probe_replies_out_of_world_input() {
+        let hub = lobby_hub();
+        let world = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .world()
+            .clone();
+        let mut events = world.subscribe();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-probe".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+
+        // The burst is written once, behind one deadline.
+        let queries = String::from_utf8_lossy(PROBE_QUERIES).into_owned();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while sequence_count(&bytes, &queries) == 0 {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the terminal probe");
+        assert_eq!(
+            sequence_count(&bytes, &queries),
+            1,
+            "probe burst must be written exactly once"
+        );
+
+        // Answer inside the window with user keys on both sides of replies.
+        let reply = [
+            b"j".as_slice(),
+            b"\x1bP1+r436F=323536\x1b\\",
+            b"k".as_slice(),
+            b"\x1b[12;40R",
+        ]
+        .concat();
+        channel.data(&reply[..]).await.unwrap();
+
+        let mut typed = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while typed.len() < 2 {
+                if let Ok(event) = events.recv().await
+                    && let crate::world::WorldEventKind::Input(bytes) = event.kind
+                {
+                    typed.extend_from_slice(&bytes);
+                }
+            }
+        })
+        .await
+        .expect("typed keys did not reach the world");
+        assert_eq!(
+            typed,
+            b"jk".to_vec(),
+            "only user keys belong in world input"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_shell_without_a_pty_sends_no_probe_bytes() {
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-no-pty".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        // No `request_pty`: the raw shell still works but owns no terminal.
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.request_shell(true).await.unwrap();
+
+        let queries = String::from_utf8_lossy(PROBE_QUERIES).into_owned();
+        let mut bytes = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(600), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            sequence_count(&bytes, &queries),
+            0,
+            "a TTY-less caller must receive no probe bytes"
+        );
         server.abort();
     }
 
@@ -3219,6 +3489,61 @@ mod tests {
         };
     }
 
+    #[test]
+    fn records_cursor_must_be_a_string_that_advances() {
+        // Issue #6615: the SSH /records drain trusted `next_after`
+        // unchecked — a non-string cursor silently read as a complete
+        // listing, and a repeated/empty cursor re-requested the same
+        // page ~18,700 times until the rendered-byte cap stopped it.
+        // Oracle: the world_net records cursor contract (#6505/#6578)
+        // — the cursor must be a string and must strictly advance.
+        let cursor =
+            |value: serde_json::Value, produced_by: &str| records_cursor(Some(&value), produced_by);
+
+        // Absent and null both mean the host has no more pages.
+        assert_eq!(records_cursor(None, ""), RecordsCursor::End);
+        assert_eq!(cursor(serde_json::Value::Null, "k1"), RecordsCursor::End);
+
+        // A normal multi-page drain: each cursor advances past the
+        // one that produced the page, then the listing ends.
+        assert_eq!(
+            cursor(serde_json::json!("k1"), ""),
+            RecordsCursor::Advance("k1".to_owned())
+        );
+        assert_eq!(
+            cursor(serde_json::json!("k2"), "k1"),
+            RecordsCursor::Advance("k2".to_owned())
+        );
+        assert_eq!(records_cursor(None, "k2"), RecordsCursor::End);
+
+        // Present but not a string: a malformed page, never End.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!({"key": "k1"}),
+            serde_json::json!(["k1"]),
+        ] {
+            assert_eq!(
+                cursor(bad, ""),
+                RecordsCursor::Malformed,
+                "non-string cursor must be malformed"
+            );
+        }
+
+        // A cursor that does not advance stops the drain: the empty
+        // cursor on the first page, a repeat of the producing
+        // cursor, and a step backwards.
+        assert_eq!(cursor(serde_json::json!(""), ""), RecordsCursor::Stalled);
+        assert_eq!(
+            cursor(serde_json::json!("k1"), "k1"),
+            RecordsCursor::Stalled
+        );
+        assert_eq!(
+            cursor(serde_json::json!("k0"), "k1"),
+            RecordsCursor::Stalled
+        );
+    }
+
     #[cfg(test)]
     fn records_of(count: usize) -> crate::world::Records {
         (0..count)
@@ -3384,10 +3709,7 @@ mod tests {
     struct FixedScreenSsh;
 
     impl crate::world::WorldProgram for FixedScreenSsh {
-        fn view(
-            &mut self,
-            _viewer: &crate::world::Participant,
-        ) -> anyhow::Result<Option<String>> {
+        fn view(&mut self, _viewer: &crate::world::Participant) -> anyhow::Result<Option<String>> {
             Ok(Some(
                 r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["abcd","wxyz"]}"#
                     .to_owned(),

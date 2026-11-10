@@ -19,13 +19,6 @@ name: mcpx docs
 # differ only in that one value (#1941).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/mcpx-docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -121,7 +114,7 @@ jobs:
           cp -rL result site
           test -f site/index.html
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -31,9 +31,9 @@ describe("fleet config", () => {
   test("the allowlist default is exactly the six fleet repos", () => {
     expect([...FLEET_REPOS]).toEqual([
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
-      "dezren39/nix",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
       "developing-today/zettel",
       "dezren39/dezren39",
     ]);
@@ -67,8 +67,8 @@ describe("fleet config", () => {
     expect(REPO_DIRS["dezren39/dezren39"]).toBe("/home/user/dezren39");
   });
 
-  test("app installations: dezren39/nix is covered; zettel and dezren39/dezren39 are not", () => {
-    expect(APP_INSTALLED_REPOS.has("dezren39/nix")).toBe(true);
+  test("app installations: dezren39/darwin-nix is covered; zettel and dezren39/dezren39 are not", () => {
+    expect(APP_INSTALLED_REPOS.has("dezren39/darwin-nix")).toBe(true);
     expect(APP_INSTALLED_REPOS.has("developing-today/zettel")).toBe(false);
     expect(APP_INSTALLED_REPOS.has("dezren39/dezren39")).toBe(false);
     for (const repo of APP_INSTALLED_REPOS) {

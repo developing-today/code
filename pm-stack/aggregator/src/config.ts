@@ -7,11 +7,11 @@ import { join } from "node:path";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
-function parseAggregatorPort(value: string | undefined): number {
-  const normalized = s(value, "4870");
+function parseAggregatorPort(value: string | undefined, name = "PM_AGG_PORT", defaultValue = "4870"): number {
+  const normalized = s(value, defaultValue);
   const port = Number(normalized);
   if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
+    throw new Error(`Invalid ${name}=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
   }
   return port;
 }
@@ -48,6 +48,10 @@ export interface Config {
   viewsFile: string;
   /** Cross-stack event log store (#1739) — one chronological stream. */
   eventsFile: string;
+  /** Source freshness invalidation journal, separate from #1739/#3321. */
+  freshnessFile: string;
+  /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
+  freshnessPort: number;
   activityFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
@@ -55,9 +59,17 @@ export interface Config {
   snapshotsDir: string;
   /** Scheduled-digest archive (#1278): one JSON file per digest. */
   digestsDir: string;
+  /** Append-only notification state/send/suppression log (#3317). */
+  notificationsFile: string;
+  /** Versioned item-history JSONL (#3981) the forecast contract
+   * (#3984) derives from: one cutoff per line, read via
+   * ItemHistoryStore. */
+  itemHistoryFile: string;
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
+  /** Tracker of evaluated free services without automated quota cards (#1172). */
+  freeServicesTrackerFile: string;
   cloudflareExportFile: string;
   /** The Supabase usage exporter's document (#1050): the gathered live read
    * preferred over the quota view's Supabase prose when fresh. */
@@ -71,6 +83,13 @@ export interface Config {
   coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
+  /** The standing OpenCode server's own state file (service-prod.json):
+   * url + password for the server the fleet actually runs on. The
+   * aggregator reads it as the second laptop attention leg (#1116) —
+   * the OpenChamber-managed server it used to read has been gone since
+   * 2026-10-29, which left attention single-legged on the collector
+   * feed until the 2026-11-10 fixture incident. */
+  opencodeServerStateFile: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -137,16 +156,38 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
-    activityFile: s(env.PM_AGG_ACTIVITY_FILE, join(process.cwd(), "activity-ingestion.json")),
+    freshnessFile: s(
+      env.PM_AGG_FRESHNESS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "freshness.json"),
+    ),
+    freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
+    // Default is the state dir, NOT cwd (#5389): aggregator runtime state
+    // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
+    // cwd default let an env-less run write this store into whatever
+    // checkout it started from -- in the primary clone that dirtied the
+    // tree and blocked pm-git-sync. install.sh renders PM_AGG_ACTIVITY_FILE
+    // to this same path for the unit.
+    activityFile: s(
+      env.PM_AGG_ACTIVITY_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "activity-ingestion.json"),
+    ),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     digestsDir: s(env.PM_AGG_DIGESTS_DIR, join(process.cwd(), "digests")),
+    notificationsFile: s(
+      env.PM_AGG_NOTIFICATIONS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "notifications.jsonl"),
+    ),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
       join(
         homedir(),
         "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
       ),
+    ),
+    freeServicesTrackerFile: s(
+      env.PM_AGG_FREE_SERVICES_TRACKER,
+      join(homedir(), "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md"),
     ),
     cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
     supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),
@@ -155,10 +196,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    itemHistoryFile: s(
+      env.PM_AGG_ITEM_HISTORY_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "item-history.jsonl"),
+    ),
     coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
+    ),
+    opencodeServerStateFile: s(
+      env.PM_AGG_OPENCODE_SERVER_STATE,
+      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),

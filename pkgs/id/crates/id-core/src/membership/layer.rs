@@ -500,6 +500,44 @@ impl Membership {
         Ok(managers)
     }
 
+    /// The key members of `group` and their access at the causal position that `after`
+    /// names, sorted by key. Group-valued members are not returned: a caller expanding a
+    /// group reference one level (writer-set spec §D4) must not follow a nested group
+    /// reference, and key members are the only ones that can be admitted by it. This is
+    /// the enumeration counterpart of [`Membership::access_at_position`]: the answer is
+    /// pinned to the position `after` names, never the live roster [`Membership::members`]
+    /// reports.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MembershipError`] when an `after` hash is not indexed.
+    pub fn members_at_position(
+        &mut self,
+        after: &[Hash],
+        group: Hash,
+    ) -> Result<Vec<([u8; 32], Access<()>)>, MembershipError> {
+        let heads: HashSet<Hash> = self.index.frontier(after, group)?.into_iter().collect();
+        Ok(key_members_at(&self.state, heads, group))
+    }
+
+    /// The same as [`Membership::members_at_position`], borrowing the layer immutably. A
+    /// caller that holds the state can ask about a position this way; it copies the
+    /// frontier index rather than memoising into it, so prefer the mutable method on a
+    /// hot path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MembershipError`] when an `after` hash is not indexed.
+    pub fn members_at_position_shared(
+        &self,
+        after: &[Hash],
+        group: Hash,
+    ) -> Result<Vec<([u8; 32], Access<()>)>, MembershipError> {
+        let mut index = self.index.clone();
+        let heads: HashSet<Hash> = index.frontier(after, group)?.into_iter().collect();
+        Ok(key_members_at(&self.state, heads, group))
+    }
+
     /// Whether a create has been decided for `group`.
     pub fn has_group(&self, group: Hash) -> bool {
         self.state.has_group(AuthId::Group(group))
@@ -560,8 +598,7 @@ fn canonical_feed_order(events: &[CausalEvent]) -> Vec<CausalEvent> {
         }
         waiting.insert(event.id, dependencies.len());
     }
-    let by_id: HashMap<Hash, &CausalEvent> =
-        events.iter().map(|event| (event.id, event)).collect();
+    let by_id: HashMap<Hash, &CausalEvent> = events.iter().map(|event| (event.id, event)).collect();
     let mut placed: HashSet<Hash> = HashSet::new();
     let mut order = Vec::with_capacity(events.len());
     while let Some(Reverse(id)) = ready.pop() {
@@ -586,6 +623,26 @@ fn canonical_feed_order(events: &[CausalEvent]) -> Vec<CausalEvent> {
         order.extend(rest);
     }
     order
+}
+
+/// The key members of `group` at the auth frontier `heads`, sorted by key. Group-valued
+/// members are skipped (one-level expansion, writer-set spec §D4).
+fn key_members_at(
+    state: &GroupState,
+    heads: HashSet<Hash>,
+    group: Hash,
+) -> Vec<([u8; 32], Access<()>)> {
+    let mut members: Vec<([u8; 32], Access<()>)> =
+        Graph::members_at(state, heads, AuthId::Group(group))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, access)| match id {
+                AuthId::Key(key) => Some((key, access)),
+                AuthId::Group(_) => None,
+            })
+            .collect();
+    members.sort_unstable_by_key(|(key, _)| *key);
+    members
 }
 
 /// Replays `accepted` on a fresh graph.
@@ -1171,4 +1228,3 @@ mod tests {
         }
     }
 }
-

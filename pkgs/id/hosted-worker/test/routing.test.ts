@@ -23,9 +23,18 @@ test("jurisdiction must be present and supported", () => {
 test("userStub takes id and stub from the restricted namespace only", () => {
   const calls: string[] = [];
   const restricted = {
-    jurisdiction(j: string) { calls.push("jurisdiction:" + j); return restricted; },
-    idFromName(name: string) { calls.push("idFromName:" + name); return { name }; },
-    get(id: unknown) { calls.push("get"); return { fetch: async () => new Response("ok") }; },
+    jurisdiction(j: string) {
+      calls.push("jurisdiction:" + j);
+      return restricted;
+    },
+    idFromName(name: string) {
+      calls.push("idFromName:" + name);
+      return { name };
+    },
+    get(id: unknown) {
+      calls.push("get");
+      return { fetch: async () => new Response("ok") };
+    },
   };
   userStub(restricted, BINDING, "eu");
   assert.deepEqual(calls, ["jurisdiction:eu", "idFromName:" + BINDING, "get"]);
@@ -33,9 +42,18 @@ test("userStub takes id and stub from the restricted namespace only", () => {
 
 test("userStub fails closed when restriction is unavailable", () => {
   const ns = {
-    jurisdiction(): never { throw new Error("Jurisdiction restrictions are not implemented in workerd."); },
-    idFromName(name: string) { return { name }; },
-    get(id: unknown) { return { fetch: async () => new Response("unrestricted") }; },
+    jurisdiction(): never {
+      throw new Error("Jurisdiction restrictions are not implemented in workerd.");
+    },
+    idFromName(name: string) {
+      return { name };
+    },
+    get(id: unknown) {
+      return { fetch: async () => new Response("unrestricted") };
+    },
   };
-  assert.throws(() => userStub(ns, BINDING, "us"), (e: unknown) => e instanceof FailClosed && e.status === 503);
+  assert.throws(
+    () => userStub(ns, BINDING, "us"),
+    (e: unknown) => e instanceof FailClosed && e.status === 503,
+  );
 });

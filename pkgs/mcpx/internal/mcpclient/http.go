@@ -10,6 +10,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,11 @@ type HTTPTransport struct {
 
 	sessionMu sync.RWMutex
 	sessionID string
+	// onSessionAdopted, when set, runs after a response installs a
+	// session id this transport did not already hold. The pool uses it
+	// to persist the session for a cold restart (#1415). Set before the
+	// transport serves calls; read and written under sessionMu.
+	onSessionAdopted func(string)
 	// negotiated is the legacy version initialize settled on; it is what
 	// MCP-Protocol-Version carries on every later legacy request.
 	negotiated string
@@ -40,7 +46,6 @@ type HTTPTransport struct {
 	getStream bool
 
 	incoming chan inbound
-	errOnce  sync.Once
 	errCh    chan error
 	err      error
 
@@ -54,6 +59,48 @@ type HTTPOptions struct {
 	URL     string
 	Headers map[string]string
 	Timeout time.Duration
+}
+
+// sameHTTPOrigin compares scheme, host and effective port. Explicit default
+// ports and host casing do not change an HTTP origin.
+func sameHTTPOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil || !strings.EqualFold(a.Scheme, b.Scheme) ||
+		!strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			if n, err := strconv.Atoi(p); err == nil {
+				return strconv.Itoa(n)
+			}
+			return p
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			return "80"
+		case "https":
+			return "443"
+		default:
+			return ""
+		}
+	}
+	return port(a) == port(b)
+}
+
+// maxRedirects mirrors the bound Go's default redirect policy applies
+// when CheckRedirect is nil. A custom policy replaces that default, so
+// it must retain the bound itself: without it a same-origin redirect
+// loop is followed forever.
+const maxRedirects = 10
+
+func refuseCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("stopped after 10 redirects")
+	}
+	if len(via) > 0 && !sameHTTPOrigin(via[0].URL, req.URL) {
+		return http.ErrUseLastResponse
+	}
+	return nil
 }
 
 // newHTTPClients builds the two clients one transport owns. Each gets its
@@ -74,7 +121,8 @@ func newHTTPClients(timeout time.Duration) (hc, streamHC *http.Client) {
 		}
 		return http.DefaultTransport
 	}
-	return &http.Client{Timeout: timeout, Transport: clone()}, &http.Client{Transport: clone()}
+	return &http.Client{Timeout: timeout, Transport: clone(), CheckRedirect: refuseCrossOriginRedirect},
+		&http.Client{Transport: clone(), CheckRedirect: refuseCrossOriginRedirect}
 }
 
 // NewHTTP creates a Streamable HTTP transport.
@@ -183,17 +231,22 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		t.sessionMu.Lock()
+		adopted := sid != t.sessionID
 		t.sessionID = sid
+		hook := t.onSessionAdopted
 		t.sessionMu.Unlock()
+		if adopted && hook != nil {
+			hook(sid)
+		}
 	}
 
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil // notification acknowledged, no body
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		he := &HTTPStatusError{URL: t.url, Status: resp.StatusCode, Body: bytes.TrimSpace(b)}
 		he.rpc, he.id = parseRPCError(he.Body)
 		// A modern server answers a bad request with 400 and a JSON-RPC
@@ -217,7 +270,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		go func() {
 			defer t.wg.Done()
 			st := t.readSSE(ctx, resp.Body, reqID)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if reqID == nil || st.answered || ctx.Err() != nil {
 				return
 			}
@@ -237,18 +290,31 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		// subscriptions/listen -- was read until the server closed it,
 		// which for a subscription is never: the acknowledgement and every
 		// list_changed after it sat unread, and the stream's caller hung.
-		head := &firstValue{}
+		// The fallback buffer is capped at http.bodyLimit (#4282): the tee
+		// must never hold a whole non-JSON reply, however large it is.
+		limit := int64(defaults.HTTPBodyLimit)
+		head := &firstValue{max: limit + 1}
 		dec := json.NewDecoder(io.TeeReader(resp.Body, head))
 		var first json.RawMessage
 		if err := dec.Decode(&first); err != nil {
-			// Empty, or not JSON: handed on whole as before, for push to
-			// judge.
-			rest, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			// Empty, or not JSON: read at most one byte past the cap and
+			// hand a body under it on whole, as before. A body over it is
+			// refused, not truncated (#4282, design #4375 decision 2): a
+			// truncated non-JSON body would manufacture a partial message
+			// out of bytes that are definitionally not a protocol message.
+			room := limit + 1 - int64(head.buf.Len())
+			if room < 0 {
+				room = 0
+			}
+			rest, readErr := io.ReadAll(io.LimitReader(resp.Body, room))
+			_ = resp.Body.Close()
 			if readErr != nil {
 				return readErr
 			}
 			b := append(head.buf.Bytes(), rest...)
+			if int64(len(b)) > limit {
+				return fmt.Errorf("mcpclient: %s replied with a non-JSON body larger than the %d-byte limit", t.url, limit)
+			}
 			if len(bytes.TrimSpace(b)) > 0 {
 				t.push(b)
 			}
@@ -259,7 +325,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		t.wg.Add(1)
 		go func() {
 			defer t.wg.Done()
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			for {
 				var next json.RawMessage
 				if dec.Decode(&next) != nil {
@@ -274,17 +340,25 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 
 // firstValue keeps the bytes read while decoding a body's first JSON value,
 // so a body that turns out not to be JSON can still be handed on whole, and
-// stops keeping them once that value is decoded.
+// stops keeping them once that value is decoded. The kept head is capped at
+// max bytes (#4282): the tee must not buffer a huge non-JSON 200 reply whole.
 type firstValue struct {
 	buf  bytes.Buffer
 	done bool
+	max  int64
 }
 
 func (f *firstValue) Write(p []byte) (int, error) {
+	n := len(p)
 	if !f.done {
-		f.buf.Write(p)
+		if room := f.max - int64(f.buf.Len()); room > 0 {
+			if int64(len(p)) > room {
+				p = p[:room]
+			}
+			f.buf.Write(p)
+		}
 	}
-	return len(p), nil
+	return n, nil
 }
 
 // sseState is what one SSE stream said about itself: the last event id,
@@ -410,7 +484,7 @@ func (t *HTTPTransport) resume(ctx context.Context, reqID json.RawMessage, st ss
 			break
 		}
 		next := t.readSSE(ctx, body, reqID)
-		body.Close()
+		_ = body.Close()
 		if next.answered {
 			return
 		}
@@ -469,13 +543,13 @@ func (t *HTTPTransport) get(ctx context.Context, lastID string) (io.ReadCloser, 
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, &HTTPStatusError{URL: t.url, Status: resp.StatusCode}
 	}
 	return resp.Body, nil
 }
 
-var streamClient = &http.Client{}
+var streamClient = &http.Client{CheckRedirect: refuseCrossOriginRedirect}
 
 // listen opens the standalone GET stream a legacy Streamable HTTP server
 // uses for messages that belong to no request: list changes, resource
@@ -515,8 +589,8 @@ func (t *HTTPTransport) listen() {
 				failures++
 			} else {
 				failures = 0
-				next := t.readSSE(nil, body, nil)
-				body.Close()
+				next := t.readSSE(context.TODO(), body, nil)
+				_ = body.Close()
 				if next.lastID != "" {
 					st.lastID = next.lastID
 				}
@@ -579,7 +653,7 @@ type inbound struct {
 	origin context.Context
 }
 
-func (t *HTTPTransport) push(b []byte) { t.pushFrom(nil, b) }
+func (t *HTTPTransport) push(b []byte) { t.pushFrom(context.TODO(), b) }
 
 func (t *HTTPTransport) pushFrom(origin context.Context, b []byte) {
 	// A frame may be a single object or a batch array.
@@ -683,7 +757,13 @@ func (t *HTTPTransport) deleteSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+		// An unfollowed redirect (a refused cross-origin redirect above
+		// all) means the DELETE was never delivered: the session is
+		// still live upstream, so report it instead of success.
+		return fmt.Errorf("delete %s: http %d: redirect not followed", t.url, resp.StatusCode)
+	}
 	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("delete %s: http %d", t.url, resp.StatusCode)
 	}
@@ -734,6 +814,16 @@ func (t *HTTPTransport) Handoff() HTTPHandoff {
 		}
 	}
 	return HTTPHandoff{SessionID: t.sessionID, Negotiated: t.negotiated, URL: t.url, Headers: headers}
+}
+
+// SetSessionAdoptedHook registers fn to run whenever a response installs
+// a session id this transport did not already hold: a session established
+// by initialize, or one an upstream rotates in mid-flight. It is the seam
+// the pool's cold-restart persistence (#1415) saves through.
+func (t *HTTPTransport) SetSessionAdoptedHook(fn func(string)) {
+	t.sessionMu.Lock()
+	t.onSessionAdopted = fn
+	t.sessionMu.Unlock()
 }
 
 // Resume continues a session a predecessor process established. Nothing is

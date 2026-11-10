@@ -8,11 +8,6 @@ name: mcpx tier-2 containers
 # they can be run locally with the same assertions CI makes.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - ".github/workflows/mcpx-tier2-containers.yml"
   schedule:
     # Nightly, off the hour the other mcpx jobs favour.
     - cron: "37 5 * * *"
@@ -58,6 +53,7 @@ jobs:
         leg:
           - alpine-nonexec
           - alpine-bunmusl-exec
+          - alpine-node-exec
           - scratch-nonexec
           - distroless-static-nonexec
           - distroless-cc-deno-exec

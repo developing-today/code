@@ -43,6 +43,26 @@ general/muse-meta database rather than requiring a dedicated database. Run
 locally against a SQLite file (`file:` URL) or remotely via
 `DATABASE_URL` + `TURSO_AUTH_TOKEN`.
 
+### Upgrading the comment identity schema
+
+Existing databases with the old `pmp_comments(id)` primary key fail startup
+with an explicit error. Stop all projector writers and back up the entire
+database first, including the human-written `pmp_links` registry. Do not
+delete the database: it may contain unrelated fleet data. Using the SQL client
+for that database, run:
+
+```sql
+DROP VIEW IF EXISTS pmp_v_subject_activity;
+DROP TABLE pmp_comments;
+```
+
+Start the upgraded projector to recreate the table and view, then run a full
+reconciliation for every configured repository and check all stream errors.
+The comment and review streams reread their full GitHub collections. This
+rebuild cannot recover deleted comments or overwritten historical records
+that GitHub no longer returns; retain the backup for those records. Links,
+items, deliveries, cursors, and other applications' tables are untouched.
+
 ## Secrets (referenced by name only — never commit values)
 
 | Env var                  | What it is                                                                |
@@ -56,8 +76,8 @@ locally against a SQLite file (`file:` URL) or remotely via
 | `DATABASE_URL`           | libSQL connection URL (defaults to `file:data/projector.db`)              |
 
 `PM_REPOS` is a comma-separated allow-list of `owner/repo` names for intake and
-reconcile (e.g. `developing-today/code,developing-today/opencode,
-developing-today/openchamber,dezren39/nix`).
+reconcile (e.g. `developing-today/code,developing-today-forks/opencode,
+developing-today-forks/openchamber,dezren39/nix`).
 
 ## Run it locally
 
@@ -74,21 +94,21 @@ local source you don't commit.
 
 ### Endpoints
 
-| Route                     | Method | Auth   | Purpose                                              |
-| ------------------------- | ------ | ------ | ---------------------------------------------------- |
-| `/health`                 | GET    | none   | ok + row counts                                      |
-| `/github/webhook`         | POST   | HMAC   | GitHub App webhook intake                            |
-| `/items?refs=a/b#1,c/d#2` | GET    | none   | items (or `?repo=`, `?state=`, `?kind=`, `?limit=`)  |
-| `/comments?refs=…`        | GET    | none   | unified comment stream, newest first                 |
-| `/comments?subject=…`     | GET    | none   | comment stream across everything linked to a subject |
-| `/links?subject=…`        | GET    | none   | registry rows (or `?ref=`)                           |
-| `/links`                  | POST   | bearer | create/update a link                                 |
-| `/links?subject=…&ref=…`  | DELETE | bearer | remove a link                                        |
-| `/subjects/<subject>`     | GET    | none   | joined view: links + live item state + activity      |
-| `/hot?after=<seq>&limit=<n>&high_water=<seq>` | GET | none | hot-list page (ascending, exclusive cursor) + issued `high_water` |
-| `/hot/checkpoints?consumer=<id>` | GET | none   | a consumer's acked checkpoint cursor                 |
-| `/hot/checkpoints`        | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`     |
-| `/reconcile`              | POST   | bearer | trigger a reconciliation poll                        |
+| Route                                         | Method | Auth   | Purpose                                                           |
+| --------------------------------------------- | ------ | ------ | ----------------------------------------------------------------- |
+| `/health`                                     | GET    | none   | ok + row counts                                                   |
+| `/github/webhook`                             | POST   | HMAC   | GitHub App webhook intake                                         |
+| `/items?refs=a/b#1,c/d#2`                     | GET    | none   | items (or `?repo=`, `?state=`, `?kind=`, `?limit=`)               |
+| `/comments?refs=…`                            | GET    | none   | unified comment stream, newest first                              |
+| `/comments?subject=…`                         | GET    | none   | comment stream across everything linked to a subject              |
+| `/links?subject=…`                            | GET    | none   | registry rows (or `?ref=`)                                        |
+| `/links`                                      | POST   | bearer | create/update a link                                              |
+| `/links?subject=…&ref=…`                      | DELETE | bearer | remove a link                                                     |
+| `/subjects/<subject>`                         | GET    | none   | joined view: links + live item state + activity                   |
+| `/hot?after=<seq>&limit=<n>&high_water=<seq>` | GET    | none   | hot-list page (ascending, exclusive cursor) + issued `high_water` |
+| `/hot/checkpoints?consumer=<id>`              | GET    | none   | a consumer's acked checkpoint cursor                              |
+| `/hot/checkpoints`                            | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`                  |
+| `/reconcile`                                  | POST   | bearer | trigger a reconciliation poll                                     |
 
 **Subjects** are external keys:
 

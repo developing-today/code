@@ -61,6 +61,69 @@
 //! wins. No failure path creates a partial binding, a store, or any claim
 //! on the key.
 //!
+//! ## Lifecycle transition table (#5048, closing audit of #5047)
+//!
+//! Every name the ceremony mints is claimed once, by one holder, for its
+//! stated lifetime. Each row names the live-state transitions of one public
+//! [`HostedBindingService`] method. Disposition: **conforming** (matches §3.4
+//! / §4 as written), **known gap** (behavior differs from the contract; a
+//! named follow-up owns the fix), or **out of scope** (not part of this
+//! slice).
+//!
+//! | Method | Live state touched | Transitions | Disposition |
+//! | --- | --- | --- | --- |
+//! | `new`, `with_seed`, `set_now_override`, `service_id`, `service_public_key` | none | none | conforming |
+//! | `signup_account`, `account` | account row | creates or refreshes the row; claims no key | conforming |
+//! | `request_challenge` | challenge (live); one-time maps | runs the #5644 bounded sweep of expired one-time state, then inserts a live challenge, expiring after `CHALLENGE_TTL_SECS`; 30/account/hour | conforming; the challenge is not required to belong to an existing account (see `submit_proof`) |
+//! | `canonical_transcript` | none | pure | conforming |
+//! | `submit_proof` | challenge; binding indexes | expiry: no state change (§3.4). Session mismatch, bad or malformed signature, and conflict consume the challenge. Success consumes it and claims the `sub` and `iroh_id` in the indexes | conforming; an unknown account is detected only after the challenge is consumed |
+//! | `complete_browser_ceremony` | as `request_challenge` plus `submit_proof` | composition only | conforming |
+//! | `create_pairing_code` | pairing code (live); one-time maps | consumed check precedes live-map lookup (#4868); the #5644 bounded sweep runs before the collision loop, so expired codes no longer reserve their value; minting supersedes every earlier unexchanged code for the challenge (#4871); 10/account/hour | conforming |
+//! | `exchange_pairing_code` | pairing code; challenge (read only) | removes the code before any check, so it is single-use even on failure; does not consume the challenge | conforming; see (a) |
+//! | `request_delayed_rebind` | challenge; binding; rebind request | expiry: no state change (§3.4, #5048). Session mismatch and bad signature consume the challenge. `active` becomes `rebind_pending`; a pending request reserves the target key | conforming; `SameKey` and `NewKeyBoundElsewhere` after a valid proof leave the challenge consumed, as a successful proof already spent it |
+//! | `cancel_rebind` | rebind request; binding | `pending` becomes `cancelled`; binding `rebind_pending` becomes `active` (re-attested) | known gap tracked by #5643: the request is marked `cancelled` before binding lookup and re-attestation, so `NoBinding` or `RecordEncoding` can fail after that mutation |
+//! | `rebind_with_old_key_authorization` | challenge; binding; rebind request | fast path, or early approval of a pending request (`pending` becomes `effected`). Expiry: no state change. Once proof verification starts, session mismatch or signature failure consumes the challenge; success swaps the key index and appends history | conforming; pre-proof request/binding errors do not consume the challenge; failures after a valid proof leave it consumed |
+//! | `effect_due_rebind` | rebind request; binding | `pending` becomes `effected` once `effective_at` has passed; the target reservation is rechecked before any mutation; `NewKeyBoundElsewhere` leaves the request `pending` | conforming |
+//! | `apply_rebind` (private) | binding; key index; history; rebind records | refuses a foreign key-index owner; appends history; releases the old key from the index; claims the new key | conforming |
+//! | `rebind_request`, `pending_rebind_for_binding`, `rebind_records`, `binding`, `binding_for_sub`, `verify_rebind_record`, `verify_key_signature`, `verify_attestation`, `verify_service_attestation` | none | read only | conforming |
+//!
+//! `verify_challenge_proof` (private, shared by the two rebind entry
+//! points) follows the same §3.4 rule as `submit_proof`: expiry returns
+//! [`RebindError::ChallengeExpired`] with no state change (#5048 correction).
+//! Its doc names the same semantics, so one challenge object has one expiry
+//! meaning on both error surfaces.
+//!
+//! Dispositions for the four audit items:
+//!
+//! - **(a) Expired pairing codes.** Fixed by #5644. `create_pairing_code`
+//!   runs the bounded sweep (`prune_expired_one_time_state`) before its
+//!   collision loop, so an expired, unexchanged code no longer reserves
+//!   its six-digit value; a code also still leaves `pairing_codes` when
+//!   exchanged or superseded for the same challenge.
+//! - **(b) `consumed_challenges` growth.** Fixed by #5644. A consumed
+//!   marker now carries the consumed challenge's original `expires_at`:
+//!   replay is rejected through the whole validity window, the marker is
+//!   pruned once that window ends (on access via `replay_blocked`, or by
+//!   the sweep), and a later presentation then reports
+//!   `UnknownChallenge` rather than `ChallengeReplay` — the documented
+//!   post-expiry error-semantics change. The same sweep removes expired
+//!   unconsumed challenges from `challenges`, so none of the three
+//!   one-time maps grows for the process lifetime anymore.
+//! - **(c) Reservation scan cost.** `pending_rebind_reserves_iroh` scans
+//!   every retained rebind request. Requests are kept in all statuses, so
+//!   the scan grows with history. A target-key index is the named
+//!   alternative. It is not taken: reservation is a predicate over `Pending`
+//!   requests, so there is one source of truth, and a second index would be
+//!   a second place for state to disagree (the #4887 failure family). The
+//!   cost is accepted at this volume; revisit if request history is pruned
+//!   or grows large.
+//! - **(d) Old-key-side symmetry.** Confirmed without a new reservation. The
+//!   old key stays the binding's current key in `binding_by_iroh`, and the
+//!   binding is `rebind_pending`, for the whole wait. `apply_rebind` releases
+//!   it only when the rebind takes effect, after which it survives only in
+//!   history. This matches the contract: the old key is no longer the
+//!   account's once the rebind is effective.
+//!
 //! ## Device linkage (§1.3)
 //!
 //! Devices bind nothing individually and get no binding records. A device
@@ -72,9 +135,9 @@
 //! stores, or returns a private key. The service attestation key is the
 //! service's **own** key, not a custodial user key.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -111,8 +174,7 @@ pub const CSE_OFFER_DISCLOSURE: &str = "Hosted storage is operator-readable at r
 /// Final-screen notice for the in-browser variant (§3.3a): a binding whose
 /// only key copy dies with a browser profile is a support incident scheduled
 /// in advance.
-pub const BROWSER_KEY_EXPORT_NOTICE: &str =
-    "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
+pub const BROWSER_KEY_EXPORT_NOTICE: &str = "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
     profile is lost without an exported copy, the binding cannot be recovered except \
     through the delayed-rebind wait.";
 
@@ -238,7 +300,7 @@ pub fn parse_rfc3339(text: &str) -> Option<u64> {
     let hour = num(11, 13)?;
     let minute = num(14, 16)?;
     let second = num(17, 19)?;
-    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 60 {
+    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
     let leap = is_leap_year(year);
@@ -585,11 +647,7 @@ pub fn rebind_authorization_bytes(
 ) -> Vec<u8> {
     canonical_fields(
         REBIND_AUTHORIZATION_DOMAIN,
-        &[
-            binding_id,
-            &hex_encode(new_iroh_id),
-            challenge_id,
-        ],
+        &[binding_id, &hex_encode(new_iroh_id), challenge_id],
     )
 }
 
@@ -703,7 +761,8 @@ pub enum RebindError {
     /// No live challenge with that ID.
     #[error("unknown challenge: request a fresh one")]
     UnknownChallenge,
-    /// The challenge expired; it is consumed and dead.
+    /// The challenge expired. State change: none; the challenge is dead.
+    /// Retry with a fresh challenge.
     #[error("challenge expired: request a fresh challenge")]
     ChallengeExpired,
     /// The challenge was already presented.
@@ -751,7 +810,11 @@ pub struct HostedBindingService {
     binding_by_sub: HashMap<String, String>,
     binding_by_iroh: HashMap<String, String>,
     challenges: HashMap<String, Challenge>,
-    consumed_challenges: HashSet<String>,
+    /// Consumed challenge IDs mapped to the consumed challenge's original
+    /// `expires_at` (#5644): a marker blocks replay only until that expiry,
+    /// after which it is pruned and a late presentation reports
+    /// `UnknownChallenge`, not `ChallengeReplay`.
+    consumed_challenges: HashMap<String, u64>,
     rebind_requests: HashMap<String, RebindRequest>,
     rebind_records: Vec<RebindRecord>,
     pairing_codes: HashMap<String, PairingCode>,
@@ -781,7 +844,7 @@ impl HostedBindingService {
             binding_by_sub: HashMap::new(),
             binding_by_iroh: HashMap::new(),
             challenges: HashMap::new(),
-            consumed_challenges: HashSet::new(),
+            consumed_challenges: HashMap::new(),
             rebind_requests: HashMap::new(),
             rebind_records: Vec::new(),
             pairing_codes: HashMap::new(),
@@ -882,6 +945,11 @@ impl HostedBindingService {
             return Err(CeremonyError::RateLimited);
         }
         log.push(now);
+        // Sweep only after the rate-limit check (#5644, Codex P2 on
+        // PR #6319): a caller who is already rate-limited must not be
+        // able to trigger repeated full-map cleanup on the rejection
+        // path.
+        self.prune_expired_one_time_state(now);
 
         let mut rng = rand::rng();
         let mut nonce = [0u8; 32];
@@ -945,7 +1013,7 @@ impl HostedBindingService {
         key_signature: &[u8],
         cse_choice: Option<bool>,
     ) -> Result<BindingRecord, CeremonyError> {
-        if self.consumed_challenges.contains(challenge_id) {
+        if self.replay_blocked(challenge_id) {
             return Err(CeremonyError::ChallengeReplay);
         }
         let challenge = self
@@ -1052,8 +1120,43 @@ impl HostedBindingService {
     }
 
     fn consume(&mut self, challenge_id: &str) {
+        // The replay marker keeps the challenge's original expiry (#5644):
+        // replay is blocked through the whole validity window, and no
+        // longer — the marker is prunable from `expires_at` on.
+        let expires_at = self
+            .challenges
+            .get(challenge_id)
+            .map_or_else(|| self.now() + CHALLENGE_TTL_SECS, |c| c.expires_at);
         self.challenges.remove(challenge_id);
-        self.consumed_challenges.insert(challenge_id.to_owned());
+        self.consumed_challenges
+            .insert(challenge_id.to_owned(), expires_at);
+    }
+
+    /// Whether `challenge_id` was consumed and its original validity
+    /// window has not yet ended (#5644). An expired marker is removed on
+    /// access and no longer blocks: the challenge is long gone from
+    /// `challenges`, so the caller falls through to `UnknownChallenge`.
+    fn replay_blocked(&mut self, challenge_id: &str) -> bool {
+        match self.consumed_challenges.get(challenge_id) {
+            Some(&expires_at) if self.now() < expires_at => true,
+            Some(_) => {
+                self.consumed_challenges.remove(challenge_id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Bounded cleanup sweep for the one-time ceremony maps (#5644):
+    /// expired unconsumed challenges, expired unexchanged pairing codes,
+    /// and consumed markers past the original challenge expiry are
+    /// removed. Called from the rate-limited minting paths
+    /// (`request_challenge`, `create_pairing_code`), so the sweep itself
+    /// is bounded by the issuance rate limits.
+    fn prune_expired_one_time_state(&mut self, now: u64) {
+        self.challenges.retain(|_, c| now < c.expires_at);
+        self.pairing_codes.retain(|_, p| now < p.expires_at);
+        self.consumed_challenges.retain(|_, &mut exp| now < exp);
     }
 
     // -- variants (§3.3) -----------------------------------------------------
@@ -1105,7 +1208,7 @@ impl HostedBindingService {
         // The consumed check comes first: consume() removes a challenge
         // from the live map, so checking the map first would make this
         // ChallengeReplay branch unreachable (#4868).
-        if self.consumed_challenges.contains(challenge_id) {
+        if self.replay_blocked(challenge_id) {
             return Err(CeremonyError::ChallengeReplay);
         }
         let challenge = self
@@ -1130,6 +1233,9 @@ impl HostedBindingService {
         }
         log.push(now);
 
+        // Sweep before the collision loop (#5644): an expired,
+        // unexchanged code no longer reserves its six-digit value.
+        self.prune_expired_one_time_state(now);
         let mut rng = rand::rng();
         let code = loop {
             let candidate: u32 = rng.random_range(0..1_000_000);
@@ -1186,16 +1292,16 @@ impl HostedBindingService {
 
     /// Verify a presented challenge proof the way §3.2 specifies —
     /// existence, expiry, single-use, session match, signature — and
-    /// consume the challenge on first presentation. Shared by the rebind
-    /// paths, which need the same proof of the **new** key's possession
-    /// without §3's conflict outcomes.
+    /// consume it on the first non-expired presentation. Expiry is
+    /// state-free (§3.4). Shared by the rebind paths, which need the same
+    /// proof of the **new** key's possession without §3's conflict outcomes.
     fn verify_challenge_proof(
         &mut self,
         session_sub: &str,
         challenge_id: &str,
         key_signature: &[u8],
     ) -> Result<Challenge, RebindError> {
-        if self.consumed_challenges.contains(challenge_id) {
+        if self.replay_blocked(challenge_id) {
             return Err(RebindError::ChallengeReplay);
         }
         let challenge = self
@@ -1204,7 +1310,7 @@ impl HostedBindingService {
             .cloned()
             .ok_or(RebindError::UnknownChallenge)?;
         if self.now() >= challenge.expires_at {
-            self.consume(challenge_id);
+            // §3.4, as in `submit_proof`: expiry is state-free (#4868).
             return Err(RebindError::ChallengeExpired);
         }
         if session_sub != challenge.sub {
@@ -1242,7 +1348,9 @@ impl HostedBindingService {
             return Err(error);
         };
         let verifying = VerifyingKey::from_bytes(&key_array).map_err(|_| error.clone())?;
-        verifying.verify_strict(message, &signature).map_err(|_| error)
+        verifying
+            .verify_strict(message, &signature)
+            .map_err(|_| error)
     }
 
     /// The binding for `sub`, requiring an `active` status for paths that
@@ -1311,8 +1419,7 @@ impl HostedBindingService {
                 .attest_bytes(&mutated)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings
-            .insert(mutated.binding_id.clone(), mutated);
+        self.bindings.insert(mutated.binding_id.clone(), mutated);
         let notice = RebindNotice {
             rebind_id: request.rebind_id.clone(),
             binding_id: request.binding_id.clone(),
@@ -1373,7 +1480,8 @@ impl HostedBindingService {
                 .attest_bytes(&binding)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         Ok(binding)
     }
 
@@ -1551,12 +1659,8 @@ impl HostedBindingService {
             return Err(RebindError::NewKeyBoundElsewhere);
         }
         let mut record = record.clone();
-        record.service_signature = hex_encode(
-            &self
-                .service_key
-                .sign(&record.canonical_bytes())
-                .to_bytes(),
-        );
+        record.service_signature =
+            hex_encode(&self.service_key.sign(&record.canonical_bytes()).to_bytes());
         let mut binding = self
             .bindings
             .get(&record.binding_id)
@@ -1582,7 +1686,8 @@ impl HostedBindingService {
         self.binding_by_iroh.remove(&record.old_iroh_id);
         self.binding_by_iroh
             .insert(record.new_iroh_id.clone(), record.binding_id.clone());
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         self.rebind_records.push(record.clone());
         Ok((binding, record))
     }
@@ -1855,7 +1960,7 @@ fn prune_before(log: &mut Vec<u64>, cutoff: u64) {
 mod tests {
     use super::*;
     use crate::groups::policy::{Policy, Template};
-    use crate::groups::{fold, Body, Create, DeviceOp, Event, Key, Role};
+    use crate::groups::{Body, Create, DeviceOp, Event, Key, Role, fold};
 
     const SUB: &str = "108204481453987112345678";
     const OTHER_SUB: &str = "209305592564098223456789";
@@ -2337,6 +2442,85 @@ mod tests {
     }
 
     #[test]
+    fn consumed_marker_blocks_replay_only_until_original_expiry() {
+        // #5644: the replay marker carries the consumed challenge's
+        // original expiry. Inside the validity window a replay is
+        // ChallengeReplay; past it the marker is pruned on access and
+        // the presentation reports UnknownChallenge.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(31);
+        let iroh_id = key.verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let signature = key.sign(&HostedBindingService::canonical_transcript(&challenge));
+        service
+            .submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None)
+            .unwrap();
+        // One second before the original expiry: still blocked.
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS - 1));
+        assert_eq!(
+            service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
+            Err(CeremonyError::ChallengeReplay)
+        );
+        assert_eq!(service.consumed_challenges.len(), 1);
+        // At the expiry the marker is gone (boundary: now >= expires_at).
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS));
+        assert_eq!(
+            service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        assert!(service.consumed_challenges.is_empty());
+    }
+
+    #[test]
+    fn expired_unconsumed_challenge_is_swept_by_the_next_request() {
+        // #5644: request_challenge runs the bounded sweep, so an expired
+        // unconsumed challenge does not stay in `challenges` for the
+        // process lifetime; presenting it afterwards is UnknownChallenge.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(32);
+        let iroh_id = key.verifying_key().to_bytes();
+        let stale = service.request_challenge(SUB, &iroh_id).unwrap();
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS));
+        let fresh = service.request_challenge(SUB, &iroh_id).unwrap();
+        assert_eq!(service.challenges.len(), 1);
+        assert!(service.challenges.contains_key(&fresh.challenge_id));
+        let signature = key.sign(&HostedBindingService::canonical_transcript(&stale));
+        assert_eq!(
+            service.submit_proof(SUB, &stale.challenge_id, &signature.to_bytes(), None),
+            Err(CeremonyError::UnknownChallenge)
+        );
+    }
+
+    #[test]
+    fn expired_pairing_code_is_swept_and_stops_reserving_its_value() {
+        // #5644: create_pairing_code sweeps before its collision loop,
+        // so an expired unexchanged code leaves `pairing_codes` and no
+        // longer reserves its six-digit value; exchanging it afterwards
+        // is UnknownChallenge (it was removed, not merely expired).
+        let mut service = service();
+        signup(&mut service, SUB);
+        let iroh_id = root_key(33).verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let stale_code = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+        assert_eq!(service.pairing_codes.len(), 1);
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS));
+        let fresh = service.request_challenge(SUB, &iroh_id).unwrap();
+        service
+            .create_pairing_code(SUB, &fresh.challenge_id)
+            .unwrap();
+        assert_eq!(service.pairing_codes.len(), 1);
+        assert!(!service.pairing_codes.contains_key(&stale_code));
+        assert_eq!(
+            service.exchange_pairing_code(&stale_code),
+            Err(CeremonyError::UnknownChallenge)
+        );
+    }
+
+    #[test]
     fn rfc3339_round_trips() {
         assert_eq!(unix_secs_to_rfc3339(0), "1970-01-01T00:00:00Z");
         assert_eq!(unix_secs_to_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
@@ -2351,6 +2535,11 @@ mod tests {
         assert_eq!(parse_rfc3339("2023-02-29T00:00:00Z"), None);
         assert_eq!(parse_rfc3339("2024-02-29T00:00:00Z"), Some(1_709_164_800));
         assert_eq!(parse_rfc3339("not-a-time"), None);
+        // A leap second is not modelled (#756, the same ruling
+        // parse_iso_timestamp follows): second 60 is refused on every
+        // date instead of aliasing to the next minute (#5416).
+        assert_eq!(parse_rfc3339("2016-12-31T23:59:60Z"), None);
+        assert_eq!(parse_rfc3339("2023-06-15T12:30:60Z"), None);
     }
 
     #[test]
@@ -2546,7 +2735,13 @@ mod tests {
             service.cancel_rebind(&request.rebind_id, &foreign.to_bytes()),
             Err(RebindError::BadOldKeySignature)
         );
-        assert_eq!(service.pending_rebind_for_binding(&binding.binding_id).unwrap().status, RebindRequestStatus::Pending);
+        assert_eq!(
+            service
+                .pending_rebind_for_binding(&binding.binding_id)
+                .unwrap()
+                .status,
+            RebindRequestStatus::Pending
+        );
 
         let old_key = root_key(21);
         let cancel = old_key.sign(&rebind_cancel_bytes(&request.rebind_id));
@@ -2685,7 +2880,10 @@ mod tests {
             Err(RebindError::NewKeyBoundElsewhere)
         );
         assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert_eq!(
@@ -2752,7 +2950,10 @@ mod tests {
             Err(RebindError::NewKeyBoundElsewhere)
         );
         assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert_eq!(
@@ -2791,7 +2992,10 @@ mod tests {
             Err(RebindError::NewKeyBoundElsewhere)
         );
         assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert!(service.rebind_records().is_empty());
@@ -2900,8 +3104,14 @@ mod tests {
             ),
             Err(RebindError::NewKeyBoundElsewhere)
         );
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_binding));
-        assert_eq!(service.binding_for_sub(SUB).unwrap().binding_id, binding.binding_id);
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_binding)
+        );
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().binding_id,
+            binding.binding_id
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert_eq!(
@@ -2968,6 +3178,25 @@ mod tests {
         // Nothing pends and nothing changed.
         let stored = service.binding_for_sub(SUB).unwrap();
         assert_eq!(stored.status, BindingStatus::Active);
-        assert!(service.pending_rebind_for_binding(&stored.binding_id).is_none());
+        assert!(
+            service
+                .pending_rebind_for_binding(&stored.binding_id)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn expired_rebind_challenge_is_not_recorded_as_consumed() {
+        let mut service = service();
+        bind(&mut service, SUB, 21);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        service.set_now_override(Some(T0 + CHALLENGE_TTL_SECS));
+        for _ in 0..2 {
+            assert_eq!(
+                service.request_delayed_rebind(SUB, &challenge_id, &proof),
+                Err(RebindError::ChallengeExpired)
+            );
+        }
     }
 }

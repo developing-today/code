@@ -56,6 +56,12 @@ pub const MAX_SUBJECTS: usize = 512;
 /// The most per-subject detail entries one record may carry.
 pub const MAX_DETAILS: usize = 512;
 
+/// The most aliases one entity may carry.
+pub const MAX_ALIASES: usize = 512;
+
+/// The most hours spans one hours window may list.
+pub const MAX_HOURS_SPANS: usize = 512;
+
 /// Nesting limit for a body's CBOR. Bodies are shallow by construction.
 const RECURSION_LIMIT: u16 = 8;
 
@@ -92,10 +98,17 @@ impl Entity {
     /// # Errors
     ///
     /// Returns [`DiditError::Invalid`] for an empty or over-long text field,
-    /// text that is not NFC, or a repeated alias.
+    /// text that is not NFC, a repeated alias, or more aliases than
+    /// [`MAX_ALIASES`].
     pub fn check(&self) -> Result<(), DiditError> {
         check_text(&self.kind, "kind", true)?;
         check_text(&self.name, "name", true)?;
+        if self.aliases.len() > MAX_ALIASES {
+            return Err(DiditError::Invalid(format!(
+                "entity aliases has {} entries, the most is {MAX_ALIASES}",
+                self.aliases.len()
+            )));
+        }
         let mut seen = HashSet::new();
         for alias in &self.aliases {
             check_text(alias, "alias", false)?;
@@ -227,7 +240,48 @@ pub struct Record {
     pub place: Option<Place>,
 }
 
+/// The default cross-app view of a record (design §7, decision D7).
+///
+/// Stable event and subject IDs are retained so related opinions and entity
+/// references still resolve, while structural details and free text are
+/// omitted. This is a derived view; it is never encoded as a didit body.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecordSummary {
+    /// The carrying event's stable ID.
+    pub id: Hash,
+    /// The explicit entity IDs covered by the act.
+    pub subjects: Vec<Hash>,
+    /// The number of subjects, retained as a convenient summary field.
+    pub subject_count: usize,
+    /// What happened.
+    pub act: String,
+    /// The author's clock, in unix seconds.
+    pub at: i64,
+    /// The author's UTC offset at `at`, in minutes.
+    pub tz_offset_minutes: i32,
+}
+
 impl Record {
+    /// Returns the summary projection, omitting details, shared detail,
+    /// measure, note, and place while retaining the stable record ID.
+    #[must_use]
+    pub fn summary_projection(&self) -> RecordSummary {
+        RecordSummary {
+            id: self.id,
+            subjects: self.subjects.clone(),
+            subject_count: self.subjects.len(),
+            act: self.act.clone(),
+            at: self.at,
+            tz_offset_minutes: self.tz_offset_minutes,
+        }
+    }
+
+    /// Returns the full projection without dropping any record fields.
+    #[must_use]
+    pub fn full_projection(&self) -> Self {
+        self.clone()
+    }
+
     /// The detail slot for `subject`, when the record carries one.
     #[must_use]
     pub fn detail_for(&self, subject: &Hash) -> Option<&RecordDetail> {
@@ -476,6 +530,12 @@ impl ActiveWindow {
                         "an hours window lists no spans".to_owned(),
                     ));
                 }
+                if hours.len() > MAX_HOURS_SPANS {
+                    return Err(DiditError::Invalid(format!(
+                        "hours spans has {} entries, the most is {MAX_HOURS_SPANS}",
+                        hours.len()
+                    )));
+                }
                 for span in hours {
                     span.check()?;
                 }
@@ -523,12 +583,18 @@ pub struct Expectation {
 
 impl Expectation {
     /// Checks the rules every expectation body meets: non-empty distinct
-    /// subjects, a valid window and active window, and valid text.
+    /// subjects, a valid window and active window, valid text, and no
+    /// self-supersede.
     ///
     /// # Errors
     ///
     /// Returns [`DiditError::Invalid`] naming the rule that failed.
     pub fn check(&self) -> Result<(), DiditError> {
+        if self.supersedes == Some(self.id) {
+            return Err(DiditError::Invalid(
+                "an expectation cannot supersede itself".to_owned(),
+            ));
+        }
         check_subjects(&self.subjects, "expectation subjects")?;
         check_text(&self.act, "act", true)?;
         self.window.check()?;

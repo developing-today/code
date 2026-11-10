@@ -58,19 +58,19 @@ Any metric at >= 80% of its Free limit carries `flag: "approaching-paid-trigger"
 
 Recorded endpoint-by-endpoint in `.scope` on every run:
 
-| Endpoint | Status |
-|---|---|
-| `GET /projects`, `GET /projects/:ref` | 200 |
-| `POST /projects/:ref/database/query` | 201 |
-| `GET /projects/:ref/analytics/endpoints/usage.api-counts` | 200 |
-| `GET /projects/:ref/analytics/endpoints/usage.api-requests-count` | 200 |
-| `GET /projects/:ref/billing/addons` | 200 (`selected_addons: []`) |
-| `GET /projects/:ref/storage/buckets` | 200 |
-| `GET /projects/:ref/health?services=db` | 200 |
-| `GET /organizations/:slug` | **403** — token is project-scoped; org plan/billing reads need an org token (Drew's account action) |
-| `GET /organizations/:slug/{billing,usage}` | 403 / 404 |
-| `GET /projects/:ref/usage`, `…/database/size` | 404 — no such endpoint |
-| egress bytes | no endpoint exists; only request counts |
+| Endpoint                                                          | Status                                                                                              |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `GET /projects`, `GET /projects/:ref`                             | 200                                                                                                 |
+| `POST /projects/:ref/database/query`                              | 201                                                                                                 |
+| `GET /projects/:ref/analytics/endpoints/usage.api-counts`         | 200                                                                                                 |
+| `GET /projects/:ref/analytics/endpoints/usage.api-requests-count` | 200                                                                                                 |
+| `GET /projects/:ref/billing/addons`                               | 200 (`selected_addons: []`)                                                                         |
+| `GET /projects/:ref/storage/buckets`                              | 200                                                                                                 |
+| `GET /projects/:ref/health?services=db`                           | 200                                                                                                 |
+| `GET /organizations/:slug`                                        | **403** — token is project-scoped; org plan/billing reads need an org token (Drew's account action) |
+| `GET /organizations/:slug/{billing,usage}`                        | 403 / 404                                                                                           |
+| `GET /projects/:ref/usage`, `…/database/size`                     | 404 — no such endpoint                                                                              |
+| egress bytes                                                      | no endpoint exists; only request counts                                                             |
 
 Creating a token or granting org consent is out of scope for the producer; the
 gap is recorded, not worked around.
@@ -80,7 +80,7 @@ gap is recorded, not worked around.
 The project ref is resolved by **name** from Bitwarden Secrets Manager at
 runtime (`supabase.project-ref`; `SUPABASE_PROJECT_REF` or `--project-ref`
 overrides it). The management token is resolved by **name** from Bitwarden
-(`supabase.access-token-muse-cli`, override `SUPABASE_TOKEN_SECRET_NAME`;
+(`supabase.muse-dev2.access-token-muse-cli`, override `SUPABASE_TOKEN_SECRET_NAME`;
 `SUPABASE_MANAGEMENT_TOKEN` wins if set). The token value is sent only to
 `api.supabase.com` and is never written to the document, a log line, a fixture,
 or argv.

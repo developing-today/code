@@ -10,6 +10,65 @@ let
   # bakes hyprctl into its PATH must use the matching one, or it will ship the
   # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
   hyprland-master = inputs.hyprland.packages.${system}.hyprland;
+  # TEMPORARY (developing-today/code#5447, found via #2715): the
+  # nixpkgs-25 segment below takes activitywatch and
+  # haskellPackages.misfortune from this input, and on the current
+  # pin (1d060086, the nixos-unstable channel rev) misfortune's
+  # dependency haskellPackages.regex-pcre is marked broken under
+  # nixpkgs' problems framework -- honestly: nixpkgs' Haskell
+  # builder stopped adding the pkg-config wrapper and the
+  # pkgconfig-depends libraries to Haskell build environments, so
+  # regex-pcre's Cabal configure hard-fails (Cabal-7620) and its
+  # buildInputs no longer contain any pcre at all. Import the input
+  # with a problems handler that warns regex-pcre's broken marking
+  # through (handlers live in the importing config -- an .extend
+  # overlay on the raw legacyPackages cannot change it, and the
+  # stock segment refuses to evaluate) plus an overlay restoring
+  # regex-pcre's old build environment: pkg-config plus a minimal
+  # vendored pcre 8.45 (the version the old pins shipped; test
+  # suite disabled). Same override class as #3906, which tracks
+  # the master-pin instance. Drew ruled 2026-11-04 ("fix it or pin
+  # misfortune") to revive it here rather than keep nixpkgs-25
+  # frozen. Remove this binding and use the raw legacyPackages
+  # again once stock regex-pcre builds on the nixpkgs-25 pin; the
+  # removal test is in #5447.
+  nixpkgs-25-fixed = import inputs.nixpkgs-25 {
+    inherit system;
+    config.problems.handlers."regex-pcre".broken = "warn";
+    overlays = [
+      (
+        final: prev:
+        let
+          pcre_8_45 = prev.stdenv.mkDerivation {
+            pname = "pcre";
+            version = "8.45";
+            src = prev.fetchurl {
+              url = "mirror://sourceforge/project/pcre/pcre/8.45/pcre-8.45.tar.bz2";
+              sha256 = "sha256-Ta5v3NK7C7bDe1+Xwzwr6VTadDmFNpzdrDVG4yGL/7g=";
+            };
+            nativeBuildInputs = [ prev.updateAutotoolsGnuConfigScriptsHook ];
+            configureFlags = [
+              "--enable-unicode-properties"
+              "--disable-cpp"
+              "--enable-jit=auto"
+            ];
+            hardeningDisable = [ "shadowstack" ];
+            doCheck = false;
+          };
+        in
+        {
+          haskellPackages = prev.haskellPackages.override {
+            overrides = self: super: {
+              regex-pcre = super.regex-pcre.overrideAttrs (old: {
+                nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ prev.pkg-config ];
+                buildInputs = (old.buildInputs or [ ]) ++ [ pcre_8_45 ];
+              });
+            };
+          };
+        }
+      )
+    ];
+  };
   espIdf5 = inputs.esp-dev.packages.${system}.esp-idf-full;
   espIdf6 = inputs.esp-dev-6.packages.${system}.esp-idf-full;
   mkEspIdfSystemPackage =
@@ -166,10 +225,13 @@ let
   # rewritten: several of these packages hard-code their own store path in Exec=,
   # which would launch the unwrapped binary straight from the store and silently
   # bypass the flag when started from a launcher rather than a shell.
-  scaleElectron2x =
-    pkg:
+  # The general form of scaleElectron2x: same wrapper (binaries
+  # wrapped, desktop entries repointed at the wrappers), with a
+  # caller-chosen flag set and derivation-name suffix.
+  wrapElectronWithFlags =
+    nameSuffix: flags: pkg:
     pkgs.symlinkJoin {
-      name = "${pkg.pname or pkg.name or "electron-app"}-scaled2x";
+      name = "${pkg.pname or pkg.name or "electron-app"}-${nameSuffix}";
       paths = [ pkg ];
       nativeBuildInputs = [ pkgs.makeWrapper ];
       postBuild = ''
@@ -179,7 +241,7 @@ let
           [ -x "$target" ] || continue
           rm "$bin"
           makeWrapper "$target" "$bin" \
-            --add-flags "--force-device-scale-factor=2"
+            --add-flags "${lib.concatStringsSep " " flags}"
         done
 
         if [ -d "$out/share/applications" ]; then
@@ -197,10 +259,102 @@ let
       };
     };
 
+  scaleElectron2x = wrapElectronWithFlags "scaled2x" [ "--force-device-scale-factor=2" ];
+
+  # Chromium with structural CDP (code#5924 follow-up): the fleet
+  # Chromium entries must always expose the DevTools endpoint on
+  # loopback -- 19224 (convention: 19222 Helium, 19223 Brave,
+  # 19224 Chromium). wrapElectronWithFlags cannot be reused here:
+  # the wrapped chromium package symlinks share/applications into
+  # chromium-unwrapped's tree, and the helper's in-place desktop
+  # rewrite fails on the read-only target. No rewrite is needed:
+  # chromium's desktop file uses a bare `Exec=chromium`, resolved
+  # through PATH, so wrapping bin/ covers shell and launcher
+  # launches alike. Wrapper flags precede caller args, so
+  # automation passing its own --remote-debugging-port
+  # (playwright/puppeteer via mcpx) still wins.
+  chromiumPkg = inputs.nixpkgs-unstable.legacyPackages.${system}.chromium;
+  chromiumCdp = pkgs.symlinkJoin {
+    name = "${chromiumPkg.name}-cdp";
+    paths = [ chromiumPkg ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      for bin in "$out"/bin/*; do
+        [ -L "$bin" ] || continue
+        target=$(readlink -f "$bin")
+        [ -x "$target" ] || continue
+        rm "$bin"
+        makeWrapper "$target" "$bin" \
+          --add-flags "--remote-debugging-address=127.0.0.1" \
+          --add-flags "--remote-debugging-port=19224"
+      done
+    '';
+    meta = (chromiumPkg.meta or { }) // {
+      mainProgram = chromiumPkg.meta.mainProgram or null;
+    };
+  };
+
+  # Firefox-family with structural WebDriver BiDi (code#5924
+  # follow-up): Firefox and Zen have no CDP -- their remote
+  # protocol is WebDriver BiDi, started by --remote-debugging-port
+  # in current Firefox (verified against the installed
+  # Firefox 159.0: "WebDriver BiDi listening on ws://127.0.0.1"
+  # + a session.status round trip). Fleet port convention, one
+  # table for every browser remote endpoint, loopback-only:
+  #   19222 Helium CDP        19225 Firefox BiDi
+  #   19223 Brave/Chrome CDP  19226 Zen BiDi
+  #   19224 Chromium CDP      19227 Zen Twilight BiDi (darwin only)
+  # The remote agent binds 127.0.0.1 by itself, and its default
+  # policy is kept deliberately: foreign Host headers get 400
+  # and Origin-bearing upgrade requests get no WebSocket, so
+  # web content on this machine cannot hijack the socket. Local
+  # agent tooling (no Origin) works as-is; a caller that needs
+  # an Origin passes --remote-allow-origins itself -- caller
+  # args follow wrapper flags. Same bin-only wrapper shape as
+  # chromiumCdp: both packages' desktop files use bare
+  # `Exec=firefox` / `Exec=zen-beta`, resolved through PATH, so
+  # wrapping bin/ covers shell and launcher launches alike.
+  firefoxBidi = wrapFirefoxBidi "firefox" pkgs.firefox 19225;
+  wrapFirefoxBidi =
+    name: pkg: port:
+    let
+      joined = pkgs.symlinkJoin {
+        name = "${pkg.name}-bidi";
+        paths = [ pkg ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          for bin in "$out"/bin/*; do
+            [ -L "$bin" ] || continue
+            target=$(readlink -f "$bin")
+            [ -x "$target" ] || continue
+            rm "$bin"
+            makeWrapper "$target" "$bin" \
+              --add-flags "--remote-debugging-port=${toString port}"
+          done
+        '';
+        meta = (pkg.meta or { }) // {
+          mainProgram = pkg.meta.mainProgram or null;
+        };
+      };
+    in
+    joined
+    // lib.optionalAttrs (pkg ? override) {
+      # Keep the wrapped package override-compatible (code#6156):
+      # consumers such as home-manager's firefox module probe and
+      # call `package.override`; a bare symlinkJoin has none.
+      # Forward the underlying package's override, re-applying this
+      # wrap to its result and preserving its function-args shape.
+      override = lib.setFunctionArgs (args: wrapFirefoxBidi name (pkg.override args) port) (
+        lib.functionArgs pkg.override
+      );
+    };
+
+  zenBidi = wrapFirefoxBidi "zen" inputs.zen-browser.packages.${system}.default 19226;
+
   # OpenChamber's Electron GUI, built from the developing-today/openchamber fork.
   openchamber-desktop = inputs.openchamber.packages.${system}.openchamber-desktop;
 
-  # OpenChamber CLI/server built from the developing-today/openchamber fork.
+  # OpenChamber CLI/server built from the developing-today-forks/openchamber fork.
   openchamber = inputs.openchamber.packages.${system}.openchamber;
 
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the
@@ -226,11 +380,6 @@ let
   # online lives in home/common.
   desktop-commander = pkgs.callPackage (lib.from-root "pkgs/desktop-commander") { };
 
-  # Jules Tools, the CLI for Google's async coding agent. Not in nixpkgs; the
-  # npm package is a stub that downloads a dynamically linked Go binary, which
-  # will not exec on NixOS without autoPatchelfHook. See the derivation header.
-  jules = pkgs.callPackage (lib.from-root "pkgs/jules") { };
-
   # Antigravity ACP server and Hub. Both vendored from nixpkgs master rather
   # than taken from a channel: neither exists in ANY nixpkgs revision this flake
   # pins (stable, unstable or master-as-pinned), and bumping an input to reach
@@ -246,10 +395,6 @@ let
   # Cursor, Gemini CLI and others. 18.6k stars, no declared licence upstream.
   cockpit-tools = pkgs.callPackage (lib.from-root "pkgs/cockpit-tools") { };
 
-  # Google's experimental Jules orchestration pair. Fleet drives goal files ->
-  # analyzer sessions -> labelled issues -> worker sessions; Merge reconciles
-  # the overlapping PRs that result. Google's own words on Fleet: "very
-  # experimental, just for fun".
   # Grok CLI (superagent-ai/grok-cli, published to npm as `grok-dev`).
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
@@ -260,8 +405,6 @@ let
   # Claude Code 2.1.293 (nixpkgs has 2.1.234 in both channel and unstable).
   claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
 
-  jules-fleet = pkgs.callPackage (lib.from-root "pkgs/jules-fleet") { };
-  jules-merge = pkgs.callPackage (lib.from-root "pkgs/jules-merge") { };
   antigravity-hub = pkgs.callPackage (lib.from-root "pkgs/antigravity-hub") { };
 
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
@@ -406,14 +549,11 @@ in
       command-code
       desktop-commander
       mcpx
-      jules
       antigravity-acp
       antigravity-hub
       claude-code
       cockpit-tools
       grok-cli
-      jules-fleet
-      jules-merge
       latestCli.codex
       opencode-v2-compat
       openchamber
@@ -423,7 +563,7 @@ in
       nix-output-monitor.packages.${system}.default
       ssh-to-age.packages.${system}.default
       nix-search.packages.${system}.default
-      zen-browser.packages.${system}.default
+      zenBidi # zen + structural WebDriver BiDi on 127.0.0.1:19226 (code#5924)
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
       opencode.packages.${system}.opencode
@@ -437,7 +577,18 @@ in
       # MCP servers are npx/uvx/docker invocations that need a conventional
       # filesystem layout and break against a pure store path.
       (scaleElectron2x inputs.claude-desktop.packages.${system}.claude-desktop-fhs)
-      (scaleElectron2x inputs.helium.packages.${system}.helium)
+      # Helium additionally carries the CDP flags (code#5924): the
+      # DevTools protocol endpoint is how agents drive the browser --
+      # second only to structured APIs in the agent access hierarchy.
+      # Loopback-only bind; the tailnet path is a `tailscale serve`
+      # mapping created at activation (fleet convention: serve state
+      # is imperative), per
+      # doc/2026-11-04_remote-gui-access-runbook.md.
+      (wrapElectronWithFlags "scaled2x-cdp" [
+        "--force-device-scale-factor=2"
+        "--remote-debugging-address=127.0.0.1"
+        "--remote-debugging-port=19222"
+      ] inputs.helium.packages.${system}.helium)
       # chatgpt: the -remote-mobile-control variant rather than plain
       # `codex-desktop`. OpenAI's own Codex Remote requires the host to run the
       # macOS or Windows desktop app ("you can't set it up from the Codex CLI or
@@ -712,7 +863,7 @@ in
       jdk21
       androidSdk.androidsdk
     ])
-    ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
+    ++ (with nixpkgs-25-fixed; [ activitywatch ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       # AI coding agents. Kept on the unstable channel rather than master
       # because unstable is cached (see the chromium note below) and these
@@ -731,8 +882,7 @@ in
       # Pro/Ultra users: Gemini CLI was replaced by Antigravity CLI"), which is
       # an eval *warning*, not a build failure -- 0.47.0 builds and runs fine.
       # Installed deliberately: upstream google-gemini/gemini-cli is very much
-      # alive, and the `gemini` binary is required by the official
-      # gemini-cli-extensions/jules extension.
+      # alive.
       gemini-cli
     ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
@@ -969,9 +1119,11 @@ in
       gtk3
       gtk4
       #hackgen-nf-font
-      # misfortune is pinned to the nixpkgs-25 set: in the fleet-pinned unstable rev its
-      # regex-pcre dependency is marked broken, which refuses evaluation (#3327 pin exception).
-      (inputs.nixpkgs-25.legacyPackages.${system}.haskellPackages.misfortune)
+      # misfortune is pinned to the nixpkgs-25 set (via the nixpkgs-25-fixed binding
+      # above, which carries the regex-pcre override -- #5447): in the fleet-pinned
+      # unstable rev its regex-pcre dependency is marked broken, which refuses
+      # evaluation (#3327 pin exception).
+      nixpkgs-25-fixed.haskellPackages.misfortune
       hasklig
       hledger
       hledger-iadd
@@ -1187,7 +1339,8 @@ in
       # Testing and development tools
       #beekeeper-studio # electron 31 eol
       #cypress # electron 37 eol: insecure in this nixpkgs
-      inputs.nixpkgs-unstable.legacyPackages.${system}.chromium # nixos-unstable channel: cached (master chromium is not)
+      chromiumCdp # chromium + structural CDP on 127.0.0.1:19224 (code#5924); nixos-unstable channel: cached (master chromium is not)
+      firefoxBidi # firefox + structural WebDriver BiDi on 127.0.0.1:19225 (code#5924); also the HM programs.firefox package (home/common)
       inputs.nixpkgs-unstable.legacyPackages.${system}.chromedriver
       playwright-driver
       direnv

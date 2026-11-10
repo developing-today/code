@@ -12,16 +12,24 @@ world = []
 sandbox = []
 web = ["dep:qrcode"]
 test-utils = []
+# Registry exit proof for #1061: registers one test-only provider through the
+# provider registry alone (pkgs/id/tests/provider_registry_exit_proof.rs).
+# Never enabled by a production build.
+test-provider = []
 
 [dependencies]
 anyhow = "1"
+# Content address of a boundary declaration (boundary.rs, #7782).
+blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 futures-lite = "2"
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = ["serde"] }
+p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
+  "serde",
+] }
 postcard = { version = "1", features = ["alloc"] }
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -44,6 +52,8 @@ rqrr = { version = "0.11.0", default-features = false }
 # their own. Same pins as the parent crate. Dev only; no runtime effect.
 vt100 = "=0.16.2"
 iroh = { version = "1", features = ["test-utils"] }
+# Narrowing-only property test for boundary composition (boundary.rs, #7782).
+proptest = "1.12"
 
 [lints.rust]
 # Rust compiler lints

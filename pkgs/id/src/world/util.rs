@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) use crate::text::sanitize_chat;
+
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -120,7 +122,11 @@ pub(crate) fn legacy_sanitize_display_name(name: &str) -> String {
 /// cannot recognize them by equality; see the #2960 check in
 /// `WorldCore::restore`.)
 pub(crate) fn is_pre_fix_mint_display_name(name: &str) -> bool {
-    if name.chars().next().is_none_or(|first| first.is_whitespace()) {
+    if name
+        .chars()
+        .next()
+        .is_none_or(|first| first.is_whitespace())
+    {
         return false;
     }
     if name
@@ -133,22 +139,11 @@ pub(crate) fn is_pre_fix_mint_display_name(name: &str) -> bool {
     count == 48 || (count < 48 && name.trim() == name)
 }
 
-pub(crate) fn sanitize_chat(text: &str) -> String {
-    text.chars()
-        .filter(|ch| {
-            (!ch.is_control() || *ch == '\n' || *ch == '\t')
-                && (!crate::petname::is_format_char(*ch) || *ch == '\u{200c}' || *ch == '\u{200d}')
-        })
-        .collect::<String>()
-        .trim()
-        .to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        is_pre_fix_mint_display_name, legacy_sanitize_display_name,
-        pre_fix_sanitize_display_name, sanitize_chat, sanitize_display_name,
+        is_pre_fix_mint_display_name, legacy_sanitize_display_name, pre_fix_sanitize_display_name,
+        sanitize_chat, sanitize_display_name,
     };
 
     #[test]
@@ -201,8 +196,14 @@ mod tests {
         // 48-char cap is trimmed after truncation, and every minted
         // name is a fixed point of the sanitizer.
         let cases = [
-            (format!("{} {}", "a".repeat(47), "b".repeat(10)), "a".repeat(47)),
-            (format!("{}  {}", "a".repeat(46), "b".repeat(10)), "a".repeat(46)),
+            (
+                format!("{} {}", "a".repeat(47), "b".repeat(10)),
+                "a".repeat(47),
+            ),
+            (
+                format!("{}  {}", "a".repeat(46), "b".repeat(10)),
+                "a".repeat(46),
+            ),
             (
                 format!("{}\u{a0}{}", "a".repeat(47), "b".repeat(10)),
                 "a".repeat(47),

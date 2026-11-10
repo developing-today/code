@@ -38,7 +38,7 @@ preserve exactly:
 1. **Sensitivity is a caller ceiling, enforced before ranking.**
    `SENS_ORDER = [shareable, personal, local-only, secret-bearing]`;
    the default ceiling is `personal`. Classification filters are
-   SQL pre-filters applied to both branches *before* ranking, so a
+   SQL pre-filters applied to both branches _before_ ranking, so a
    restricted chunk is never ranked, scored, or snippeted for a
    caller whose ceiling excludes it. Reaching `secret-bearing`
    requires spelling the ceiling out explicitly.
@@ -91,14 +91,14 @@ re-measurement.
 
 ## Decision summary
 
-| # | Question | Decision |
-|---|----------|----------|
-| 1 | One artifact, two modes? | **One Rust binary**, `atlas-search`, with one-shot CLI subcommands and a `serve` subcommand. CLI is standalone-capable by default and can route through the service (`--via-service`); it is never a thin-client-only tool. |
-| 2 | Service protocol / temp store | Job protocol over HTTP+JSON: submit → workers run branches concurrently → fused ranking lands in an **in-memory temp store** (TTL, per-job capability token) → clients page an immutable ranking. Fetch-to-fill escalation lives *inside* the job's vector branch, never in client paging. |
-| 3 | Clients, exposure, auth | Named clients only (Drew's CLI, OpenChamber/fork sessions on amd, sandbox scripts via tailnet). Bind 127.0.0.1 + `tailscale serve` on the MagicDNS name, same pattern as the OpenCode server. Per-client bearer tokens in a 0600 state file (service-prod.json pattern), **each token carrying a maximum sensitivity ceiling the server clamps to**. Aster is not a v1 client. |
-| 4 | Layout / packaging / deploy | Self-contained `pkgs/atlas-search/` (pkgs/id pattern): workspace of four crates, `default.nix` via `rustPlatform.buildRustPackage`, ONNX Runtime loaded dynamically from the nix closure (which must carry libstdc++ + zlib). Model artifact provisioned to the state dir at deploy time, pinned revision + sha256, **not** in the nix store. Deploy as a systemd **user service** declared in home-manager; state under `~/.local/state/atlas-search/`. |
-| 5 | Parity + migration | Three gates: embedder bit-identity on a fixed probe set; golden-311 tie vs the Python production path on the production corpus (tolerances stated in §5); the A/B-winning backend as the implemented default. Migration is additive-first in four phases; the Python remains installed as the fallback and stays the eval reference permanently. |
-| 6 | Non-goals | No writes to the production atlas DB (the service holds only a read-only token), no corpus re-embedding, no publish-schema changes, no client-side ceiling widening, no public exposure, no Aster client in v1. |
+| #   | Question                      | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | One artifact, two modes?      | **One Rust binary**, `atlas-search`, with one-shot CLI subcommands and a `serve` subcommand. CLI is standalone-capable by default and can route through the service (`--via-service`); it is never a thin-client-only tool.                                                                                                                                                                                                                              |
+| 2   | Service protocol / temp store | Job protocol over HTTP+JSON: submit → workers run branches concurrently → fused ranking lands in an **in-memory temp store** (TTL, per-job capability token) → clients page an immutable ranking. Fetch-to-fill escalation lives _inside_ the job's vector branch, never in client paging.                                                                                                                                                               |
+| 3   | Clients, exposure, auth       | Named clients only (Drew's CLI, OpenChamber/fork sessions on amd, sandbox scripts via tailnet). Bind 127.0.0.1 + `tailscale serve` on the MagicDNS name, same pattern as the OpenCode server. Per-client bearer tokens in a 0600 state file (service-prod.json pattern), **each token carrying a maximum sensitivity ceiling the server clamps to**. Aster is not a v1 client.                                                                           |
+| 4   | Layout / packaging / deploy   | Self-contained `pkgs/atlas-search/` (pkgs/id pattern): workspace of four crates, `default.nix` via `rustPlatform.buildRustPackage`, ONNX Runtime loaded dynamically from the nix closure (which must carry libstdc++ + zlib). Model artifact provisioned to the state dir at deploy time, pinned revision + sha256, **not** in the nix store. Deploy as a systemd **user service** declared in home-manager; state under `~/.local/state/atlas-search/`. |
+| 5   | Parity + migration            | Three gates: embedder bit-identity on a fixed probe set; golden-311 tie vs the Python production path on the production corpus (tolerances stated in §5); the A/B-winning backend as the implemented default. Migration is additive-first in four phases; the Python remains installed as the fallback and stays the eval reference permanently.                                                                                                         |
+| 6   | Non-goals                     | No writes to the production atlas DB (the service holds only a read-only token), no corpus re-embedding, no publish-schema changes, no client-side ceiling widening, no public exposure, no Aster client in v1.                                                                                                                                                                                                                                          |
 
 ## 1. One artifact, two modes
 
@@ -116,9 +116,9 @@ binary — was rejected for one concrete reason: the search
 semantics are the product. Filters, ceiling enforcement, fusion,
 and the envelope format must be identical in both modes, or the
 golden-parity gate (§5) has to be passed twice against two
-implementations that will drift. Two *crates* (a core library
+implementations that will drift. Two _crates_ (a core library
 both modes consume) give the separation without the drift; two
-*binaries* only add a second release artifact to keep in lockstep.
+_binaries_ only add a second release artifact to keep in lockstep.
 The cost of one binary is real but small: the serve code
 (HTTP stack, worker pool) is compiled into the CLI too. It is
 dead weight of a few MB in a binary whose runtime resident set is
@@ -159,8 +159,8 @@ The CLI keeps both paths, deliberately:
   result. It gains: no model load (warm embedder), shared Turso
   pool, the service's deeper caches. It loses: independence — a
   down service must fall back loudly to standalone, never fail
-  silently or hang; the flag's contract is *prefer service, fall
-  back with a note in the envelope's `notes`*, matching how the
+  silently or hang; the flag's contract is _prefer service, fall
+  back with a note in the envelope's `notes`_, matching how the
   Python reports backend fallbacks today.
 
 Making the CLI thin-client-only was rejected: it would convert
@@ -178,7 +178,7 @@ concurrently, results land in a temp store, clients pull until
 their pools are satisfied — is adopted with one sharpening:
 **what the client pages is the fused ranking, and the ranking is
 immutable once computed.** Fetch-to-fill depth escalation is a
-property of the vector *branch's* execution inside the job
+property of the vector _branch's_ execution inside the job
 (exactly the `index-fill` semantics the Python's A/B modes
 already define), not of client paging. This keeps RRF correct by
 construction: fusion runs once, over complete branch pools, and
@@ -188,15 +188,15 @@ because a branch was still filling.
 
 ### Endpoints (HTTP + JSON, versioned path)
 
-| Endpoint | Semantics |
-|----------|-----------|
-| `POST /v1/search` | One-shot convenience: submit + wait + first page in a single call, for simple clients. Same job machinery underneath. |
-| `POST /v1/search/jobs` | Submit a job `{query, filters, ceiling, pool, vector_backend}` → `202 {job_id, job_token}`. The server clamps `ceiling` to the caller's token cap (§3) and records the *effective* ceiling on the job. |
-| `GET /v1/search/jobs/{id}` | Job status: `queued / running / done / failed / expired`, branch states, effective ceiling, pool actually used, notes. |
+| Endpoint                                          | Semantics                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/search`                                 | One-shot convenience: submit + wait + first page in a single call, for simple clients. Same job machinery underneath.                                                                                                                                                                              |
+| `POST /v1/search/jobs`                            | Submit a job `{query, filters, ceiling, pool, vector_backend}` → `202 {job_id, job_token}`. The server clamps `ceiling` to the caller's token cap (§3) and records the _effective_ ceiling on the job.                                                                                             |
+| `GET /v1/search/jobs/{id}`                        | Job status: `queued / running / done / failed / expired`, branch states, effective ceiling, pool actually used, notes.                                                                                                                                                                             |
 | `GET /v1/search/jobs/{id}/results?cursor=&limit=` | Pages of the fused ranking, in the Python's envelope shape (results carry `rank_sources` and fused `score`; page carries `next_cursor` or `null`). Cursor is opaque; it encodes an offset into the job's immutable ranking. Only the job's `job_token` (or the owning client's token) may page it. |
-| `DELETE /v1/search/jobs/{id}` | Early release of the job's stored results. |
-| `GET /v1/search/jobs/{id}/chunk/{chunk_id}` | `get-chunk` equivalent (chunk + neighbors) under the job's effective ceiling — a chunk outside the ceiling returns the same shape as a missing chunk, never a leak of its existence tier. |
-| `GET /health` | Liveness + embedder state (cold/warming/ready), queue depth. No auth, no data. |
+| `DELETE /v1/search/jobs/{id}`                     | Early release of the job's stored results.                                                                                                                                                                                                                                                         |
+| `GET /v1/search/jobs/{id}/chunk/{chunk_id}`       | `get-chunk` equivalent (chunk + neighbors) under the job's effective ceiling — a chunk outside the ceiling returns the same shape as a missing chunk, never a leak of its existence tier.                                                                                                          |
+| `GET /health`                                     | Liveness + embedder state (cold/warming/ready), queue depth. No auth, no data.                                                                                                                                                                                                                     |
 
 A job's requested `pool` is the per-branch pool depth (default
 100, the production value). A client wanting a deeper fused list
@@ -204,7 +204,7 @@ asks for a larger pool at submit time; it does not page its way
 to depth — paging beyond the computed ranking returns the end of
 the list, not a deeper search. A follow-up job at a larger pool
 is cheap to submit and is the honest mechanism, because a deeper
-pool is a *different search* (the pool sweep moved MRR
+pool is a _different search_ (the pool sweep moved MRR
 materially), not a longer page of the same one.
 
 ### The temp store: in-memory, TTL'd, capability-gated
@@ -214,12 +214,12 @@ Three candidates were considered:
 - **A scratch Turso/libsql database** — rejected on evidence,
   not taste: the production atlas writer is currently stalled at
   ~22 min per write (hatch-personal#20); a temp store whose
-  writes queue behind *any* remote writer inherits a failure
+  writes queue behind _any_ remote writer inherits a failure
   mode that has nothing to do with search, and every branch
   write pays a network round trip for data with a 10-minute
   useful life.
 - **A local SQLite file in the service's state dir** — workable,
-  and the documented fallback if job *history* ever becomes a
+  and the documented fallback if job _history_ ever becomes a
   requirement (debugging, audit). Rejected as the default
   because persistence is a liability here (below), and a single
   service process has no need of a second writer-serialized
@@ -229,13 +229,13 @@ Three candidates were considered:
   a fused ranking of ≤ pool result entries with snippets.
 - **In-memory (chosen).** A sharded map keyed by job_id, holding
   branch pools as they land and the fused ranking when fusion
-  completes, behind a TTL sweeper. Results are *reproducible*
-  (a lost job is a resubmit, not a data loss), *small* (above),
-  and *perishable by design*:
+  completes, behind a TTL sweeper. Results are _reproducible_
+  (a lost job is a resubmit, not a data loss), _small_ (above),
+  and _perishable by design_:
 
 What survives a service restart: **nothing in the temp store,
 and that is the requirement, not a gap.** A job's results contain
-corpus snippets at the *job's effective ceiling* — the most
+corpus snippets at the _job's effective ceiling_ — the most
 sensitive data the service touches. Leaving them on disk would
 extend the exposure of ceiling-gated content beyond the query
 that authorized it, into a file any later process (or backup)
@@ -273,18 +273,18 @@ not load-bearing for the design):
 
 Clients pulling deep or often are not a backpressure concern
 once fusion is done — paging is map lookups. The pull pattern
-that *is* bounded is job creation, which is where the cost is.
+that _is_ bounded is job creation, which is where the cost is.
 
 ## 3. Clients, exposure, auth
 
 ### The named client set (v1)
 
-| Client | Where it runs | Transport | Ceiling cap (proposed) |
-|--------|---------------|-----------|------------------------|
-| Drew's `atlas-search` CLI | laptop (amd) | loopback | `secret-bearing` — Drew's own tool keeps the Python's full range, still requiring the ceiling to be spelled out per query |
-| OpenChamber sessions | laptop (amd) | loopback | `personal` (the current default) |
-| Fork-server (OpenCode) agents | laptop (amd) | loopback | `personal` |
-| Sandbox scripts / Muse lanes | sandbox VM | tailnet (MagicDNS) | `personal` |
+| Client                        | Where it runs | Transport          | Ceiling cap (proposed)                                                                                                    |
+| ----------------------------- | ------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| Drew's `atlas-search` CLI     | laptop (amd)  | loopback           | `secret-bearing` — Drew's own tool keeps the Python's full range, still requiring the ceiling to be spelled out per query |
+| OpenChamber sessions          | laptop (amd)  | loopback           | `personal` (the current default)                                                                                          |
+| Fork-server (OpenCode) agents | laptop (amd)  | loopback           | `personal`                                                                                                                |
+| Sandbox scripts / Muse lanes  | sandbox VM    | tailnet (MagicDNS) | `personal`                                                                                                                |
 
 **Aster (Dot) is not a v1 client.** It is an external-facing
 assistant with its own usage rules and logging; giving it a token
@@ -295,7 +295,7 @@ one more token row — but nothing in v1 issues it one.
 
 Anything not in the table gets no token. In particular there is
 no anonymous mode and no "trusted network" mode: tailnet
-membership gets a client *reachability*, never authorization.
+membership gets a client _reachability_, never authorization.
 
 ### Exposure
 
@@ -323,14 +323,14 @@ and extended in the one direction Atlas's privacy model demands:
   in this file and in each client's own config (the CLI reads
   its token from `~/.config/atlas-search/client.json`, also
   0600; sandbox copies from their local equivalent). Token
-  *values* never appear in the repo, in logs, or in this design;
+  _values_ never appear in the repo, in logs, or in this design;
   they are referenced by client name everywhere else.
 - Every request carries `Authorization: Bearer <token>` —
   including on loopback (the OpenCode server password-auths
   loopback too; precedent kept).
 - **The clamp is the security property.** A job's requested
   ceiling is clamped server-side: `effective = min(requested,
-  token.ceiling_cap)` under `SENS_ORDER`, and the effective
+token.ceiling_cap)` under `SENS_ORDER`, and the effective
   ceiling is what the branch pre-filters are built from, what is
   recorded on the job, and what the envelope reports. A client
   cannot widen its own ceiling by asking, by paging another
@@ -346,7 +346,7 @@ and extended in the one direction Atlas's privacy model demands:
 ## 4. Layout in developing-today/code, packaging, deploy
 
 Drew's rule is that all services and binaries live in this repo.
-Atlas's *tooling* historically lives in hatch-personal
+Atlas's _tooling_ historically lives in hatch-personal
 (`workspace/turso-atlas`) because that is where the corpus
 pipeline grew; the binary and service are new code and go here,
 in a self-contained package following the pkgs/id pattern (its
@@ -433,7 +433,7 @@ so the packaging step cannot rediscover them:
    loader path. For a nix-native binary this is ordinary
    `buildInputs`/`runtimeDependencies` hygiene (gcc's lib gets
    into the closure via the onnxruntime package's own deps, but
-   the packaging step must *verify* with `ldd`/closure inspection
+   the packaging step must _verify_ with `ldd`/closure inspection
    and a smoke run — not assume), plus a post-install check that
    starts the binary and runs one FTS-only and one embedded
    query against a fixture DB.
@@ -545,7 +545,7 @@ The running A/B (scan vs index-fill vs index-fixed, golden 311,
 production corpus) settles the default `VectorBackend`. Core
 implements all three strategies behind the trait regardless —
 they already exist as Python modes and the flag is how they get
-re-measured — but the *default* is whichever the A/B crowns, and
+re-measured — but the _default_ is whichever the A/B crowns, and
 Gate B is run with that default on both sides. If the A/B is
 still running when the core step starts, the core step starts
 with `scan` (the incumbent) and the default flips by a one-line
@@ -559,7 +559,7 @@ not block on it and does not pre-judge it.
    The Python is untouched and remains what `atlas-search`
    resolves to everywhere.
 1. **CLI opt-in.** The binary installs under the name
-   `atlas-search` in its own profile position *alongside* the
+   `atlas-search` in its own profile position _alongside_ the
    Python wrapper, which is renamed (not removed) to
    `atlas-search-py`. Callers opt in per environment. Gates A+B
    must be green before this phase.
@@ -583,7 +583,7 @@ not block on it and does not pre-judge it.
   only a read-only Turso token; there is no write credential on
   its code path to misuse.
 - **No re-embedding of the corpus, ever.** The service embeds
-  *queries* only. Corpus embedding (initial passes, deltas) is
+  _queries_ only. Corpus embedding (initial passes, deltas) is
   the publish pipeline's job, with its own gates.
 - **No publish-schema changes.** The missing secondary indexes
   behind the ~15 s filtered-query cost are the publish
@@ -638,21 +638,21 @@ recommendation Drew is being asked to ratify or flip:
   are data; avoids another FOD restamp cycle) and accepts the
   hand-deletion risk with a loud failure + repair verb. The
   hermetic alternative is defensible in this fleet and is a
-  packaging-local flip. *Recommendation: state-dir; flip only if
-  generation-atomic model rollback becomes a stated need.*
+  packaging-local flip. _Recommendation: state-dir; flip only if
+  generation-atomic model rollback becomes a stated need._
 - **Q2 — Which client tokens, if any, get a cap above
   `personal` in v1?** §3 proposes Drew's own CLI only. Agent
   clients at `personal` cannot see local-only material (e.g.
   some of Drew's own working sessions), which will occasionally
-  make agent-run searches thinner than Drew's own. *Recommendation:
+  make agent-run searches thinner than Drew's own. _Recommendation:
   v1 as proposed — only Drew's CLI above `personal`; revisit
   per-client after real usage shows the cost, since a cap raise
   is a one-line `service.json` edit and a cap granted early is
-  exposure that cannot be un-seen.*
+  exposure that cannot be un-seen._
 - **Q3 — When the service is healthy, should the sandbox CLI
   default to `--via-service`?** The sandbox has no local corpus
   and reaches amd over the tailnet anyway; the service gives it
-  the warm embedder. *Recommendation: yes at phase 3, with the
+  the warm embedder. _Recommendation: yes at phase 3, with the
   loud standalone fallback (§1) as the safety property; laptop
   CLI keeps standalone as its default until Drew says otherwise,
-  since the laptop is where offline/local-publish use lives.*
+  since the laptop is where offline/local-publish use lives._

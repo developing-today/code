@@ -260,7 +260,13 @@ mod tests {
                 "{line:?}"
             );
         }
-        for line in ["/logs\t5", "/records\tfoo", "/documents\tfoo", "/document\treport.txt", "/input\tab"] {
+        for line in [
+            "/logs\t5",
+            "/records\tfoo",
+            "/documents\tfoo",
+            "/document\treport.txt",
+            "/input\tab",
+        ] {
             assert_eq!(
                 parse_line(line),
                 Some(WorldLine::Message("unknown command; type /help".into())),

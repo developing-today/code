@@ -689,10 +689,7 @@ impl WorldHub {
         if let Ok(slots) = self.inner.slots.lock() {
             for (name, slot) in slots.iter() {
                 if slot.service.get().is_some() {
-                    names.insert(
-                        name.clone(),
-                        (true, slot.leases.load(Ordering::Acquire)),
-                    );
+                    names.insert(name.clone(), (true, slot.leases.load(Ordering::Acquire)));
                 }
             }
         }

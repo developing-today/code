@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
-import { isProjectPoolItem } from "./projects.ts";
+import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
 import {
@@ -28,17 +28,18 @@ import type {
   ChargeRow,
   DnsSection,
   GoalMeasurement,
-  JulesSummary,
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
   PoolFreshness,
   ProjectPoolItem,
+  ProjectAudit,
   QuotaCredentialRow,
   QuotaPool,
   QuotaView,
   QuotaWindow,
   SaasService,
+  UninstrumentedSaasService,
   SessionFeedEntry,
   SessionRecord,
   SnapshotRecord,
@@ -87,19 +88,21 @@ export interface FleetFeed {
   /** PAYG lines loadFeed's sanitization dropped (#2450), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   paygDropped?: number;
-  /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
+  /** Sandbox-server sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
-  /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
-  julesSummary?: JulesSummary;
   /** The orchestration job's latest section (#899), when one exists. */
   orchestration?: OrchestrationSection;
   /** The DNS/domain register (#902), parsed by the collector (slice 3). */
   dns?: DnsSection;
-  /** Identity-registry records (#906 §3): sandbox OpenCode + Jules + Muse launches. */
+  /** Identity-registry records (#906 §3): sandbox OpenCode + Muse launches. */
   registry?: SessionRecord[];
   /** Usage & billing hub (design §2.3): family-2 services extracted from
    * quota-view.md Part (b) by the collector; absent in older feeds. */
   saas?: SaasService[];
+  /** Tracker-derived services without an instrumented quota card. */
+  uninstrumentedServices?: UninstrumentedSaasService[];
+  /** Malformed tracker rows dropped by loadFeed (#1172). */
+  uninstrumentedServicesDropped?: number;
   /** Hub PAYG lines (§1.2), from quota-view.md + the provider registry. */
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
@@ -123,10 +126,12 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
-  /** Project #4 coverage census (#1220): per-repo open-issue and
-   * gate-label counts from the collector's Search API reads, embedded
-   * beside the projects section. Absent when the collector had no
-   * GitHub token or the census failed. */
+  /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
+  projectAudit?: ProjectAudit;
+  /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
+   * gate-label, and timestamped >90-day untouched-issue counts from the
+   * collector's Search API reads, embedded beside the projects section.
+   * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
@@ -153,6 +158,19 @@ export interface FeedMetadata {
   sections: Record<string, FeedSectionCollectionStatus>;
 }
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7741, mirroring the #7694 capUnits guard in actions.ts):
+// an astral character straddling the cap is dropped whole. Local copy, like
+// comments.ts (#7731) — a shared import would tangle module dependencies.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 /** Keep collector diagnostics useful without allowing credentials or
  *  response payloads to leak into the shared feed. */
 export function sanitizeCollectionError(value: unknown): string {
@@ -163,13 +181,19 @@ export function sanitizeCollectionError(value: unknown): string {
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(
-      /\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      // Quoted keys (#3966): JSON bodies embed credentials as
+      // {"api_key": "v"}, {'password': 'v'}, or nested {"secret":
+      // "v"} — the keyword is wrapped in quotes, so allow an
+      // optional quote on each side of the name. `key` covers bare
+      // URL credential params (?key=..., &api_key=...); the value
+      // stops at & so sibling params survive.
+      /(["']?\b(?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|key|authorization)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)/gi,
       "$1[redacted]",
     )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
-    .replace(/[\r\n\t]+/g, " ")
-    .slice(0, 240);
+    .replace(/[\r\n\t]+/g, " ");
+  message = capUnits(message, 240);
   return message || "collection failed";
 }
 
@@ -221,8 +245,7 @@ const LINED_UP_STATUSES: readonly string[] = ["in-progress", "queued", "blocked"
 // element fields directly (t.horizon, s.blocker), so a record alone is
 // not enough — the fields it dereferences must be the right shapes, or
 // the designed invalid-section fallback never happens and the consumer
-// throws (or silently renders falsified state) instead. linedUp
-// blockedBy stays out of scope here (#4316 owns the nested shape).
+// throws (or silently renders falsified state) instead.
 function isLinedUpElement(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
@@ -230,7 +253,22 @@ function isLinedUpElement(v: unknown): boolean {
     typeof v.horizon === "string" &&
     LINED_UP_HORIZONS.includes(v.horizon) &&
     (v.status === undefined || (typeof v.status === "string" && LINED_UP_STATUSES.includes(v.status))) &&
-    (v.horizonWhy === undefined || typeof v.horizonWhy === "string")
+    (v.horizonWhy === undefined || typeof v.horizonWhy === "string") &&
+    // #6174: consumers dereference `ref` as a string (assembleWorkItems
+    // keys items by it; todayFromSection carries it to the render), so
+    // its type is gated here like the other dereferenced fields. A
+    // string that is not a GitHub ref stays valid at the gate — goal
+    // ids are legitimate lined-up refs in live data (#6149); consumers
+    // guard those with isValidRef at the render (#6149/#6205).
+    (v.ref === undefined || typeof v.ref === "string") &&
+    // #4316: blockedBy is a DependencyRef[] — the same shape the
+    // top-level dependencies array is gated with (isDependencyElement).
+    // Ungated, a malformed blockedBy passed the section as valid and
+    // its blockers were silently dropped by the canonical layer
+    // (asBlockers), rendering a blocked task as unblocked. Absence is
+    // fine; a present value must be an array of dependency elements.
+    (v.blockedBy === undefined ||
+      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
   );
 }
 
@@ -483,6 +521,11 @@ export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefine
   return Array.isArray(feed?.projects);
 }
 
+/** Fail-soft read of the scheduled Project #4 audit snapshot. */
+export function projectAuditFromFeed(feed: Partial<FleetFeed> | null | undefined): ProjectAudit | null {
+  return isProjectAudit(feed?.projectAudit) ? feed.projectAudit : null;
+}
+
 /** Fail-soft read of the coverage census from a parsed feed: absent
  * or malformed sections yield null (the panel then renders backlog
  * counts as unavailable), malformed rows drop individually. A duplicate
@@ -522,7 +565,7 @@ export function isQuotaWindow(v: unknown): v is QuotaWindow {
   );
 }
 
-const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale", "lapsed"];
 
 /** One quota pool whose own shape is safe to hand to the renderers
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
@@ -540,7 +583,7 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error", "lapsed"];
 
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (
@@ -890,7 +933,8 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
     // unguarded, so — like burn/choices above — the feed is rejected
     // whole. Malformed ELEMENTS inside an array are loadFeed's
     // drop-and-count concern, not the gate's.
-    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention)) &&
+    (f.uninstrumentedServices === undefined || Array.isArray(f.uninstrumentedServices))
   );
 }
 
@@ -924,6 +968,32 @@ export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
   return { rows, dropped: v.length - rows.length };
 }
 
+export interface UninstrumentedServiceSanitization {
+  rows?: UninstrumentedSaasService[];
+  dropped: number;
+}
+
+/** A tracker row safe to hand to renderers (#1172). */
+export function isUninstrumentedSaasService(v: unknown): v is UninstrumentedSaasService {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    typeof v.whatFor === "string" &&
+    typeof v.status === "string" &&
+    (v.checkedAt === null || isIsoDate(v.checkedAt)) &&
+    typeof v.overageBehavior === "string" &&
+    typeof v.guardrailNotes === "string"
+  );
+}
+
+/** Drop malformed tracker rows at the shared feed boundary. */
+export function sanitizeUninstrumentedServices(v: unknown): UninstrumentedServiceSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isUninstrumentedSaasService);
+  return { rows, dropped: v.length - rows.length };
+}
+
 export interface RegistrySanitization {
   /** Safe registry rows, or undefined when the optional section is absent. */
   rows?: SessionRecord[];
@@ -937,9 +1007,11 @@ export interface RegistrySanitization {
  * dropped individually. */
 export function sanitizeRegistry(v: unknown): RegistrySanitization {
   if (v === undefined) return { dropped: 0 };
-  if (!Array.isArray(v)) return { rows: [], dropped: 1 };
-  const rows = v.filter(isSessionRecord);
-  return { rows, dropped: v.length - rows.length };
+  // Shared container primitive (#2576 Phase 1): a non-array section is one
+  // shape failure; malformed array entries drop individually and count.
+  const parsed = arrayOf(isSessionRecord)(v);
+  if (parsed === null) return { rows: [], dropped: 1 };
+  return { rows: parsed.values, dropped: parsed.dropped };
 }
 
 /** A PAYG line safe for both the attention derivation and the quota renderer. */
@@ -1007,6 +1079,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const charges =
       parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    const uninstrumented = sanitizeUninstrumentedServices(parsed.uninstrumentedServices);
     // Registry rows feed both the session registry and coverage, so sanitize
     // once here rather than letting the two consumers see different inputs.
     const registry = sanitizeRegistry(parsed.registry);
@@ -1052,6 +1125,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(uninstrumented.rows ? { uninstrumentedServices: uninstrumented.rows } : {}),
+      ...(uninstrumented.dropped > 0 ? { uninstrumentedServicesDropped: uninstrumented.dropped } : {}),
       ...(registry.rows !== undefined ? { registry: registry.rows } : {}),
       ...(registry.dropped > 0 ? { registryDropped: registry.dropped } : {}),
       ...(payg.rows !== undefined ? { payg: payg.rows } : {}),

@@ -11,19 +11,6 @@ name: mcpx-fix-test-guard
 # new check appears for them.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - ".github/scripts/check-mcpx-fix-test.sh"
-      - ".github/scripts/check-mcpx-fix-test.test.sh"
-      - ".github/workflows/mcpx-fix-test-guard.yml"
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - ".github/scripts/check-mcpx-fix-test.sh"
-      - ".github/scripts/check-mcpx-fix-test.test.sh"
-      - ".github/workflows/mcpx-fix-test-guard.yml"
   workflow_dispatch:
 
 permissions:

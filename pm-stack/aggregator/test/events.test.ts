@@ -7,15 +7,17 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   EVENT_RETENTION_MAX,
+  eventHash,
   EventsStore,
   emitEvent,
   filterEvents,
   pageEvents,
   pruneEvents,
   validateStreamEvent,
+  type AuditEvent,
   type StreamEvent,
 } from "../src/events.ts";
 
@@ -181,16 +183,21 @@ describe("events store (#1739)", () => {
       { ...base, at: "2026-11-01T09:00:00Z", ref: "developing-today/code#8", summary: "Closed" },
     ];
     const itemContext = new Map([
-      ["developing-today/code#7", { project: "https://github.com/orgs/developing-today/projects/1", epic: "developing-today/code#1" }],
+      [
+        "developing-today/code#7",
+        { project: "https://github.com/orgs/developing-today/projects/1", epic: "developing-today/code#1" },
+      ],
       ["developing-today/code#8", { project: "https://github.com/orgs/developing-today/projects/2", epic: null }],
     ]);
-    expect(filterEvents(events, {
-      refs: ["developing-today/code#7"],
-      project: "https://github.com/orgs/developing-today/projects/1",
-      epic: "developing-today/code#1",
-      search: "REVIEW",
-      itemContext,
-    }).map((event) => event.ref)).toEqual(["gh:developing-today/code#7"]);
+    expect(
+      filterEvents(events, {
+        refs: ["developing-today/code#7"],
+        project: "https://github.com/orgs/developing-today/projects/1",
+        epic: "developing-today/code#1",
+        search: "REVIEW",
+        itemContext,
+      }).map((event) => event.ref),
+    ).toEqual(["gh:developing-today/code#7"]);
   });
 
   test("cursor pages use stable id ordering and exclude events ingested after the snapshot", async () => {
@@ -205,10 +212,30 @@ describe("events store (#1739)", () => {
 
     // A late-arriving old event sorts behind the cursor by event time,
     // but its ingestion time is beyond the first page's fixed snapshot.
-    await store.record({ ...base, id: "late-event", at: new Date(now - 5 * 60_000).toISOString(), summary: "arrived late" });
+    await store.record({
+      ...base,
+      id: "late-event",
+      at: new Date(now - 5 * 60_000).toISOString(),
+      summary: "arrived late",
+    });
     const second = pageEvents(await store.list(), { limit: 2, cursor: first.nextCursor });
     expect(second.events.map((event) => event.id)).toEqual(["event-c"]);
     expect(second.events.map((event) => event.id)).not.toContain("late-event");
+  });
+
+  test("ingestedAt stamps are strictly monotonic across rapid appends (#3322, PR #7665)", async () => {
+    // pageEvents snapshot exclusion is only exact if a later append
+    // can never share the snapshot's newest ingestedAt; wall-clock
+    // stamps tie at millisecond resolution, so record() must stamp
+    // strictly past the previous record even within the same ms.
+    const { store } = tmpStore();
+    for (let i = 0; i < 5; i++) {
+      await store.record({ ...base, id: `mono-${i}`, summary: `rapid ${i}` });
+    }
+    const stamps = (await store.list()).map((e) => Date.parse(e.ingestedAt)).sort((a, b) => a - b);
+    for (let i = 1; i < stamps.length; i++) {
+      expect(stamps[i]).toBeGreaterThan(stamps[i - 1]!);
+    }
   });
 
   test("pageEvents compares ingestion timestamps as instants, not strings", () => {
@@ -249,19 +276,42 @@ describe("events store (#1739)", () => {
   });
 
   test("validateStreamEvent refuses impossible calendar dates (#5154)", () => {
-    // Date.parse rolls these over to a neighbouring month instead of
-    // returning NaN; the ingest boundary must refuse them outright.
-    expect(validateStreamEvent({ ...base, at: "2026-02-30" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-02-30T10:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-04-31T10:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-13-01T00:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-02-29T10:00:00Z" }).ok).toBe(false);
+    // Date.parse rolls impossible dates over and accepts locale-dependent
+    // non-ISO forms; the ingest boundary must refuse both with its ISO error.
+    for (const at of [
+      "2026-02-30",
+      "2026-02-30T10:00:00Z",
+      "2026-04-31T10:00:00Z",
+      "March 2, 2026",
+      "03/02/2026",
+      "2026-13-01T00:00:00Z",
+      "2026-02-29T10:00:00Z",
+    ]) {
+      expect(validateStreamEvent({ ...base, at })).toEqual({
+        ok: false,
+        error: "event.at must be an ISO timestamp string",
+      });
+    }
     // Controls: real timestamps still validate — leap date, offset,
     // fractional seconds, date-only.
     expect(validateStreamEvent({ ...base, at: "2024-02-29T10:00:00Z" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00+02:00" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00.500Z" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "2026-02-28" }).ok).toBe(true);
+  });
+
+  test("legacy event files with impossible or non-ISO timestamps are quarantined", async () => {
+    for (const at of ["2026-02-30T10:00:00Z", "2026-04-31T10:00:00Z", "March 2, 2026", "03/02/2026"]) {
+      const dir = mkdtempSync(join(tmpdir(), "agg-events-invalid-at-"));
+      const file = join(dir, "events.json");
+      const original = JSON.stringify({ version: 1, events: [{ ...base, at }] }, null, 2);
+      writeFileSync(file, original);
+
+      expect(await new EventsStore(file).list()).toEqual([]);
+      const quarantined = readdirSync(dir).find((name) => name.startsWith("events.json.corrupt-"));
+      expect(quarantined).toBeDefined();
+      expect(readFileSync(join(dir, quarantined!), "utf8")).toBe(original);
+    }
   });
 
   test("validateStreamEvent rejects malformed records", () => {
@@ -300,6 +350,40 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync
 import { verifyEventChain } from "../src/events.ts";
 
 describe("events audit v2 (#3322 slice A)", () => {
+  async function writeV2WithIngestedAt(ingestedAt: string) {
+    const { file, store } = tmpStore();
+    await store.record({ ...base, at: new Date(Date.now() - 60_000).toISOString() });
+    const stored = JSON.parse(readFileSync(file, "utf8")) as { version: 2; events: AuditEvent[] };
+    const event = { ...stored.events[0]!, ingestedAt };
+    event.hash = eventHash(event.prevHash, event);
+    const raw = JSON.stringify({ ...stored, events: [event] }, null, 2);
+    writeFileSync(file, raw);
+    return { file, dir: dirname(file), raw };
+  }
+
+  test.each([
+    ["impossible November day", "2026-11-31T00:00:00.000Z"],
+    ["impossible February day", "2026-02-30T00:00:00.000Z"],
+    ["non-ISO date spelling", "November 2, 2026"],
+  ])("a v2 record with %s ingestedAt is quarantined", async (_label, ingestedAt) => {
+    const { file, dir, raw } = await writeV2WithIngestedAt(ingestedAt);
+    expect(await new EventsStore(file).list()).toEqual([]);
+    const quarantined = readdirSync(dir).filter((name) => name.startsWith("events.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]!), "utf8")).toBe(raw);
+  });
+
+  test.each([
+    ["fractional seconds", "2026-11-01T10:00:00.500Z"],
+    ["offset", "2026-11-01T10:00:00+02:00"],
+  ])("a v2 record with valid ISO ingestedAt (%s) loads", async (_label, ingestedAt) => {
+    const { file, dir } = await writeV2WithIngestedAt(ingestedAt);
+    const store = new EventsStore(file);
+    expect((await store.list()).map((event) => event.ingestedAt)).toEqual([ingestedAt]);
+    expect((await store.health()).integrity.ok).toBe(true);
+    expect(readdirSync(dir).some((name) => name.startsWith("events.json.corrupt-"))).toBe(false);
+  });
+
   test("record stamps v2 audit fields: stable id, ingest time, attribution, source, hash link", async () => {
     const { store } = tmpStore();
     const at = new Date(Date.now() - 60_000).toISOString();
