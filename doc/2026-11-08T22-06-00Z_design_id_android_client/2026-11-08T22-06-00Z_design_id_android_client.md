@@ -122,7 +122,7 @@ Every invocation requires both:
 1. an ID grant scoped to provider, capability, consumer, purpose, rate/volume, and expiry; and
 2. the relevant Android runtime permission or system-mediated selection for the operation.
 
-Effective authority is their intersection. Denial or revocation by either gate stops the invocation and suspends the affected provider capability in discovery; an Android permission does not create an ID grant. The host checks ID authority on every invocation. A transport identity, Binder caller, AppFunctions entry, or notification token is not itself a grant.
+Effective authority is their intersection. Denial or revocation by either gate stops the invocation, but the consequences are scoped by which gate failed (per #5903 D3): a consumer-specific ID-grant failure (an expired, revoked, or missing grant for that consumer) denies only that consumer's invocation and never suspends the provider capability in discovery for other consumers with valid grants (D3(2)); capability-wide suspension in discovery is reserved for provider/platform availability changes — Android permission revocation, provider shutdown, or the app leaving its declared execution envelope (D3(3)). An Android permission does not create an ID grant. The host checks ID authority on every invocation. A transport identity, Binder caller, AppFunctions entry, or notification token is not itself a grant.
 
 ### 5.2 Risk classes and lifecycle
 
