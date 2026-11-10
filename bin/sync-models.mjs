@@ -1,4 +1,14 @@
 #!/usr/bin/env node
+// Parsed-shape contract (#3068): parsed is not validated. Every value
+// this tool obtains by parsing (config files, provider/model API
+// responses, local service RPCs) is shape-checked once at the parse
+// boundary before it is dereferenced: a wrong shape is a named shape
+// error in this tool's vocabulary, never a raw TypeError and never a
+// silently half-applied value. Absence is not emptiness — a missing
+// section is absent, not an empty object/array standing in for a
+// measured result. Coercion is not validation. The full statement
+// lives in pm-stack/aggregator/README.md ("Parsed-shape contract
+// (#3068)"); the closing audit is recorded on issue #3069.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -25,7 +35,17 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v');
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
-const HOME_DIR = process.env.HOME || '/home/user';
+// Home-resolution contract (issues #5762 / #5763): a non-empty HOME
+// is the only home resolution. The old `|| '/home/user'` fallback was
+// a hardcoded-user substitute directory; unset/empty HOME now fails
+// loudly naming HOME instead of syncing another user's config/state.
+const HOME_DIR = process.env.HOME;
+if (!HOME_DIR) {
+  console.error(
+    '[sync-models] Error: HOME is not set or is empty: sync-models requires a non-empty HOME to resolve its config/state paths (home-resolution contract, issues #5762/#5763)',
+  );
+  process.exit(2);
+}
 // Config resolution (#591, #4544): the model catalogs this script maintains
 // live in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc),
 // which the OpenCode server layers over the tracked configured default via

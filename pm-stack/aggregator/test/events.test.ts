@@ -7,15 +7,17 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   EVENT_RETENTION_MAX,
+  eventHash,
   EventsStore,
   emitEvent,
   filterEvents,
   pageEvents,
   pruneEvents,
   validateStreamEvent,
+  type AuditEvent,
   type StreamEvent,
 } from "../src/events.ts";
 
@@ -348,6 +350,40 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync
 import { verifyEventChain } from "../src/events.ts";
 
 describe("events audit v2 (#3322 slice A)", () => {
+  async function writeV2WithIngestedAt(ingestedAt: string) {
+    const { file, store } = tmpStore();
+    await store.record({ ...base, at: new Date(Date.now() - 60_000).toISOString() });
+    const stored = JSON.parse(readFileSync(file, "utf8")) as { version: 2; events: AuditEvent[] };
+    const event = { ...stored.events[0]!, ingestedAt };
+    event.hash = eventHash(event.prevHash, event);
+    const raw = JSON.stringify({ ...stored, events: [event] }, null, 2);
+    writeFileSync(file, raw);
+    return { file, dir: dirname(file), raw };
+  }
+
+  test.each([
+    ["impossible November day", "2026-11-31T00:00:00.000Z"],
+    ["impossible February day", "2026-02-30T00:00:00.000Z"],
+    ["non-ISO date spelling", "November 2, 2026"],
+  ])("a v2 record with %s ingestedAt is quarantined", async (_label, ingestedAt) => {
+    const { file, dir, raw } = await writeV2WithIngestedAt(ingestedAt);
+    expect(await new EventsStore(file).list()).toEqual([]);
+    const quarantined = readdirSync(dir).filter((name) => name.startsWith("events.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]!), "utf8")).toBe(raw);
+  });
+
+  test.each([
+    ["fractional seconds", "2026-11-01T10:00:00.500Z"],
+    ["offset", "2026-11-01T10:00:00+02:00"],
+  ])("a v2 record with valid ISO ingestedAt (%s) loads", async (_label, ingestedAt) => {
+    const { file, dir } = await writeV2WithIngestedAt(ingestedAt);
+    const store = new EventsStore(file);
+    expect((await store.list()).map((event) => event.ingestedAt)).toEqual([ingestedAt]);
+    expect((await store.health()).integrity.ok).toBe(true);
+    expect(readdirSync(dir).some((name) => name.startsWith("events.json.corrupt-"))).toBe(false);
+  });
+
   test("record stamps v2 audit fields: stable id, ingest time, attribution, source, hash link", async () => {
     const { store } = tmpStore();
     const at = new Date(Date.now() - 60_000).toISOString();

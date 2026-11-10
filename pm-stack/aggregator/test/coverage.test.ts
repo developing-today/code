@@ -7,6 +7,7 @@ import {
   CoverageSnapshotStore,
   diffCoverage,
   isRepoCensus,
+  isValidAnchorAt,
   nextCoverageSnapshot,
   staleIssueSearchQuery,
   staleIssueState,
@@ -189,6 +190,111 @@ describe("snapshot rotation + delta", () => {
     const delta = diffCoverage(mk("2026-11-01T00:00:00Z", null), mk("2026-10-24T00:00:00Z", 90));
     expect(delta.get("developing-today/code")?.openIssues).toBeNull();
     expect(delta.get("developing-today/code")?.poolItems).toBe(0);
+  });
+});
+
+describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
+  const mk = (at: string, codeOpen: number | null): CoverageReport => ({
+    generatedAt: at,
+    repos: [
+      {
+        repo: "developing-today/code",
+        openIssues: codeOpen,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
+    ],
+  });
+
+  test("a garbage anchorAt falls back to current.generatedAt and rotation fires on schedule", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-01T00:00:00Z", 90),
+      weekly: mk("2026-10-01T00:00:00Z", 90),
+      anchorAt: "not-a-date",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-01T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
+  });
+
+  test("an impossible anchorAt (2026-02-30) is treated like an unparseable one", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-01T00:00:00Z", 90),
+      weekly: mk("2026-10-01T00:00:00Z", 90),
+      anchorAt: "2026-02-30T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-01T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
+  });
+
+  test("the store reads a poisoned-anchor file as absent and a well-formed one as itself", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "coverage-anchor-"));
+    try {
+      const file = join(dir, "coverage-snapshot.json");
+      const store = new CoverageSnapshotStore(file);
+      const good: CoverageSnapshotFile = {
+        baseline: null,
+        current: mk("2026-10-01T00:00:00Z", 90),
+        anchorAt: "2026-10-01T00:00:00Z",
+      };
+      await store.write(good);
+      expect(await store.read()).toEqual(good);
+      await store.write({ ...good, anchorAt: "not-a-date" });
+      expect(await store.read()).toBeNull();
+      await store.write({ ...good, anchorAt: "2026-02-30T00:00:00Z" });
+      expect(await store.read()).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the fallback anchor rotates a week later instead of freezing", () => {
+    // The freeze bug was one week downstream: main kept returning the
+    // poisoned anchor, so no later read could ever cross the week. The
+    // fallback must be a real date that the NEXT read rotates from.
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-31T00:00:00Z", 90),
+      weekly: mk("2026-10-24T00:00:00Z", 80),
+      anchorAt: "2026-02-30T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.anchorAt).toBe("2026-10-31T00:00:00Z");
+    expect(snap.baseline).toBeNull();
+    const aWeekLater = new Date("2026-11-08T00:00:00Z");
+    const rotated = nextCoverageSnapshot(snap, mk("2026-11-08T00:00:00Z", 120), aWeekLater);
+    expect(rotated.anchorAt).toBe("2026-11-08T00:00:00.000Z");
+    expect(rotated.baseline?.generatedAt).toBe("2026-10-24T00:00:00Z");
+  });
+
+  test("isValidAnchorAt agrees with an independent calendar oracle on generated dates", () => {
+    // Oracle: plain leap-year + days-in-month arithmetic, written here
+    // independently of the implementation Date round-trip (#5196 Codex
+    // P1: parser invariants get property tests, not picked examples).
+    const isLeap = (y: number) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+    const daysInMonth = (y: number, m: number) =>
+      [31, isLeap(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+    // Deterministic LCG so the generated cases are reproducible.
+    let seed = 5196;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    for (let i = 0; i < 600; i++) {
+      const year = 1900 + (next() % 400);
+      const month = 1 + (next() % 14); // 13-14: invalid months
+      const day = next() % 34; // 0 and 32-33: invalid days
+      const stamp = year + "-" + pad(month) + "-" + pad(day) + "T00:00:00Z";
+      const expected = month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+      expect(isValidAnchorAt(stamp)).toBe(expected);
+    }
+    // Non-string and unparseable shapes never validate.
+    for (const junk of ["", "not-a-date", null, undefined, 0, {}])
+      expect(isValidAnchorAt(junk)).toBe(false);
   });
 });
 
@@ -415,5 +521,30 @@ describe("CoverageSnapshotStore reads (#4140)", () => {
     expect(await readRaw({ ...goodFile, current: badReport })).toBeNull();
     expect(await readRaw({ ...goodFile, baseline: badReport })).toBeNull();
     expect(await readRaw("{not json")).toBeNull();
+  });
+
+  test("a present-but-unusable anchorAt reads as absent under the whole-file gate; absent stays legacy-valid (#5196)", async () => {
+    // Garbage and impossible dates are corruption, not a silent fallback:
+    // the whole file reads as absent, so the poisoned anchor is never
+    // re-persisted on a panel read and rotation cannot freeze on it.
+    expect(await readRaw({ ...goodFile, anchorAt: "not-a-date" })).toBeNull();
+    expect(await readRaw({ ...goodFile, anchorAt: "2026-02-30T00:00:00Z" })).toBeNull();
+    expect(await readRaw({ ...goodFile, anchorAt: "" })).toBeNull();
+    expect(await readRaw({ ...goodFile, anchorAt: 1234 })).toBeNull();
+    // Files written before anchorAt existed keep their fallback.
+    const preAnchor = { baseline: null, current: report, weekly: report };
+    expect(await readRaw(preAnchor)).toEqual(preAnchor);
+  });
+});
+
+describe("isValidAnchorAt (#5196)", () => {
+  test("real timestamps pass; junk, impossible dates and non-strings fail", () => {
+    expect(isValidAnchorAt("2026-11-01T00:00:00Z")).toBe(true);
+    expect(isValidAnchorAt("2026-11-01")).toBe(true);
+    expect(isValidAnchorAt("")).toBe(false);
+    expect(isValidAnchorAt("not-a-date")).toBe(false);
+    expect(isValidAnchorAt("2026-02-30T00:00:00Z")).toBe(false);
+    expect(isValidAnchorAt(undefined)).toBe(false);
+    expect(isValidAnchorAt(1234)).toBe(false);
   });
 });

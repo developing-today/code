@@ -897,7 +897,12 @@ impl ServeWorlds {
             "serve startup: records ready, building world service (#190 breadcrumb)"
         );
         let service = if self.ephemeral {
-            make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
+            make(WorldHandle::spawn_with_device_manifest(
+                WorldCore::new(name, limits)?,
+                Box::<crate::world::EmptyWorldProgram>::default(),
+                Some(WorldHandle::host_device_manifest()),
+            ))
+            .with_records_store(records)
         } else {
             let (service, report) =
                 crate::world_store::open_world(&dir, name, limits, runtime, make).await?;
@@ -1074,6 +1079,28 @@ fn serve_pull_policy(started: Option<&StartedServerConfig>) -> crate::pull_polic
     })
 }
 
+/// The world protocol serve registers for a hub: the loaded operator
+/// config's #2247 budget policy when a server config was given, the
+/// coded defaults when none was. Before this wire, the budgets
+/// table was parsed and held at startup scope but never reached the
+/// protocol, so configured per-counterparty caps were inert in
+/// production.
+#[cfg(feature = "world")]
+fn world_protocol_for(
+    hub: crate::world_hub::WorldHub,
+    local_node: [u8; 32],
+    started: Option<&StartedServerConfig>,
+) -> crate::world_net::WorldProtocol {
+    match started {
+        Some(started) => crate::world_net::WorldProtocol::with_budgets(
+            hub,
+            local_node,
+            started.config.budgets().clone(),
+        ),
+        None => crate::world_net::WorldProtocol::with_local_node(hub, local_node),
+    }
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -1164,7 +1191,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         );
     }
     #[cfg(feature = "world")]
-    let _started_server_config = match &server_config {
+    let started_server_config = match &server_config {
         Some(path) => {
             let started = start_server_config(path)?;
             status!(
@@ -1466,7 +1493,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     let world_protocol = world_hub
         .as_ref()
-        .map(|hub| crate::world_net::WorldProtocol::with_local_node(hub.clone(), *node_id.as_bytes()));
+        .map(|hub| world_protocol_for(hub.clone(), *node_id.as_bytes(), started_server_config.as_ref()));
 
     #[cfg(feature = "world")]
     let abuse_handle = world_protocol
@@ -3534,6 +3561,68 @@ mod tests {
             crate::pull_policy::PullPolicy::Members
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // #2247: the loaded [budgets] must reach the world protocol serve
+    // registers, not just the parser.
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_enforces_configured_budgets() {
+        let dir = serve_config_dir("budgets");
+        let path = dir.join("server.toml");
+        let ann = ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+            .verifying_key()
+            .to_bytes();
+        let ann_hex = ann.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{ann_hex}\"\n\n[budgets]\nper_peer_bytes_per_hour = 1000\n\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 500\nwindow_seconds = 60\n"
+            ),
+        )
+        .unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_ne!(
+            *started.config.budgets(),
+            crate::abuse::BudgetPolicy::default()
+        );
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], Some(&started));
+        let handle = protocol.abuse_handle();
+        let mut evaluator = handle.lock().unwrap();
+        // The configured policy — not the default — is the evaluator's.
+        assert_eq!(evaluator.budgets(), Some(started.config.budgets()));
+        // Ann's counterparty row replaced her per-peer limits.
+        let limits = started.config.budgets().limits_for_peer(&ann);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].bytes_per_window, 500);
+        // A charge beyond the configured cap is refused as a budget
+        // refusal (the frame is dropped; the peer is not disconnected).
+        let refusal = evaluator
+            .check_budget(crate::abuse::Direction::Inbound, ann, None, 600, 1_000)
+            .unwrap_err();
+        assert_eq!(refusal.reason, crate::abuse::RefusalReason::BudgetExhausted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_defaults_budgets_without_config() {
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], None);
+        let handle = protocol.abuse_handle();
+        let evaluator = handle.lock().unwrap();
+        assert_eq!(
+            evaluator.budgets(),
+            Some(&crate::abuse::BudgetPolicy::default())
+        );
     }
 
     #[test]

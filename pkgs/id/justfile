@@ -225,7 +225,8 @@ just-recipes-check:
 # Run all Rust tests
 [group('test')]
 test-rust:
-    cargo test --all-features
+    cargo nextest run --all-features
+    cargo test --all-features --doc
 alias test-cargo := test-rust
 
 # Planted-bug check: prove the voiding/frontier suites catch planted bugs (#1395, P2.3/P2.8)
@@ -241,14 +242,14 @@ test: test-rust test-web-unit test-web-typecheck
 # Run all Rust tests (sandbox-safe: excludes tests requiring network)
 [group('test')]
 test-sandbox:
-    cargo test --all-features -- --skip serve_tests
+    cargo nextest run --all-features -E 'not test(serve_tests)'
 
 # Full Rust run: the complete suite, then the regression replay and the tuple property tests at a higher case count
 [group('test')]
 test-full:
-    cargo test --all-features --no-fail-fast
-    cargo test --all-features --test regression_replay
-    PROPTEST_CASES="${PROPTEST_CASES:-4096}" ID_TUPLE_FUZZ_CASES="${ID_TUPLE_FUZZ_CASES:-20000}" cargo test --all-features --test tuple_properties
+    cargo nextest run --all-features --no-fail-fast
+    cargo nextest run --all-features --test regression_replay
+    PROPTEST_CASES="${PROPTEST_CASES:-4096}" ID_TUPLE_FUZZ_CASES="${ID_TUPLE_FUZZ_CASES:-20000}" cargo nextest run --all-features --test tuple_properties
     @echo "✓ Full Rust test run passed"
 
 # Crash-safety gate for redb and the identity store: every storage call under every survival policy, and the lying-sync control, in release
@@ -290,13 +291,13 @@ crash-gate-ingest:
 # Run unit tests only (fast)
 [group('test')]
 test-unit:
-    cargo test --all-features --lib
+    cargo nextest run --all-features --lib
 alias test-lib := test-unit
 
 # Run the id-native-shell unit + contract transcript tests (#5582): non-default workspace member, so the default-member test recipes never run it.
 [group('test')]
 test-native-shell:
-    cargo test -p id-native-shell
+    cargo nextest run -p id-native-shell
 
 # Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out
 bench *args:
@@ -305,13 +306,13 @@ bench *args:
 # Run integration tests only
 [group('test')]
 test-integration:
-    cargo test --all-features --test cli_integration
+    cargo nextest run --all-features --test cli_integration
 alias test-int := test-integration
 
 # Run integration tests (sandbox-safe: excludes serve_tests requiring network)
 [group('test')]
 test-int-sandbox:
-    cargo test --all-features --test cli_integration -- --skip serve_tests
+    cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests)'
 
 # Run one COUNT-th slice of the integration tests (sandbox-safe:
 # excludes serve_tests requiring network) — see
@@ -325,12 +326,12 @@ test-shard-sandbox SHARD COUNT:
 # Run tests with output shown
 [group('test')]
 test-verbose:
-    cargo test --all-features -- --nocapture
+    cargo nextest run --all-features --nocapture
 
 # Run a specific test by name
 [group('test')]
 test-one NAME:
-    cargo test --all-features {{ NAME }}
+    cargo nextest run --all-features -E 'test({{ NAME }})'
 
 # [bun] Run web tests (Rust + TypeScript unit tests + type checking)
 [group('test')]

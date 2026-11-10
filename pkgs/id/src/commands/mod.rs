@@ -74,6 +74,7 @@ pub mod tag;
 pub mod text;
 #[cfg(feature = "world")]
 pub mod world;
+pub mod writer_set;
 
 pub use claim::cmd_claim;
 pub use client::create_local_client_endpoint;
@@ -101,3 +102,4 @@ pub use serve::{
 pub use tag::{cmd_migrate_tags, cmd_tag};
 #[cfg(feature = "world")]
 pub use world::cmd_world;
+pub use writer_set::cmd_writer_sets;
