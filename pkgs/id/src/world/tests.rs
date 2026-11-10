@@ -1831,6 +1831,81 @@ mod tests {
         assert_eq!(oversized_result["error"], "bad_args");
     }
 
+    /// #7942: `device.info` driven through the public `WorldHandle`
+    /// spawn path — the manifest supplied at spawn comes back in the
+    /// result event, twice (the cached copy serves repeated requests;
+    /// nothing re-enumerates), with no direct field mutation.
+    #[tokio::test]
+    async fn device_info_through_the_public_spawn_path_returns_the_supplied_manifest() {
+        use std::sync::Mutex;
+
+        #[derive(Debug, Default)]
+        struct DeviceProbe {
+            results: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+
+        impl WorldProgram for DeviceProbe {
+            fn snapshot(&mut self) -> Result<Option<String>> {
+                Ok(Some("{}".to_owned()))
+            }
+
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value =
+                        serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                    if value["cap"] == "result" {
+                        self.results.lock().unwrap().push(value);
+                    }
+                }
+                Ok(())
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({
+                        "v": 1,
+                        "requests": [
+                            {"id": "device-1", "cap": "device.info", "args": {}},
+                            {"id": "device-2", "cap": "device.info", "args": {}},
+                        ],
+                    })
+                    .to_string(),
+                ))
+            }
+        }
+
+        let manifest = crate::world_caps::DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["device.info".to_owned()]));
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let probe = DeviceProbe {
+            results: Arc::clone(&results),
+        };
+        let _world =
+            WorldHandle::spawn_with_device_manifest(core, Box::new(probe), Some(manifest.clone()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if results.lock().unwrap().len() >= 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "device.info was not answered");
+            tokio::task::yield_now().await;
+        }
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 2);
+        for result in results.iter() {
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["value"], manifest.to_json(), "{result}");
+        }
+    }
+
     #[tokio::test]
     async fn records_read_pages_fit_the_result_event_that_delivers_them() {
         // Regression for #4888: sixteen ~8 KiB records total ~128 KiB,

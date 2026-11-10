@@ -667,6 +667,76 @@ mod tests {
         }
     }
 
+    fn write_raw_registry_file(name: &str, raw: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "id-publications-test-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("publications.json");
+        std::fs::write(&file, raw).unwrap();
+        file
+    }
+
+    #[test]
+    fn load_refuses_duplicate_json_keys_naming_the_file() {
+        // #6504: a key spelled twice must be refused outright, never
+        // collapsed (last wins) before `validate_persisted` runs — an
+        // invalid first spelling would otherwise be silently restored
+        // as the valid second one. Each case hides an invalid value
+        // first; the controls below prove each shape loads or fails on
+        // its own merits.
+        let cases: [(&str, &str, &str); 3] = [
+            (
+                "dup-publications",
+                "publications",
+                r#"{"publications":[{"world":"","placement":{"kind":"path_mount","path":"//bad"}}],
+                    "publications":[{"world":"arena","placement":{"kind":"path_mount","path":"/arena"}}]}"#,
+            ),
+            (
+                "dup-world",
+                "world",
+                r#"{"publications":[{"world":"","world":"arena",
+                    "placement":{"kind":"path_mount","path":"/arena"}}]}"#,
+            ),
+            (
+                "dup-path",
+                "path",
+                r#"{"publications":[{"world":"arena",
+                    "placement":{"kind":"path_mount","path":"//bad","path":"/good"}}]}"#,
+            ),
+        ];
+        for (name, key, raw) in cases {
+            let file = write_raw_registry_file(name, raw);
+            let err = Registry::load(&file)
+                .expect_err(&format!("duplicate `{key}` must be refused ({name})"));
+            let text = format!("{err:#}");
+            assert!(
+                text.contains("duplicate field"),
+                "{name}: error must say duplicate field: {text}"
+            );
+            assert!(
+                text.contains(&format!("`{key}`")),
+                "{name}: error must name the key `{key}`: {text}"
+            );
+            assert!(
+                text.contains(&file.display().to_string()),
+                "{name}: error must name the file: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_accepts_the_single_spelling_of_each_duplicate_key_case() {
+        // Controls for the duplicate-key test: the same records with
+        // each key spelled once (the valid spelling) load.
+        let raw = r#"{"publications":[{"world":"arena",
+            "placement":{"kind":"path_mount","path":"/arena"}}]}"#;
+        let file = write_raw_registry_file("single-spelling", raw);
+        let loaded = Registry::load(&file).unwrap();
+        assert_eq!(loaded.publications, vec![mount("/arena", false)]);
+    }
+
     #[test]
     fn boot_warning_names_the_route_for_any_spelling() {
         // Stored outside publish(): `//world` is the `/world` mount,

@@ -255,7 +255,7 @@ impl InMemoryLedger {
         if self.failed_transfers.contains_key(&transfer.id) {
             return Err(TransferError::IdAlreadyFailed);
         }
-        
+
         if let Some(existing) = self.transfers.get(&transfer.id) {
             return if existing == transfer {
                 Err(TransferError::Exists)
@@ -489,7 +489,7 @@ impl LedgerBackend for InMemoryLedger {
                             self.failed_transfers.insert(failing.id, error);
                         }
                     }
-                    
+
                     // The chain broke at the first non-`Created` leg in
                     // chain order: an earlier `Exists` leg (TigerBeetle
                     // breaks on it before ever reaching the hard

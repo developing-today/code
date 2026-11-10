@@ -1133,16 +1133,30 @@ mod tests {
         let (mut store, signing, public, envelope) = uploaded_store();
         store.bind_device(&public, [42; 32]);
         let first = store.download_for_restore(&public, 5_000).unwrap();
-        assert_eq!(first.token, RestoreToken { generation: 1, restore_epoch: 1 });
+        assert_eq!(
+            first.token,
+            RestoreToken {
+                generation: 1,
+                restore_epoch: 1
+            }
+        );
         // Delete while the first restore's notifications are still
         // delivering, then recreate at a higher upload epoch.
         let delete_sig = sign_delete(&signing, 1);
         store.delete(&public, &delete_sig).unwrap();
         let recreate_sig = sign_upload(&signing, &envelope, 2);
-        store.upload(&public, &envelope, 2, &recreate_sig, 6_000).unwrap();
+        store
+            .upload(&public, &envelope, 2, &recreate_sig, 6_000)
+            .unwrap();
         let second = store.download_for_restore(&public, 7_000).unwrap();
         assert_eq!(second.restore_epoch, 1);
-        assert_eq!(second.token, RestoreToken { generation: 2, restore_epoch: 1 });
+        assert_eq!(
+            second.token,
+            RestoreToken {
+                generation: 2,
+                restore_epoch: 1
+            }
+        );
         assert!(!store.is_authoritative(&public));
         // The delayed confirmation from the deleted backup arrives.
         assert!(!store.confirm_restore_notifications(&public, first.token));
