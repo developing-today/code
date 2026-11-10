@@ -124,6 +124,12 @@ const DEMOTE_WINDOW_MS = 4 * 60 * 60 * 1000;
 const DEMOTE_THRESHOLD = 3;
 const STREAM_FIRST_CONTENT_WINDOW_MS = 250;
 const STREAM_PREFACE_MAX_BYTES = 64 * 1024;
+// Hard ceiling for a single in-progress data event in the relay: the
+// preface window (above) rejects non-content prefaces, but one valid
+// content event may be larger than the window, so its enforcement is
+// deferred until the event completes (see relayStream). This ceiling
+// still bounds a never-ending event.
+const STREAM_EVENT_HARD_MAX_BYTES = 16 * 1024 * 1024;
 
 // ---------------------------------------------------------------- config
 
@@ -1486,6 +1492,19 @@ const relayStream = async (prepared, res, headers) => {
       preContent.push(value);
       preContentBytes += value.byteLength;
       if (preContentBytes > STREAM_PREFACE_MAX_BYTES) {
+        // Distinguish a large content event from a non-content
+        // preface (Codex P2 on PR #5558): while the inspector's
+        // partial event already carries a data: payload, the event
+        // has not been judged yet — defer the limit until it
+        // completes. This matters when the prepare window expired
+        // mid-event, so the relay's byte count restarted part-way
+        // through one valid event. A hard ceiling still bounds a
+        // never-ending event.
+        if (
+          state.tail.includes("data:") &&
+          preContentBytes <= STREAM_EVENT_HARD_MAX_BYTES
+        )
+          continue;
         const err = new LeafError(
           "leaf stream preface exceeded the pre-content limit",
           { tag: "ProviderInternal" },
