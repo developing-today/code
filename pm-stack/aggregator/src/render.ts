@@ -59,7 +59,7 @@ import { summarizeDns } from "./dns.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
-import { ageMsText, feedAgeText } from "./feed.ts";
+import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
@@ -3871,6 +3871,15 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
   const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  // #1116 item (5): when the feed itself has crossed the staleness
+  // threshold the dashboard must say so visibly — a "feed X old" suffix
+  // is not an actionable warning. The data-signal hook is what the
+  // age-feed drill greps for as its rendered-page evidence.
+  const feedAgeMs = summary.health.feedAgeMs;
+  const feedStaleBanner =
+    feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
+      ? `<div class="banner feed-stale" data-signal="feed-stale">Feed stale — last collection ${esc(ageMsText(feedAgeMs))} ago (threshold ${esc(ageMsText(FEED_STALE_MS))}); the collector may be down. <a href="/health">Check health</a></div>`
+      : "";
   const itemList = (items: { title: string; repo: string }[], empty: string) =>
     items.length
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
@@ -3895,7 +3904,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
 <h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
-<h2>Health</h2>${healthStrip}
+<h2>Health</h2>${feedStaleBanner}${healthStrip}
 <h2>In progress</h2>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
 <p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;

@@ -31,6 +31,11 @@ interface Scenario {
   healthPlan: string[]; // per health call: fresh | stale | fail
   incidentFlag?: boolean;
   holdLock?: boolean;
+  /** Rendered overview page for PM_DRILL_PAGE_CMD (#1116 item 5):
+   *  warn = carries the stale-feed banner, silent = readable page
+   *  without it, fail = the page cannot be fetched. Unset means the
+   *  drill default runs (local curl, unreadable in this sandbox). */
+  page?: "warn" | "silent" | "fail";
   /** Every drill sleep rewrites the feed with a fresh stamp — the
    *  collector's own 5-minute run landing mid-drill. */
   rewriteOnSleep?: boolean;
@@ -117,20 +122,42 @@ printf '{"degraded":%s,"feed":{"generatedAt":"%s","ageMs":0}}' "$([ "$mode" = st
   }
 
   try {
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      HOME: base,
+      PATH: `${bin}:${process.env.PATH}`,
+      PM_DRILL_STATE_DIR: state,
+      PM_DRILL_FEED_FILE: feedFile,
+      PM_DRILL_HEALTH_CMD: join(base, "health"),
+      PM_DRILL_ATTENTION_CMD: `printf '%s' '{"attention":[{"id":"watchdog:feed"}]}'`,
+      PM_DRILL_NO_POST: "1",
+      PM_DRILL_RESTORE_WAIT_MIN: "1",
+      STUB_TIMER_ACTIVE: scn.timerActive ? "1" : "0",
+      STUB_REWRITE_ON_SLEEP: scn.rewriteOnSleep ? "1" : "0",
+    };
+    // #1116 item (5): stub the rendered overview page the drill greps for
+    // the stale-feed banner. Unset when the scenario has no page plan, so
+    // the drill default (local curl) runs and records unknown.
+    if (scn.page === "warn") {
+      writeExe(
+        join(base, "page"),
+        `#!/bin/sh
+printf '%s' '<div class="banner feed-stale" data-signal="feed-stale">Feed stale</div>'`,
+      );
+      env.PM_DRILL_PAGE_CMD = join(base, "page");
+    } else if (scn.page === "silent") {
+      writeExe(
+        join(base, "page"),
+        `#!/bin/sh
+printf '%s' '<div class="card">3 of 3 services up</div>'`,
+      );
+      env.PM_DRILL_PAGE_CMD = join(base, "page");
+    } else if (scn.page === "fail") {
+      writeExe(join(base, "page"), "#!/bin/sh\nexit 1\n");
+      env.PM_DRILL_PAGE_CMD = join(base, "page");
+    }
     const r = spawnSync("bash", [DRILL], {
-      env: {
-        ...process.env,
-        HOME: base,
-        PATH: `${bin}:${process.env.PATH}`,
-        PM_DRILL_STATE_DIR: state,
-        PM_DRILL_FEED_FILE: feedFile,
-        PM_DRILL_HEALTH_CMD: join(base, "health"),
-        PM_DRILL_ATTENTION_CMD: `printf '%s' '{"attention":[{"id":"watchdog:feed"}]}'`,
-        PM_DRILL_NO_POST: "1",
-        PM_DRILL_RESTORE_WAIT_MIN: "1",
-        STUB_TIMER_ACTIVE: scn.timerActive ? "1" : "0",
-        STUB_REWRITE_ON_SLEEP: scn.rewriteOnSleep ? "1" : "0",
-      },
+      env,
       encoding: "utf8",
       timeout: 30000,
     });
@@ -209,8 +236,7 @@ describe("age-feed drill: a real run ages, notices, and restores", () => {
     expect(evidence.degraded).toBe(true);
   });
 
-  test("collector rewrites the feed mid-drill -> re-aged, still fires and restores", () => {
-    // health reads: baseline fresh, wait-poll fresh (collector's write
+  test("collector rewrites the feed mid-drill -> re-aged, still fires and restores", () => {    // health reads: baseline fresh, wait-poll fresh (collector's write
     // landed during the sleep), wait-poll stale -> signal, restore fresh.
     const r = runDrill({
       timerActive: true,
@@ -226,5 +252,31 @@ describe("age-feed drill: a real run ages, notices, and restores", () => {
     // The drill re-aged the collector's fresh write (it presented a
     // stale-but-alive feed), then restored the saved bytes on exit.
     expect(r.feedBytes).toBe(r.originalFeed);
+  });
+});
+
+describe("age-feed drill: rendered-page stale warning (#1116 item 5)", () => {
+  test("page carrying the stale banner is recorded as seen", () => {
+    const r = runDrill({ timerActive: true, healthPlan: ["fresh", "stale", "fresh"], page: "warn" });
+    expect(r.status).toBe(0);
+    const result = JSON.parse(readFileSync(r.resultFile, "utf8"));
+    expect(result.outcome).toBe("passed");
+    expect(result.page_warn_seen).toBe(true);
+  });
+
+  test("readable page without the banner is recorded as not seen", () => {
+    const r = runDrill({ timerActive: true, healthPlan: ["fresh", "stale", "fresh"], page: "silent" });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("has no stale-feed warning");
+    const result = JSON.parse(readFileSync(r.resultFile, "utf8"));
+    expect(result.page_warn_seen).toBe(false);
+  });
+
+  test("unreadable page is recorded as unknown, drill still passes on the health signal", () => {
+    const r = runDrill({ timerActive: true, healthPlan: ["fresh", "stale", "fresh"], page: "fail" });
+    expect(r.status).toBe(0);
+    const result = JSON.parse(readFileSync(r.resultFile, "utf8"));
+    expect(result.outcome).toBe("passed");
+    expect(result.page_warn_seen).toBe(null);
   });
 });
