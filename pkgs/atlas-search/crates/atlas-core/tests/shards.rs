@@ -130,6 +130,7 @@ fn write_shard(dir: &Path, name: &str, chunks: &[Chunk]) {
             ("part", &part.to_string()),
             ("expected_chunks", &chunks.len().to_string()),
             ("metric", "cosine"),
+            ("embedding_model", atlas_core::types::DEFAULT_MODEL),
             ("engine", "tursodb"),
         ],
     );
@@ -371,6 +372,108 @@ fn new_shard_joins_without_code_changes_and_moves_the_snapshot_id() {
         grown.snapshot_id(),
         after.snapshot_id(),
         "per-shard counts matter"
+    );
+}
+
+#[test]
+fn manifest_round_trip_carries_embedding_model() {
+    use atlas_core::shards::Manifest;
+    use std::collections::BTreeMap;
+    let pairs: BTreeMap<String, String> = [
+        ("shard", "atlas-core-internal-misc-01"),
+        ("tier", "internal"),
+        ("topic", "misc"),
+        ("metric", "cosine"),
+        ("embedding_model", atlas_core::types::DEFAULT_MODEL),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let m = Manifest::from_pairs(&pairs).unwrap();
+    assert_eq!(
+        m.embedding_model.as_deref(),
+        Some(atlas_core::types::DEFAULT_MODEL)
+    );
+
+    let mut bare = pairs.clone();
+    bare.remove("embedding_model");
+    let m = Manifest::from_pairs(&bare).unwrap();
+    assert_eq!(m.embedding_model, None);
+}
+
+#[test]
+fn divergent_embedding_model_aborts_unless_lenient() {
+    let c = corpus("model-divergent", 17);
+    let con = rusqlite::Connection::open(c.dir.join("atlas-core-internal-misc-01.db")).unwrap();
+    con.execute(
+        "UPDATE atlas_manifest SET value = 'other/model-v9' WHERE \"key\" = 'embedding_model'",
+        [],
+    )
+    .unwrap();
+    let err = c
+        .discover(&LogConnector::new(vec![]), Tier::Internal)
+        .err()
+        .unwrap();
+    let msg = err.to_string();
+    assert!(msg.contains("atlas-core-internal-misc-01"), "{msg}");
+    assert!(msg.contains("other/model-v9"), "{msg}");
+    assert!(msg.contains(atlas_core::types::DEFAULT_MODEL), "{msg}");
+
+    let lenient = discover(
+        &DirLister { dir: c.dir.clone() },
+        &LogConnector::new(vec![]),
+        &DiscoveryOptions {
+            lenient: true,
+            ..DiscoveryOptions::new(TierCeiling(Tier::Internal))
+        },
+    )
+    .unwrap();
+    assert!(
+        lenient
+            .shards()
+            .iter()
+            .all(|s| s.name != "atlas-core-internal-misc-01")
+    );
+    assert!(
+        lenient
+            .rejections
+            .iter()
+            .any(|r| r.name == "atlas-core-internal-misc-01" && r.reason.contains("other/model-v9"))
+    );
+}
+
+#[test]
+fn missing_embedding_model_aborts_unless_lenient() {
+    let c = corpus("model-missing", 19);
+    let con = rusqlite::Connection::open(c.dir.join("atlas-core-internal-misc-01.db")).unwrap();
+    con.execute(
+        "DELETE FROM atlas_manifest WHERE \"key\" = 'embedding_model'",
+        [],
+    )
+    .unwrap();
+    let err = c
+        .discover(&LogConnector::new(vec![]), Tier::Internal)
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string().contains("no `embedding_model` key"),
+        "{err}"
+    );
+
+    let lenient = discover(
+        &DirLister { dir: c.dir.clone() },
+        &LogConnector::new(vec![]),
+        &DiscoveryOptions {
+            lenient: true,
+            ..DiscoveryOptions::new(TierCeiling(Tier::Internal))
+        },
+    )
+    .unwrap();
+    assert!(
+        lenient
+            .shards()
+            .iter()
+            .all(|s| s.name != "atlas-core-internal-misc-01")
     );
 }
 
