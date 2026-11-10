@@ -1,0 +1,14 @@
+2026-10-11T17:22:22.988988Z  INFO harness: dialing with one loopback hint role="client" event="start" me=ed4928c628 kind=connect ticket=[127.0.0.1:50072]
+2026-10-11T17:22:22.989729Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:22:22.989849Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=ResolveRemote(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state::path_state: added addressing information
+2026-10-11T17:22:22.989957Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: local addrs updated, triggering holepunching
+2026-10-11T17:22:22.989978Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: not holepunching: no connections
+2026-10-11T17:22:22.990001Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: Address Lookup not configured
+2026-10-11T17:22:22.991781Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=SendDatagram(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: sending datagram to all known paths paths=[Ip(127.0.0.1:50072)]
+2026-10-11T17:22:23.110508Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=AddConnection(99300738460000) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={127.0.0.1:48160}
+2026-10-11T17:22:23.114469Z  INFO harness: connect() returned a Connection role="client" event="connect_ok" elapsed_ms=125.359804 remote_info=["Ip(127.0.0.1:50072)/Active"]
+2026-10-11T17:22:23.210361Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:22:23.210831Z  INFO harness: peer closed role="client" event="closed_by_peer" elapsed_ms=221.72560199999998 why=closed by peer: not on allowlist (code 4097) dbg=ApplicationClosed(ApplicationClose { error_code: 4097, reason: b"not on allowlist" }) remote_info=["Ip(127.0.0.1:50072)/Active"]
+2026-10-11T17:22:23.413499Z  INFO harness: final snapshot role="client" event="remote_info_final" remote_info=["Ip(127.0.0.1:50072)/Active"]
+2026-10-11T17:22:23.413763Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor cancelled
+2026-10-11T17:22:23.413809Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor terminating

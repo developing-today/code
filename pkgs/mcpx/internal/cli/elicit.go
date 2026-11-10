@@ -1,17 +1,24 @@
 package cli
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // ExitInputRequired is returned when a call stopped to ask something.
@@ -33,14 +40,19 @@ type ExitCoder interface {
 	ExitCode() int
 }
 
-// broker opens the question store, which lives beside the log index.
+// broker opens the question store (elicit.StorePath). The legacy
+// location beside the log index -- or under a configured logging.dir --
+// is honoured as a migration source only.
 func (a *App) broker() (*elicit.Broker, error) {
 	dir := firstNonEmpty(a.Settings().String("logging.dir"),
 		filepath.Join(a.Paths.State, "logs"))
-	if err := os.MkdirAll(dir, defaults.PublicDirMode); err != nil {
+	b, err := elicit.OpenAt(a.Paths.State, filepath.Join(dir, "elicit.db"))
+	if err != nil {
 		return nil, err
 	}
-	return elicit.Open(filepath.Join(dir, "elicit.db"))
+	b.Configure(a.Settings().Duration("elicit.ttl"),
+		a.Settings().Duration("elicit.maxAge"))
+	return b, nil
 }
 
 // CmdElicit answers, lists and follows outstanding questions.
@@ -53,6 +65,7 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 	fs := newFlagSet("elicit")
 	session := fs.String("session", "", "restrict to one session")
 	audience := fs.String("audience", "", "agent or human")
+	yes := fs.Bool("yes", false, "answer without the interactive review prompt")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -61,7 +74,7 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	switch sub {
 	case "", "list":
@@ -79,9 +92,9 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tFOR\tLEFT\tSERVER\tASKS")
+		_, _ = fmt.Fprintln(w, "ID\tFOR\tLEFT\tSERVER\tASKS")
 		for _, r := range pending {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Audience,
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Audience,
 				short(r.TTLRemaining()), orDash(r.Server), trunc(r.Message, 48))
 		}
 		_ = w.Flush()
@@ -132,6 +145,35 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 				}
 				content = json.RawMessage(raw)
 			}
+		}
+		// Review before relay (#1678): on a terminal, a form answer is
+		// shown back -- credential-shaped values masked -- and relayed
+		// only on an explicit yes. --yes and non-interactive stdin keep
+		// the historical one-shot behaviour byte-for-byte.
+		if len(content) > 0 && !*yes && isTerminal(os.Stdin) {
+			r, found, err := b.Get(fs.Arg(0))
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("no elicitation %s", fs.Arg(0))
+			}
+			if r.Mode == elicit.Form {
+				fmt.Print(renderAnswerReview(r, content))
+				confirmed, err := confirmSend(ctx, os.Stdin)
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					return fmt.Errorf("answer not sent: declined at review")
+				}
+			}
+		}
+		// A cancellation that landed during the review (or at any
+		// point above) wins over the relay: the user said stop, so
+		// nothing is sent (Codex review, PR #3011).
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		return b.Respond(elicit.Answer{
 			ID: fs.Arg(0), Action: elicit.Accept, Content: content, By: "cli",
@@ -218,19 +260,30 @@ func renderQuestion(r elicit.Request) string {
 	fmt.Fprintf(&b, "  expires  in %s\n", short(r.TTLRemaining()))
 	if r.Mode == elicit.URL {
 		fmt.Fprintf(&b, "  url      %s\n", r.URL)
+		b.WriteString(urlDomainLines(r.URL))
 		fmt.Fprintf(&b, "\n  mcpx elicit accept %s     (after visiting it)\n", r.ID)
+		fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
+		return b.String()
+	}
+	if r.Mode == elicit.Sample {
+		b.WriteString(sampleRequestLines(r))
+		fmt.Fprintf(&b, "\n  mcpx elicit answer %s %s\n", r.ID, shellQuote(sampleAnswerExample()))
 		fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
 		return b.String()
 	}
 	for _, f := range describeSchema(r.Schema) {
 		fmt.Fprintf(&b, "  %-8s %s\n", f.name, f.detail)
 	}
-	fmt.Fprintf(&b, "\n  mcpx elicit answer %s '%s'\n", r.ID, exampleFor(r.Schema))
+	fmt.Fprintf(&b, "\n  mcpx elicit answer %s %s\n", r.ID, shellQuote(exampleFor(r.Schema)))
 	fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
 	return b.String()
 }
 
-type schemaField struct{ name, detail string }
+type schemaField struct {
+	name, detail string
+	format       string
+	def          json.RawMessage
+}
 
 func describeSchema(raw json.RawMessage) []schemaField {
 	if len(raw) == 0 {
@@ -238,9 +291,11 @@ func describeSchema(raw json.RawMessage) []schemaField {
 	}
 	var doc struct {
 		Properties map[string]struct {
-			Type        string `json:"type"`
-			Description string `json:"description"`
-			Enum        []any  `json:"enum"`
+			Type        string          `json:"type"`
+			Format      string          `json:"format"`
+			Description string          `json:"description"`
+			Enum        []any           `json:"enum"`
+			Default     json.RawMessage `json:"default"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
@@ -267,8 +322,12 @@ func describeSchema(raw json.RawMessage) []schemaField {
 		if p.Description != "" {
 			detail += " -- " + p.Description
 		}
-		out = append(out, schemaField{name: name, detail: detail})
+		if len(p.Default) > 0 {
+			detail += ", default: " + compactJSON(p.Default)
+		}
+		out = append(out, schemaField{name: name, detail: detail, format: p.Format, def: p.Default})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out
 }
 
@@ -279,9 +338,248 @@ func exampleFor(raw json.RawMessage) string {
 	}
 	var parts []string
 	for _, f := range fields {
-		parts = append(parts, fmt.Sprintf("%q:%q", f.name, "..."))
+		v := `"..."`
+		if len(f.def) > 0 {
+			v = compactJSON(f.def)
+		}
+		parts = append(parts, fmt.Sprintf("%q:%s", f.name, v))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// sampleRequestLines renders a sampling question as what it is: a
+// server asking a model to complete a prompt (#1837, Phase 3 of #1834).
+//
+// A sampling question's Schema is a full CreateMessageRequest, not a
+// JSON Schema, so describeSchema finds no properties in it and the old
+// rendering showed the reviewer nothing -- the system prompt sat in
+// Message and the actual prompt (the messages) rendered as nothing,
+// with a '{}' answer example that is not a CreateMessageResult. Here
+// the reviewer sees the requesting server (the from line above), the
+// system prompt and every message verbatim, so the thing being relayed
+// can actually be reviewed before it is answered. The full request
+// JSON stays available on the row itself (show with the global --json
+// flag). Answered results are recorded on the broker row and visible
+// via `mcpx elicit result <id>`; there is no pre-delivery staging
+// state, and this rendering does not invent one.
+func sampleRequestLines(r elicit.Request) string {
+	var b strings.Builder
+	b.WriteString("  sampling  a server asks a model to complete this prompt; review the prompt itself before answering -- an answer relays a model completion back to the server\n")
+	var req struct {
+		SystemPrompt string `json:"systemPrompt"`
+		Messages     []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		MaxTokens int `json:"maxTokens"`
+	}
+	if err := json.Unmarshal(r.Schema, &req); err != nil || (req.SystemPrompt == "" && len(req.Messages) == 0) {
+		fmt.Fprintf(&b, "  request   could not be decoded; the full request JSON is on this row (mcpx --json elicit show %s)\n", r.ID)
+		return b.String()
+	}
+	if req.SystemPrompt != "" {
+		fmt.Fprintf(&b, "  system    %s\n", req.SystemPrompt)
+	}
+	for i, m := range req.Messages {
+		fmt.Fprintf(&b, "  msg %-4d  %s\n", i+1, m.Role)
+		for _, line := range sampleContentLines(m.Content) {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+	}
+	if req.MaxTokens > 0 {
+		fmt.Fprintf(&b, "  maxTokens %d\n", req.MaxTokens)
+	}
+	return b.String()
+}
+
+// sampleContentLines renders one message's content: text blocks
+// verbatim (the prompt is the thing under review), any other block as
+// compact JSON so nothing is silently dropped.
+func sampleContentLines(raw json.RawMessage) []string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return []string{"(no content)"}
+	}
+	var blocks []json.RawMessage
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			return []string{compactJSON(raw)}
+		}
+	} else {
+		blocks = []json.RawMessage{raw}
+	}
+	var out []string
+	for _, blk := range blocks {
+		var block struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(blk, &block) == nil && block.Type == "text" {
+			out = append(out, block.Text)
+			continue
+		}
+		out = append(out, compactJSON(blk))
+	}
+	if len(out) == 0 {
+		return []string{"(no content)"}
+	}
+	return out
+}
+
+// sampleAnswerExample is the answer skeleton offered for a sampling
+// question: a real CreateMessageResult shape (the shape
+// elicit.ValidateSampleResult accepts), not the '{}' a schema-less
+// question used to offer.
+func sampleAnswerExample() string {
+	return `{"role":"assistant","model":"<model>","content":{"type":"text","text":"..."},"stopReason":"endTurn"}`
+}
+
+// shellQuote renders s as a single POSIX shell word: wrapped in single
+// quotes, with each embedded single quote closed, escaped and reopened.
+// The suggested answer command embeds schema defaults, which are
+// server-controlled; quoting at this boundary keeps a default such as
+// O'Reilly (or worse) from breaking the command or injecting into it.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// urlDomainLines renders the registrable domain under a URL question's
+// full URL, and -- for a punycode or non-ASCII host -- both host forms and
+// the warning. Plain ASCII hosts get the domain line only (#1678).
+func urlDomainLines(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ""
+	}
+	// The publicsuffix list compares labels case-sensitively, while
+	// URL hosts are case-insensitive: an uppercase host would look
+	// up CO.UK, miss the lowercase rules, and render the suffix
+	// itself as the domain -- dropping the registrant's label from
+	// the review indicator (Codex review, PR #3011). The lookup
+	// uses the lowercased host; the full URL printed above and the
+	// host forms below keep the host as the server sent it.
+	domain, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(host))
+	if err != nil {
+		domain = host
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  domain   %s\n", domain)
+	if uni, ascii, puny := hostForms(host); puny {
+		fmt.Fprintf(&b, "  host     %s (%s)\n", uni, ascii)
+		b.WriteString("  warn     host uses punycode; check the domain is the one you expect\n")
+	}
+	return b.String()
+}
+
+// hostForms returns the unicode and punycode forms of a host that uses
+// either, reporting whether the host is punycode-shaped at all.
+func hostForms(host string) (uni, ascii string, puny bool) {
+	nonASCII := false
+	for _, r := range host {
+		if r > 127 {
+			nonASCII = true
+			break
+		}
+	}
+	if !nonASCII && !strings.Contains(strings.ToLower(host), "xn--") {
+		return "", "", false
+	}
+	uni, err := idna.ToUnicode(host)
+	if err != nil {
+		uni = host
+	}
+	ascii, err = idna.ToASCII(host)
+	if err != nil {
+		ascii = host
+	}
+	return uni, ascii, true
+}
+
+// renderAnswerReview prints the answer about to be relayed, with
+// credential-shaped values masked as (set)/(not set) -- never the value,
+// never its length (#1678).
+func renderAnswerReview(r elicit.Request, content json.RawMessage) string {
+	var b strings.Builder
+	b.WriteString("About to send this answer:\n")
+	var values map[string]json.RawMessage
+	if json.Unmarshal(content, &values) != nil {
+		fmt.Fprintf(&b, "  %s\n", compactJSON(content))
+		return b.String()
+	}
+	formats := map[string]string{}
+	for _, f := range describeSchema(r.Schema) {
+		formats[f.name] = f.format
+		// The relay applies schema defaults to omitted fields
+		// (mcpclient.applyDefaults), so the review must show the
+		// effective answer -- defaults included -- not only what
+		// was explicitly supplied (#1678, Codex P2 on PR 3011).
+		if _, supplied := values[f.name]; !supplied && len(f.def) > 0 {
+			values[f.name] = f.def
+		}
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		raw := values[name]
+		if elicit.IsSensitiveField(name, formats[name]) {
+			state := "(not set)"
+			if isSetValue(raw) {
+				state = "(set)"
+			}
+			fmt.Fprintf(&b, "  %-8s %s\n", name, state)
+			continue
+		}
+		fmt.Fprintf(&b, "  %-8s %s\n", name, compactJSON(raw))
+	}
+	return b.String()
+}
+
+// isSetValue reports whether an answer value carries anything: JSON null,
+// an empty string and an absent value all count as not set.
+func isSetValue(raw json.RawMessage) bool {
+	t := strings.TrimSpace(string(raw))
+	return t != "" && t != "null" && t != `""`
+}
+
+// confirmSend asks for the relay decision; anything but y/yes -- EOF
+// included -- is a no, so a vanished terminal never sends. The read is
+// cancellation-aware: main cancels the command context on SIGINT, and
+// a prompt that ignored that would sit blocked on the read and could
+// still relay on a later y, after the user already said stop
+// (Codex review, PR #3011).
+func confirmSend(ctx context.Context, in io.Reader) (bool, error) {
+	fmt.Print("Send this answer? [y/N] ")
+	type result struct{ line string }
+	read := make(chan result, 1)
+	go func() {
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		read <- result{line}
+	}()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case r := <-read:
+		switch strings.ToLower(strings.TrimSpace(r.line)) {
+		case "y", "yes":
+			return true, nil
+		}
+		return false, nil
+	}
+}
+
+func compactJSON(raw json.RawMessage) string {
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		return string(raw)
+	}
+	return b.String()
 }
 
 func short(d time.Duration) string {

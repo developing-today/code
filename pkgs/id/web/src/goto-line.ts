@@ -13,63 +13,93 @@ import type { EditorView } from "prosemirror-view";
 /** State for the goto-line dialog. */
 let dialogEl: HTMLElement | null = null;
 let dialogInput: HTMLInputElement | null = null;
+let dialogError: HTMLElement | null = null;
 let activeView: EditorView | null = null;
 
-/** Count lines in the document (newline characters + 1). */
+/**
+ * Document positions of every line start, in order.
+ *
+ * Line semantics (#745): each textblock contributes one line per
+ * `\n`-separated segment of its text — a paragraph, heading or list item
+ * is one line, and a code block contributes as many lines as it has
+ * segments. Lines are computed by walking the document structure, NOT
+ * from `doc.textContent`: ProseMirror concatenates textblocks with no
+ * separator, so textContent-based counting merges block-boundary lines
+ * and is blind to blocks after the first, and a text offset cannot be
+ * mapped to a document position with a constant (every textblock adds
+ * its own opening/closing overhead). A textblock at position `pos`
+ * holds its text starting at `pos + 1`.
+ */
+function getLineStarts(view: EditorView): number[] {
+  const starts: number[] = [];
+  view.state.doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true; // descend into block containers (lists, quotes, cells…)
+    const contentStart = pos + 1;
+    starts.push(contentStart);
+
+    let currentPos = contentStart;
+    node.forEach((child) => {
+      if (child.type.name === "hard_break") {
+        starts.push(currentPos + child.nodeSize);
+      } else if (child.isText) {
+        const text = child.text;
+        if (text) {
+          for (let i = 0; i < text.length; i++) {
+            if (text[i] === "\n") {
+              starts.push(currentPos + i + 1);
+            }
+          }
+        }
+      }
+      currentPos += child.nodeSize;
+    });
+    return false; // inline content cannot contain another textblock
+  });
+  return starts;
+}
+
+/** Count lines in the document (see getLineStarts for the semantics). */
 function getLineCount(view: EditorView): number {
-  const text = view.state.doc.textContent;
-  if (text.length === 0) return 1;
-  let count = 1;
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === "\n") count++;
-  }
-  return count;
+  return Math.max(1, getLineStarts(view).length);
 }
 
 /** Get the document position at the start of a given line number (1-based). */
 function getLineStartPos(view: EditorView, targetLine: number): number | null {
-  let currentLine = 1;
-  let pos = 0;
-
-  if (targetLine <= 1) return 0;
-
-  // Walk through the document text
-  const text = view.state.doc.textContent;
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === "\n") {
-      currentLine++;
-      if (currentLine === targetLine) {
-        // The position in text content needs to be mapped to doc position.
-        // In a code_block (raw mode), text offset maps directly.
-        // We need to account for node structure.
-        pos = i + 1;
-        break;
-      }
-    }
-  }
-
-  if (currentLine < targetLine) return null; // Line doesn't exist
-
-  // Map text offset to doc position
-  // In raw mode: doc structure is doc > code_block > text
-  // The code_block starts at pos 1 (after doc open), text starts at pos 2
-  // So doc position = text offset + 2
-  // In rich mode: more complex, but we handle via resolve
-  const docPos = pos + 2; // +1 for doc node, +1 for code_block node
-  if (docPos > view.state.doc.content.size) return null;
-  return docPos;
+  if (targetLine < 1) return null;
+  return getLineStarts(view)[targetLine - 1] ?? null;
 }
 
 /** Create the goto-line dialog DOM. */
 function createDialog(container: HTMLElement): HTMLElement {
   const dialog = document.createElement("div");
   dialog.className = "goto-line-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-label", "Go to line");
   dialog.innerHTML = `
-    <label class="goto-line-label">Go to Line:</label>
-    <input type="number" min="1" class="goto-line-input" id="goto-line-input" placeholder="Line #" autocomplete="off" />
+    <label class="goto-line-label" for="goto-line-input">Go to Line:</label>
+    <input type="number" min="1" class="goto-line-input" id="goto-line-input" placeholder="Line #" autocomplete="off" aria-describedby="goto-line-error" />
+    <span class="goto-line-error" id="goto-line-error" role="alert"></span>
   `;
   container.prepend(dialog);
   return dialog;
+}
+
+/**
+ * Explain why the typed value was rejected, in the dialog itself.
+ *
+ * Before this, invalid input only re-selected the text: no visible or
+ * spoken reason, so "Go to Line" looked broken for out-of-range or
+ * non-integer values (#712).
+ */
+function showGotoLineError(message: string): void {
+  if (dialogInput) dialogInput.setAttribute("aria-invalid", "true");
+  if (dialogError) dialogError.textContent = message;
+}
+
+/** Clear the rejection message once the value changes or the dialog closes. */
+function clearGotoLineError(): void {
+  if (dialogInput) dialogInput.removeAttribute("aria-invalid");
+  if (dialogError) dialogError.textContent = "";
 }
 
 /** Open the goto-line dialog. */
@@ -77,26 +107,65 @@ function openGotoLine(view: EditorView): void {
   const container = view.dom.parentElement;
   if (!container) return;
 
+  // The dialog is a module singleton attached to one container. When the
+  // editor is recreated (disconnect / open another file) the old dialog is
+  // detached with the old container — and no production code calls
+  // destroyGotoLineDialog() on teardown. Rebind instead of "opening" a
+  // detached node (#718).
+  if (dialogEl && dialogEl.parentElement !== container) {
+    destroyGotoLineDialog();
+  }
+
   if (!dialogEl) {
     dialogEl = createDialog(container);
     dialogInput = dialogEl.querySelector("#goto-line-input");
+    dialogError = dialogEl.querySelector("#goto-line-error");
 
     if (dialogInput) {
+      dialogInput.addEventListener("input", clearGotoLineError);
       dialogInput.addEventListener("keydown", (e: KeyboardEvent) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          const line = parseInt(dialogInput?.value ?? "", 10);
-          if (!Number.isNaN(line) && activeView) {
-            const pos = getLineStartPos(activeView, line);
-            if (pos !== null) {
-              const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
-              activeView.dispatch(tr);
-              activeView.focus();
-              // Scroll the cursor into view
-              const scrollTr = activeView.state.tr.scrollIntoView();
-              activeView.dispatch(scrollTr);
-            }
+          // Strict validation (#712): the value must be a whole line number
+          // inside the document. Bare parseInt would treat 0/negatives as
+          // line 1 and truncate fractions (2.9 -> 2); out-of-range values
+          // used to close the dialog silently with no jump and no feedback.
+          // Invalid input keeps the dialog open with the text selected so
+          // the user can correct it; the cursor does not move.
+          const raw = (dialogInput?.value ?? "").trim();
+          // Only a run of decimal digits counts (#2776): Number() alone
+          // also reinterprets hex/binary/scientific spellings the field
+          // never showed as that line ("0x10" -> 16, "1e2" -> 100,
+          // "2.0" -> 2) — the parseWorldSeed rule (#832).
+          const line = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+          // ⚡ Bolt optimization: compute line starts once instead of traversing doc twice
+          const lineStarts = activeView ? getLineStarts(activeView) : [];
+          const lineCount = Math.max(1, lineStarts.length);
+          const pos =
+            activeView && raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
+              ? (lineStarts[line - 1] ?? null)
+              : null;
+          if (pos === null || !activeView) {
+            // #712: keep the dialog open, but say why — values that are
+            // empty, not whole numbers, or outside 1..lineCount all used
+            // to be rejected silently.
+            const message =
+              raw === ""
+                ? "Enter a line number."
+                : !/^\d+$/.test(raw)
+                  ? "Enter a whole number."
+                  : `Enter a line between 1 and ${lineCount}.`;
+            showGotoLineError(message);
+            dialogInput?.select();
+            return;
           }
+          clearGotoLineError();
+          const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
+          activeView.dispatch(tr);
+          activeView.focus();
+          // Scroll the cursor into view
+          const scrollTr = activeView.state.tr.scrollIntoView();
+          activeView.dispatch(scrollTr);
           closeGotoLine();
         } else if (e.key === "Escape") {
           e.preventDefault();
@@ -108,6 +177,7 @@ function openGotoLine(view: EditorView): void {
 
   activeView = view;
   dialogEl.style.display = "";
+  clearGotoLineError();
 
   // Show line count hint
   const totalLines = getLineCount(view);
@@ -121,6 +191,7 @@ function openGotoLine(view: EditorView): void {
 
 /** Close the goto-line dialog. */
 function closeGotoLine(): void {
+  clearGotoLineError();
   if (dialogEl) {
     dialogEl.style.display = "none";
   }
@@ -154,6 +225,7 @@ export function destroyGotoLineDialog(): void {
     dialogEl.remove();
     dialogEl = null;
     dialogInput = null;
+    dialogError = null;
     activeView = null;
   }
 }

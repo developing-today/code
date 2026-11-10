@@ -23,10 +23,7 @@ export default {
         // An SSE frame is `data: <payload>\n\n`. A line starting with `:` is a
         // comment — used here as a heartbeat to keep the stream from going idle.
         controller.enqueue(encoder.encode("data: hello\n\n"));
-        timer = setInterval(
-          () => controller.enqueue(encoder.encode(": ping\n\n")),
-          25_000,
-        );
+        timer = setInterval(() => controller.enqueue(encoder.encode(": ping\n\n")), 25_000);
       },
       // cancel() fires when the client disconnects.
       cancel() {
@@ -116,10 +113,7 @@ listener.on("notification", (msg) => {
 
 // Anywhere you mutate state, NOTIFY so every isolate pushes to its own streams.
 function publish(payload: unknown) {
-  return pool.query("SELECT pg_notify($1, $2)", [
-    CHANNEL,
-    JSON.stringify(payload),
-  ]);
+  return pool.query("SELECT pg_notify($1, $2)", [CHANNEL, JSON.stringify(payload)]);
 }
 ```
 

@@ -3,12 +3,14 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Runtime kinds. A kind is what mcpx knows how to build an argv for; a
@@ -43,7 +45,13 @@ type Runtime struct {
 	Bin  string
 	// Perms are the rendered permission flags.
 	Perms []string
-	Args  func(script string) []string
+	// ConfigArgs are the runtime's declared extra arguments (script.
+	// runtimes args), kept beside the Args closure so other stages can
+	// reuse the resolution-relevant subset: the preflight import graph
+	// must be computed with the same import map / config the execution
+	// will use, or it checks a different graph from the one that runs.
+	ConfigArgs []string
+	Args       func(script string) []string
 }
 
 // RuntimeDef declares a runtime under script.runtimes.
@@ -377,6 +385,9 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 	var tried []string
 	for _, name := range names {
 		c, lerr := s.lookup(name)
+		if lerr == nil && c.kind == KindNode {
+			lerr = checkNodeTransformTypes(c.bin)
+		}
 		if lerr != nil {
 			if explicit {
 				return nil, lerr
@@ -401,8 +412,88 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 		strings.Join(names, ", "), strings.Join(tried, "\n  "))
 }
 
+type nodeTransformProbe struct {
+	err error
+}
+
+var nodeTransformProbes sync.Map // resolved binary path -> nodeTransformProbe
+
+// checkNodeTransformTypes verifies the exact Node mode mcpx needs before it
+// returns a runtime. Some minimal distributions ship Node without the
+// TypeScript transform support behind this flag; passing the flag later then
+// produces a raw ERR_NO_TYPESCRIPT stack. Cache by resolved binary path since
+// runtimes are resolved repeatedly during one process.
+func checkNodeTransformTypes(bin string) error {
+	if cached, ok := nodeTransformProbes.Load(bin); ok {
+		return cached.(nodeTransformProbe).err
+	}
+	probe, err := os.CreateTemp("", "mcpx-node-transform-probe-*.ts")
+	if err != nil {
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: create temporary TypeScript script: %w", bin, err)
+	}
+	probePath := probe.Name()
+	defer os.Remove(probePath)
+	if _, err := probe.WriteString("enum McpxTransformTypesProbe { Supported }; void McpxTransformTypesProbe.Supported;\n"); err != nil {
+		_ = probe.Close()
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: write temporary TypeScript script: %w", bin, err)
+	}
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: close temporary TypeScript script: %w", bin, err)
+	}
+	output, err := exec.Command(bin, "--no-warnings", "--experimental-transform-types", probePath).CombinedOutput()
+	var probeErr error
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		probeErr = fmt.Errorf("node runtime %s does not support --experimental-transform-types required by mcpx for TypeScript scripts; use a Node build with transform-types support, or choose bun (musl) or deno: %s", bin, detail)
+	}
+	actual, _ := nodeTransformProbes.LoadOrStore(bin, nodeTransformProbe{err: probeErr})
+	return actual.(nodeTransformProbe).err
+}
+
+// ResolveDeferred is Resolve for a runtime the caller will look up
+// itself against a PATH it establishes. Same resolution and the same
+// refusals, except that a binary absent from mcpx's own PATH comes back
+// as its bare name instead of an error: a JavaScript shebang may name a
+// runtime that exists only on the PATH the shebang sets, and that PATH
+// cannot be applied until the run's effective directory is known
+// (#2611 review). Resolve would reject it first and the run would fail
+// with "not found" for a runtime the shebang's own environment has.
+//
+// A declared runtime keeps Resolve's behaviour: its binary is part of
+// its declaration, not a question about PATH.
+func ResolveDeferred(prefer, permSpec string, s Setup) (*Runtime, error) {
+	rt, err := Resolve(prefer, permSpec, s)
+	if err == nil {
+		return rt, nil
+	}
+	if prefer == "" || prefer == "auto" || strings.Contains(prefer, "/") {
+		return nil, err
+	}
+	if _, declared := s.Runtimes[prefer]; declared {
+		return nil, err
+	}
+	if !knownKind(prefer) {
+		// Only a kind name says how to build an argv without running
+		// the binary to find out what it is.
+		return nil, err
+	}
+	steps, perr := parseSpec(permSpec)
+	if perr != nil {
+		return nil, perr
+	}
+	perms, ref, rerr := s.renderPerms(steps, prefer)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if ref != nil {
+		return nil, fmt.Errorf("%s", ref.msg(prefer))
+	}
+	return build(candidate{name: prefer, kind: prefer, bin: prefer}, perms), nil
+}
+
 func build(c candidate, perms []string) *Runtime {
-	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Perms: perms}
+	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Perms: perms,
+		ConfigArgs: append([]string(nil), c.args...)}
 	switch c.kind {
 	case KindDeno:
 		rt.Args = func(script string) []string {
@@ -422,7 +513,12 @@ func build(c candidate, perms []string) *Runtime {
 		}
 	case KindNode:
 		rt.Args = func(script string) []string {
-			a := []string{"--no-warnings", "--experimental-strip-types"}
+			// --experimental-transform-types, not --experimental-strip-types:
+			// strip-only mode rejects non-erasable TypeScript (enum, value
+			// namespaces, parameter properties) that Node itself runs fine
+			// once types are transformed (#263). Strip-types is also a
+			// no-op default on Node 24.
+			a := []string{"--no-warnings", "--experimental-transform-types"}
 			a = append(a, c.args...)
 			a = append(a, perms...)
 			return append(a, script)

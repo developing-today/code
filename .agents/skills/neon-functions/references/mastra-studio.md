@@ -32,9 +32,7 @@ import { Mastra } from "@mastra/core/mastra";
 import { Observability, MastraPlatformExporter } from "@mastra/observability";
 import { pricingAgent } from "./agents/pricing";
 
-const platformReady = Boolean(
-  process.env.MASTRA_PLATFORM_ACCESS_TOKEN && process.env.MASTRA_PROJECT_ID,
-);
+const platformReady = Boolean(process.env.MASTRA_PLATFORM_ACCESS_TOKEN && process.env.MASTRA_PROJECT_ID);
 
 const observability = platformReady
   ? new Observability({

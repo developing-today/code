@@ -14,7 +14,7 @@ what was deliberately not built.
 
 The most valuable thing here needs no model at all, and that was the central
 finding of the issue. mcpx already knows every tool's input schema. What it
-did not know was what those schemas *used to be* — `internal/codegen` could
+did not know was what those schemas _used to be_ — `internal/codegen` could
 fingerprint a catalog and diff two of them, but nothing ever stored one, so
 every diff was against nothing and the question "when did this change" had no
 answer anywhere in the program.
@@ -68,10 +68,7 @@ to every surface. The server's error stays first and whole; the rendered
 diagnostic follows it, and `/v1/call` carries the same finding as data:
 
 ```json
-{"error": "mcp error -32602: Invalid params\ndemo.create_issue: the call was rejected and repo is required but was not sent (schema changed 2026-09-30: `repo` was added and is required)\n  minimum:    await demo.create_issue({ repo: \"\", ... })",
- "diagnostics": [{"kind": "invalid-params", "tool": "demo.create_issue", "field": "repo",
-   "changed": {"when": "2026-09-30T…", "kind": "argument-added", "what": "`repo` was added and is required"},
-   "fix": "await demo.create_issue({ repo: \"\", ... })", "fatal": true}]}
+{ "error": "mcp error -32602: Invalid params\ndemo.create_issue: the call was rejected and repo is required but was not sent (schema changed 2026-09-30: `repo` was added and is required)\n  minimum:    await demo.create_issue({ repo: \"\", ... })", "diagnostics": [{ "kind": "invalid-params", "tool": "demo.create_issue", "field": "repo", "changed": { "when": "2026-09-30T…", "kind": "argument-added", "what": "`repo` was added and is required" }, "fix": "await demo.create_issue({ repo: \"\", ... })", "fatal": true }] }
 ```
 
 So `mcpx call` prints it, `mcpx --json call` puts the document on stdout, a
@@ -107,13 +104,17 @@ resolving an instance and using it.
 the answer is genuinely open: the server is exclusive, so its instances are
 distinct things rather than copies; several are live; and the caller's own
 scope key names none of them. When the caller already has an instance, the
-scope key *is* the answer and a question would be theatre. The form is an enum
+scope key _is_ the answer and a question would be theatre. The form is an enum
 of the live keys plus "new", each with what it is doing — holders, calls,
 idle time, pid — because a choice without that is not a choice.
 
 **Destructive confirmation** (`elicit.confirmDestructive`, off). Before a call
 to a tool that may be destructive: annotated `destructiveHint: true`, or (the specification's default) not annotated `readOnlyHint: true` or `destructiveHint: false`. This is the step a
-human-driven client has and a script does not.
+human-driven client has and a script does not. A tool the operator
+declared in the server's `readOnlyTools` (#6116) is pre-authorized
+and never asked about: the declaration is the answer, given in
+configuration ahead of time, which is the only answer a headless
+caller can give.
 
 The two disagree about what a silent deadline means, deliberately. An
 unanswered disambiguation takes `elicit.disambiguateDefault`, which is `new` —
@@ -154,6 +155,17 @@ const found = await demo.search({ repo: @repo, olderThanDays: @days });
 Declaration is a header comment because a comment survives every runtime,
 cannot affect execution, and is visible in the file somebody edits. References
 are `@name`, the spelling the launcher already uses for its own holes.
+
+**A recipe is also an MCP tool.** The `@param` header is already a typed
+schema, so tools/list carries one tool per recipe, named `recipe_<name>`,
+with that schema and the summary as its description. Calling it runs the
+recipe through `/v1/recipes/{name}/run` -- the same render, diagnostics and
+runner `mcpx recipes run` uses. Exposure is on by default; `// @tool false`
+in the header opts one out. The number exposed is capped
+(`DefaultToolBudget`, 25) so fifty saved scripts do not become fifty schemas
+in every host, and `mcpx catalog` ends with the count, the cap and any recipe
+kept out -- a name another producer already claimed is reported there rather
+than silently dropped.
 
 **Values are substituted as JSON, never as text.** A recipe runs with the
 user's credentials; raw substitution would make every placeholder an injection
@@ -225,11 +237,34 @@ through it. It is one function, marked, for exactly that reason.
 
 **Scope — "anything that makes mcpx call a model has to justify that it isn't
 rebuilding the harness."** Three of the four things built here never call one.
-The fourth has no model of its own and never will: option 3 from the issue, a
-configured provider with an API key, was not built and should not be. It is
-the one that makes mcpx an agent. Sampling through the caller is the opposite
-— it is mcpx asking the harness it already sits under, which is what the
-specification is for.
+The fourth originally stopped there: option 3 from the issue, a configured
+provider with an API key, was not built, on the grounds that it is the one
+that makes mcpx an agent. That conclusion has since been reversed by the
+facts #1925 records: the 2026-07-28 MCP revision deprecates sampling
+(SEP-2577) and names integrating directly with provider APIs as the
+migration, and no opencode — the primary consumer — declares sampling at
+all. So a configured provider now exists, as one backend of the thin
+provider layer in `internal/model`: a `Provider` interface with a single
+`Generate`, reached only through the `model.*` settings, with
+`model.provider` defaulting to `none` — a user who configures nothing gets
+exactly the behaviour described above. Sampling through the caller survives
+as another backend of the same layer: it is mcpx asking the harness it
+already sits under, which remains right where a client declares it. What
+has not changed is the guard that made the original refusal coherent: no
+operation calls a model on a path where a deterministic answer exists, and
+a provider error returns the deterministic result plus a note that the
+model was unavailable. A `Generate` function is not an agent; the harness
+mcpx sits under still owns the loop, the tools and the session.
+
+Provider credentials remain opt-in: `model.apiKeyEnv` names the variable for
+the singular provider, while `model.providers` can map provider names to their
+own `baseURL` and `apiKeyEnv`. mcpx never scans the environment for key names.
+`model.profiles` names ordered lists of `provider/model` ids, so a failure or
+unconfigured entry falls through to the next configured provider. A profile
+can set its own token budget and per-attempt timeout. `model.default` and an
+operation's model override may each name either a profile or a provider/model
+id; when every profile entry is unavailable, generation stays on its
+deterministic path.
 
 **Trust — "generated code runs with the user's credentials."** Return the
 script by default (`prompt.autonomy: propose`, one level of the dial in

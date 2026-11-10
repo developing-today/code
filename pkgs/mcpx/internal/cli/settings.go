@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Settings resolves every setting for this invocation.
@@ -38,7 +38,11 @@ func (a *App) Settings() *settings.Set {
 		set := settings.NewSet(sch)
 
 		// Configuration files, furthest first so the nearest ends up highest.
-		files := configFilesFarthestFirst(a.ConfigPath)
+		files, ferr := configFilesFarthestFirst(a.ConfigPath)
+		if ferr != nil {
+			a.settingsErr = ferr
+			return
+		}
 		for i, path := range files {
 			doc, rerr := readJSONFile(path)
 			if rerr != nil {
@@ -133,7 +137,7 @@ func (a *App) ApplyGlobalSettingFlags(args []string) (rest []string, err error) 
 		mine = append(mine, args[0])
 		args = args[1:]
 		bf, isBool := f.Value.(interface{ IsBoolFlag() bool })
-		if !strings.Contains(mine[len(mine)-1], "=") && !(isBool && bf.IsBoolFlag()) && len(args) > 0 {
+		if !strings.Contains(mine[len(mine)-1], "=") && (!isBool || !bf.IsBoolFlag()) && len(args) > 0 {
 			mine = append(mine, args[0])
 			args = args[1:]
 		}
@@ -325,6 +329,8 @@ var handFlagsMeaningOther = map[string]map[string]bool{
 	"exec":   {"keep": true},    // likewise
 	"api":    {"include": true}, // operations to include, not logging.include
 	"schema": {"format": true},  // output schema format, not logging.format
+	"man":    {"format": true},  // output document format, not logging.format
+	"config": {"format": true},  // --schema output format, not logging.format
 }
 
 // unknownKeysError turns the collected unknown keys into one message naming
@@ -355,12 +361,18 @@ func ignoredKeysError(ignored []config.IgnoredKey) error {
 	return errors.New(b.String())
 }
 
-func configFilesFarthestFirst(explicit string) []string {
+func configFilesFarthestFirst(explicit string) ([]string, error) {
 	if explicit != "" {
-		return []string{explicit}
+		return []string{explicit}, nil
 	}
-	search := config.SearchPath()
-	// SearchPath is nearest-first, because that is the order a lookup wants.
+	// The settings layer reads the same chain Load merges: the two-pass
+	// resolution (issue #1842), so a file paths.config adds contributes
+	// its settings as well as its servers.
+	search, _, err := config.ResolveChain()
+	if err != nil {
+		return nil, err
+	}
+	// The chain is nearest-first, because that is the order a lookup wants.
 	// Layering wants the opposite, so that the nearest file is applied last
 	// and therefore wins.
 	out := make([]string, 0, len(search))
@@ -369,7 +381,7 @@ func configFilesFarthestFirst(explicit string) []string {
 			out = append(out, search[i])
 		}
 	}
-	return out
+	return out, nil
 }
 
 func readJSONFile(path string) (map[string]any, error) {

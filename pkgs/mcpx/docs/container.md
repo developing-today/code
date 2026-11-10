@@ -1,42 +1,48 @@
 # Running mcpx in a container
 
-What `Containerfile` builds, what it deliberately does not, and what was
-measured along the way.
+The Nix-built OCI image, what it deliberately does not contain, and the
+measurements made against the retired Containerfile prototype.
 
 ```
+id:           running-mcpx-in-a-container
+since:        pre-release
 created:      2026-09-30T04:00:00-05:00
-last-updated: 2026-09-30T07:30:00-05:00
+last-updated: 2026-11-05T10:40:00-05:00
 status:       implemented
 ```
 
-A starting point rather than a shipping image. The goal was the smallest thing
-that actually works -- builds, runs, and can execute a script -- so that the
-decisions that come next are made against something real instead of a design.
+The shipped image is a Nix-built OCI artifact exported as
+`packages.x86_64-linux.mcpx-container`. It contains the static mcpx binary,
+Bun as its one JavaScript runtime, and the certificate bundle needed for
+outbound TLS. The Containerfile prototype has been removed; image contents and
+dependencies are now declared in `container-image.nix`.
 
 ---
 
 ## 1. What it is
 
-Three stages:
+The image closure is:
 
-| stage | image | why |
-| --- | --- | --- |
-| `build` | `golang:1.27-bookworm` | `go.mod` asks for 1.26.7; the image ships 1.27.1 |
-| `bun` | `oven/bun:1-debian` | a pinned bun, so the build does not depend on a release URL |
-| runtime | `debian:bookworm-slim` | ordinary, and has the glibc the builder linked against |
+| component | Nix input                 | why                                                |
+| --------- | ------------------------- | -------------------------------------------------- |
+| mcpx      | `pkgs/mcpx/package.nix`    | pure-Go static binary, built from the flake source |
+| JavaScript| pinned flake `bun` package | `mcpx exec` and `mcpx run` need a JS runtime       |
+| TLS       | `cacert`                   | registry and script HTTPS connections             |
 
-All three are pinned by tag *and* digest. The tag says what it is; the digest
-says which one. A tag moves, and a build that depends on when it ran is not a
-build.
+The root flake lock pins the Nixpkgs revision supplying Bun and the image
+tools. The image tag comes from `pkgs/mcpx/VERSION`; this image is built from
+local source, not from a mutable upstream base-image tag.
 
-The runtime stage adds `ca-certificates`, copies in `bun` and `mcpx`, drops
-to an unprivileged user, and sets `ENTRYPOINT ["mcpx"]`. It has no git; §3
-says why that is not a loss.
+The image is built from scratch, runs as uid 1000, and sets an explicit PATH
+containing only mcpx and Bun. It has no git; §3 says why that is not a loss.
+
+Build and load the image from the repository root:
 
 ```
-docker build -f Containerfile -t mcpx .
-docker run --rm mcpx --version
-docker run --rm -v "$PWD/.mcpx.json:/work/.mcpx.json:ro" mcpx ls
+nix build .#packages.x86_64-linux.mcpx-container
+docker load < result
+docker run --rm mcpx:0.1.0 --version
+docker run --rm -v "$PWD/.mcpx.json:/work/.mcpx.json:ro" mcpx:0.1.0 ls
 ```
 
 ## 2. The JavaScript runtime
@@ -47,13 +53,13 @@ returns `no JavaScript runtime found` and the command fails. An image that
 cannot run a script is an image that can only do the things a plain MCP client
 could already do.
 
-Bun because it is the smallest of the three. Measured on this machine
-(linux/arm64, the binary inside each project's own Debian image):
+Bun because it is the smallest of the three. The binary-size comparison was
+measured on this machine (linux/arm64, inside each runtime's Debian image):
 
-| runtime | binary |
-| --- | --- |
-| bun 1.4.2 | 79.4 MB |
-| deno (`denoland/deno:debian`) | 85.0 MB |
+| runtime                           | binary   |
+| --------------------------------- | -------- |
+| bun 1.4.2                         | 79.4 MB  |
+| deno (`denoland/deno:debian`)     | 85.0 MB  |
 | node 22 (`node:22-bookworm-slim`) | 122.2 MB |
 
 Smaller margins than the x86-64 figures usually quoted, but the same order.
@@ -142,27 +148,33 @@ the directory, the daemon logs why once, and `doctor` turns the line into a
 warning that says to install git. Adding it back is one package in the
 `apt-get install` line.
 
-## 4. Static linking: a goal, not a state
+## 4. Static linking: the policy
 
-The image links against glibc today. `CGO_ENABLED` is unset in an ordinary Go
-build, which means *enabled* on a native build, and two packages change
-behaviour when it is:
+`CGO_ENABLED` is unset in an ordinary Go build, which means _enabled_ on a
+native build, and two packages change behaviour when it is:
 
 - `internal/logging/trace.go:9` imports `os/user`, which under cgo calls
   `getpwuid_r` through libc rather than parsing `/etc/passwd`;
 - `net` is reachable from most of the tree, and under cgo its resolver is
   `getaddrinfo`, which honours `nsswitch.conf`.
 
-So the binary is dynamically linked and will only run on a base image with a
-compatible glibc. That is why the runtime stage is `debian:bookworm-slim`
-rather than something smaller: it is the same glibc the builder used.
+**Policy (#1987): the artifacts that ship as a bare mcpx binary ship
+static.** The trade-off is the two bullets above — pure-Go `os/user` does
+not consult NSS and the pure-Go resolver ignores `nsswitch.conf` — and it
+is accepted for these artifacts because neither behaviour is load-bearing
+for a daemon/CLI whose state lives in its own directories, while a binary
+that only runs beside one exact glibc (or one Nix store path) fails
+everywhere else silently.
 
-The Containerfile takes `ARG CGO_ENABLED` and uses it in the build step, so
-the switch is already wired. It defaults to `1` because that is what the rest
-of the build assumes, not because `0` fails.
+| artifact              | static?          | note                                                                                                                                                        |
+| --------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nix package           | yes              | `package.nix` sets `env.CGO_ENABLED = "0"`; the installed `bin/mcpx` is a `makeBinaryWrapper` launcher by design — the binary it launches is the static one |
+| this image's `mcpx`   | yes              | it is built from the same Go package, with the workstation wrapper disabled                                                      |
+| this image as a whole | no               | Bun is dynamically linked; its Nix closure supplies the libraries it needs                                                      |
+| release tarball       | not decided here | the release pipeline is #1881's; this policy is the input it should consume                                                                                 |
 
-**`CGO_ENABLED=0` builds, and the result is static and works.** Measured,
-not assumed:
+Measured, not assumed (the CGO_ENABLED=0 build, before it became the
+default):
 
 ```
 $ docker build -f Containerfile --build-arg CGO_ENABLED=0 -t mcpx:cgo0 .
@@ -175,43 +187,46 @@ $ docker run --rm -v "$PWD:/work:ro" mcpx:cgo0 \
 you said: cgo0
 ```
 
-Same size to the byte-ish -- 14 811 298 against 14 811 401 -- so the pure-Go
-`os/user` and resolver cost nothing here.
+Same size to the byte-ish -- 14 811 298 against 14 811 401 -- so the
+pure-Go `os/user` and resolver cost nothing here.
 
-That is the surprise worth recording: **mcpx itself is not what stands in the
-way of a static image.** The argument defaults to `1` because this file
-records a goal rather than making the decision, but the decision is one
-argument away and nothing observable breaks.
+### Tier-2 container legs
 
-What a genuinely static *image* would still need:
+Tier 2 (#1987) means: runs nightly and on pushes to main that touch
+`pkgs/mcpx`, never gates a PR. The legs are
+`scripts/tier2-containers.sh`, run by the `mcpx tier-2 containers`
+workflow; each leg asserts the surface its image can actually support,
+including mcpx's own clean refusal where a surface is absent:
 
-1. A decision about `os/user` and `net`, for users rather than for this
-   image. The pure-Go implementations are not equivalent: `os/user` parses
-   `/etc/passwd` and does not consult NSS, and the resolver stops honouring
-   `nsswitch.conf`. Inside a container neither matters. Outside one,
-   somebody's directory service does.
-2. Something to do about bun. `scratch` or distroless only pays off once
-   *everything* in the image is static, and bun is not -- it is dynamically
-   linked against glibc. A static mcpx beside a dynamic bun on
-   `debian:bookworm-slim` saves nothing at all. Going further means dropping
-   `exec` from the image, or a musl build of everything.
-None of that is blocked by this file. git used to be a third item here; it
-is no longer in the image (§3).
+| leg                         | image                                  | asserts                                                         |
+| --------------------------- | -------------------------------------- | --------------------------------------------------------------- |
+| `alpine-nonexec`            | `alpine:3.21`                          | `--version`; `exec` refuses with "no usable JavaScript runtime" |
+| `alpine-bunmusl-exec`       | alpine + bun's musl build              | `exec` runs a script                                            |
+| `alpine-node-exec`          | `alpine:3.21` + `apk add nodejs`        | `exec` runs a script or gives an actionable transform-types refusal |
+| `scratch-nonexec`           | `FROM scratch` + CA certs              | `--version`; the same clean `exec` refusal                      |
+| `distroless-static-nonexec` | `gcr.io/distroless/static-debian12`    | `--version`; the same clean `exec` refusal                      |
+| `distroless-cc-deno-exec`   | `gcr.io/distroless/cc-debian12` + deno | `exec` runs a script                                            |
 
-## 5. Where the size goes
+The **alpine + nodejs exec** leg (#2699) guards either a working Node
+TypeScript-transform path or mcpx's actionable refusal when that Node build
+does not support `--experimental-transform-types`. Tier 3 (fedora, flatpak,
+silverblue/kinoite hosts, the Windows port) is unchanged: separate issues
+when a user appears.
 
-Measured on linux/arm64 with the digests pinned in `Containerfile`, before
-and after §3, both built on the same machine:
+## 5. Historical prototype size measurements
 
-| layer | with git | without |
-| --- | --- | --- |
-| `debian:bookworm-slim` | 108 MB | 108 MB |
-| `apt-get install` | 105 MB (`ca-certificates git`) | 10.4 MB (`ca-certificates`) |
-| bun | 79.4 MB | 79.4 MB |
-| mcpx | 14.8 MB | 14.9 MB |
-| **layers, uncompressed** | **307 MB** | **213 MB** |
-| compressed content | 106 MB | 75.6 MB |
-| `docker images` disk usage | 413 MB | 288 MB |
+The following measurements are from the retired Debian-based Containerfile
+prototype on linux/arm64. They are not measurements of the current Nix image.
+
+| layer                      | with git                       | without                     |
+| -------------------------- | ------------------------------ | --------------------------- |
+| `debian:bookworm-slim`     | 108 MB                         | 108 MB                      |
+| `apt-get install`          | 105 MB (`ca-certificates git`) | 10.4 MB (`ca-certificates`) |
+| bun                        | 79.4 MB                        | 79.4 MB                     |
+| mcpx                       | 14.8 MB                        | 14.9 MB                     |
+| **layers, uncompressed**   | **307 MB**                     | **213 MB**                  |
+| compressed content         | 106 MB                         | 75.6 MB                     |
+| `docker images` disk usage | 413 MB                         | 288 MB                      |
 
 The 413 MB this document used to quote is the last row, which is the
 uncompressed layers plus the compressed blobs they were unpacked from. The
@@ -226,18 +241,20 @@ Debian's essential set, in the base layer -- but nothing in mcpx uses it.
 
 ## 6. What was deliberately left out
 
-- **No CI job.** Building an image on every push is a cost, and the workflow
-  restructure is its own piece of work.
-- **No container tests.** The e2e suite spawns daemons and binds unix sockets;
-  running it inside an image is a different harness, not a flag.
-- **No scratch or distroless variant**, for the reason in §4.2.
-- **Not wired into `package.nix`.** The Nix build and the container build are
-  two ways to produce the same binary; making one depend on the other buys
-  nothing yet.
+- **Image build is change-scoped in CI.** The `mcpx nix build` workflow builds
+  the Nix image on pull requests touching `pkgs/mcpx/**`, the root flake
+  wiring, or that workflow. The broad tier-2 container legs (§4) remain
+  nightly and on pushes to main.
+- **No full e2e suite inside an image.** The e2e suite spawns daemons and
+  binds unix sockets; the tier-2 legs assert surfaces, which is a
+  different, smaller harness.
+- **No shipped scratch or distroless variant.** They exist as tier-2 test
+  legs; a shipped minimal image still drops `exec` (no static JS runtime
+  exists to put in it), which is a product decision nobody has taken.
+- **No git, Deno or Node.** The image promises Bun as its only JavaScript
+  runtime and leaves git discovery fallbacks unavailable, as described in §3.
 
 ## 7. What to watch
 
-The `.dockerignore` excludes `result` -- a dangling symlink into the Nix store
-that does not exist inside the build. If a `nix build` has been run in the
-tree and this file is removed, the container build will fail on a broken
-symlink, and the error will not say why.
+The image recipe and its `contents` list live in `container-image.nix`; the
+root flake exports the image as `mcpx-container` for builds and CI.

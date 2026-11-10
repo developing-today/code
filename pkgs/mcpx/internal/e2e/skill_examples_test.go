@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"errors"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,9 +71,7 @@ func TestSkillExamplesRun(t *testing.T) {
 
 	for _, rt := range []string{"deno", "bun", "node"} {
 		t.Run(rt, func(t *testing.T) {
-			if _, err := exec.LookPath(rt); err != nil {
-				t.Skipf("%s not installed", rt)
-			}
+			testsupport.RequireBinary(t, rt)
 			e := newEnv(t, oneServer)
 			dir := filepath.Join(e.dir, "examples")
 			if err := os.MkdirAll(dir, 0o755); err != nil {

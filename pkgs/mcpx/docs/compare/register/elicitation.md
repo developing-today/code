@@ -2,7 +2,7 @@
 
 ```
 created:      2026-09-30T08:00:00-05:00
-last-updated: 2026-09-30T08:00:00-05:00
+last-updated: 2026-10-30T19:00:00-05:00
 increment:    1
 status:       standard
 tags:         area:compare
@@ -20,31 +20,31 @@ modern upstream) is registered in [mrtr.md](mrtr.md).
 
 Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| ELI-01 | `elicitation/create` and the `elicitation` client capability | `2025-06-18 has` `opencode v2 has` | `24-11 — · 25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (MRTR)`; opencode v2 ✓, v1 ✗, lootbox ✗ | ✓ — both directions through the broker | + high | S | low |
-| ELI-02 | `requestedSchema` limited to flat primitive properties | `2025-06-18 has` | `25-06 ✓ · 25-11 ✓ (+ arrays for multi-select) · 26-07 ✓` | ✓ — forwarded verbatim; never validated | + low | S | low |
-| ELI-03 | Three-way action `accept` / `decline` / `cancel` | `2025-06-18 has` | `25-06 ✓ · 25-11 ✓ · 26-07 ✓` | ✓ — `cancel` when nobody was asked | + low | S | low |
-| ELI-04 | Enum schemas: `enumNames` → titled/untitled single and multi-select | `2025-11-25 has` `mcpx missing` | `25-06 enum+enumNames · 25-11 rich · 26-07 rich` | partial — rich enums reach 2025-06-18 hosts undowngraded (#214) | + low | M | low |
-| ELI-05 | `default` on every primitive schema | `2025-11-25 has` `opencode v2 has` | `25-06 boolean only · 25-11 all · 26-07 all`; opencode v2 applies defaults | ✓ — forwarded unchanged | + low | S | low |
-| ELI-06 | `ElicitResult.content` values may be `string[]` | `2025-11-25 has` | `25-06 scalars · 25-11 + string[] · 26-07 + string[]` | ✓ — answers relayed as raw JSON | + low | S | low |
-| ELI-07 | `requestedSchema.$schema` allowed | `2025-11-25 has` | `25-11 ✓ · 26-07 ✓` | ✓ — forwarded verbatim | − moot | S | low |
-| ELI-08 | `mode` field; omitted means form | `2025-11-25 has` | `25-11 ✓ · 26-07 ✓` | ✓ — stripped for pre-2025-11-25 hosts | + low | S | low |
-| ELI-09 | URL-mode elicitation | `2025-11-25 has` `opencode v2 has` `mcpx missing` | `25-11 ✓ · 26-07 ✓`; opencode v2 renders a link field | partial — relayed; broker accepts url without declaring it (#214) | + med | S | med |
-| ELI-10 | `elicitationId` added, then removed | `2025-11-25 has` `2026-07-28 removes` `mcpx missing` | `25-11 only` | partial — stripped for old hosts, leaked to 2026 hosts (#201) | + low | S | low |
-| ELI-11 | `notifications/elicitation/complete` added, then removed | `2025-11-25 has` `2026-07-28 removes` `opencode v2 has` | `25-11 only`; opencode v2 handles it | partial — consumed from upstreams, never sent to hosts | + low | S | low |
-| ELI-12 | `-32042` `URLElicitationRequiredError` added, then removed | `2025-11-25 has` `2026-07-28 removes` `has better replacement` `mcpx missing` | `25-11 only`; 26-07 reserves the code | ✗ — neither emitted nor handled from upstreams (#214) | + med | M | med |
-| ELI-13 | Sensitive data: never → only via URL mode | `2025-11-25 has` | `25-06 never · 25-11 URL only · 26-07 URL only` | n/a — relays; broker answers persist to SQLite | + low | S | med |
-| ELI-14 | 2026 `ElicitRequest` embedded in `InputRequiredResult`, not a request | `2026-07-28 has` | `26-07 only` | ✓ — produced and answered | + med | S | low |
-| ELI-15 | Legacy delivery over Streamable HTTP: request on the POST's SSE | `2025-06-18 has` `2026-07-28 removes` | `25-03..25-11 allowed · 26-07 forbidden` | ✓ — works with a session (wire L1–L3) | + high | S | low |
-| ELI-16 | Legacy delivery over stdio: request on the pipe | `2025-06-18 has` | `25-06 ✓ · 25-11 ✓` | ✓ — interruptible calls run concurrently; not wire-driven | + high | S | low |
-| ELI-17 | Stateless 2026 host plus eliciting upstream | `2026-07-28 has` `mcpx missing` | `26-07 only` | ✗ — `-32603` after 8 busy rounds (wire M1) (#201) | + high | M | high |
-| ELI-18 | Naming the originating server in a relayed question | `mcpx missing` | spec: client MUST show who asks; mcpx: legacy path only | partial — legacy prefixed "(via mcpx)"; 2026 path raw (#201) | + med | S | med |
-| ELI-19 | Question from a shared upstream instance | `impl deferred` | mcpx only | partial — goes to the broker, never inline | + low | L | low |
-| ELI-20 | Questions raised inside `mcpx_exec` | `impl deferred` `opencode v2 has` `mcpx missing` | mcpx only | partial — always the broker, never the host (#77) | + low | L | low |
-| ELI-21 | Answering an elicitation from inside a script | `opencode v2 has` `mcpx missing` | opencode v2 UI form; mcpx designed, not built | ✗ — no `onElicit`; broker and policy only (#214) | + med | M | low |
-| ELI-22 | Client with no elicitation answerer | `opencode v1 has` `lootbox has` | opencode v1 and lootbox: `-32601`; mcpx: `cancel` | ✓ — declares, answers `cancel` when nobody is asked | + low | S | low |
-| ELI-23 | Elicitation attributed to a session or a whole location | `opencode v2 has` | opencode v2: Location-global forms | n/a — mcpx is the server here | + low | S | low |
+| ID     | Difference                                                            | Labels                                                         | Where it exists                                                                          | mcpx @ 05c78b2                                                                                                                                                                                                                                      | Value  | Effort | Risk |
+| ------ | --------------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ | ---- |
+| ELI-01 | `elicitation/create` and the `elicitation` client capability          | `2025-06-18 has` `opencode v2 has`                             | `24-11 — · 25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (MRTR)`; opencode v2 ✓, v1 ✗, lootbox ✗ | ✓ — both directions through the broker                                                                                                                                                                                                              | + high | S      | low  |
+| ELI-02 | `requestedSchema` limited to flat primitive properties                | `2025-06-18 has`                                               | `25-06 ✓ · 25-11 ✓ (+ arrays for multi-select) · 26-07 ✓`                                | ✓ — forwarded verbatim; never validated                                                                                                                                                                                                             | + low  | S      | low  |
+| ELI-03 | Three-way action `accept` / `decline` / `cancel`                      | `2025-06-18 has`                                               | `25-06 ✓ · 25-11 ✓ · 26-07 ✓`                                                            | ✓ — `cancel` when nobody was asked                                                                                                                                                                                                                  | + low  | S      | low  |
+| ELI-04 | Enum schemas: `enumNames` → titled/untitled single and multi-select   | `2025-11-25 has`                                               | `25-06 enum+enumNames · 25-11 rich · 26-07 rich`                                         | ✓ — titled single-select downgraded to `enum`+`enumNames` for pre-2025-11-25 hosts in `paramsFor`, non-boolean `default` stripped; multi-select refused whole for old hosts (no equivalent; stays with the broker) (#2078)                          | + low  | M      | low  |
+| ELI-05 | `default` on every primitive schema                                   | `2025-11-25 has` `opencode v2 has`                             | `25-06 boolean only · 25-11 all · 26-07 all`; opencode v2 applies defaults               | ✓ — forwarded unchanged                                                                                                                                                                                                                             | + low  | S      | low  |
+| ELI-06 | `ElicitResult.content` values may be `string[]`                       | `2025-11-25 has`                                               | `25-06 scalars · 25-11 + string[] · 26-07 + string[]`                                    | ✓ — answers relayed as raw JSON                                                                                                                                                                                                                     | + low  | S      | low  |
+| ELI-07 | `requestedSchema.$schema` allowed                                     | `2025-11-25 has`                                               | `25-11 ✓ · 26-07 ✓`                                                                      | ✓ — forwarded verbatim                                                                                                                                                                                                                              | − moot | S      | low  |
+| ELI-08 | `mode` field; omitted means form                                      | `2025-11-25 has`                                               | `25-11 ✓ · 26-07 ✓`                                                                      | ✓ — stripped for pre-2025-11-25 hosts                                                                                                                                                                                                               | + low  | S      | low  |
+| ELI-09 | URL-mode elicitation                                                  | `2025-11-25 has` `opencode v2 has`                             | `25-11 ✓ · 26-07 ✓`; opencode v2 renders a link field                                    | ✓ — relayed only to url-declared hosts; as a client mcpx declares `url` only with a handler installed (`mcpclient/modern.go`), the pool installs it, and `-32042`-named URLs open through the broker (#2079)                                        | + med  | S      | med  |
+| ELI-10 | `elicitationId` added, then removed                                   | `2025-11-25 has` `2026-07-28 removes` `mcpx missing`           | `25-11 only`                                                                             | partial — stripped for old hosts, leaked to 2026 hosts (#201)                                                                                                                                                                                       | + low  | S      | low  |
+| ELI-11 | `notifications/elicitation/complete` added, then removed              | `2025-11-25 has` `2026-07-28 removes` `opencode v2 has`        | `25-11 only`; opencode v2 handles it                                                     | partial — consumed from upstreams, never sent to hosts                                                                                                                                                                                              | + low  | S      | low  |
+| ELI-12 | `-32042` `URLElicitationRequiredError` added, then removed            | `2025-11-25 has` `2026-07-28 removes` `has better replacement` | `25-11 only`; 26-07 reserves the code                                                    | ✓ — handled from upstreams as a client (broker URL flow, one retry, #2079) and emitted as a server to 2025-11-25 url-declared hosts when a pending URL question is undeliverable, listing exactly those elicitations; never emitted at 2026 (#2080) | + med  | M      | med  |
+| ELI-13 | Sensitive data: never → only via URL mode                             | `2025-11-25 has`                                               | `25-06 never · 25-11 URL only · 26-07 URL only`                                          | n/a — relays; broker answers persist to SQLite                                                                                                                                                                                                      | + low  | S      | med  |
+| ELI-14 | 2026 `ElicitRequest` embedded in `InputRequiredResult`, not a request | `2026-07-28 has`                                               | `26-07 only`                                                                             | ✓ — produced and answered                                                                                                                                                                                                                           | + med  | S      | low  |
+| ELI-15 | Legacy delivery over Streamable HTTP: request on the POST's SSE       | `2025-06-18 has` `2026-07-28 removes`                          | `25-03..25-11 allowed · 26-07 forbidden`                                                 | ✓ — works with a session (wire L1–L3)                                                                                                                                                                                                               | + high | S      | low  |
+| ELI-16 | Legacy delivery over stdio: request on the pipe                       | `2025-06-18 has`                                               | `25-06 ✓ · 25-11 ✓`                                                                      | ✓ — interruptible calls run concurrently; not wire-driven                                                                                                                                                                                           | + high | S      | low  |
+| ELI-17 | Stateless 2026 host plus eliciting upstream                           | `2026-07-28 has` `mcpx missing`                                | `26-07 only`                                                                             | ✗ — `-32603` after 8 busy rounds (wire M1) (#201)                                                                                                                                                                                                   | + high | M      | high |
+| ELI-18 | Naming the originating server in a relayed question                   | `mcpx missing`                                                 | spec: client MUST show who asks; mcpx: legacy path only                                  | partial — legacy prefixed "(via mcpx)"; 2026 path raw (#201)                                                                                                                                                                                        | + med  | S      | med  |
+| ELI-19 | Question from a shared upstream instance                              | `impl deferred`                                                | mcpx only                                                                                | partial — goes to the broker, never inline                                                                                                                                                                                                          | + low  | L      | low  |
+| ELI-20 | Questions raised inside `mcpx_exec`                                   | `impl deferred` `opencode v2 has` `mcpx missing`               | mcpx only                                                                                | partial — always the broker, never the host (#77)                                                                                                                                                                                                   | + low  | L      | low  |
+| ELI-21 | Answering an elicitation from inside a script                         | `opencode v2 has` `mcpx missing`                               | opencode v2 UI form; mcpx designed, not built                                            | decided — broker-only by design (#1935): no `onElicit`; every answer flows through the broker                                                                                                                                                       | + med  | M      | low  |
+| ELI-22 | Client with no elicitation answerer                                   | `opencode v1 has` `lootbox has`                                | opencode v1 and lootbox: `-32601`; mcpx: `cancel`                                        | ✓ — declares, answers `cancel` when nobody is asked                                                                                                                                                                                                 | + low  | S      | low  |
+| ELI-23 | Elicitation attributed to a session or a whole location               | `opencode v2 has`                                              | opencode v2: Location-global forms                                                       | n/a — mcpx is the server here                                                                                                                                                                                                                       | + low  | S      | low  |
 
 ## ELI-01 `elicitation/create` and the `elicitation` client capability
 
@@ -106,10 +106,13 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** 2025-06-18 has `EnumSchema{enum, enumNames?}`. 2025-11-25 (SEP-1330) replaces it with
   `UntitledSingleSelect{enum}`, `TitledSingleSelect{oneOf[{const,title}]}`, `UntitledMultiSelect{type:"array",
-  items.enum}`, `TitledMultiSelect{items.anyOf}`, plus a `LegacyTitledEnumSchema` (the old `enumNames`).
+items.enum}`, `TitledMultiSelect{items.anyOf}`, plus a `LegacyTitledEnumSchema` (the old `enumNames`).
 - **Where.** Simple enums in 2025-06-18; rich enums in 2025-11-25 and 2026-07-28.
-- **mcpx @ 05c78b2.** When a 2025-11-25 upstream's question goes to a 2025-06-18 host, only `mode` and `elicitationId` are
-  stripped (`internal/mcpserver/conn.go:398-404`); `oneOf` and array enums go through unchanged.
+- **mcpx (current, #2078).** `paramsFor` (`internal/mcpserver/conn.go`) downgrades a titled single-select
+  property to `enum` + `enumNames` for a pre-2025-11-25 host and strips `default` from every non-boolean
+  property (the 2025-06-18 schema allows it only on booleans, ELI-05). A multi-select question has no
+  2025-06-18 equivalent and is refused whole for an old host (`Question.Sendable`): it stays with the
+  broker rather than being flattened into a different answer type.
 - **Value to mcpx.** + low: downgrade titled single-select to `enum` + `enumNames` for 2025-06-18 hosts; multi-select has
   no 2025-06-18 equivalent and would have to be refused or flattened.
 - **Effort.** M — a schema rewrite per property, plus mapping multi-select answers back.
@@ -184,10 +187,11 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   nothing but the URL passes through the client.
 - **Where.** 2025-11-25 and 2026-07-28. opencode v2 renders an external-link field and settles the form on the answer (or,
   in legacy, on the completion notification).
-- **mcpx @ 05c78b2.** Relays URL questions only to hosts that declared `url` (CAP-08). As a client it never declares `url`,
-  yet `elicitViaBroker` accepts `mode: "url"` and files it under the upstream's `elicitationId`
-  (`internal/daemon/hooks.go:122-146`), and an upstream `notifications/elicitation/complete` marks the row accepted
-  (`internal/daemon/hooks.go:55-68`). It handles what it never asked for.
+- **mcpx (current, #2079).** Relays URL questions only to hosts that declared `url` (CAP-08). As a client
+  it now declares `url` only with a handler installed (`internal/mcpclient/modern.go` capabilities; the
+  pool installs the handler), and an upstream `-32042` is opened through the broker's existing
+  elicitation/create path (`internal/daemon/hooks.go`, `urlElicitationsViaBroker`) before the call is
+  retried once. The earlier state -- accepting URL questions it never declared -- is gone.
 - **Value to mcpx.** + med: declaring `url` would let OAuth-style servers use it legitimately rather than by accident.
 - **Effort.** S for the declaration; the per-host gating is CAP-08.
 - **Risk.** med: two upstreams choosing the same `elicitationId` collide in the broker, because the row id is theirs.
@@ -195,7 +199,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   also lists as a known gap that mcpx never starts a URL elicitation of its own (for example for upstream OAuth). The 2026
   URL params are only `mode`, `message`, `url`.
 - **Sources.** `schema/2025-11-25/schema.ts:2189` "mode: \"url\";"; `2025-11-25/changelog.mdx:17` "Added support for";
-  `internal/daemon/hooks.go:138` "ID:        p.ElicitationID,"; `internal/mcpclient/modern.go:51`;
+  `internal/daemon/hooks.go:138` "ID: p.ElicitationID,"; `internal/mcpclient/modern.go:51`;
   `docs/protocol.md:376` "url-mode elicitation raised by mcpx itself."; `schema/2026-07-28/schema.ts:2821-2838`;
   `v2:packages/core/src/mcp/index.ts:226`.
 
@@ -241,8 +245,15 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   before a retry. 2026 removes the type; `-32042` is reserved "2025-11-25 only" and MUST NOT be emitted. An
   `InputRequiredResult` carrying a URL `elicitation/create` replaces it.
 - **Where.** 2025-11-25 only.
-- **mcpx @ 05c78b2.** `-32042` appears nowhere in `internal/mcpserver` or `internal/mcpclient`. Whether an upstream's
-  `-32042` passes through to hosts unchanged was not verified.
+- **mcpx (current, #2079 + #2080).** As a client, `-32042` is intercepted in `CallTool` at
+  2025-11-25 only (`internal/mcpclient/client.go`): the named elicitations open through the broker and
+  the call retries exactly once. As a server, `viaAsk` (`internal/mcpserver/url_required.go`) now
+  produces `-32042` for a 2025-11-25 host that declared `elicitation.url` when a URL question of its
+  call is pending and undeliverable (no channel at entry, or `askClient` returns `ErrNoPush`), listing
+  exactly the pending URL questions via `paramsFor`; the broker keeps the questions. An upstream
+  `-32042` reaching the server side unhandled is relayed only to url-declared 2025-11-25 hosts, else
+  the call fails generically. Never emitted at 2026 (the conformance gap
+  `elicitation-server-must-return-32042` is retired by #2080).
 - **Value to mcpx.** + med: as a client of 2025-11-25 upstreams, turn `-32042` into URL questions for the host (legacy
   `elicitation/create`, or `input_required` for a 2026 host) and retry the call.
 - **Effort.** M.
@@ -402,11 +413,11 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   because the server "cannot attribute them to a persisted session row"). Cloudflare (agent-level handlers). mcpx
   (broker; no script hook). opencode v1 (capability commented out; answers `-32601`) and lootbox (`capabilities: {}`;
   elicitation register, ELI-22) refuse. Broker routes `GET /v1/elicit`, `GET /v1/elicit/{id}`, `POST
-  /v1/elicit/{id}/{action}` (`internal/daemon/server.go:422-424`). `daemonAsker.Begin` treats only `mcpx_call` as
+/v1/elicit/{id}/{action}` (`internal/daemon/server.go:422-424`). `daemonAsker.Begin` treats only `mcpx_call` as
   interruptible (`internal/cli/serve_ask.go:44-58`). The script-side `onElicit(q => …)` is designed in a proposal
   (`docs/elicitation.md:7` status `proposed`; `docs/elicitation.md:308-330`) and not built (rg finds no `onElicit` in
   `internal/codegen`). mcpx defers the inline case on purpose: "A script makes many upstream calls and the question
-  belongs to one of them; the correlation in §3.4 identifies a *call*, and a script is not one"
+  belongs to one of them; the correlation in §3.4 identifies a _call_, and a script is not one"
   (`docs/protocol.md:379-382`). Protocol details live in the elicitation register (ELI-20, ELI-21).
 - **Sources.** `docs/protocol.md:379` "A modern client cannot answer a question raised by";
   `internal/cli/serve_ask.go:57` "p.Name != \"mcpx_call\"".; `docs/elicitation.md:321` `onElicit(async (q) => {`; `v2:packages/core/src/mcp/client.ts:143`; `v2:packages/core/src/mcp/index.ts:80-82`; https://developers.cloudflare.com/agents/model-context-protocol/apis/client-api/#elicitation ("On the stateless path, elicitation returns `input_required` and completes through multi-round-trip requests (MRTR).")
@@ -424,7 +435,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   for a human.
 - **Effort.** M — a long-poll or SSE from the generated client to `/v1/elicit?run=<id>`, plus handler registration.
 - **Risk.** low: without it scripts depend on policy answers or a human at the CLI or TUI.
-- **Detail.** The doc is ahead of the code, so the gap is a doc/code disagreement as well as a missing feature.
+- **Detail.** The doc was ahead of the code, so the gap was a doc/code disagreement as well as a missing feature. Closed 2026-11-03 (#1935) as a deliberate design decision: broker-only. `Route` sends url-mode, credential-field, and confirmation questions to a human on purpose, and an inline script handler would bypass or duplicate that gate; question-to-call correlation for a multi-call script is also unsolved (ELI-20). Scripts answer through the broker instead (exit 75 + `mcpx elicit answer`, `/v1/elicit`, `mcpx_elicit_*`, the ops surface). `docs/elicitation.md` §5.2 carries the full decision and its revisit conditions.
 - **Sources.** `docs/elicitation.md:318-324` "onElicit(async (q) => {"; `internal/daemon/server.go:422-424`;
   `v2:packages/core/src/mcp/client.ts:143`.
 

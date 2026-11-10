@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // scriptedServer is a fake whose replies are chosen per test, recording every
@@ -102,7 +102,7 @@ func dialModern(t *testing.T, s *scriptedServer, o mcpclient.Options) *mcpclient
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 
@@ -320,7 +320,7 @@ func TestSamplingIsDeclaredOnlyWhenSomethingCanAnswerIt(t *testing.T) {
 		if _, ok := caps["elicitation"]; !ok {
 			t.Errorf("handler=%v: elicitation should always be declared", withHandler)
 		}
-		c.Close()
+		_ = c.Close()
 	}
 }
 
@@ -340,7 +340,7 @@ func TestRootsAreServedEvenWithAHandlerInstalled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// The server asks; the client's reply is the frame with our id and no
 	// method.
@@ -414,5 +414,139 @@ func TestInputRequestsOfOneRoundAreAskedTogetherUnderTheirKeys(t *testing.T) {
 	}
 	if !keys["a"] || !keys["b"] {
 		t.Errorf("each question should carry its server's key, saw %v", keys)
+	}
+}
+
+// Sampling shape enforcement reaches the modern era through the same
+// answer() the legacy wire uses: an input_required sampling request that
+// carries tools is refused before the handler runs, and an undeclared
+// includeContext is dropped from what the handler sees.
+func TestModernSamplingShape(t *testing.T) {
+	ask := func(samplingParams map[string]any) func(string, map[string]any) any {
+		return func(method string, params map[string]any) any {
+			switch method {
+			case "server/discover":
+				return modernDiscover(params)
+			case "tools/call":
+				if _, ok := params["inputResponses"]; ok {
+					return map[string]any{"resultType": "complete", "content": []any{}}
+				}
+				return map[string]any{
+					"resultType": "input_required",
+					"inputRequests": map[string]any{
+						"q": map[string]any{"method": "sampling/createMessage", "params": samplingParams},
+					},
+				}
+			}
+			return nil
+		}
+	}
+	base := map[string]any{
+		"messages":  []any{map[string]any{"role": "user", "content": map[string]any{"type": "text", "text": "hi"}}},
+		"maxTokens": 100,
+	}
+
+	t.Run("2026-07-28/sampling/tools-without-capability-is-32602", func(t *testing.T) {
+		withTools := map[string]any{"tools": []any{map[string]any{"name": "lookup"}}}
+		for k, v := range base {
+			withTools[k] = v
+		}
+		calls := 0
+		c := dialModern(t, newScripted(ask(withTools)), mcpclient.Options{
+			OnServerRequest: func(context.Context, string, json.RawMessage) (any, error) {
+				calls++
+				return map[string]any{"role": "assistant", "model": "m", "stopReason": "endTurn"}, nil
+			},
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := c.CallTool(ctx, "ask", map[string]any{})
+		if err == nil || !strings.Contains(err.Error(), "sampling.tools") {
+			t.Fatalf("tools-carrying sampling request not refused naming sampling.tools: %v", err)
+		}
+		if calls != 0 {
+			t.Fatalf("handler invoked %d times for a refused request", calls)
+		}
+	})
+
+	t.Run("2026-07-28/sampling/includecontext-without-capability-is-dropped", func(t *testing.T) {
+		withContext := map[string]any{"includeContext": "allServers"}
+		for k, v := range base {
+			withContext[k] = v
+		}
+		var got map[string]any
+		c := dialModern(t, newScripted(ask(withContext)), mcpclient.Options{
+			OnServerRequest: func(_ context.Context, _ string, raw json.RawMessage) (any, error) {
+				_ = json.Unmarshal(raw, &got)
+				return map[string]any{"role": "assistant", "model": "m", "stopReason": "endTurn",
+					"content": map[string]any{"type": "text", "text": "ok"}}, nil
+			},
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := c.CallTool(ctx, "ask", map[string]any{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := got["includeContext"]; ok {
+			t.Errorf("handler saw includeContext the client never declared: %v", got)
+		}
+		if _, ok := got["messages"]; !ok {
+			t.Errorf("handler lost the rest of the request: %v", got)
+		}
+	})
+}
+
+func TestExtensionsDeclaredOnModernOnly(t *testing.T) {
+	// Register CAP-11 (#1918): a 2026-07-28 connection declares the
+	// extensions map, and an identifier is added only with its
+	// implementation -- since #1556 that is exactly the tasks
+	// extension, which CallTool now drives for taskSupport-"required"
+	// tools. A legacy initialize has no extensions key at all: the map
+	// has no counterpart in that era's shape.
+	s := newScripted(func(method string, params map[string]any) any {
+		switch method {
+		case "server/discover":
+			return modernDiscover(params)
+		case "tools/list":
+			return map[string]any{"resultType": "complete", "tools": []any{}}
+		}
+		return nil
+	})
+	c := dialModern(t, s, mcpclient.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.ListTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range s.requests() {
+		params, _ := r["params"].(map[string]any)
+		meta, _ := params["_meta"].(map[string]any)
+		caps, _ := meta[mcpclient.MetaClientCapabilities].(map[string]any)
+		ext, ok := caps["extensions"].(map[string]any)
+		if !ok {
+			t.Errorf("%s: modern capabilities carry no extensions map: %v", r["method"], caps)
+			continue
+		}
+		if len(ext) != 1 {
+			t.Errorf("%s: extensions declares %v; only the implemented tasks extension may be declared", r["method"], ext)
+		}
+		if _, ok := ext["io.modelcontextprotocol/tasks"]; !ok {
+			t.Errorf("%s: extensions %v does not declare io.modelcontextprotocol/tasks", r["method"], ext)
+		}
+	}
+
+	var lcaps map[string]any
+	ls := legacyServer(&lcaps)
+	lctx, lcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer lcancel()
+	lc, err := mcpclient.NewWithOptions(lctx, ls, mcpclient.Options{
+		ClientName: "mcpx", ClientVersion: "t", Preference: mcpclient.ForceLegacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lc.Close() }()
+	if _, ok := lcaps["extensions"]; ok {
+		t.Errorf("legacy initialize must not carry extensions: %v", lcaps)
 	}
 }

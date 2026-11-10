@@ -1,0 +1,10 @@
+relay: http://127.0.0.1:3340 answers /ping, log /home/user/work/spikes/c1-connect/logs/t8-relay.txt
+profile: 1 relay(s) (0 with QAD off), policy RelayOnly, no lookups
+server bound, endpoint started
+client bound, endpoint started
+online: server 3.000092584s, client 3.004448622s
+ticket: 101 chars, 1 relay, 0 direct
+dial start
+dial by ticket: connected 16.344237ms, replied 27.808413ms, echoed true, handshake over relay http://127.0.0.1:3340/
+  path after reply: * relay http://127.0.0.1:3340/
+RESULT t8: PASS

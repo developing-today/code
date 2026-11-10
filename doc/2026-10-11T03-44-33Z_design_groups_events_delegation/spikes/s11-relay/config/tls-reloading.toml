@@ -1,0 +1,12 @@
+# Scenario 3: TLS with Reloading cert mode (same ports and paths as tls-manual.toml).
+# Cert and key paths are read once at startup.
+http_bind_addr = "127.0.0.1:19122"
+enable_quic_addr_discovery = false
+metrics_bind_addr = "127.0.0.1:19221"
+
+[tls]
+https_bind_addr = "127.0.0.1:19121"
+hostname = "localhost"
+cert_mode = "Reloading"
+manual_cert_path = "certs/live/leaf.pem"
+manual_key_path = "certs/live/leaf.key"

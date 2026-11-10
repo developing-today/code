@@ -21,7 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 
 	_ "modernc.org/sqlite"
 )
@@ -83,8 +85,18 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			// This is the setting `mcpx` gives the daemon it starts on
 			// demand, so it is the one the tests start.
 			"MCPX_AUTOSTART_IDLE_EXIT="+testIdleExit,
+			// The write policy gate (#1979) defaults to ask, and these
+			// tests drive the CLI and the MCP surface with no human to
+			// answer: an unannotated tool is a write by the
+			// specification's defaults, so every such call would wait
+			// out the ask timeout and fail. The gate's own tests opt
+			// back in by setting policy.write=ask (or the
+			// confirmDestructive floor) explicitly, the way
+			// handoff_load_test.go already does.
+			"MCPX_POLICY_WRITE=allow",
 		),
 	}
+	recordSettingProbes(t)
 	t.Cleanup(func() {
 		// `stop --all` rather than `stop`: plain `stop` dials the socket
 		// path recomputed from the environment, and a long state path moves
@@ -93,7 +105,7 @@ func newEnv(t *testing.T, cfgBody string) *env {
 		// survives. `--all` reads the daemon-<key>.json info files instead,
 		// which record the path the daemon actually bound. Each env has its
 		// own MCPX_STATE_DIR, so `--all` is scoped to this test.
-		if out, err := e.try("stop", "--all"); err != nil {
+		if out, err := e.tryUnrecorded("stop", "--all"); err != nil {
 			// Logged, not fatal: a test that has already passed should not
 			// be failed by its own teardown, but a teardown that silently
 			// fails is how the leak went unnoticed for so long.
@@ -142,13 +154,29 @@ func repoRoot(t *testing.T) string {
 }
 
 func (e *env) try(args ...string) (string, error) {
+	return e.tryWith(e.mcpx, args...)
+}
+
+func (e *env) tryWith(bin string, args ...string) (string, error) {
+	return e.tryWithCoverage(bin, bin == e.mcpx, args...)
+}
+
+func (e *env) tryUnrecorded(args ...string) (string, error) {
+	return e.tryWithCoverage(e.mcpx, false, args...)
+}
+
+func (e *env) tryWithCoverage(bin string, record bool, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.mcpx, args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	out, err := cmd.CombinedOutput()
-	return string(out), harnessTimeout(ctx, err)
+	err = harnessTimeout(ctx, err)
+	if err == nil && record {
+		e.recordCLI(args)
+	}
+	return string(out), err
 }
 
 // harnessTimeout names the harness's own deadline as the killer. Without it
@@ -173,6 +201,7 @@ func (e *env) runStdin(stdin string, args ...string) string {
 	if err != nil {
 		e.t.Fatalf("mcpx %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
+	e.recordCLI(args)
 	return string(out)
 }
 
@@ -188,6 +217,13 @@ func (e *env) run(args ...string) string {
 const oneServer = `{
   "mcpServers": {
     "demo": { "command": "FAKE", "mcpx": { "sharing": "shared", "scope": "global", "description": "a fake server" } }
+  }
+}`
+
+const twoVisibleServers = `{
+  "mcpServers": {
+    "alpha": { "command": "FAKE" },
+    "beta":  { "command": "FAKE" }
   }
 }`
 
@@ -343,7 +379,7 @@ console.log("GOT:" + String(r));
 func TestRunWritesTypedClientBesideTheScript(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "s.ts")
-	os.WriteFile(script, []byte(`console.log("ok");`), 0o644)
+	_ = os.WriteFile(script, []byte(`console.log("ok");`), 0o644)
 	e.run("run", script)
 	client := filepath.Join(e.dir, "mcpx-client.ts")
 	b, err := os.ReadFile(client)
@@ -475,7 +511,7 @@ func TestSchemaCacheSurvivesDaemonRestart(t *testing.T) {
 	if err := os.Rename(e.fake, moved); err != nil {
 		t.Skipf("cannot move fake binary: %v", err)
 	}
-	defer os.Rename(moved, e.fake)
+	defer func() { _ = os.Rename(moved, e.fake) }()
 
 	// Every part of the catalogue, not only tools: the cache held tools and
 	// resources and not prompts, so a restarted daemon served none, and
@@ -949,7 +985,7 @@ func TestNamedExportReceivesSpreadArguments(t *testing.T) {
 	body := `export function join(a: string, b: string) { return a + "+" + b; }
 export default function main() { return "default-was-used"; }
 `
-	os.WriteFile(script, []byte(body), 0o644)
+	_ = os.WriteFile(script, []byte(body), 0o644)
 	out := e.run("run", "--export", "join", script, "x", "y")
 	if !strings.Contains(out, "x+y") {
 		t.Fatalf("--export should call the named function with spread args:\n%s", out)
@@ -962,7 +998,7 @@ export default function main() { return "default-was-used"; }
 func TestUnknownExportNamesWhatExists(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "named2.ts")
-	os.WriteFile(script, []byte(`export function real() { return 1; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export function real() { return 1; }`), 0o644)
 	out, err := e.try("run", "--export", "missing", script)
 	if err == nil {
 		t.Fatalf("expected failure:\n%s", out)
@@ -975,7 +1011,7 @@ func TestUnknownExportNamesWhatExists(t *testing.T) {
 func TestScriptWithoutDefaultExportStillRunsOnImport(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "toplevel.ts")
-	os.WriteFile(script, []byte(`console.log("ran at import time");`), 0o644)
+	_ = os.WriteFile(script, []byte(`console.log("ran at import time");`), 0o644)
 	out := e.run("run", script)
 	if !strings.Contains(out, "ran at import time") {
 		t.Fatalf("a script with no entry point should still run:\n%s", out)
@@ -991,7 +1027,7 @@ export default async function main() {
   return { done: true };
 }
 `
-	os.WriteFile(script, []byte(body), 0o644)
+	_ = os.WriteFile(script, []byte(body), 0o644)
 	out := e.run("--json", "run", script)
 
 	var doc struct {
@@ -1030,7 +1066,7 @@ export default async function main() {
 func TestRunJSONReportsAFailure(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "fail.ts")
-	os.WriteFile(script, []byte(`throw new Error("deliberate");`), 0o644)
+	_ = os.WriteFile(script, []byte(`throw new Error("deliberate");`), 0o644)
 	out, err := e.try("--json", "run", script)
 	if err == nil {
 		t.Fatal("a throwing script should exit non-zero")
@@ -1068,7 +1104,7 @@ func TestEmitStreamsResultsToStdout(t *testing.T) {
 func TestEmitAndReturnCoexist(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "both.ts")
-	os.WriteFile(script, []byte(`import { emit } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { emit } from "./mcpx-client.ts";
 export default function main() {
   emit({ partial: 1 });
   emit({ partial: 2 });
@@ -1120,7 +1156,7 @@ func TestLogCapturesAnErrorStructurally(t *testing.T) {
 func TestLogSourceRecordsTheCallSite(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "src.ts")
-	os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
 export default function named() {
   log.info("hello");
 }
@@ -1163,7 +1199,7 @@ func TestLogSourceIsOffByDefault(t *testing.T) {
 func TestAFilteredLogCallNeverTouchesItsArguments(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "cost.ts")
-	os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log } from "./mcpx-client.ts";
 export default function main() {
   let touched = 0;
   const probe = { get i() { touched++; return 1; } };
@@ -1223,7 +1259,7 @@ func TestLogWithBindsAttributes(t *testing.T) {
 			continue
 		}
 		var doc map[string]any
-		json.Unmarshal([]byte(line), &doc)
+		_ = json.Unmarshal([]byte(line), &doc)
 		if doc["msg"] == "bound" && doc["run"] == "r1" {
 			bound = true
 		}
@@ -1285,7 +1321,7 @@ func TestExecPrefixFlagReplacesUnlessInherited(t *testing.T) {
 func TestFileScriptPrefixRunsBeforeTopLevelCode(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "top.ts")
-	os.WriteFile(script, []byte(`console.log("TOP-LEVEL");
+	_ = os.WriteFile(script, []byte(`console.log("TOP-LEVEL");
 export default function main() { return "done"; }
 `), 0o644)
 	// A static import would be hoisted and run the module first whatever the
@@ -1303,7 +1339,7 @@ export default function main() { return "done"; }
 func TestFileScriptPrefixCanPatchGlobals(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "glob.ts")
-	os.WriteFile(script, []byte(`export default function main() {
+	_ = os.WriteFile(script, []byte(`export default function main() {
   return { saw: (globalThis as any).INJECTED ?? "<unset>" };
 }
 `), 0o644)
@@ -1318,7 +1354,7 @@ func TestFileScriptPrefixCannotBindModuleScope(t *testing.T) {
 	// declaration is not visible inside the script.
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "scope.ts")
-	os.WriteFile(script, []byte(`export default function main() {
+	_ = os.WriteFile(script, []byte(`export default function main() {
   return { has: typeof (globalThis as any).FROM_PREFIX_CONST };
 }
 `), 0o644)
@@ -1331,7 +1367,7 @@ func TestFileScriptPrefixCannotBindModuleScope(t *testing.T) {
 func TestFileScriptSuffixSeesTheResult(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "res.ts")
-	os.WriteFile(script, []byte(`export default function main() { return { n: 1 }; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return { n: 1 }; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--suffix", `log.info("ok={ok}", { ok: result.ok });`, script)
 	if !strings.Contains(out, "ok=true") {
@@ -1342,7 +1378,7 @@ func TestFileScriptSuffixSeesTheResult(t *testing.T) {
 func TestFileScriptSuffixRunsEvenOnFailure(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "fail2.ts")
-	os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
 	out, err := e.try("run", "--format", "bare",
 		"--suffix", `log.warn("cleanup ok={ok}", { ok: result.ok });`, script)
 	if err == nil {
@@ -1356,7 +1392,7 @@ func TestFileScriptSuffixRunsEvenOnFailure(t *testing.T) {
 func TestFileScriptPrefixSeesTheScriptContext(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "ctx.ts")
-	os.WriteFile(script, []byte(`export default function main() { return "x"; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return "x"; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--prefix", `log.info("{name} got {n}", { name: script.name, n: script.args.length });`,
 		script, "a", "b")
@@ -1410,7 +1446,7 @@ func TestScriptCanUseGlobalsWithoutImporting(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "noimp.ts")
 	// No import statement anywhere.
-	os.WriteFile(script, []byte(`export default async function main() {
+	_ = os.WriteFile(script, []byte(`export default async function main() {
   log("plain call");
   emit({ streamed: 1 });
   const r = await demo.echo({ message: "via global" });
@@ -1437,7 +1473,7 @@ func TestLogIsCallableAsInfo(t *testing.T) {
 func TestImportingStillWorksAlongsideGlobals(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "mixed.ts")
-	os.WriteFile(script, []byte(`import { log as imported } from "./mcpx-client.ts";
+	_ = os.WriteFile(script, []byte(`import { log as imported } from "./mcpx-client.ts";
 export default function main() {
   imported.info("via import");
   log.info("via global");
@@ -1484,7 +1520,7 @@ func TestConsoleCaptureCanBeDisabled(t *testing.T) {
 func TestGlobalDeclarationsAreWrittenForEditors(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "decl.ts")
-	os.WriteFile(script, []byte(`export default function main() { return 1; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { return 1; }`), 0o644)
 	e.run("run", script)
 
 	b, err := os.ReadFile(filepath.Join(e.dir, "mcpx-globals.d.ts"))
@@ -1501,7 +1537,7 @@ func TestGlobalDeclarationsAreWrittenForEditors(t *testing.T) {
 func TestLauncherPhasesRunInOrder(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "ph.ts")
-	os.WriteFile(script, []byte(`export default function main() { log("3 body"); return undefined; }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { log("3 body"); return undefined; }`), 0o644)
 	out := e.run("run", "--format", "bare",
 		"--before", `log("1 before")`, "--prefix", `log("2 prefix")`,
 		"--on-success", `log("4 success")`, "--suffix", `log("5 suffix")`, script)
@@ -1520,7 +1556,7 @@ func TestLauncherPhasesRunInOrder(t *testing.T) {
 func TestOnErrorRunsAndTheErrorStillPropagates(t *testing.T) {
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "pherr.ts")
-	os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
+	_ = os.WriteFile(script, []byte(`export default function main() { throw new Error("deliberate"); }`), 0o644)
 	out, err := e.try("run", "--format", "bare",
 		"--on-success", `log("should not run")`,
 		"--on-error", `log.error("onError fired")`,
@@ -2440,14 +2476,14 @@ func seedElicitation(t *testing.T, e *env, id, server, mode, schema string) {
 	t.Helper()
 	// Through the same pure-Go driver the store uses, so the suite needs no
 	// sqlite3-capable interpreter on PATH (the nix check sandbox has none).
-	db, err := sql.Open("sqlite", filepath.Join(e.dir, "state", "logs", "elicit.db"))
+	db, err := sql.Open("sqlite", elicit.StorePath(filepath.Join(e.dir, "state")))
 	if err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	now := time.Now().UnixMilli()
-	if _, err := db.Exec(`INSERT OR REPLACE INTO elicitations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, "cal-x", "", "s1", server, "tool", mode, "which one?", schema, "", "", "", now, now+120000, "pending", 1); err != nil {
+	if _, err := db.Exec(`INSERT OR REPLACE INTO elicitations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, "cal-x", "", "s1", server, "tool", mode, "which one?", schema, "", "", "", now, now+120000, now, "pending", 1); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 }
@@ -2550,9 +2586,7 @@ func TestScriptsReachTheDaemonOverItsSocketWhereTheRuntimeCan(t *testing.T) {
 		{"deno", "via unix"}, {"bun", "via unix"}, {"node", "via tcp"},
 	} {
 		t.Run(c.rt, func(t *testing.T) {
-			if _, err := exec.LookPath(c.rt); err != nil {
-				t.Skipf("%s not installed", c.rt)
-			}
+			testsupport.RequireBinary(t, c.rt)
 			e := newEnv(t, oneServer)
 			out := e.run("exec", "--runtime", c.rt, "--format", "bare",
 				`const r = await demo.echo({message:"x"}); console.log("via", transport());`)
@@ -2576,7 +2610,7 @@ func TestTheEventStreamDeliversCallsAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type %q", ct)
 	}
@@ -2610,9 +2644,12 @@ func (e *env) socketClient(t *testing.T) *http.Client {
 	}
 	return &http.Client{
 		Timeout: 3 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
-		}},
+		Transport: coverageRoundTripper{
+			test: t.Name(),
+			base: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
+			}},
+		},
 	}
 }
 
@@ -2630,7 +2667,7 @@ func TestARecordPostedToTheDaemonLandsInTheSameLogAsTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -2650,7 +2687,7 @@ func TestARecordPostedToTheDaemonLandsInTheSameLogAsTheCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400", body, resp.StatusCode)
 		}
@@ -2770,7 +2807,7 @@ func TestEnvCleanupStopsTheDaemonItStarted(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if conn, err := net.Dial("unix", d.socket); err == nil {
-			conn.Close()
+			_ = conn.Close()
 			t.Errorf("daemon %d still listening on %s after cleanup", d.pid, d.socket)
 		}
 		if syscall.Kill(d.pid, 0) == nil {
@@ -2783,7 +2820,7 @@ func TestEnvCleanupStopsTheDaemonItStarted(t *testing.T) {
 // or the process.
 func daemonAlive(socket string, pid int) bool {
 	if conn, err := net.Dial("unix", socket); err == nil {
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}
 	return syscall.Kill(pid, 0) == nil
@@ -2810,7 +2847,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -2843,7 +2880,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad.Body.Close()
+	_ = bad.Body.Close()
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Errorf("relative dir: status %d, want 400", bad.StatusCode)
 	}
@@ -2935,6 +2972,40 @@ func TestTwoConfigurationsDoNotShareAGeneratedClient(t *testing.T) {
 	}
 }
 
+// TestExecFlagProbeRowsMatchCoverage pins the rows above to the
+// contract in internal/cli (cli.ExecFlagProbes / ExecFlagExemptions):
+// a row added without a contract update — or a contract entry with no
+// row — fails here instead of drifting silently.
+func TestExecFlagProbeRowsMatchCoverage(t *testing.T) {
+	rows := map[string]bool{}
+	for _, r := range execFlagProbeRows {
+		name := strings.TrimPrefix(r.flag, "--")
+		if rows[name] {
+			t.Errorf("two probe rows for --%s", name)
+		}
+		rows[name] = true
+		if _, exempt := cli.ExecFlagExemptions[name]; exempt {
+			t.Errorf("--%s has a probe row AND an exemption; pick one", name)
+		}
+	}
+	for _, name := range cli.ExecFlagProbes {
+		if !rows[name] {
+			t.Errorf("cli.ExecFlagProbes names %q but there is no probe row for it here", name)
+		}
+	}
+	for name := range rows {
+		found := false
+		for _, p := range cli.ExecFlagProbes {
+			if p == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("probe row for --%s is not in cli.ExecFlagProbes", name)
+		}
+	}
+}
+
 // TestEveryExecFlagChangesSomething is the guard for a fault this repository
 // has now shipped three times: a flag defined on a shared flag set, described
 // in the help, and read on only one of the two paths that share it.
@@ -2945,125 +3016,162 @@ func TestTwoConfigurationsDoNotShareAGeneratedClient(t *testing.T) {
 // looks exactly like a flag that worked.
 //
 // A flag earns its place by changing an observable outcome. Add a row when
-// you add a flag to `mcpx exec`.
+// you add a flag to `mcpx exec`. The rows are the contract in
+// cli.ExecFlagProbes: TestExecFlagSetIsFullyProbed (internal/cli,
+// unit-speed) enumerates the real exec/run FlagSet and fails when a
+// hand-written flag has neither a row here nor a reasoned exemption
+// in cli.ExecFlagExemptions (#2188), and
+// TestExecFlagProbeRowsMatchCoverage below fails when these rows and
+// the contract drift apart.
 //
 // Every row runs twice: here, and with --remote on the daemon. The remote
 // path was handed five of these flags and dropped the rest (#192) -- parsed,
 // described in the help, and absent from the program the daemon ran.
+// execFlagProbeRow is one probe row of
+// TestEveryExecFlagChangesSomething: the flag is run with and without,
+// and must change an observable outcome.
+type execFlagProbeRow struct {
+	flag string
+	// config optionally gives a probe its own fixture; most rows share the
+	// one-server environment, while namespace visibility needs two servers.
+	config string
+	// base is given both with and without the flag, so the comparison
+	// isolates the flag rather than everything around it.
+	base   []string
+	args   []string
+	source string
+	// want must appear with the flag and must not appear without it.
+	want string
+	// gone must appear without the flag and must not appear with it,
+	// for a flag whose effect is to take something away.
+	gone string
+	// fails marks a flag whose whole purpose is to refuse the run, or a
+	// source that fails so a failure hook can be seen.
+	fails bool
+}
+
+var execFlagProbeRows = []execFlagProbeRow{
+	{
+		flag:   "--export",
+		args:   []string{"--export=main"},
+		source: `export const main = async () => { emit({via: "main"}); };`,
+		want:   `"via":"main"`,
+	},
+	{
+		flag:   "--launcher",
+		args:   []string{"--launcher", `console.log("LAUNCHED"); @entry`},
+		source: `emit({ok: 1});`,
+		want:   "LAUNCHED",
+	},
+	{
+		flag:   "--no-launcher",
+		args:   []string{"--no-launcher"},
+		source: `export default () => emit({wrapped: 1});`,
+		gone:   `"wrapped":1`,
+	},
+	{
+		flag:   "--prefix",
+		args:   []string{"--prefix", "const shared = 41;"},
+		source: `emit({v: shared + 1});`,
+		want:   `"v":42`,
+	},
+	{
+		flag:   "--suffix",
+		args:   []string{"--suffix", `emit({tail: "SUFFIXED"});`},
+		source: `emit({ok: 1});`,
+		want:   "SUFFIXED",
+	},
+	{
+		flag:   "--before",
+		args:   []string{"--before", `console.log("BEFORE-RAN");`},
+		source: `emit({ok: 1});`,
+		want:   "BEFORE-RAN",
+	},
+	{
+		flag:   "--on-success",
+		args:   []string{"--on-success", `console.log("SUCCESS-HOOK");`},
+		source: `emit({ok: 1});`,
+		want:   "SUCCESS-HOOK",
+	},
+	{
+		flag:   "--on-error",
+		args:   []string{"--on-error", `console.log("ERROR-HOOK");`},
+		source: `throw new Error("boom");`,
+		want:   "ERROR-HOOK",
+		fails:  true,
+	},
+	{
+		flag:   "--env",
+		args:   []string{"--env", "MCPX_FLAG_PROBE=FROM-ENV-FLAG"},
+		source: `const g = globalThis as any; emit({e: g.Deno ? g.Deno.env.get("MCPX_FLAG_PROBE") : g.process.env.MCPX_FLAG_PROBE});`,
+		want:   "FROM-ENV-FLAG",
+	},
+	{
+		flag:   "--no-capture-console",
+		args:   []string{"--no-capture-console"},
+		source: `console.log("WRAPPED:" + String((globalThis.console as any).__mcpxWrapped));`,
+		want:   "WRAPPED:undefined",
+	},
+	{
+		// Without permission the repeated placeholder is refused before
+		// anything runs, so the launcher's line is the evidence.
+		flag:   "--allow-repeat",
+		base:   []string{`--launcher=console.log("REPEAT-OK"); @entry @entry`},
+		args:   []string{"--allow-repeat", "entry"},
+		source: `emit({ok: 1});`,
+		want:   "REPEAT-OK",
+	},
+	{
+		// The marker is the point: with the check the script is refused
+		// before it runs, without it the emit has already happened by
+		// the time the name turns out not to exist.
+		flag:   "--typecheck",
+		args:   []string{"--typecheck=on"},
+		source: `emit({ran: 1}); await totally_made_up.x({});`,
+		want:   "does not type check",
+		fails:  true,
+	},
+	{
+		flag:   "--validate",
+		args:   []string{"--validate"},
+		source: `emit({ok: 1});`,
+		want:   "valid=true",
+	},
+	{
+		flag:   "--ns",
+		config: twoVisibleServers,
+		args:   []string{"--ns", "alpha"},
+		source: `const g = globalThis as any;
+const hasAlpha = typeof g.alpha?.echo === "function";
+const hasBeta = typeof g.beta?.state === "function";
+if (hasAlpha && !hasBeta) console.log("ALPHA_ONLY");
+if (hasAlpha && hasBeta) console.log("BOTH_NAMESPACES");`,
+		want: "ALPHA_ONLY",
+		gone: "BOTH_NAMESPACES",
+	},
+}
+
 func TestEveryExecFlagChangesSomething(t *testing.T) {
 	e := newEnv(t, oneServer)
-	type row struct {
-		flag string
-		// base is given both with and without the flag, so the comparison
-		// isolates the flag rather than everything around it.
-		base   []string
-		args   []string
-		source string
-		// want must appear with the flag and must not appear without it.
-		want string
-		// gone must appear without the flag and must not appear with it,
-		// for a flag whose effect is to take something away.
-		gone string
-		// fails marks a flag whose whole purpose is to refuse the run, or a
-		// source that fails so a failure hook can be seen.
-		fails bool
-	}
-	rows := []row{
-		{
-			flag:   "--export",
-			args:   []string{"--export=main"},
-			source: `export const main = async () => { emit({via: "main"}); };`,
-			want:   `"via":"main"`,
-		},
-		{
-			flag:   "--launcher",
-			args:   []string{"--launcher", `console.log("LAUNCHED"); @entry`},
-			source: `emit({ok: 1});`,
-			want:   "LAUNCHED",
-		},
-		{
-			flag:   "--no-launcher",
-			args:   []string{"--no-launcher"},
-			source: `export default () => emit({wrapped: 1});`,
-			gone:   `"wrapped":1`,
-		},
-		{
-			flag:   "--prefix",
-			args:   []string{"--prefix", "const shared = 41;"},
-			source: `emit({v: shared + 1});`,
-			want:   `"v":42`,
-		},
-		{
-			flag:   "--suffix",
-			args:   []string{"--suffix", `emit({tail: "SUFFIXED"});`},
-			source: `emit({ok: 1});`,
-			want:   "SUFFIXED",
-		},
-		{
-			flag:   "--before",
-			args:   []string{"--before", `console.log("BEFORE-RAN");`},
-			source: `emit({ok: 1});`,
-			want:   "BEFORE-RAN",
-		},
-		{
-			flag:   "--on-success",
-			args:   []string{"--on-success", `console.log("SUCCESS-HOOK");`},
-			source: `emit({ok: 1});`,
-			want:   "SUCCESS-HOOK",
-		},
-		{
-			flag:   "--on-error",
-			args:   []string{"--on-error", `console.log("ERROR-HOOK");`},
-			source: `throw new Error("boom");`,
-			want:   "ERROR-HOOK",
-			fails:  true,
-		},
-		{
-			flag:   "--env",
-			args:   []string{"--env", "MCPX_FLAG_PROBE=FROM-ENV-FLAG"},
-			source: `const g = globalThis as any; emit({e: g.Deno ? g.Deno.env.get("MCPX_FLAG_PROBE") : g.process.env.MCPX_FLAG_PROBE});`,
-			want:   "FROM-ENV-FLAG",
-		},
-		{
-			flag:   "--no-capture-console",
-			args:   []string{"--no-capture-console"},
-			source: `console.log("WRAPPED:" + String((globalThis.console as any).__mcpxWrapped));`,
-			want:   "WRAPPED:undefined",
-		},
-		{
-			// Without permission the repeated placeholder is refused before
-			// anything runs, so the launcher's line is the evidence.
-			flag:   "--allow-repeat",
-			base:   []string{`--launcher=console.log("REPEAT-OK"); @entry @entry`},
-			args:   []string{"--allow-repeat", "entry"},
-			source: `emit({ok: 1});`,
-			want:   "REPEAT-OK",
-		},
-		{
-			// The marker is the point: with the check the script is refused
-			// before it runs, without it the emit has already happened by
-			// the time the name turns out not to exist.
-			flag:   "--typecheck",
-			args:   []string{"--typecheck=on"},
-			source: `emit({ran: 1}); await totally_made_up.x({});`,
-			want:   "does not type check",
-			fails:  true,
-		},
-	}
+	rows := execFlagProbeRows
 	for _, where := range []string{"local", "remote"} {
 		for _, c := range rows {
 			t.Run(where+"/"+c.flag, func(t *testing.T) {
+				probeEnv := e
+				if c.config != "" {
+					probeEnv = newEnv(t, c.config)
+				}
 				lead := []string{"exec"}
 				if where == "remote" {
 					lead = append(lead, "--remote")
 				}
 				lead = append(lead, c.base...)
 				argv := append(append(append([]string{}, lead...), c.args...), c.source)
-				with, werr := e.try(argv...)
+				with, werr := probeEnv.try(argv...)
 				if !c.fails && werr != nil {
 					t.Fatalf("%s: %v\n%s", c.flag, werr, with)
 				}
-				without, _ := e.try(append(append([]string{}, lead...), c.source)...)
+				without, _ := probeEnv.try(append(append([]string{}, lead...), c.source)...)
 				if c.want != "" {
 					if !strings.Contains(with, c.want) {
 						t.Errorf("%s did nothing: wanted %q in\n%s", c.flag, c.want, with)
@@ -3150,4 +3258,40 @@ func withoutMCPXVars(env []string) []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// withoutModelCLIs makes sure no model is reachable from the daemon this test
+// starts, whatever the machine running the suite has installed.
+//
+// ResolveProvider takes the first of: OpenAI variables, then OPENCODE_BINARY,
+// then opencode on PATH, then CLAUDE_BIN, then claude on PATH. The harness
+// inherits the developer's environment, so a machine with opencode installed
+// reached a real model on every "no model" assertion, and the result depended
+// on that machine's CLIs and network. Here both CLIs point at a stub that
+// answers nothing, and the OpenAI pair is dropped so it cannot win first.
+//
+// The stub is a provider, so a CLI is "installed" as far as the daemon can
+// tell. It touches the returned path when it runs, so a test can assert that
+// no model CLI was called at all, not only that the answer reads as no-model.
+func (e *env) withoutModelCLIs(t *testing.T) (called string) {
+	t.Helper()
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "no-model")
+	called = filepath.Join(dir, "called")
+	body := "#!/bin/sh\ntouch '" + called + "'\necho 'no model in this test' >&2\nexit 1\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dropped := map[string]bool{
+		"OPENCODE_BINARY": true, "OPENCODE_V2_BIN": true, "CLAUDE_BIN": true,
+		"OPENAI_BASE_URL": true, "OPENAI_API_KEY": true, "OPENAI_MODEL": true,
+	}
+	out := make([]string, 0, len(e.envVars)+2)
+	for _, kv := range e.envVars {
+		if key, _, _ := strings.Cut(kv, "="); !dropped[key] {
+			out = append(out, kv)
+		}
+	}
+	e.envVars = append(out, "OPENCODE_BINARY="+stub, "CLAUDE_BIN="+stub)
+	return called
 }

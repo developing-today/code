@@ -1,3 +1,4 @@
+// Package scripting implements mcpx's LLM-assisted script synthesis, validation and repair.
 package scripting
 
 import (
@@ -12,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // CompletionRequest represents an inference request sent to an LLM provider.
@@ -31,12 +32,12 @@ type Provider interface {
 
 // ProviderConfig configures model resolution.
 type ProviderConfig struct {
-	Type     string `json:"type"`     // "openai", "ollama", "qwen", "claude", "codex", "opencode", "agy", "command"
-	BaseURL  string `json:"baseUrl"`  // e.g. "http://localhost:11434/v1", "https://api.openai.com/v1"
-	APIKey   string `json:"apiKey"`   // API key if required
-	Model    string `json:"model"`    // Model name, e.g. "qwen2.5-coder", "gpt-4o"
-	Command  string `json:"command"`  // CLI command if Type == "command"
-	Timeout  time.Duration
+	Type    string `json:"type"`    // "openai", "ollama", "qwen", "claude", "codex", "opencode", "agy", "command"
+	BaseURL string `json:"baseUrl"` // e.g. "http://localhost:11434/v1", "https://api.openai.com/v1"
+	APIKey  string `json:"apiKey"`  // API key if required
+	Model   string `json:"model"`   // Model name, e.g. "qwen2.5-coder", "gpt-4o"
+	Command string `json:"command"` // CLI command if Type == "command"
+	Timeout time.Duration
 }
 
 // OpenAICompatibleProvider handles any OpenAI-compatible completions API
@@ -116,15 +117,20 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req CompletionR
 	if err != nil {
 		return "", fmt.Errorf("provider %s request failed: %w", p.name, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
+		return "", fmt.Errorf("provider %s returned HTTP %d: %s", p.name, resp.StatusCode, string(errBody))
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, defaults.ProviderResponseBodyLimit+1))
 	if err != nil {
 		return "", err
 	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("provider %s returned HTTP %d: %s", p.name, resp.StatusCode, string(respBody))
+	if int64(len(respBody)) > defaults.ProviderResponseBodyLimit {
+		return "", fmt.Errorf("provider %s response body exceeds the %d-byte limit",
+			p.name, defaults.ProviderResponseBodyLimit)
 	}
 
 	var parsed struct {
@@ -206,7 +212,54 @@ func (p *CallbackProvider) Complete(ctx context.Context, req CompletionRequest) 
 
 // ResolveProvider inspects the environment and config to return the best available provider.
 func ResolveProvider(cfg ProviderConfig, fallbackFn func(ctx context.Context, req CompletionRequest) (string, error)) Provider {
-	// 1. Explicit configuration
+	// 1. Explicit named agent CLI helpers
+	switch strings.ToLower(cfg.Type) {
+	case "opencode":
+		model := cfg.Model
+		if model == "" {
+			model = "claude-code/claude-haiku-5-5"
+		}
+		bin := os.Getenv("OPENCODE_BINARY")
+		if bin == "" {
+			bin = os.Getenv("OPENCODE_V2_BIN")
+		}
+		if bin == "" {
+			bin = "opencode"
+		}
+		return NewCommandProvider("opencode", fmt.Sprintf("%s run --model %s", bin, model))
+	case "claude":
+		bin := os.Getenv("CLAUDE_BIN")
+		if bin == "" {
+			bin = "claude"
+		}
+		cmdStr := bin + " --dangerously-skip-permissions -p"
+		if cfg.Model != "" {
+			cmdStr += " --model " + cfg.Model
+		}
+		return NewCommandProvider("claude", cmdStr)
+	case "codex":
+		bin := os.Getenv("CODEX_BIN")
+		if bin == "" {
+			bin = "codex"
+		}
+		cmdStr := bin + " exec"
+		if cfg.Model != "" {
+			cmdStr += " -c model=" + cfg.Model
+		}
+		return NewCommandProvider("codex", cmdStr)
+	case "agy", "antigravity":
+		bin := os.Getenv("ANTIGRAVITY_BIN")
+		if bin == "" {
+			bin = "agy"
+		}
+		cmdStr := bin + " --print"
+		if cfg.Model != "" {
+			cmdStr += " --model " + cfg.Model
+		}
+		return NewCommandProvider("antigravity", cmdStr)
+	}
+
+	// 2. Explicit configuration (HTTP URL or raw Command)
 	if cfg.BaseURL != "" {
 		name := cfg.Type
 		if name == "" {
@@ -222,7 +275,7 @@ func ResolveProvider(cfg ProviderConfig, fallbackFn func(ctx context.Context, re
 		return NewCommandProvider(name, cfg.Command)
 	}
 
-	// 2. Environment variables (Local Qwen / Ollama / OpenAI / etc.)
+	// 3. Environment variables (Local Qwen / Ollama / OpenAI / etc.)
 	if url := os.Getenv("OPENAI_BASE_URL"); url != "" {
 		return NewOpenAICompatibleProvider("openai-base-env", url, os.Getenv("OPENAI_API_KEY"), os.Getenv("OPENAI_MODEL"), defaults.CallTimeout)
 	}
@@ -230,7 +283,32 @@ func ResolveProvider(cfg ProviderConfig, fallbackFn func(ctx context.Context, re
 		return NewOpenAICompatibleProvider("openai", "https://api.openai.com/v1", key, "gpt-4o-mini", defaults.CallTimeout)
 	}
 
-	// 3. Fallback callback (e.g. MCP broker sampling)
+	// 4. Auto-detect installed CLI harnesses outside OpenCode:
+	// Prioritize OpenCode with Haiku 5.5 High, then Claude Code CLI with Haiku.
+	opencodeBin := os.Getenv("OPENCODE_BINARY")
+	if opencodeBin == "" {
+		opencodeBin = os.Getenv("OPENCODE_V2_BIN")
+	}
+	if opencodeBin == "" {
+		if path, err := exec.LookPath("opencode"); err == nil {
+			opencodeBin = path
+		}
+	}
+	if opencodeBin != "" {
+		return NewCommandProvider("opencode", fmt.Sprintf("%s run --model claude-code/claude-haiku-5-5", opencodeBin))
+	}
+
+	claudeBin := os.Getenv("CLAUDE_BIN")
+	if claudeBin == "" {
+		if path, err := exec.LookPath("claude"); err == nil {
+			claudeBin = path
+		}
+	}
+	if claudeBin != "" {
+		return NewCommandProvider("claude", fmt.Sprintf("%s --dangerously-skip-permissions -p --model claude-haiku-5-5", claudeBin))
+	}
+
+	// 5. Fallback callback (e.g. MCP broker sampling)
 	if fallbackFn != nil {
 		return NewCallbackProvider("sampling-broker", fallbackFn)
 	}

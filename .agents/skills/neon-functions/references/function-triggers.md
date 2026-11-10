@@ -10,10 +10,10 @@ If `neon deploy` returns 404 `function triggers not available for this project`,
 
 `triggers` is a keyed map on `defineConfig`. Types:
 
-| `type`                   | When it fires                                      | `neon.ts` fields                         | CLI create                                      |
-| ------------------------ | -------------------------------------------------- | ---------------------------------------- | ----------------------------------------------- |
-| `schedule`               | On a five-field UTC cron expression                | `function`, `cron`                       | `neon triggers create --cron '…'`               |
-| `storage_object_created` | When an object is created in a declared bucket     | `function`, `bucket`, optional `prefix`  | `neon triggers create --bucket <name>`          |
+| `type`                   | When it fires                                  | `neon.ts` fields                        | CLI create                             |
+| ------------------------ | ---------------------------------------------- | --------------------------------------- | -------------------------------------- |
+| `schedule`               | On a five-field UTC cron expression            | `function`, `cron`                      | `neon triggers create --cron '…'`      |
+| `storage_object_created` | When an object is created in a declared bucket | `function`, `bucket`, optional `prefix` | `neon triggers create --bucket <name>` |
 
 `create` takes `--cron` or `--bucket`, not both. `@neon/functions` ≥ 0.11.0: `parseTriggerDelivery` accepts both types; `parseTriggerInvocation` and Hono `parseTrigger(c)` stay schedule-only (`storage_object_created` is `invalid_body` there).
 
@@ -21,15 +21,15 @@ If `neon deploy` returns 404 `function triggers not available for this project`,
 
 The trigger name is the `neon.ts` map key (CLI `--name`). It must be unique among every trigger visible on the branch, including other functions.
 
-| Field          | Required | Notes                                                                 |
-| -------------- | -------- | --------------------------------------------------------------------- |
-| `type`         | yes      | `"schedule"` or `"storage_object_created"`                            |
-| `function`     | yes      | Function slug. REST/MCP: `function_slug`                              |
-| `cron`         | schedule | Five-field UTC expression, e.g. `0 * * * *`, `*/15 * * * *`           |
-| `bucket`       | storage  | Bucket name. REST: `storage_object_created.bucket_name`               |
-| `prefix`       | no       | Object-key prefix filter. REST: `storage_object_created.prefix`       |
-| `functionPath` | no       | Path on the function. Default `/`. CLI: `--function-path`             |
-| `enabled`      | no       | Default `true`. CLI: `--enabled false` to create disabled             |
+| Field          | Required | Notes                                                           |
+| -------------- | -------- | --------------------------------------------------------------- |
+| `type`         | yes      | `"schedule"` or `"storage_object_created"`                      |
+| `function`     | yes      | Function slug. REST/MCP: `function_slug`                        |
+| `cron`         | schedule | Five-field UTC expression, e.g. `0 * * * *`, `*/15 * * * *`     |
+| `bucket`       | storage  | Bucket name. REST: `storage_object_created.bucket_name`         |
+| `prefix`       | no       | Object-key prefix filter. REST: `storage_object_created.prefix` |
+| `functionPath` | no       | Path on the function. Default `/`. CLI: `--function-path`       |
+| `enabled`      | no       | Default `true`. CLI: `--enabled false` to create disabled       |
 
 ## neon.ts (preferred)
 

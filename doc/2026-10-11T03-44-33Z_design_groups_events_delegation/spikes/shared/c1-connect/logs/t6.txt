@@ -1,0 +1,7 @@
+(b) ticket with no addresses, no lookup: failed after 361.429µs: No addressing information available: No address lookup configured
+(c) bare ID, no lookup, no ticket: failed after 109.282µs: No addressing information available: No address lookup configured
+(b, DHT on) address-less ticket: resolved after 1 attempt(s), 124.123389ms from the first
+(a) unknown ID on the testnet DHT, round 1: failed after 2.738683ms: No addressing information available: All address lookup services failed or produced no results
+(a) unknown ID on the testnet DHT, round 2: failed after 3.046542ms: No addressing information available: All address lookup services failed or produced no results
+(a) unknown ID on the testnet DHT, round 3: failed after 3.130969ms: No addressing information available: All address lookup services failed or produced no results
+RESULT t6: PASS

@@ -1,0 +1,33 @@
+(b) XOR cancellation, in memory on crafted IDs (real BLAKE3 IDs cannot be steered this way)
+  b1: fingerprints equal: true, counts 3 vs 2
+  PASS b1: the count check catches it: flights=4, both sides learned the true 5-item difference: true
+  b2: fingerprints equal: true, counts 2 vs 2
+  PASS b2: equal fingerprint and count is not caught: flights=2, learned A=0 B=0, true difference=4: the 4 events are missed
+  note: 128-bit fingerprints make a chance match 2^-128 per compared range. Constructing one with
+        real events needs a 4-way XOR collision (about 2^43 signed events by generalized birthday).
+(a) sequence gap: chain 7 lacks seq 20 on the acceptor, and has seq 21..49
+  PASS gap is present before sync: gaps=1 bad links=0
+  PASS height-only comparison sees no difference: authors whose largest seq differs: 0 of 1000
+  PASS range sync moves exactly the missing event: acceptor inserted 1, dialer inserted 0, learned = true diff: true
+  PASS stores equal after sync: every row matches
+  PASS chain 7 is contiguous with valid links: gaps=0 bad links=0
+  flights (A+B): 7, control bytes: 3749
+(c) bounds at keys with 0x00 bytes: authors with zero bytes at chosen public-key positions
+  50 authors, 17 of them with a 0x00 byte in the public key; every seq < 256 also has 0x00 bytes
+  PASS (c) in-memory run learns the true difference: K=2 T=1: flights 16 ok=true; K=2 T=4: flights 14 ok=true; K=16 T=16: flights 6 ok=true; K=32 T=16: flights 6 ok=true; K=4 T=8: flights 9 ok=true
+  PASS (c) wire sync with zero-byte keys is exact: acceptor inserted 20 of 20, stores equal: true
+  PASS (c) links valid after sync: gaps=0 bad links=0
+(d) interrupted session, restarted from scratch (1,000 chains; 60 chains get 3 new events each)
+  cut run: dialer error = Some("cut before record 101")
+  cut run: acceptor error = Some("connection lost: closed by peer: cut (code 1)")
+  PASS (d1) both sides report the cut: dialer err=true, acceptor err=true
+  PASS (d1) only whole batches committed: 96 of 180 new events committed (batch 32)
+  PASS (d1) store consistent after the cut: gaps=0 bad links=0
+  PASS (d1) committed events are the ones in the store: 96 of the new events are in the store, 96 new rows
+  PASS (d1) restart sends only what is missing: restart inserted 84 (expected 84), duplicates 0
+  PASS (d1) restart learns exactly the missing events: learned 84 and 84, missing 84
+  PASS (d1) stores equal after restart: stores equal: true
+  PASS (d1) links valid after restart: gaps=0 bad links=0
+  PASS (d2) cut during reconciliation commits nothing: dialer err=true, acceptor err=true, new rows=0
+  PASS (d2) restart completes with no duplicates: restart inserted 180 of 180, stores equal: true
+failures: 0

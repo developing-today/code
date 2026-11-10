@@ -1,0 +1,35 @@
+# The relay kit's modes. A mode is one way to run iroh-relay on one host.
+#
+#   tunnel  setup A, a Cloudflare Tunnel. cloudflared terminates TLS at Cloudflare's edge and
+#           forwards to the relay's plain HTTP origin on loopback. No inbound port, no UDP.
+#   vps     setup B, a public IPv4 address. TLS on 443, HTTP on 80, QUIC address discovery on
+#           7842/udp.
+#
+# Each mode's values are the ones its config file and unit must carry. tests/relay_ops.rs
+# checks the committed config and unit for each mode against this file.
+#
+# Keys:
+#   config            the relay config for this mode, copied to /etc/iroh-relay/relay.toml
+#   unit_dropin       the unit drop-in to install beside iroh-relay.service, if any
+#   hostname          the public name clients use, as https://<hostname>
+#   http_bind_addr    the plain HTTP listener
+#   https_bind_addr   the TLS listener; absent when the mode serves no TLS
+#   metrics_bind_addr the metrics listener, which must stay on loopback
+#   qad               whether QUIC address discovery is on
+
+[modes.tunnel]
+config = "tunnel.toml"
+# The Tunnel's public hostname, set in the Cloudflare dashboard to point at http://localhost:3340.
+hostname = "relay.example.org"
+http_bind_addr = "127.0.0.1:3340"
+metrics_bind_addr = "127.0.0.1:9090"
+qad = false
+
+[modes.vps]
+config = "vps.toml"
+unit_dropin = "iroh-relay.service.d/vps.conf"
+hostname = "relay.example.org"
+http_bind_addr = "[::]:80"
+https_bind_addr = "[::]:443"
+metrics_bind_addr = "127.0.0.1:9090"
+qad = true

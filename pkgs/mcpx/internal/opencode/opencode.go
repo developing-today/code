@@ -32,18 +32,82 @@ type DB struct {
 	cols map[string]map[string]bool
 }
 
-// DefaultPaths are where an opencode v1 database is looked for, nearest
+// DefaultPaths are where an opencode database is looked for, nearest
 // first. OPENCODE_DB wins, because that is how a caller says "this one".
+//
+// PM-21 (#1942): the filename depends on the release channel. v1 writes
+// opencode.db only for latest/beta/prod and opencode-<channel>.db for
+// the rest (a v1 next build writes opencode-next.db); v2 writes
+// opencode.db for latest/dev/beta/next/prod. mcpx cannot know which
+// opencode -- or which channel -- is installed, so each data directory
+// contributes every opencode*.db it actually holds, plain opencode.db
+// first and then channel files newest-first (the most recently written
+// database is the live one). A directory that cannot be listed, or
+// holds no match, contributes the plain opencode.db path exactly as
+// before, so the not-found error still names the canonical place.
+// OPENCODE_DISABLE_CHANNEL_DB (which both opencodes honour) turns the
+// channel files off here too.
 func DefaultPaths() []string {
 	var out []string
 	if p := os.Getenv("OPENCODE_DB"); p != "" {
 		out = append(out, p)
 	}
+	var dirs []string
 	if data := os.Getenv("XDG_DATA_HOME"); data != "" {
-		out = append(out, filepath.Join(data, "opencode", "opencode.db"))
+		dirs = append(dirs, filepath.Join(data, "opencode"))
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		out = append(out, filepath.Join(home, ".local", "share", "opencode", "opencode.db"))
+		dirs = append(dirs, filepath.Join(home, ".local", "share", "opencode"))
+	}
+	for _, dir := range dirs {
+		out = append(out, channelDBPaths(dir)...)
+	}
+	return out
+}
+
+// channelDBPaths lists dir's opencode database files in the order Find
+// should try them: opencode.db, then opencode-<channel>.db files by
+// modification time, newest first. With channel databases disabled, or
+// when the directory cannot be listed or holds none, it is just the
+// plain opencode.db path.
+func channelDBPaths(dir string) []string {
+	plain := filepath.Join(dir, "opencode.db")
+	if os.Getenv("OPENCODE_DISABLE_CHANNEL_DB") != "" {
+		return []string{plain}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return []string{plain}
+	}
+	type cand struct {
+		path string
+		mod  time.Time
+	}
+	var chans []cand
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == "opencode.db" ||
+			!strings.HasPrefix(name, "opencode-") || !strings.HasSuffix(name, ".db") {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		chans = append(chans, cand{filepath.Join(dir, name), info.ModTime()})
+	}
+	if len(chans) == 0 {
+		return []string{plain}
+	}
+	sort.Slice(chans, func(i, j int) bool {
+		if !chans[i].mod.Equal(chans[j].mod) {
+			return chans[i].mod.After(chans[j].mod)
+		}
+		return chans[i].path < chans[j].path
+	})
+	out := []string{plain}
+	for _, c := range chans {
+		out = append(out, c.path)
 	}
 	return out
 }
@@ -77,7 +141,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	return &DB{db: db, path: path, cols: map[string]map[string]bool{}}, nil
@@ -108,7 +172,7 @@ func (d *DB) has(table, column string) bool {
 					set[name] = true
 				}
 			}
-			rows.Close()
+			_ = rows.Close()
 		}
 		d.cols[table] = set
 	}
@@ -268,17 +332,24 @@ func (d *DB) group(expr string, since, until time.Time, limit int) ([]Group, err
 	if d.has("session", "tokens_output") {
 		tout = "COALESCE(SUM(tokens_output),0)"
 	}
-	q := fmt.Sprintf(`SELECT %s AS k, count(*), %s, %s, %s FROM session%s
-		GROUP BY k ORDER BY 3 DESC, 2 DESC`, expr, cost, tin, tout, where)
+	// Messages are counted per session with the same correlated subquery
+	// Busiest uses, summed over the group. A database whose message table
+	// has no session_id degrades to 0 rather than failing the statistic.
+	msgs := "0"
+	if d.has("message", "session_id") {
+		msgs = "COALESCE(SUM((SELECT count(*) FROM message m WHERE m.session_id = session.id)),0)"
+	}
+	q := fmt.Sprintf(`SELECT %s AS k, count(*), %s, %s, %s, %s FROM session%s
+		GROUP BY k ORDER BY 3 DESC, 2 DESC`, expr, cost, tin, tout, msgs, where)
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Group
 	for rows.Next() {
 		var g Group
-		if err := rows.Scan(&g.Key, &g.Sessions, &g.Cost, &g.TokensIn, &g.TokensOut); err != nil {
+		if err := rows.Scan(&g.Key, &g.Sessions, &g.Cost, &g.TokensIn, &g.TokensOut, &g.Messages); err != nil {
 			return nil, err
 		}
 		out = append(out, g)
@@ -286,7 +357,7 @@ func (d *DB) group(expr string, since, until time.Time, limit int) ([]Group, err
 	return trim(out, limit), rows.Err()
 }
 
-// Busiest returns the sessions with the most messages.
+// Session is one opencode session row: identity, title, agent and model.
 type Session struct {
 	ID       string    `json:"id"`
 	Title    string    `json:"title"`
@@ -322,7 +393,7 @@ func (d *DB) Busiest(since, until time.Time, limit int) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Session
 	for rows.Next() {
 		var s Session
@@ -339,7 +410,7 @@ func (d *DB) Busiest(since, until time.Time, limit int) ([]Session, error) {
 	return out, rows.Err()
 }
 
-// Activity is a count per hour, for seeing when work happens.
+// Bucket is an hourly count of sessions and messages, for seeing when work happens.
 type Bucket struct {
 	When     time.Time `json:"when"`
 	Sessions int64     `json:"sessions"`
@@ -359,7 +430,7 @@ func (d *DB) Activity(since, until time.Time, limit int) ([]Bucket, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Bucket
 	for rows.Next() {
 		var ms, n int64

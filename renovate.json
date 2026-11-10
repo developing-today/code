@@ -1,4 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:base"]
+  "extends": ["config:base"],
+  "packageRules": [
+    {
+      "description": "The p2panda crates are git deps pinned to one shared upstream rev and must move together; per-crate PRs break the pkgs/id Nix build (#643).",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["/^p2panda-/"],
+      "groupName": "p2panda"
+    },
+    {
+      "description": "The opencode and openchamber flake inputs are owned by the flake-inputs-update GitHub Actions workflow (.github/workflows/flake-inputs-update.yml), which bumps, validates, and merges them daily. Renovate must not update them.",
+      "matchManagers": ["nix"],
+      "matchPackageNames": ["opencode", "openchamber"],
+      "enabled": false
+    }
+  ]
 }

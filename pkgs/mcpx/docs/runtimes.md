@@ -9,12 +9,12 @@ bundle mcpx's own flags under a name. Every setting named here is in
 
 `script.runtime` (`--runtime`, `MCPX_SCRIPT_RUNTIME`) is one of:
 
-| Value | Meaning |
-| --- | --- |
-| `auto` (default) | the first entry of `script.runtimeOrder` that is installed **and** can enforce the permissions asked for |
-| `deno`, `bun`, `node` | that binary on `PATH` |
-| a name under `script.runtimes` | the declared binary, with the declared kind |
-| a path or another name on `PATH` | accepted when its basename, without an executable extension, is `deno`, `bun` or `node` |
+| Value                            | Meaning                                                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `auto` (default)                 | the first entry of `script.runtimeOrder` that is installed **and** can enforce the permissions asked for |
+| `deno`, `bun`, `node`            | that binary on `PATH`                                                                                    |
+| a name under `script.runtimes`   | the declared binary, with the declared kind                                                              |
+| a path or another name on `PATH` | accepted when its basename, without an executable extension, is `deno`, `bun` or `node`                  |
 
 Binaries are resolved with Go's `exec.LookPath`, so `PATHEXT` is honoured on
 Windows and nothing assumes `.exe`. A name that resolves to something that is
@@ -42,11 +42,11 @@ mcpx: bash resolves to /bin/bash, which is not a known JavaScript runtime; decla
 up on `PATH` (default: the declared name); `args` are runtime options placed
 after mcpx's own fixed options and before the permission flags:
 
-| Kind | argv |
-| --- | --- |
-| deno | `run --quiet --no-check <args> <permission flags> <script>` |
-| bun | `run <args> <permission flags> <script>` |
-| node | `--no-warnings --experimental-strip-types <args> <permission flags> <script>` |
+| Kind | argv                                                                              |
+| ---- | --------------------------------------------------------------------------------- |
+| deno | `run --quiet --no-check <args> <permission flags> <script>`                       |
+| bun  | `run <args> <permission flags> <script>`                                          |
+| node | `--no-warnings --experimental-transform-types <args> <permission flags> <script>` |
 
 The script sees `MCPX_RUNTIME` set to the **kind**, not the declared name.
 
@@ -54,19 +54,59 @@ The script sees `MCPX_RUNTIME` set to the **kind**, not the declared name.
 object, so the nearest file that sets one replaces the whole object from
 files further away, as with any other setting.
 
+## Capability matrix
+
+What each runtime can actually do for a script, measured rather than
+asserted: every cell below is the result of the capability probes in
+`internal/probe`, which run in the mcpx CI job against the installed
+deno, bun and node. Five one-line TypeScript probes (environment
+access, `fetch`, file read via `node:fs`, JSON round-trip, exit codes)
+plus package-resolution and type-check probes run per runtime; if a
+runtime's behaviour changes, the probe test fails and this table must
+be updated in the same change.
+
+| Capability                                                                            | deno               | bun                               | node                              |
+| ------------------------------------------------------------------------------------- | ------------------ | --------------------------------- | --------------------------------- |
+| Environment access (`Deno.env` / `process.env`)                                       | yes                | yes                               | yes                               |
+| `fetch` global                                                                        | yes                | yes                               | yes                               |
+| `node:` builtins (e.g. `node:fs`)                                                     | yes                | yes                               | yes                               |
+| JSON parse/stringify                                                                  | yes                | yes                               | yes                               |
+| Script-chosen exit code (`Deno.exit` / `process.exit`)                                | yes                | yes                               | yes                               |
+| Bare package resolution from `node_modules`                                           | yes                | yes                               | yes                               |
+| Static type checking before run                                                       | yes (`deno check`) | no — types are stripped unchecked | no — types are stripped unchecked |
+| Permission enforcement (profiles below)                                               | full model         | none (`all` only)                 | partial (`--permission`)          |
+| Python runtime ([#1917](https://github.com/developing-today/code/issues/1917))        | pending            | pending                           | pending                           |
+| Flake environments ([#1921](https://github.com/developing-today/code/issues/1921))    | pending            | pending                           | pending                           |
+| Dependency management ([#1913](https://github.com/developing-today/code/issues/1913)) | pending            | pending                           | pending                           |
+
+### Which runtime should I choose?
+
+- **Default (`auto`)** — let mcpx pick the first installed runtime
+  that can enforce the permissions you asked for; this is the right
+  choice unless you have a reason below.
+- **deno** — you need a permission profile narrower than `all`, or
+  you want scripts type-checked (`deno check`) before they run. The
+  only runtime whose sandbox is complete.
+- **bun** — startup speed matters and the script runs unsandboxed
+  anyway; bun has no permission model, so profiles other than `all`
+  are refused for it.
+- **node** — maximum npm-ecosystem compatibility, or the target
+  machine only has node; network access cannot be restricted under
+  node, so profiles that limit it are refused for it.
+
 ## Permission profiles
 
 `script.permissions` (`--permissions`, `MCPX_PERMISSIONS`) names profiles.
 A profile maps a runtime **kind** to the flags that enforce it there. The
 built-ins live in `internal/defaults/defaults.json` (`mcpx config --defaults`):
 
-| Profile | deno | node | bun |
-| --- | --- | --- | --- |
-| `all` (also `none`, `off`, `unsandboxed`) — the default | `--allow-all` | no flags | no flags |
-| `net` | `--allow-net --allow-env` | — | — |
-| `read` | `--allow-read --allow-env` | — | — |
-| `readnet` (also `read-net`) | `--allow-read --allow-net --allow-env` | `--permission --allow-fs-read=*` | — |
-| `strict` | `--allow-net=127.0.0.1 --allow-env` | — | — |
+| Profile                                                 | deno                                   | node                             | bun      |
+| ------------------------------------------------------- | -------------------------------------- | -------------------------------- | -------- |
+| `all` (also `none`, `off`, `unsandboxed`) — the default | `--allow-all`                          | no flags                         | no flags |
+| `net`                                                   | `--allow-net --allow-env`              | —                                | —        |
+| `read`                                                  | `--allow-read --allow-env`             | —                                | —        |
+| `readnet` (also `read-net`)                             | `--allow-read --allow-net --allow-env` | `--permission --allow-fs-read=*` | —        |
+| `strict`                                                | `--allow-net=127.0.0.1 --allow-env`    | —                                | —        |
 
 **— means refused.** A runtime kind a profile does not list cannot run under
 it, and mcpx says which profile, which runtime, and how to define it:
@@ -147,7 +187,7 @@ A preset is a named list of mcpx's own flags:
 ```json
 {
   "presets": {
-    "ci":    ["--json", "--log-level=warn"],
+    "ci": ["--json", "--log-level=warn"],
     "debug": ["--log-level=debug", "--timeout=30s"]
   }
 }

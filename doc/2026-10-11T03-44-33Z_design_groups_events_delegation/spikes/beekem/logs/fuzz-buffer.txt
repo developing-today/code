@@ -1,0 +1,11 @@
+## Randomized run: 300 trials, 8 rounds, group of 5, buffering=true
+converged: 289 of 300
+nobody left to settle (not compared): 11
+out-of-order deliveries buffered: 4225
+out-of-order deliveries dropped: 0
+max predecessors named by one op: 5
+failures by reason:
+merge or op errors (other than out-of-order):
+   485  IdentifierNotFound
+     3  NoMembers
+panics: 0

@@ -40,6 +40,10 @@ import { getVersion, receiveTransaction } from "prosemirror-collab";
 import { Step } from "prosemirror-transform";
 import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
 import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
+import { closeImageBrowser } from "./image-browser";
+import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
+
+export { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
 
 // Message type tags
 const MSG = {
@@ -58,6 +62,31 @@ const MSG = {
 // MessagePack encoder/decoder configured for array format
 const packr = new Packr({ useRecords: false, structuredClone: true });
 const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
+
+/** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE
+ * steps and at most MAX_STEPS_MESSAGE_BYTES of encoded steps, in order.
+ * Remaining steps stay unconfirmed and are sent by later flushes.
+ * Returns an empty batch when the FIRST pending step alone exceeds the
+ * byte budget: such a step can never be sent within the server cap, and
+ * splitting it into several wire steps would corrupt prosemirror-collab's
+ * count-based confirmation (the server echoes applied steps and the
+ * plugin confirms that many unconfirmed steps). Withholding it keeps the
+ * edit in the local document instead of having the server reject the
+ * message and the reconnect path re-initialize the editor from server
+ * state, silently discarding the edit. */
+export function stepBatch<T>(steps: readonly T[], sizeOf: (step: T) => number = () => 0): T[] {
+  const batch: T[] = [];
+  let bytes = 0;
+  for (const step of steps) {
+    if (batch.length >= MAX_STEPS_PER_MESSAGE) break;
+    const size = sizeOf(step);
+    if (batch.length > 0 && bytes + size > MAX_STEPS_MESSAGE_BYTES) break;
+    if (batch.length === 0 && size > MAX_STEPS_MESSAGE_BYTES) break;
+    batch.push(step);
+    bytes += size;
+  }
+  return batch;
+}
 
 export interface CollabConnection {
   ws: WebSocket;
@@ -84,6 +113,18 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
  */
+/**
+ * Build the collab WebSocket URL for a document (#2830). The docId goes
+ * into a single path segment, so it must be percent-encoded: a raw `/`
+ * breaks the single-segment route, a raw `#`/`?` truncates the URL
+ * (losing the query string), and a raw `%20` in a name is decoded by
+ * the server into a *different* file. The axum route percent-decodes
+ * the segment, so encoding here round-trips to the exact filename.
+ */
+export function buildCollabWsUrl(wsProtocol: string, host: string, docId: string): string {
+  return `${wsProtocol}//${host}/ws/collab/${encodeURIComponent(docId)}`;
+}
+
 export function initCollab(
   wsUrl: string,
   container: HTMLElement,
@@ -100,6 +141,13 @@ export function initCollab(
   if (filename) params.set("filename", filename);
   const queryStr = params.toString();
   const finalWsUrl = queryStr ? `${wsUrl}?${queryStr}` : wsUrl;
+
+  // Single mutable source of truth for the identity token (#1463). The
+  // AUTH_OK handler overwrites this when the server refreshes the token,
+  // and every (re)connect sends this value. Sending the init-time `token`
+  // parameter instead would re-send the original token on every reconnect,
+  // so the refresh would never reach the socket that needs it.
+  let currentToken: string | null = token ?? null;
 
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -127,9 +175,27 @@ export function initCollab(
     if (onStatus) onStatus(status);
   };
 
+  // The server caps WebSocket messages at MAX_FRAME_BYTES (1 MiB;
+  // pkgs/id/src/frames.rs, applied as max_message_size in
+  // pkgs/id/src/web/collab.rs) and exceeding it closes the socket.
+  // On reconnect the INIT handler rebuilds the editor from server
+  // state, so one oversized STEPS message (e.g. a >1 MiB paste)
+  // would silently discard every unconfirmed local edit. Never send
+  // an over-cap message: dropping it keeps the socket — and the
+  // local document — alive, and the error status says why sync is
+  // stuck. Splitting oversized step batches is tracked separately.
+  const MAX_MESSAGE_BYTES = 1024 * 1024;
+
   // Encode and send a message (always uses currentWs)
   const send = (msgType: number, ...fields: unknown[]): void => {
     const data = packr.pack([msgType, ...fields]);
+    if (data.byteLength > MAX_MESSAGE_BYTES) {
+      console.error(
+        `[collab] not sending oversized message (type ${msgType}, ${data.byteLength} bytes > ${MAX_MESSAGE_BYTES} cap); local changes are preserved but cannot sync until they are smaller`,
+      );
+      updateStatus("error");
+      return;
+    }
     if (connected && currentWs && currentWs.readyState === WebSocket.OPEN) {
       currentWs.send(data);
     } else {
@@ -189,27 +255,64 @@ export function initCollab(
     const sendable = getSendableSteps(editorInstance.view);
     console.log("[collab] sendable:", sendable);
     if (sendable) {
-      console.log("[collab] Sending", sendable.steps.length, "steps, version:", sendable.version);
-      send(MSG.STEPS, sendable.version, sendable.steps, sendable.clientID);
+      const batch = stepBatch(sendable.steps, stepWireSize);
+      if (batch.length === 0) {
+        // The head pending step alone exceeds the wire budget (e.g. a
+        // >1 MiB paste represented as a single replace step). Do not send
+        // it: the server would refuse the message and the reconnect path
+        // would discard the edit. It stays in the local document,
+        // unconfirmed; surface the wedge instead of losing content.
+        console.error(
+          "[collab] Pending step exceeds the",
+          MAX_STEPS_MESSAGE_BYTES,
+          "byte message budget and cannot be synced; edit kept locally only.",
+        );
+        return;
+      }
+      console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
+      send(MSG.STEPS, sendable.version, batch, sendable.clientID);
     }
   };
 
   const handleMessage = (data: ArrayBuffer): void => {
-    let msg: unknown[];
+    let frame: unknown;
     try {
-      msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
+      frame = unpackr.unpack(new Uint8Array(data));
     } catch (err) {
       console.error("[collab] Failed to decode MessagePack message:", err);
       return;
     }
-    const msgType = msg[0] as number;
+    if (!Array.isArray(frame)) {
+      console.error("[collab] Dropping malformed MessagePack frame: expected an array");
+      return;
+    }
+    const msg = frame as unknown[];
+    const msgType = msg[0];
+    if (typeof msgType !== "number" || !Number.isInteger(msgType)) {
+      console.error("[collab] Dropping malformed MessagePack frame: invalid message type");
+      return;
+    }
     console.log("[collab] handleMessage msgType:", msgType);
 
     switch (msgType) {
       case MSG.INIT: {
         // [0, version, doc, mode]
-        const version = msg[1] as number;
-        const doc = msg[2] as { type: string; content?: unknown[] };
+        const version = msg[1];
+        const doc = msg[2];
+        const docRecord =
+          doc !== null && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>) : null;
+        if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+          console.error("[collab] Dropping malformed Init message: invalid version");
+          return;
+        }
+        if (
+          !docRecord ||
+          docRecord.type !== "doc" ||
+          (docRecord.content !== undefined && !Array.isArray(docRecord.content))
+        ) {
+          console.error("[collab] Dropping malformed Init message: invalid document");
+          return;
+        }
         const mode = ((msg[3] as string) || "raw") as ContentMode;
         documentMode = mode;
         console.log("[collab] Received Init, version:", version, "mode:", mode);
@@ -217,7 +320,7 @@ export function initCollab(
         if (!editorInstance) {
           // First connection — initialize the editor from scratch
           console.log("[collab] Initializing editor with server version:", version, "mode:", mode);
-          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
+          editorInstance = initEditor(container, docRecord, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Our clientID:", myClientID);
 
@@ -235,9 +338,12 @@ export function initCollab(
           // version mismatch errors.
           console.log("[collab] Reconnect: re-initializing editor, server version:", version);
           container.removeEventListener("editor:change", handleEditorChange);
+          // The view is about to be destroyed; the image browser overlay
+          // would outlive it on document.body (#1381).
+          closeImageBrowser();
           editorInstance.view.destroy();
 
-          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
+          editorInstance = initEditor(container, docRecord, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Reconnect: new clientID:", myClientID);
 
@@ -252,6 +358,10 @@ export function initCollab(
         // Start reconnect cleanup timer (will remove stale cursors after 1s)
         // Must be called after editor is initialized
         onInitReceived(editorInstance.view);
+        // A WebSocket opening is not enough to prove the collaboration
+        // session recovered: the server may accept and immediately drop it
+        // before sending Init. Reset only after the protocol is initialized.
+        reconnectAttempts = 0;
         break;
       }
 
@@ -279,6 +389,12 @@ export function initCollab(
             const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
             editorInstance.view.dispatch(tr);
             console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
+            // If this update confirmed one of our batches and more steps are
+            // still pending (an oversized transaction chunked by stepBatch),
+            // send the next batch now - no new editor:change event fires for
+            // a confirmation, so without this the remainder would stall
+            // until the next local edit.
+            handleEditorChange();
           } catch (err) {
             // Step application failed — editor state is desynchronized.
             // Trigger reconnect to get fresh Init + catch-up from server.
@@ -381,9 +497,15 @@ export function initCollab(
         const authName = msg[2] as string | null;
         const refreshedToken = msg[3] as string | null | undefined;
         console.log("[collab] Auth OK: client_id=%s, name=%s", authClientId, authName);
-        // Save the refreshed token so long-lived WS sessions stay fresh
-        if (refreshedToken && onTokenRefresh) {
-          onTokenRefresh(refreshedToken);
+        // Save the refreshed token so long-lived WS sessions stay fresh.
+        // Write it back to currentToken first: reconnects authenticate with
+        // currentToken, so the refreshed value must live here, not only in
+        // the caller's onTokenRefresh callback (#1463).
+        if (refreshedToken) {
+          currentToken = refreshedToken;
+          if (onTokenRefresh) {
+            onTokenRefresh(refreshedToken);
+          }
         }
         break;
       }
@@ -439,7 +561,6 @@ export function initCollab(
       }
       console.log("[collab] Connected to", wsUrl);
       connected = true;
-      reconnectAttempts = 0;
       updateStatus("connected");
       if (editorInstance) {
         setConnectionState(editorInstance.view, "connected");
@@ -447,8 +568,8 @@ export function initCollab(
       // Send AUTH as the very first message (before flushing queued messages).
       // The server waits for this before sending INIT. Token is kept out of
       // the URL to avoid leaking in logs/Referer headers over HTTPS.
-      if (token) {
-        const authData = packr.pack([MSG.AUTH, token]);
+      if (currentToken) {
+        const authData = packr.pack([MSG.AUTH, currentToken]);
         socket.send(authData);
         console.log("[collab] Sent AUTH message");
       }

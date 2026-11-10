@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 func recv(t *testing.T, s *events.Subscription) events.Event {
@@ -84,6 +84,31 @@ func TestAReconnectingSubscriberMissesNothing(t *testing.T) {
 	}
 }
 
+func TestAReplayLargerThanTheSubscriberBufferMissesNothing(t *testing.T) {
+	// Regression for #193: the retained history (1024 by default) is
+	// larger than the subscriber buffer (256), and the replay used to fill
+	// that buffer before the subscriber could read anything, silently
+	// dropping the rest with no gap reported.
+	b := events.New(0)
+	const n = 300 // > EventSubscriberBuf (256), < EventHistory (1024)
+	for i := 0; i < n; i++ {
+		b.Publish(events.Event{Kind: events.CallFinished})
+	}
+	s, gap := b.SubscribeFrom(events.Filter{}, 0, true)
+	defer s.Close()
+	if gap {
+		t.Error("everything asked for is still retained, so there should be no gap")
+	}
+	for want := uint64(1); want <= n; want++ {
+		if e := recv(t, s); e.Seq != want {
+			t.Fatalf("replay out of order or incomplete: got seq %d, want %d", e.Seq, want)
+		}
+	}
+	if d := s.Dropped.Load(); d != 0 {
+		t.Errorf("replay dropped %d events before the subscriber could read", d)
+	}
+}
+
 func TestAGapBeyondHistoryIsReportedRatherThanHidden(t *testing.T) {
 	// A subscriber gone longer than the history covers is told so, so it can
 	// resynchronise rather than trust a stream with a hole in it.
@@ -95,6 +120,27 @@ func TestAGapBeyondHistoryIsReportedRatherThanHidden(t *testing.T) {
 	defer s.Close()
 	if !gap {
 		t.Error("seven events fell out of history; that should be reported")
+	}
+}
+
+func TestExplicitZeroReportsAGapAfterTrim(t *testing.T) {
+	// #1679: the gap check was gated on since > 0, so an explicit
+	// position zero after the retained history had been trimmed
+	// replayed from mid-history and reported no gap -- events the
+	// subscriber had never seen vanished silently, while since=1 in
+	// the same state (the control in
+	// TestAGapBeyondHistoryIsReportedRatherThanHidden) did report.
+	b := events.New(3)
+	for i := 0; i < 10; i++ {
+		b.Publish(events.Event{Kind: events.CallFinished})
+	}
+	s, gap := b.SubscribeFrom(events.Filter{}, 0, true)
+	defer s.Close()
+	if !gap {
+		t.Error("events 1-7 fell out of history before position zero; that should be reported")
+	}
+	if e := recv(t, s); e.Seq != 8 {
+		t.Fatalf("replay should start at the oldest retained event (seq 8), got seq %d", e.Seq)
 	}
 }
 

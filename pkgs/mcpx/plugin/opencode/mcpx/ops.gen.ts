@@ -20,8 +20,33 @@ type OpSpec = {
   response: "json" | "response"
 }
 
+export const OPERATION_FINGERPRINT = "f991ef3215011e82484759f8a9b2122671e0b974d4da47647141cf2f1017e8af"
+
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
+  adapters_add: {
+    method: "POST",
+    path: "/v1/adapters",
+    params: {
+      name: { in: "body", required: true },
+      command: { in: "body", required: true },
+      runtime: { in: "body" },
+      args: { in: "body" },
+      env: { in: "body" },
+      description: { in: "body" },
+      tools: { in: "body" },
+      replace: { in: "body" },
+    },
+    response: "json",
+  },
+  adapters_remove: {
+    method: "DELETE",
+    path: "/v1/adapters/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
   artifact_delete: {
     method: "DELETE",
     path: "/v1/artifacts/{id}",
@@ -104,6 +129,18 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  authz_decisions: {
+    method: "GET",
+    path: "/v1/authz/decisions",
+    params: {},
+    response: "json",
+  },
+  authz_decisions_clear: {
+    method: "DELETE",
+    path: "/v1/authz/decisions",
+    params: {},
+    response: "json",
+  },
   batch: {
     method: "POST",
     path: "/v1/batch",
@@ -111,6 +148,7 @@ export const OPS: Record<string, OpSpec> = {
       calls: { in: "body", required: true },
       stopOnError: { in: "body" },
       parallel: { in: "body" },
+      safePrefix: { in: "body" },
       session: { in: "body" },
       context: { in: "body" },
     },
@@ -408,6 +446,14 @@ export const OPS: Record<string, OpSpec> = {
     params: {},
     response: "json",
   },
+  preflight: {
+    method: "POST",
+    path: "/v1/preflight",
+    params: {
+      source: { in: "body", required: true },
+    },
+    response: "json",
+  },
   prompt_get: {
     method: "POST",
     path: "/v1/prompt",
@@ -547,6 +593,51 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  secret_request_decline: {
+    method: "DELETE",
+    path: "/v1/secret-requests/{id}",
+    params: {
+      id: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  secret_request_get: {
+    method: "GET",
+    path: "/v1/secret-requests/{id}",
+    params: {
+      id: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  secret_requests_list: {
+    method: "GET",
+    path: "/v1/secret-requests",
+    params: {},
+    response: "json",
+  },
+  secrets_list: {
+    method: "GET",
+    path: "/v1/secrets",
+    params: {},
+    response: "json",
+  },
+  secrets_set: {
+    method: "PUT",
+    path: "/v1/secrets/{name}",
+    params: {
+      name: { in: "path", required: true },
+      value: { in: "body", required: true },
+    },
+    response: "json",
+  },
+  secrets_unset: {
+    method: "DELETE",
+    path: "/v1/secrets/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
   servers_add: {
     method: "POST",
     path: "/v1/servers",
@@ -561,6 +652,14 @@ export const OPS: Record<string, OpSpec> = {
       mcpx: { in: "body" },
       scope: { in: "body" },
       replace: { in: "body" },
+    },
+    response: "json",
+  },
+  servers_get: {
+    method: "GET",
+    path: "/v1/servers/{name}",
+    params: {
+      name: { in: "path", required: true },
     },
     response: "json",
   },
@@ -585,6 +684,12 @@ export const OPS: Record<string, OpSpec> = {
     params: {
       session: { in: "body", required: true },
     },
+    response: "json",
+  },
+  sessions_read: {
+    method: "GET",
+    path: "/v1/sessions",
+    params: {},
     response: "json",
   },
   settings_get: {
@@ -710,6 +815,14 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "response",
   },
+  writes_clear: {
+    method: "POST",
+    path: "/v1/writes/{server}/clear",
+    params: {
+      server: { in: "path", required: true },
+    },
+    response: "json",
+  },
 }
 
 /** A refusal from the daemon, with the status and the body kept. */
@@ -802,6 +915,23 @@ export class DaemonOps {
   }
 
   /**
+   * Add an adapter declaration, live. `POST /v1/adapters`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  adaptersAdd(args: { name: string; command: string; runtime?: string; args?: unknown[]; env?: Record<string, unknown>; description?: string; tools?: unknown[]; replace?: boolean }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("adapters_add", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Remove an adapter declaration, live. `DELETE /v1/adapters/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  adaptersRemove(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("adapters_remove", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Forget one artifact. `DELETE /v1/artifacts/{id}`.
    * Privileged: it changes the daemon rather than reading it.
    * Destructive: it cannot be undone, and other callers are affected.
@@ -864,9 +994,24 @@ export class DaemonOps {
   }
 
   /**
+   * The permissive authorisation decision report. `GET /v1/authz/decisions`.
+   */
+  authzDecisions(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("authz_decisions", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Clear the recorded authorisation decisions. `DELETE /v1/authz/decisions`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  authzDecisionsClear(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("authz_decisions_clear", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Execute multiple tool calls in a single turn. `POST /v1/batch`.
    */
-  batch(args: { calls: unknown[]; stopOnError?: boolean; parallel?: boolean; session?: string; context?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
+  batch(args: { calls: unknown[]; stopOnError?: boolean; parallel?: boolean; safePrefix?: boolean; session?: string; context?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("batch", args, opts) as Promise<unknown>
   }
 
@@ -1087,6 +1232,13 @@ export class DaemonOps {
   }
 
   /**
+   * Check a script's servers are ready before running it. `POST /v1/preflight`.
+   */
+  preflight(args: { source: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("preflight", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Render one prompt with its arguments filled in. `POST /v1/prompt`.
    */
   promptGet(args: { server: string; name: string; arguments?: Record<string, unknown>; sessionId?: string; callId?: string }, opts: CallOptions = {}): Promise<unknown> {
@@ -1203,11 +1355,64 @@ export class DaemonOps {
   }
 
   /**
+   * Decline a secret request. `DELETE /v1/secret-requests/{id}`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  secretRequestDecline(args: { id: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secret_request_decline", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * One secret request, and whether it is still waiting. `GET /v1/secret-requests/{id}`.
+   */
+  secretRequestGet(args: { id: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secret_request_get", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Requests waiting for a person to give secrets. `GET /v1/secret-requests`.
+   */
+  secretRequestsList(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secret_requests_list", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Which secrets servers need, and which of them have a value. `GET /v1/secrets`.
+   */
+  secretsList(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secrets_list", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Give a secret a value, in memory only. `PUT /v1/secrets/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  secretsSet(args: { name: string; value: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secrets_set", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Forget a runtime value for a secret. `DELETE /v1/secrets/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  secretsUnset(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secrets_unset", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Add a server, live. `POST /v1/servers`.
    * Privileged: it changes the daemon rather than reading it.
    */
   serversAdd(args: { name: string; command?: string; args?: unknown[]; env?: Record<string, unknown>; url?: string; headers?: Record<string, unknown>; transport?: "stdio" | "http" | "sse"; mcpx?: Record<string, unknown>; scope?: "project" | "user"; replace?: boolean }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("servers_add", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * One configured server, and whether it can run now. `GET /v1/servers/{name}`.
+   */
+  serversGet(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("servers_get", args, opts) as Promise<unknown>
   }
 
   /**
@@ -1232,6 +1437,13 @@ export class DaemonOps {
    */
   sessionRelease(args: { session: string }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("session_release", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * The session inventory: every pool's live instances. `GET /v1/sessions`.
+   */
+  sessionsRead(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("sessions_read", args, opts) as Promise<unknown>
   }
 
   /**
@@ -1334,5 +1546,13 @@ export class DaemonOps {
    */
   types(args: { ns?: string; instructions?: "0" | "1"; profile?: string; skipDefault?: "0" | "1"; allProfiles?: "0" | "1" } = {}, opts: CallOptions = {}): Promise<Response> {
     return this.invoke("types", args, opts) as Promise<Response>
+  }
+
+  /**
+   * Clear a server's unknown-write block. `POST /v1/writes/{server}/clear`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  writesClear(args: { server: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("writes_clear", args, opts) as Promise<unknown>
   }
 }

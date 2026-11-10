@@ -34,6 +34,12 @@ func (s *Server) ConnWithSend(id string, send func(any) error) *Conn { return s.
 
 func (s *Server) SurfaceForTest(ctx context.Context) ([]Tool, error) { return s.surface(ctx) }
 
+// WithRawForTest marks a context as one that arrived with ?codemode=false,
+// as ServeHTTP does from the URL. The raw-surface selection lives only in
+// the request context, so a test driving HandleOn directly has no other
+// way in.
+func WithRawForTest(ctx context.Context) context.Context { return withCodemode(ctx, true) }
+
 func (s *Server) InvokeForTest(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	return s.invoke(ctx, name, args)
 }

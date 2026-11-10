@@ -31,7 +31,20 @@ func CompileToolPatterns(list []string) (ToolPatterns, error) {
 	var p ToolPatterns
 	for _, s := range list {
 		switch {
-		case len(s) >= 2 && strings.HasPrefix(s, "/") && strings.HasSuffix(s, "/"):
+		case strings.HasPrefix(s, "/"):
+			// An entry beginning with / is a regexp entry, and a regexp
+			// entry is a complete /.../ pair: an unclosed entry (including
+			// the lone /) silently fell through to an exact name that
+			// matches nothing a server offers, and // compiled the empty
+			// regexp, which matches every name -- the two silent
+			// mistranslations a deny entry must never make (#1631). Both
+			// are compile errors naming the entry.
+			if len(s) < 2 || !strings.HasSuffix(s, "/") {
+				return ToolPatterns{}, fmt.Errorf("tool pattern %q: unclosed regexp (missing closing /)", s)
+			}
+			if len(s) == 2 {
+				return ToolPatterns{}, fmt.Errorf("tool pattern %q: empty regexp", s)
+			}
 			re, err := regexp.Compile(s[1 : len(s)-1])
 			if err != nil {
 				return ToolPatterns{}, fmt.Errorf("tool pattern %q: %w", s, err)
@@ -103,11 +116,19 @@ func globRegexp(glob string) (*regexp.Regexp, error) {
 			if neg {
 				b.WriteString("^")
 			}
+			first := true
 			for _, r := range glob[body : j+k] {
-				if r == '\\' || r == '[' || r == ']' {
+				// A ^ first in the body is a literal class member in the
+				// glob; copied verbatim it would land first in the RE2 class
+				// and negate it (#1631). Escape it there. (The [!...] form
+				// already emitted its own negation ^, and there a
+				// body-leading ^ is a member of the negated set, which RE2
+				// reads correctly unescaped.)
+				if r == '\\' || r == '[' || r == ']' || (r == '^' && first && !neg) {
 					b.WriteByte('\\')
 				}
 				b.WriteRune(r)
+				first = false
 			}
 			b.WriteString("]")
 			i = j + k

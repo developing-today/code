@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // askEnv is an installation whose one server asks questions back.
@@ -138,7 +138,7 @@ func TestALegacyClientIsAskedOverStreamableHTTP(t *testing.T) {
 		},
 	})
 	session := init.Header.Get("Mcp-Session-Id")
-	init.Body.Close()
+	_ = init.Body.Close()
 	if session == "" {
 		t.Fatal("a legacy client needs a session, or its answer has nowhere to go")
 	}
@@ -148,7 +148,7 @@ func TestALegacyClientIsAskedOverStreamableHTTP(t *testing.T) {
 		"params": map[string]any{"name": "mcpx_call",
 			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"}},
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("a request that has to ask something must stream, got %q", ct)
 	}
@@ -173,7 +173,7 @@ func TestALegacyClientIsAskedOverStreamableHTTP(t *testing.T) {
 			// On a separate POST, which is the whole reason a session
 			// exists: this connection is busy being the answer to the
 			// first request.
-			go func() { mcpPost(t, ep, session, answer).Body.Close() }()
+			go func() { _ = mcpPost(t, ep, session, answer).Body.Close() }()
 		default:
 			if frame["result"] != nil {
 				final = frame
@@ -218,7 +218,7 @@ func TestAModernClientIsHandedTheQuestionInTheResult(t *testing.T) {
 	disc := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1,
 		"method": "server/discover", "params": map[string]any{"_meta": meta}})
 	issued := disc.Header.Get("Mcp-Session-Id")
-	disc.Body.Close()
+	_ = disc.Body.Close()
 	if issued != "" {
 		// 2026-07-28 has no sessions. One used to be minted here only so a
 		// requestState had something to be bound to; it is bound to the
@@ -234,7 +234,7 @@ func TestAModernClientIsHandedTheQuestionInTheResult(t *testing.T) {
 	resp := mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": 2,
 		"method": "tools/call", "params": params})
 	first := decodeJSON(t, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	result, _ := first["result"].(map[string]any)
 	if result == nil || result["resultType"] != "input_required" {
 		t.Fatalf("a modern client is asked by being answered:\n%s", dumpJSON(t, first))
@@ -262,7 +262,7 @@ func TestAModernClientIsHandedTheQuestionInTheResult(t *testing.T) {
 	resp = mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": 3,
 		"method": "tools/call", "params": params})
 	second := decodeJSON(t, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	body := dumpJSON(t, second)
 	if !strings.Contains(body, "me/modern") {
 		t.Fatalf("the retry should carry the original call through:\n%s", body)
@@ -293,7 +293,7 @@ func TestARequestStateOnAnotherRequestIsRefused(t *testing.T) {
 	r := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 2,
 		"method": "tools/call", "params": params})
 	first := decodeJSON(t, r.Body)
-	r.Body.Close()
+	_ = r.Body.Close()
 	result, _ := first["result"].(map[string]any)
 	state, _ := result["requestState"].(string)
 	if state == "" {
@@ -306,7 +306,7 @@ func TestARequestStateOnAnotherRequestIsRefused(t *testing.T) {
 	r = mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 3,
 		"method": "tools/call", "params": other})
 	stolen := decodeJSON(t, r.Body)
-	r.Body.Close()
+	_ = r.Body.Close()
 	if stolen["error"] == nil {
 		t.Fatalf("a requestState was accepted on a request it was not issued for:\n%s", dumpJSON(t, stolen))
 	}
@@ -429,7 +429,7 @@ func TestAClientThatDeclaredNothingStillReachesTheBroker(t *testing.T) {
 			done <- outcome{err: err}
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, err := io.ReadAll(resp.Body)
 		done <- outcome{body: string(raw), err: err}
 	}()
@@ -485,7 +485,7 @@ func TestCompletionComesFromTheServerAndSaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	text := dumpJSON(t, body)
 	if body["upstream"] != true || body["source"] != "upstream" {
@@ -510,7 +510,7 @@ func TestCompletionFallsBackToTheCacheAndSaysWhy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	text := dumpJSON(t, body)
 	if body["upstream"] != false || body["source"] != "cache" {
@@ -536,7 +536,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 	resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1,
 		"method": "tools/list", "params": map[string]any{}})
 	body := dumpJSON(t, decodeJSON(t, resp.Body))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !strings.Contains(body, "mcpx_catalog") {
 		t.Fatalf("the daemon should serve MCP on its own listeners:\n%s", body)
 	}
@@ -548,7 +548,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := dumpJSON(t, decodeJSON(t, r.Body))
-	r.Body.Close()
+	_ = r.Body.Close()
 	if !strings.Contains(called, "through the daemon") {
 		t.Fatalf("POST /v1/call/{server}/{tool} should reach the tool:\n%s", called)
 	}
@@ -559,7 +559,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	invoked := dumpJSON(t, decodeJSON(t, r.Body))
-	r.Body.Close()
+	_ = r.Body.Close()
 	if !strings.Contains(invoked, "demo") {
 		t.Fatalf("POST /v1/tools/{tool} should run the tool:\n%s", invoked)
 	}
@@ -571,7 +571,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := dumpJSON(t, decodeJSON(t, r.Body))
-	r.Body.Close()
+	_ = r.Body.Close()
 	if !strings.Contains(doc, "/v1/call/demo/echo") {
 		t.Errorf("the specification should describe every tool path:\n%s", firstN(doc, 400))
 	}
@@ -601,7 +601,7 @@ func TestTheProtocolMatrixIsServedFromTheTableTheCodeReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	text := dumpJSON(t, body)
 	for _, want := range []string{"2026-07-28", "2025-03-26", "structuredContent", "elicitationURL"} {
@@ -649,7 +649,7 @@ func TestTheDaemonReportsItsRevisionPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	sp, _ := body["spec"].(map[string]any)
 	order, _ := sp["precedence"].([]any)
@@ -659,5 +659,85 @@ func TestTheDaemonReportsItsRevisionPolicy(t *testing.T) {
 	}
 	if strict["2026-07-28"] != false || strict["2024-11-05"] != true {
 		t.Errorf("strict %v, want 2026-07-28 lenient and the rest strict", strict)
+	}
+}
+
+// The policy decides what a relayed progress notification looks like on the
+// wire. 2024-11-05 has no `message` on progress and every later revision
+// does, so a message-relaying daemon talking to a 2024-11-05 client must
+// strip it only when that revision's rule governs -- by default it does not,
+// with --mcp-spec 2024-11-05 it does. The unit precedent is
+// TestProgressMessagePrecedence; this is the same decision through the
+// daemon, a real upstream and a real client (#307, #2212).
+func TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		serveArg []string
+		want     bool
+	}{
+		{"default", nil, true},
+		{"mcp-spec-2024-11-05", []string{"--mcp-spec", "2024-11-05"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, oneServer)
+			e.run("refresh")
+			notes, res := relaySessionAs(t, e, "2024-11-05", c.serveArg,
+				map[string]any{}, "info", map[string]any{"progressToken": "policy-tok"})
+			if res["result"] == nil {
+				t.Fatalf("the call should still answer:\n%s", dumpJSON(t, res))
+			}
+			var progress int
+			for _, n := range notes {
+				if n["method"] != "notifications/progress" {
+					continue
+				}
+				progress++
+				p, _ := n["params"].(map[string]any)
+				msg, has := p["message"]
+				if has != c.want {
+					t.Errorf("message present=%v, want %v: %s", has, c.want, dumpJSON(t, n))
+				}
+				if has {
+					if s, _ := msg.(string); !strings.Contains(s, "step") {
+						t.Errorf("the upstream's message should be relayed verbatim when kept: %v", msg)
+					}
+				}
+				if p["progressToken"] != "policy-tok" {
+					t.Errorf("the client's own token should survive: %v", p)
+				}
+			}
+			if progress != 2 {
+				t.Errorf("want both progress frames, got %d (%v)", progress, notes)
+			}
+		})
+	}
+}
+
+// A 2026-07-28 server has no server-initiated requests: the client MUST NOT
+// answer one. mcpx drops it while that revision is strict, and answers it
+// with MCPX_SPEC_LENIENT=2026-07-28, for a server that has not caught up
+// with its own revision. The unit precedent is
+// TestLenient2026AnswersServerRequests; this is the same decision through
+// the daemon (#307, #2212).
+func TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"default", nil, "dropped"},
+		{"lenient-2026-07-28", []string{"MCPX_SPEC_LENIENT=2026-07-28"}, "answered"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, _ := eraEnv(t, "modern", "", c.env...)
+			out := e.run("call", "era.ask-server", "{}")
+			if !strings.Contains(out, c.want) {
+				t.Fatalf("want %q, got:\n%s", c.want, out)
+			}
+			row := upstreamRow(t, e)
+			if row["era"] != "modern" {
+				t.Errorf("the upstream must be a 2026-07-28 server for this decision: %v", row)
+			}
+		})
 	}
 }

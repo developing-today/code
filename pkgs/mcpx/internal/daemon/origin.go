@@ -11,7 +11,11 @@ import (
 //
 // The daemon listens on loopback TCP as well as its unix socket, and /v1 is
 // unauthenticated: the socket's file permissions are the access control, and
-// a TCP port has none. A page in any browser on this machine can send a
+// a TCP port has none. The authorisation vocabulary (#1968) does not change
+// that -- it names the caller (a principal per surface, authz.go) and what
+// each operation would require, and the check answers yes; this refusal of
+// browser pages is a transport defence, not an authentication, and stays
+// the only thing standing between a web page and /v1 over TCP. A page in any browser on this machine can send a
 // "simple" cross-origin POST -- text/plain, no preflight -- to
 // 127.0.0.1:<port>/v1/exec, and the handler decodes the body as JSON
 // regardless of its declared type. So every page the user visits could run
@@ -38,10 +42,25 @@ func (s *Server) refuseBrowserPages(next http.Handler) http.Handler {
 				"add it to transport.allowedOrigins if it should", origin))
 			return
 		}
-		if overTCP(r) && s.loopbackOnly() && !s.loopbackHost(r.Host) {
-			writeErr(w, http.StatusForbidden, fmt.Errorf("host %q is not this daemon's; "+
-				"a loopback daemon answers only to a loopback name", r.Host))
-			return
+		if overTCP(r) && s.loopbackOnly() {
+			if ip, ok := tailnetLocalIP(r); ok {
+				// This request arrived on the tailnet listener, whose
+				// clients name the daemon by its MagicDNS name, not by
+				// a loopback name — the loopback rule would refuse
+				// every legitimate tsnet caller. The tailnet is an
+				// authenticated network, so the Host rule there is
+				// the mirror image: the name must be this daemon's
+				// own tailnet name or address.
+				if !s.tailnetHost(r.Host, ip) {
+					writeErr(w, http.StatusForbidden, fmt.Errorf("host %q is not this daemon's tailnet name; "+
+						"the tailnet listener answers only to its own name", r.Host))
+					return
+				}
+			} else if !s.loopbackHost(r.Host) {
+				writeErr(w, http.StatusForbidden, fmt.Errorf("host %q is not this daemon's; "+
+					"a loopback daemon answers only to a loopback name", r.Host))
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -60,6 +79,52 @@ func (s *Server) loopbackOnly() bool {
 	}
 	ip := net.ParseIP(strings.Trim(s.Address, "[]"))
 	return strings.EqualFold(s.Address, "localhost") || (ip != nil && ip.IsLoopback())
+}
+
+// tailnetLocalIP returns the local address of a request that arrived on
+// a tailnet listener: a TCP address in Tailscale's ranges (100.64.0.0/10
+// or the fd7a:115c:a1e0::/48 ULA). ok is false for any other request.
+func tailnetLocalIP(r *http.Request) (net.IP, bool) {
+	addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok || addr.Network() != "tcp" {
+		return nil, false
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return nil, false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return ip, v4[0] == 100 && v4[1]&0xc0 == 0x40
+	}
+	ula := net.ParseIP("fd7a:115c:a1e0::")
+	return ip, ip.Mask(net.CIDRMask(48, 128)).Equal(ula)
+}
+
+// tailnetHost reports whether host names this daemon on its tailnet: its
+// own tailnet IP, or its configured tsnet hostname (short, or as a
+// prefix of the full MagicDNS name a client dialed).
+func (s *Server) tailnetHost(host string, localIP net.IP) bool {
+	h := host
+	if split, _, err := net.SplitHostPort(host); err == nil {
+		h = split
+	}
+	h = strings.TrimSuffix(strings.Trim(h, "[]"), ".")
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.Equal(localIP)
+	}
+	name := strings.TrimSuffix(s.set.String("daemon.tsnet.hostname"), ".")
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(h)
+	// The full MagicDNS form is <hostname>.<tailnet>.ts.net; a bare
+	// prefix match would also accept mcpx-daemon.evil.example.
+	return strings.EqualFold(h, name) ||
+		(strings.HasPrefix(lower, strings.ToLower(name)+".") && strings.HasSuffix(lower, ".ts.net"))
 }
 
 func (s *Server) loopbackHost(host string) bool {

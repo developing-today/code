@@ -1,2 +1,8 @@
 .iroh*
 test.*
+.identity.db
+.identity.redb
+
+# Local clippy/cargo scratch output at the flake root
+/clippy_out*.txt
+/cargo-build-output.txt

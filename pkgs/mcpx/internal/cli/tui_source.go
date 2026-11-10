@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/opencode"
-	"github.com/dezren39/mcpx/internal/tui"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/opencode"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tui"
 )
 
 // Stats renders one dimension of the log as a grid.
@@ -20,7 +20,7 @@ func (s tuiSource) Stats(_ context.Context, dimension string) (tui.Table, error)
 	if err != nil {
 		return tui.Table{}, err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	q := logstore.Query{Limit: -1}
 
 	switch dimension {
@@ -168,7 +168,7 @@ func (s tuiSource) Instances(_ context.Context) (tui.Table, error) {
 	if err != nil {
 		return tui.Table{}, err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	rows, err := st.Instances(logstore.Query{Limit: -1})
 	if err != nil {
 		return tui.Table{}, err
@@ -208,7 +208,7 @@ func (s tuiSource) Sessions(_ context.Context) (tui.Table, error) {
 	if err != nil {
 		return tui.Table{}, err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	mine, err := st.Sessions(logstore.Query{Limit: -1})
 	if err != nil {
 		return tui.Table{}, err
@@ -240,7 +240,7 @@ func (s tuiSource) Sessions(_ context.Context) (tui.Table, error) {
 	note := ""
 	if path, ferr := opencode.Find(""); ferr == nil {
 		if db, derr := opencode.Open(path); derr == nil {
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			if sessions, serr := db.Busiest(time.Time{}, time.Time{}, 200); serr == nil {
 				for _, os := range sessions {
 					r, ok := byID[os.ID]
@@ -291,7 +291,7 @@ func (s tuiSource) Storage(_ context.Context) (tui.Table, error) {
 	if err != nil {
 		return tui.Table{}, err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	_, files, err := st.Volume(logstore.Query{Limit: -1})
 	if err != nil {
 		return tui.Table{}, err

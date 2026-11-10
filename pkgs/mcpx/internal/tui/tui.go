@@ -25,7 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 type pane int
@@ -75,7 +75,6 @@ var statsDimensions = []string{"calls", "servers", "errors", "sessions", "slowes
 // Styles are resolved once. lipgloss detects colour support at construction,
 // so building them per frame would re-probe the terminal on every keystroke.
 type styles struct {
-	app       lipgloss.Style
 	title     lipgloss.Style
 	pane      lipgloss.Style
 	paneOn    lipgloss.Style

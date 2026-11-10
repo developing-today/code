@@ -4,198 +4,20 @@
  */
 
 import "@starfederation/datastar";
+import { initHome } from "./home";
 import "./world";
 import "./world";
-import { type CollabConnection, initCollab } from "./collab";
+import { AutoSaveManager, type SaveResult } from "./auto-save";
+import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
+import { updateHeaderSubtitle } from "./header-subtitle";
+import { identityNeedsRefresh } from "./identity-refresh";
+import { clientIdForDisplay } from "./settings-identity";
+import { closeImageBrowser } from "./image-browser";
+import { createNavigation } from "./navigation";
+import { resolveSaveFilename } from "./save-filename";
+import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
-
-/** Result from saveFile() for AutoSaveManager to process */
-type SaveResult = { ok: true } | { ok: false; retryAfterMs?: number };
-
-// =============================================================================
-// Auto-save Manager
-// =============================================================================
-
-const AUTOSAVE_DEBOUNCE_MS = 2000;
-
-type SaveState = "idle" | "unsaved" | "saving" | "saved" | "rate-limited" | "error";
-
-class AutoSaveManager {
-  state: SaveState = "idle";
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  private savedResetTimer: ReturnType<typeof setTimeout> | null = null;
-  private saveFn: () => Promise<SaveResult>;
-
-  constructor(saveFn: () => Promise<SaveResult>) {
-    this.saveFn = saveFn;
-  }
-
-  /** Called when user makes a local edit (editor:change event) */
-  onContentChange(): void {
-    // Clear any pending timers
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    if (this.savedResetTimer !== null) {
-      clearTimeout(this.savedResetTimer);
-      this.savedResetTimer = null;
-    }
-
-    this.state = "unsaved";
-    this.updateIndicator();
-
-    // Start debounce — save after 2s of no edits
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      this.triggerSave();
-    }, AUTOSAVE_DEBOUNCE_MS);
-  }
-
-  /** Called when another client saves (NewVersion received) */
-  onNewVersion(): void {
-    // Cancel any pending save — their version is newer
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
-    if (this.savedResetTimer !== null) {
-      clearTimeout(this.savedResetTimer);
-      this.savedResetTimer = null;
-    }
-
-    this.state = "saved";
-    this.updateIndicator();
-
-    // Reset indicator after 2s
-    this.savedResetTimer = setTimeout(() => {
-      this.savedResetTimer = null;
-      if (this.state === "saved") {
-        this.state = "idle";
-        this.updateIndicator();
-      }
-    }, 2000);
-  }
-
-  /** Manual save — Ctrl+S or button click. Cancels debounce and saves immediately. */
-  saveNow(): void {
-    // Cancel debounce timer — we're saving right now
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    // Don't save if already saving (button is disabled anyway)
-    if (this.state === "saving" || this.state === "rate-limited") {
-      return;
-    }
-    this.triggerSave();
-  }
-
-  /** Clean up all timers (called when editor closes) */
-  cancel(): void {
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
-    if (this.savedResetTimer !== null) {
-      clearTimeout(this.savedResetTimer);
-      this.savedResetTimer = null;
-    }
-    this.state = "idle";
-    this.updateIndicator();
-  }
-
-  /** Execute the save and handle the result */
-  private async triggerSave(): Promise<void> {
-    this.state = "saving";
-    this.updateIndicator();
-
-    const result = await this.saveFn();
-    this.onSaveResult(result);
-  }
-
-  /** Transition state based on save outcome */
-  private onSaveResult(result: SaveResult): void {
-    if (result.ok) {
-      this.state = "saved";
-      this.updateIndicator();
-
-      // Reset to idle after 2s
-      this.savedResetTimer = setTimeout(() => {
-        this.savedResetTimer = null;
-        if (this.state === "saved") {
-          this.state = "idle";
-          this.updateIndicator();
-        }
-      }, 2000);
-    } else if (result.retryAfterMs) {
-      // Rate limited — schedule retry
-      this.state = "rate-limited";
-      this.updateIndicator();
-
-      this.retryTimer = setTimeout(() => {
-        this.retryTimer = null;
-        this.triggerSave();
-      }, result.retryAfterMs);
-    } else {
-      // Generic error — don't auto-retry (prevents infinite loops on network outage)
-      this.state = "error";
-      this.updateIndicator();
-
-      // Show error for 2s, then revert to "save •" (content is still unsaved)
-      this.savedResetTimer = setTimeout(() => {
-        this.savedResetTimer = null;
-        if (this.state === "error") {
-          this.state = "unsaved";
-          this.updateIndicator();
-        }
-      }, 2000);
-    }
-  }
-
-  /** Update the save button text/state to reflect current state */
-  updateIndicator(): void {
-    const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
-    if (!saveBtn) return;
-
-    switch (this.state) {
-      case "idle":
-        saveBtn.textContent = "save";
-        saveBtn.disabled = false;
-        break;
-      case "unsaved":
-        saveBtn.textContent = "save \u2022";
-        saveBtn.disabled = false;
-        break;
-      case "saving":
-        saveBtn.textContent = "saving\u2026";
-        saveBtn.disabled = true;
-        break;
-      case "saved":
-        saveBtn.textContent = "saved \u2713";
-        saveBtn.disabled = false;
-        break;
-      case "rate-limited":
-        saveBtn.textContent = "retry\u2026";
-        saveBtn.disabled = true;
-        break;
-      case "error":
-        saveBtn.textContent = "error!";
-        saveBtn.disabled = false;
-        break;
-    }
-  }
-}
 
 declare global {
   interface Window {
@@ -288,10 +110,11 @@ function updateStoredName(name: string | null): void {
 
 /** Check if the identity token needs refreshing (older than 24h). */
 function needsRefresh(): boolean {
-  const refreshedAt = localStorage.getItem(IDENTITY_REFRESHED_AT_KEY);
-  if (!refreshedAt) return true;
-  const elapsed = Date.now() - Number(refreshedAt);
-  return elapsed >= IDENTITY_REFRESH_INTERVAL_MS;
+  return identityNeedsRefresh(
+    localStorage.getItem(IDENTITY_REFRESHED_AT_KEY),
+    Date.now(),
+    IDENTITY_REFRESH_INTERVAL_MS,
+  );
 }
 
 /**
@@ -535,22 +358,6 @@ function initScrollShowHeader(
 }
 
 /**
- * Update header subtitle based on navigation state.
- * Shows "p2p file sharing" on initial load, or last filename as link after navigation.
- */
-function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string | null, hasHistory: boolean): void {
-  const subtitle = document.getElementById("header-subtitle");
-  if (!subtitle) return;
-
-  if (lastFilename && lastFilePath && hasHistory) {
-    // Create a link to the last file
-    subtitle.innerHTML = `// <a href="${lastFilePath}" data-nav>${lastFilename}</a>`;
-  } else {
-    subtitle.textContent = "// p2p file sharing";
-  }
-}
-
-/**
  * Update back link based on app navigation history.
  * If there's history, use SPA navigation. Otherwise, grey out but still allow browser back.
  */
@@ -622,68 +429,11 @@ let peersRefreshInterval: ReturnType<typeof setInterval> | null = null;
 // Track search debounce timer
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-/**
- * Fetch a URL and replace the innerHTML of a target element.
- * Used for partial page updates (search, pagination, tags WS refresh, peers auto-refresh).
- */
-async function fetchPartial(url: string, targetSelector: string): Promise<void> {
-  try {
-    const response = await fetch(url, {
-      headers: { "X-Partial-Request": "true" },
-    });
-    if (!response.ok) {
-      console.error("[id] fetchPartial failed:", response.status, response.statusText);
-      return;
-    }
-    const html = await response.text();
-    const target = document.querySelector(targetSelector);
-    if (target) {
-      target.innerHTML = html;
-      onPartialSwapped(targetSelector);
-    }
-  } catch (err) {
-    console.error("[id] fetchPartial error:", err);
-  }
-}
-
-/**
- * Navigate to a URL by fetching it as a partial and swapping #main content.
- * Used by [data-nav] link clicks, programmatic navigation, and popstate.
- */
-async function navigateTo(url: string, pushUrl: boolean = true): Promise<void> {
-  // Close editor before navigation
-  const app = (window as unknown as Record<string, IdApp>).idApp;
-  if (app?.collab) {
-    app.closeEditor();
-  }
-
-  try {
-    const response = await fetch(url, {
-      headers: { "X-Partial-Request": "true" },
-    });
-    if (!response.ok) {
-      console.error("[id] navigateTo failed:", response.status, response.statusText);
-      // Fallback to full page navigation
-      window.location.href = url;
-      return;
-    }
-    const html = await response.text();
-    const main = document.getElementById("main");
-    if (main) {
-      main.innerHTML = html;
-      if (pushUrl) {
-        window.history.pushState(null, "", url);
-      }
-      onMainSwapped();
-    } else {
-      // No #main element, fallback
-      window.location.href = url;
-    }
-  } catch (err) {
-    console.error("[id] navigateTo error:", err);
-    window.location.href = url;
-  }
-}
+// Navigation + partial swaps live in navigation.ts, with supersession
+// (#1462): only the most recently issued request may write the DOM, push
+// history, or run swap side effects. The swap callbacks are function
+// declarations below, hoisted, so they can be wired in here.
+const { fetchPartial, navigateTo } = createNavigation({ onPartialSwapped, onMainSwapped });
 
 /**
  * Called after #main content is swapped. Handles re-initialization of UI components
@@ -701,6 +451,10 @@ function onMainSwapped(): void {
       .then((identity) => {
         if (identity) {
           currentIdentity = identity;
+          // Codex P2 on PR #7328: if this refresh re-registered (expired
+          // token), the settings page may already have rendered the old
+          // client id — refresh the displayed id to match the new identity.
+          refreshSettingsClientId();
         }
       })
       .catch(() => {
@@ -749,6 +503,7 @@ function onMainSwapped(): void {
     // Populate display name input on settings page
     initSettingsIdentity();
   }
+  initHome();
 }
 
 /**
@@ -764,6 +519,26 @@ function onPartialSwapped(_targetSelector: string): void {
  * Initialize search debounce for file search input and show-deleted checkbox.
  * Search triggers after 300ms of inactivity; checkbox triggers immediately.
  */
+/**
+ * Current file-list query params: search + show-deleted + the #4973
+ * sort/origin controls. Every partial refresh (search debounce,
+ * show-deleted toggle, tag WebSocket events) must carry all of them, or
+ * the refresh silently drops the sort order and origin filter while the
+ * controls still show them selected (Codex review, PR #5191).
+ */
+function currentFileListParams(): URLSearchParams {
+  const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
+  const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
+  const sortSelect = document.getElementById("file-sort") as HTMLSelectElement | null;
+  const originInput = document.getElementById("file-origin") as HTMLInputElement | null;
+  const params = new URLSearchParams();
+  if (searchInput?.value) params.set("search", searchInput.value);
+  if (showDeletedCheckbox?.checked) params.set("show_deleted", "true");
+  if (sortSelect?.value) params.set("sort", sortSelect.value);
+  if (originInput?.value) params.set("origin", originInput.value);
+  return params;
+}
+
 function initSearchDebounce(): void {
   const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
   const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
@@ -773,12 +548,7 @@ function initSearchDebounce(): void {
   const doSearch = () => {
     if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
     searchDebounceTimer = setTimeout(() => {
-      const query = searchInput?.value || "";
-      const showDeleted = showDeletedCheckbox?.checked || false;
-      const params = new URLSearchParams();
-      if (query) params.set("search", query);
-      if (showDeleted) params.set("show_deleted", "true");
-      const qs = params.toString();
+      const qs = currentFileListParams().toString();
       const url = qs ? `/api/files?${qs}` : "/api/files";
       fetchPartial(url, "#file-list-content");
     }, 300);
@@ -792,12 +562,7 @@ function initSearchDebounce(): void {
     showDeletedCheckbox.addEventListener("change", () => {
       // Immediate on checkbox change (no debounce)
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-      const query = searchInput?.value || "";
-      const showDeleted = showDeletedCheckbox?.checked || false;
-      const params = new URLSearchParams();
-      if (query) params.set("search", query);
-      if (showDeleted) params.set("show_deleted", "true");
-      const qs = params.toString();
+      const qs = currentFileListParams().toString();
       const url = qs ? `/api/files?${qs}` : "/api/files";
       fetchPartial(url, "#file-list-content");
     });
@@ -828,7 +593,25 @@ function initPeersAutoRefresh(): void {
  * Populate the display name input on the settings page (if present).
  * Reads the current name from the identity state and fills the input.
  */
+/**
+ * Render the settings page client id (#1792): the stable, server-issued
+ * client id. It persists across in-site navigation because the identity
+ * is kept in localStorage; fall back to the stored value when the
+ * in-memory identity has not been populated yet. Called both when the
+ * settings page initializes and when an async identity refresh completes
+ * (re-registration after token expiry changes the id under a page that
+ * already rendered the old one — Codex P2, PR #7328).
+ */
+function refreshSettingsClientId(): void {
+  const clientIdEl = document.getElementById("client-id-value");
+  if (clientIdEl) {
+    clientIdEl.textContent = clientIdForDisplay(currentIdentity?.clientId, getStoredIdentity()?.clientId);
+  }
+}
+
 function initSettingsIdentity(): void {
+  refreshSettingsClientId();
+
   const input = document.getElementById("display-name-input") as HTMLInputElement | null;
   if (!input) return; // Not on settings page
 
@@ -868,8 +651,14 @@ async function init(): Promise<void> {
   // Initialize theme system
   initTheme();
 
+  // A program-only surface (#2146 phase 2) has no Explorer identity
+  // or tags endpoints on its listener: registering an identity or
+  // connecting the tags WebSocket there would only fail and retry
+  // forever. The world presenter (world.ts) is the whole surface.
+  const programSurface = document.querySelector("[data-world-program]") !== null;
+
   // Initialize client identity (register if needed, validate if stored)
-  currentIdentity = await ensureIdentity();
+  currentIdentity = programSurface ? null : await ensureIdentity();
 
   // Create app API
   const app: IdApp = {
@@ -915,14 +704,7 @@ async function init(): Promise<void> {
             const lastRefresh = (window as unknown as Record<string, number>).__tagRefreshTs || 0;
             if (now - lastRefresh > 500) {
               (window as unknown as Record<string, number>).__tagRefreshTs = now;
-              const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
-              const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
-              const query = searchInput?.value || "";
-              const showDeleted = showDeletedCheckbox?.checked || false;
-              const params = new URLSearchParams();
-              if (query) params.set("search", query);
-              if (showDeleted) params.set("show_deleted", "true");
-              const qs = params.toString();
+              const qs = currentFileListParams().toString();
               const url = qs ? `/api/files?${qs}` : "/api/files";
               fetchPartial(url, "#file-list-content");
             }
@@ -1011,6 +793,7 @@ async function init(): Promise<void> {
         removeBtn.className = "tag-remove-btn";
         removeBtn.textContent = "\u00d7";
         removeBtn.title = "Remove tag";
+        removeBtn.setAttribute("aria-label", `Remove tag ${label}`);
         removeBtn.onclick = (e) => {
           e.preventDefault();
           if (filename) {
@@ -1204,7 +987,7 @@ async function init(): Promise<void> {
         // Connect to collab server - editor will be initialized after receiving server doc
         updateStatus("connecting");
         const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws/collab/${docId}`;
+        const wsUrl = buildCollabWsUrl(wsProtocol, window.location.host, docId);
         console.log("[id] Connecting to WebSocket:", wsUrl);
 
         this.collab = initCollab(
@@ -1258,6 +1041,10 @@ async function init(): Promise<void> {
     },
 
     closeEditor(): void {
+      // The image browser overlay lives on document.body and holds the
+      // editor view in its closures — close it before the view is
+      // destroyed or it stays stuck over the next document (#1381).
+      closeImageBrowser();
       // Cancel auto-save timers and remove editor:change listener
       if (this.autoSave) {
         this.autoSave.cancel();
@@ -1298,8 +1085,7 @@ async function init(): Promise<void> {
       const editorContainer = document.getElementById("editor-container");
       if (!editorContainer) return { ok: false };
 
-      const filenameEncoded = editorContainer.dataset.docId;
-      const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+      const filename = resolveSaveFilename(editorContainer.dataset);
       const hash = editorContainer.dataset.hash;
 
       if (!filename || !hash) {
@@ -1589,22 +1375,34 @@ async function init(): Promise<void> {
       if (this.autoSave) {
         this.autoSave.saveNow();
       } else if (this.collab?.editor) {
-        // Fallback: direct save if AutoSaveManager not yet initialized
-        this.saveFile().then((result) => {
-          const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
-          if (!btn) return;
-          if (result.ok) {
-            btn.textContent = "saved \u2713";
-            setTimeout(() => {
-              btn.textContent = "save";
-            }, 2000);
-          } else if (!result.retryAfterMs) {
+        // Fallback: direct save if AutoSaveManager not yet initialized.
+        // saveFile() resolves with { ok: false } for handled failures, but a
+        // rejection must not go unhandled (#1494): surface it as a save error.
+        this.saveFile()
+          .then((result) => {
+            const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
+            if (!btn) return;
+            if (result.ok) {
+              btn.textContent = "saved \u2713";
+              setTimeout(() => {
+                btn.textContent = "save";
+              }, 2000);
+            } else if (!result.retryAfterMs) {
+              btn.textContent = "error!";
+              setTimeout(() => {
+                btn.textContent = "save";
+              }, 2000);
+            }
+          })
+          .catch((err: unknown) => {
+            console.error("[id] Save error:", err);
+            const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
+            if (!btn) return;
             btn.textContent = "error!";
             setTimeout(() => {
               btn.textContent = "save";
             }, 2000);
-          }
-        });
+          });
       }
     },
   };
@@ -1684,7 +1482,7 @@ async function init(): Promise<void> {
 
   // Ctrl+S to save, Enter to submit tags
   document.addEventListener("keydown", (event: KeyboardEvent) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+    if (isSaveShortcut(event)) {
       event.preventDefault();
       if (app.collab?.editor && app.autoSave) {
         app.autoSave.saveNow();
@@ -1738,7 +1536,7 @@ async function init(): Promise<void> {
   console.log("[id] Web interface initialized");
 
   // Connect tags WebSocket for live updates (global — stays connected across pages)
-  app.connectTagsWs();
+  if (!programSurface) app.connectTagsWs();
 
   // Initialize back button on main page
   updateBackLink(app.navHistory, app.currentPath);
@@ -1759,6 +1557,7 @@ async function init(): Promise<void> {
   initPeersAutoRefresh();
   // Populate display name on settings page (if direct navigation)
   initSettingsIdentity();
+  initHome();
 
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById("editor-container");

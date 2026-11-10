@@ -21,7 +21,7 @@ Open http://localhost:3000 in your browser (default port).
 
 ## Features
 
-- **File Browser**: HTMX-powered listing with search, filtering, bulk operations
+- **File Browser**: Server-rendered listing with client-side navigation (Datastar SDK + TypeScript), search, filtering, bulk operations
 - **Collaborative Editor**: Real-time text editing using ProseMirror + prosemirror-collab
 - **Syntax Highlighting**: Language-aware code coloring via Shiki (50+ languages)
 - **Line Numbers**: Toggleable line numbers for code files (Alt+L)
@@ -43,7 +43,7 @@ Open http://localhost:3000 in your browser (default port).
 │                      Web Interface                          │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │
-│  │   Axum      │    │   HTMX      │    │ ProseMirror │      │
+│  │   Axum      │    │  Datastar   │    │ ProseMirror │      │
 │  │   Router    │───►│   Views     │───►│   Editor    │      │
 │  └─────────────┘    └─────────────┘    └─────────────┘      │
 │         │                  │                  │             │
@@ -66,7 +66,7 @@ Open http://localhost:3000 in your browser (default port).
 
 The Nix dev shell provides all required tools:
 
-- Rust 1.89.0
+- Rust 1.99.0
 - Bun (for TypeScript bundling)
 - TypeScript
 - Chromium and Firefox (for E2E tests)
@@ -244,7 +244,7 @@ Three DaisyUI terminal-inspired themes with `#000000` black backgrounds. Switch 
 | `/edit/{hash}`        | GET    | Editor/viewer for file by hash      |
 | `/file/{name}`        | GET    | Editor/viewer for file by name      |
 | `/blob/{hash}`        | GET    | Raw blob content with Content-Type  |
-| `/api/files`          | GET    | File list (HTMX partial)            |
+| `/api/files`          | GET    | File list (HTML partial)            |
 | `/api/save`           | POST   | Save file content                   |
 | `/api/new`            | POST   | Create new file                     |
 | `/api/rename`         | POST   | Rename file (with optional archive) |

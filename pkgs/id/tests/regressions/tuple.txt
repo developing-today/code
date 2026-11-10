@@ -1,0 +1,24 @@
+# Known-bad tuple inputs, replayed on every run. See README.md for the format.
+# Each line: area, input (two elements separated by a space), expected result.
+
+# "a" is not a prefix of "a\0b": a NUL inside a value must not end the field early.
+tuple	s:a s:a\0b	ok
+tuple	s:a\0b s:a	ok
+tuple	s:a s:a\0	ok
+tuple	s:a\0 s:a\0\0	ok
+tuple	s:a\0b s:a\0\0	ok
+# The empty string and a lone NUL.
+tuple	s: s:\0	ok
+tuple	s:\0 s:\0\0	ok
+# Values that differ only after a shared prefix.
+tuple	s:ab s:a\0b	ok
+tuple	s:a\x01 s:a	ok
+tuple	s:\xc3\xa9 s:e	ok
+# The same cases for byte strings.
+tuple	b:a b:a\0b	ok
+tuple	b:\0 b:\0\0	ok
+tuple	b:a\0 b:a\0\0	ok
+tuple	b:\0\0 b:\0	ok
+tuple	b:\xff b:\xff\0	ok
+# Mixed element types: bytes sort before strings.
+tuple	b:a s:a	ok

@@ -2,35 +2,56 @@ package mcpclient
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // StdioTransport runs an MCP server as a child process and speaks
 // newline-delimited JSON-RPC over its stdin/stdout.
 type StdioTransport struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
+	// cmd is nil for a child this process adopted from a predecessor.
+	cmd   *exec.Cmd
+	pid   int
+	stdin *os.File
+	// stdout reads frames from outR. Replaced on adoption, when bytes the
+	// predecessor had read but not framed come first.
 	stdout *bufio.Reader
 	// outR and errR are the parent's read ends, closed by Close once the
 	// child is gone. Ours rather than cmd.StdoutPipe/StderrPipe: see NewStdio.
 	outR, errR *os.File
 	// stderrDone is closed when the child's stderr has been read to EOF.
 	stderrDone chan struct{}
+	stderrTo   io.Writer
 
+	// writeMu serialises frames on stdin. Send holds it while blocked in a
+	// write, so Close must not wait for it: closed is an atomic instead, and
+	// Close sets it and then closes stdin, which is what releases a blocked
+	// write.
 	writeMu sync.Mutex
-	closeMu sync.Mutex
-	closed  bool
+	closed  atomic.Bool
+	// detached is set while another process owns the child's pipes; see
+	// Detach. An atomic, like closed: Recv reads it under readMu while
+	// Detach sets it without holding readMu.
+	detached atomic.Bool
+	// readMu is held by Recv, so Detach can wait out a read in progress.
+	readMu sync.Mutex
+	// pending is the start of a frame whose end had not arrived when a read
+	// was interrupted, kept so that a handoff does not lose it.
+	pending []byte
 
 	label   string
 	stderr  *ringBuffer
@@ -53,6 +74,11 @@ type StdioOptions struct {
 	// StdinGrace and TermGrace are Close's waits after closing stdin and
 	// after SIGTERM. Zero means defaults.StdioStdinGrace / StdioTermGrace.
 	StdinGrace, TermGrace time.Duration
+	// Context, when set, bounds a nix: program-spec resolution at spawn:
+	// the caller's startup budget cancels the build instead of the build
+	// outliving the budget on its own timeout and launching a child whose
+	// handshake context has already expired. Nil means context.Background.
+	Context context.Context
 }
 
 // maxLine bounds a single JSON-RPC frame. MCP servers such as
@@ -64,7 +90,24 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	if opts.Command == "" {
 		return nil, errors.New("stdio transport: empty command")
 	}
-	cmd := exec.Command(opts.Command, opts.Args...)
+	// A nix: program spec resolves once, here at spawn, to the store
+	// path that actually runs (progspec, #1921): the child is the built
+	// program, never a nix process. A plain command passes through
+	// untouched, exactly as before. A resolution failure names the spec
+	// and refuses the launch rather than falling back to PATH.
+	command := opts.Command
+	if progspec.IsNix(command) {
+		ctx := opts.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resolved, err := progspec.ResolvePathInDir(ctx, command, opts.Cwd)
+		if err != nil {
+			return nil, fmt.Errorf("stdio transport: %w", err)
+		}
+		command = resolved
+	}
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Cwd
 
 	env := []string{}
@@ -79,42 +122,51 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	// (chrome-devtools-mcp forks a browser).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	stdin, err := cmd.StdinPipe()
+	// Plain pipes throughout, not cmd.StdinPipe/StdoutPipe/StderrPipe. Those
+	// are closed by cmd.Wait as soon as the child exits, which races the
+	// readers: a child that prints why it is refusing to start and exits had
+	// its stderr thrown away ("read |0: file already closed", stderr empty)
+	// about one start in twenty. With our own pipes the readers drain to EOF,
+	// and a handoff can pass the ends to another process.
+	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	// Plain pipes, not cmd.StdoutPipe/StderrPipe. Those are closed by
-	// cmd.Wait as soon as the child exits, which races the readers: a child
-	// that prints why it is refusing to start and exits had its stderr
-	// thrown away ("read |0: file already closed", stderr empty) about one
-	// start in twenty. With our own pipes the readers drain to EOF.
 	outR, outW, err := os.Pipe()
 	if err != nil {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return nil, err
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		outR.Close()
-		outW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return nil, err
 	}
-	cmd.Stdout, cmd.Stderr = outW, errW
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, outW, errW
 	startErr := cmd.Start()
 	// The child holds its own copies; ours must go, or EOF never arrives.
-	outW.Close()
-	errW.Close()
+	_ = stdinR.Close()
+	_ = outW.Close()
+	_ = errW.Close()
 	if startErr != nil {
-		outR.Close()
-		errR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 		return nil, fmt.Errorf("start %s: %w", opts.Command, startErr)
 	}
 
 	t := &StdioTransport{
 		cmd:        cmd,
-		stdin:      stdin,
+		pid:        cmd.Process.Pid,
+		stdin:      stdinW,
 		stdout:     bufio.NewReaderSize(outR, 1<<20),
 		outR:       outR,
 		errR:       errR,
+		stderrTo:   opts.StderrTo,
 		label:      strings.TrimSpace(opts.Command + " " + strings.Join(opts.Args, " ")),
 		stderr:     newRingBuffer(64 << 10),
 		exited:     make(chan struct{}),
@@ -122,15 +174,7 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 		stdinGrace: cmp.Or(opts.StdinGrace, defaults.StdioStdinGrace),
 		termGrace:  cmp.Or(opts.TermGrace, defaults.StdioTermGrace),
 	}
-
-	go func() {
-		defer close(t.stderrDone)
-		var w io.Writer = t.stderr
-		if opts.StderrTo != nil {
-			w = io.MultiWriter(t.stderr, opts.StderrTo)
-		}
-		_, _ = io.Copy(w, errR)
-	}()
+	t.startStderr()
 	go func() {
 		t.waitErr = cmd.Wait()
 		close(t.exited)
@@ -139,16 +183,36 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	return t, nil
 }
 
+// startStderr copies the child's stderr into the ring buffer until the pipe
+// is interrupted or closed.
+func (t *StdioTransport) startStderr() {
+	t.stderrDone = make(chan struct{})
+	go func(done chan struct{}) {
+		defer close(done)
+		var w io.Writer = t.stderr
+		if t.stderrTo != nil {
+			w = io.MultiWriter(t.stderr, t.stderrTo)
+		}
+		_, _ = io.Copy(w, t.errR)
+	}(t.stderrDone)
+}
+
 // Send writes one frame.
 func (t *StdioTransport) Send(ctx context.Context, msg []byte) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	if t.closed {
+	if t.closed.Load() || t.detached.Load() {
 		return errors.New("stdio transport closed")
 	}
-	if _, err := t.stdin.Write(append(msg, '\n')); err != nil {
+	frame := append(msg, '\n')
+	n, err := t.stdin.Write(frame)
+	if err != nil {
 		return fmt.Errorf("write to %s: %w (stderr: %s)", t.label, err, t.lastWords(400))
 	}
+	if n != len(frame) {
+		return fmt.Errorf("write to %s: %w", t.label, io.ErrShortWrite)
+	}
+	markToolCallDispatched(ctx, msg)
 	return nil
 }
 
@@ -176,8 +240,15 @@ func (t *StdioTransport) lastWords(n int) string {
 
 // Recv reads one frame, skipping any non-JSON noise a server prints to stdout.
 func (t *StdioTransport) Recv() ([]byte, error) {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	if t.detached.Load() {
+		// A read loop that was waiting on readMu while Detach took the
+		// pipes must not consume frames the successor owns (#2842).
+		return nil, errors.New("stdio transport is detached")
+	}
 	for {
-		line, err := readLine(t.stdout)
+		line, err := t.readLine()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				// The reason a server died is usually its last words on
@@ -201,19 +272,22 @@ func (t *StdioTransport) Recv() ([]byte, error) {
 	}
 }
 
-func readLine(r *bufio.Reader) ([]byte, error) {
-	var buf []byte
+// readLine returns the next newline-terminated line. Bytes read but not yet
+// returned stay in pending, so an interrupted read loses nothing.
+func (t *StdioTransport) readLine() ([]byte, error) {
 	for {
-		chunk, isPrefix, err := r.ReadLine()
-		if err != nil {
-			return nil, err
+		if i := bytes.IndexByte(t.pending, '\n'); i >= 0 {
+			line := t.pending[:i]
+			t.pending = t.pending[i+1:]
+			return line, nil
 		}
-		buf = append(buf, chunk...)
-		if len(buf) > maxLine {
+		if len(t.pending) > maxLine {
 			return nil, fmt.Errorf("frame exceeds %d bytes", maxLine)
 		}
-		if !isPrefix {
-			return buf, nil
+		chunk, err := t.stdout.ReadSlice('\n')
+		t.pending = append(t.pending, chunk...)
+		if err != nil && err != bufio.ErrBufferFull {
+			return nil, err
 		}
 	}
 }
@@ -249,19 +323,18 @@ func waitOrTimeout(ch <-chan struct{}, d time.Duration) <-chan struct{} {
 // children (chrome-devtools-mcp's browser) end with it.
 // https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#stdio
 func (t *StdioTransport) Close() error {
-	t.closeMu.Lock()
-	if t.closed {
-		t.closeMu.Unlock()
+	// The flag is set before stdin is closed, so it is already visible to any
+	// Send the close wakes, and only the first Close goes on to tear down.
+	if !t.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	t.closed = true
-	t.closeMu.Unlock()
 
+	// Closing stdin is also what unblocks a Send stuck in a full pipe.
 	_ = t.stdin.Close()
-	if t.cmd.Process == nil {
+	if t.pid == 0 {
 		return nil
 	}
-	pgid := -t.cmd.Process.Pid
+	pgid := -t.pid
 	select {
 	case <-t.exited:
 	case <-time.After(t.stdinGrace):
@@ -273,8 +346,8 @@ func (t *StdioTransport) Close() error {
 			<-waitOrTimeout(t.exited, defaults.StdioKillWait)
 		}
 	}
-	t.outR.Close()
-	t.errR.Close()
+	_ = t.outR.Close()
+	_ = t.errR.Close()
 	return nil
 }
 
@@ -285,12 +358,7 @@ func (t *StdioTransport) Info() string { return t.label }
 func (t *StdioTransport) Stderr(n int) string { return t.stderr.Tail(n) }
 
 // PID returns the child process id (0 if not started).
-func (t *StdioTransport) PID() int {
-	if t.cmd.Process == nil {
-		return 0
-	}
-	return t.cmd.Process.Pid
-}
+func (t *StdioTransport) PID() int { return t.pid }
 
 // ringBuffer keeps the last n bytes written to it.
 type ringBuffer struct {

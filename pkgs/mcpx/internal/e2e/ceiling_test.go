@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 	"io"
 	"net/http"
 	"os"
@@ -97,7 +98,7 @@ func TestV1CannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 			t.Fatal(err)
 		}
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		var doc map[string]any
 		_ = json.Unmarshal(b, &doc)
 		if resp.StatusCode != http.StatusOK {
@@ -116,7 +117,7 @@ func TestV1CannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !strings.Contains(string(b), `"value":"propose"`) {
 		t.Errorf("GET autonomy.max should report propose: %s", b)
 	}
@@ -133,7 +134,7 @@ func TestTheCeilingCannotBeRaisedAtRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var put map[string]any
 	_ = json.Unmarshal(b, &put)
 	if put["applied"] != false || put["restartRequired"] != true {
@@ -262,7 +263,7 @@ func TestRepairCannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var got callErrorDoc
 	if err := json.Unmarshal(b, &got); err != nil || resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status %d: %v\n%s", resp.StatusCode, err, b)
@@ -270,18 +271,17 @@ func TestRepairCannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 	if len(got.Diagnostics) != 0 {
 		t.Errorf("repair.autonomy run past autonomy.max off still attached diagnostics:\n%s", b)
 	}
-	if !strings.HasPrefix(got.Error, "mcp error -32602") {
-		t.Errorf("the server's own error should still come back:\n%s", b)
+	// Phase 2 of #1481: the refusal is detected by mcpx's own argument
+	// validation, so the error that comes back unexplained is the
+	// validator's -32602 headline, not a server answer.
+	if !strings.HasPrefix(got.Error, "Invalid params") {
+		t.Errorf("the refusal's own error should still come back:\n%s", b)
 	}
 }
 
 func lookBun(t *testing.T) string {
 	t.Helper()
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("bun is not installed")
-	}
-	return bun
+	return testsupport.RequireBinary(t, "bun")
 }
 
 func runBun(t *testing.T, bun string, e *env, file string, extra ...string) string {

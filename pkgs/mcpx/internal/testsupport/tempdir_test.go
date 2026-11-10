@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // mcpx finds config, scripts and recipes by walking up from the working
@@ -36,5 +36,25 @@ func TestTempDirIsNeverInsideHome(t *testing.T) {
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		t.Errorf("TempDir must still be a usable directory: %v", err)
+	}
+}
+
+// SocketDir must stay short even when TMPDIR is a long, deeply nested
+// directory (a nix sandbox build's is): the whole point is that a socket
+// bound inside it fits Darwin's 104-byte sockaddr_un limit (#434).
+func TestSocketDirStaysShortUnderALongTmpDir(t *testing.T) {
+	long := filepath.Join(os.TempDir(), strings.Repeat("a-very-long-directory-name/", 6))
+	t.Setenv("TMPDIR", long)
+	t.Setenv("GOTMPDIR", long)
+
+	dir := testsupport.SocketDir(t)
+	if strings.HasPrefix(dir, long) {
+		t.Errorf("SocketDir returned %q, inside the long TMPDIR %q", dir, long)
+	}
+	if n := len(filepath.Join(dir, "daemon.sock")); n > 100 {
+		t.Errorf("a daemon.sock inside SocketDir is %d bytes, over the 100-byte unix socket ceiling", n)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Errorf("SocketDir must be a usable directory: %v", err)
 	}
 }

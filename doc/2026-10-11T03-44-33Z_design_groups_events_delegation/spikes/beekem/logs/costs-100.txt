@@ -1,0 +1,33 @@
+## N = 100 (committer: member 0; receiver: member 1); fill pass: members 1..=99 of 99
+
+| Commit | Samples | Bytes per op (one copy) | Committer egress, unicast to n-1 | Committer CPU median (µs) | Receiver merge median (µs) |
+|---|---|---|---|---|---|
+| add (during build) | 100 | 264 | 26104 | 20 | 3 |
+| update, first after build | 1 | 13664 | 1352736 | 5965 | 104 |
+| update, fill pass | 99 | 8240 | 815792 | 3713 | 67 |
+| update, fill pass, last 10% | 11 | 3070 | 303912 | 943 | 39 |
+| update, steady state (20 random committers) | 20 | 2794 | 276606 | 617 | 32 |
+| remove (steady state) | 1 | 464 | 45936 | 51 | 13 |
+| update, first after remove | 1 | 3264 | 323136 | 1328 | 49 |
+| update, second after remove | 1 | 3328 | 329472 | 1325 | 48 |
+| add (steady state) | 1 | 264 | 26136 | 43 | 13 |
+| update, first after add | 1 | 3536 | 350064 | 1626 | 104 |
+
+Signature verification (receiver, steady-state ops), median: 48 µs
+Fill pass total bytes (99 ops): 815792
+
+### Receiver state (member 1)
+ops in graph: 225; members: 100
+serialized state right after creation (adds + first update): 76784 B
+total serialized state at end of run: 990688 B
+  op bytes (all ops, wire form): 922560 B
+  owner_sks: 1800 B
+  residual (tree, graph index, cached keys): 66328 B
+
+### Joiner payload
+replica copy (with_new_owner, serialized): 988960 B
+op log alone (replayed by joiner): 922560 B
+
+### Leak check (committer's replica, serialized as-is: 1004704 B)
+sender's own leaf secret key present: true
+epoch keys present: 123 of 123

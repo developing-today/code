@@ -52,10 +52,7 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use iroh::{
-    EndpointAddr,
-    endpoint::{Endpoint, RelayMode, presets},
-};
+use iroh::{EndpointAddr, endpoint::Endpoint};
 use iroh_base::EndpointId;
 use iroh_blobs::{
     ALPN as BLOBS_ALPN, BlobFormat, Hash,
@@ -73,6 +70,8 @@ use crate::{
     get_serve_info, is_node_id, load_or_create_keypair, open_store, parse_put_spec,
     parse_stdin_items, read_input,
 };
+
+const PUT_FINALIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 
 /// Add `data` to `store` as a raw blob; returns its hash and a guard that keeps
 /// the blob protected until dropped (hold it until the blob has been named).
@@ -112,7 +111,7 @@ pub async fn push_and_name(
     name: &str,
     hash: Hash,
 ) -> Result<()> {
-    let blobs_conn = endpoint.connect(target.clone(), BLOBS_ALPN).await?;
+    let blobs_conn = crate::connectivity::connect(endpoint, target.clone(), BLOBS_ALPN).await?;
     let push_request = PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
     store
         .remote()
@@ -124,23 +123,28 @@ pub async fn push_and_name(
              server's `--allow-node` or `.iroh-allowed`)",
         )?;
 
-    let meta_conn = endpoint.connect(target, META_ALPN).await?;
+    let meta_conn = crate::connectivity::connect(endpoint, target, META_ALPN).await?;
     let req = MetaRequest::Put {
         filename: name.to_owned(),
         hash,
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
-    let outcome = loop {
-        match request_over(&meta_conn, &req).await {
-            Ok(MetaResponse::Error { message })
-                if crate::fileops::is_blob_missing_message(&message)
-                    && std::time::Instant::now() < deadline =>
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let outcome = crate::connectivity::within(
+        PUT_FINALIZATION_TIMEOUT,
+        "registering the blob name",
+        async {
+            loop {
+                match request_over(&meta_conn, &req).await? {
+                    MetaResponse::Error { message }
+                        if crate::fileops::is_blob_missing_message(&message) =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    response => return Ok(response),
+                }
             }
-            other => break other,
-        }
-    };
+        },
+    )
+    .await;
     meta_conn.close(0u32.into(), b"done");
     blobs_conn.close(0u32.into(), b"done");
     match expect_ok(outcome?)? {
@@ -150,9 +154,19 @@ pub async fn push_and_name(
     }
 }
 
+/// Trim a name typed at the forgiving CLI surface before FileOps sees it.
+///
+/// FileOps stores names verbatim and refuses padding (#4102 / design #4766
+/// Phase 3), so a stray leading or trailing space is treated as a typing slip
+/// here rather than failing the command.
+fn trim_surface_name(name: &str) -> &str {
+    name.trim()
+}
+
 /// Store `data` under `name`: on the local server if one is running, otherwise
 /// directly in the local stores (with the same metadata a server would record).
 async fn put_named(name: &str, data: Vec<u8>) -> Result<()> {
+    let name = trim_surface_name(name);
     if let Some(serve_info) = get_serve_info().await {
         let store = open_store(true).await?;
         let store_handle = store.as_store();
@@ -216,7 +230,8 @@ pub async fn cmd_put_hash(source: &str) -> Result<()> {
 
         let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-        let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+        let blobs_conn =
+            crate::connectivity::connect(&endpoint, endpoint_addr.clone(), BLOBS_ALPN).await?;
         let push_request =
             PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
         store_handle
@@ -333,11 +348,12 @@ pub async fn cmd_put_one_remote(
     let (hash, _guard) = add_raw(&store_handle, afs::read(&path_buf).await?).await?;
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
-    if no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
-    let endpoint = builder.bind().await?;
+    let endpoint = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+    )
+    .secret_key(client_key)
+    .bind()
+    .await?;
 
     let result = push_and_name(
         &store_handle,
@@ -374,6 +390,16 @@ pub async fn cmd_put_one_remote(
 /// # Errors
 ///
 /// Collects errors from individual puts and reports them all at the end.
+/// Whether a lone `put` argument targets an existing file — either
+/// directly (`path`) or through a `path:name` spec, whose literal string
+/// never exists as a path. The stdin auto-detection in [`cmd_put_multi`]
+/// relies on this: an existing file means the argument is a file put,
+/// not a name to store stdin content under (#4152).
+fn put_spec_targets_existing_file(spec: &str) -> bool {
+    let (path, _) = parse_put_spec(spec);
+    PathBuf::from(path).exists()
+}
+
 pub async fn cmd_put_multi(
     files: Vec<String>,
     content_mode: bool,
@@ -410,9 +436,10 @@ pub async fn cmd_put_multi(
 
     // Auto-detect stdin content: if exactly one arg (the name) and stdin is piped
     if items.len() == 1 && !std::io::stdin().is_terminal() && !from_stdin {
-        // Check if the item looks like a file path that exists
-        let path = PathBuf::from(&items[0]);
-        if !path.exists() {
+        // Check if the item looks like a file path that exists. A
+        // `path:name` spec never exists as a literal path, so the check
+        // goes through the spec's path part (#4152).
+        if !put_spec_targets_existing_file(&items[0]) {
             // Doesn't exist as a file, treat as name and read content from stdin
             let name = &items[0];
             if hash_only {
@@ -461,6 +488,14 @@ mod tests {
     }
 
     #[test]
+    fn cli_put_name_is_trimmed_before_fileops() {
+        for input in [" report.txt", "report.txt ", "\treport.txt\n"] {
+            assert_eq!(trim_surface_name(input), "report.txt");
+        }
+        assert_eq!(trim_surface_name("my report.txt"), "my report.txt");
+    }
+
+    #[test]
     fn test_parse_put_spec_integration() {
         // Simple path
         let (path, name) = parse_put_spec("file.txt");
@@ -471,6 +506,24 @@ mod tests {
         let (path, name) = parse_put_spec("file.txt:custom");
         assert_eq!(path, "file.txt");
         assert_eq!(name, Some("custom"));
+    }
+
+    #[test]
+    fn test_put_spec_targets_existing_file() {
+        // Missing files are not file targets, with or without a name.
+        assert!(!put_spec_targets_existing_file("no-such-file-4152.txt"));
+        assert!(!put_spec_targets_existing_file(
+            "no-such-file-4152.txt:custom"
+        ));
+        // An existing file is a file target plain and as `path:name` —
+        // the regression in #4152 was the literal spec string being
+        // checked, which a `path:name` spec can never satisfy.
+        let file = std::env::temp_dir().join("id-put-spec-targets-existing-file-test.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let plain = file.to_str().unwrap().to_string();
+        assert!(put_spec_targets_existing_file(&plain));
+        assert!(put_spec_targets_existing_file(&format!("{plain}:custom")));
+        std::fs::remove_file(&file).ok();
     }
 
     #[tokio::test]

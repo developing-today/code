@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // The era probe.
@@ -182,6 +182,7 @@ func (c *Client) judge(resp *rpcResponse, tried map[string]int) (verdict, string
 	}
 	c.metaVersion = chosen
 	c.Negotiated = chosen
+	c.negotiated.Store(chosen)
 	c.ServerInfo = dr.Meta.ServerInfo
 	c.Capabilities = dr.Capabilities
 	c.Instructions = dr.Instructions

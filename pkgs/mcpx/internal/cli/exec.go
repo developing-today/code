@@ -9,7 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
 	"net/http"
 	"net/url"
@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 )
 
 // execOptions is what the exec and run commands resolved from their flags,
@@ -73,6 +73,66 @@ func (a *App) runsRemotely(c *Client, where string) (bool, error) {
 	}
 }
 
+// refuseIfUnready is the check a local run passes before it starts. The daemon
+// checks what it is asked to run, but a script run here is started by this
+// process, and a script that starts and then meets a server waiting for a
+// secret fails part way through: the failure the secrets check exists to
+// prevent.
+//
+// The text checked is everything the run executes: the snippet with its prefix
+// and suffix, or the file, and the phases that run around either. A file that
+// cannot be found or read is left to the run, which reports the error itself.
+func (a *App) refuseIfUnready(ctx context.Context, c *Client, inline bool, shape scriptShape, args []string) error {
+	var parts []string
+	if inline {
+		parts = append(parts, shape.inlineSource(args))
+	} else if len(args) > 0 {
+		file, err := resolveScript(args[0])
+		if err != nil {
+			return nil
+		}
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return nil
+		}
+		parts = append(parts, string(b))
+	}
+	parts = append(parts, shape.before...)
+	parts = append(parts, shape.onSuccess...)
+	parts = append(parts, shape.onError...)
+	if !inline {
+		parts = append(parts, shape.prefix...)
+		parts = append(parts, shape.suffix...)
+	}
+
+	raw, err := c.Do(ctx, http.MethodPost, "/v1/preflight", mustMarshal(map[string]string{
+		"source": strings.Join(parts, "\n"),
+	}))
+	if err != nil {
+		return err
+	}
+	var rep struct {
+		Ready   bool `json:"ready"`
+		Missing []struct {
+			Server  string   `json:"server"`
+			Secrets []string `json:"secrets"`
+		} `json:"missing"`
+		Requests []string `json:"requests"`
+	}
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		return err
+	}
+	if rep.Ready {
+		return nil
+	}
+	waiting := make([]string, 0, len(rep.Missing))
+	for _, m := range rep.Missing {
+		waiting = append(waiting, m.Server+" needs "+strings.Join(m.Secrets, ", "))
+	}
+	return fmt.Errorf("the script was not started: %s. Give each value with `mcpx secrets set <NAME>`; "+
+		"requests %s wait for them", strings.Join(waiting, "; "), strings.Join(rep.Requests, ", "))
+}
+
 // artifactOptions turns the resolved flags into the wire form.
 func (e execOptions) artifactOptions(cwd string) *execsvc.ArtifactOptions {
 	if e.ArtifactsDir == "" && e.Delivery == "" {
@@ -87,11 +147,9 @@ func (e execOptions) artifactOptions(cwd string) *execsvc.ArtifactOptions {
 
 // localStore opens the daemon's artifact store from this side.
 //
-// The same directory, not a copy. When the daemon is on this machine the
-// store is a shared SQLite index in WAL mode and a tree of blobs, so the CLI
-// reading it sees exactly what the daemon wrote -- and can hardlink a blob
-// into an output directory rather than fetching its own copy of bytes that
-// are already here.
+// When the daemon is on this machine the store is a shared SQLite index in
+// WAL mode and a tree of blobs. The CLI can read those blobs directly and
+// copy them into an output directory without fetching them back over a socket.
 func (a *App) localStore() (*artifacts.Store, error) {
 	set := a.Settings()
 	if !set.Bool("artifacts.enabled") {
@@ -101,6 +159,8 @@ func (a *App) localStore() (*artifacts.Store, error) {
 	return artifacts.Open(artifacts.Options{
 		Dir:      filepath.Join(paths.State, "artifacts"),
 		TTL:      set.Duration("artifacts.ttl"),
+		IdleTTL:  set.Duration("artifacts.idleTtl"),
+		MaxAge:   set.Duration("artifacts.maxAge"),
 		MaxBytes: set.Bytes("artifacts.maxBytes"),
 		Quota:    set.Bytes("artifacts.quota"),
 	})
@@ -115,10 +175,13 @@ func (a *App) localStore() (*artifacts.Store, error) {
 func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Service {
 	set := a.Settings()
 	lim := execsvc.DefaultLimits()
+	lim.Interpreter = set.String("script.interpreter")
+	lim.CwdPolicy = set.String("script.cwd")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
+	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 	return &execsvc.Service{
 		Store: store,
 		// The script runs in this process's machine, and the daemon whose
@@ -158,7 +221,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	sc := bufio.NewScanner(resp.Body)
 	// The same ceiling the daemon writes with, rather than a second number
 	// that happens to be larger today.
@@ -167,7 +230,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 	pending := map[string]*os.File{}
 	defer func() {
 		for _, f := range pending {
-			f.Close()
+			_ = f.Close()
 		}
 	}()
 	for sc.Scan() {
@@ -184,7 +247,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 		}
 		// Frames are echoed as they arrive when the caller asked for a
 		// stream: that is what it asked for.
-		fmt.Fprintln(os.Stdout, line)
+		_, _ = fmt.Fprintln(os.Stdout, line)
 	}
 	return sc.Err()
 }
@@ -243,22 +306,54 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 			return nil
 		}
 		delete(pending, f.ID)
-		if err := w.Close(); err != nil {
-			return err
-		}
+		stagedPath := w.Name()
+		defer func() {
+			_ = w.Close()
+			_ = os.Remove(stagedPath)
+		}()
 		name := "artifact"
+		match := -1
 		for i := range res.Artifacts {
 			if res.Artifacts[i].ID == f.ID {
 				name = res.Artifacts[i].Name
-				dest := filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(name))
-				if err := os.Rename(w.Name(), dest); err != nil {
-					return err
-				}
-				res.Artifacts[i].Path = dest
-				return nil
+				match = i
+				break
 			}
 		}
-		return os.Rename(w.Name(), filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(name)))
+		// Never overwrite: a second artifact whose name sanitises to the
+		// same file is suffixed, exactly as Store.Export does (#1605).
+		// Renaming onto the bare sanitised name silently destroyed the
+		// first artifact's body and left both Path fields pointing at
+		// the one surviving file. The claim is held across the copy
+		// (#4253): the staged temp is copied into the claimed name, so a
+		// destination that appears in the meantime is never replaced.
+		dest, claim, err := artifacts.ClaimPath(eo.ArtifactsDir, name)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Seek(0, io.SeekStart); err != nil {
+			_ = claim.Close()
+			_ = os.Remove(dest)
+			return err
+		}
+		if _, err := io.Copy(claim, w); err != nil {
+			_ = claim.Close()
+			_ = os.Remove(dest)
+			return err
+		}
+		if err := w.Close(); err != nil {
+			_ = claim.Close()
+			_ = os.Remove(dest)
+			return err
+		}
+		if err := claim.Close(); err != nil {
+			_ = os.Remove(dest)
+			return err
+		}
+		if match >= 0 {
+			res.Artifacts[match].Path = dest
+		}
+		return nil
 	}
 	return nil
 }
@@ -275,10 +370,10 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		}
 	default:
 		for _, e := range res.Emits {
-			fmt.Fprintln(os.Stdout, string(e))
+			_, _ = fmt.Fprintln(os.Stdout, string(e))
 		}
 		if res.Stdout != "" {
-			fmt.Fprint(os.Stdout, res.Stdout)
+			_, _ = fmt.Fprint(os.Stdout, res.Stdout)
 		}
 		a.reportArtifacts(res)
 	}
@@ -328,13 +423,14 @@ func (a *App) fetchArtifacts(res *execsvc.Result, eo execOptions) error {
 				return gerr
 			}
 			body, err = io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if err != nil {
 				return err
 			}
 		}
-		dest := filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(art.Name))
-		if err := writeNew(dest, body); err != nil {
+		// Never overwrite, same rule as the streaming path (#1605).
+		dest, err := writeNew(eo.ArtifactsDir, art.Name, body)
+		if err != nil {
 			return err
 		}
 		art.Path = dest
@@ -342,22 +438,26 @@ func (a *App) fetchArtifacts(res *execsvc.Result, eo execOptions) error {
 	return nil
 }
 
-// writeNew writes through a temporary name so a failure leaves nothing that
-// looks finished.
-func writeNew(dest string, body []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".incoming-*")
+// writeNew delivers body into dir under name without ever overwriting,
+// and returns the path written. The name is claimed with ClaimPath and the
+// body is written into the claim itself (#4253), so the name stays taken
+// for the whole write; a failure removes the claimed name, leaving
+// nothing that looks finished.
+func writeNew(dir, name string, body []byte) (string, error) {
+	dest, claim, err := artifacts.ClaimPath(dir, name)
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(body); err != nil {
-		tmp.Close()
-		return err
+	if _, err := claim.Write(body); err != nil {
+		_ = claim.Close()
+		_ = os.Remove(dest)
+		return "", err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	if err := claim.Close(); err != nil {
+		_ = os.Remove(dest)
+		return "", err
 	}
-	return os.Rename(tmp.Name(), dest)
+	return dest, nil
 }
 
 // reportArtifacts tells the person at the terminal what came back.
@@ -406,6 +506,7 @@ func (c *Client) stream(ctx context.Context, method, path string, body any, acce
 	// the work does. The client's own timeout would cut it off mid-run.
 	hc := *c.hc
 	hc.Timeout = 0
+	c.authorize(req)
 	resp, err := hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {
@@ -415,7 +516,7 @@ func (c *Client) stream(ctx context.Context, method, path string, body any, acce
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		var e struct {
 			Error string `json:"error"`
 		}
@@ -437,6 +538,10 @@ type execRemoteFlags struct {
 	export      string
 	session     string
 	shape       scriptShape
+	dryRun      bool
+	// remoteFile asks the daemon to resolve the script name itself
+	// (#2168): the wire request carries file, not source.
+	remoteFile bool
 }
 
 // execOnDaemon sends the script to the daemon and renders what comes back.
@@ -452,8 +557,19 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	sh := rf.shape
 	source := sh.inlineSource(fs.Args())
 	var args []string
+	var scriptPath string
 	phases := &execsvc.Phases{Before: sh.before, OnSuccess: sh.onSuccess, OnError: sh.onError}
-	if !inline {
+	if !inline && rf.remoteFile {
+		// --remote-file (#2168): the name travels, not the text, and the
+		// daemon resolves it on its own search path through the shared
+		// scriptresolve rule. This is the form for a script that lives
+		// on the daemon's side — including one this machine does not
+		// have at all. --export works here too: the daemon resolved the
+		// file itself, so its launcher imports the real file and calls
+		// the named export there.
+		args = fs.Args()[1:]
+		phases.Prefix, phases.Suffix = sh.prefix, sh.suffix
+	} else if !inline {
 		// The file's text travels and the daemon writes it to its own disk,
 		// where the launcher imports it -- so --export works as it does
 		// locally. Relative imports are what cannot survive the trip.
@@ -461,6 +577,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		if err != nil {
 			return err
 		}
+		scriptPath = path
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -473,10 +590,22 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	}
 
 	cwd, _ := os.Getwd()
+	depsOpts, derr := a.depsOptions(cwd, scriptPath)
+	if derr != nil {
+		return derr
+	}
 	opts := execsvc.Options{
 		Runtime:     rf.runtime,
 		Permissions: rf.permissions,
-		Session:     session,
+		// From the resolved set, so --interpreter/--shell, the env and
+		// config files reach local and remote exec the same way.
+		Interpreter: a.Settings().String("script.interpreter"),
+		// The caller's script.cwd policy travels with the request; the
+		// daemon's own policy is only the fallback for callers that send
+		// none. Without this a caller's --script-cwd (or env/config
+		// value) was silently ignored by remote runs.
+		CwdPolicy: a.Settings().String("script.cwd"),
+		Session:   session,
 		// The caller's context, not the daemon's. A remote daemon has a
 		// different working directory and a different environment, and a
 		// script that reads either should see the one belonging to whoever
@@ -487,13 +616,22 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		Args:      args,
 		Artifacts: eo.artifactOptions(cwd),
 
-		Export:         rf.export,
-		Env:            withInputReport(sh.env, a.stdoutOverride == nil),
-		TypeCheck:      sh.typecheck,
-		Launcher:       sh.launcher,
-		LauncherName:   sh.launcherName,
-		AllowRepeat:    sh.allowRepeat,
-		CaptureConsole: &sh.captureConsole,
+		Export:                 rf.export,
+		DryRun:                 rf.dryRun,
+		Env:                    withInputReport(sh.env, a.stdoutOverride == nil),
+		TypeCheck:              sh.typecheck,
+		TypeCheckOnError:       sh.checkOnError,
+		TypeCheckOnUnsupported: sh.checkOnUnsupported,
+		Imports:                sh.imports,
+		ImportsOnDynamic:       sh.importsOnDynamic,
+		ImportsOnMissing:       sh.importsOnMissing,
+		ImportsCrossProject:    sh.importsCrossProject,
+		ImportsNetwork:         sh.importsNetwork,
+		Launcher:               sh.launcher,
+		LauncherName:           sh.launcherName,
+		AllowRepeat:            sh.allowRepeat,
+		CaptureConsole:         &sh.captureConsole,
+		Deps:                   depsOpts,
 	}
 	if len(phases.Before)+len(phases.Prefix)+len(phases.OnSuccess)+
 		len(phases.OnError)+len(phases.Suffix) > 0 {
@@ -520,6 +658,11 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	// printed nothing. The structured answer is rendered as text locally.
 	if opts.Output != execsvc.OutputStream {
 		opts.Output = execsvc.OutputStructured
+	}
+	if rf.remoteFile && !inline {
+		// The file: form of the wire request — the daemon resolves the
+		// name through scriptresolve and runs the file it finds (#2168).
+		return a.execRemote(ctx, c, map[string]any{"file": fs.Arg(0), "options": opts}, eo)
 	}
 	return a.execRemote(ctx, c, map[string]any{"source": source, "options": opts}, eo)
 }
@@ -561,7 +704,7 @@ func (c *Client) ArtifactBody(ctx context.Context, id string) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", "", err

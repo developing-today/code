@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // callParams is a tools/call that reaches the (possibly blocking) backend.
@@ -90,9 +90,10 @@ func TestTransportServer(t *testing.T) {
 			srv, _ := newServer(t)
 			ss := stdioServer(t, srv)
 			ss.request(t, rev, "tools/list", nil)
-			ss.in.Close()
+			_ = ss.in.Close()
 			select {
-			case <-ss.done:
+			case recvErr := <-ss.done:
+				_ = recvErr
 				ss.done <- nil
 			case <-time.After(wait):
 				t.Fatal("did not exit at EOF")
@@ -224,7 +225,7 @@ func TestTransportServer(t *testing.T) {
 		sess := hs.initialize(t, rev)
 		res, _ := hs.request(t, rev, sess, "tools/list", nil)
 		ct := res.Header.Get("Content-Type")
-		if res.Status != http.StatusOK || !(strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/event-stream")) {
+		if res.Status != http.StatusOK || (!strings.HasPrefix(ct, "application/json") && !strings.HasPrefix(ct, "text/event-stream")) {
 			t.Errorf("%d %q", res.Status, ct)
 		}
 	})
@@ -669,7 +670,7 @@ func TestTransportClient(t *testing.T) {
 		_, _ = c.CallTimeout(ctxT(t), 50*time.Millisecond, "t", map[string]any{"text": "a\nb"})
 		time.Sleep(50 * time.Millisecond)
 		b, _ := os.ReadFile(in)
-		c.Close()
+		_ = c.Close()
 		return tr, strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	}
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#stdio
@@ -797,7 +798,7 @@ func TestTransportClient(t *testing.T) {
 		"streamable-http-no-resumability"} {
 		cli(id, func(t *testing.T, rev string) {
 			hp, c := httpSession(t, rev, false)
-			c.Close()
+			_ = c.Close()
 			for _, r := range hp.requests() {
 				// DELETE ends the session; GET opens the listening stream
 				// the transport allows. Every message goes by POST.
@@ -825,7 +826,7 @@ func TestTransportClient(t *testing.T) {
 		"streamable-http-client-handles-session-securely"} {
 		cli(id, func(t *testing.T, rev string) {
 			hp, c := httpSession(t, rev, false)
-			c.Close()
+			_ = c.Close()
 			reqs := hp.requests()
 			var deleted bool
 			for i, r := range reqs {
@@ -867,7 +868,7 @@ func TestTransportClient(t *testing.T) {
 	cli("streamable-http-get-close-any-time", func(t *testing.T, rev string) {
 		_, c := httpSession(t, rev, false)
 		done := make(chan struct{})
-		go func() { c.Close(); close(done) }()
+		go func() { _ = c.Close(); close(done) }()
 		select {
 		case <-done:
 		case <-time.After(wait):
@@ -923,7 +924,7 @@ func TestTransportClient(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		if _, err := c.ListTools(ctxT(t)); err != nil {
 			t.Error(err)
 		}

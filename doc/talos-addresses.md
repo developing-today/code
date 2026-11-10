@@ -1,3 +1,5 @@
+> **Historical reference only — torn down.** This file described a v1.9-era Talos test cluster that has been torn down (confirmed by Drew, 2026-10-26). Nothing in it is running. The current program is in [`planning/roadmaps/basement-cluster.md`](../planning/roadmaps/basement-cluster.md).
+
 - vip
   - https://10.10.0.42:6443
   - https://vip.01b.us:6443

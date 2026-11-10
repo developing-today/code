@@ -1,0 +1,33 @@
+table ip nat {
+	chain pre {
+		type nat hook prerouting priority dstnat; policy accept;
+		iifname "wan" udp dport 4444 dnat to 192.168.1.2:4444
+	}
+
+	chain post {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "wan" masquerade
+	}
+}
+table ip filt {
+	chain in {
+		type filter hook input priority filter; policy accept;
+		iifname "wan" ct state new drop
+	}
+}
+table ip nat {
+	chain pre {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+
+	chain post {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "wan" masquerade
+	}
+}
+table ip filt {
+	chain in {
+		type filter hook input priority filter; policy accept;
+		iifname "wan" ct state new drop
+	}
+}

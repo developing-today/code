@@ -80,7 +80,7 @@ func upgradedServer(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), "repo") {
 		t.Fatalf("catalog history should record repo becoming required:\n%s", b)
@@ -108,7 +108,7 @@ func postCall(t *testing.T, c *http.Client, path, body string) (int, []byte) {
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, b
 }
@@ -126,10 +126,14 @@ func TestARefusedCallCarriesTheSchemaChangeOverV1(t *testing.T) {
 	if !hasRepoChange(doc.Diagnostics) {
 		t.Errorf("/v1/call should name the tool, the field and what changed:\n%s", b)
 	}
-	// Added to, never replaced.
-	if !strings.HasPrefix(doc.Error, "mcp error -32602: Invalid params\n") ||
+	// Added to, never replaced. Phase 2 of #1481: the refusal is now
+	// detected by mcpx's own argument validation before the call
+	// reaches the server, so the headline is the validator's -32602
+	// naming the tool and the path-qualified reason, not the server's
+	// answer — still first and whole, the diagnostic after it.
+	if !strings.HasPrefix(doc.Error, "Invalid params: tool \"create_issue\": ") ||
 		!strings.Contains(doc.Error, "repo is required") {
-		t.Errorf("the error text should be the server's, then the rendered diagnostic:\n%s", doc.Error)
+		t.Errorf("the error text should be the refusal's, then the rendered diagnostic:\n%s", doc.Error)
 	}
 
 	// The same call collected later, as a task.
@@ -148,7 +152,7 @@ func TestARefusedCallCarriesTheSchemaChangeOverV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var taskDoc callErrorDoc
 	if err := json.Unmarshal(b, &taskDoc); err != nil || !hasRepoChange(taskDoc.Diagnostics) {
 		t.Errorf("a task's failure should carry the same diagnostics (%v):\n%s", err, b)

@@ -4,7 +4,10 @@
  * and ProseMirror plugin creation.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Slice } from "prosemirror-model";
+import { EditorState, TextSelection } from "prosemirror-state";
+import { EditorView } from "prosemirror-view";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rawSchema, richSchema } from "./editor";
 import {
   ALLOWED_IMAGE_TYPES,
@@ -140,6 +143,12 @@ describe("mimeToExtension", () => {
   it("returns bin for empty string", () => {
     expect(mimeToExtension("")).toBe("bin");
   });
+
+  it("returns bin for prototype-named MIME types", () => {
+    expect(mimeToExtension("constructor")).toBe("bin");
+    expect(mimeToExtension("toString")).toBe("bin");
+    expect(mimeToExtension("__proto__")).toBe("bin");
+  });
 });
 
 // ============================================================================
@@ -262,5 +271,373 @@ describe("uploadImageFile", () => {
 
     const file = new File(["data"], "photo.png", { type: "image/png" });
     await expect(uploadImageFile(file)).rejects.toThrow("Network error");
+  });
+
+  // Regression (#7823): a wrong-shape 200 must reject at the fetch
+  // boundary so the caller takes the upload-failure path; pre-fix these
+  // payloads resolved and inserted an image node with src undefined
+  // (or made the caller deref null and report "Insertion failed").
+  it.each([
+    ["null body", null],
+    ["string body", "abc"],
+    ["array body", []],
+    ["empty object", {}],
+    ["missing url", { hash: "abc123", name: "photo.png" }],
+    ["missing hash", { name: "photo.png", url: "/blob/abc123" }],
+    ["missing name", { hash: "abc123", url: "/blob/abc123" }],
+    ["non-string url", { hash: "abc123", name: "photo.png", url: 123 }],
+    ["non-string hash", { hash: 42, name: "photo.png", url: "/blob/abc123" }],
+  ])("rejects a malformed /api/upload payload: %s", async (_label, payload) => {
+    const mockResponse = {
+      ok: true,
+      json: () => Promise.resolve(payload),
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse as Response);
+
+    const file = new File(["fake image data"], "photo.png", { type: "image/png" });
+    await expect(uploadImageFile(file)).rejects.toThrow("Upload failed: malformed /api/upload response");
+  });
+});
+
+// ============================================================================
+// handlePaste / handleDrop size filtering (#1321)
+// ============================================================================
+
+describe("handlePaste/handleDrop oversized filtering", () => {
+  const plugin = createImageUploadPlugin(richSchema);
+  if (!plugin) throw new Error("rich schema must have an image node");
+  const handlePaste = plugin.props.handlePaste;
+  const handleDrop = plugin.props.handleDrop;
+  if (!handlePaste || !handleDrop) throw new Error("plugin must define paste/drop handlers");
+
+  function oversizedFile(name = "big.png"): File {
+    const file = new File(["x"], name, { type: "image/png" });
+    Object.defineProperty(file, "size", { value: MAX_IMAGE_SIZE + 1 });
+    return file;
+  }
+
+  function stubView() {
+    const tr = { setMeta: vi.fn().mockReturnThis() };
+    return {
+      state: { tr, selection: { from: 0 } },
+      dispatch: vi.fn(),
+      posAtCoords: vi.fn().mockReturnValue(null),
+    };
+  }
+
+  function pasteEvent(files: File[]) {
+    return { clipboardData: { files }, preventDefault: vi.fn() };
+  }
+
+  function dropEvent(files: File[]) {
+    return { dataTransfer: { files }, preventDefault: vi.fn(), clientX: 10, clientY: 20 };
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Uploads never settle, so dispatch counts stay at the synchronous
+    // placeholder insert for accepted files.
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => {}));
+  });
+
+  it("oversized-only paste is not claimed: returns false, no preventDefault, no dispatch", () => {
+    const view = stubView();
+    const event = pasteEvent([oversizedFile()]);
+    const result = handlePaste.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
+    );
+    expect(result).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(view.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("oversized-only drop is not claimed: returns false, no preventDefault, no dispatch", () => {
+    const view = stubView();
+    const event = dropEvent([oversizedFile()]);
+    const result = handleDrop.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as DragEvent,
+      undefined as unknown as Slice,
+      false,
+    );
+    expect(result).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(view.dispatch).not.toHaveBeenCalled();
+    expect(view.posAtCoords).not.toHaveBeenCalled();
+  });
+
+  it("mixed paste uploads only the valid file and still claims the event", () => {
+    const view = stubView();
+    const event = pasteEvent([oversizedFile(), new File(["ok"], "ok.png", { type: "image/png" })]);
+    const result = handlePaste.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
+    );
+    expect(result).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    // One synchronous placeholder dispatch, for the one accepted file.
+    expect(view.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("mixed drop uploads only the valid file and still claims the event", () => {
+    const view = stubView();
+    const event = dropEvent([new File(["ok"], "ok.png", { type: "image/png" }), oversizedFile()]);
+    const result = handleDrop.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as DragEvent,
+      undefined as unknown as Slice,
+      false,
+    );
+    expect(result).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(view.dispatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================================
+// handlePaste batch ordering (#1323)
+// ============================================================================
+
+describe("handlePaste batch ordering (#1323)", () => {
+  const plugin = createImageUploadPlugin(richSchema);
+  if (!plugin) throw new Error("rich schema must have an image node");
+  const handlePaste = plugin.props.handlePaste;
+  if (!handlePaste) throw new Error("plugin must define a paste handler");
+
+  interface Deferred<T> {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+    reject: (err: unknown) => void;
+  }
+  function deferred<T>(): Deferred<T> {
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  let view: EditorView | null = null;
+  let container: HTMLElement | null = null;
+  const uploads = new Map<string, Deferred<Response>>();
+
+  function createView(): EditorView {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    const doc = richSchema.node("doc", null, [richSchema.node("paragraph")]);
+    const state = EditorState.create({ schema: richSchema, doc, plugins: [plugin!] });
+    view = new EditorView(container, { state });
+    return view;
+  }
+
+  function imageAlts(v: EditorView): string[] {
+    const alts: string[] = [];
+    v.state.doc.descendants((node) => {
+      if (node.type.name === "image") alts.push(String(node.attrs.alt));
+      return true;
+    });
+    return alts;
+  }
+
+  function paste(v: EditorView, files: File[]): void {
+    const event = { clipboardData: { files }, preventDefault: vi.fn() };
+    const result = handlePaste!.call(plugin!, v, event as unknown as ClipboardEvent, undefined as unknown as Slice);
+    expect(result).toBe(true);
+  }
+
+  function okResponse(name: string): Response {
+    return {
+      ok: true,
+      json: () => Promise.resolve({ hash: name, name, url: `/blob/${name}` }),
+    } as Response;
+  }
+
+  beforeEach(() => {
+    uploads.clear();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      const file = (init?.body as FormData | undefined)?.get("file") as File;
+      const d = deferred<Response>();
+      uploads.set(file.name, d);
+      return d.promise;
+    });
+  });
+
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+    container?.remove();
+    container = null;
+    vi.restoreAllMocks();
+  });
+
+  it("inserts a pasted batch in clipboard order when uploads finish out of order", async () => {
+    const v = createView();
+    paste(v, [
+      new File(["a"], "first.png", { type: "image/png" }),
+      new File(["b"], "second.png", { type: "image/png" }),
+    ]);
+    expect(uploads.size).toBe(2);
+
+    // The second upload completes first; nothing may be inserted yet,
+    // because first.png's slot comes first in the batch.
+    uploads.get("second.png")!.resolve(okResponse("second.png"));
+    await vi.waitFor(() => {
+      expect(uploads.get("second.png")).toBeDefined();
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(imageAlts(v)).toEqual([]);
+
+    uploads.get("first.png")!.resolve(okResponse("first.png"));
+    await vi.waitFor(() => {
+      expect(imageAlts(v)).toEqual(["first.png", "second.png"]);
+    });
+  });
+
+  it("a failed upload mid-batch removes only its placeholder; survivors keep order", async () => {
+    const v = createView();
+    paste(v, [
+      new File(["a"], "one.png", { type: "image/png" }),
+      new File(["b"], "bad.png", { type: "image/png" }),
+      new File(["c"], "three.png", { type: "image/png" }),
+    ]);
+    expect(uploads.size).toBe(3);
+
+    // Complete in reverse order, with the middle upload failing.
+    uploads.get("three.png")!.resolve(okResponse("three.png"));
+    uploads.get("bad.png")!.reject(new Error("boom"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(imageAlts(v)).toEqual([]);
+
+    uploads.get("one.png")!.resolve(okResponse("one.png"));
+    await vi.waitFor(() => {
+      expect(imageAlts(v)).toEqual(["one.png", "three.png"]);
+    });
+  });
+
+  it("does not dispatch or warn when a successful upload completes after view destruction", async () => {
+    const v = createView();
+    const dispatchSpy = vi.spyOn(v, "dispatch");
+    paste(v, [new File(["a"], "after-destroy.png", { type: "image/png" })]);
+    expect(uploads.has("after-destroy.png")).toBe(true);
+
+    v.destroy();
+    view = null;
+    uploads.get("after-destroy.png")!.resolve(okResponse("after-destroy.png"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Only the synchronous placeholder insertion may dispatch. A successful
+    // upload settling after destroy must not try insertion or cleanup.
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch placeholder cleanup when a failed upload completes after view destruction", async () => {
+    const v = createView();
+    const dispatchSpy = vi.spyOn(v, "dispatch");
+    const warnSpy = vi.mocked(console.warn);
+    paste(v, [new File(["a"], "failed-after-destroy.png", { type: "image/png" })]);
+    expect(uploads.has("failed-after-destroy.png")).toBe(true);
+
+    v.destroy();
+    view = null;
+    uploads.get("failed-after-destroy.png")!.reject(new Error("upload failed"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The upload failure is real and may be logged, but dead-view cleanup
+    // must be skipped. Vitest also fails the test if the async chain rejects
+    // unhandled while settling.
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Upload failed for failed-after-destroy.png"),
+      expect.any(Error),
+    );
+  });
+});
+
+// ============================================================================
+// Upload completing after the document shrank (#1379)
+// ============================================================================
+
+describe("upload completing after the document shrank (#1379)", () => {
+  const plugin = createImageUploadPlugin(richSchema);
+  if (!plugin) throw new Error("rich schema must have an image node");
+  const handlePaste = plugin.props.handlePaste;
+  if (!handlePaste) throw new Error("plugin must define a paste handler");
+
+  it("inserts at a clamped in-range position instead of throwing and losing the image", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    // A paragraph long enough to paste at position 25.
+    const longDoc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [richSchema.text("abcdefghijklmnopqrstuvwxyz0123456789")]),
+    ]);
+    const state = EditorState.create({
+      schema: richSchema,
+      doc: longDoc,
+      plugins: [plugin!],
+      selection: TextSelection.create(longDoc, 25),
+    });
+    const view = new EditorView(container, { state });
+
+    let resolveFetch!: (value: Response) => void;
+    const fetchPromise = new Promise<Response>((res) => {
+      resolveFetch = res;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => fetchPromise);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const event = {
+        clipboardData: { files: [new File(["x"], "shrunk.png", { type: "image/png" })] },
+        preventDefault: vi.fn(),
+      };
+      const claimed = handlePaste!.call(
+        plugin,
+        view,
+        event as unknown as ClipboardEvent,
+        undefined as unknown as Slice,
+      );
+      expect(claimed).toBe(true);
+
+      // The document is replaced with a single character while the
+      // upload is in flight: the captured insert position (25) is now
+      // out of range and the placeholder decoration is deleted with
+      // the replaced range.
+      const smallDoc = richSchema.node("doc", null, [richSchema.node("paragraph", null, [richSchema.text("x")])]);
+      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, smallDoc.content));
+
+      resolveFetch({
+        ok: true,
+        json: () => Promise.resolve({ hash: "shrunk", name: "shrunk.png", url: "/blob/shrunk.png" }),
+      } as Response);
+
+      const alts: string[] = [];
+      await vi.waitFor(() => {
+        alts.length = 0;
+        view.state.doc.descendants((node) => {
+          if (node.type.name === "image") alts.push(String(node.attrs.alt));
+          return true;
+        });
+        expect(alts).toEqual(["shrunk.png"]);
+      });
+      // Neither an upload failure nor an insertion failure was logged:
+      // the upload succeeded and the image landed.
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      view.destroy();
+      container.remove();
+      vi.restoreAllMocks();
+    }
   });
 });

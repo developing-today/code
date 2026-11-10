@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 type callSetKey struct{}
@@ -19,6 +20,61 @@ type callSetKey struct{}
 // sees only the daemon's.
 func withCallSettings(ctx context.Context, cs *settings.Set) context.Context {
 	return context.WithValue(ctx, callSetKey{}, cs)
+}
+
+// callSettingsFrom returns the call settings carried on ctx, or nil.
+func callSettingsFrom(ctx context.Context) *settings.Set {
+	cs, _ := ctx.Value(callSetKey{}).(*settings.Set)
+	return cs
+}
+
+// callSettingsHeaderValue renders the overrides in cs that arrived via
+// the call-settings header back into that header's JSON shape, so a
+// value a caller sent for one request can ride along to the calls a
+// script makes on that request's behalf (via MCPX_SETTINGS and the
+// generated client's x-mcpx-settings header). Only header-origin
+// values are the caller's; the daemon's own layers stay home.
+func callSettingsHeaderValue(cs *settings.Set) string {
+	if cs == nil {
+		return ""
+	}
+	ov := map[string]string{}
+	for _, decl := range cs.Schema().All() {
+		v, ok := cs.Value(decl.Path)
+		if !ok || v.Origin.Layer != settings.LayerRuntime || v.Origin.Detail != CallSettingsHeader {
+			continue
+		}
+		ov[decl.Path] = v.Raw
+	}
+	if len(ov) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(ov)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// withRequestedCallTimeout threads a caller's requested pool.callTimeout
+// (#1864 item 4) from the request's call settings onto ctx, where the pool
+// reads it. Only a value that arrived in the call-settings header counts:
+// the merged set's other layers are the daemon's own configuration, which
+// the pool has already resolved into the ceiling this request is clamped
+// to. Threading it can only ever lower one call's budget, never raise it.
+func withRequestedCallTimeout(ctx context.Context) context.Context {
+	cs, ok := ctx.Value(callSetKey{}).(*settings.Set)
+	if !ok || cs == nil {
+		return ctx
+	}
+	v, ok := cs.Value("pool.callTimeout")
+	if !ok || v.Origin.Layer != settings.LayerRuntime || v.Origin.Detail != CallSettingsHeader {
+		return ctx
+	}
+	if d := cs.Duration("pool.callTimeout"); d > 0 {
+		return pool.WithCallTimeout(ctx, d)
+	}
+	return ctx
 }
 
 // repairAutonomy is the request's repair.autonomy, already lowered to
@@ -48,7 +104,14 @@ func (r *Registry) repairAutonomy(ctx context.Context) string {
 // finding as data, for a caller that would rather act on a field than parse
 // a sentence -- which is also what a repair step needs to start from.
 type CallErrorBody struct {
-	Error       string                `json:"error"`
+	Error string `json:"error"`
+	// Code is the machine-readable kind of a daemon-side refusal
+	// (#6116): "confirmation_required" when the confirmation gate
+	// refused a call nobody confirmed, "write_policy_denied" when
+	// the write policy refused it. Empty for every other failure --
+	// a tool that ran and failed carries Upstream instead -- so a
+	// caller can branch on the gate without parsing Error's text.
+	Code        string                `json:"code,omitempty"`
 	Diagnostics []diagnose.Diagnostic `json:"diagnostics,omitempty"`
 	// Upstream is the JSON-RPC error the server answered with, when the
 	// failure was one. A relay needs the code and data, not the sentence:
@@ -115,6 +178,17 @@ func (r *Registry) explainCall(ctx context.Context, server, tool string, args an
 	}
 	code, message, ok := upstreamFault(err)
 	if !ok {
+		// A client-side validation refusal (Phase 2 of #1481) never
+		// reached the server, but the failure is still the arguments'
+		// fault: the client detected the same -32602 the server would
+		// have answered with, and the error carries that code (the
+		// gateway relays it by the same interface). Explain it with
+		// its own message.
+		if c, m, coded := clientFault(err); coded {
+			code, message, ok = c, m, true
+		}
+	}
+	if !ok {
 		// A timeout, a server that would not start, a pipe that broke before
 		// the answer: nothing came back, so there is nothing to explain, and
 		// the arguments are the one thing that was not at fault.
@@ -160,6 +234,14 @@ func callDiagnostics(err error) []diagnose.Diagnostic {
 
 func callErrorBody(err error) CallErrorBody {
 	body := CallErrorBody{Error: err.Error(), Diagnostics: callDiagnostics(err)}
+	var notConfirmed ErrNotConfirmed
+	var writeDenied ErrWriteDenied
+	switch {
+	case errors.As(err, &notConfirmed):
+		body.Code = "confirmation_required"
+	case errors.As(err, &writeDenied):
+		body.Code = "write_policy_denied"
+	}
 	if code, msg, ok := upstreamFault(err); ok {
 		body.Upstream = &UpstreamError{Code: code, Message: msg, Data: upstreamData(err)}
 	}
@@ -195,6 +277,21 @@ func upstreamFault(err error) (code int, message string, ok bool) {
 			continue
 		}
 		return int(c.Int()), m.String(), true
+	}
+	return 0, "", false
+}
+
+// clientFault is a failure mcpx itself detected before the call reached
+// a server, when the error carries the JSON-RPC code it stands for.
+// Only Invalid Params is read this way: it is the one code that says the
+// arguments were at fault, which is the one thing a schema can explain.
+// The check is an interface assertion (the gateway's precedent in
+// internal/mcpserver), not a concrete type, so a validation error from
+// any layer that carries its code is explained the same way.
+func clientFault(err error) (code int, message string, ok bool) {
+	var coded interface{ RPCCode() int }
+	if errors.As(err, &coded) && coded.RPCCode() == diagnose.InvalidParams {
+		return coded.RPCCode(), err.Error(), true
 	}
 	return 0, "", false
 }

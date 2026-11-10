@@ -1,0 +1,5 @@
+# Derived from the kit's tunnel.toml (config/tunnel.kit.toml). Only the ports changed, to 19101/19201,
+# so this runs on loopback with no clash. Tunnel shape: plain HTTP, no QUIC address discovery.
+http_bind_addr = "127.0.0.1:19101"
+enable_quic_addr_discovery = false
+metrics_bind_addr = "127.0.0.1:19201"

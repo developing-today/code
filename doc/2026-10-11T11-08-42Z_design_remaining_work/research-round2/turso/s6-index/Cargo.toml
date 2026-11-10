@@ -1,0 +1,19 @@
+[package]
+name = "s6-index"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Spike S6 with a Turso backend (N1): local index storage, redb versus SQLite (WAL) versus Turso 0.8.2"
+
+# Own workspace root. This spike is not a member of /home/user/work/spikes.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+hex = "0.4"
+redb = "=4.3.0"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+# turso 0.8.2 (MIT). Default features off: no mimalloc (the other two stores use the
+# system allocator) and no `fts` (tantivy). The default-feature build is measured separately.
+turso = { version = "=0.8.2", default-features = false }

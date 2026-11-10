@@ -1,0 +1,35 @@
+== multi-refuse (10 runs) ==
+server  hook ran: 10/10 (100%, 95% Wilson 72-100%); allowed flag at hook: 0 allowed of 10
+server  refused in hook: 10/10 (100%, 95% Wilson 72-100%); handed to application: 0/10 (0%, 95% Wilson 0-28%); refused after stream: 0/10 (0%, 95% Wilson 0-28%); refused before handshake: 0/10 (0%, 95% Wilson 0-28%)
+server  candidates queued before hook: 10/10 (100%, 95% Wilson 72-100%); queue-to-hook gap median 0.7 ms (min 0.5, max 7.4, n=10)
+server  first Initial packet to candidates queued (server-side handshake) median 127.6 ms (min 92.1, max 178.8, n=10)
+server  hook-to-refusal gap median 0.6 ms (min 0.5, max 11.3, n=10)
+server  REACH_OUT received (trace runs only): 10/10 (100%, 95% Wilson 72-100%); received before hook 10/10 (100%, 95% Wilson 72-100%); before refusal 10/10 (100%, 95% Wilson 72-100%)
+client  connect() returned Ok: 10/10 (100%, 95% Wilson 72-100%); connect() error: 0/10 (0%, 95% Wilson 0-28%)
+client  connect() return time median 91.1 ms (min 71.3, max 124.8, n=10)
+client  connect() returned before the server's hook ran: 10/10 (100%, 95% Wilson 72-100%)
+client  peer close observed time from start median 156.5 ms (min 121.2, max 208.5, n=10); connect-return to close median 60.3 ms (min 42.7, max 99.5, n=10)
+client  close message(s): {'closed by peer: not on allowlist (code 4097)': 10}
+client  saw >=1 server AddressAdded before/at close: 1/10 (10%, 95% Wilson 2-40%); of those, AddressAdded before the close event: 1
+client  saw a server address NOT in the ticket (new information): 1/10 (10%, 95% Wilson 2-40%)
+client  holepunch attempt failed ('connection is already closed' etc.) in: 0/10 (0%, 95% Wilson 0-28%)
+client  example new addresses (run-02): ['10.200.0.1:43082', '10.200.0.2:43082']
+
+== multi-app (5 runs) ==
+server  hook ran: 5/5 (100%, 95% Wilson 57-100%); allowed flag at hook: 0 allowed of 5
+server  refused in hook: 0/5 (0%, 95% Wilson 0-43%); handed to application: 5/5 (100%, 95% Wilson 57-100%); refused after stream: 5/5 (100%, 95% Wilson 57-100%); refused before handshake: 0/5 (0%, 95% Wilson 0-43%)
+server  candidates queued before hook: 5/5 (100%, 95% Wilson 57-100%); queue-to-hook gap median 0.8 ms (min 0.6, max 7.7, n=5)
+server  first Initial packet to candidates queued (server-side handshake) median 124.9 ms (min 78.5, max 166.3, n=5)
+server  hook-to-refusal gap n/a
+server  REACH_OUT received (trace runs only): 5/5 (100%, 95% Wilson 57-100%); received before hook 5/5 (100%, 95% Wilson 57-100%); before refusal 5/5 (100%, 95% Wilson 57-100%)
+client  connect() returned Ok: 5/5 (100%, 95% Wilson 57-100%); connect() error: 0/5 (0%, 95% Wilson 0-43%)
+client  connect() return time median 97.6 ms (min 57.3, max 114.8, n=5)
+client  connect() returned before the server's hook ran: 5/5 (100%, 95% Wilson 57-100%)
+client  peer close observed time from start median 159.9 ms (min 96.9, max 211.9, n=5); connect-return to close median 63.2 ms (min 31.8, max 97.1, n=5)
+client  close message(s): {'closed by peer: not on allowlist (code 4098)': 5}
+client  stream error(s): {'read error: connection lost': 5}
+client  saw >=1 server AddressAdded before/at close: 5/5 (100%, 95% Wilson 57-100%); of those, AddressAdded before the close event: 4
+client  saw a server address NOT in the ticket (new information): 5/5 (100%, 95% Wilson 57-100%)
+client  holepunch attempt failed ('connection is already closed' etc.) in: 3/5 (60%, 95% Wilson 23-88%)
+client  example new addresses (run-1): ['10.200.0.1:60063', '10.200.0.2:60063']
+

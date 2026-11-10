@@ -1,0 +1,7 @@
+## fork: chains=1000; chain 3 at seq 25 is the original on the dialer and a different event on the acceptor
+| unrelated new events on the dialer | parameters, both sides | failures, verbatim | rows after, dialer / acceptor |
+|---|---|---|---|
+| 0 | K16 T16 | dialer: fork at key f22a287318da15fb7f32bbfa3205d4b037ac80702e2bcc0b359ec43fbed4092e0000000000000019 / acceptor: fork at key f22a287318da15fb7f32bbfa3205d4b037ac80702e2bcc0b359ec43fbed4092e0000000000000019 / stores differ after sync: 50000 rows vs 50000 rows / 50000 rows after sync, union is 50001 | 50000 / 50000 |
+| 0 | K4 T8 | dialer: connection lost: closed by peer: 0 / acceptor: fork at key f22a287318da15fb7f32bbfa3205d4b037ac80702e2bcc0b359ec43fbed4092e0000000000000019 / stores differ after sync: 50000 rows vs 50000 rows / 50000 rows after sync, union is 50001 | 50000 / 50000 |
+| 20 | K16 T16 | dialer: fork at key f22a287318da15fb7f32bbfa3205d4b037ac80702e2bcc0b359ec43fbed4092e0000000000000019 / acceptor: fork at key f22a287318da15fb7f32bbfa3205d4b037ac80702e2bcc0b359ec43fbed4092e0000000000000019 / stores differ after sync: 50020 rows vs 50000 rows / 50020 rows after sync, union is 50021 | 50020 / 50000 |
+| 20 | K4 T8 | dialer: fork at key f22a287318da15fb7f32bbfa3205d4b037ac80702e2bcc0b359ec43fbed4092e0000000000000019 / acceptor: fork at key f22a287318da15fb7f32bbfa3205d4b037ac80702e2bcc0b359ec43fbed4092e0000000000000019 / stores differ after sync: 50020 rows vs 50000 rows / 50020 rows after sync, union is 50021 | 50020 / 50000 |

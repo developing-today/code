@@ -6,14 +6,16 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // Attempt is one rung of the connection ladder, and what happened on it.
@@ -90,7 +92,7 @@ func (a *App) Connect(ctx context.Context, opt ConnectOptions) (*Client, *Ladder
 	if opt.Endpoint != "" {
 		start := time.Now()
 		c := NewClientAt(paths, a.ConfigPath, opt.Endpoint)
-		if c.Ping(ctx) {
+		if c.reachable(ctx) {
 			record("url", opt.Endpoint, start, nil)
 			l.Chosen = "url"
 			return c, l, nil
@@ -208,7 +210,21 @@ func siblingSockets(paths daemon.Paths) []string {
 // pool -- and neither is required to answer a question. Where one cannot be
 // started, this is the difference between mcpx working slowly and not
 // working.
+// inlineDaemonPing is Client.Ping, indirected so tests can keep the
+// in-process daemon from ever answering and so drive inlineDaemon's poll
+// loop deterministically: a daemon with an empty configuration answers
+// the first Ping, so the wait below is otherwise never entered (#323).
+// Production code never reassigns it.
+var inlineDaemonPing = (*Client).Ping
+
 func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
+	// A cancelled caller must not be read as "no daemon answered": Ping is
+	// ctx-bound, so it could never succeed, and the poll below would burn
+	// the whole inline start timeout before reporting the wrong error.
+	// EnsureDaemon learned this in #233; this rung gets the same checks.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cfg, err := config.Load(a.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("inline mode needs a configuration: %w", err)
@@ -222,6 +238,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 	}
 	paths := a.Paths
 	paths.Socket = filepath.Join(dir, "d.sock")
+	a.daemonSocket = paths.Socket
 
 	// A discarding logger. A daemon's operational chatter belongs in its
 	// log file; in-process it would land in the middle of the command's own
@@ -230,7 +247,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		Config: cfg, Paths: paths, Version: a.Version,
 		Logger:   log.New(io.Discard, "", 0),
 		Settings: a.Settings(),
-		Augment:  a.augmentAdapters,
+		Augment:  a.augmentConfig,
 	})
 	if err != nil {
 		_ = os.RemoveAll(dir)
@@ -240,25 +257,133 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 	// the connection attempt; the servers have to live as long as the
 	// command using them does.
 	life, stop := context.WithCancel(context.Background())
+	// The API is hosted in this process and the client carries its
+	// requests to the daemon's handler through an in-process transport:
+	// inline mode no longer serialises every call through a socket to
+	// itself. The socket is opened only if a script asks for it, via
+	// the client's lazy socket: a script is a child process, and a
+	// path is the only way it can reach this daemon.
+	transport := newInProcessTransport(srv.InProcessHandler(life))
 	a.inlineStop = func() {
 		stop()
+		transport.Close()
 		_ = os.RemoveAll(dir)
 	}
-	if err := srv.ServeInline(life, paths.Socket); err != nil {
-		a.inlineStop()
-		return nil, err
-	}
-	c := NewClient(paths, a.ConfigPath)
+	c := NewInProcessClient(paths, a.ConfigPath, transport, func() (string, error) {
+		if err := srv.ServeSocket(life, paths.Socket); err != nil {
+			return "", err
+		}
+		return paths.Socket, nil
+	})
 	deadline := time.Now().Add(a.Settings().Duration("daemon.inlineStartTimeout"))
 	for time.Now().Before(deadline) {
-		if c.Ping(ctx) {
+		if inlineDaemonPing(c, ctx) {
 			return c, nil
 		}
-		time.Sleep(a.Settings().Duration("daemon.inlineStartPoll"))
+		select {
+		case <-ctx.Done():
+			a.inlineStop()
+			return nil, ctx.Err()
+		case <-time.After(a.Settings().Duration("daemon.inlineStartPoll")):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		a.inlineStop()
+		return nil, err
 	}
 	a.inlineStop()
 	return nil, fmt.Errorf("the in-process daemon did not answer")
 }
+
+// inProcessTransport carries HTTP requests to a handler hosted in this
+// process. Each request travels over a fresh net.Pipe connection served
+// by a private http.Server, so streaming responses and the handler's
+// own connection semantics are the ones a socket would give it — only
+// the kernel, the socket file, and the serialisation round trip to a
+// daemon that is this process are gone.
+type inProcessTransport struct {
+	inner *http.Transport
+	srv   *http.Server
+	ln    *pipeListener
+}
+
+func newInProcessTransport(handler http.Handler) *inProcessTransport {
+	ln := newPipeListener()
+	t := &inProcessTransport{ln: ln, srv: &http.Server{Handler: handler}}
+	go func() { _ = t.srv.Serve(ln) }()
+	t.inner = &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			client, server := net.Pipe()
+			if err := ln.deliver(ctx, server); err != nil {
+				_ = client.Close()
+				_ = server.Close()
+				return nil, err
+			}
+			return client, nil
+		},
+		// One pipe per request, as the socket client makes one
+		// connection per request: a takeover or a stop can never strand
+		// a call on a connection the other end has finished with.
+		DisableKeepAlives: true,
+	}
+	return t
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *inProcessTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.inner.RoundTrip(req)
+}
+
+// Close stops the private server and refuses new connections.
+func (t *inProcessTransport) Close() {
+	_ = t.srv.Close()
+	_ = t.ln.Close()
+	t.inner.CloseIdleConnections()
+}
+
+// pipeListener is a net.Listener whose connections arrive by hand-off
+// from the transport's dialler instead of from a kernel socket.
+type pipeListener struct {
+	conns chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newPipeListener() *pipeListener {
+	return &pipeListener{conns: make(chan net.Conn), done: make(chan struct{})}
+}
+
+func (l *pipeListener) deliver(ctx context.Context, c net.Conn) error {
+	select {
+	case l.conns <- c:
+		return nil
+	case <-l.done:
+		return net.ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+type pipeAddr struct{}
+
+func (pipeAddr) Network() string { return "in-process" }
+func (pipeAddr) String() string  { return "in-process" }
+
+func (l *pipeListener) Addr() net.Addr { return pipeAddr{} }
 
 // CloseInline stops an in-process daemon, if one was started.
 func (a *App) CloseInline() {

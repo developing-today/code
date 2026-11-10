@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // fakeBackend counts calls under a lock: stdio requests run concurrently, so
@@ -101,7 +102,7 @@ func (f *fakeBackend) GetPrompt(_ context.Context, name string, _ map[string]str
 
 // Complete stands in for the upstream server that owns a ref: values only it
 // could know, so a test can tell who answered.
-func (f *fakeBackend) Complete(_ context.Context, params json.RawMessage) ([]string, error) {
+func (f *fakeBackend) Complete(_ context.Context, params json.RawMessage) (mcpserver.Completion, error) {
 	f.hit("complete")
 	var p struct {
 		Ref struct {
@@ -111,11 +112,19 @@ func (f *fakeBackend) Complete(_ context.Context, params json.RawMessage) ([]str
 	_ = json.Unmarshal(params, &p)
 	switch p.Ref.Name {
 	case "nosuch":
-		return nil, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
+		return mcpserver.Completion{}, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
 	case "broken":
-		return nil, errors.New("upstream timed out")
+		return mcpserver.Completion{}, errors.New("upstream timed out")
+	case "capped":
+		// Stands in for the daemon's already-capped /v1/complete reply
+		// (#2878): fewer values than the full match count, total known.
+		values := make([]string, 50)
+		for i := range values {
+			values[i] = fmt.Sprintf("capped-%02d", i)
+		}
+		return mcpserver.Completion{Values: values, Total: 150, TotalKnown: true}, nil
 	}
-	return []string{"from-upstream-1", "from-upstream-2", "from-upstream-3"}, nil
+	return mcpserver.Completion{Values: []string{"from-upstream-1", "from-upstream-2", "from-upstream-3"}}, nil
 }
 
 func (f *fakeBackend) ResourceTemplates(context.Context) ([]mcpserver.ResourceRef, error) {
@@ -758,7 +767,9 @@ func TestResourceTemplatesAreServedRatherThanSwallowed(t *testing.T) {
 func TestAToolCallCanRunAsATask(t *testing.T) {
 	// For a genuinely slow tool, holding a request open for minutes invites
 	// every intermediary to time it out. A task hands back a handle at once.
+	store := tasks.New()
 	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.TaskStore = store
 	resp := s.Handle(context.Background(), mcpserver.Request(1, "tools/call", map[string]any{
 		// mcpx_call: a tool that declares taskSupport (2025-11-25).
 		"name": "mcpx_call", "arguments": map[string]any{"namespace": "alpha", "tool": "t"},
@@ -777,6 +788,14 @@ func TestAToolCallCanRunAsATask(t *testing.T) {
 		t.Fatalf("a task handle should come back at once: %s", b)
 	}
 	id := got.Result.Task.TaskID
+	if _, _, err := store.Result(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	beforeResult, ok := store.Get(id)
+	if !ok || beforeResult.LastTouched == nil {
+		t.Fatalf("completed task has no touch metadata: %+v", beforeResult)
+	}
+	time.Sleep(10 * time.Millisecond)
 
 	// tasks/result waits for it and returns the tool's own result.
 	res := s.Handle(context.Background(), mcpserver.Request(2, "tasks/result",
@@ -788,13 +807,28 @@ func TestAToolCallCanRunAsATask(t *testing.T) {
 	if !strings.Contains(text, "alpha") {
 		t.Errorf("the tool's result should arrive: %q", text)
 	}
+	afterResult, ok := store.Get(id)
+	if !ok || afterResult.LastTouched == nil || !afterResult.LastTouched.After(*beforeResult.LastTouched) {
+		t.Fatalf("MCP tasks/result did not touch retention: before=%+v after=%+v", beforeResult, afterResult)
+	}
+	time.Sleep(10 * time.Millisecond)
+	s.Handle(context.Background(), mcpserver.Request(3, "tasks/list", nil))
+	afterList, ok := store.Get(id)
+	if !ok || afterList.LastTouched == nil || !afterList.LastTouched.Equal(*afterResult.LastTouched) {
+		t.Fatalf("MCP collection read touched retention: before=%+v after=%+v", afterResult, afterList)
+	}
 
 	// tasks/get reports it completed.
-	get := s.Handle(context.Background(), mcpserver.Request(3, "tasks/get",
+	get := s.Handle(context.Background(), mcpserver.Request(4, "tasks/get",
 		map[string]any{"taskId": id}))
 	b, _ = json.Marshal(get)
 	if !strings.Contains(string(b), `"completed"`) {
 		t.Errorf("the task should be completed: %s", b)
+	}
+	for _, field := range []string{`"expiresAt"`, `"lastTouched"`, `"ttlRemainingMs"`} {
+		if !strings.Contains(string(b), field) {
+			t.Errorf("the task representation should include %s: %s", field, b)
+		}
 	}
 }
 

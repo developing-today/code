@@ -1,0 +1,17 @@
+BASELINE (no mutation): exit 0; test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+  failing tests: none
+M1 option B accepts trailing bytes (lenient parse): exit 101; test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+  failing tests (1): ['b_rejects_trailing_bytes_that_iroh_would_ignore']
+M2 option D skips the expected-signer check: exit 101; test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+  failing tests (1): ['d_verifies_a_valid_suffix_and_rejects_each_tamper']
+M3 option C skips the ticket digest check: exit 101; test result: FAILED. 17 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+  failing tests (2): ['c_rejects_a_swapped_endpoint_id_that_the_standard_parser_accepts', 'e_a_valid_event_verifies_and_a_mismatched_one_is_rejected']
+M4 option D splits by re-encoding the ticket: exit 101; test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+  failing tests (1): ['d_split_follows_the_wire_length_because_non_canonical_payloads_parse']
+M5 options B and D sign with no domain tag: exit 101; test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+  failing tests (1): ['a_signature_made_for_option_d_is_refused_as_option_b']
+M6 option E refuses a plain ticket: exit 101; test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+  failing tests (1): ['e_a_plain_ticket_is_accepted_and_unverified_not_refused']
+M7 option C ignores the event author: exit 101; test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+  failing tests (1): ['c_rejects_an_event_from_another_key_or_with_a_forged_signature']
+scratch copy removed

@@ -1,0 +1,10 @@
+server: 1 relay(s) (0 with QAD off), policy RelayOnly, no lookups
+client: 1 relay(s) (0 with QAD off), policy RelayOnly, no lookups
+online: server 3.011444105s, client 3.301768ms
+server's own address: 1 relay, 2 direct
+ticket: 103 chars, 1 relay, 0 direct
+dial by ticket: connected 16.894171ms, replied 30.696267ms, echoed true, handshake over relay http://localhost:37363/
+  path after reply: * relay http://localhost:37363/
+2026-10-11T10:40:34.870860Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:40:34.870960Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+RESULT t1: PASS

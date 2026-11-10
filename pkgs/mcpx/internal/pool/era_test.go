@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // eraServer is one eramcp configuration with its own frame log.
@@ -65,12 +65,15 @@ func startOnce(t *testing.T, p *pool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	lease, err := p.Acquire(ctx, "")
+	lease, err := p.Acquire(ctx, config.ResolvedScope{Key: ""})
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease.Release()
 	p.Restart(context.Background(), true)
+	// The lazy child closes in the background; the hook this test reads is
+	// restored when it ends, so wait for the close first.
+	p.WaitDrained()
 }
 
 func newEraPool(s *eraServer, eras pool.EraStore) *pool.Pool {
@@ -238,7 +241,7 @@ func TestPoolProbe(t *testing.T) {
 		defer p.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		res, err := p.Call(ctx, "", "hello", nil)
+		res, err := p.Call(ctx, config.ResolvedScope{Key: ""}, "hello", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +267,7 @@ func TestPoolProbe(t *testing.T) {
 		defer p.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		if _, err := p.Call(ctx, "", "hello", nil); err != nil {
+		if _, err := p.Call(ctx, config.ResolvedScope{Key: ""}, "hello", nil); err != nil {
 			t.Fatal(err)
 		}
 		if era, v := p.Era(); era != mcpclient.EraModern || v != "2026-07-28" {

@@ -1,0 +1,9 @@
+stock-s1-welcome-k1.bin raw=879 zstd19=730 xz9e=784 gzip9=775 bzip2_9=838 brotli11=665
+stock-s1-welcome-k1000.bin raw=147277 zstd19=95594 xz9e=86528 gzip9=100591 bzip2_9=78344 brotli11=86562
+both-s1-welcome-k1.bin raw=529 zstd19=517 xz9e=572 gzip9=549 bzip2_9=642 brotli11=484
+both-s1-welcome-k1000.bin raw=40493 zstd19=40507 xz9e=40564 gzip9=40547 bzip2_9=41027 brotli11=40497
+transcoded-outer-s1-welcome-k1000.bin raw=77441 zstd19=77457 xz9e=77512 gzip9=77512 bzip2_9=78130 brotli11=77446
+stock-s1-update-dm-k1000.bin raw=383 zstd19=385 xz9e=448 gzip9=428 bzip2_9=519 brotli11=367
+both-s1-update-dm-k1000.bin raw=344 zstd19=346 xz9e=408 gzip9=385 bzip2_9=475 brotli11=329
+stock-s1-readd-k1000.bin raw=77407 zstd19=77423 xz9e=77480 gzip9=77465 bzip2_9=78106 brotli11=77412
+both-s1-readd-k1000.bin raw=40424 zstd19=40438 xz9e=40492 gzip9=40476 bzip2_9=40953 brotli11=40428

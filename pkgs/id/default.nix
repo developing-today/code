@@ -16,6 +16,10 @@ let
   # Read Cargo.toml for package metadata
   cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 
+  # The Rust version the check installs, from the pin in rust-toolchain.toml
+  toolchainToml = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);
+  rustVersion = toolchainToml.toolchain.channel;
+
   pname = cargoToml.package.name;
   inherit (cargoToml.package) version;
 
@@ -26,13 +30,16 @@ in
     inherit pname version;
     src = ./.;
 
-    buildFeatures = [ "sandbox" "world" ];
+    buildFeatures = [
+      "sandbox"
+      "world"
+    ];
 
     cargoLock = {
       lockFile = ./Cargo.lock;
-      # All dependencies come from crates.io (distributed-topic-tracker is no
-      # longer a git dependency). If a git dependency is ever added, pin its
-      # hash here via `outputHashes`.
+      outputHashes = {
+        "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+      };
     };
 
     nativeBuildInputs = with pkgs; [
@@ -46,6 +53,12 @@ in
     # Run tests during build
     doCheck = true;
 
+    # Compile and run the test phase under the ci-check profile (#3195)
+    # instead of release: same opt-level, no LTO / codegen-units=1 /
+    # strip costs for test binaries. The release binary build
+    # (cargoBuildType) is unchanged.
+    checkType = "ci-check";
+
     # Additional check commands (run after cargoTest)
     postCheck = ''
       echo "Running additional checks..."
@@ -55,7 +68,7 @@ in
 
     meta = with pkgs.lib; {
       description = "A peer-to-peer file sharing CLI built with Iroh";
-      homepage = "https://github.com/example/id";
+      homepage = "https://github.com/developing-today/code";
       license = with licenses; [
         mit
         asl20
@@ -91,7 +104,7 @@ in
       export RUSTUP_HOME=$HOME/.rustup
 
       # Install Rust toolchain
-      rustup default 1.89.0
+      rustup default ${rustVersion}
       rustup component add clippy rustfmt
 
       echo "══════════════════════════════════════════════════════"
@@ -109,6 +122,9 @@ in
 
       echo "→ Running integration tests..."
       cargo test --test cli_integration
+
+      echo "→ Checking the toolchain pin..."
+      cargo test --test toolchain_pin
 
       echo "→ Running doc tests..."
       cargo test --doc

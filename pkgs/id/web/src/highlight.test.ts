@@ -4,7 +4,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createSyntaxHighlightPlugin, detectLanguage } from "./highlight";
+import {
+  createSyntaxHighlightPlugin,
+  detectLanguage,
+  EXT_TO_LANG,
+  FILENAME_TO_LANG,
+  LANG_IMPORTS,
+  languageFromInfoString,
+  resolveCodeBlockLanguage,
+} from "./highlight";
 
 // ============================================================================
 // Language Detection: Extension Mapping
@@ -324,6 +332,28 @@ describe("detectLanguage", () => {
   });
 
   // ==========================================================================
+  // Special-name stem vs known extension (#721)
+  // ==========================================================================
+
+  describe("special-name stem vs known extension", () => {
+    it("lets a known extension win over a special-name stem", () => {
+      expect(detectLanguage("justfile.rs")).toBe("rust");
+      expect(detectLanguage("makefile.md")).toBe("markdown");
+      expect(detectLanguage("dockerfile.py")).toBe("python");
+      expect(detectLanguage("gemfile.json")).toBe("json");
+      expect(detectLanguage("vagrantfile.toml")).toBe("toml");
+      expect(detectLanguage("cmakelists.rs")).toBe("rust");
+      expect(detectLanguage("rakefile.ts")).toBe("typescript");
+    });
+
+    it("keeps the special name when the extension is unknown", () => {
+      expect(detectLanguage("Dockerfile.dev")).toBe("dockerfile");
+      expect(detectLanguage("CMakeLists.txt")).toBe("cmake");
+      expect(detectLanguage("Makefile.bak")).toBe("makefile");
+    });
+  });
+
+  // ==========================================================================
   // Dotfiles
   // ==========================================================================
 
@@ -392,6 +422,19 @@ describe("detectLanguage", () => {
       expect(detectLanguage("")).toBeUndefined();
     });
 
+    it("returns undefined for prototype-member extensions (#2787)", () => {
+      // Plain-object lookups on EXT_TO_LANG matched inherited
+      // Object.prototype members: these returned a function / object
+      // instead of a language string.
+      expect(detectLanguage("notes.constructor")).toBeUndefined();
+      expect(detectLanguage("notes.__proto__")).toBeUndefined();
+    });
+
+    it("returns undefined for prototype-member filenames (#2787)", () => {
+      expect(detectLanguage("constructor")).toBeUndefined();
+      expect(detectLanguage("__proto__")).toBeUndefined();
+    });
+
     it("is case-insensitive for extensions", () => {
       expect(detectLanguage("App.JS")).toBe("javascript");
       expect(detectLanguage("style.CSS")).toBe("css");
@@ -408,6 +451,49 @@ describe("detectLanguage", () => {
       expect(detectLanguage("package-lock.json")).toBe("json");
       expect(detectLanguage("bun.lockb")).toBeUndefined();
     });
+  });
+});
+
+// ============================================================================
+// Detection / Grammar Registry Consistency
+// ============================================================================
+
+describe("grammar registry", () => {
+  it("registers a grammar for every detected language except gitignore", () => {
+    // The detected set is derived mechanically from the same maps
+    // detectLanguage() reads, plus its dotfile-branch literals, so adding
+    // a mapping without a grammar fails here instead of silently
+    // rendering plain text. "gitignore" is the sole exception:
+    // @shikijs/langs in shiki 4.5.0 ships no gitignore grammar.
+    const detected = new Set<string>([
+      ...Object.values(EXT_TO_LANG),
+      ...Object.values(FILENAME_TO_LANG),
+      "gitignore",
+      "dotenv",
+      "properties",
+      "json",
+    ]);
+    const unregistered = [...detected].filter((lang) => lang !== "gitignore" && !(lang in LANG_IMPORTS));
+    expect(unregistered).toEqual([]);
+  });
+
+  it("registers grammars for the languages added for #749", () => {
+    for (const lang of [
+      "bat",
+      "dotenv",
+      "erlang",
+      "hcl",
+      "just",
+      "less",
+      "ocaml",
+      "properties",
+      "protobuf",
+      "sass",
+      "viml",
+      "zig",
+    ]) {
+      expect(LANG_IMPORTS[lang], lang).toBeTypeOf("function");
+    }
   });
 });
 
@@ -442,5 +528,87 @@ describe("createSyntaxHighlightPlugin", () => {
     });
     expect(plugin).toBeDefined();
     expect(plugin.spec).toBeDefined();
+  });
+});
+
+// ============================================================================
+// Per-Block Language: Fence Info String (#1479)
+// ============================================================================
+
+describe("languageFromInfoString", () => {
+  it("resolves Shiki language ids directly", () => {
+    expect(languageFromInfoString("rust")).toBe("rust");
+    expect(languageFromInfoString("python")).toBe("python");
+    expect(languageFromInfoString("cpp")).toBe("cpp");
+  });
+
+  it("resolves extension-style author spellings", () => {
+    expect(languageFromInfoString("rs")).toBe("rust");
+    expect(languageFromInfoString("py")).toBe("python");
+    expect(languageFromInfoString("js")).toBe("javascript");
+    expect(languageFromInfoString("sh")).toBe("bash");
+    expect(languageFromInfoString("yml")).toBe("yaml");
+  });
+
+  it("resolves alias spellings", () => {
+    expect(languageFromInfoString("c++")).toBe("cpp");
+    expect(languageFromInfoString("c#")).toBe("csharp");
+    expect(languageFromInfoString("shell")).toBe("bash");
+  });
+
+  it("ignores trailing attribute words", () => {
+    expect(languageFromInfoString("rust ignore")).toBe("rust");
+    expect(languageFromInfoString("python linenos")).toBe("python");
+  });
+
+  it("is case-insensitive and trims whitespace", () => {
+    expect(languageFromInfoString("  Rust  ")).toBe("rust");
+    expect(languageFromInfoString("PYTHON")).toBe("python");
+  });
+
+  it("returns undefined for unknown, empty, or prototype-named strings", () => {
+    expect(languageFromInfoString("notalang")).toBeUndefined();
+    expect(languageFromInfoString("")).toBeUndefined();
+    expect(languageFromInfoString(null)).toBeUndefined();
+    expect(languageFromInfoString(undefined)).toBeUndefined();
+    expect(languageFromInfoString("constructor")).toBeUndefined();
+    expect(languageFromInfoString("__proto__")).toBeUndefined();
+  });
+});
+
+describe("resolveCodeBlockLanguage", () => {
+  it("uses the codec's params info string over the filename language", () => {
+    // Codec-shaped doc (#1479 probe): a notes.md document whose fenced
+    // blocks carry attrs.params, never a language attr.
+    const detected = detectLanguage("notes.md");
+    expect(resolveCodeBlockLanguage({ params: "rust" }, detected)).toBe("rust");
+    expect(resolveCodeBlockLanguage({ params: "python" }, detected)).toBe("python");
+  });
+
+  it("highlights codec-shaped blocks in an extensionless document", () => {
+    const detected = detectLanguage("README");
+    expect(detected).toBeUndefined();
+    expect(resolveCodeBlockLanguage({ params: "rust" }, detected)).toBe("rust");
+    expect(resolveCodeBlockLanguage({ params: "python" }, detected)).toBe("python");
+  });
+
+  it("keeps the language attribute at top priority (raw mode)", () => {
+    expect(resolveCodeBlockLanguage({ language: "rust", params: "python" }, "markdown")).toBe("rust");
+    expect(resolveCodeBlockLanguage({ language: "rust" }, undefined)).toBe("rust");
+  });
+
+  it("falls back to the filename language with no usable info string", () => {
+    expect(resolveCodeBlockLanguage({}, "markdown")).toBe("markdown");
+    expect(resolveCodeBlockLanguage({ params: null }, "markdown")).toBe("markdown");
+    expect(resolveCodeBlockLanguage({ params: "" }, "markdown")).toBe("markdown");
+    expect(resolveCodeBlockLanguage({ params: "notalang" }, "markdown")).toBe("markdown");
+    expect(resolveCodeBlockLanguage({}, undefined)).toBeUndefined();
+  });
+
+  it("does not highlight an htmlBlock by its params provenance value", () => {
+    // The codec emits {params: "html", htmlBlock: true} for HTML blocks;
+    // "html" there is provenance, not an authored fence language.
+    expect(resolveCodeBlockLanguage({ params: "html", htmlBlock: true }, "markdown")).toBe("markdown");
+    expect(resolveCodeBlockLanguage({ params: "html", htmlBlock: true }, undefined)).toBeUndefined();
   });
 });

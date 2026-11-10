@@ -1,0 +1,4 @@
+# Scenario 4 relay 1 (derived from tunnel.toml, local ports).
+http_bind_addr = "127.0.0.1:19111"
+enable_quic_addr_discovery = false
+metrics_bind_addr = "127.0.0.1:19211"

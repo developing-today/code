@@ -28,28 +28,117 @@
 //! it to sign/verify tokens. Tokens are base64url-encoded for safe use
 //! in query parameters and `localStorage`.
 //!
+//! # Persistence
+//!
+//! With a database path, records live in a redb file with one table, keyed by
+//! client ID. Each value is `nonce (12 bytes) || AES-256-GCM ciphertext` of the
+//! JSON record. The client ID is the associated data, so a value moved under
+//! another key fails to authenticate. The AES key is derived from the server's
+//! secret key with HKDF-SHA256.
+//!
 //! # Thread Safety
 //!
 //! The [`IdentityStore`] is designed for concurrent access using `Arc<RwLock<>>`
 //! internally. Clone it freely across handlers.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit};
+use anyhow::Context as _;
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
+use redb::{Database, DatabaseError, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::sync::RwLock;
 use tokio::sync::watch;
 
-/// Maximum allowed display name length (bytes).
-const MAX_NAME_LENGTH: usize = 64;
+/// Maximum allowed display name length (Unicode scalar values).
+const MAX_NAME_LENGTH: usize = 48;
 
 /// Maximum token age before it's considered expired (30 days in seconds).
 const TOKEN_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Maximum tolerated clock skew for a token issued in the future (5 minutes).
+const TOKEN_FUTURE_SKEW_SECS: u64 = 5 * 60;
+
+/// Default admission bound on registered web identities (#1766).
+///
+/// Registration used to grow the identity store — the in-memory maps
+/// AND the on-disk redb — without any bound. The bound refuses NEW
+/// registrations at capacity; it never deletes existing records, and
+/// already-registered identities keep authenticating and refreshing
+/// tokens at capacity (a cap is an admission control, not a cleanup —
+/// lifecycle deletion for legacy records is a separate design).
+/// Sized for a personal dashboard: one identity per browser profile /
+/// device / test run, with generous headroom.
+pub const DEFAULT_MAX_IDENTITIES: usize = 10_000;
+
+/// Environment variable overriding [`DEFAULT_MAX_IDENTITIES`]:
+/// a positive count, or `none` for unbounded.
+pub const MAX_IDENTITIES_ENV: &str = "ID_WEB_MAX_IDENTITIES";
+
+/// Registration refused because the identity store is at its
+/// configured admission bound (#1766). The register handler maps this
+/// to a 503 so a refused first visit is observable and explainable,
+/// never a silent or generic failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityCapacityError {
+    /// The configured admission bound.
+    pub limit: usize,
+    /// How many identities were registered when the refusal happened.
+    pub registered: usize,
+}
+
+impl std::fmt::Display for IdentityCapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "identity registration capacity reached ({}/{} identities); new registrations are refused — existing identities are unaffected and no records are deleted",
+            self.registered, self.limit
+        )
+    }
+}
+
+impl std::error::Error for IdentityCapacityError {}
+
+/// Resolve the configured identity admission bound (#1766): the
+/// `ID_WEB_MAX_IDENTITIES` environment variable when set (`none` =
+/// unbounded, otherwise a positive count), else
+/// [`DEFAULT_MAX_IDENTITIES`]. An unparsable or zero value is a
+/// configuration error an operator should hear about, so it logs a
+/// warning and falls back to the default rather than silently
+/// refusing every first visit.
+pub fn configured_max_identities() -> Option<usize> {
+    match std::env::var(MAX_IDENTITIES_ENV) {
+        Err(_) => Some(DEFAULT_MAX_IDENTITIES),
+        Ok(raw) => {
+            let value = raw.trim();
+            if value.eq_ignore_ascii_case("none") {
+                None
+            } else if let Ok(n) = value.parse::<usize>() {
+                if n == 0 {
+                    tracing::warn!(
+                        "[identity] {MAX_IDENTITIES_ENV}=0 would refuse every registration; falling back to the default bound {DEFAULT_MAX_IDENTITIES}"
+                    );
+                    Some(DEFAULT_MAX_IDENTITIES)
+                } else {
+                    Some(n)
+                }
+            } else {
+                tracing::warn!(
+                    "[identity] {MAX_IDENTITIES_ENV}={raw:?} is not a count or 'none'; falling back to the default bound {DEFAULT_MAX_IDENTITIES}"
+                );
+                Some(DEFAULT_MAX_IDENTITIES)
+            }
+        }
+    }
+}
 
 /// A client's identity information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,10 +162,10 @@ struct TokenPayload {
     created_at: u64,
 }
 
-/// In-memory store for client identities, optionally backed by encrypted `SQLite`.
+/// In-memory store for client identities, optionally backed by an encrypted redb file.
 ///
 /// Keyed by `client_id` (a hex string). Thread-safe via `Arc<RwLock<>>`.
-/// When backed by a database, mutations are written through to `SQLite` for
+/// When backed by a database, mutations are written through to the redb file for
 /// persistence across server restarts.
 #[derive(Clone)]
 pub struct IdentityStore {
@@ -89,8 +178,15 @@ pub struct IdentityStore {
     signing_key: Arc<SigningKey>,
     /// Ed25519 verifying key (derived from signing key, used to verify tokens).
     verifying_key: VerifyingKey,
-    /// `SQLite` database for persistent storage (`None` for ephemeral/test mode).
-    db: Option<Arc<libsql::Database>>,
+    /// Admission bound on registered identities (#1766): `Some(limit)`
+    /// refuses NEW registrations once `clients` holds `limit` entries.
+    /// Records loaded from disk at startup count toward the bound.
+    /// Existing identities are never removed to make room, and the
+    /// verify/refresh paths ignore the bound. `None` is unbounded
+    /// (ephemeral/test stores by default).
+    max_identities: Option<usize>,
+    /// Encrypted redb file for persistent storage (`None` for ephemeral/test mode).
+    db: Option<Arc<IdentityDb>>,
 }
 
 impl std::fmt::Debug for IdentityStore {
@@ -98,95 +194,53 @@ impl std::fmt::Debug for IdentityStore {
         f.debug_struct("IdentityStore")
             .field("clients", &self.clients)
             .field("signing_key", &"<SigningKey>")
+            .field("max_identities", &self.max_identities)
             .field("db", &self.db.as_ref().map(|_| "<Database>"))
             .finish_non_exhaustive()
     }
 }
 
 impl IdentityStore {
-    /// Create a new identity store backed by an encrypted `SQLite` database.
+    /// Create a new identity store backed by an encrypted redb file.
     ///
-    /// Derives a signing key and DB encryption key from the given secret key
-    /// bytes using HKDF-SHA256. The DB file is encrypted at rest using AES-256-GCM.
-    /// All existing identities are loaded into memory on startup.
+    /// Derives a signing key and an encryption key from the given secret key
+    /// bytes using HKDF-SHA256. Record values are encrypted with AES-256-GCM.
+    /// All existing identities are authenticated and loaded into memory on
+    /// startup. A record that fails authentication fails the open.
     ///
     /// # Arguments
     ///
     /// * `secret_key` - 32-byte secret key (from iroh `SecretKey::to_bytes()`)
-    /// * `db_path` - Path for the `SQLite` database file (e.g., `.identity.db`)
+    /// * `db_path` - Path for the redb file (e.g., `.identity.redb`)
     pub async fn new(secret_key: [u8; 32], db_path: PathBuf) -> anyhow::Result<Self> {
-        // Derive signing key via HKDF-SHA256
-        let hk = Hkdf::<Sha256>::new(None, &secret_key);
-        let mut signing_bytes = [0u8; 32];
-        hk.expand(b"id-identity-signing", &mut signing_bytes)
-            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for signing key"))?;
-        let signing_key = SigningKey::from_bytes(&signing_bytes);
+        Self::new_with_max_identities(secret_key, db_path, Some(DEFAULT_MAX_IDENTITIES)).await
+    }
+
+    /// Create a new identity store backed by an encrypted redb file,
+    /// with an explicit admission bound (#1766): `Some(limit)` refuses
+    /// new registrations once `limit` identities are held — records
+    /// loaded from disk count toward it — and `None` is unbounded.
+    /// See [`IdentityStore::new`] for the storage description.
+    pub async fn new_with_max_identities(
+        secret_key: [u8; 32],
+        db_path: PathBuf,
+        max_identities: Option<usize>,
+    ) -> anyhow::Result<Self> {
+        let (signing_key, enc_bytes) = derive_keys(&secret_key)?;
         let verifying_key = signing_key.verifying_key();
 
-        // Derive DB encryption key via HKDF-SHA256
-        let mut enc_bytes = [0u8; 32];
-        hk.expand(b"id-identity-encryption", &mut enc_bytes)
-            .map_err(|_e| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
-        let hex_key = hex_encode(&enc_bytes);
+        // Open the file and load every record. redb is synchronous, so this runs
+        // on the blocking pool.
+        let (db, identities) = run_blocking(move || IdentityDb::open(&db_path, &enc_bytes)).await?;
 
-        // Open encrypted SQLite database
-        let db_path_str = db_path.display().to_string();
-        let uri = format!("file:{db_path_str}?cipher=aes256gcm&hexkey={hex_key}");
-        let db = libsql::Builder::new_local(uri)
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to open identity database: {e}"))?;
-        let conn = db
-            .connect()
-            .map_err(|e| anyhow::anyhow!("Failed to connect to identity database: {e}"))?;
-
-        // Create table if it doesn't exist
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS identities (
-                client_id TEXT PRIMARY KEY,
-                name TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            )",
-            (),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create identities table: {e}"))?;
-
-        // Load existing identities into memory
-        let mut clients = HashMap::new();
-        let mut name_watchers_map = HashMap::new();
-        let mut rows = conn
-            .query(
-                "SELECT client_id, name, created_at, updated_at FROM identities",
-                (),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to query identities: {e}"))?;
-
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read identity row: {e}"))?
-        {
-            let client_id = db_text(&row, 0)?;
-            let name = db_opt_text(&row, 1)?;
-            let created_at = db_u64(&row, 2)?;
-            let updated_at = db_u64(&row, 3)?;
-
-            let identity = ClientIdentity {
-                client_id: client_id.clone(),
-                name: name.clone(),
-                created_at,
-                updated_at,
-            };
-
-            let (tx, _rx) = watch::channel(name);
-            name_watchers_map.insert(client_id.clone(), tx);
-            clients.insert(client_id, identity);
+        let count = identities.len();
+        let mut clients = HashMap::with_capacity(count);
+        let mut name_watchers_map = HashMap::with_capacity(count);
+        for identity in identities {
+            let (tx, _rx) = watch::channel(identity.name.clone());
+            name_watchers_map.insert(identity.client_id.clone(), tx);
+            clients.insert(identity.client_id.clone(), identity);
         }
-
-        let count = clients.len();
         if count > 0 {
             tracing::info!("[identity] Loaded {count} identities from database");
         }
@@ -196,6 +250,7 @@ impl IdentityStore {
             name_watchers: Arc::new(RwLock::new(name_watchers_map)),
             signing_key: Arc::new(signing_key),
             verifying_key,
+            max_identities,
             db: Some(Arc::new(db)),
         })
     }
@@ -205,6 +260,14 @@ impl IdentityStore {
     /// Generates a random signing key. Identities are lost when the store
     /// is dropped. Used in tests and when persistence is not needed.
     pub fn new_ephemeral() -> Self {
+        Self::new_ephemeral_with_limit(None)
+    }
+
+    /// Create an ephemeral identity store with an admission bound
+    /// (#1766): `Some(limit)` refuses new registrations once `limit`
+    /// identities are held; `None` is unbounded. The test seam for
+    /// capacity behavior.
+    pub fn new_ephemeral_with_limit(max_identities: Option<usize>) -> Self {
         let signing_key = SigningKey::generate(&mut rand::rng());
         let verifying_key = signing_key.verifying_key();
         Self {
@@ -212,6 +275,7 @@ impl IdentityStore {
             name_watchers: Arc::new(RwLock::new(HashMap::new())),
             signing_key: Arc::new(signing_key),
             verifying_key,
+            max_identities,
             db: None,
         }
     }
@@ -232,23 +296,60 @@ impl IdentityStore {
             updated_at: now,
         };
 
-        // Persist to database first (if available)
-        if let Some(db) = &self.db {
-            let conn = db
-                .connect()
-                .map_err(|e| anyhow::anyhow!("DB connect: {e}"))?;
-            conn.execute(
-                "INSERT INTO identities (client_id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                db_identity_params(&client_id, name.as_ref(), now, now),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("DB insert: {e}"))?;
-        }
-
-        // Store the identity in memory
+        // Admission bound (#1766): hold the clients write lock across
+        // check + persist + insert, so concurrent registrations cannot
+        // race past the bound (the redb create used to happen before
+        // the in-memory insert with no lock spanning both, which would
+        // have made a count check racy). Registrations are rare, so
+        // verify/refresh readers waiting out one create is acceptable.
+        // At capacity the refusal is the typed IdentityCapacityError —
+        // existing records are never deleted to make room.
+        //
+        // The critical section runs in a detached task (Codex P2 on
+        // PR #4143): spawn_blocking is not aborted when the awaiting
+        // future is cancelled, so a section owned by the caller's
+        // future could drop the lock with the record committed to disk
+        // but never inserted — the in-memory count would then
+        // under-count persisted records and repeated cancellations
+        // would bypass the bound (and the uncounted records would all
+        // load on restart). Detached, the section keeps the admission
+        // reservation and the in-memory accounting alive through
+        // completion of the blocking write, independently of the
+        // requesting future; awaiting the handle only observes the
+        // outcome.
         {
-            let mut clients = self.clients.write().await;
-            clients.insert(client_id.clone(), identity.clone());
+            let clients = Arc::clone(&self.clients);
+            let db = self.db.clone();
+            let max_identities = self.max_identities;
+            let record = identity.clone();
+            let persist = tokio::spawn(async move {
+                let mut clients = clients.write().await;
+                if let Some(limit) = max_identities {
+                    let registered = clients.len();
+                    if registered >= limit {
+                        tracing::warn!(
+                            "[identity] Registration refused at capacity: {registered}/{limit} identities (admission bound, issue 1766)"
+                        );
+                        return Err(anyhow::Error::from(IdentityCapacityError {
+                            limit,
+                            registered,
+                        }));
+                    }
+                }
+
+                // Persist to database first (if available)
+                if let Some(db) = &db {
+                    let db = Arc::clone(db);
+                    let record = record.clone();
+                    run_blocking(move || db.create(&record)).await?;
+                }
+
+                clients.insert(record.client_id.clone(), record);
+                Ok::<(), anyhow::Error>(())
+            });
+            persist
+                .await
+                .map_err(|e| anyhow::anyhow!("identity registration task failed: {e}"))??;
         }
 
         // Create a watch channel for name changes
@@ -309,28 +410,17 @@ impl IdentityStore {
         identity.name.clone_from(&name);
         identity.updated_at = unix_timestamp();
         let result = identity.clone();
-        drop(clients);
 
-        // Persist to database (best-effort — in-memory is authoritative during session)
-        if let Some(db) = &self.db
-            && let Ok(conn) = db.connect()
-        {
-            let params = vec![
-                name.as_ref()
-                    .map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
-                libsql::Value::Integer(i64::try_from(result.updated_at).unwrap_or(0)),
-                libsql::Value::Text(client_id.to_owned()),
-            ];
-            if let Err(e) = conn
-                .execute(
-                    "UPDATE identities SET name = ?1, updated_at = ?2 WHERE client_id = ?3",
-                    params,
-                )
-                .await
-            {
+        // Persist to database (best-effort: in-memory is authoritative during session).
+        // The write runs under the lock, so the file ends in the same order as memory.
+        if let Some(db) = &self.db {
+            let db = Arc::clone(db);
+            let record = result.clone();
+            if let Err(e) = run_blocking(move || db.update(&record)).await {
                 tracing::warn!("[identity] Failed to persist name update: {e}");
             }
         }
+        drop(clients);
 
         // Notify any subscribed WS handlers of the name change
         {
@@ -429,13 +519,18 @@ impl IdentityStore {
 
         // Verify signature
         let signature = ed25519_dalek::Signature::from_bytes(signature_bytes.try_into().ok()?);
-        self.verifying_key.verify(payload_bytes, &signature).ok()?;
+        self.verifying_key
+            .verify_strict(payload_bytes, &signature)
+            .ok()?;
 
         // Deserialize payload
         let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
 
-        // Reject expired tokens (older than TOKEN_MAX_AGE_SECS)
+        // Reject tokens dated implausibly far in the future, then apply the age cap.
         let now = unix_timestamp();
+        if payload.created_at > now.saturating_add(TOKEN_FUTURE_SKEW_SECS) {
+            return None;
+        }
         if now.saturating_sub(payload.created_at) > TOKEN_MAX_AGE_SECS {
             return None;
         }
@@ -466,22 +561,17 @@ fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
-/// Sanitize a display name: trim whitespace, enforce max length, return `None` if empty.
-fn sanitize_name(name: Option<String>) -> Option<String> {
-    name.map(|n| n.trim().to_owned())
-        .filter(|n| !n.is_empty())
-        .map(|n| {
-            if n.len() > MAX_NAME_LENGTH {
-                // Truncate at char boundary
-                let mut end = MAX_NAME_LENGTH;
-                while !n.is_char_boundary(end) && end > 0 {
-                    end -= 1;
-                }
-                n[..end].to_owned()
-            } else {
-                n
-            }
-        })
+/// Sanitize a display name consistently for identities and cursor frames.
+pub(super) fn sanitize_name(name: Option<String>) -> Option<String> {
+    name.map(|name| {
+        name.chars()
+            .filter(|ch| !ch.is_control() && !crate::is_format_char(*ch))
+            .take(MAX_NAME_LENGTH)
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    })
+    .filter(|name| !name.is_empty())
 }
 
 /// Create a short display ID from a `client_id` (first 6 chars).
@@ -498,56 +588,295 @@ fn unix_timestamp() -> u64 {
 }
 
 // =============================================================================
-// Database Helpers
+// Encrypted Store (redb)
 // =============================================================================
 
-/// Extract a TEXT value from a database row.
-fn db_text(row: &libsql::Row, idx: i32) -> anyhow::Result<String> {
-    match row
-        .get_value(idx)
-        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
-    {
-        libsql::Value::Text(s) => Ok(s),
-        other => anyhow::bail!("Expected text at column {idx}, got {other:?}"),
+/// The one table: client ID to sealed record.
+const IDENTITIES: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("identities");
+
+/// AES-256-GCM nonce length. Every stored value starts with its own nonce.
+const NONCE_LEN: usize = 12;
+
+/// Run a redb call on tokio's blocking pool. Commits fsync, which must not stall
+/// an async worker thread.
+async fn run_blocking<T, F>(task: F) -> anyhow::Result<T>
+where
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|e| anyhow::anyhow!("identity store task failed: {e}"))?
+}
+
+/// The redb file behind an [`IdentityStore`].
+///
+/// Each value is `nonce || ciphertext`: a fresh random 12-byte nonce, then the
+/// AES-256-GCM ciphertext and tag of the JSON record. The client ID is the
+/// associated data, so a value moved under another key fails to authenticate.
+/// Client IDs stay in plaintext as keys; the record, names included, does not.
+struct IdentityDb {
+    db: Database,
+    cipher: Aes256Gcm,
+}
+
+impl IdentityDb {
+    /// Open the file at `path`, or create it if it does not exist, then [`load`](Self::load) it.
+    ///
+    /// A new file is built under a temporary name, so `path` only ever names a file that redb can
+    /// open. The first commit makes the file a valid, empty store. It is then renamed into place,
+    /// and the directory is synced before the store is returned, so no acknowledged write can
+    /// depend on a rename that has not reached the disk. A crash during creation leaves at most a
+    /// stale temporary file, which the next creation overwrites.
+    fn open(path: &Path, key: &[u8; 32]) -> anyhow::Result<(Self, Vec<ClientIdentity>)> {
+        if path.exists() {
+            let db = Database::create(path).map_err(|e| store_error(path, e))?;
+            return Self::load(db, key);
+        }
+        let temp = creating_path(path);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)
+            .with_context(|| format!("failed to create identity store {}", temp.display()))?;
+        let db = Database::builder()
+            .create_file(file)
+            .map_err(|e| store_error(&temp, e))?;
+        let created = Self::load(db, key)?;
+        std::fs::rename(&temp, path).with_context(|| {
+            format!(
+                "failed to move identity store {} into place",
+                temp.display()
+            )
+        })?;
+        sync_dir(parent_dir(path))
+            .with_context(|| format!("failed to sync the directory of {}", path.display()))?;
+        Ok(created)
+    }
+
+    /// Create the table if the file is new, then authenticate every record.
+    ///
+    /// A record that fails authentication stops the load: a wrong key or an
+    /// altered file must not start a store that silently drops identities. On an
+    /// empty file a wrong key cannot be seen until the first record exists.
+    fn load(db: Database, key: &[u8; 32]) -> anyhow::Result<(Self, Vec<ClientIdentity>)> {
+        let store = Self {
+            db,
+            cipher: Aes256Gcm::new(&(*key).into()),
+        };
+        let txn = store.db.begin_write()?;
+        txn.open_table(IDENTITIES)?;
+        txn.commit()?;
+        let records = store.read_all()?;
+        Ok((store, records))
+    }
+
+    /// Decrypt every record, in no particular order.
+    fn read_all(&self) -> anyhow::Result<Vec<ClientIdentity>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(IDENTITIES)?;
+        let mut records = Vec::new();
+        for entry in table.iter()? {
+            let (client_id, value) = entry?;
+            records.push(self.unseal(client_id.value(), value.value())?);
+        }
+        Ok(records)
+    }
+
+    /// Insert a record. A client ID that is already stored is an error (INSERT).
+    fn create(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+        let value = self.seal(identity)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(IDENTITIES)?;
+            if table.get(identity.client_id.as_str())?.is_some() {
+                anyhow::bail!("identity {} already exists", short_id(&identity.client_id));
+            }
+            table.insert(identity.client_id.as_str(), value.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Overwrite the record stored under its client ID (UPDATE by key).
+    fn update(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+        let value = self.seal(identity)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(IDENTITIES)?;
+            table.insert(identity.client_id.as_str(), value.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Encrypt a record under a fresh random nonce, as `nonce || ciphertext`.
+    ///
+    /// Nonces are random, not counters, so the store needs no persisted nonce
+    /// state. At 96 bits, a collision under one key is negligible for any write
+    /// volume an identity store sees.
+    fn seal(&self, identity: &ClientIdentity) -> anyhow::Result<Vec<u8>> {
+        let plaintext = serde_json::to_vec(identity)?;
+        let mut nonce = [0u8; NONCE_LEN];
+        rand::fill(&mut nonce);
+        let ciphertext = self
+            .cipher
+            .encrypt(
+                &nonce.into(),
+                Payload {
+                    msg: &plaintext,
+                    aad: identity.client_id.as_bytes(),
+                },
+            )
+            .map_err(|_e| {
+                anyhow::anyhow!(
+                    "failed to encrypt identity {}",
+                    short_id(&identity.client_id)
+                )
+            })?;
+        let mut value = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+        value.extend_from_slice(&nonce);
+        value.extend_from_slice(&ciphertext);
+        Ok(value)
+    }
+
+    /// Split and decrypt one stored value. `client_id` is its table key.
+    fn unseal(&self, client_id: &str, value: &[u8]) -> anyhow::Result<ClientIdentity> {
+        let Some((nonce, ciphertext)) = value.split_at_checked(NONCE_LEN) else {
+            anyhow::bail!("identity {} is truncated", short_id(client_id));
+        };
+        let nonce: [u8; NONCE_LEN] = nonce.try_into()?;
+        let plaintext = self
+            .cipher
+            .decrypt(
+                &nonce.into(),
+                Payload {
+                    msg: ciphertext,
+                    aad: client_id.as_bytes(),
+                },
+            )
+            .map_err(|_e| {
+                anyhow::anyhow!(
+                    "identity {} failed authentication: the key is wrong or the file was altered",
+                    short_id(client_id)
+                )
+            })?;
+        Ok(serde_json::from_slice(&plaintext)?)
     }
 }
 
-/// Extract an optional TEXT value from a database row.
-fn db_opt_text(row: &libsql::Row, idx: i32) -> anyhow::Result<Option<String>> {
-    match row
-        .get_value(idx)
-        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
-    {
-        libsql::Value::Text(s) if !s.is_empty() => Ok(Some(s)),
-        libsql::Value::Text(_) | libsql::Value::Null => Ok(None),
-        other => anyhow::bail!("Expected text or null at column {idx}, got {other:?}"),
+/// The signing key for tokens, and the AES-256-GCM key for records, both derived from the secret
+/// key with HKDF-SHA256.
+fn derive_keys(secret_key: &[u8; 32]) -> anyhow::Result<(SigningKey, [u8; 32])> {
+    let hk = Hkdf::<Sha256>::new(None, secret_key);
+    let mut signing_bytes = [0u8; 32];
+    hk.expand(b"id-identity-signing", &mut signing_bytes)
+        .map_err(|_e| anyhow::anyhow!("HKDF expand failed for signing key"))?;
+    let mut enc_bytes = [0u8; 32];
+    hk.expand(b"id-identity-encryption", &mut enc_bytes)
+        .map_err(|_e| anyhow::anyhow!("HKDF expand failed for encryption key"))?;
+    Ok((SigningKey::from_bytes(&signing_bytes), enc_bytes))
+}
+
+/// The name a new store file is built under: the store's file name with `.creating` appended.
+fn creating_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map_or_else(OsString::new, OsStr::to_os_string);
+    name.push(".creating");
+    path.with_file_name(name)
+}
+
+/// The directory that holds `path`. A bare file name lives in the current directory.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
     }
 }
 
-/// Extract a u64 value from a database INTEGER column.
-fn db_u64(row: &libsql::Row, idx: i32) -> anyhow::Result<u64> {
-    match row
-        .get_value(idx)
-        .map_err(|e| anyhow::anyhow!("Failed to get column {idx}: {e}"))?
-    {
-        libsql::Value::Integer(n) => Ok(u64::try_from(n).unwrap_or(0)),
-        other => anyhow::bail!("Expected integer at column {idx}, got {other:?}"),
+/// Makes the renames in `dir` durable. Only Unix can open a directory to sync it, so elsewhere
+/// this does nothing.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn store_error(path: &Path, error: DatabaseError) -> anyhow::Error {
+    match error {
+        DatabaseError::DatabaseAlreadyOpen => anyhow::anyhow!(
+            "identity store {} is already open in another process or handle",
+            path.display()
+        ),
+        other => anyhow::anyhow!("failed to open identity store {}: {other}", path.display()),
     }
 }
 
-/// Convert identity fields to database parameter values for INSERT.
-fn db_identity_params(
-    client_id: &str,
-    name: Option<&String>,
-    created_at: u64,
-    updated_at: u64,
-) -> Vec<libsql::Value> {
-    vec![
-        libsql::Value::Text(client_id.to_owned()),
-        name.map_or(libsql::Value::Null, |n| libsql::Value::Text(n.clone())),
-        libsql::Value::Integer(i64::try_from(created_at).unwrap_or(0)),
-        libsql::Value::Integer(i64::try_from(updated_at).unwrap_or(0)),
-    ]
+/// The crash gate's view of the store (`tests/crash/identity.rs`). Not part of the public API.
+///
+/// The gate runs the store's own redb operations over a database it opened on its fault model, so
+/// a power cut can land inside them. It reopens each disk image through [`open_path`], the file
+/// path that [`IdentityStore::new`](super::IdentityStore::new) takes.
+#[doc(hidden)]
+pub mod crash_gate {
+    pub use super::ClientIdentity;
+    use super::{IdentityDb, derive_keys};
+    use redb::Database;
+    use std::path::{Path, PathBuf};
+
+    /// A store opened by the gate.
+    pub struct Store(IdentityDb);
+
+    impl std::fmt::Debug for Store {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Store").finish_non_exhaustive()
+        }
+    }
+
+    impl Store {
+        /// Inserts an identity. A client ID that is already stored is an error.
+        pub fn create(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+            self.0.create(identity)
+        }
+
+        /// Overwrites the identity stored under its client ID.
+        pub fn update(&self, identity: &ClientIdentity) -> anyhow::Result<()> {
+            self.0.update(identity)
+        }
+
+        /// Every stored identity, decrypted and authenticated.
+        pub fn records(&self) -> anyhow::Result<Vec<ClientIdentity>> {
+            self.0.read_all()
+        }
+    }
+
+    /// Loads a store from `db`, which the caller opened. A new file gets its table in the first
+    /// commit, which this makes.
+    pub fn open_database(db: Database, secret_key: &[u8; 32]) -> anyhow::Result<Store> {
+        let (_, enc_key) = derive_keys(secret_key)?;
+        let (store, _) = IdentityDb::load(db, &enc_key)?;
+        Ok(Store(store))
+    }
+
+    /// Opens the store file at `path`, or creates it, as
+    /// [`IdentityStore::new`](super::IdentityStore::new) does.
+    pub fn open_path(path: &Path, secret_key: &[u8; 32]) -> anyhow::Result<Store> {
+        let (_, enc_key) = derive_keys(secret_key)?;
+        let (store, _) = IdentityDb::open(path, &enc_key)?;
+        Ok(Store(store))
+    }
+
+    /// The name that a new store file is built under.
+    pub fn creating_path(path: &Path) -> PathBuf {
+        super::creating_path(path)
+    }
 }
 
 /// Base64url encode without padding (RFC 4648 section 5).
@@ -622,12 +951,27 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
         let a = decode_char(bytes[i])?;
         let b = decode_char(bytes[i + 1])?;
         let c = decode_char(bytes[i + 2])?;
+        // Canonical spelling only (#1840): three characters carry
+        // two bytes, so the final character's low 2 bits are unused.
+        // The encoder zeroes them; a spelling that sets them decodes
+        // to the same bytes, which made every token malleable into
+        // alias strings that all verified. Refuse them here, at the
+        // single choke point every verify path funnels through.
+        if c & 0x03 != 0 {
+            return None;
+        }
         let triple = (a << 18) | (b << 12) | (c << 6);
         data.push((triple >> 16) as u8);
         data.push((triple >> 8) as u8);
     } else if remaining == 2 {
         let a = decode_char(bytes[i])?;
         let b = decode_char(bytes[i + 1])?;
+        // Same refusal for the two-character final group: it carries
+        // one byte, so the final character's low 4 bits are unused
+        // and must be zero (#1840).
+        if b & 0x0F != 0 {
+            return None;
+        }
         let triple = (a << 18) | (b << 12);
         data.push((triple >> 16) as u8);
     } else if remaining == 1 {
@@ -646,6 +990,9 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use proptest::prelude::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_generate_client_id() {
@@ -671,11 +1018,35 @@ mod tests {
             sanitize_name(Some("Bob".to_owned())),
             Some("Bob".to_owned())
         );
+        assert_eq!(
+            sanitize_name(Some("Mary Jane-Smith".to_owned())),
+            Some("Mary Jane-Smith".to_owned())
+        );
 
-        // Long name truncation
-        let long_name = "a".repeat(100);
+        assert_eq!(
+            sanitize_name(Some("A\n\t\u{001b}\u{202e}lice".to_owned())),
+            Some("Alice".to_owned())
+        );
+        assert_eq!(
+            sanitize_name(Some("A\u{061c}\u{200e}\u{200f}\u{202a}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}B".to_owned())),
+            Some("AB".to_owned())
+        );
+        assert_eq!(
+            sanitize_name(Some("a\u{200b}b\u{feff}c\u{00ad}d".to_owned())),
+            Some("abcd".to_owned())
+        );
+        assert_eq!(
+            sanitize_name(Some("a\u{200d}b\u{200c}c".to_owned())),
+            Some("abc".to_owned())
+        );
+        assert_eq!(
+            sanitize_name(Some("こんにちは世界".to_owned())),
+            Some("こんにちは世界".to_owned())
+        );
+
+        let long_name = "界".repeat(50);
         let sanitized = sanitize_name(Some(long_name)).unwrap();
-        assert!(sanitized.len() <= MAX_NAME_LENGTH);
+        assert_eq!(sanitized.chars().count(), MAX_NAME_LENGTH);
     }
 
     #[test]
@@ -700,6 +1071,41 @@ mod tests {
             let decoded = base64url_decode(&encoded).unwrap();
             assert_eq!(decoded, data, "Failed for len={len}");
         }
+    }
+
+    #[test]
+    fn test_base64url_decode_refuses_trailing_bit_aliases() {
+        // #1840: the final character of an unpadded encoding carries
+        // unused low bits (2 for a 3-char final group, 4 for a 2-char
+        // one). The canonical encoder zeroes them; a spelling that
+        // sets them decodes to the same bytes, so a token had up to
+        // 16 alias strings that all verified. Decode refuses the
+        // non-canonical spellings outright.
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let alias = |encoded: &str, mask: u32| -> String {
+            let mut bytes = encoded.as_bytes().to_vec();
+            let last = bytes.len() - 1;
+            let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
+            assert_eq!(
+                value & mask,
+                0,
+                "canonical encoding zeroes the trailing bits"
+            );
+            bytes[last] = ALPHABET[(value | mask) as usize];
+            String::from_utf8(bytes).unwrap()
+        };
+        // 2-byte input -> 3-char final group, low 2 bits unused.
+        let data2 = [0xABu8, 0xCD];
+        let enc2 = base64url_encode(&data2);
+        assert_eq!(base64url_decode(&enc2).unwrap(), data2);
+        assert!(base64url_decode(&alias(&enc2, 0b01)).is_none());
+        assert!(base64url_decode(&alias(&enc2, 0b10)).is_none());
+        // 1-byte input -> 2-char final group, low 4 bits unused.
+        let data1 = [0xABu8];
+        let enc1 = base64url_encode(&data1);
+        assert_eq!(base64url_decode(&enc1).unwrap(), data1);
+        assert!(base64url_decode(&alias(&enc1, 0b0001)).is_none());
+        assert!(base64url_decode(&alias(&enc1, 0b1000)).is_none());
     }
 
     #[test]
@@ -733,6 +1139,118 @@ mod tests {
 
         let verified = store.verify_token(&token).await.unwrap();
         assert_eq!(verified.name, None);
+    }
+
+    #[tokio::test]
+    async fn test_token_trailing_bit_alias_refused() {
+        // #1840 at the token level: respelling a real issued token by
+        // setting the final character's unused trailing bits must not
+        // verify, while the canonical spelling still does. The token
+        // byte length fixes the final group: %4==3 chars -> low 2 bits
+        // unused, %4==2 chars -> low 4 bits unused.
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let store = IdentityStore::new_ephemeral();
+        let (token, _) = store.register(Some("Alice".to_owned())).await.unwrap();
+        assert!(store.verify_token(&token).await.is_some());
+        let mask: u32 = match token.len() % 4 {
+            3 => 0b01,
+            2 => 0b0001,
+            other => panic!("issued token should end in a partial group, got len%4={other}"),
+        };
+        let mut bytes = token.as_bytes().to_vec();
+        let last = bytes.len() - 1;
+        let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
+        assert_eq!(
+            value & mask,
+            0,
+            "canonical spelling zeroes the trailing bits"
+        );
+        bytes[last] = ALPHABET[(value | mask) as usize];
+        let alias = String::from_utf8(bytes).unwrap();
+        assert_ne!(alias, token);
+        assert!(store.verify_token(&alias).await.is_none());
+        assert!(store.verify_token_client_id(&alias).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_register_admission_bound_at_and_beyond_limit() {
+        // #1766: at the bound the next registration is refused with
+        // the typed capacity error; nothing is deleted to make room.
+        let store = IdentityStore::new_ephemeral_with_limit(Some(2));
+        store.register(Some("A".to_owned())).await.unwrap();
+        store.register(Some("B".to_owned())).await.unwrap();
+        let err = store.register(Some("C".to_owned())).await.unwrap_err();
+        let cap = err
+            .downcast_ref::<IdentityCapacityError>()
+            .expect("typed capacity error");
+        assert_eq!(cap.limit, 2);
+        assert_eq!(cap.registered, 2);
+        assert_eq!(store.clients.read().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_register_admission_bound_concurrent_race() {
+        // #1766: many registrations racing for the last slots —
+        // exactly `limit` succeed, because check + persist + insert
+        // run under one write lock.
+        let store = Arc::new(IdentityStore::new_ephemeral_with_limit(Some(5)));
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let s = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                s.register(Some(format!("racer-{i}"))).await
+            }));
+        }
+        let mut ok = 0;
+        let mut refused = 0;
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(_) => ok += 1,
+                Err(e) => {
+                    assert!(e.downcast_ref::<IdentityCapacityError>().is_some());
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!(ok, 5);
+        assert_eq!(refused, 11);
+        assert_eq!(store.clients.read().await.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_at_capacity_still_works() {
+        // #1766 acceptance pin: the bound refuses NEW registrations
+        // only — an existing identity keeps verifying and refreshing
+        // its token at capacity.
+        let store = IdentityStore::new_ephemeral_with_limit(Some(1));
+        let (token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+        assert!(store.register(Some("Bob".to_owned())).await.is_err());
+        let (fresh, refreshed) = store.verify_and_refresh(&token).await.unwrap();
+        assert_eq!(refreshed.client_id, identity.client_id);
+        assert!(store.verify_token(&fresh).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_restart_at_bound_serves_existing_refuses_new() {
+        // #1766: records loaded from disk at startup count toward the
+        // bound — a store reopened at capacity admits nobody new but
+        // still serves (and refreshes) everyone it loaded.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identities.redb");
+        let secret = [7u8; 32];
+        let store = IdentityStore::new_with_max_identities(secret, path.clone(), Some(1))
+            .await
+            .unwrap();
+        let (token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+        drop(store);
+
+        let store = IdentityStore::new_with_max_identities(secret, path, Some(1))
+            .await
+            .unwrap();
+        let err = store.register(Some("Bob".to_owned())).await.unwrap_err();
+        assert!(err.downcast_ref::<IdentityCapacityError>().is_some());
+        let (_, refreshed) = store.verify_and_refresh(&token).await.unwrap();
+        assert_eq!(refreshed.client_id, identity.client_id);
     }
 
     #[tokio::test]
@@ -884,5 +1402,385 @@ mod tests {
         // Expired token should be rejected
         assert!(store.verify_token(&expired_token).await.is_none());
         assert!(store.verify_token_client_id(&expired_token).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_future_dated_token_within_and_beyond_skew() {
+        let store = IdentityStore::new_ephemeral();
+        let (_, identity) = store.register(None).await.unwrap();
+        let now = unix_timestamp();
+
+        let within_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS - 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&within_skew).await.is_some());
+
+        let beyond_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS + 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&beyond_skew).await.is_none());
+        assert!(store.verify_token_client_id(&beyond_skew).is_none());
+    }
+
+    /// A token with the given payload and 64 signature bytes, in the wire format.
+    fn token_of(payload: &[u8], signature: &[u8; 64]) -> String {
+        let mut bytes = u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
+        bytes.extend_from_slice(payload);
+        bytes.extend_from_slice(signature);
+        base64url_encode(&bytes)
+    }
+
+    #[test]
+    fn a_token_with_a_non_canonical_s_is_refused() {
+        let store = IdentityStore::new_ephemeral();
+        let token = store.create_token("abc", unix_timestamp()).unwrap();
+        assert!(store.decode_token(&token).is_some());
+        let mut bytes = base64url_decode(&token).unwrap();
+        let split = bytes.len() - 64;
+        let raw: [u8; 64] = bytes[split..].try_into().unwrap();
+        bytes[split..].copy_from_slice(&with_non_canonical_s(raw));
+        assert!(store.decode_token(&base64url_encode(&bytes)).is_none());
+    }
+
+    #[test]
+    fn a_token_under_a_small_order_key_is_refused() {
+        // The key is derived from the server's secret, so a small-order key
+        // cannot arrive through the API. Set it directly to test the check.
+        let mut store = IdentityStore::new_ephemeral();
+        store.verifying_key = VerifyingKey::from_bytes(&IDENTITY_KEY).unwrap();
+        let payload = serde_json::to_vec(&TokenPayload {
+            client_id: "abc".to_owned(),
+            created_at: unix_timestamp(),
+        })
+        .unwrap();
+        let token = token_of(&payload, &identity_forgery());
+        assert!(store.decode_token(&token).is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // Encrypted redb store
+    // -------------------------------------------------------------------------
+
+    /// Key for the in-memory table tests.
+    const TABLE_KEY: [u8; 32] = [3u8; 32];
+
+    /// Secret key for the store tests, which open real files.
+    const STORE_SECRET: [u8; 32] = [7u8; 32];
+
+    /// Set only in the child process of `test_second_process_cannot_open_store`.
+    const PROBE_PATH_ENV: &str = "ID_IDENTITY_PROBE_PATH";
+
+    fn identity_record(client_id: &str, name: Option<&str>) -> ClientIdentity {
+        ClientIdentity {
+            client_id: client_id.to_owned(),
+            name: name.map(str::to_owned),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        }
+    }
+
+    /// An empty redb file in memory, so the sealing tests never fsync.
+    fn in_memory_file() -> Database {
+        Database::builder()
+            .create_with_backend(redb::backends::InMemoryBackend::new())
+            .unwrap()
+    }
+
+    fn in_memory_store() -> IdentityDb {
+        IdentityDb::load(in_memory_file(), &TABLE_KEY).unwrap().0
+    }
+
+    /// The value stored under `client_id`, exactly as the file holds it.
+    fn raw_value(store: &IdentityDb, client_id: &str) -> Vec<u8> {
+        let txn = store.db.begin_read().unwrap();
+        let table = txn.open_table(IDENTITIES).unwrap();
+        table.get(client_id).unwrap().unwrap().value().to_vec()
+    }
+
+    /// The nonce at the front of the value stored under `client_id`.
+    fn raw_nonce(store: &IdentityDb, client_id: &str) -> [u8; NONCE_LEN] {
+        raw_value(store, client_id)[..NONCE_LEN].try_into().unwrap()
+    }
+
+    #[test]
+    fn test_record_round_trips_through_the_table() {
+        let (_, empty) = IdentityDb::load(in_memory_file(), &TABLE_KEY).unwrap();
+        assert!(empty.is_empty());
+
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        store.create(&identity_record("bb22", None)).unwrap();
+
+        let mut records = store.read_all().unwrap();
+        records.sort_by(|a, b| a.client_id.cmp(&b.client_id));
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].client_id, "aa11");
+        assert_eq!(records[0].name.as_deref(), Some("Alice"));
+        assert_eq!(records[0].created_at, 1_700_000_000);
+        assert_eq!(records[1].name, None);
+    }
+
+    #[test]
+    fn test_stored_value_hides_the_name() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice Wonderland")))
+            .unwrap();
+        let value = raw_value(&store, "aa11");
+        assert!(value.len() > NONCE_LEN + 16, "nonce, record and tag");
+        assert!(
+            !value.windows(5).any(|w| w == b"Alice"),
+            "the name must be encrypted"
+        );
+    }
+
+    #[test]
+    fn test_create_refuses_a_stored_client_id() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        let err = store
+            .create(&identity_record("aa11", Some("Mallory")))
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(store.read_all().unwrap()[0].name.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn test_update_overwrites_the_record() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        store.update(&identity_record("aa11", Some("Bob"))).unwrap();
+        let records = store.read_all().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name.as_deref(), Some("Bob"));
+    }
+
+    #[test]
+    fn test_wrong_key_refuses_records_it_did_not_seal() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        let IdentityDb { db, .. } = store;
+        let err = IdentityDb::load(db, &[4u8; 32]).err().unwrap();
+        assert!(err.to_string().contains("failed authentication"), "{err}");
+    }
+
+    #[test]
+    fn test_altered_value_is_refused() {
+        let store = in_memory_store();
+        store
+            .create(&identity_record("aa11", Some("Alice")))
+            .unwrap();
+        let value = raw_value(&store, "aa11");
+        let opened = store.unseal("aa11", &value).unwrap();
+        assert_eq!(opened.name.as_deref(), Some("Alice"));
+
+        // Flipping any single bit of the nonce, ciphertext or tag must fail.
+        for byte in 0..value.len() {
+            for bit in 0..8u8 {
+                let mut altered = value.clone();
+                altered[byte] ^= 1u8 << bit;
+                assert!(
+                    store.unseal("aa11", &altered).is_err(),
+                    "byte {byte} bit {bit} was accepted"
+                );
+            }
+        }
+        // The same bytes under another client ID: the ID is the associated data.
+        assert!(store.unseal("bb22", &value).is_err());
+        // Truncated: inside the nonce, and a whole nonce with no tag.
+        assert!(store.unseal("aa11", &value[..5]).is_err());
+        assert!(store.unseal("aa11", &value[..NONCE_LEN + 15]).is_err());
+    }
+
+    #[test]
+    fn test_nonces_never_repeat_across_random_writes() {
+        proptest!(ProptestConfig::with_cases(64), |(
+            writes in prop::collection::vec((0usize..4, prop::option::of("[a-z]{0,12}")), 1..200),
+        )| {
+            let store = in_memory_store();
+            let ids: Vec<String> = (0..4).map(|i| format!("{i:032x}")).collect();
+            let mut seen = HashSet::new();
+            for id in &ids {
+                store.create(&identity_record(id, None)).unwrap();
+                prop_assert!(seen.insert(raw_nonce(&store, id)), "nonce reused by create of {id}");
+            }
+            for (index, name) in &writes {
+                let id = &ids[*index];
+                store.update(&identity_record(id, name.as_deref())).unwrap();
+                prop_assert!(seen.insert(raw_nonce(&store, id)), "nonce reused by update of {id}");
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn test_records_survive_close_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let (token, client_id) = {
+            let store = IdentityStore::new(STORE_SECRET, path.clone())
+                .await
+                .unwrap();
+            let (token, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+            store
+                .update_name(&identity.client_id, Some("Bob".to_owned()))
+                .await
+                .unwrap();
+            (token, identity.client_id)
+        };
+
+        let store = IdentityStore::new(STORE_SECRET, path).await.unwrap();
+        let reopened = store.verify_token(&token).await.unwrap();
+        assert_eq!(reopened.client_id, client_id);
+        assert_eq!(reopened.name.as_deref(), Some("Bob"));
+        assert_eq!(store.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_wrong_key_refuses_to_open_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        {
+            let store = IdentityStore::new(STORE_SECRET, path.clone())
+                .await
+                .unwrap();
+            store.register(Some("Alice".to_owned())).await.unwrap();
+        }
+        let err = IdentityStore::new([8u8; 32], path).await.unwrap_err();
+        assert!(err.to_string().contains("failed authentication"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_creation_leaves_only_the_store_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let store = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        assert!(path.exists());
+        assert!(!creating_path(&path).exists());
+        drop(store);
+    }
+
+    #[tokio::test]
+    async fn test_stale_creating_file_is_replaced() {
+        // What an interrupted creation leaves: bytes under the temporary name, no valid header.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        std::fs::write(creating_path(&path), [0xAB; 4096]).unwrap();
+
+        let store = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        assert_eq!(store.len().await, 0);
+        assert!(!creating_path(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn test_torn_store_file_is_refused() {
+        // Creation never leaves a file at the store's name, so a torn one is not a state the store
+        // makes. It is refused with an error, not replaced.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        std::fs::write(&path, [0xAB; 4096]).unwrap();
+
+        let err = IdentityStore::new(STORE_SECRET, path).await.unwrap_err();
+        assert!(
+            err.to_string().contains("failed to open identity store"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tampered_file_refuses_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let client_id = {
+            let store = IdentityStore::new(STORE_SECRET, path.clone())
+                .await
+                .unwrap();
+            let (_, identity) = store.register(Some("Alice".to_owned())).await.unwrap();
+            identity.client_id
+        };
+
+        // Flip the last bit of the stored tag, straight through redb.
+        let file = Database::create(&path).unwrap();
+        let txn = file.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(IDENTITIES).unwrap();
+            let mut value = table
+                .get(client_id.as_str())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            let last = value.len() - 1;
+            value[last] ^= 1;
+            table.insert(client_id.as_str(), value.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+        drop(file);
+
+        let err = IdentityStore::new(STORE_SECRET, path).await.unwrap_err();
+        assert!(err.to_string().contains("failed authentication"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_second_process_cannot_open_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.redb");
+        let held = IdentityStore::new(STORE_SECRET, path.clone())
+            .await
+            .unwrap();
+        held.register(Some("Alice".to_owned())).await.unwrap();
+
+        // Run the probe test in a child process, which finds the path in its environment.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "web::identity::tests::test_second_open_probe",
+                "--nocapture",
+            ])
+            .env(PROBE_PATH_ENV, &path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "probe failed:\n{stdout}");
+        assert!(
+            stdout.contains("PROBE: identity store")
+                && stdout.contains("already open in another process"),
+            "the child should be refused with a clear error:\n{stdout}"
+        );
+
+        // The refused open leaves the file intact for the process that holds it.
+        drop(held);
+        let reopened = IdentityStore::new(STORE_SECRET, path).await.unwrap();
+        assert_eq!(reopened.len().await, 1);
+    }
+
+    /// The child half of [`test_second_process_cannot_open_store`]. It does nothing
+    /// unless the probe path is set, so an ordinary test run passes it with no effect.
+    #[tokio::test]
+    async fn test_second_open_probe() {
+        let Some(path) = std::env::var_os(PROBE_PATH_ENV) else {
+            return;
+        };
+        match IdentityStore::new(STORE_SECRET, PathBuf::from(path)).await {
+            Ok(_) => println!("PROBE: opened"),
+            Err(e) => println!("PROBE: {e}"),
+        }
     }
 }

@@ -23,6 +23,10 @@
 // ERAMCP_DISCOVER_DELAY delays the discover answer (a slow-starting server).
 // ERAMCP_SUPPORTED overrides the versions a modern server supports
 // (comma-separated); a discover asking for another gets -32022.
+// ERAMCP_LIST_DELAY delays tools/list answers (a slow catalogue read).
+// ERAMCP_TTL_MS, when set, is declared as ttlMs on tools/list results
+// (may be 0 or negative); ERAMCP_CACHE_SCOPE likewise as cacheScope.
+// Both exist for the #1602 pool-cache tests.
 package main
 
 import (
@@ -30,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,7 +55,15 @@ var (
 	// initialized is set once this process has answered initialize: the
 	// session is legacy from then on.
 	initialized atomic.Bool
+	// answered receives a reply to a request this server sent. handle()
+	// tells such a frame from a request by its empty method, which it used
+	// to answer with -32601.
+	answered = make(chan struct{}, 1)
 )
+
+func textResult(s string) map[string]any {
+	return map[string]any{"content": []any{map[string]any{"type": "text", "text": s}}}
+}
 
 func main() {
 	if s := os.Getenv("ERAMCP_SUPPORTED"); s != "" {
@@ -82,8 +95,8 @@ func record(method string) {
 	if err != nil {
 		return
 	}
-	defer fh.Close()
-	fmt.Fprintln(fh, method)
+	defer func() { _ = fh.Close() }()
+	_, _ = fmt.Fprintln(fh, method)
 }
 
 func send(v map[string]any) {
@@ -91,9 +104,9 @@ func send(v map[string]any) {
 	b, _ := json.Marshal(v)
 	writeMu.Lock()
 	defer writeMu.Unlock()
-	out.Write(b)
-	out.WriteByte('\n')
-	out.Flush()
+	_, _ = out.Write(b)
+	_ = out.WriteByte('\n')
+	_ = out.Flush()
 }
 
 func ok(id json.RawMessage, result any) { send(map[string]any{"id": id, "result": result}) }
@@ -112,6 +125,14 @@ func modern() bool { return mode == "modern" || mode == "dual" }
 func handle(f frame) {
 	if len(f.ID) == 0 {
 		return // a notification
+	}
+	if f.Method == "" {
+		// A reply to a request this server sent: ask-server reports it.
+		select {
+		case answered <- struct{}{}:
+		default:
+		}
+		return
 	}
 	switch f.Method {
 	case "initialize":
@@ -157,13 +178,30 @@ func handle(f frame) {
 		ok(f.ID, map[string]any{})
 		return
 	case "tools/list":
-		ok(f.ID, map[string]any{"tools": []any{map[string]any{
+		if d := os.Getenv("ERAMCP_LIST_DELAY"); d != "" {
+			if dur, err := time.ParseDuration(d); err == nil {
+				time.Sleep(dur)
+			}
+		}
+		res := map[string]any{"tools": []any{map[string]any{
 			"name": "hello", "description": "says hello",
 			"inputSchema": map[string]any{"type": "object"},
 		}, map[string]any{
 			"name": "ask", "description": "asks a question, the 2026-07-28 way",
 			"inputSchema": map[string]any{"type": "object"},
-		}}})
+		}, map[string]any{
+			"name": "ask-server", "description": "sends one server-initiated request and says whether the client answered",
+			"inputSchema": map[string]any{"type": "object"},
+		}}}
+		if v := os.Getenv("ERAMCP_TTL_MS"); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				res["ttlMs"] = n
+			}
+		}
+		if v := os.Getenv("ERAMCP_CACHE_SCOPE"); v != "" {
+			res["cacheScope"] = v
+		}
+		ok(f.ID, res)
 		return
 	case "tools/call":
 		var call struct {
@@ -171,6 +209,25 @@ func handle(f frame) {
 			InputResponses map[string]json.RawMessage `json:"inputResponses"`
 		}
 		_ = json.Unmarshal(f.Params, &call)
+		if call.Name == "ask-server" {
+			// One server-initiated request, the mechanism 2026-07-28 forbids
+			// the client to answer. Under the default policy mcpx drops it
+			// and this ends "dropped"; with 2026-07-28 lenient, "answered"
+			// (#2212, spec.Governs).
+			select {
+			case <-answered: // a stale reply from an earlier call
+			default:
+			}
+			send(map[string]any{"jsonrpc": "2.0", "id": 9001,
+				"method": "roots/list", "params": map[string]any{}})
+			select {
+			case <-answered:
+				ok(f.ID, textResult("answered"))
+			case <-time.After(2 * time.Second):
+				ok(f.ID, textResult("dropped"))
+			}
+			return
+		}
 		if call.Name == "ask" && !initialized.Load() {
 			// The 2026-07-28 way to ask: answer input_required and expect
 			// the same request again with the answer attached.

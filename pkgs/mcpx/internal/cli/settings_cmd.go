@@ -9,9 +9,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // CmdSettings reads and changes settings.
@@ -79,12 +79,12 @@ func (a *App) settingsList(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SETTING\tVALUE\tFROM\tSCOPE\tHOT")
+	_, _ = fmt.Fprintln(tw, "SETTING\tVALUE\tFROM\tSCOPE\tHOT")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 			r.Path, quoteEmpty(r.Value), r.Source, r.Scope, yesNo(r.Hot))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	if !*withPlumbing {
 		fmt.Println("\n(--plumbing also lists internal settings; --daemon shows what the daemon resolved)")
 	}
@@ -384,12 +384,49 @@ func (a *App) CmdServers(ctx context.Context, args []string) error {
 	switch sub {
 	case "list", "ls":
 		return a.serversList(ctx)
+	case "show":
+		return a.serversShow(ctx, args)
 	case "add":
 		return a.serversAdd(ctx, args)
 	case "remove", "rm", "delete":
 		return a.serversRemove(ctx, args)
 	}
-	return fmt.Errorf("no servers subcommand %q; list, add or remove", sub)
+	return fmt.Errorf("no servers subcommand %q; list, show, add or remove", sub)
+}
+
+// serversShow is one server's entry, and whether it can run now and what
+// it is waiting for. Waiting is the answer most often wanted here, so it is
+// printed in words rather than left to the JSON.
+func (a *App) serversShow(ctx context.Context, args []string) error {
+	fs := newFlagSet("servers")
+	if err := parseFlags(a, fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: mcpx servers show <name>")
+	}
+	name := fs.Arg(0)
+	c, err := a.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := c.Do(ctx, http.MethodGet, "/v1/servers/"+urlEscape(name), nil)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.out(out)
+	}
+	raw, _ = json.MarshalIndent(out, "", "  ")
+	fmt.Println(string(raw))
+	if missing, _ := out["missingSecrets"].([]any); len(missing) > 0 {
+		fmt.Printf("\n%s is waiting for %d secret(s). Give each one with `mcpx secrets set <NAME>`.\n", name, len(missing))
+	}
+	return nil
 }
 
 func (a *App) serversList(ctx context.Context) error {
@@ -415,7 +452,7 @@ func (a *App) serversList(ctx context.Context) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tNAMESPACE\tHOW\tDEFINED IN")
+	_, _ = fmt.Fprintln(tw, "NAME\tNAMESPACE\tHOW\tDEFINED IN")
 	for _, s := range out.Servers {
 		how, _ := s["command"].(string)
 		if how == "" {
@@ -428,7 +465,7 @@ func (a *App) serversList(ctx context.Context) error {
 			}
 			how += " " + strings.Join(parts, " ")
 		}
-		fmt.Fprintf(tw, "%v\t%v\t%s\t%v\n", s["name"], s["namespace"], truncate(how, 48), s["from"])
+		_, _ = fmt.Fprintf(tw, "%v\t%v\t%s\t%v\n", s["name"], s["namespace"], truncate(how, 48), s["from"])
 	}
 	return tw.Flush()
 }
@@ -466,8 +503,7 @@ func (a *App) serversAdd(ctx context.Context, args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: mcpx servers add <name> -- <command> [args...]\n" +
-			"       mcpx servers add <name> --url https://...")
+		return fmt.Errorf("usage: mcpx servers add <name> -- <command> [args...]\n       mcpx servers add <name> --url https://example.com")
 	}
 	name := fs.Arg(0)
 	command := ""

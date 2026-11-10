@@ -1,0 +1,2 @@
+    Checking seitan-v2 v0.0.0 (/home/user/work/spikes-next/s9-seitan/seitan-v2)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s

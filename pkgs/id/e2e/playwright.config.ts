@@ -26,6 +26,14 @@ import { defineConfig, devices } from "@playwright/test";
 // Each browser project gets its own ephemeral server on a different port
 // to avoid shared state issues (e.g., files created in chromium tests
 // appearing in firefox tests).
+//
+// NOTE (#229): that isolates browsers, not spec files — every spec in a
+// project shares that project's server (and its in-memory store) for the
+// whole invocation. Runners therefore invoke Playwright once per spec
+// file so each file gets a fresh ephemeral server: see the test-e2e
+// check in ../flake.nix and the test-e2e* recipes in ../justfile. A
+// single full-suite invocation (e.g. `bunx playwright test` with no file
+// argument) does NOT have per-spec isolation.
 const CHROMIUM_PORT = Number(process.env.TEST_PORT) || 4173;
 const FIREFOX_PORT = CHROMIUM_PORT + 1;
 
@@ -82,8 +90,19 @@ const firefoxProject = {
 // In VM test or local: both browsers (each VM runs one browser via --project).
 const projects = IS_NIX_BUILD && !IS_VM_TEST ? [firefoxProject] : [chromiumProject, firefoxProject];
 
+// World E2E (#1322): the world-surface spec joins the lobby world, so the
+// test servers host one with the roc-screen fixture program (a Screen-surface
+// counter: "+" keypresses and pastes increment it, layout reflows 30<->20
+// columns). The fixture is checked in under e2e/fixtures so the spec needs
+// no Roc toolchain; refresh it from examples/roc-screen after a platform ABI
+// change. The token must match the spec default (and the NixOS VM wiring in
+// nix/tests/playwright-e2e-test.nix); override with ID_E2E_WORLD_ADMIN_TOKEN
+// in all three places at once.
+const WORLD_ADMIN_TOKEN = process.env.ID_E2E_WORLD_ADMIN_TOKEN ?? "e2e-world-admin-token";
+const WORLD_FLAGS = `--world --world-admin-token ${WORLD_ADMIN_TOKEN} --world-module fixtures/roc-screen.wasm`;
+
 const chromiumServer = {
-  command: `../target/debug/id serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS}`,
+  command: `../target/debug/id serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
   port: CHROMIUM_PORT,
   reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
   timeout: 60_000,
@@ -92,7 +111,7 @@ const chromiumServer = {
 };
 
 const firefoxServer = {
-  command: `../target/debug/id serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS}`,
+  command: `../target/debug/id serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
   port: FIREFOX_PORT,
   reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
   timeout: 60_000,

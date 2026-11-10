@@ -1,0 +1,52 @@
+# Fast PR checks for pkgs/id — the canonical list built by id-check.yml.
+#
+# One check name per line (a checks.x86_64-linux attribute of
+# pkgs/id/flake.nix). check-id-pr-checks.sh guards this list against the
+# flake: a flake check that is neither listed here nor excluded there
+# fails the PR gate by name, as does a listed name the flake no longer
+# defines.
+#
+# Intentionally NOT listed (see check-id-pr-checks.sh for the single
+# exclusion list): the `default` aggregate, which re-runs this same set
+# inside a single derivation, and the heavy checks that run nightly in
+# id-e2e-nightly.yml (test-e2e and the nixos-* VM checks). Also not
+# listed: the aggregate test recipes `test`, `test-web` and `test-int`
+# — the test-shard-* checks below plus test-unit, test-web-unit and
+# test-web-typecheck cover every test they run, in parallel (#869).
+# Also not listed: the aggregate `crash-gate` — the crash-gate-*
+# checks below partition its tests by name filter in parallel (#551).
+cargo-fmt-check
+rustfmt-check
+web-fmt-check
+prettier-check
+nix-fmt-check
+treefmt-check
+biome-check
+shellcheck-check
+shfmt-check
+statix-check
+taplo-check
+justfmt-check
+clippy-lint
+clippy-native-shell
+web-lint
+cargo-check
+prod-lines-check
+test-unit
+test-native-shell
+test-shard-0
+test-shard-1
+test-shard-2
+test-shard-3
+test-web-unit
+test-web-typecheck
+roc-test
+roc-examples
+crash-gate-sampled
+crash-gate-sweep
+crash-gate-control
+crash-gate-ingest
+just-recipes-drift
+build-sh-test
+just-recipes-alias-admission
+doc

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
 )
 
 const null = "\x00null"
@@ -155,6 +155,54 @@ func TestListReportsEveryNameNearestWinning(t *testing.T) {
 	}
 }
 
+func TestListDoesNotReportAShadowedOverlapAsAmbiguous(t *testing.T) {
+	// A nearer entry already decided the name, so a .ts/.js pair further
+	// down the path is never consulted -- Find resolves it cleanly and List
+	// must not contradict that by both naming and warning about it.
+	near, far := t.TempDir(), t.TempDir()
+	_ = os.WriteFile(filepath.Join(near, "shared.ts"), []byte("near"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "shared.ts"), []byte("far ts"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "shared.js"), []byte("far js"), 0o644)
+
+	got := searchpath.Resolve([]string{near, far}, null, searchpath.Options{Dir: near})
+	names, amb := got.List(searchpath.FindOptions{Extensions: []string{".ts", ".js"}})
+	if len(amb) != 0 {
+		t.Errorf("the shadowed pair should not be ambiguous: %v", amb)
+	}
+	if strings.Join(names, ",") != "shared" {
+		t.Errorf("shared should be listed once and nothing else: %v", names)
+	}
+}
+
+func TestListReportsAnOverlapOnlyWhereItIsNearest(t *testing.T) {
+	// The nearest occurrence of the name is the coin flip; a farther plain
+	// copy must not quietly stand in for it, which is what Find refuses too.
+	near, far := t.TempDir(), t.TempDir()
+	_ = os.WriteFile(filepath.Join(near, "both.ts"), []byte("ts"), 0o644)
+	_ = os.WriteFile(filepath.Join(near, "both.js"), []byte("js"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "both.ts"), []byte("far"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "only-far.ts"), []byte("x"), 0o644)
+
+	got := searchpath.Resolve([]string{near, far}, null, searchpath.Options{Dir: near})
+	names, amb := got.List(searchpath.FindOptions{Extensions: []string{".ts", ".js"}})
+	if len(amb) != 1 || amb[0].Name != "both" || len(amb[0].Paths) != 2 {
+		t.Fatalf("the nearest pair should be the one reported: %v", amb)
+	}
+	for _, p := range amb[0].Paths {
+		if !strings.HasPrefix(p, near) {
+			t.Errorf("only the nearest pair belongs in the ambiguity: %v", amb[0].Paths)
+		}
+	}
+	for _, n := range names {
+		if n == "both" {
+			t.Errorf("an ambiguous name should not also be listed: %v", names)
+		}
+	}
+	if strings.Join(names, ",") != "only-far" {
+		t.Errorf("the farther plain copy must not stand in for the ambiguous one: %v", names)
+	}
+}
+
 func TestDescribeMarksWhatIsMissingAndWhatIsAFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "f.ts")
@@ -182,5 +230,46 @@ func TestMissingEntriesAreKeptUnlessAskedOtherwise(t *testing.T) {
 	})
 	if len(pruned.Entries) != 0 {
 		t.Errorf("dropped when asked: %+v", pruned.Entries)
+	}
+}
+
+func TestOnlyBareTildeAndTildeSlashExpandHome(t *testing.T) {
+	// #1702, rule pinned by triage task 1921: only a bare ~ and ~/...
+	// name the caller's home. A ~name entry is not expanded -- the
+	// tilde survives as a literal first segment of an ordinary
+	// relative entry -- because resolving it under the caller's home
+	// silently searches a lookalike directory (and invents one for
+	// users that do not exist), while a passwd lookup would answer
+	// differently for the CLI user and the daemon user.
+	t.Setenv("HOME", "/home/testhome")
+	got := searchpath.Resolve([]string{
+		"~", "~/scripts", "~alice/scripts", "~nosuchuser/scripts", "~scratch",
+	}, null, searchpath.Options{Dir: "/w"})
+	want := []string{
+		"/home/testhome",
+		"/home/testhome/scripts",
+		"/w/~alice/scripts",
+		"/w/~nosuchuser/scripts",
+		"/w/~scratch",
+	}
+	if len(got.Entries) != len(want) {
+		t.Fatalf("entries = %+v", got.Entries)
+	}
+	for i, w := range want {
+		if got.Entries[i].Path != w {
+			t.Errorf("entry %d = %q, want %q", i, got.Entries[i].Path, w)
+		}
+	}
+	// Describe renders what Find/List actually search, so a reader
+	// can see the literal ~name directory instead of a rewritten
+	// path under the caller's home.
+	d := got.Describe()
+	for _, w := range want {
+		if !strings.Contains(d, w) {
+			t.Errorf("Describe() does not mention %q:\n%s", w, d)
+		}
+	}
+	if strings.Contains(d, "/home/testhome/alice") || strings.Contains(d, "/home/testhome/scratch") {
+		t.Errorf("Describe() still rewrites a ~name entry under the caller's home:\n%s", d)
 	}
 }

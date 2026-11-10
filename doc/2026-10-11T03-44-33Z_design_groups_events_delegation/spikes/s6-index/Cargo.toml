@@ -1,0 +1,16 @@
+[package]
+name = "s6-index"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Spike S6: local index storage, redb versus SQLite (WAL)"
+
+# Own workspace root. This spike is not a member of /home/user/work/spikes.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+hex = "0.4"
+redb = "=4.3.0"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }

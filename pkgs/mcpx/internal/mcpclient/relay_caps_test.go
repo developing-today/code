@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // metaCaps is the clientCapabilities the last request of method declared.
@@ -165,7 +165,7 @@ func TestAJSONBodyIsReadMessageByMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sent := make(chan error, 1)
@@ -212,7 +212,7 @@ func TestAJSONBodyIsReadMessageByMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tr2.Close()
+	defer func() { _ = tr2.Close() }()
 	if err := tr2.Send(ctx, []byte(`{"jsonrpc":"2.0","id":2,"method":"ping"}`)); err != nil {
 		t.Fatal(err)
 	}

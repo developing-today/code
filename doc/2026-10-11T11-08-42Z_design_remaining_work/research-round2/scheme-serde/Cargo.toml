@@ -1,0 +1,29 @@
+[package]
+name = "scheme-serde"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+# Standalone crate, not a member of the spikes workspace (BRIEF rule 4). The three path copies are
+# excluded so that cargo does not treat them as workspace members.
+[workspace]
+exclude = [
+  "variants/both/p2panda-encryption",
+  "variants/inner/p2panda-encryption",
+  "variants/outer/p2panda-encryption",
+]
+
+[dependencies]
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+cbor-core = "=0.10.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_bytes = "0.11.19"
+# Stock crate, as pinned (the baseline).
+p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["data_scheme", "test_utils"] }
+# Pinned source plus `serde_bytes` on both fields (the option (b) diff).
+p2panda-encryption-both = { package = "p2panda-encryption-both", path = "variants/both/p2panda-encryption", features = ["data_scheme", "test_utils"] }
+# Only the `TwoPartyPlaintext.plaintext` field annotated (inner layer).
+p2panda-encryption-inner = { package = "p2panda-encryption-inner", path = "variants/inner/p2panda-encryption", features = ["data_scheme", "test_utils"] }
+# Only the `X3dhCiphertext.ciphertext` field annotated (outer layer).
+p2panda-encryption-outer = { package = "p2panda-encryption-outer", path = "variants/outer/p2panda-encryption", features = ["data_scheme", "test_utils"] }

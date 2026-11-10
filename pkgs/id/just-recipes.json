@@ -78,6 +78,64 @@
           "namepath": "root::chown",
           "shebang": true
         },
+        "deploy-developing-today-backup": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [["nix run .#developing-today-backup-deploy -- ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Deploy the developing-today-backup Worker via the nix flake app (wrangler versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+          "name": "deploy-developing-today-backup",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::deploy-developing-today-backup",
+          "shebang": false
+        },
+        "deploy-pkarr": {
+          "attributes": [{ "group": "pkarr" }],
+          "body": [["nix run .#pkarr-deploy -- ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Deploy the pkarr Worker via the nix flake app (cf versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+          "name": "deploy-pkarr",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::deploy-pkarr",
+          "shebang": false
+        },
         "fix": {
           "attributes": [{ "group": "format" }],
           "body": [],
@@ -138,6 +196,51 @@
           "private": false,
           "quiet": false,
           "namepath": "root::fmt",
+          "shebang": false
+        },
+        "github-backup-fetch": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [
+            ["systemctl --user start github-backup-fetch.service"],
+            ["@systemctl --user status github-backup-fetch.service --no-pager | head -5"]
+          ],
+          "dependencies": [],
+          "doc": "Run the github-backup daily fetch now (via the installed systemd unit)",
+          "name": "github-backup-fetch",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-fetch",
+          "shebang": false
+        },
+        "github-backup-reconcile": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [
+            ["systemctl --user start github-backup-reconcile.service"],
+            ["@systemctl --user status github-backup-reconcile.service --no-pager | head -5"]
+          ],
+          "dependencies": [],
+          "doc": "Run the github-backup weekly reconciliation sweep now (via the installed systemd unit)",
+          "name": "github-backup-reconcile",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-reconcile",
+          "shebang": false
+        },
+        "github-backup-units": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [["bash infra/github-backup/systemd/install-units.sh"]],
+          "dependencies": [],
+          "doc": "Install or refresh the github-backup laptop systemd units from this checkout",
+          "name": "github-backup-units",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-units",
           "shebang": false
         },
         "id-mail-deploy": {
@@ -250,6 +353,65 @@
           "namepath": "root::mcpx-stop",
           "shebang": false
         },
+        "mcpx-test-affected": {
+          "attributes": [{ "group": "util" }],
+          "body": [
+            ["python3 pkgs/mcpx/scripts/affected-tests.py --base ", [["variable", "base"]], " ", [["variable", "args"]]]
+          ],
+          "dependencies": [],
+          "doc": "agent test tiers from code#1966 (policy: pkgs/mcpx/TESTING.md)",
+          "name": "mcpx-test-affected",
+          "parameters": [
+            {
+              "default": "origin/main",
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "singular",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "base",
+              "pattern": null,
+              "short": null,
+              "value": null
+            },
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::mcpx-test-affected",
+          "shebang": false
+        },
+        "rebuild": {
+          "attributes": [{ "group": "nixos" }],
+          "body": [["#!/usr/bin/env bash"], ["set -euo pipefail"], ["just update-inputs-all"], ["just switch"]],
+          "dependencies": [],
+          "doc": "Update all flake inputs, then rebuild and switch NixOS configuration",
+          "name": "rebuild",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::rebuild",
+          "shebang": true
+        },
         "stage-docs": {
           "attributes": [{ "group": "docs" }],
           "body": [["./scripts/stage-docs.sh ", [["variable", "args"]]]],
@@ -343,7 +505,9 @@
             ["#!/usr/bin/env bash"],
             ["set -euo pipefail"],
             ["git grep -rl '[[:space:]]$' -- \\"],
-            ["  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \\"],
+            [
+              "  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \\"
+            ],
             ["  ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \\"],
             [
               "  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \\"
@@ -354,6 +518,7 @@
             ["  ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \\"],
             ["  2>/dev/null | while IFS= read -r f; do"],
             ["  case \"$f\" in"],
+            ["    */transcript.txt) continue ;;"],
             ["    */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;"],
             ["    */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;"],
             ["    */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;"],
@@ -662,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/code/root.just",
+      "source": "/home/user/git/fleet/6592/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -680,7 +845,6 @@
     "nix-check": { "attributes": [], "name": "nix-check", "target": "test-nix" },
     "release-force": { "attributes": [], "name": "release-force", "target": "release-web-force" },
     "test-cargo": { "attributes": [], "name": "test-cargo", "target": "test-rust" },
-    "test-full": { "attributes": [], "name": "test-full", "target": "test-nix" },
     "test-int": { "attributes": [], "name": "test-int", "target": "test-integration" },
     "test-lib": { "attributes": [], "name": "test-lib", "target": "test-unit" },
     "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
@@ -744,6 +908,35 @@
       "private": false,
       "quiet": false,
       "namepath": "audit",
+      "shebang": false
+    },
+    "bench": {
+      "attributes": [],
+      "body": [["cargo bench --bench world_bench -- ", [["variable", "args"]]]],
+      "dependencies": [],
+      "doc": "Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out",
+      "name": "bench",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "bench",
       "shebang": false
     },
     "build": {
@@ -1271,10 +1464,13 @@
         { "arguments": [], "recipe": "web-fmt-check", "star": null },
         { "arguments": [], "recipe": "cargo-check", "star": null },
         { "arguments": [], "recipe": "clippy-lint", "star": null },
+        { "arguments": [], "recipe": "clippy-native-shell", "star": null },
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
+        { "arguments": [], "recipe": "test-native-shell", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
+        { "arguments": [], "recipe": "roc-test", "star": null },
         { "arguments": [], "recipe": "doc", "star": null },
         { "arguments": [], "recipe": "build", "star": null },
         { "arguments": [], "recipe": "release", "star": null }
@@ -1282,7 +1478,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 11,
+      "priors": 14,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -1327,6 +1523,19 @@
       "namepath": "clippy-lint-fix",
       "shebang": false
     },
+    "clippy-native-shell": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["cargo clippy -p id-native-shell --all-targets"]],
+      "dependencies": [],
+      "doc": "Clippy for id-native-shell (#5582): non-default workspace member, so the default-member clippy-lint never sees it.",
+      "name": "clippy-native-shell",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "clippy-native-shell",
+      "shebang": false
+    },
     "coverage": {
       "attributes": [{ "group": "docs" }],
       "body": [["cargo llvm-cov --html"]],
@@ -1364,6 +1573,88 @@
       "private": false,
       "quiet": false,
       "namepath": "coverage-summary",
+      "shebang": false
+    },
+    "crash-gate": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --skip write_corpus --include-ignored"],
+        ["@echo \"✓ Crash gate passed\""]
+      ],
+      "dependencies": [],
+      "doc": "Crash-safety gate for redb and the identity store: every storage call under every survival policy, and the lying-sync control, in release",
+      "name": "crash-gate",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate",
+      "shebang": false
+    },
+    "crash-gate-control": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        [
+          "cargo test --release --features web --test crash -- --include-ignored full_lying_sync_control_produces_failures"
+        ],
+        ["@echo \"✓ Crash gate (full lying-sync controls) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-control",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-control",
+      "shebang": false
+    },
+    "crash-gate-ingest": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --include-ignored ingest_survives_every_crash_point"],
+        ["@echo \"✓ Crash gate (full ingest sweep) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-ingest",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-ingest",
+      "shebang": false
+    },
+    "crash-gate-sampled": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --skip write_corpus"],
+        ["@echo \"✓ Crash gate (sampled + corpus replay) passed\""]
+      ],
+      "dependencies": [],
+      "doc": "losing all PR coverage.",
+      "name": "crash-gate-sampled",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-sampled",
+      "shebang": false
+    },
+    "crash-gate-sweep": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --include-ignored full_sweep_has_no_failures"],
+        ["@echo \"✓ Crash gate (full sweeps) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-sweep",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-sweep",
       "shebang": false
     },
     "default": {
@@ -1498,6 +1789,19 @@
       "private": false,
       "quiet": false,
       "namepath": "just-recipes",
+      "shebang": false
+    },
+    "just-recipes-check": {
+      "attributes": [{ "group": "deps" }],
+      "body": [["bash scripts/just-recipes-check.sh"]],
+      "dependencies": [],
+      "doc": "Fail when just-recipes.json has drifted from this justfile (#2729)",
+      "name": "just-recipes-check",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "just-recipes-check",
       "shebang": false
     },
     "kill": {
@@ -1699,6 +2003,32 @@
       "namepath": "outdated",
       "shebang": false
     },
+    "planted-bug-check": {
+      "attributes": [{ "group": "test" }],
+      "body": [["bash tests/planted-bug-check.sh"]],
+      "dependencies": [],
+      "doc": "Planted-bug check: prove the voiding/frontier suites catch planted bugs (#1395, P2.3/P2.8)",
+      "name": "planted-bug-check",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "planted-bug-check",
+      "shebang": false
+    },
+    "prod-lines-check": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["bash scripts/prod-lines-check.sh && bash scripts/prod-lines-check-test.sh"]],
+      "dependencies": [],
+      "doc": "the companion self-test proves the guard fails, not just that it passes",
+      "name": "prod-lines-check",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "prod-lines-check",
+      "shebang": false
+    },
     "release": {
       "attributes": [{ "group": "build" }],
       "body": [["./scripts/build.sh web release"]],
@@ -1795,6 +2125,19 @@
       "private": false,
       "quiet": false,
       "namepath": "repl",
+      "shebang": false
+    },
+    "roc-test": {
+      "attributes": [{ "group": "test" }],
+      "body": [["bash scripts/roc-test.sh"]],
+      "dependencies": [],
+      "doc": "Run the Roc library expect() tests (RocJson, Screen, Key) with the pinned Roc compiler (#813)",
+      "name": "roc-test",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "roc-test",
       "shebang": false
     },
     "run": {
@@ -2151,7 +2494,11 @@
     },
     "test-e2e": {
       "attributes": [{ "group": "e2e" }],
-      "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test"]],
+      "body": [
+        [
+          "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test \"$spec\" || exit 1; done"
+        ]
+      ],
       "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (both chromium and firefox)",
       "name": "test-e2e",
@@ -2164,7 +2511,11 @@
     },
     "test-e2e-chromium": {
       "attributes": [{ "group": "e2e" }],
-      "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=chromium"]],
+      "body": [
+        [
+          "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=chromium \"$spec\" || exit 1; done"
+        ]
+      ],
       "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (chromium only)",
       "name": "test-e2e-chromium",
@@ -2177,7 +2528,11 @@
     },
     "test-e2e-firefox": {
       "attributes": [{ "group": "e2e" }],
-      "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=firefox"]],
+      "body": [
+        [
+          "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=firefox \"$spec\" || exit 1; done"
+        ]
+      ],
       "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (firefox only)",
       "name": "test-e2e-firefox",
@@ -2201,9 +2556,29 @@
       "namepath": "test-e2e-report",
       "shebang": false
     },
+    "test-full": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo nextest run --all-features --no-fail-fast"],
+        ["cargo nextest run --all-features --test regression_replay"],
+        [
+          "PROPTEST_CASES=\"${PROPTEST_CASES:-4096}\" ID_TUPLE_FUZZ_CASES=\"${ID_TUPLE_FUZZ_CASES:-20000}\" cargo nextest run --all-features --test tuple_properties"
+        ],
+        ["@echo \"✓ Full Rust test run passed\""]
+      ],
+      "dependencies": [],
+      "doc": "Full Rust run: the complete suite, then the regression replay and the tuple property tests at a higher case count",
+      "name": "test-full",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-full",
+      "shebang": false
+    },
     "test-int-sandbox": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features --test cli_integration -- --skip serve_tests"]],
+      "body": [["cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests)'"]],
       "dependencies": [],
       "doc": "Run integration tests (sandbox-safe: excludes serve_tests requiring network)",
       "name": "test-int-sandbox",
@@ -2216,7 +2591,7 @@
     },
     "test-integration": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features --test cli_integration"]],
+      "body": [["cargo nextest run --all-features --test cli_integration"]],
       "dependencies": [],
       "doc": "Run integration tests only",
       "name": "test-integration",
@@ -2225,6 +2600,19 @@
       "private": false,
       "quiet": false,
       "namepath": "test-integration",
+      "shebang": false
+    },
+    "test-native-shell": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-native-shell"]],
+      "dependencies": [],
+      "doc": "Run the id-native-shell unit + contract transcript tests (#5582): non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-native-shell",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-native-shell",
       "shebang": false
     },
     "test-nix": {
@@ -2312,7 +2700,7 @@
     },
     "test-one": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features ", [["variable", "NAME"]]]],
+      "body": [["cargo nextest run --all-features -E 'test(", [["variable", "NAME"]], ")'"]],
       "dependencies": [],
       "doc": "Run a specific test by name",
       "name": "test-one",
@@ -2341,7 +2729,7 @@
     },
     "test-rust": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features"]],
+      "body": [["cargo nextest run --all-features"], ["cargo test --all-features --doc"]],
       "dependencies": [],
       "doc": "Run all Rust tests",
       "name": "test-rust",
@@ -2354,7 +2742,7 @@
     },
     "test-sandbox": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features -- --skip serve_tests"]],
+      "body": [["cargo nextest run --all-features -E 'not test(serve_tests)'"]],
       "dependencies": [],
       "doc": "Run all Rust tests (sandbox-safe: excludes tests requiring network)",
       "name": "test-sandbox",
@@ -2365,9 +2753,53 @@
       "namepath": "test-sandbox",
       "shebang": false
     },
+    "test-shard-sandbox": {
+      "attributes": [{ "group": "test" }],
+      "body": [["bash scripts/test-shard-sandbox.sh ", [["variable", "SHARD"]], " ", [["variable", "COUNT"]]]],
+      "dependencies": [],
+      "doc": "pair (#869; 3 → 4 shards in #551 to rebalance the ~12.5 min shards).",
+      "name": "test-shard-sandbox",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "SHARD",
+          "pattern": null,
+          "short": null,
+          "value": null
+        },
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "COUNT",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-shard-sandbox",
+      "shebang": false
+    },
     "test-unit": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features --lib"]],
+      "body": [["cargo nextest run --all-features --lib"]],
       "dependencies": [],
       "doc": "Run unit tests only (fast)",
       "name": "test-unit",
@@ -2380,7 +2812,7 @@
     },
     "test-verbose": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features -- --nocapture"]],
+      "body": [["cargo nextest run --all-features --nocapture"]],
       "dependencies": [],
       "doc": "Run tests with output shown",
       "name": "test-verbose",
@@ -2907,7 +3339,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/code/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/14371-6378-nextest/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

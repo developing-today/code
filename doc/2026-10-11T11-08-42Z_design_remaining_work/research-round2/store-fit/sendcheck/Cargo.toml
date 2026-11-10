@@ -1,0 +1,11 @@
+[package]
+name = "sendcheck"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+redb = "=4.3.0"
+tokio = { version = "1", features = ["sync", "rt"] }
+
+[workspace]

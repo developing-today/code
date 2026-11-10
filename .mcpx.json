@@ -1,16 +1,20 @@
 {
   "$schema": "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json",
   "mcpServers": {
-    "codedb": {
-      "command": "/home/user/bin/codedb",
-      "args": ["mcp"],
+    "codex-connectors": {
+      "command": "npx",
+      "args": ["-y", "@wileai/codex-connectors-mcp@0.1.1"],
       "env": {
-        "CODEDB_NO_TELEMETRY": "1"
+        "CODEX_CONNECTORS_ALLOW": "Airtable, ChatGPT Space, Codex Document Control, Context.dev, Context7, DigitalOcean, Dropbox, Engram, Exa, Firecrawl, GitHub, Gmail, Google Calendar, Google Drive, HAPI MCP Registry, Hotline, Lovable, Neon, OpenAI Platform, Parallel Search, Pets, Plugin Management, Railway, Remote Desktop Commander, Replit, Safety Settings, Search Service, Sites, Slack, Sprites, Stack Overflow For Agents, Supabase, tldraw, Todoist: To Do List & Calendar, Vercel, Walmart, Wolfram",
+        "CODEX_CONNECTORS_MODE": "compact"
       }
     },
     "fff": {
       "command": "/home/user/.local/bin/fff-mcp",
-      "args": []
+      "args": [],
+      "mcpx": {
+        "readOnlyTools": ["find_files", "grep", "multi_grep"]
+      }
     },
     "chrome-devtools": {
       "command": "npx",
@@ -34,34 +38,17 @@
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://mcp.context7.com/mcp"]
     },
-    "jules": {
-      "command": "npx",
-      "args": ["-y", "@google/jules-mcp"]
-    },
-    "antigravity-jules-orchestration": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@iflow-mcp/scarmonit-antigravity-jules-orchestration"
-      ]
-    },
     "antigravity": {
       "command": "npx",
       "args": ["-y", "@ask-llm/antigravity-mcp"]
     },
     "desktop-commander": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@wonderwhy-er/desktop-commander"
-      ]
+      "args": ["-y", "@wonderwhy-er/desktop-commander"]
     },
     "sequential-thinking": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ]
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
     },
     "mcp-server-neon": {
       "command": "npx",
@@ -74,6 +61,40 @@
     "gopls-mcp-server": {
       "command": "go",
       "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"]
+    },
+    "codebase-memory": {
+      "command": "npx",
+      "args": ["-y", "codebase-memory-mcp"]
+    },
+    "deepwiki": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.deepwiki.com/mcp"]
+    },
+    "fff-nix": {
+      "command": "/home/user/.local/bin/fff-mcp",
+      "args": ["/home/user/code"],
+      "mcpx": {
+        "readOnlyTools": ["find_files", "grep", "multi_grep"]
+      }
+    },
+    "fff-worktree": {
+      "command": "/home/user/.local/bin/fff-mcp",
+      "args": ["/home/user/.local/share/opencode/worktree"],
+      "mcpx": {
+        "readOnlyTools": ["find_files", "grep", "multi_grep"]
+      }
+    },
+    "codedb": {
+      "command": "node",
+      "args": ["/home/user/git/code/bin/codedb-bridge.mjs"],
+      "env": {
+        "CODEDB_NO_TELEMETRY": "1",
+        "CODEDB_DAEMON_URL": "http://127.0.0.1:7719"
+      }
     }
+  },
+  "repair": {
+    "provider": "opencode",
+    "model": "claude-code/claude-haiku-5-5"
   }
 }

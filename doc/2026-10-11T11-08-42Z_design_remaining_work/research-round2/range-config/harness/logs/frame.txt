@@ -1,0 +1,9 @@
+| events | leaf reply, bytes | payload limit, bytes | over the limit | index RSS, MiB | RSS bytes per event |
+|---|---|---|---|---|---|
+| 50000 | 1600006 | 16777216 | false | 4.7 | 99 |
+| events | leaf reply, bytes | payload limit, bytes | over the limit | index RSS, MiB | RSS bytes per event |
+|---|---|---|---|---|---|
+| 524000 | 16768006 | 16777216 | false | 44.3 | 89 |
+| events | leaf reply, bytes | payload limit, bytes | over the limit | index RSS, MiB | RSS bytes per event |
+|---|---|---|---|---|---|
+| 550000 | 17600006 | 16777216 | true | 46.4 | 88 |

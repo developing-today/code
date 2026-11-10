@@ -1,0 +1,17 @@
+{
+  "customizations": {
+    "vscode": {
+      "extensions": ["mkhl.direnv", "jnoortheen.nix-ide", "golang.Go"]
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25"
+    }
+  },
+  "image": "ghcr.io/developing-today/fleet-build:full",
+  "name": "devtoday-code",
+  "postCreateCommand": "bash -lc 'direnv allow . ; go version ; nix --version ; git --version'",
+  "remoteUser": "vscode"
+}

@@ -30,6 +30,12 @@ fn hostExpectFailed(_: [*]const u8, _: usize) callconv(.c) void {}
 var last_crash: [4096]u8 = undefined;
 var last_crash_len: usize = 0;
 
+const PLAZA_ABI_VERSION: u32 = 1;
+
+export fn plaza_abi_version() u32 {
+    return PLAZA_ABI_VERSION;
+}
+
 fn hostCrashed(bytes: [*]const u8, len: usize) callconv(.c) void {
     last_crash_len = @min(len, last_crash.len);
     @memcpy(last_crash[0..last_crash_len], bytes[0..last_crash_len]);
@@ -88,6 +94,15 @@ export fn plaza_view(model: usize) usize {
 
 /// Structured records projected from the model: a JSON object the host
 /// stores and replicates. Shares the `plaza_out_len` output slot with view.
+/// Render at a connection's viewport; the program decides its own layout.
+export fn plaza_layout(model: usize, width: u64, height: u64) usize {
+    ensure();
+    last_out.decref(&roc_host);
+    abi.increfBox(@ptrFromInt(model), 1);
+    last_out = abi.roc_layout(@ptrFromInt(model), width, height);
+    return @intFromPtr(last_out.asSlice().ptr);
+}
+
 export fn plaza_records(model: usize) usize {
     ensure();
     last_out.decref(&roc_host);

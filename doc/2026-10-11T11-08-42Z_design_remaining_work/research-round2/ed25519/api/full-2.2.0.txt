@@ -1,0 +1,82 @@
+src/context.rs:49:pub struct Context<'k, 'v, K> {
+src/context.rs:59: pub const MAX_LENGTH: usize = 255;
+src/context.rs:62: pub(crate) fn new(key: &'k K, value: &'v [u8]) -> Result<Self, SignatureError> {
+src/context.rs:71: pub fn key(&self) -> &'k K {
+src/context.rs:76: pub fn value(&self) -> &'v [u8] {
+src/verifying.rs:48:pub use self::stream::StreamVerifier;
+src/verifying.rs:63:pub struct VerifyingKey {
+src/verifying.rs:120: pub fn to_bytes(&self) -> [u8; PUBLIC_KEY_LENGTH] {
+src/verifying.rs:126: pub fn as_bytes(&self) -> &[u8; PUBLIC_KEY_LENGTH] {
+src/verifying.rs:165: pub fn from_bytes(bytes: &[u8; PUBLIC_KEY_LENGTH]) -> Result<VerifyingKey, SignatureError> {
+src/verifying.rs:178: pub fn with_context<'k, 'v>(
+src/verifying.rs:190: pub fn is_weak(&self) -> bool {
+src/verifying.rs:201: pub(crate) fn raw_verify<CtxDigest>(
+src/verifying.rs:228: pub(crate) fn raw_verify_prehashed<CtxDigest, MsgDigest>(
+src/verifying.rs:282: pub fn verify_prehashed<MsgDigest>(
+src/verifying.rs:357: pub fn verify_strict(
+src/verifying.rs:388: pub fn verify_stream(
+src/verifying.rs:422: pub fn verify_prehashed_strict<MsgDigest>(
+src/verifying.rs:474: pub fn to_montgomery(&self) -> MontgomeryPoint {
+src/verifying.rs:479: pub fn to_edwards(&self) -> EdwardsPoint {
+src/verifying.rs:494:pub(crate) struct RCompute<CtxDigest> {
+src/verifying.rs:507: pub(crate) fn compute(
+src/verifying.rs:518: pub(crate) fn new(
+src/verifying.rs:543: pub(crate) fn update(&mut self, m: &[u8]) {
+src/verifying.rs:547: pub(crate) fn finish(self) -> CompressedEdwardsY {
+src/verifying/stream.rs:13:pub struct StreamVerifier {
+src/verifying/stream.rs:22: pub(crate) fn new(public_key: VerifyingKey, signature: InternalSignature) -> Self {
+src/verifying/stream.rs:30: pub fn update(&mut self, chunk: impl AsRef<[u8]>) {
+src/verifying/stream.rs:36: pub fn finalize_and_verify(self) -> Result<(), SignatureError> {
+src/constants.rs:13:pub const SIGNATURE_LENGTH: usize = 64;
+src/constants.rs:16:pub const SECRET_KEY_LENGTH: usize = 32;
+src/constants.rs:19:pub const PUBLIC_KEY_LENGTH: usize = 32;
+src/constants.rs:22:pub const KEYPAIR_LENGTH: usize = SECRET_KEY_LENGTH + PUBLIC_KEY_LENGTH;
+src/constants.rs:31:pub const EXPANDED_SECRET_KEY_LENGTH: usize =
+src/signing.rs:59:pub type SecretKey = [u8; SECRET_KEY_LENGTH];
+src/signing.rs:66:pub struct SigningKey {
+src/signing.rs:104: pub fn from_bytes(secret_key: &SecretKey) -> Self {
+src/signing.rs:114: pub fn to_bytes(&self) -> SecretKey {
+src/signing.rs:120: pub fn as_bytes(&self) -> &SecretKey {
+src/signing.rs:138: pub fn from_keypair_bytes(bytes: &[u8; 64]) -> Result<SigningKey, SignatureError> {
+src/signing.rs:160: pub fn to_keypair_bytes(&self) -> [u8; KEYPAIR_LENGTH] {
+src/signing.rs:169: pub fn verifying_key(&self) -> VerifyingKey {
+src/signing.rs:176: pub fn with_context<'k, 'v>(
+src/signing.rs:202: pub fn generate<R: CryptoRngCore + ?Sized>(csprng: &mut R) -> SigningKey {
+src/signing.rs:310: pub fn sign_prehashed<MsgDigest>(
+src/signing.rs:326: pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
+src/signing.rs:398: pub fn verify_prehashed<MsgDigest>(
+src/signing.rs:474: pub fn verify_strict(
+src/signing.rs:486: pub fn verify_stream(
+src/signing.rs:510: pub fn to_scalar_bytes(&self) -> [u8; 32] {
+src/signing.rs:536: pub fn to_scalar(&self) -> Scalar {
+src/signing.rs:832: pub(crate) fn raw_sign<CtxDigest>(
+src/signing.rs:856: pub(crate) fn raw_sign_byupdate<CtxDigest, F>(
+src/signing.rs:895: pub(crate) fn raw_sign_prehashed<CtxDigest, MsgDigest>(
+src/batch.rs:22:pub use curve25519_dalek::digest::Digest;
+src/batch.rs:136:pub fn verify_batch(
+src/hazmat.rs:40:pub struct ExpandedSecretKey {
+src/hazmat.rs:84: pub fn from_bytes(bytes: &[u8; 64]) -> Self {
+src/hazmat.rs:108: pub fn from_slice(bytes: &[u8]) -> Result<Self, SignatureError> {
+src/hazmat.rs:137:pub fn raw_sign<CtxDigest>(
+src/hazmat.rs:182:pub fn raw_sign_prehashed<CtxDigest, MsgDigest>(
+src/hazmat.rs:210:pub fn raw_sign_byupdate<CtxDigest, F>(
+src/hazmat.rs:225:pub fn raw_verify<CtxDigest>(
+src/hazmat.rs:242:pub fn raw_verify_prehashed<CtxDigest, MsgDigest>(
+src/errors.rs:25:pub(crate) enum InternalError {
+src/errors.rs:107:pub type SignatureError = ed25519::signature::Error;
+src/lib.rs:256:pub use ed25519;
+src/lib.rs:269:pub mod hazmat;
+src/lib.rs:274:pub use curve25519_dalek::digest::Digest;
+src/lib.rs:276:pub use sha2::Sha512;
+src/lib.rs:279:pub use crate::batch::*;
+src/lib.rs:280:pub use crate::constants::*;
+src/lib.rs:282:pub use crate::context::Context;
+src/lib.rs:283:pub use crate::errors::*;
+src/lib.rs:284:pub use crate::signing::*;
+src/lib.rs:285:pub use crate::verifying::*;
+src/lib.rs:289:pub use ed25519::signature::{DigestSigner, DigestVerifier};
+src/lib.rs:290:pub use ed25519::signature::{Signer, Verifier};
+src/lib.rs:291:pub use ed25519::Signature;
+src/lib.rs:294:pub use ed25519::pkcs8;
+src/signature.rs:29:pub(crate) struct InternalSignature {
+src/signature.rs:151: pub fn from_bytes(bytes: &[u8; SIGNATURE_LENGTH]) -> Result<InternalSignature, SignatureError> {

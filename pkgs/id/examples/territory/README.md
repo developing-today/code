@@ -60,8 +60,12 @@ moves right (`l`), `/input 20` claims (space).
 
 - **CLI:** `id world join` as above.
 - **SSH:** `ssh -p 2223 lobby@HOST`. The password is the guest capability.
-  The screen is the plain-text view.
 - **Web:** `http://HOST:8787/world`, paste the capability.
 - **Records:** `id world records NODE --capability ...` prints the JSON
   projection (grid, seats, online flags). `id world mirror` replicates it over
   Iroh with an iroh-docs replica.
+
+The view is a portable screen: a multi-player grid with box borders, one
+distinct colour per seat, an inverted cursor, a free-cell count, and a
+scoreboard line per seat. SSH and the browser render the same validated cell
+grid; the guest never emits escape sequences or markup.

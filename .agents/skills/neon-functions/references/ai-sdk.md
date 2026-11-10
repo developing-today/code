@@ -68,8 +68,7 @@ export default {
     });
 
     return result.toUIMessageStreamResponse({
-      onError: (error) =>
-        error instanceof Error ? error.message : String(error),
+      onError: (error) => (error instanceof Error ? error.message : String(error)),
     });
   },
 };
@@ -92,8 +91,7 @@ const files = new Files({ adapter: neonFiles({ bucket: "images" }) });
 
 const result = streamText({
   model: neon("gpt-5-mini"),
-  system:
-    "Use image_generation when the user asks for a picture, then describe it.",
+  system: "Use image_generation when the user asks for a picture, then describe it.",
   messages,
   tools: {
     image_generation: neon.tools.imageGeneration({

@@ -233,8 +233,10 @@ are therefore:
   actor and sequences a `program_installed` event. The command prints the
   module's BLAKE3 hash.
 - The browser page `/world` can issue invites (separate admin bearer), upload a
-  `.wasm` module, join, chat, send input, and render host-produced view text.
-  Browser, CLI, and Iroh clients all drive the same `world_session` protocol.
+  `.wasm` module or select up to 8 `.roc` sources for admin-authenticated
+  compile-and-install (128 KiB per file, 256 KiB total), join, chat, send input,
+  and render host-produced view text. Browser, CLI, and Iroh clients all drive
+  the same `world_session` protocol.
 - The hosted world state and module pin are currently volatile: restarting
   `serve` resets the actor and releases its temp-tag pin. Durable module
   selection, event-log replay/state restoration, and fetching module bytes from
@@ -269,6 +271,20 @@ Browser TypeScript checking, all 343 browser unit tests, and the web bundle
 build pass. Full Rust tests pass: 655 library, 97 CLI integration, 5 remote
 write/QUIC, 19 doctests. Nix `id-lib` builds with 479 unit tests and its
 hermetic integration/doctest checks.
+
+## 2026-10-14 Verification: browser Roc source upload
+
+The `/world` host controls now accept multiple `.roc` source files and send the
+existing admin-authenticated `compile` frame over `/ws/world`; the UI validates
+the server's 8-file, 128 KiB/file and 256 KiB total limits, reports compile
+status and the installed BLAKE3 hash, and leaves world interaction available.
+The compiled-module upload remains available. The browser WS tests reject a
+wrong admin token and cover compile/install/run (counter input changes
+`count=0` to `count=1`). The authorized compile test was skipped here because
+`examples/roc-world/targets/wasm32/host.wasm` is not present; build it with
+`examples/roc-world/build-host.sh` to run that integration path. Targeted WS
+tests passed (the compile test reports this documented skip), as did browser
+TypeScript typechecking and all 343 browser tests.
 
 **Boundary reminder:** pure Roc with a deliberately effect-free platform is
 capability-safe by construction; Wasm is not required to deny ambient file or
@@ -369,11 +385,11 @@ Wasmtime gives fuel, memory caps, and a second isolation layer for free.
 
 So the rule is **provenance decides the tier, not the language**:
 
-| Tier | What runs | Who may supply it | Bounds |
-| ---- | --------- | ----------------- | ------ |
-| N: native Roc | Roc compiled with the `id` world platform (Rust host), no effects beyond the program ABI | The operator only, built from source on the host | Authority: none by construction. CPU/memory: not bounded in-process, so run in a dedicated worker with rlimits and a watchdog (not yet built) |
-| W: Wasm in Wasmtime | The same program compiled to wasm32, import-free | Anyone: uploaded, or fetched from a peer by blob hash | Fuel per call, memory cap, size limits, poisoned on trap (implemented in `sandbox.rs`) |
-| B: Wasm in the browser | The same wasm module, for view/prediction only | The host serves the module the world pins | Browser sandbox; never authoritative, server state wins |
+| Tier                   | What runs                                                                                | Who may supply it                                     | Bounds                                                                                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| N: native Roc          | Roc compiled with the `id` world platform (Rust host), no effects beyond the program ABI | The operator only, built from source on the host      | Authority: none by construction. CPU/memory: not bounded in-process, so run in a dedicated worker with rlimits and a watchdog (not yet built) |
+| W: Wasm in Wasmtime    | The same program compiled to wasm32, import-free                                         | Anyone: uploaded, or fetched from a peer by blob hash | Fuel per call, memory cap, size limits, poisoned on trap (implemented in `sandbox.rs`)                                                        |
+| B: Wasm in the browser | The same wasm module, for view/prediction only                                           | The host serves the module the world pins             | Browser sandbox; never authoritative, server state wins                                                                                       |
 
 All three tiers implement one `WorldProgram` seam (`update(participant, bytes)`
 and `view(viewer) -> bytes`), so a world does not know which tier runs it.
@@ -393,7 +409,7 @@ through a small `SessionIo` trait, so protocol behavior cannot diverge.
   UTF-8 JSON object, at most 16 KiB. The JSON is exactly the WebSocket
   protocol, so presentation adapters are transport-agnostic.
 - The first frame is `join {capability, after?}` or `invite {admin_token,
-  display_name}`; anything else is an error and the stream ends. A peer that
+display_name}`; anything else is an error and the stream ends. A peer that
   sends no first frame within 10 s is dropped.
 - Iroh authenticates the **node**, not the participant. The remote node ID is
   logged but never grants world authority; the capability does. This matches
@@ -407,8 +423,8 @@ Clients: `id world invite <NODE> --admin-token T --name N` and
 
 ### Not yet done (explicit)
 
-*(Superseded: the items below were completed in later sections. See
-“Current status: not yet offered” at the end of this document.)*
+_(Superseded: the items below were completed in later sections. See
+“Current status: not yet offered” at the end of this document.)_
 
 - `WorldProgram` wiring into the actor, then the Roc wasm demo. The checked-in
   Roc module still traps on its first `view`; that must be diagnosed first.
@@ -549,7 +565,7 @@ copy of the structured data.
 ### Sync completion: readiness is not arrival
 
 `replicate` used to return as soon as the docs engine declared the document
-*ready* (`PendingContentReady`). Readiness only means the initial sync round is
+_ready_ (`PendingContentReady`). Readiness only means the initial sync round is
 over — a peer can still be connecting, so a replica could read an empty
 document even though the host had entries (seen as a rare flake under full
 suite load). It now also waits for every announced entry's blob to be local,
@@ -585,9 +601,9 @@ participant can replicate with a read-only ticket, in memory or on disk, and
 that survives host restarts on the same namespace; two example apps (counter,
 tic-tac-toe) build with the shared platform and run end to end.
 
-*(Superseded — see "Current status" at the end of this document. The worlds
+_(Superseded — see "Current status" at the end of this document. The worlds
 hub, the capability runtime, the compile service and the native Roc tier
-below were all built after this list was written.)*
+below were all built after this list was written.)_
 
 ---
 
@@ -680,7 +696,7 @@ built in this order, each committed on its own: **hub**, **capabilities**,
 - Bounds: a ceiling on open worlds (`--world-max-open`) and on concurrent
   sessions (`--world-max-sessions`); a session holds a lease for its lifetime.
   Durable worlds with no sessions are evicted after an idle period and reopen
-  from their journal on next use, so the number of *existing* worlds is
+  from their journal on next use, so the number of _existing_ worlds is
   limited by disk, not memory. Ephemeral worlds are never evicted.
 - Each world keeps its own actor, journal, module directory, records document
   and (with the native tier) its own worker process: no state is shared across
@@ -694,7 +710,7 @@ the server is expressed as **data it returns** and **events it receives**:
 - `wants : model -> Str` (JSON, a pure projection like `records`) lists the
   subscriptions and requests the model currently has:
   `{"v":1,"subscribe":["time.tick:5000","players"],
-    "requests":[{"id":"r1","cap":"time.now"}]}`.
+"requests":[{"id":"r1","cap":"time.now"}]}`.
 - The host turns each new thing into an **event**, delivered through the
   existing `update(model, 0, json)` (participant 0 is the host; real
   participants start at 1). Every such event is **journaled** before it is
@@ -862,7 +878,7 @@ defaults). Notes worth keeping:
 - The compiler child runs with a cleared environment (its cache lives in
   the job directory, so concurrent jobs never collide), CPU/address-space/
   file-size rlimits, bounded captured output, and a wall-clock deadline
-  with kill. `RLIMIT_NPROC` is deliberately *not* set: it counts the user's
+  with kill. `RLIMIT_NPROC` is deliberately _not_ set: it counts the user's
   whole process table (threads included) and would starve the compiler's
   worker threads for reasons unrelated to the job.
 - The result goes through the same import-free validation as an upload
@@ -901,7 +917,7 @@ wants, snapshot, restore.
   of released with a mismatched refcount.
 - **Spawn hardening** (in the post-fork hook): `no_new_privs`, dumpable off,
   rlimits (address space, CPU, file size, processes, core), Landlock — the
-  ruleset denies *every* path except an EXECUTE+READ grant on the worker's
+  ruleset denies _every_ path except an EXECUTE+READ grant on the worker's
   own file (opened O_PATH by the parent before the fork; pre_exec hooks must
   not touch the filesystem) — and a seccomp allowlist that permits the
   worker's syscalls (including the one pending `execve`, which Landlock
@@ -1076,19 +1092,34 @@ serves the world to any ordinary SSH client: `ssh -p PORT <WORLD>@host`, with
 the invite capability as the password. An empty user names the default world.
 The password is checked when the shell opens, through the same join path as
 Iroh and WebSocket, so a wrong capability is answered inside the shell with
-`join denied`. The shell's keystrokes become `input` frames, and each `view`
-frame clears the terminal and repaints it; `error` frames are printed.
+`join denied`. The shell line-buffers fragmented terminal packets: ordinary
+complete lines are `chat` frames, `/input <hex>` sends raw program input,
+`/records [prefix]` requests capability-authorized record pages, `/help` lists
+commands and `/quit` closes the shell. Empty and overlong lines and terminal
+control sequences are not submitted. Views clear and repaint the terminal, so
+the default program chat/view and records can be used in one session.
+
+The same local blob store opened by `serve` backs `/documents [prefix]` and
+`/document <name>`. Listing skips internal dot-tags and is bounded; viewing is
+read-only and limited to exact public `.txt`, `.md` or `.markdown` names whose
+blob is complete, at most 64 KiB and valid UTF-8. Terminal control characters
+are removed. Missing, binary and oversized files are refused; SSH does not
+resolve filesystem paths or traverse private namespaces. Collaboration edits
+remain in the web ProseMirror editor.
 
 The server host key lives in `.ssh-host-key` (created on first start). Input
 is queued with `try_send` rather than awaited: the handler runs on the same
 russh loop that flushes output, so waiting for queue space could deadlock.
 A flood of keystrokes drops input instead of stalling the session.
 
-Verification: `world_ssh` unit tests drive `serve` with a russh client. A
-wrong password is refused inside the shell. With the sandbox feature, the
-counter module is installed in-process and the client sees `count=0`, then
-`count=1` after `inc`, parsed with `vt100`. The test does not start the full
-binary, because its Iroh startup stalls in the sandbox.
+Verification: `world_ssh` tests drive `serve` with a russh client and cover
+fragmented lines, CR/LF, maximum length, commands, records rendering, authorized
+chat/records requests, and read-only document listing/viewing including missing,
+binary, oversized and internal names. A wrong password is refused inside the
+shell. With the sandbox feature, the counter module is installed in-process
+and the client sees `count=0`, then `count=1` after `/input 696e63`, parsed with
+`vt100`. The tests do not start the full binary, because its Iroh startup stalls
+in the sandbox.
 
 Access control is not decided by this transport. The SSH password is the same
 bearer capability the other transports accept, so the open question (ACL

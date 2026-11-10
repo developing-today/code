@@ -1,0 +1,127 @@
+   Compiling s8-tags v0.0.0 (/home/user/work/spikes-next/s8-tags/mutants/m4_join_keeps_all)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.89s
+     Running tests/props.rs (/home/user/work/spikes-next/s8-tags/mutants/target/debug/deps/props-2044cf6e193bf094)
+
+running 5 tests
+test late_duplicate_of_a_removed_add_is_dropped ... ok
+test clear_naming_unseen_dots_does_not_remove_them ... ok
+test concurrent_adds_survive_a_clear_that_did_not_see_them ... ok
+test join_is_commutative_associative_and_idempotent ... FAILED
+test convergence_under_partitions_and_any_delivery_order ... FAILED
+
+failures:
+
+---- join_is_commutative_associative_and_idempotent stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m4_join_keeps_all/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file. (You may need to create it.)
+cc fe84973afdea5ac26f273a369eb0f476445d3731e9d81cd50169fbebfd901570
+
+thread 'join_is_commutative_associative_and_idempotent' (3409791) panicked at tests/props.rs:185:1:
+Test failed: replica 0 differs from the reference over its applied ops
+ state: State { live: {Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }}, vv: {[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 2} }
+ want:  State { live: {}, vv: {[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 2} }.
+minimal failing input: (n, acts, seed, picks) = (
+    3,
+    [
+        Set {
+            r: 2,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Sync {
+            from: 2,
+            to: 0,
+            by_state: false,
+            seed: 0,
+        },
+        Clear {
+            r: 2,
+            observed: [],
+            unseen: [
+                0,
+            ],
+        },
+        Sync {
+            from: 2,
+            to: 0,
+            by_state: true,
+            seed: 0,
+        },
+    ],
+    0,
+    [
+        0,
+        0,
+        0,
+    ],
+)
+	successes: 3
+	local rejects: 0
+	global rejects: 0
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- convergence_under_partitions_and_any_delivery_order stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m4_join_keeps_all/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file.
+cc 7274fb511b9a4ae608240cb2ae29452da940a9351666c07e7503b661c75100a7
+
+thread 'convergence_under_partitions_and_any_delivery_order' (3409790) panicked at tests/props.rs:185:1:
+Test failed: state-based join differs from the reference over the union of applied ops.
+minimal failing input: (n, acts, seed) = (
+    3,
+    [
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Sync {
+            from: 0,
+            to: 2,
+            by_state: false,
+            seed: 0,
+        },
+        Clear {
+            r: 0,
+            observed: [],
+            unseen: [
+                0,
+            ],
+        },
+    ],
+    153726281267235404,
+)
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+
+
+failures:
+    convergence_under_partitions_and_any_delivery_order
+    join_is_commutative_associative_and_idempotent
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `--test props`
+error: 1 target failed:
+    `--test props`

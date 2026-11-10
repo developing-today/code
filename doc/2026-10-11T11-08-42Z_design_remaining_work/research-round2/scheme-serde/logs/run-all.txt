@@ -1,0 +1,310 @@
+## serde read check (one byte field, 4 bytes)
+Vec<u8> encodes to [84, 01, 02, 03, 18, c8] (6 B)
+serde_bytes encodes to [44, 01, 02, 03, c8] (5 B)
+read Vec<u8> from the array form: ok [1, 2, 3, 200]
+read Vec<u8> from the byte-string form: err: expected array, got Bytes
+read ByteBuf from the array form: err: incompatible CBOR type Array
+read ByteBuf from the byte-string form: ok [1, 2, 3, 200]
+read EitherForm from the array form: ok Bytes([1, 2, 3, 200])
+read EitherForm from the byte-string form: ok Bytes([1, 2, 3, 200])
+
+## build: stock, seed 1
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 737 | 379 | 490 |
+| 1 | 2 | 879 | 379 | 567 |
+| 2 | 3 | 1028 | 380 | 645 |
+| 5 | 6 | 1458 | 379 | 877 |
+| 10 | 11 | 2208 | 377 | 1260 |
+| 50 | 51 | 8104 | 379 | 4345 |
+| 100 | 101 | 15411 | 381 | 8194 |
+| 250 | 251 | 37408 | 377 | 19708 |
+| 500 | 501 | 73968 | 381 | 38918 |
+| 750 | 751 | 110646 | 381 | 58159 |
+| 1000 | 1001 | 147277 | 383 | 77407 |
+fit welcome = a + b*secrets over 11 samples: b = 146.53 B/secret, a = 597.8 B, max residual = 40.2 B
+fit re-add = a + b*secrets: b = 76.90 B/secret, a = 414.3 B
+update DM to Bob over all samples: min 377 B, max 383 B
+
+## build: both, seed 1
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 489 | 342 | 418 |
+| 1 | 2 | 529 | 342 | 459 |
+| 2 | 3 | 570 | 342 | 499 |
+| 5 | 6 | 690 | 342 | 620 |
+| 10 | 11 | 891 | 342 | 820 |
+| 50 | 51 | 2492 | 343 | 2422 |
+| 100 | 101 | 4492 | 343 | 4422 |
+| 250 | 251 | 10492 | 343 | 10422 |
+| 500 | 501 | 20493 | 344 | 20424 |
+| 750 | 751 | 30493 | 344 | 30424 |
+| 1000 | 1001 | 40493 | 344 | 40424 |
+fit welcome = a + b*secrets over 11 samples: b = 40.00 B/secret, a = 450.5 B, max residual = 1.5 B
+fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+update DM to Bob over all samples: min 342 B, max 344 B
+
+## build: inner, seed 1
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 677 | 342 | 418 |
+| 1 | 2 | 734 | 342 | 459 |
+| 2 | 3 | 809 | 342 | 499 |
+| 5 | 6 | 1047 | 342 | 620 |
+| 10 | 11 | 1450 | 342 | 820 |
+| 50 | 51 | 4510 | 343 | 2422 |
+| 100 | 101 | 8321 | 343 | 4422 |
+| 250 | 251 | 19713 | 343 | 10422 |
+| 500 | 501 | 38787 | 344 | 20424 |
+| 750 | 751 | 57794 | 344 | 30424 |
+| 1000 | 1001 | 76953 | 344 | 40424 |
+fit welcome = a + b*secrets over 11 samples: b = 76.24 B/secret, a = 596.2 B, max residual = 55.6 B
+fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+update DM to Bob over all samples: min 342 B, max 344 B
+
+## build: outer, seed 1
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 522 | 379 | 490 |
+| 1 | 2 | 601 | 379 | 567 |
+| 2 | 3 | 678 | 380 | 645 |
+| 5 | 6 | 908 | 379 | 877 |
+| 10 | 11 | 1295 | 377 | 1260 |
+| 50 | 51 | 4380 | 379 | 4345 |
+| 100 | 101 | 8225 | 381 | 8194 |
+| 250 | 251 | 19743 | 377 | 19708 |
+| 500 | 501 | 38951 | 381 | 38918 |
+| 750 | 751 | 58191 | 381 | 58159 |
+| 1000 | 1001 | 77441 | 383 | 77407 |
+fit welcome = a + b*secrets over 11 samples: b = 76.90 B/secret, a = 447.4 B, max residual = 23.0 B
+fit re-add = a + b*secrets: b = 76.90 B/secret, a = 414.3 B
+update DM to Bob over all samples: min 377 B, max 383 B
+
+## cross-decode, seed 1 (decode_cbor of the whole direct message; the inner layer is inside the AEAD and is not read)
+stock K=1 welcome read by both: Err("incompatible CBOR type Array")
+both K=1 welcome read by stock: Err("expected array, got Bytes")
+stock K=1 welcome read by inner: Ok(())
+stock K=1 welcome read by outer: Err("incompatible CBOR type Array")
+inner K=1 welcome read by stock: Ok(())
+outer K=1 welcome read by stock: Err("expected array, got Bytes")
+stock re-add welcome read by both: Ok(())
+both re-add welcome read by stock: Ok(())
+stock K=1000 bytes are canonical (decode then encode is identity): true
+stock K=1 welcome: stock build re-encodes it byte-exact: false
+stock K=1 welcome: Value decode then encode is identity: true
+outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: false
+both K=1 welcome: both build re-encodes it byte-exact: false
+## transcoder: stock PreKey welcome to the outer-only layout (seed 1)
+K=1: stock 879 B -> wire 601 B
+K=1: from_wire(to_wire(x)) == x: true
+K=1: stock reads the round trip: Ok(())
+K=1: outer build reads the wire form: Ok(())
+K=1: outer build re-encodes the wire form byte-exact: false
+K=1000: stock 147277 B -> wire 77441 B
+K=1000: from_wire(to_wire(x)) == x: true
+K=1000: stock reads the round trip: Ok(())
+K=1000: outer build reads the wire form: Ok(())
+K=1000: outer build re-encodes the wire form byte-exact: false
+K=1000: version tag overhead on the wire form: array (version, body) +7 B, map {v, body} +14 B
+both K=1000 welcome 40493 B: version tag overhead: array +5 B, map +12 B
+
+## build: stock, seed 2
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 744 | 379 | 498 |
+| 1 | 2 | 893 | 375 | 569 |
+| 2 | 3 | 1041 | 378 | 647 |
+| 5 | 6 | 1491 | 376 | 886 |
+| 10 | 11 | 2220 | 381 | 1271 |
+| 50 | 51 | 8093 | 379 | 4355 |
+| 100 | 101 | 15426 | 380 | 8210 |
+| 250 | 251 | 37310 | 380 | 19718 |
+| 500 | 501 | 73994 | 382 | 38933 |
+| 750 | 751 | 110525 | 383 | 58169 |
+| 1000 | 1001 | 147261 | 382 | 77369 |
+fit welcome = a + b*secrets over 11 samples: b = 146.46 B/secret, a = 603.3 B, max residual = 68.4 B
+fit re-add = a + b*secrets: b = 76.87 B/secret, a = 425.5 B
+update DM to Bob over all samples: min 375 B, max 383 B
+
+## build: both, seed 2
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 489 | 342 | 418 |
+| 1 | 2 | 529 | 342 | 459 |
+| 2 | 3 | 570 | 342 | 499 |
+| 5 | 6 | 690 | 342 | 620 |
+| 10 | 11 | 891 | 342 | 820 |
+| 50 | 51 | 2492 | 343 | 2422 |
+| 100 | 101 | 4492 | 343 | 4422 |
+| 250 | 251 | 10492 | 343 | 10422 |
+| 500 | 501 | 20493 | 344 | 20424 |
+| 750 | 751 | 30493 | 344 | 30424 |
+| 1000 | 1001 | 40493 | 344 | 40424 |
+fit welcome = a + b*secrets over 11 samples: b = 40.00 B/secret, a = 450.5 B, max residual = 1.5 B
+fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+update DM to Bob over all samples: min 342 B, max 344 B
+
+## build: inner, seed 2
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 677 | 342 | 418 |
+| 1 | 2 | 748 | 342 | 459 |
+| 2 | 3 | 830 | 342 | 499 |
+| 5 | 6 | 1053 | 342 | 620 |
+| 10 | 11 | 1452 | 342 | 820 |
+| 50 | 51 | 4484 | 343 | 2422 |
+| 100 | 101 | 8288 | 343 | 4422 |
+| 250 | 251 | 19767 | 343 | 10422 |
+| 500 | 501 | 38817 | 344 | 20424 |
+| 750 | 751 | 57846 | 344 | 30424 |
+| 1000 | 1001 | 76939 | 344 | 40424 |
+fit welcome = a + b*secrets over 11 samples: b = 76.26 B/secret, a = 601.2 B, max residual = 25.7 B
+fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+update DM to Bob over all samples: min 342 B, max 344 B
+
+## build: outer, seed 2
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 528 | 379 | 498 |
+| 1 | 2 | 605 | 375 | 569 |
+| 2 | 3 | 682 | 378 | 647 |
+| 5 | 6 | 916 | 376 | 886 |
+| 10 | 11 | 1302 | 381 | 1271 |
+| 50 | 51 | 4386 | 379 | 4355 |
+| 100 | 101 | 8241 | 380 | 8210 |
+| 250 | 251 | 19750 | 380 | 19718 |
+| 500 | 501 | 38964 | 382 | 38933 |
+| 750 | 751 | 58199 | 383 | 58169 |
+| 1000 | 1001 | 77402 | 382 | 77369 |
+fit welcome = a + b*secrets over 11 samples: b = 76.87 B/secret, a = 457.4 B, max residual = 19.4 B
+fit re-add = a + b*secrets: b = 76.87 B/secret, a = 425.5 B
+update DM to Bob over all samples: min 375 B, max 383 B
+
+## cross-decode, seed 2 (decode_cbor of the whole direct message; the inner layer is inside the AEAD and is not read)
+stock K=1 welcome read by both: Err("incompatible CBOR type Array")
+both K=1 welcome read by stock: Err("expected array, got Bytes")
+stock K=1 welcome read by inner: Ok(())
+stock K=1 welcome read by outer: Err("incompatible CBOR type Array")
+inner K=1 welcome read by stock: Ok(())
+outer K=1 welcome read by stock: Err("expected array, got Bytes")
+stock re-add welcome read by both: Ok(())
+both re-add welcome read by stock: Ok(())
+stock K=1000 bytes are canonical (decode then encode is identity): true
+stock K=1 welcome: stock build re-encodes it byte-exact: true
+stock K=1 welcome: Value decode then encode is identity: true
+outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: false
+both K=1 welcome: both build re-encodes it byte-exact: false
+## transcoder: stock PreKey welcome to the outer-only layout (seed 2)
+K=1: stock 893 B -> wire 605 B
+K=1: from_wire(to_wire(x)) == x: true
+K=1: stock reads the round trip: Ok(())
+K=1: outer build reads the wire form: Ok(())
+K=1: outer build re-encodes the wire form byte-exact: false
+K=1000: stock 147261 B -> wire 77402 B
+K=1000: from_wire(to_wire(x)) == x: true
+K=1000: stock reads the round trip: Ok(())
+K=1000: outer build reads the wire form: Ok(())
+K=1000: outer build re-encodes the wire form byte-exact: false
+K=1000: version tag overhead on the wire form: array (version, body) +7 B, map {v, body} +14 B
+both K=1000 welcome 40493 B: version tag overhead: array +5 B, map +12 B
+
+## build: stock, seed 3
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 735 | 379 | 493 |
+| 1 | 2 | 888 | 382 | 564 |
+| 2 | 3 | 1015 | 381 | 643 |
+| 5 | 6 | 1476 | 382 | 878 |
+| 10 | 11 | 2215 | 378 | 1260 |
+| 50 | 51 | 8078 | 383 | 4349 |
+| 100 | 101 | 15422 | 381 | 8208 |
+| 250 | 251 | 37408 | 378 | 19704 |
+| 500 | 501 | 73960 | 380 | 38908 |
+| 750 | 751 | 110594 | 382 | 58125 |
+| 1000 | 1001 | 147252 | 379 | 77381 |
+fit welcome = a + b*secrets over 11 samples: b = 146.49 B/secret, a = 600.0 B, max residual = 39.4 B
+fit re-add = a + b*secrets: b = 76.87 B/secret, a = 417.3 B
+update DM to Bob over all samples: min 378 B, max 383 B
+
+## build: both, seed 3
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 489 | 342 | 418 |
+| 1 | 2 | 529 | 342 | 459 |
+| 2 | 3 | 570 | 342 | 499 |
+| 5 | 6 | 690 | 342 | 620 |
+| 10 | 11 | 891 | 342 | 820 |
+| 50 | 51 | 2492 | 343 | 2422 |
+| 100 | 101 | 4492 | 343 | 4422 |
+| 250 | 251 | 10492 | 343 | 10422 |
+| 500 | 501 | 20493 | 344 | 20424 |
+| 750 | 751 | 30493 | 344 | 30424 |
+| 1000 | 1001 | 40493 | 344 | 40424 |
+fit welcome = a + b*secrets over 11 samples: b = 40.00 B/secret, a = 450.5 B, max residual = 1.5 B
+fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+update DM to Bob over all samples: min 342 B, max 344 B
+
+## build: inner, seed 3
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 671 | 342 | 418 |
+| 1 | 2 | 744 | 342 | 459 |
+| 2 | 3 | 827 | 342 | 499 |
+| 5 | 6 | 1059 | 342 | 620 |
+| 10 | 11 | 1437 | 342 | 820 |
+| 50 | 51 | 4514 | 343 | 2422 |
+| 100 | 101 | 8270 | 343 | 4422 |
+| 250 | 251 | 19747 | 343 | 10422 |
+| 500 | 501 | 38838 | 344 | 20424 |
+| 750 | 751 | 57817 | 344 | 30424 |
+| 1000 | 1001 | 76965 | 344 | 40424 |
+fit welcome = a + b*secrets over 11 samples: b = 76.26 B/secret, a = 597.7 B, max residual = 55.7 B
+fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+update DM to Bob over all samples: min 342 B, max 344 B
+
+## build: outer, seed 3
+| K | secrets | welcome B (PreKey, full) | update DM to Bob B (HPKE, 1 secret) | re-add welcome B (HPKE, full) |
+|---|---|---|---|---|
+| 0 | 1 | 524 | 379 | 493 |
+| 1 | 2 | 598 | 382 | 564 |
+| 2 | 3 | 675 | 381 | 643 |
+| 5 | 6 | 909 | 382 | 878 |
+| 10 | 11 | 1294 | 378 | 1260 |
+| 50 | 51 | 4382 | 383 | 4349 |
+| 100 | 101 | 8239 | 381 | 8208 |
+| 250 | 251 | 19740 | 378 | 19704 |
+| 500 | 501 | 38941 | 380 | 38908 |
+| 750 | 751 | 58157 | 382 | 58125 |
+| 1000 | 1001 | 77411 | 379 | 77381 |
+fit welcome = a + b*secrets over 11 samples: b = 76.86 B/secret, a = 450.1 B, max residual = 25.6 B
+fit re-add = a + b*secrets: b = 76.87 B/secret, a = 417.3 B
+update DM to Bob over all samples: min 378 B, max 383 B
+
+## cross-decode, seed 3 (decode_cbor of the whole direct message; the inner layer is inside the AEAD and is not read)
+stock K=1 welcome read by both: Err("incompatible CBOR type Array")
+both K=1 welcome read by stock: Err("expected array, got Bytes")
+stock K=1 welcome read by inner: Ok(())
+stock K=1 welcome read by outer: Err("incompatible CBOR type Array")
+inner K=1 welcome read by stock: Ok(())
+outer K=1 welcome read by stock: Err("expected array, got Bytes")
+stock re-add welcome read by both: Ok(())
+both re-add welcome read by stock: Ok(())
+stock K=1000 bytes are canonical (decode then encode is identity): true
+stock K=1 welcome: stock build re-encodes it byte-exact: true
+stock K=1 welcome: Value decode then encode is identity: true
+outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: false
+both K=1 welcome: both build re-encodes it byte-exact: false
+## transcoder: stock PreKey welcome to the outer-only layout (seed 3)
+K=1: stock 888 B -> wire 598 B
+K=1: from_wire(to_wire(x)) == x: true
+K=1: stock reads the round trip: Ok(())
+K=1: outer build reads the wire form: Ok(())
+K=1: outer build re-encodes the wire form byte-exact: true
+K=1000: stock 147252 B -> wire 77411 B
+K=1000: from_wire(to_wire(x)) == x: true
+K=1000: stock reads the round trip: Ok(())
+K=1000: outer build reads the wire form: Ok(())
+K=1000: outer build re-encodes the wire form byte-exact: false
+K=1000: version tag overhead on the wire form: array (version, body) +7 B, map {v, body} +14 B
+both K=1000 welcome 40493 B: version tag overhead: array +5 B, map +12 B
+

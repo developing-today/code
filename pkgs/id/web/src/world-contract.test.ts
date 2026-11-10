@@ -1,0 +1,578 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  Conformance,
+  checkClientFrame,
+  checkServerFrame,
+  parseShellContract,
+  type ShellContract,
+} from "./shell-contract";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const contractDocument: unknown = JSON.parse(
+  readFileSync(resolve(here, "../../contract/shell-contract.v1.json"), "utf8"),
+);
+const contract = parseShellContract(contractDocument);
+
+function withFieldType(side: "client" | "server", frameName: string, fieldName: string, type: string): ShellContract {
+  const malformed = structuredClone(contract);
+  const frames = side === "client" ? malformed.client_frames : malformed.server_frames;
+  const frame = frames[frameName];
+  if (!frame) throw new Error(`missing ${side} frame ${frameName}`);
+  (frame.fields as Record<string, unknown>)[fieldName] = type;
+  return malformed;
+}
+
+/** The world page markup, read from the Rust template so the test cannot drift from it. */
+function worldPageMarkup(): string {
+  const source = readFileSync(resolve(here, "../../src/web/templates.rs"), "utf8");
+  const start = source.indexOf("pub fn render_world_page");
+  const open = source.indexOf('r#"', start);
+  const close = source.indexOf('"#;', open);
+  if (start < 0 || open < 0 || close < 0) throw new Error("world page template not found in templates.rs");
+  return source.slice(open + 3, close);
+}
+
+describe("shell contract validator", () => {
+  const cap = "cap";
+
+  it("validates every client and server field spec when loading a contract", () => {
+    expect(parseShellContract(contractDocument)).toEqual(contract);
+
+    const malformedClient = withFieldType("client", "chat", "text", "u65");
+    expect(() => parseShellContract(malformedClient)).toThrow("chat.text: unknown field type `u65`");
+
+    const malformedServer = withFieldType("server", "view", "sequence", "u65");
+    expect(() => parseShellContract(malformedServer)).toThrow("view.sequence: unknown field type `u65`");
+  });
+
+  it("rejects malformed constraint values when loading a contract", () => {
+    const badEnum = structuredClone(contract);
+    (badEnum.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", enum: 7 };
+    expect(() => parseShellContract(badEnum)).toThrow("chat.text: enum must be an array of strings");
+
+    const badBound = structuredClone(contract);
+    (badBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: "9" };
+    expect(() => parseShellContract(badBound)).toThrow("chat.text: max_bytes must be a finite number");
+  });
+
+  it("rejects malformed top-level fields when loading a contract (#4323)", () => {
+    const without = (key: string): Record<string, unknown> => {
+      const malformed = structuredClone(contract) as unknown as Record<string, unknown>;
+      delete malformed[key];
+      return malformed;
+    };
+
+    expect(() => parseShellContract(without("routing_fields"))).toThrow("routing_fields must be an array of strings");
+    expect(() => parseShellContract(without("projection"))).toThrow("projection must be an object");
+    expect(() => parseShellContract(without("max_frame_bytes"))).toThrow(
+      "max_frame_bytes must be a non-negative integer",
+    );
+
+    const stringRouting = structuredClone(contract) as unknown as Record<string, unknown>;
+    stringRouting.routing_fields = "world";
+    expect(() => parseShellContract(stringRouting)).toThrow("routing_fields must be an array of strings");
+
+    const mixedRouting = structuredClone(contract) as unknown as Record<string, unknown>;
+    mixedRouting.routing_fields = ["world", 7];
+    expect(() => parseShellContract(mixedRouting)).toThrow("routing_fields must be an array of strings");
+
+    const stringProjection = structuredClone(contract) as unknown as Record<string, unknown>;
+    stringProjection.projection = "world_state";
+    expect(() => parseShellContract(stringProjection)).toThrow("projection must be an object");
+
+    const withoutRedacted = structuredClone(contract) as unknown as Record<string, unknown>;
+    withoutRedacted.projection = {};
+    expect(() => parseShellContract(withoutRedacted)).toThrow("projection.redacted_keys must be an array of strings");
+
+    const mixedRedacted = structuredClone(contract) as unknown as Record<string, unknown>;
+    mixedRedacted.projection = { redacted_keys: ["seed", 7] };
+    expect(() => parseShellContract(mixedRedacted)).toThrow("projection.redacted_keys must be an array of strings");
+
+    const negativeCap = structuredClone(contract) as unknown as Record<string, unknown>;
+    negativeCap.max_frame_bytes = -1;
+    expect(() => parseShellContract(negativeCap)).toThrow("max_frame_bytes must be a non-negative integer");
+
+    const fractionalCap = structuredClone(contract) as unknown as Record<string, unknown>;
+    fractionalCap.max_frame_bytes = 1.5;
+    expect(() => parseShellContract(fractionalCap)).toThrow("max_frame_bytes must be a non-negative integer");
+  });
+
+  it("rejects malformed frame specs and header fields when loading a contract (#6965)", () => {
+    const asRecord = (doc: unknown): Record<string, any> => doc as Record<string, any>;
+
+    const noClass = structuredClone(contract);
+    delete asRecord(noClass.client_frames.chat).class;
+    expect(() => parseShellContract(noClass)).toThrow("chat: unknown frame class");
+
+    const badClass = structuredClone(contract);
+    asRecord(badClass.client_frames.chat).class = "bogus";
+    expect(() => parseShellContract(badClass)).toThrow("chat: unknown frame class");
+
+    // A string `phases` must not load: at check time it would substring-match
+    // phase names, so chat would be accepted in the opening phase.
+    const stringPhases = structuredClone(contract);
+    asRecord(stringPhases.client_frames.chat).phases = "joinedopening";
+    expect(() => parseShellContract(stringPhases)).toThrow("chat: phases must be an array of phase names");
+
+    const bogusPhase = structuredClone(contract);
+    asRecord(bogusPhase.client_frames.chat).phases = ["joined", "bogus"];
+    expect(() => parseShellContract(bogusPhase)).toThrow("chat: phases must be an array of phase names");
+
+    // A bogus `opens` must not load: Conformance would adopt it as the
+    // session phase after a join.
+    const bogusOpens = structuredClone(contract);
+    asRecord(bogusOpens.client_frames.join).opens = "bogus";
+    expect(() => parseShellContract(bogusOpens)).toThrow("join: opens must be a phase name");
+
+    const stringForbidden = structuredClone(contract);
+    asRecord(stringForbidden.client_frames.attenuate).forbidden_keys = "uses";
+    expect(() => parseShellContract(stringForbidden)).toThrow("attenuate: forbidden_keys must be an array of strings");
+
+    const stringVersion = structuredClone(contract);
+    asRecord(stringVersion).version = "1";
+    expect(() => parseShellContract(stringVersion)).toThrow("version must be a non-negative integer");
+
+    const noRevision = structuredClone(contract);
+    delete asRecord(noRevision).revision;
+    expect(() => parseShellContract(noRevision)).toThrow("revision must be a non-negative integer");
+
+    const noTransports = structuredClone(contract);
+    delete asRecord(noTransports).transports;
+    expect(() => parseShellContract(noTransports)).toThrow("transports must be an object");
+
+    const noName = structuredClone(contract);
+    delete asRecord(noName).contract;
+    expect(() => parseShellContract(noName)).toThrow("contract must be a string");
+
+    const negativeBound = structuredClone(contract);
+    (negativeBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: -1 };
+    expect(() => parseShellContract(negativeBound)).toThrow("chat.text: max_bytes must be a non-negative integer");
+
+    const fractionalBound = structuredClone(contract);
+    (fractionalBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: 1.5 };
+    expect(() => parseShellContract(fractionalBound)).toThrow("chat.text: max_bytes must be a non-negative integer");
+
+    const negativeMin = structuredClone(contract);
+    (negativeMin.client_frames.join!.fields as Record<string, unknown>).after = {
+      type: "u64",
+      optional: true,
+      nullable: true,
+      min: -1,
+    };
+    expect(() => parseShellContract(negativeMin)).toThrow("join.after: min must be a non-negative integer");
+  });
+
+  it("returns violations instead of throwing for malformed field specs", () => {
+    const malformedClient = withFieldType("client", "chat", "text", "u65");
+    const clientCheck = checkClientFrame(malformedClient, { type: "chat", text: "hi" }, "joined");
+    expect(clientCheck).toEqual({
+      ok: false,
+      error: expect.stringContaining("chat.text"),
+    });
+    if (!clientCheck.ok) expect(clientCheck.error).toContain("unknown field type `u65`");
+
+    const malformedServer = withFieldType("server", "view", "sequence", "u65");
+    const serverCheck = checkServerFrame(malformedServer, {
+      type: "view",
+      sequence: 1,
+      data: "x",
+      surface: null,
+      view_revision: 1,
+    });
+    expect(serverCheck).toEqual({
+      ok: false,
+      error: expect.stringContaining("view.sequence"),
+    });
+    if (!serverCheck.ok) expect(serverCheck.error).toContain("unknown field type `u65`");
+
+    const session = new Conformance(malformedClient);
+    session.client({ type: "join", capability: cap, after: null, world: null });
+    expect(session.phase).toBe("joined");
+    expect(() => session.client({ type: "chat", text: "hi" })).not.toThrow();
+    expect(session.violations).toEqual([{ index: 1, side: "client", message: expect.stringContaining("chat.text") }]);
+  });
+
+  it("accepts the frames a joined shell sends", () => {
+    expect(checkClientFrame(contract, { type: "join", capability: cap, after: null, world: null }, "opening")).toEqual({
+      ok: true,
+      type: "join",
+    });
+    expect(checkClientFrame(contract, { type: "resize", width: 500, height: 200 }, "joined").ok).toBe(true);
+    expect(checkClientFrame(contract, { type: "input", data_hex: "1b5b41" }, "joined").ok).toBe(true);
+    expect(checkClientFrame(contract, { type: "records", capability: cap, after: "k" }, "joined").ok).toBe(true);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 1, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(true);
+  });
+
+  it.each([
+    ["an unknown type", { type: "teleport" }, "joined", "is not a client frame"],
+    ["a missing field", { type: "chat" }, "joined", "needs field `text`"],
+    ["an unknown field", { type: "chat", text: "hi", loud: true }, "joined", "has no field `loud`"],
+    ["a resize wider than 500", { type: "resize", width: 501, height: 10 }, "joined", "must be in 1..=500"],
+    ["non-hex input", { type: "input", data_hex: "zz" }, "joined", "even number of hex digits"],
+    ["odd-length hex input", { type: "input", data_hex: "abc" }, "joined", "even number of hex digits"],
+    [
+      "`uses` in attenuate",
+      { type: "attenuate", name: "n", scopes: ["chat"], extra: { uses: 3 } },
+      "joined",
+      "may not carry `uses`",
+    ],
+    ["chat before a join", { type: "chat", text: "hi" }, "opening", "may not be sent in the opening phase"],
+    ["a non-string routing field", { type: "chat", text: "hi", world: 3 }, "joined", "routing field `world`"],
+    ["a paste over 4096 bytes", { type: "paste", text: "é".repeat(2049) }, "joined", "more than 4096"],
+    [
+      "a role outside the enum",
+      { type: "invite", admin_token: "a", display_name: "d", role: "god" },
+      "opening",
+      "one of",
+    ],
+  ] as const)("rejects %s", (_name, frame, phase, error) => {
+    const check = checkClientFrame(contract, frame, phase);
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.error).toContain(error);
+  });
+
+  it("accepts u64 values at and above 2^53, like the Rust checker (#1441)", () => {
+    const seed = (value: number) =>
+      checkClientFrame(contract, { type: "install_begin", admin_token: "a", total_bytes: 1, seed: value }, "opening");
+    expect(seed(2 ** 53).ok).toBe(true);
+    // u64::MAX as it arrives from wire JSON: already rounded by the parser.
+    expect(seed(JSON.parse("18446744073709551615") as number).ok).toBe(true);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 2 ** 53, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(true);
+    expect(checkServerFrame(contract, { type: "records", sequence: 2 ** 53, records: {} }).ok).toBe(true);
+  });
+
+  it("rejects u64 values provably above u64::MAX, like the Rust checker (#1441)", () => {
+    const seed = (value: number) =>
+      checkClientFrame(contract, { type: "install_begin", admin_token: "a", total_bytes: 1, seed: value }, "opening");
+    // 2^64 is the rounded wire form of u64::MAX itself: ambiguous, accepted.
+    expect(seed(2 ** 64).ok).toBe(true);
+    const over64 = seed(2 ** 65);
+    expect(over64.ok).toBe(false);
+    if (!over64.ok) expect(over64.error).toContain("18446744073709551615");
+    expect(seed(1e100).ok).toBe(false);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 2 ** 65, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(false);
+  });
+
+  it("still enforces the u64 bounds JS can check exactly (#1441)", () => {
+    const begin = (patch: Record<string, unknown>) =>
+      checkClientFrame(
+        contract,
+        { type: "install_begin", admin_token: "a", total_bytes: 1, seed: 1, ...patch },
+        "opening",
+      );
+    expect(begin({ seed: -1 }).ok).toBe(false);
+    expect(begin({ seed: 1.5 }).ok).toBe(false);
+    expect(begin({ total_bytes: 0 }).ok).toBe(false);
+    const over = begin({ total_bytes: 16777217 });
+    expect(over.ok).toBe(false);
+    if (!over.ok) {
+      expect(over.error).toContain("16777216");
+      expect(over.error).not.toContain("9007199254740991");
+    }
+  });
+
+  it("rejects a seed leaked at any depth of a server frame", () => {
+    const leak = checkServerFrame(contract, { type: "event", event: { kind: { program: { seed: 7 } } } });
+    expect(leak).toEqual({ ok: false, error: expect.stringContaining("leaks `seed` (7)") });
+    expect(checkServerFrame(contract, { type: "event", event: { kind: { seed: 0 } } }).ok).toBe(true);
+    expect(checkServerFrame(contract, { type: "records", sequence: 1, records: {}, extra: 1 }).ok).toBe(false);
+  });
+
+  it("follows session phases", () => {
+    const query = new Conformance(contract);
+    query.client({ type: "info", capability: cap });
+    expect(query.phase).toBe("query");
+    query.client({ type: "join", capability: cap });
+    expect(query.phase).toBe("joined");
+    query.client({ type: "chat", text: "hi" });
+    expect(query.violations).toEqual([]);
+
+    const closed = new Conformance(contract);
+    closed.client({ type: "caps", capability: cap });
+    expect(closed.phase).toBe("closed");
+    closed.client({ type: "caps", capability: cap });
+    expect(closed.violations).toEqual([{ index: 1, side: "client", message: "the host already ended this session" }]);
+
+    const install = new Conformance(contract);
+    install.client({ type: "install_begin", admin_token: "a", total_bytes: 1, seed: 1 });
+    expect(install.phase).toBe("install");
+    install.client({ type: "install_chunk", offset: 0, data_hex: "00" });
+    install.client({ type: "install_end" });
+    expect(install.phase).toBe("closed");
+    expect(install.violations).toEqual([]);
+
+    const refused = new Conformance(contract);
+    refused.client({ type: "records", capability: cap });
+    refused.server({ type: "error", message: "no" });
+    expect(refused.phase).toBe("closed");
+    refused.client({ type: "join", capability: cap });
+    expect(refused.violations).toHaveLength(1);
+  });
+});
+
+type Entry = { from: "client" | "server"; frame: unknown };
+
+/** A WebSocket stand-in that records what the shell sends and lets the test answer. */
+class FakeSocket extends EventTarget {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  static readonly all: FakeSocket[] = [];
+
+  readyState = FakeSocket.CONNECTING;
+  bufferedAmount = 0;
+  onclose: ((event: Event) => void) | null = null;
+  readonly transcript: Entry[] = [];
+
+  constructor(readonly url: string) {
+    super();
+    FakeSocket.all.push(this);
+  }
+
+  send(data: string): void {
+    if (this.readyState !== FakeSocket.OPEN) throw new Error(`send on a socket in state ${this.readyState}`);
+    this.transcript.push({ from: "client", frame: JSON.parse(data) });
+  }
+
+  close(): void {
+    if (this.readyState === FakeSocket.CLOSED) return;
+    this.readyState = FakeSocket.CLOSED;
+    this.dispatchEvent(new Event("close"));
+  }
+
+  open(): void {
+    this.readyState = FakeSocket.OPEN;
+    this.dispatchEvent(new Event("open"));
+  }
+
+  deliver(frame: Record<string, unknown>): void {
+    this.transcript.push({ from: "server", frame });
+    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
+  }
+
+  deliverRaw(data: string): void {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+
+  sent(type: string): Array<Record<string, unknown>> {
+    return this.transcript
+      .filter((entry) => entry.from === "client" && (entry.frame as { type?: string }).type === type)
+      .map((entry) => entry.frame as Record<string, unknown>);
+  }
+}
+
+class FakeResizeObserver {
+  static readonly all: FakeResizeObserver[] = [];
+  constructor(readonly callback: ResizeObserverCallback) {
+    FakeResizeObserver.all.push(this);
+  }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  fire(): void {
+    this.callback([], this as unknown as ResizeObserver);
+  }
+}
+
+function setFiles(input: HTMLInputElement, files: File[]): void {
+  Object.defineProperty(input, "files", { configurable: true, value: files });
+}
+
+describe("web shell conformance", () => {
+  const realWebSocket = globalThis.WebSocket;
+  const realResizeObserver = globalThis.ResizeObserver;
+  let root: HTMLElement;
+  const q = <T extends HTMLElement>(selector: string): T => {
+    const found = root.querySelector<T>(selector);
+    if (!found) throw new Error(`missing ${selector}`);
+    return found;
+  };
+
+  beforeAll(async () => {
+    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    sessionStorage.clear();
+    document.body.innerHTML = worldPageMarkup();
+    await import("./world");
+  });
+
+  afterAll(() => {
+    vi.stubGlobal("WebSocket", realWebSocket);
+    vi.stubGlobal("ResizeObserver", realResizeObserver);
+    document.body.innerHTML = "";
+  });
+
+  it("sends only contract frames, in the right phases, across every flow", async () => {
+    root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
+    expect(root.dataset.initialized).toBe("true");
+
+    // Join.
+    q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
+    q<HTMLButtonElement>("[data-world-join]").click();
+    const session = FakeSocket.all.at(-1) as FakeSocket;
+    expect(session.url).toMatch(/\/ws\/world$/);
+    session.open();
+    expect(session.sent("join")).toHaveLength(1);
+    expect(session.sent("resize")).toHaveLength(1);
+
+    // Snapshot and view; the snapshot asks for records, which page.
+    session.deliver({
+      type: "snapshot",
+      snapshot: { world_id: "lobby", current_sequence: 4, participants: [{ id: 1, display_name: "ada" }], seed: 0 },
+    });
+    session.deliver({ type: "view", sequence: 4, data: "hello", surface: null, view_revision: 1 });
+    expect(q("[data-world-view]").textContent).toBe("hello");
+    expect(session.sent("records")).toEqual([{ type: "records", capability: "guest-capability" }]);
+    session.deliver({ type: "records", sequence: 4, records: { a: 1 }, next_after: "a" });
+    expect(session.sent("records").at(-1)).toEqual({ type: "records", capability: "guest-capability", after: "a" });
+    session.deliver({ type: "records", sequence: 4, records: { b: 2 }, next_after: null });
+    expect(JSON.parse(q("[data-world-records]").textContent ?? "")).toEqual({ a: 1, b: 2 });
+
+    // Resize, keys, paste, chat, input line, records refresh.
+    for (const observer of FakeResizeObserver.all) observer.fire();
+    const view = q("[data-world-view]");
+    view.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
+    view.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: () => "pasted text" } });
+    view.dispatchEvent(paste);
+    q<HTMLInputElement>("[data-world-chat]").value = "hi all";
+    q<HTMLFormElement>("[data-world-chat-form]").dispatchEvent(new Event("submit", { cancelable: true }));
+    q<HTMLFormElement>("[data-world-input-form]").dispatchEvent(new Event("submit", { cancelable: true }));
+    session.deliver({
+      type: "event",
+      event: { sequence: 5, participant_id: 1, kind: { kind: "chat", data: "hi all" } },
+    });
+    session.deliver({
+      type: "event",
+      event: { sequence: 6, participant_id: 1, kind: { kind: "input", data: [97] } },
+    });
+    session.deliver({ type: "records", sequence: 6, records: {}, next_after: null });
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    session.deliver({ type: "records", sequence: 6, records: {} });
+
+    expect(session.sent("input").map((frame) => frame.data_hex)).toEqual(["61", "1b5b41", "696e63"]);
+    expect(session.sent("paste")).toEqual([{ type: "paste", text: "pasted text" }]);
+    expect(session.sent("chat")).toEqual([{ type: "chat", text: "hi all" }]);
+
+    // Module install over its own session.
+    q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+    setFiles(q<HTMLInputElement>("[data-world-module]"), [
+      new File([new Uint8Array(9000).fill(7)], "game.wasm", { type: "application/wasm" }),
+    ]);
+    q<HTMLButtonElement>("[data-world-install]").click();
+    const upload = FakeSocket.all.at(-1) as FakeSocket;
+    expect(upload).not.toBe(session);
+    upload.open();
+    upload.deliver({ type: "upload_ready", chunk_bytes: 6144 });
+    await vi.waitFor(() => expect(upload.sent("install_end")).toHaveLength(1));
+    expect(upload.sent("install_chunk").map((frame) => frame.offset)).toEqual([0, 6144]);
+    upload.deliver({ type: "module_installed", module_hash: "abc", sequence: 7 });
+    expect(upload.readyState).toBe(FakeSocket.CLOSED);
+
+    // Roc compile over its own session.
+    q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+    setFiles(q<HTMLInputElement>("[data-world-source]"), [
+      new File(["app [main!] {}"], "main.roc"),
+      new File(["module []"], "Util.roc"),
+    ]);
+    q<HTMLButtonElement>("[data-world-compile]").click();
+    await vi.waitFor(() => expect(FakeSocket.all.at(-1)).not.toBe(upload));
+    const compiler = FakeSocket.all.at(-1) as FakeSocket;
+    compiler.open();
+    compiler.deliver({ type: "compiled", module_hash: "def", sequence: 8, diagnostics: "" });
+    expect(compiler.readyState).toBe(FakeSocket.CLOSED);
+
+    // Every recorded session, checked against the contract in order.
+    const exercised = new Set<string>();
+    const report: string[] = [];
+    for (const [number, socket] of FakeSocket.all.entries()) {
+      const check = new Conformance(contract);
+      for (const entry of socket.transcript) {
+        if (entry.from === "client") {
+          check.client(entry.frame);
+          exercised.add((entry.frame as { type: string }).type);
+        } else {
+          check.server(entry.frame);
+        }
+      }
+      for (const violation of check.violations) {
+        report.push(`socket ${number} frame ${violation.index} (${violation.side}): ${violation.message}`);
+      }
+    }
+    expect(report).toEqual([]);
+    expect([...exercised].sort()).toEqual(
+      [
+        "chat",
+        "compile",
+        "input",
+        "install_begin",
+        "install_chunk",
+        "install_end",
+        "join",
+        "paste",
+        "records",
+        "resize",
+      ].sort(),
+    );
+  });
+
+  it("rejects malformed frames and bad chunk_bytes in the upload handler (#5034)", async () => {
+    root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
+    const status = () => q("[data-world-status]").textContent;
+    const startUpload = (): FakeSocket => {
+      q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+      setFiles(q<HTMLInputElement>("[data-world-module]"), [
+        new File([new Uint8Array(9000).fill(7)], "game.wasm", { type: "application/wasm" }),
+      ]);
+      q<HTMLButtonElement>("[data-world-install]").click();
+      const upload = FakeSocket.all.at(-1) as FakeSocket;
+      upload.open();
+      return upload;
+    };
+
+    // Non-object frames: error status + socket closed, never a throw or a hang.
+    for (const raw of ["null", "123", '"hi"', "[1,2]"]) {
+      const upload = startUpload();
+      upload.deliverRaw(raw);
+      expect(status()).toBe("Host returned an invalid upload response");
+      expect(upload.readyState).toBe(FakeSocket.CLOSED);
+      expect(upload.sent("install_chunk")).toHaveLength(0);
+    }
+
+    // Fractional and string chunk_bytes take the invalid-chunk-size path.
+    for (const chunkBytes of [100.5, "512"]) {
+      const upload = startUpload();
+      upload.deliver({ type: "upload_ready", chunk_bytes: chunkBytes as unknown as number });
+      expect(status()).toBe("Host returned an invalid module chunk size");
+      expect(upload.readyState).toBe(FakeSocket.CLOSED);
+      expect(upload.sent("install_chunk")).toHaveLength(0);
+      expect(upload.sent("install_end")).toHaveLength(0);
+    }
+  });
+
+  it("rejects malformed frames in the compile handler (#5034)", async () => {
+    root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
+    const status = () => q("[data-world-status]").textContent;
+    q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+    setFiles(q<HTMLInputElement>("[data-world-source]"), [new File(["app [main!] {}"], "main.roc")]);
+    const before = FakeSocket.all.at(-1) as FakeSocket;
+    q<HTMLButtonElement>("[data-world-compile]").click();
+    await vi.waitFor(() => expect(FakeSocket.all.at(-1)).not.toBe(before));
+    const compiler = FakeSocket.all.at(-1) as FakeSocket;
+    compiler.open();
+    compiler.deliverRaw("null");
+    expect(status()).toBe("Host returned an invalid compile response");
+    expect(compiler.readyState).toBe(FakeSocket.CLOSED);
+  });
+});

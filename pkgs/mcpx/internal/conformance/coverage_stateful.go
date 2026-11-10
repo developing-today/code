@@ -13,7 +13,37 @@ func init() {
 		S("ext-tasks-get-carries-result", "mcpserver.TestTasksPerEra/2026-07-28/tasks/server-directed-CreateTaskResult-is-flat", "mcpserver.TestTasksPerEra/2026-07-28/tasks/tool-isError-is-completed-not-failed"),
 		S("ext-tasks-update", "mcpserver.TestTasksPerEra/2026-07-28/tasks/update-and-cancel-ack-empty-unknown-is-32602", "mcpserver.TestATaskAskingAQuestionIsInputRequiredAndTasksUpdateAnswersIt@2026-07-28"),
 		S("ext-tasks-notifications-via-listen", "mcpserver.TestSubscriptionsListen/2026-07-28/subscriptions/taskIds-without-the-extension-is-32021", "mcpserver.TestListenDeliversTaskStatusNotifications@2026-07-28", "mcpserver.TestListenReportsATaskThatAlreadyFinished@2026-07-28"),
+		S("ext-tasks-durable-before-response", "mcpserver.TestInjectedStoreKeepsMCPTasksAcrossReopen@2026-07-28"),
 		S("tasks-unidentified-no-list", "mcpserver.TestTasksPerEra/2025-11-25/tasks/another-connection-cannot-list-or-read-it"),
+		// Phase 1 of #2497 (#2498, merged in PR #2869) retired the rate-limit
+		// and resource-limit gaps; the store's limits are covered below.
+		S("tasks-rate-limit", "tasks.TestAdmitCountsAgainstThePerMinuteWindow@all"),
+		S("tasks-resource-limits", "tasks.TestStartClampsTTLToTheStoreMax@all", "tasks.TestStartRefusesBeyondThePerRequestorCap@all", "tasks.TestNewIDIs128Bit@all"),
+		// Phase 2 of #2497 (#2499, merged in PR #3699) retired the honest-
+		// ending gaps; the status-message and cancellation contracts are
+		// covered by the store tests below.
+		S("tasks-failed-status-message", "tasks.TestAToolResultThatIsItselfAnErrorIsAFailedTask@all", "tasks.TestIsErrorStatusMessageUsesFirstTextAndFallsBack@all"),
+		S("ext-tasks-cancel-cooperative", "tasks.TestCancellingStopsTheWorkAndStands@all", "tasks.TestCooperativeCancellationHandshake@all", "tasks.TestFaultWithinCancelGraceKeepsItsFailure@all", "tasks.TestCancelGraceExpiryWinsOverLateResult@all", "tasks.TestCancelGraceCompletionOrExpiryWinsAtMostOnce@all"),
+		// Phase 3 of #2497 (#2500): audit is covered on the shared store and
+		// both retrieval surfaces; the unbound model is asserted in docs.
+		S("tasks-audit",
+			"tasks.TestTaskAuditLogsCreationAndTerminalMetadataOnly@all",
+			"tasks.TestTaskAuditLogsLimitRefusalsWithRequestorAndLimit@all",
+			"mcpserver.TestStartTaskAuditsMCPTaskCreationAndTerminal@all",
+			"mcpserver.TestTaskRetrievalAuditIsDebugAndMetadataOnly@all",
+			"daemon.TestV1TaskRetrievalAuditIsDebugAndMetadataOnly@all"),
+		S("tasks-document-unbound", "conformance.TestTaskVisibilityDocumentation@all"),
+		C("caching-ttl-zero-stale", "pool.TestPoolCacheTTLZeroStale@2026-07-28", "mcpclient.TestListToolsWithHintsAggregatesPages@2026-07-28"),
+		C("caching-ttl-positive-fresh", "pool.TestPoolCacheTTLPositiveFresh@2026-07-28", "pool.TestPoolCacheTTLPositiveExpires@2026-07-28"),
+		C("caching-ttl-absent-zero", "pool.TestPoolCacheTTLAbsentStale@2026-07-28", "mcpclient.TestListPromptsWithHintsAbsent@2026-07-28"),
+		C("caching-ttl-negative-zero", "pool.TestPoolCacheTTLNegativeStale@2026-07-28"),
+		C("caching-stale-refetch", "pool.TestPoolCacheConcurrentExpiredCollapse@2026-07-28", "pool.TestPoolCacheTTLZeroStale@2026-07-28"),
+		C("caching-private-no-cross-auth", "daemon.TestSaveCacheSkipsPrivatePools@2026-07-28", "daemon.TestLoadCacheNeverSeedsPrivateEntry@2026-07-28", "pool.TestPoolCacheStaleServedOnRefetchError@2026-07-28"),
+		C("caching-notification-invalidates", "daemon.TestListChangedInvalidatesPoolCache@2026-07-28"),
+		// Retired without a cover (#1604): verdicts recorded in overrides/stateful.json,
+		// reasons in pagination-caching.md PG-11/PG-13 and on #1601:
+		// caching-may-refetch-early-serve-stale (declined -- refresh is synchronous),
+		// caching-page-refetch and caching-key-method-params (not applicable by construction).
 		S("caching-server-must-hint", "mcpserver.TestModernEnvelope/2026-07-28/caching/tools-list-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/resources-read-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/server-discover-has-ttlMs-and-cacheScope"),
 		S("cache-ttl-scope-required",
 			"mcpserver.TestModernEnvelope/2026-07-28/caching/server-discover-has-ttlMs-and-cacheScope",
@@ -101,24 +131,11 @@ func init() {
 			"caching-ttl-not-poll",
 		),
 	)
+	// The get-implies-list item remains a documented open question, not a
+	// behavior change: unbound tasks stay reachable by ID and omitted from
+	// owner-scoped lists. A separate owner-bound listing API can be considered
+	// later; this phase only documents the existing access model.
 	registerGaps(
-		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#209", Why: "a task started on a connection without an identity can be read by tasks/get and is never listed"},
-		Gap{ID: "tasks-failed-status-message", Side: Server, Issue: "#209", Why: "a task failed by an isError tool result carries no statusMessage"},
-		Gap{ID: "tasks-document-unbound", Side: Server, Issue: "#209", Why: "nothing user-facing documents that an unowned task is reachable by anyone holding its id"},
-		Gap{ID: "tasks-rate-limit", Side: Server, Issue: "#209", Why: "tasks/* has no rate limit"},
-		Gap{ID: "tasks-resource-limits", Side: Server, Issue: "#209", Why: "no maximum ttl and no cap on concurrent tasks per requestor"},
-		Gap{ID: "tasks-audit", Side: Server, Issue: "#209", Why: "task creation, completion and retrieval are not logged"},
-		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#209", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
-		Gap{ID: "ext-tasks-durable-before-response", Side: Server, Issue: "#209", Why: "the task store is an in-memory map; a task does not survive the daemon"},
-		Gap{ID: "caching-ttl-zero-stale", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-ttl-positive-fresh", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-ttl-absent-zero", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-ttl-negative-zero", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-stale-refetch", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-may-refetch-early-serve-stale", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-page-refetch", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-key-method-params", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-private-no-cross-auth", Side: Client, Issue: "#200", Why: "cacheScope is ignored, so a private upstream list is served to every downstream caller"},
-		Gap{ID: "caching-notification-invalidates", Side: Client, Issue: "#257", Why: "unverified since subscriptions/listen landed upstream (#239): nothing tests that a modern list_changed empties the pool list cache"},
+		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#2497", Why: "documentation-only disposition: unbound tasks remain reachable by ID and omitted from owner-scoped lists; open question is whether a separate owner-bound listing API is needed"},
 	)
 }

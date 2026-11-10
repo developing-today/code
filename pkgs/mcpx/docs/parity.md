@@ -32,10 +32,12 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (73)
+## /v1 operations (87)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
+| `adapters_add` | `POST /v1/adapters` | `mcpx adapter add` | `mcpx_adapters_add` | `ops.adaptersAdd()` | Privileged. |
+| `adapters_remove` | `DELETE /v1/adapters/{name}` | `mcpx adapter remove` | `mcpx_adapters_remove` | `ops.adaptersRemove()` | Privileged. Destructive. |
 | `artifacts_list` | `GET /v1/artifacts` | `mcpx artifact list` *generated* | `mcpx_artifacts_list` | `ops.artifactsList()` |  |
 | `artifact_put` | `POST /v1/artifacts` | `mcpx artifact put` *generated* | `mcpx_artifact_put` | `ops.artifactPut()` | Privileged. |
 | `artifact_delete` | `DELETE /v1/artifacts/{id}` | `mcpx artifact delete` *generated* | `mcpx_artifact_delete` | `ops.artifactDelete()` | Privileged. Destructive. |
@@ -44,6 +46,8 @@ carry instead is a description that says so and MCP annotations
 | `ask_poll` | `GET /v1/ask/{id}` | `mcpx ask poll` *generated* | `mcpx_ask_poll` | `ops.askPoll()` |  |
 | `ask_abandon` | `POST /v1/ask/{id}/abandon` | `mcpx ask abandon` *generated* | `mcpx_ask_abandon` | `ops.askAbandon()` | Privileged. Destructive. |
 | `ask_answers` | `POST /v1/ask/{id}/answers` | `mcpx ask answers` *generated* | `mcpx_ask_answers` | `ops.askAnswers()` | Privileged. |
+| `authz_decisions_clear` | `DELETE /v1/authz/decisions` | `mcpx authz decisions clear` *generated* | `mcpx_authz_decisions_clear` | `ops.authzDecisionsClear()` | Privileged. |
+| `authz_decisions` | `GET /v1/authz/decisions` | `mcpx authz decisions` *generated* | `mcpx_authz_decisions` | `ops.authzDecisions()` |  |
 | `batch` | `POST /v1/batch` | `mcpx batch` | `mcpx_batch` | `ops.batch()` |  |
 | `call` | `POST /v1/call` | `mcpx call` | `mcpx_call` | `ops.call()`, `call()`, `callAsTask()` |  |
 | `call_path` | `POST /v1/call/{server}/{tool}` | `mcpx call` | `mcpx_call` | `ops.callPath()` |  |
@@ -75,6 +79,7 @@ carry instead is a description that says so and MCP annotations
 | `metrics_tools` | `GET /v1/metrics/tools` | `mcpx metrics tools` *generated* | `mcpx_metrics_tools` | `ops.metricsTools()` |  |
 | `namespaces` | `GET /v1/namespaces` | `mcpx ls` | `mcpx_namespaces` | `ops.namespaces()`, `namespaces()` |  |
 | `openapi` | `GET /v1/openapi.json` | `mcpx openapi` | `mcpx_openapi` | `ops.openapi()` |  |
+| `preflight` | `POST /v1/preflight` | `mcpx preflight` *generated* | `mcpx_preflight` | `ops.preflight()` |  |
 | `prompt_get` | `POST /v1/prompt` | `mcpx prompts` | `mcpx_prompt_get` | `ops.promptGet()` |  |
 | `prompts` | `GET /v1/prompts` | `mcpx prompts` | `mcpx_prompts` | `ops.prompts()` |  |
 | `protocol` | `GET /v1/protocol` | `mcpx protocol` *generated* | `mcpx_protocol` | `ops.protocol()` |  |
@@ -91,10 +96,18 @@ carry instead is a description that says so and MCP annotations
 | `resources` | `GET /v1/resources` | `mcpx resources` | `mcpx_resources` | `ops.resources()` |  |
 | `restart` | `POST /v1/restart` | `mcpx restart` | `mcpx_restart` | `ops.restart()` | Privileged. Destructive. |
 | `search` | `GET /v1/search` | `mcpx search` | `mcpx_search` | `ops.search()` |  |
+| `secret_requests_list` | `GET /v1/secret-requests` | `mcpx secrets requests` | `mcpx_secret_requests_list` | `ops.secretRequestsList()` |  |
+| `secret_request_decline` | `DELETE /v1/secret-requests/{id}` | `mcpx secrets decline` | `mcpx_secret_request_decline` | `ops.secretRequestDecline()` | Privileged. |
+| `secret_request_get` | `GET /v1/secret-requests/{id}` | `mcpx secrets request` | `mcpx_secret_request_get` | `ops.secretRequestGet()` |  |
+| `secrets_list` | `GET /v1/secrets` | `mcpx secrets list` | `mcpx_secrets_list` | `ops.secretsList()` |  |
+| `secrets_unset` | `DELETE /v1/secrets/{name}` | `mcpx secrets unset` | `mcpx_secrets_unset` | `ops.secretsUnset()` | Privileged. Destructive. |
+| `secrets_set` | `PUT /v1/secrets/{name}` | `mcpx secrets set` | none: a value sent as a tool argument would sit in the model's context and transcript; the CLI reads it from standard input and OpenChamber from a password field | `ops.secretsSet()` | Privileged. |
 | `servers_list` | `GET /v1/servers` | `mcpx servers list` | `mcpx_servers_list` | `ops.serversList()` |  |
 | `servers_add` | `POST /v1/servers` | `mcpx servers add` | `mcpx_servers_add` | `ops.serversAdd()` | Privileged. |
 | `servers_remove` | `DELETE /v1/servers/{name}` | `mcpx servers remove` | `mcpx_servers_remove` | `ops.serversRemove()` | Privileged. Destructive. |
+| `servers_get` | `GET /v1/servers/{name}` | `mcpx servers show` | `mcpx_servers_get` | `ops.serversGet()` |  |
 | `session_release` | `POST /v1/session/release` | `mcpx session release` *generated* | `mcpx_session_release` | `ops.sessionRelease()` | Privileged. |
+| `sessions_read` | `GET /v1/sessions` | `mcpx sessions read` *generated* | `mcpx_sessions_read` | `ops.sessionsRead()` |  |
 | `settings_list` | `GET /v1/settings` | `mcpx settings list` | `mcpx_settings_list` | `ops.settingsList()` |  |
 | `settings_unset` | `DELETE /v1/settings/{path}` | `mcpx settings unset` | `mcpx_settings_unset` | `ops.settingsUnset()` | Privileged. |
 | `settings_get` | `GET /v1/settings/{path}` | `mcpx settings get` | `mcpx_settings_get` | `ops.settingsGet()` |  |
@@ -109,19 +122,22 @@ carry instead is a description that says so and MCP annotations
 | `tools` | `GET /v1/tools` | `mcpx tools` *generated* | `mcpx_tools` | `ops.tools()` |  |
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
+| `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
-## CLI commands (61)
+## CLI commands (72)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
 
 | Command | Operations | Notes |
 | --- | --- | --- |
-| `adapter` | – | Adapter declarations are files the CLI reads; the daemon serves each adapter as a server of its own, so its tools reach every tool operation (call, types, search, catalog) like any upstream's. |
+| `adapter` | `adapters_add`, `adapters_remove` |  |
 | `api` | – | OpenAPI declarations are files the CLI reads; the tools they produce are served over MCP, and are not yet a tool source the daemon owns (#83). |
 | `artifact` / `artifacts` | `artifacts_list`, `artifact_put`, `artifact_delete`, `artifact_get` | Generated from the operation table. |
 | `ask` | `ask_begin`, `ask_poll`, `ask_abandon`, `ask_answers` | Generated from the operation table. |
+| `authz` | `authz_decisions_clear`, `authz_decisions` | Generated from the operation table. |
 | `batch` | `batch` |  |
+| `cache` | – | Reads and prunes the cache directory on this machine; no daemon is involved. |
 | `call` | `call`, `call_path` |  |
 | `catalog` | `catalog` |  |
 | `client` | `client_module` |  |
@@ -129,7 +145,7 @@ that reaches none says why: those are decisions, not gaps.
 | `completion` | – | Text about the binary, produced by the binary. |
 | `config` | – | Reads the configuration files on the caller's search path; `settings` is the running daemon's view. |
 | `daemon` | – | Starts a daemon, which a daemon's own API cannot do. |
-| `daemons` | – | Reads every daemon's info file on this machine; one daemon cannot see the others. |
+| `daemons` | – | Reads every daemon's info file on this machine; one daemon cannot see the others. Daemons with their own state directory mirror their record into the default one, and records whose process is gone are pruned. |
 | `dashboard` | `dashboard` |  |
 | `diagnose` | `diagnose` |  |
 | `doctor` | – | Checks this machine: binaries on PATH, permissions, configuration files. |
@@ -143,6 +159,7 @@ that reaches none says why: those are decisions, not gaps.
 | `health` | `health` | Generated from the operation table. |
 | `help` | – | Text about the binary, produced by the binary. |
 | `history` | `catalog_history` | Generated from the operation table. |
+| `hook` | – | Reads the resolved `hooks` setting from the configuration chain on this machine. |
 | `init` | – | Writes a file into the current directory. |
 | `interactions` | `interactions_list`, `interactions_get` |  |
 | `log` / `logs` | `log_query`, `log_record` |  |
@@ -150,6 +167,8 @@ that reaches none says why: those are decisions, not gaps.
 | `man` | – | Text about the binary, produced by the binary. |
 | `metrics` | `metrics_tokens`, `metrics_tools` | Generated from the operation table. |
 | `openapi` | `openapi` |  |
+| `plugin` | – | Plugin discovery is local: the CLI and daemon read paths.plugins and PATH on this machine, and the daemon serves each plugin as a server of its own. |
+| `preflight` | `preflight` | Generated from the operation table. |
 | `prompt` | `intent` |  |
 | `prompts` | `prompt_get`, `prompts` |  |
 | `protocol` | `protocol` | Generated from the operation table. |
@@ -165,19 +184,25 @@ that reaches none says why: those are decisions, not gaps.
 | `schema` | – | Reshapes what `tools` and `types` return into JSON Schema, OpenAPI or MCP form; the data is those operations', the conversion is local. |
 | `scripts` | – | Lists the caller's script search path. |
 | `search` | `search` |  |
+| `secrets` | `secret_requests_list`, `secret_request_decline`, `secret_request_get`, `secrets_list`, `secrets_unset`, `secrets_set` |  |
 | `serve` | – | It is the MCP surface: a stdio shim over the daemon, which serves the same tools at `/mcp` itself. |
-| `servers` | `servers_list`, `servers_add`, `servers_remove` |  |
+| `servers` | `servers_list`, `servers_add`, `servers_remove`, `servers_get` |  |
 | `session` | `session_release` | Generated from the operation table. |
+| `sessions` | `sessions_read` | Generated from the operation table. |
 | `settings` | `settings_list`, `settings_unset`, `settings_get`, `settings_set` |  |
 | `skills` | – | Manages embedded agent skills. |
 | `stats` | `stats_query` |  |
 | `status` | `status` |  |
+| `stdio-proxy` | – | It is a byte pipe: it dials the daemon's unix socket on this host and copies stdin/stdout to it, which no /v1 operation can express. |
 | `stop` | `shutdown` |  |
+| `supervise` | – | Runs in its own process as the re-exec target of the supervised transport; it serves no API. |
 | `task` / `tasks` | `tasks_list`, `task_get`, `task_cancel`, `task_result` | Generated from the operation table. |
 | `tool` | `tool_invoke` | Generated from the operation table. |
 | `tools` | `tools` | Generated from the operation table. |
 | `tui` | – | An interactive interface over the reads above; it consumes the API rather than extending it. |
 | `types` | `types` |  |
+| `upgrade` | – | Replaces the running daemon with another binary, a decision for whoever runs the CLI rather than a tool a model can call. |
+| `writes` | `writes_clear` | Generated from the operation table. |
 
 ## Hand-written MCP tools (12)
 
@@ -210,6 +235,6 @@ that will enforce it. `TestEveryEnforcedBoundaryNamesItsRefusal` holds both.
 | --- | --- | --- | --- |
 | `transport.allowedOrigins` | a web page on an origin that is not loopback, the daemon's own address or listed in transport.allowedOrigins cannot use /v1 or /mcp | **enforced** | `TestAWebPageCannotRunCodeThroughTheDaemon`, `TestV1AndMCPAgreeOnOrigins` |
 | `script.permissions` | a script runs with no more than the permission profile named; a runtime with no permission model refuses a narrowed profile | **enforced** | `TestScriptPermissionsIsReachableFromEverySurface`, `TestAStrictScriptCannotReadFilesOnARuntimeWithoutPermissions`, `TestARestrictedProfileIsRefusedByARuntimeThatCannotEnforceIt` |
-| `elicit.confirmDestructive` | with it on, a call to a tool that may be destructive (annotated destructiveHint, or unannotated) does not run unless somebody confirms it | **enforced** | `TestADestructiveCallIsRefusedWhenNobodyConfirms`, `TestConfirmDestructiveHoldsOnAColdDaemon` |
+| `elicit.confirmDestructive` | with it on, a call to a tool that may be destructive (annotated destructiveHint, or unannotated) does not run unless somebody confirms it; a remote server's annotation never clears the call (#2191) | **enforced** | `TestADestructiveCallIsRefusedWhenNobodyConfirms`, `TestConfirmDestructiveHoldsOnAColdDaemon` |
 | `autonomy.max` | mcpx does no more on its own than the daemon's autonomy.max allows: a prompt, a recipe run by name or a configured hook asked for above it is lowered to it and the answer says so, from /v1, the CLI, MCP and the plugin alike. It does not govern code a caller sends to /v1/exec itself | **enforced** | `TestV1CannotRaiseAutonomyAboveTheCeiling`, `TestTheCeilingCannotBeRaisedAtRuntime`, `TestTheCLICannotRaiseAutonomyAboveTheCeiling`, `TestMCPCannotRaiseAutonomyAboveTheCeiling`, `TestThePluginCannotRaiseAutonomyAboveTheCeiling`, `TestHooksFromConfigDoNotRunAboveTheCeiling`, `TestRepairCannotRaiseAutonomyAboveTheCeiling`, `TestACallerCannotRaiseAClampedSetting` |
 | `privileged operations (Admin)` | operations marked privileged change the daemon rather than read it; nothing checks who calls them, and every tool description and the OpenAPI document say so | **advisory** | #253 |

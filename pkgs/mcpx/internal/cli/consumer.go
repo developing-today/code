@@ -13,22 +13,22 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/recipes"
-	"github.com/dezren39/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
 )
 
 // ---- client methods ----
 
 // DiagnoseResult is what POST /v1/diagnose answers.
 type DiagnoseResult struct {
-	Valid          bool                            `json:"valid"`
-	Diagnostics    []diagnose.Diagnostic           `json:"diagnostics"`
-	Fatal          bool                            `json:"fatal"`
+	Valid          bool                              `json:"valid"`
+	Diagnostics    []diagnose.Diagnostic             `json:"diagnostics"`
+	Fatal          bool                              `json:"fatal"`
 	Questions      []scripting.ClarificationQuestion `json:"questions,omitempty"`
-	SuggestedFixes []string                        `json:"suggestedFixes,omitempty"`
-	Repaired       string                          `json:"repaired,omitempty"`
-	RepairedValid  bool                            `json:"repairedValid,omitempty"`
+	SuggestedFixes []string                          `json:"suggestedFixes,omitempty"`
+	Repaired       string                            `json:"repaired,omitempty"`
+	RepairedValid  bool                              `json:"repairedValid,omitempty"`
 }
 
 // Diagnose asks the daemon to explain a script.
@@ -122,9 +122,18 @@ func (c *Client) RunRecipe(ctx context.Context, name string, values map[string]a
 		map[string]any{"placeholders": values, "autonomy": autonomy, "session": session})
 }
 
-func (c *Client) Intent(ctx context.Context, prompt, autonomy string, values map[string]any, session string) (*Resolution, error) {
-	return c.resolution(ctx, "/v1/intent",
-		map[string]any{"prompt": prompt, "autonomy": autonomy, "placeholders": values, "session": session})
+// Intent asks the daemon to turn a prompt into a script (or its result).
+// provider and model are the caller's own choice of generation model for
+// this request; empty leaves the daemon's configured provider in place.
+func (c *Client) Intent(ctx context.Context, prompt, autonomy string, values map[string]any, session, provider, model string) (*Resolution, error) {
+	body := map[string]any{"prompt": prompt, "autonomy": autonomy, "placeholders": values, "session": session}
+	if provider != "" {
+		body["provider"] = provider
+	}
+	if model != "" {
+		body["model"] = model
+	}
+	return c.resolution(ctx, "/v1/intent", body)
 }
 
 // resolution posts and reads the answer, refusal included.
@@ -161,6 +170,7 @@ func (c *Client) resolution(ctx context.Context, path string, body any) (*Resolu
 func (a *App) CmdDiagnose(ctx context.Context, args []string) error {
 	fs := newFlagSet("diagnose")
 	session := fs.String("session", "", "session key")
+	repair := fs.Bool("repair", false, "attempt automatic script repair via model provider if fatal diagnostics are found")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -182,7 +192,7 @@ func (a *App) CmdDiagnose(ctx context.Context, args []string) error {
 	if err := a.ensureAnySchemas(ctx, c); err != nil {
 		return err
 	}
-	res, err := c.Diagnose(ctx, source, *session)
+	res, err := c.DiagnoseWithRepair(ctx, source, *session, *repair)
 	if err != nil {
 		return err
 	}
@@ -194,6 +204,19 @@ func (a *App) CmdDiagnose(ctx context.Context, args []string) error {
 		return nil
 	}
 	fmt.Println(diagnose.Render(res.Diagnostics))
+	if len(res.Questions) > 0 {
+		fmt.Println("\nClarifying questions:")
+		for _, q := range res.Questions {
+			fmt.Printf("  ? [%s] %s\n", q.Field, q.Question)
+		}
+	}
+	if res.Repaired != "" {
+		fmt.Println("\nRepaired script (validation passed):")
+		fmt.Println(res.Repaired)
+		if res.RepairedValid {
+			return nil
+		}
+	}
 	if res.Fatal {
 		return errors.New("the script does not match the tools it calls")
 	}
@@ -267,9 +290,9 @@ func (a *App) CmdRecipes(ctx context.Context, args []string) error {
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tTAKES\tCALLS\tSUMMARY")
+		_, _ = fmt.Fprintln(w, "NAME\tTAKES\tCALLS\tSUMMARY")
 		for _, r := range list.Recipes {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name,
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name,
 				orDash(placeholderNames(r)), orDash(strings.Join(r.Tools, " ")),
 				trunc(r.Summary, 44))
 		}
@@ -405,11 +428,13 @@ func parseAssignments(args []string) (map[string]any, error) {
 
 // CmdPrompt turns a request in words into a script, or runs it.
 func (a *App) CmdPrompt(ctx context.Context, args []string) error {
-	args = hoistFlags(args, map[string]bool{"autonomy": true, "session": true, "set": true})
+	args = hoistFlags(args, map[string]bool{"autonomy": true, "session": true, "set": true, "provider": true, "model": true})
 	fs := newFlagSet("prompt")
 	run := fs.Bool("run", false, "run the script instead of returning it, the same as --autonomy run")
 	autonomy := fs.String("autonomy", "", "propose returns the script; run executes it (default: prompt.autonomy)")
 	session := fs.String("session", "", "session key")
+	provider := fs.String("provider", "", "model provider to generate with, overriding the daemon's repair.provider for this request")
+	model := fs.String("model", "", "model to generate with, overriding the daemon's repair.model for this request")
 	set := newRepeatable()
 	fs.Var(set, "set", "placeholder value for a matched recipe, key=value; repeatable")
 	if err := parseFlags(a, fs, args); err != nil {
@@ -436,7 +461,7 @@ func (a *App) CmdPrompt(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := c.Intent(ctx, strings.Join(fs.Args(), " "), m, values, *session)
+	res, err := c.Intent(ctx, strings.Join(fs.Args(), " "), m, values, *session, *provider, *model)
 	if err != nil {
 		return err
 	}
@@ -455,7 +480,7 @@ func (a *App) showResolution(res *Resolution) error {
 		return a.out(res)
 	}
 	// "No model is available" is information, not a failure: it is the
-	// default state of every caller that cannot answer sampling, and exiting
+	// default state of every caller with no provider configured, and exiting
 	// non-zero for it would make the ordinary case look broken.
 	if res.Source == "" && res.Model == "none" {
 		fmt.Println(res.Message)
@@ -472,7 +497,11 @@ func (a *App) showResolution(res *Resolution) error {
 	if res.Recipe != "" {
 		fmt.Fprintf(os.Stderr, "mcpx: recipe %s\n", res.Recipe)
 	} else if res.Generated {
-		fmt.Fprintln(os.Stderr, "mcpx: generated by sampling; review it before running")
+		by := res.Model
+		if by == "" {
+			by = "a model"
+		}
+		fmt.Fprintf(os.Stderr, "mcpx: generated by %s; review it before running\n", by)
 	}
 	if len(res.Diagnostics) > 0 {
 		fmt.Fprintln(os.Stderr, diagnose.Render(res.Diagnostics))

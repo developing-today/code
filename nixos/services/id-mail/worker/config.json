@@ -2,12 +2,7 @@
   "worker": "mail",
   "compatibilityDate": "2026-10-01",
   "workersDev": true,
-  "routes": [
-    "mail.security.cab",
-    "mail.id.security.cab",
-    "id-mail.security.cab",
-    "mail-id.security.cab"
-  ],
+  "routes": ["mail.security.cab", "mail.id.security.cab", "id-mail.security.cab", "mail-id.security.cab"],
   "retire": ["id-mail"],
   "senders": ["id@security.cab"],
   "defaultTransport": "email",

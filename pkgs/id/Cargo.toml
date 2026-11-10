@@ -2,12 +2,28 @@
 name = "id"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.91.0"
+rust-version = "1.96"
 description = "A peer-to-peer file sharing CLI built with Iroh"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/id"
+repository = "https://github.com/developing-today/code"
 keywords = ["p2p", "file-sharing", "iroh", "cli"]
 categories = ["command-line-utilities", "network-programming"]
+
+# =============================================================================
+# Workspace
+# =============================================================================
+# Phase 1 of the pkgs/id crate split (#3447): the leaf modules live in the
+# id-core sub-crate under crates/; this package is the workspace root.
+
+[workspace]
+members = ["crates/id-core", "crates/id-native-shell"]
+# The vendored crates stay OUT of the workspace: as path dependencies inside
+# this directory Cargo would otherwise treat them as members, and a member's
+# feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
+# forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
+# into Cargo.lock even though no build here enables it (see vendor/README.md).
+exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
+default-members = [".", "crates/id-core"]
 
 # =============================================================================
 # Features
@@ -15,8 +31,14 @@ categories = ["command-line-utilities", "network-programming"]
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["dep:wasmtime", "world"]
-world = ["dep:sha2", "dep:subtle", "dep:reqwest", "dep:rustls"]
+sandbox = ["dep:wasmtime", "world", "id-core/sandbox"]
+world = [
+  "dep:subtle",
+  "dep:hmac",
+  "dep:scrypt",
+  "dep:rmp-serde",
+  "id-core/world",
+]
 ssh = ["world", "dep:russh"]
 web = [
   "world",
@@ -29,35 +51,78 @@ web = [
   "dep:rmp-serde",
   "dep:comrak",
   "dep:urlencoding",
-  "dep:libsql",
-  "dep:base64",
+  "dep:aes-gcm",
   "dep:hkdf",
-  "dep:sha2",
+  "dep:qrcode",
+  "id-core/web",
 ]
+# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
+dht = ["dep:iroh-mainline-address-lookup"]
+# Live-cluster binding for the currency PoC (#2289): the official TigerBeetle
+# Rust client, pinned to the harness server version (harness.rs). Off by
+# default so normal builds do not link the client native tb_client library.
+currency-poc-tb = ["dep:tigerbeetle"]
 
 [dependencies]
+# Foundation leaf modules extracted in Phase 1 of the crate split (#3447).
+# Features are forwarded explicitly (see [features]); the crate's modules
+# are re-exported at their historical crate:: paths in src/lib.rs.
+id-core = { path = "crates/id-core", default-features = false }
 anyhow = "1"
+cbor-core = { version = "=0.10.1", features = ["serde"] }
+# Calendar arithmetic and the IANA time-zone database for the did-it tracker's
+# pure evaluator (#3788). chrono-tz embeds the database, so evaluation needs no
+# system zoneinfo at run time or in the Nix build.
+chrono = "0.4"
+chrono-tz = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
 distributed-topic-tracker = "0.3"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 futures-lite = "2"
+futures-util = { version = "0.3", features = ["sink"] }
 iroh = "1"
 iroh-mdns-address-lookup = "0.6"
+# Mainline DHT address lookup (P7.3). Optional: only the `dht` feature brings it and n0-mainline in.
+iroh-mainline-address-lookup = { version = "0.6", optional = true }
 iroh-base = "1"
+iroh-tickets = "1"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+# Store traits only. The default features would pull in SQLite (explainers section 14).
+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
+# LogSync. A vendored copy whose store dependency has no SQLite default (vendor/README.md).
+p2panda-sync = { path = "vendor/p2panda-sync" }
+# Group membership and the auth DAG (P2.1). The `serde` feature (P2.3) serializes group actions,
+# which the event store keeps with each group operation. `test_utils` is not enabled: it turns on
+# test-only behaviour in p2panda-core, so the test types come from our own tests.
+p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
+  "serde",
+] }
+# DataScheme group encryption (P4.1, src/encryption/). `data_scheme` is on because the adapter is the
+# scheme. `test_utils` and `message_scheme` stay off: the adapter brings its own orderer and membership.
+p2panda-encryption = { path = "vendor/p2panda-encryption", default-features = false, features = [
+  "data_scheme",
+] }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
+redb = "=4.3.0"
 rustyline = "18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+tigerbeetle = { version = "=0.17.9", optional = true }
 tokio = { version = "1", features = ["full"] }
+# TOML parser for the server config (P2.9).
+toml = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
 
 # Web feature dependencies (optional)
 axum = { version = "0.8", features = ["ws", "multipart"], optional = true }
@@ -70,23 +135,76 @@ tower-http = { version = "0.7", features = [
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 futures = { version = "0.3.32", optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "form"], optional = true }
-rustls = { version = "0.23", optional = true }
 rmp-serde = { version = "1", optional = true }
 comrak = { version = "0.56", default-features = false, optional = true }
 urlencoding = { version = "2", optional = true }
-libsql = { version = "0.9", features = ["encryption"], optional = true }
-base64 = { version = "0.22", optional = true }
+aes-gcm = { version = "0.11", default-features = false, features = [
+  "aes",
+  "alloc",
+], optional = true }
+argon2 = "0.6"
+chacha20poly1305 = "0.10"
+zeroize = "1"
+rpassword = "7"
+base64 = "0.22"
+blake3 = "1"
+# Turso/libsql HTTP adapter v1 (#7577, decision record #5806): raw HTTP
+# pipeline client in src/foreign_libsql.rs. rustls, tokio-rustls and
+# webpki-roots are already in Cargo.lock via iroh/quinn; no SQLite-family
+# dependency is added (the store_traits guard test stays green).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
-sha2 = { version = "0.11", optional = true }
+# SHA-256 for the hosted binding ceremony's service attestation (slice 1,
+# #3808): required in every build variant, not only `world`/`web`.
+sha2 = "0.11"
+# HMAC-SHA512 for the Seitan V2 invite ID and Ed25519 seed (P6.1, src/seitan/derive.rs). Already in the lock.
+hmac = { version = "0.13", optional = true }
+# scrypt for the Seitan V2 stretch (P6.1). Already in the lock as a transitive dependency.
+scrypt = { version = "0.12", optional = true }
 subtle = { version = "2", optional = true }
-wasmtime = { version = "=43.0.2", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
-russh = { version = "=0.64.1", optional = true }
+wasmtime = { version = "=48.0.7", default-features = false, features = [
+  "cranelift",
+  "runtime",
+  "std",
+], optional = true }
+russh = { version = "=0.65.0", optional = true }
 
 [dev-dependencies]
+# Paused-time session-driver tests. Dev only.
+tokio = { version = "1", features = ["test-util"] }
+# The root package's tests exercise dial deadlines using id-core's test-only helpers.
+id-core = { path = "crates/id-core", default-features = false, features = [
+  "test-utils",
+  "test-provider",
+] }
+# SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
+rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"
 tokio-tungstenite = "0.29"
 vt100 = "=0.16.2"
+proptest = "1.12"
+# Interop vectors for the canonical CBOR of event headers. Dev only.
+dcbor = "=0.25.2"
+# Local relay server for the startup-wait tests (iroh's test-utils feature). Dev only.
+iroh = { version = "1", features = ["test-utils"] }
+# Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
+toml = "1"
+# Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.
+n0-mainline = "0.7"
+# XSalsa20-Poly1305 for the Keybase V2 vector's pkey box (P6.1 known-answer test). Dev only; not in the lock before P6.1.
+crypto_secretbox = "0.1"
+# Reads the vector's msgpack byte strings (P6.1 known-answer test). Dev only; already in the lock.
+serde_bytes = "0.11"
+# Decodes the Keybase vector constants as published (P6.1 known-answer test). Dev only; already in the lock.
+base64 = "0.22"
+
+# The DHT testnet test needs the `dht` feature (P7.3).
+[[test]]
+name = "dht_testnet"
+required-features = ["dht"]
 
 # =============================================================================
 # Lints Configuration
@@ -179,6 +297,11 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
+# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
+# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
+# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
+assert_is_empty = "allow"
+chunks_exact_to_as_chunks = "allow"
 
 # =============================================================================
 # Profile Configuration
@@ -197,7 +320,22 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+[profile.ci-check]
+# Nix test-phase profile (#3195): release-shaped codegen so tests keep
+# release behaviour (opt-level 3, fuel budgets), without paying release
+# LTO, single-codegen-unit, or symbol stripping for throwaway test
+# binaries. Wired in via checkType in default.nix and flake.nix; the release binary
+# build is untouched.
+inherits = "release"
+lto = false
+codegen-units = 256
+strip = false
+
 [profile.test]
 # Include debug info for better error messages
 debug = true
 opt-level = 0
+
+[[bench]]
+name = "world_bench"
+harness = false

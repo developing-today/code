@@ -1,0 +1,24 @@
+# systemd unit for iroh-relay, shared by both modes in relay.kit.toml. Install the binary at
+# /usr/local/bin/iroh-relay and the mode's config at /etc/iroh-relay/relay.toml before enabling
+# the unit. The vps mode also installs iroh-relay.service.d/vps.conf, which grants the port
+# capability. The tunnel mode installs none.
+[Unit]
+Description=iroh relay
+After=network-online.target
+Wants=network-online.target
+# Refuse to start without the config. The relay otherwise starts silently on [::]:80 (S11).
+ConditionPathExists=/etc/iroh-relay/relay.toml
+
+[Service]
+ExecStart=/usr/local/bin/iroh-relay --config-path /etc/iroh-relay/relay.toml
+# The relay ignores SIGTERM and is hard-killed by it. SIGINT exits cleanly (S11).
+KillSignal=SIGINT
+User=iroh-relay
+Group=iroh-relay
+StateDirectory=iroh-relay
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

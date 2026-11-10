@@ -57,8 +57,8 @@ func subLog(line string) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(f, "%d %s\n", pid, line)
-	f.Close()
+	_, _ = fmt.Fprintf(f, "%d %s\n", pid, line)
+	_ = f.Close()
 }
 
 func emitUpdates() {
@@ -103,9 +103,9 @@ func main() {
 	send := func(resp map[string]any) {
 		b, _ := json.Marshal(resp)
 		writeMu.Lock()
-		out.Write(b)
-		out.WriteByte('\n')
-		out.Flush()
+		_, _ = out.Write(b)
+		_ = out.WriteByte('\n')
+		_ = out.Flush()
 		writeMu.Unlock()
 	}
 	notify = send
@@ -468,6 +468,12 @@ func callTool(r req) map[string]any {
 	switch p.Name {
 	case "echo":
 		msg, _ := p.Arguments["message"].(string)
+		// MCPX_REPORT_ENV names a variable of this process's environment,
+		// and echo answers with its value. It is how a test sees what a
+		// secret was delivered as, which the server cannot otherwise say.
+		if name := os.Getenv("MCPX_REPORT_ENV"); name != "" {
+			return ok(r.ID, textResult(os.Getenv(name)))
+		}
 		return ok(r.ID, textResult(msg))
 	case "open":
 		v, _ := p.Arguments["value"].(string)
@@ -536,8 +542,13 @@ func callTool(r req) map[string]any {
 		_ = json.Unmarshal(r.Params, &m)
 		if tok, ok := m.Meta["progressToken"]; ok {
 			for i := 1; i <= 2; i++ {
+				// With a message, as every revision from 2025-03-26 defines
+				// it: relaying to a 2024-11-05 client is where the two
+				// schemas disagree, and the e2e revision-policy tests need
+				// the field that gets stripped (#307, #2212).
 				notify(map[string]any{"jsonrpc": "2.0", "method": "notifications/progress",
-					"params": map[string]any{"progressToken": tok, "progress": i, "total": 2}})
+					"params": map[string]any{"progressToken": tok, "progress": i, "total": 2,
+						"message": fmt.Sprintf("step %d of 2", i)}})
 			}
 		}
 		for _, lvl := range []string{"debug", "warning"} {

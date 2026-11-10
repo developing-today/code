@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // probeServer is an in-process server whose answers are a function, so each
@@ -49,7 +49,7 @@ func (s *probeServer) Send(_ context.Context, msg []byte) error {
 	params, _ := f["params"].(map[string]any)
 	result, rpcErr, hangUp, delay := s.answer(method, params)
 	if hangUp {
-		s.Close()
+		_ = s.Close()
 		return nil
 	}
 	if result == nil && rpcErr == nil {
@@ -192,7 +192,7 @@ func probeDial(t *testing.T, s *probeServer, o mcpclient.Options) (*mcpclient.Cl
 	}
 	c, err := mcpclient.NewWithOptions(ctx, s, o)
 	if c != nil {
-		t.Cleanup(func() { c.Close() })
+		t.Cleanup(func() { _ = c.Close() })
 	}
 	return c, err
 }
@@ -469,7 +469,7 @@ func dialHTTP(t *testing.T, url string, o mcpclient.Options) (*mcpclient.Client,
 	o.ClientName, o.ClientVersion = "mcpx", "test"
 	c, err := mcpclient.NewWithOptions(ctx, tr, o)
 	if c != nil {
-		t.Cleanup(func() { c.Close() })
+		t.Cleanup(func() { _ = c.Close() })
 	}
 	return c, err
 }
@@ -607,7 +607,7 @@ func TestHTTPEraProbe(t *testing.T) {
 			t.Fatal(err)
 		}
 		addr := ln.Addr().String()
-		ln.Close()
+		_ = ln.Close()
 		_, err = dialHTTP(t, "http://"+addr+"/mcp", mcpclient.Options{})
 		if err == nil {
 			t.Fatal("expected an error")

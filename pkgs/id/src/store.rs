@@ -8,8 +8,9 @@
 //!
 //! Two storage modes are supported via [`StoreType`]:
 //!
-//! - **Persistent** ([`FsStore`]): SQLite-backed storage in `.iroh-store/`.
-//!   Data survives restarts. Only one process can access at a time.
+//! - **Persistent** ([`FsStore`]): redb-backed storage in `.iroh-store/`
+//!   (iroh-blobs' file store). Data survives restarts. Only one process can
+//!   access at a time.
 //!
 //! - **Ephemeral** ([`MemStore`]): In-memory storage that is discarded on
 //!   shutdown. Useful for testing or temporary operations.
@@ -44,7 +45,7 @@
 //! # }
 //! ```
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use iroh_base::SecretKey;
 use iroh_blobs::{
     api::Store,
@@ -90,9 +91,14 @@ use crate::STORE_PATH;
 pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
     match afs::read(path).await {
         Ok(bytes) => {
-            let bytes: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
-                anyhow!("invalid key length: expected 32, got {}", v.len())
-            })?;
+            let bytes: [u8; 32] = match bytes.try_into() {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    // A visible but incomplete file may be the winner's key
+                    // still being written; wait before treating it as corrupt.
+                    read_key_after_creation_race(path).await?
+                }
+            };
             restrict_key_permissions(path).await;
             Ok(SecretKey::from(bytes))
         }
@@ -201,7 +207,7 @@ async fn restrict_key_permissions(path: &str) {
 ///
 /// # Variants
 ///
-/// * `Persistent` - File-system backed `SQLite` storage. Data survives restarts.
+/// * `Persistent` - File-system backed redb storage. Data survives restarts.
 /// * `Ephemeral` - In-memory storage. Data is lost on shutdown.
 ///
 /// # Example
@@ -222,10 +228,10 @@ async fn restrict_key_permissions(path: &str) {
 /// ```
 #[derive(Debug)]
 pub enum StoreType {
-    /// File-system backed persistent storage using `SQLite`.
+    /// File-system backed persistent storage using redb (iroh-blobs' `FsStore`).
     ///
     /// Data is stored in the `.iroh-store/` directory. Only one process
-    /// can access the database at a time due to `SQLite` locking.
+    /// can access the database at a time due to redb's file lock.
     Persistent(FsStore),
 
     /// In-memory ephemeral storage.
@@ -301,7 +307,7 @@ impl StoreType {
 /// # Arguments
 ///
 /// * `ephemeral` - If `true`, creates an in-memory store. If `false`,
-///   opens/creates a persistent SQLite-backed store.
+///   opens/creates a persistent redb-backed store.
 ///
 /// # Returns
 ///
@@ -343,6 +349,22 @@ mod tests {
     use super::*;
     use futures_lite::StreamExt;
     use tempfile::TempDir;
+
+    /// The persistent store is redb (iroh-blobs' `FsStore`), not a SQL engine. This
+    /// greps the docs of this module and of `lib.rs` so the old claim cannot return.
+    #[test]
+    fn test_docs_do_not_call_the_persistent_store_sqlite() {
+        for (name, source) in [
+            ("store.rs", include_str!("store.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+        ] {
+            let stale: Vec<&str> = source
+                .lines()
+                .filter(|line| line.trim_start().starts_with("//") && line.contains("SQLite"))
+                .collect();
+            assert!(stale.is_empty(), "{name} still says SQLite: {stale:?}");
+        }
+    }
 
     #[tokio::test]
     async fn test_ephemeral_store() {
@@ -492,6 +514,52 @@ mod tests {
                 .to_string()
                 .contains("invalid key length")
         );
+        assert_eq!(std::fs::read(&key_path).unwrap(), b"too short");
+    }
+
+    #[tokio::test]
+    async fn test_load_or_create_keypair_waits_for_partial_existing_key() {
+        let tmp_dir = TempDir::new().unwrap();
+        let key_path = tmp_dir.path().join("partial-key");
+        let key_path_str = key_path.to_str().unwrap();
+        let winner_key = SecretKey::generate();
+        let winner_bytes = winner_key.to_bytes();
+        let initial_bytes = 8;
+
+        // Model the window after create_new exposes the file but before the
+        // winning process has finished writing the key.
+        std::fs::write(&key_path, &winner_bytes[..initial_bytes]).unwrap();
+
+        let writer_path = key_path.clone();
+        let remaining_bytes = winner_bytes[initial_bytes..].to_vec();
+        let (writer_ready, writer_started) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn(async move {
+            let write_at = tokio::time::Instant::now() + std::time::Duration::from_millis(200);
+            writer_ready.send(()).unwrap();
+            tokio::time::sleep_until(write_at).await;
+            use tokio::io::AsyncWriteExt as _;
+            let mut file = tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(writer_path)
+                .await
+                .unwrap();
+            file.write_all(&remaining_bytes).await.unwrap();
+        });
+        writer_started.await.unwrap();
+        assert_eq!(
+            std::fs::read(&key_path).unwrap(),
+            &winner_bytes[..initial_bytes]
+        );
+
+        let started = tokio::time::Instant::now();
+        let loaded_key = load_or_create_keypair(key_path_str).await.unwrap();
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(100),
+            "loading should wait for the winning write to finish"
+        );
+        writer.await.unwrap();
+
+        assert_eq!(loaded_key.to_bytes(), winner_bytes);
     }
 
     #[tokio::test]

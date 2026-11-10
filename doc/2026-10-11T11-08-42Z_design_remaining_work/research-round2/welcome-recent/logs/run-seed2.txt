@@ -1,0 +1,84 @@
+## op counts, stock
+OP|create|0|1
+OP|add (new member, full bundle)|1|1
+OP|remove|1|2
+OP|update|2|3
+OP|add back after remove (re-add)|3|3
+OP|from_join welcome (empty bundle)|3|3
+OP|update after from_join|3|4
+## op counts, serde-bytes
+OP|create|0|1
+OP|add (new member, full bundle)|1|1
+OP|remove|1|2
+OP|update|2|3
+OP|add back after remove (re-add)|3|3
+OP|from_join welcome (empty bundle)|3|3
+OP|update after from_join|3|4
+RUN|stock|2|100|epochs 101|re-adds 50|rotate ms 84
+ROW|stock|2|100|full|15450|29|15372|101|511.2|207.8|101|0|0|101|101|1|217770|50
+PRE|stock|2|100|full|welcome ok, 101 application outputs
+ROW|stock|2|100|recent:1|756|29|678|1|284.4|7.4|1|100|0|1|101|1|20837|50
+ERR|stock|2|100|recent:1|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|100|recent:1|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|stock|2|100|recent:8|1771|29|1693|8|354.7|22.7|8|93|0|8|101|1|47218|50
+ERR|stock|2|100|recent:8|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|100|recent:8|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|stock|2|100|recent:32|5258|29|5180|32|410.5|63.5|32|69|0|32|101|1|123262|50
+ERR|stock|2|100|recent:32|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|100|recent:32|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|stock|2|100|recent:128|15433|29|15355|101|415.7|195.7|101|0|0|101|101|1|217770|50
+PRE|stock|2|100|recent:128|welcome ok, 101 application outputs
+ROW|stock|2|100|recent:512|15406|29|15328|101|384.5|205.1|101|0|0|101|101|1|217770|50
+PRE|stock|2|100|recent:512|welcome ok, 101 application outputs
+RUN|serde-bytes|2|100|epochs 101|re-adds 50|rotate ms 64
+ROW|serde-bytes|2|100|full|4492|29|4414|101|320.2|1.7|101|0|0|101|101|1|121076|50
+PRE|serde-bytes|2|100|full|welcome ok, 101 application outputs
+ROW|serde-bytes|2|100|recent:1|489|29|411|1|304.5|1.6|1|100|0|1|101|1|18939|50
+ERR|serde-bytes|2|100|recent:1|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|100|recent:1|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|serde-bytes|2|100|recent:8|771|29|693|8|280.0|1.6|8|93|0|8|101|1|32677|50
+ERR|serde-bytes|2|100|recent:8|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|100|recent:8|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|serde-bytes|2|100|recent:32|1732|29|1654|32|280.6|2.3|32|69|0|32|101|1|72076|50
+ERR|serde-bytes|2|100|recent:32|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|100|recent:32|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|serde-bytes|2|100|recent:128|4492|29|4414|101|286.8|1.9|101|0|0|101|101|1|121076|50
+PRE|serde-bytes|2|100|recent:128|welcome ok, 101 application outputs
+ROW|serde-bytes|2|100|recent:512|4492|29|4414|101|284.5|1.8|101|0|0|101|101|1|121076|50
+PRE|serde-bytes|2|100|recent:512|welcome ok, 101 application outputs
+RUN|stock|2|1000|epochs 1001|re-adds 500|rotate ms 1695
+ROW|stock|2|1000|full|147395|29|147317|1001|1466.1|1843.3|1001|0|0|1001|1001|1|19507875|500
+PRE|stock|2|1000|full|welcome ok, 1001 application outputs
+ROW|stock|2|1000|recent:1|741|29|663|1|271.4|7.0|1|1000|0|1|1001|1|208845|500
+ERR|stock|2|1000|recent:1|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|1000|recent:1|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|stock|2|1000|recent:8|1741|29|1663|8|266.1|20.5|8|993|0|8|1001|1|478613|500
+ERR|stock|2|1000|recent:8|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|1000|recent:8|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|stock|2|1000|recent:32|5272|29|5194|32|335.5|77.3|32|969|0|32|1001|1|1386844|500
+ERR|stock|2|1000|recent:32|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|1000|recent:32|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|stock|2|1000|recent:128|19319|29|19241|128|410.3|229.0|128|873|0|128|1001|1|4794962|500
+ERR|stock|2|1000|recent:128|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|1000|recent:128|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|stock|2|1000|recent:512|75534|29|75456|512|828.1|883.7|512|489|0|512|1001|1|14882391|500
+ERR|stock|2|1000|recent:512|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|stock|2|1000|recent:512|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+RUN|serde-bytes|2|1000|epochs 1001|re-adds 500|rotate ms 875
+ROW|serde-bytes|2|1000|full|40493|29|40415|1001|481.6|3.3|1001|0|0|1001|1001|1|10211722|500
+PRE|serde-bytes|2|1000|full|welcome ok, 1001 application outputs
+ROW|serde-bytes|2|1000|recent:1|489|29|411|1|274.5|1.7|1|1000|0|1|1001|1|189862|500
+ERR|serde-bytes|2|1000|recent:1|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|1000|recent:1|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|serde-bytes|2|1000|recent:8|771|29|693|8|281.1|1.8|8|993|0|8|1001|1|330500|500
+ERR|serde-bytes|2|1000|recent:8|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|1000|recent:8|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|serde-bytes|2|1000|recent:32|1732|29|1654|32|364.9|2.1|32|969|0|32|1001|1|802349|500
+ERR|serde-bytes|2|1000|recent:32|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|1000|recent:32|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|serde-bytes|2|1000|recent:128|5572|29|5494|128|392.9|2.5|128|873|0|128|1001|1|2572589|500
+ERR|serde-bytes|2|1000|recent:128|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|1000|recent:128|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929
+ROW|serde-bytes|2|1000|recent:512|20933|29|20855|512|384.5|2.5|512|489|0|512|1001|1|7810722|500
+ERR|serde-bytes|2|1000|recent:512|UnknownGroupSecret(83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929)
+PRE|serde-bytes|2|1000|recent:512|welcome fails: tried to decrypt message with an unknown group secret: 83dd1af6ebc345b6bca515b4417c40c3789a98718c4eb9f6701bb16fdeb37929

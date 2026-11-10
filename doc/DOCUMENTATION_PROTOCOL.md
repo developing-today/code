@@ -57,11 +57,47 @@ After initial rollout is complete:
 
 - **Short updates**: Files can be brief notes, updates to specific parts, or complete re-summarization of current/proposed design
 
-## File Immutability
+## Dated Records and Maintained Control Documents
 
-- **Do not modify files** after initial creation (except appending during active rollout)
-- **After some time**, stop appending—create new files instead
-- **Preserve historical record**: Files represent the state of understanding at that point in time
+Documents follow one of two sets of rules. A dated record says what was known and decided at one time. A maintained control document says how things stand now, and other work steers by it. [`planning/DOCUMENTATION_ARCHITECTURE.md`](../planning/DOCUMENTATION_ARCHITECTURE.md) has the placement rules for every kind of document in the repository. [`README.md`](README.md) maps where each kind lives.
+
+### Dated historical records
+
+Dated historical records are:
+
+- the files in `doc/<UTC>_<kind>_<name>/`;
+- in a research package (`doc/<UTC>_research_<slug>/`):
+  - `transcript.txt`, the exact request;
+  - `package.json`, written once at intake;
+  - directed notes in `notes/`;
+  - receipts in `receipts/`;
+  - decision records in `decisions/`.
+
+The rules for them:
+
+- Do not modify files after initial creation, except appending during active rollout (see above). A later finding goes in a new dated section or file that links back.
+- `transcript.txt` is never edited, not even its whitespace. Notes are immutable once written. Corrections are new files: a new note, receipt or decision.
+
+### Maintained control documents
+
+Maintained control documents are:
+
+- the root entry points: `README.md`, `AGENTS.md`, `CLAUDE.md` and `ROADMAP.md`;
+- indexes, such as `doc/README.md` and `planning/plans/README.md`;
+- everything in `planning/`, including roadmaps, plans, templates and the workflow library;
+- in a research package:
+  - the main reference `main.md` and the design `design.md`;
+  - each concept file, which only its current owner edits.
+
+The rules for them:
+
+- Edit them in place, so they stay current. Do not pile history at the bottom.
+- Change them only through a PR from your own branch. Many agents read and write them, and a PR is where conflicts are resolved before anything is lost. [`planning/workflow/collaboration.md`](../planning/workflow/collaboration.md) has the rules for parallel writers.
+- Every change gets a change-log line:
+  - In a research package, a change to `main.md` or `design.md` adds one line to the package's `changes.md`. That file is union-merged, so parallel PRs do not conflict.
+  - A document with its own `## Change log` section gets one line there per PR.
+  - Elsewhere, the PR and its commit message are the record.
+- Do not delete what a statement originally said. Mark it `clarified`, `superseded` or `retracted`: the new status goes in front with a UTC time and a short reason, and the earlier trail follows. [`planning/workflow/records.md`](../planning/workflow/records.md) defines the item trail format.
 
 ## Handling Superseded Features
 
@@ -91,3 +127,7 @@ docs/
 ├── 2026-03-20T09-00-00Z_feature_meta_protocol_v2/
 │   └── 2026-03-20T09-00-00Z_feature_meta_protocol_v2.md       # References old folder
 ```
+
+## Change log
+
+- 2026-10-21: Split dated historical records from maintained control documents. The older paths here say `docs/`, which is a symlink to `doc/`; both reach the same folders. Rules from earlier versions are unchanged.

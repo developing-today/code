@@ -1,0 +1,28 @@
+## matrix: chains=10000 K=16 T=16 batch=256 repeats=5
+| N | flights (A+B) | control B | data B | transport B (QUIC) | wall ms, median | of which commit ms, median | index ms, median | checks |
+|---|---|---|---|---|---|---|---|---|
+run N=0 r=1 flights=2 (A 1 B 1) control=33 data=16 wall=3.3 ms commit=0.0 ms index=240.0 ms transport=21594 ok=true
+run N=0 r=2 flights=2 (A 1 B 1) control=33 data=16 wall=3.8 ms commit=0.0 ms index=223.6 ms transport=21546 ok=true
+run N=0 r=3 flights=2 (A 1 B 1) control=33 data=16 wall=3.6 ms commit=0.0 ms index=149.2 ms transport=21644 ok=true
+run N=0 r=4 flights=2 (A 1 B 1) control=33 data=16 wall=4.7 ms commit=0.0 ms index=136.8 ms transport=21487 ok=true
+run N=0 r=5 flights=2 (A 1 B 1) control=33 data=16 wall=3.8 ms commit=0.0 ms index=154.0 ms transport=21557 ok=true
+| 0 | 2 | 33 | 16 | 21557 | 3.8 | 0.0 | 154.0 | all ok, identical across runs |
+run N=2 r=1 flights=8 (A 4 B 4) control=7422 data=996 wall=32.9 ms commit=4.4 ms index=157.9 ms transport=30541 ok=true
+run N=2 r=2 flights=8 (A 4 B 4) control=7422 data=996 wall=32.1 ms commit=4.0 ms index=152.6 ms transport=30554 ok=true
+run N=2 r=3 flights=8 (A 4 B 4) control=7422 data=996 wall=34.6 ms commit=4.8 ms index=156.8 ms transport=30814 ok=true
+run N=2 r=4 flights=8 (A 4 B 4) control=7422 data=996 wall=32.5 ms commit=3.5 ms index=150.3 ms transport=30627 ok=true
+run N=2 r=5 flights=8 (A 4 B 4) control=7422 data=996 wall=27.2 ms commit=4.3 ms index=152.3 ms transport=30562 ok=true
+| 2 | 8 | 7422 | 996 | 30562 | 32.5 | 4.3 | 152.6 | all ok, identical across runs |
+run N=20 r=1 flights=8 (A 4 B 4) control=63856 data=9816 wall=40.3 ms commit=8.1 ms index=157.3 ms transport=97867 ok=true
+run N=20 r=2 flights=8 (A 4 B 4) control=63856 data=9816 wall=39.2 ms commit=7.2 ms index=154.0 ms transport=97797 ok=true
+run N=20 r=3 flights=8 (A 4 B 4) control=63856 data=9816 wall=73.4 ms commit=5.1 ms index=194.0 ms transport=98268 ok=true
+run N=20 r=4 flights=8 (A 4 B 4) control=63856 data=9816 wall=67.9 ms commit=7.0 ms index=202.0 ms transport=96486 ok=true
+run N=20 r=5 flights=8 (A 4 B 4) control=63856 data=9816 wall=48.0 ms commit=5.5 ms index=182.5 ms transport=96331 ok=true
+| 20 | 8 | 63856 | 9816 | 97797 | 48.0 | 7.0 | 182.5 | all ok, identical across runs |
+run N=200 r=1 flights=8 (A 4 B 4) control=462479 data=98016 wall=120.0 ms commit=22.8 ms index=187.4 ms transport=595901 ok=true
+run N=200 r=2 flights=8 (A 4 B 4) control=462479 data=98016 wall=84.9 ms commit=21.5 ms index=183.3 ms transport=599808 ok=true
+run N=200 r=3 flights=8 (A 4 B 4) control=462479 data=98016 wall=84.7 ms commit=22.5 ms index=167.6 ms transport=595720 ok=true
+run N=200 r=4 flights=8 (A 4 B 4) control=462479 data=98016 wall=67.3 ms commit=21.4 ms index=149.3 ms transport=599552 ok=true
+run N=200 r=5 flights=8 (A 4 B 4) control=462479 data=98016 wall=61.8 ms commit=14.5 ms index=144.2 ms transport=600618 ok=true
+| 200 | 8 | 462479 | 98016 | 599552 | 84.7 | 21.5 | 167.6 | all ok, identical across runs |
+LogSync control for this chain count (S1, CBOR, not re-run): 760071 B, 2 flights before data.

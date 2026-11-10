@@ -3,6 +3,7 @@
   stdenvNoCC,
   fetchurl,
   autoPatchelfHook,
+  patchelf,
   installShellFiles,
   makeWrapper,
   zlib,
@@ -65,8 +66,9 @@ let
       mainProgram ? pname,
       dynamic ? false,
     }:
-    assert lib.assertMsg (system == "x86_64-linux")
-      "pkgs/latest-cli: ${pname} is a prebuilt x86_64-linux artifact; system is ${system}";
+    assert lib.assertMsg (
+      system == "x86_64-linux"
+    ) "pkgs/latest-cli: ${pname} is a prebuilt x86_64-linux artifact; system is ${system}";
     stdenvNoCC.mkDerivation {
       inherit pname version;
 
@@ -123,7 +125,12 @@ let
       '';
 
       meta = {
-        inherit description homepage license mainProgram;
+        inherit
+          description
+          homepage
+          license
+          mainProgram
+          ;
         platforms = [ "x86_64-linux" ];
         sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
       };
@@ -318,31 +325,43 @@ in
   # app and release archives are at .../releases" -- so the release tarball is
   # the real artifact.
   #
+  # 0.1.2 is the first stable line containing Orchestrator V2: delegate_task,
+  # the T3 Code MCP, provider fork/switch, OpenCode 2 + Muse Code providers,
+  # the ACP registry, the server queue and scheduled tasks. It is a one-way
+  # upgrade from the 0.0.x (V1) line -- a V1 client refuses a V2 server and
+  # vice versa, so the desktop and mobile apps must move with it.
+  #
+  # Provider minimums at 0.1.2 (from the release notes): Codex >= 0.159,
+  # Claude Code >= 2.1.280, OpenCode >= 2.0.18 (2.x only -- never drive an
+  # OpenCode 1.x binary against the shared 2.x session DB), Pi >= 0.80.5,
+  # Grok >= 1.0.13. The fleet builds all satisfy these.
+  #
   # This provides the `t3` CLI/server (used by systemd.user.services.t3code).
-  # The Electron desktop GUI is a separate asset (.deb/.AppImage) and is still
-  # taken from nixpkgs as `t3code-desktop`.
+  # The Electron desktop GUI is a separate asset (.AppImage) and is packaged
+  # separately in pkgs/t3code-desktop, version-locked to this server.
   t3 =
-    assert lib.assertMsg (system == "x86_64-linux")
-      "pkgs/latest-cli: t3 is a prebuilt x86_64-linux artifact; system is ${system}";
-    stdenvNoCC.mkDerivation {
+    assert lib.assertMsg (
+      system == "x86_64-linux"
+    ) "pkgs/latest-cli: t3 is a prebuilt x86_64-linux artifact; system is ${system}";
+    stdenvNoCC.mkDerivation rec {
       pname = "t3";
-      version = "0.0.45";
+      version = "0.1.2";
 
       src = fetchurl {
-        url = "https://github.com/pingdotgg/t3code/releases/download/v0.0.45/t3-0.0.45-linux-x64.tar.gz";
-        hash = "sha256-EFBa50vGpDz6sP3gvwag4NaGL3QDBZG+mUpkDUig1r0=";
+        url = "https://github.com/pingdotgg/t3code/releases/download/v0.1.2/t3-0.1.2-linux-x64.tar.gz";
+        hash = "sha256-eu1iXLlhk43xdMGgZ8DwUjU2CUC1PogqFkMSa3VNoWw=";
       };
 
       nativeBuildInputs = [
-        autoPatchelfHook
         makeWrapper
+        patchelf
       ];
       buildInputs = [
         zlib
         stdenv.cc.cc.lib
       ];
 
-      sourceRoot = "t3-0.0.45-linux-x64";
+      sourceRoot = "t3-${version}-linux-x64";
       dontStrip = true;
 
       installPhase = ''
@@ -350,9 +369,27 @@ in
         mkdir -p "$out/libexec/t3" "$out/bin"
         cp -r . "$out/libexec/t3/"
         chmod +x "$out/libexec/t3/t3"
+        # Do NOT use autoPatchelfHook here (issue #4884): the t3 binary is a
+        # Node.js SEA (single executable application) build, and patchelf's
+        # rpath rewrite (--add-rpath and --set-rpath alike, patchelf 0.19.2)
+        # corrupts its ELF layout -- the result segfaults inside ld.so
+        # (dl_main) before main ever runs, on any machine, in or out of the
+        # build sandbox. Setting ONLY the interpreter with patchelf is safe
+        # (verified against the pristine upstream binary), so do exactly
+        # that, and supply the libraries the binary NEEDs (libatomic,
+        # libstdc++, libgcc_s from cc.lib) through the wrapper's
+        # LD_LIBRARY_PATH instead of an rpath. The bundled .node addons
+        # only need glibc + cc.lib libraries too.
+        patchelf --set-interpreter "${stdenv.cc.bintools.dynamicLinker}" "$out/libexec/t3/t3"
         # The binary resolves client/ and node_modules/ relative to itself, so
         # wrap rather than symlink into bin/.
-        makeWrapper "$out/libexec/t3/t3" "$out/bin/t3"
+        makeWrapper "$out/libexec/t3/t3" "$out/bin/t3" \
+          --prefix LD_LIBRARY_PATH : "${
+            lib.makeLibraryPath [
+              stdenv.cc.cc.lib
+              zlib
+            ]
+          }"
         runHook postInstall
       '';
 
@@ -367,7 +404,10 @@ in
       meta = {
         description = "T3 Code server and CLI";
         homepage = "https://t3.codes";
-        license = lib.licenses.unfree;
+        # Upstream pingdotgg/t3code is MIT; this was previously marked unfree
+        # in error (the server tarball is the MIT-licensed project's own
+        # release artifact).
+        license = lib.licenses.mit;
         mainProgram = "t3";
         platforms = [ "x86_64-linux" ];
         sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];

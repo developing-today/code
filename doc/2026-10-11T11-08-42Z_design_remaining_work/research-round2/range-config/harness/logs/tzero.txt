@@ -1,0 +1,8 @@
+| parameters (T, K) on both sides | result |
+|---|---|
+| T=16, K=16 | ok: 6 flights, 3 and 3 learned |
+| T=1, K=2 | ok: 12 flights, 3 and 3 learned |
+| T=0, K=16 | ok: 6 flights, 3 and 3 learned |
+| T=16, K=1 | panic: K must be at least 2, or a split makes no progress |
+| one key each, differing: T=0, K=16 | panic: reconciliation did not terminate |
+| one key each, differing: T=1, K=2 | ok: 4 flights |

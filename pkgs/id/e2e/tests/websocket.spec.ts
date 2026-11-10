@@ -113,7 +113,7 @@ test.setTimeout(30_000);
 
 /** Create a file and navigate to its editor, returning the filename */
 async function createFile(page: Page, name: string): Promise<void> {
-  await page.goto("/");
+  await page.goto("/files");
   await page.fill("#new-file-name", name);
   await page.click("#new-file-form button[type='submit']");
   await page.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
@@ -256,7 +256,7 @@ test.describe("WebSocket Connection + Editor Ready", () => {
     const fileName = `ws-initial-${Date.now()}.txt`;
 
     // Navigate and check initial status before WS connects
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });

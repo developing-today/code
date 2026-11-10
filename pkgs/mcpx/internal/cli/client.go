@@ -8,23 +8,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Client talks to the daemon over its unix socket, starting one if needed.
@@ -35,8 +37,43 @@ type Client struct {
 	// endpoint is empty for the local socket, or a base URL for a daemon
 	// somewhere else.
 	endpoint string
+	// ssh, when set, is the ssh:// endpoint this client dials; sshURL is
+	// the endpoint as the user wrote it, which is what errors report (the
+	// http URL the transport uses is an internal placeholder).
+	ssh    *daemon.SSHEndpoint
+	sshURL string
+	// lazySocket, for an in-process (inline) client, opens the daemon's
+	// socket on first use and returns its path. Inline mode creates no
+	// socket for its own calls; only a script — a child process, which
+	// cannot share the in-process transport — needs one, so the socket
+	// is opened lazily by Socket.
+	lazySocket func() (string, error)
+	socketOnce sync.Once
+	socketPath string
+	// dialSocket is the socket the local transport actually dials,
+	// resolved once at construction through the info record
+	// (Paths.ClientSocket, #1886): the computed Paths.Socket is only a
+	// hint, and a daemon whose state path was too long for sun_path
+	// bound somewhere else and wrote the real path in its record.
+	dialSocket string
+	// resolveSocket marks a client built for its own daemon with no
+	// explicit endpoint: both its transport and Socket() re-resolve
+	// through ClientSocket at use time, so a replacement daemon
+	// EnsureDaemon spawns on a different socket is followed, not just
+	// dialled (Codex round 2 on PR #2561). Explicit unix:// endpoints
+	// leave it false — that target was chosen by the caller (e.g. a
+	// record-targeted client in stop --all) and must not be overridden
+	// by MCPX_SOCKET or a later record.
+	resolveSocket bool
 	// set is this process's resolved configuration.
 	set *settings.Set
+	// authToken, when authResolved is true, is the bearer token of THIS
+	// client's target daemon, resolved from the target's own
+	// configuration (targetBearerToken). Record-targeted clients
+	// (stop --all, daemons) talk to daemons other projects configured;
+	// their token is that daemon's, not the invoking project's.
+	authToken    string
+	authResolved bool
 	// callSettings is the JSON header carrying whatever call-scoped settings
 	// this invocation actually chose. Computed once: it cannot change within
 	// a run, and recomputing it per request would put a schema walk on the
@@ -71,7 +108,10 @@ func clientSettings() *settings.Set {
 func callHeader(set *settings.Set) string {
 	ov := map[string]string{}
 	for _, decl := range set.Schema().All() {
-		if decl.Scope != settings.ScopeCall {
+		// CallRequest settings ride along too: pool.callTimeout is the
+		// daemon's ceiling, but a caller may ask for a shorter call
+		// (#1864 item 4); the daemon clamps the request to its own value.
+		if decl.Scope != settings.ScopeCall && !decl.CallRequest {
 			continue
 		}
 		v, ok := set.Value(decl.Path)
@@ -88,6 +128,95 @@ func callHeader(set *settings.Set) string {
 		return ""
 	}
 	return string(b)
+}
+
+// authorize attaches the configured daemon bearer token to a request
+// (#1975): the same transport.bearerToken setting the daemon checks,
+// resolved from this client's own settings (environment or config), so
+// a caller and its daemon agree by construction. Unset, no header --
+// the request is byte-for-byte what it was before the setting existed.
+func (c *Client) authorize(req *http.Request) {
+	tok := daemon.BearerToken(c.set)
+	if c.authResolved {
+		tok = c.authToken
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+}
+
+// targetBearerToken resolves the bearer token of the daemon a client
+// targets through configPath (#1975, Codex on PR #2711). Clients built
+// for a recorded daemon -- stop --all, daemons -- construct through
+// NewClientAt with that daemon's config path, but a token resolved
+// from the invoking project's settings is the wrong credential for
+// another project's daemon: the probe 401s, stop silently skips a
+// live daemon, and daemons reports it stopped.
+//
+// Resolution mirrors the daemon's own: the target's configuration
+// CHAIN, then the environment. The chain matters: a daemon started
+// with ordinary discovery inherits the setting from a parent or user
+// config when its nearest file does not carry it, so resolving only
+// the recorded file would miss the inherited token and 401 the
+// daemon's own ordinary clients (Codex on PR #2711, round on
+// d02a018d). An invocation-scoped token in the client's own settings
+// (environment, preset, flag or runtime layer -- anything but a
+// file) still wins: it is the token this process was told to use. A
+// token only the invoking project's file carries is NOT sent: the
+// target daemon never saw it.
+//
+// Best effort by design: an unreadable target file resolves to no
+// token rather than failing a fleet-wide listing or stop.
+func targetBearerToken(configPath string, own *settings.Set) (string, bool) {
+	if v, ok := own.Value(daemon.BearerTokenSetting); ok &&
+		v.Origin.Layer != settings.LayerFile && v.Origin.Layer != settings.LayerDefault {
+		return v.Raw, true
+	}
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		return "", false
+	}
+	set := settings.NewSet(sch)
+	files := targetConfigFiles(configPath)
+	for i, path := range files {
+		doc, rerr := readJSONFile(path)
+		if rerr != nil {
+			continue
+		}
+		if aerr := sch.ApplyFile(set, doc, path, i); aerr != nil {
+			return "", false
+		}
+	}
+	if eerr := sch.ApplyEnv(set, settings.Environ()); eerr != nil {
+		return "", false
+	}
+	return daemon.BearerToken(set), true
+}
+
+// targetConfigFiles is the farthest-first file list a target daemon's
+// settings resolve from: the discovery chain of the recorded file's
+// directory (the walk the daemon itself was found by), with the
+// recorded file appended as the nearest layer when discovery cannot
+// see it (an MCPX_CONFIG bypass names a file outside the walk).
+func targetConfigFiles(configPath string) []string {
+	var files []string
+	if chain, _, err := config.ResolveChainFrom(filepath.Dir(configPath)); err == nil {
+		for i := len(chain) - 1; i >= 0; i-- {
+			if _, serr := os.Stat(chain[i]); serr == nil {
+				files = append(files, chain[i])
+			}
+		}
+	}
+	found := false
+	for _, f := range files {
+		if f == configPath {
+			found = true
+		}
+	}
+	if !found {
+		files = append(files, configPath)
+	}
+	return files
 }
 
 // NewClient builds a socket-backed API client.
@@ -110,19 +239,38 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	c := &Client{paths: paths, cfg: configPath, set: set,
 		callSettings: callHeader(set),
 		endpoint:     strings.TrimRight(endpoint, "/")}
+	if configPath != "" {
+		c.authToken, c.authResolved = targetBearerToken(configPath, set)
+	}
 	timeout := set.Duration("http.requestTimeout")
 	idle := set.Duration("http.idleConnTimeout")
 
 	if c.endpoint == "" {
+		c.dialSocket = paths.ClientSocket()
+		c.resolveSocket = true
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					// Resolve at dial time, not once at construction
+					// (#1886, Codex on PR #2561): a client built while
+					// a stale info record names a dead daemon's socket
+					// must follow the replacement EnsureDaemon starts,
+					// which binds the computed path and republishes the
+					// record. ClientSocket's fast path costs one stat
+					// when the computed socket is already live.
+					sock := paths.ClientSocket()
 					var d net.Dialer
-					return d.DialContext(ctx, "unix", paths.Socket)
+					return d.DialContext(ctx, "unix", sock)
 				},
-				MaxIdleConns:    set.Int("http.idleConns"),
-				IdleConnTimeout: idle,
+				// No connection is kept between calls. A takeover closes
+				// the old daemon's idle connections; a client that reused
+				// one could send into it just as it closed, and a POST is
+				// not retried by the transport once its bytes are written.
+				// A fresh connection is queued for the successor instead.
+				DisableKeepAlives: true,
+				MaxIdleConns:      set.Int("http.idleConns"),
+				IdleConnTimeout:   idle,
 			},
 		}
 		return c
@@ -133,6 +281,7 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	// two daemons.
 	if sock, ok := strings.CutPrefix(c.endpoint, "unix://"); ok {
 		c.endpoint = ""
+		c.dialSocket = sock
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -141,6 +290,58 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 					return d.DialContext(ctx, "unix", sock)
 				},
 				MaxIdleConns: set.Int("http.idleConns"), IdleConnTimeout: idle,
+			},
+		}
+		return c
+	}
+	// An ssh:// endpoint (issue #1880) tunnels the same HTTP API through
+	// the operator's own ssh, so a remote daemon needs no listening port
+	// and no new credential. The system ssh binary is the transport: its
+	// agent, ssh_config, known_hosts and bastion rules already describe
+	// who may reach that host.
+	if ep, isSSH, perr := daemon.ParseSSHEndpoint(c.endpoint); isSSH {
+		c.ssh = &ep
+		c.sshURL = ep.String()
+		dialer := daemon.NewSSHDialer(ep)
+		var dial func(context.Context, string, string) (net.Conn, error)
+		if perr != nil {
+			dial = func(context.Context, string, string) (net.Conn, error) { return nil, perr }
+		} else {
+			dial = dialer.DialContext
+		}
+		c.endpoint = "http://" + dialer.Address()
+		c.hc = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext: dial,
+				// One ssh process per connection, reused while it lives:
+				// starting ssh costs a handshake, so it is worth keeping
+				// an idle one exactly as a VPN endpoint is.
+				MaxIdleConns:        set.Int("http.remoteIdleConns"),
+				MaxIdleConnsPerHost: set.Int("http.remoteIdleConns"),
+				IdleConnTimeout:     idle,
+			},
+		}
+		return c
+	}
+	// A tsnet:// endpoint names a daemon by tailnet identity (#1967). The
+	// client joins the tailnet as an ephemeral node to dial it; there is
+	// no address to fall back to, and the dialer says so when it cannot
+	// join (no TS_AUTHKEY) instead of retrying the name as plain TCP.
+	if host, port, isTSNet, perr := daemon.ParseTSNetEndpoint(c.endpoint); isTSNet {
+		dialer := daemon.NewTSNetDialer("mcpx-client")
+		dial := dialer.DialContext
+		if perr != nil {
+			dial = func(context.Context, string, string) (net.Conn, error) { return nil, perr }
+		}
+		c.endpoint = "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+		c.hc = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext:         dial,
+				MaxIdleConns:        set.Int("http.remoteIdleConns"),
+				MaxIdleConnsPerHost: set.Int("http.remoteIdleConns"),
+				IdleConnTimeout:     idle,
 			},
 		}
 		return c
@@ -160,17 +361,51 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	return c
 }
 
-// Remote reports whether this client talks to a daemon it cannot start.
+// NewInProcessClient builds a client whose daemon is hosted in this
+// process: rt carries its requests to the daemon's handler directly, so
+// no connection is dialled and no socket exists for the client's own
+// calls. lazySocket opens the daemon's real socket if something — a
+// script — asks for it through Socket.
+func NewInProcessClient(paths daemon.Paths, configPath string, rt http.RoundTripper, lazySocket func() (string, error)) *Client {
+	c := NewClient(paths, configPath)
+	c.hc.Transport = rt
+	c.lazySocket = lazySocket
+	return c
+}
+
 // Socket is the unix socket this client is actually using, or "" when the
 // daemon is somewhere else.
+//
+// Remote reports whether this client talks to a daemon it cannot start.
 //
 // Asked of the connection rather than recomputed from the configuration.
 // Inline mode listens on a private temporary socket, so deriving the path
 // from the config key gave the wrong answer -- and an empty one, which the
 // generated client turned into "cannot reach the mcpx daemon at ".
 func (c *Client) Socket() string {
+	if c.lazySocket != nil {
+		c.socketOnce.Do(func() {
+			if p, err := c.lazySocket(); err == nil {
+				c.socketPath = p
+			}
+		})
+		return c.socketPath
+	}
 	if c.endpoint != "" {
 		return ""
+	}
+	if c.resolveSocket {
+		// Re-resolve, like the transport does at dial time: a stale
+		// record may have named a dead daemon whose replacement bound
+		// a different socket, and commands.go exports this value as
+		// MCPX_SOCKET for scripts — a cached construction-time path
+		// would send them to the dead socket (Codex round 2, #2561).
+		if s := c.paths.ClientSocket(); s != "" {
+			return s
+		}
+	}
+	if c.dialSocket != "" {
+		return c.dialSocket
 	}
 	return c.paths.Socket
 }
@@ -241,6 +476,7 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 	if v := mcpclient.CallerVersionFrom(ctx); v != "" {
 		req.Header.Set(daemon.CallerVersionHeader, v)
 	}
+	c.authorize(req)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {
@@ -254,18 +490,28 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 // readReply reads a whole response, turning a non-2xx status into an
 // *HTTPError.
 func (c *Client) readReply(resp *http.Response) ([]byte, int, error) {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, 0, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var e struct {
-			Error string `json:"error"`
+			Error     string `json:"error"`
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			RequestID string `json:"requestId"`
 		}
 		msg := fmt.Sprintf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-		if json.Unmarshal(b, &e) == nil && e.Error != "" {
-			msg = e.Error
+		if json.Unmarshal(b, &e) == nil {
+			switch {
+			case e.Error != "":
+				msg = e.Error
+			case e.Code == "secret_required" && e.Message != "":
+				// A refusal for a missing secret says what is missing and
+				// which request answers it; the raw body says the same in JSON.
+				msg = e.Message + " (request " + e.RequestID + ")"
+			}
 		}
 		return nil, resp.StatusCode, &HTTPError{Status: resp.StatusCode, Body: b, Msg: msg}
 	}
@@ -305,21 +551,65 @@ func (c *Client) Ping(ctx context.Context) bool {
 	return err == nil
 }
 
+// reachable is Ping with the ssh:// fallback EnsureDaemon has always had:
+// an ssh handshake can legitimately take longer than
+// autostart.pingTimeout, so a timed-out Ping is retried once as a plain
+// health request bounded only by the caller's ctx before the daemon is
+// declared unreachable. Non-ssh endpoints get Ping exactly.
+func (c *Client) reachable(ctx context.Context) bool {
+	if c.Ping(ctx) {
+		return true
+	}
+	if c.ssh == nil {
+		return false
+	}
+	_, err := c.do(ctx, http.MethodGet, "/v1/health", nil)
+	return err == nil
+}
+
 // EnsureDaemon starts a background daemon if one is not already running and
 // waits for it to become reachable. This is what makes every command work with
 // no setup step.
 func (c *Client) EnsureDaemon(ctx context.Context) error {
+	// A cancelled caller wants nothing started and nothing waited for:
+	// without this check a failed Ping (which a cancelled context always
+	// produces) is read as "no daemon", so a daemon gets spawned and the
+	// poll below waits out the whole connect timeout (#284).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.Remote() {
 		// Starting a local daemon because a remote one is unreachable would
 		// silently answer from the wrong machine, which is worse than
 		// failing.
-		if c.Ping(ctx) {
+		if c.reachable(ctx) {
 			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if c.ssh != nil {
+			// Say what was tried. Over ssh the interesting failure is
+			// usually on the far side -- no daemon on that socket, or no
+			// mcpx on that PATH -- and "unreachable" alone sends the
+			// reader looking at the wrong machine.
+			// A successful health request here — after a Ping that
+			// timed out on a slow handshake — means the daemon IS
+			// reachable; accept it instead of reporting ErrNoDaemon.
+			if _, derr := c.do(ctx, http.MethodGet, "/v1/health", nil); derr == nil {
+				return nil
+			} else {
+				return fmt.Errorf("no mcpx daemon at %s (remote command: %s): %v; it is not started from here",
+					c.sshURL, strings.Join(c.ssh.RemoteCommand(), " "), derr)
+			}
 		}
 		return fmt.Errorf("no mcpx daemon at %s; it is not started from here", c.endpoint)
 	}
 	if c.Ping(ctx) {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if !c.set.Bool("daemon.autostart") {
 		return fmt.Errorf("%w and daemon.autostart is off, so mcpx will not start one",
@@ -350,9 +640,17 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
 	cmd := exec.Command(exe, args...)
+	// A daemon auto-started by this invocation must resolve the
+	// same chain this process did. A --paths-config seed lives only
+	// in this process's memory, so forward it as the child's
+	// MCPX_PATHS_CONFIG (PR #2477 finding); an environment seed
+	// needs no forwarding, as the child inherits the environment.
+	if seed, ok := config.PathsConfigSeedEnv(); ok {
+		cmd.Env = append(os.Environ(), "MCPX_PATHS_CONFIG="+seed)
+	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
@@ -367,7 +665,18 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 		if c.Ping(ctx) {
 			return nil
 		}
-		time.Sleep(c.set.Duration("autostart.pollInterval"))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(c.set.Duration("autostart.pollInterval")):
+		}
+	}
+	// A cancellation that only becomes visible as the loop exits on the
+	// deadline (Done not yet fired, Err already set) is the caller's
+	// cancellation, not a daemon failure (#328; the dezren39/nix copy has
+	// had this post-loop check since its #233 fix).
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	tail, _ := os.ReadFile(logPath)
 	if max := c.set.Bytes("autostart.logTail"); int64(len(tail)) > max {
@@ -440,9 +749,19 @@ func boolParam(b bool) string {
 
 // ClientModule returns the generated script client source.
 func (c *Client) ClientModule(ctx context.Context, ns []string, session string, prof Profile) (string, error) {
+	return c.ClientModuleLanguage(ctx, "", ns, session, prof)
+}
+
+// ClientModuleLanguage is ClientModule for a named script language (#1917
+// Phase 2). Empty names the default target, whose route and bytes are
+// unchanged; any other name is asked for on the same route.
+func (c *Client) ClientModuleLanguage(ctx context.Context, language string, ns []string, session string, prof Profile) (string, error) {
 	q := "?session=" + session + prof.query()
 	if len(ns) > 0 {
 		q += "&ns=" + strings.Join(ns, ",")
+	}
+	if language != "" {
+		q += "&language=" + urlEscape(language)
 	}
 	b, err := c.do(ctx, http.MethodGet, "/v1/client.ts"+q, nil)
 	return string(b), err
@@ -450,9 +769,17 @@ func (c *Client) ClientModule(ctx context.Context, ns []string, session string, 
 
 // Globals returns the ambient declarations for the installed globals.
 func (c *Client) Globals(ctx context.Context, ns []string, prof Profile) (string, error) {
+	return c.GlobalsLanguage(ctx, "", ns, prof)
+}
+
+// GlobalsLanguage is Globals for a named script language (#1917 Phase 2).
+func (c *Client) GlobalsLanguage(ctx context.Context, language string, ns []string, prof Profile) (string, error) {
 	q := "?_" + prof.query()
 	if len(ns) > 0 {
 		q += "&ns=" + strings.Join(ns, ",")
+	}
+	if language != "" {
+		q += "&language=" + urlEscape(language)
 	}
 	b, err := c.do(ctx, http.MethodGet, "/v1/globals.d.ts"+q, nil)
 	return string(b), err
@@ -460,9 +787,21 @@ func (c *Client) Globals(ctx context.Context, ns []string, prof Profile) (string
 
 // Search ranks tools against a query.
 func (c *Client) Search(ctx context.Context, q string, limit int, semantic ...bool) ([]daemon.ToolInfo, error) {
+	return c.SearchOpts(ctx, q, limit, len(semantic) > 0 && semantic[0], "", false)
+}
+
+// SearchOpts is Search with the #1923 options: an exact tag filter and
+// per-term score explanations.
+func (c *Client) SearchOpts(ctx context.Context, q string, limit int, semantic bool, tag string, explain bool) ([]daemon.ToolInfo, error) {
 	semQ := ""
-	if len(semantic) > 0 && semantic[0] {
+	if semantic {
 		semQ = "&semantic=true"
+	}
+	if tag != "" {
+		semQ += "&tag=" + urlEscape(tag)
+	}
+	if explain {
+		semQ += "&explain=true"
 	}
 	b, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/v1/search?q=%s&limit=%d%s", urlEscape(q), limit, semQ), nil)
 	if err != nil {
@@ -524,19 +863,33 @@ type BatchResultItem struct {
 	Error      string          `json:"error,omitempty"`
 	IsError    bool            `json:"isError,omitempty"`
 	DurationMs int64           `json:"durationMs,omitempty"`
+	// Skipped marks an item a safe-prefix batch did not run, with
+	// the reason it stopped (#1927).
+	Skipped bool   `json:"skipped,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // BatchResponse is the response to /v1/batch.
 type BatchResponse struct {
 	Results []BatchResultItem `json:"results"`
+	// SafePrefix is present when a safe-prefix batch stopped:
+	// where, and why (#1927).
+	SafePrefix *BatchSafePrefix `json:"safePrefix,omitempty"`
+}
+
+// BatchSafePrefix reports a safe-prefix stop.
+type BatchSafePrefix struct {
+	StoppedAt int    `json:"stoppedAt"`
+	Reason    string `json:"reason"`
 }
 
 // Batch invokes multiple tools in a single turn.
-func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, cc config.CallContext) (*BatchResponse, error) {
+func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, safePrefix bool, cc config.CallContext) (*BatchResponse, error) {
 	b, err := c.do(ctx, http.MethodPost, "/v1/batch", map[string]any{
 		"calls":       calls,
 		"stopOnError": stopOnError,
 		"parallel":    parallel,
+		"safePrefix":  safePrefix,
 		"context":     cc,
 	})
 	if err != nil {
@@ -569,7 +922,7 @@ func (c *Client) CallRelayed(ctx context.Context, server, tool string, cc config
 		var out CallResult
 		return &out, json.Unmarshal(b, &out)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	dec := json.NewDecoder(resp.Body)
 	for {
 		var f daemon.RelayFrame
@@ -688,7 +1041,7 @@ type RestartReply struct {
 	} `json:"servers"`
 }
 
-// Restart restarts a server (or all when empty); lazy only stops.
+// Restart restarts a server (or all when empty); lazy does not wait for calls in flight.
 func (c *Client) Restart(ctx context.Context, server string, lazy bool) (RestartReply, error) {
 	var out RestartReply
 	b, err := c.do(ctx, http.MethodPost, "/v1/restart", map[string]any{"server": server, "lazy": lazy})
@@ -704,10 +1057,40 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return err
 }
 
+// Upgrade asks the running daemon to hand over to the binary at path, started
+// through start (the unit's start command ahead of it, or none). The answer is
+// "current" when that is the binary it already runs.
+func (c *Client) Upgrade(ctx context.Context, binary string, start []string) (map[string]any, error) {
+	b, err := c.do(ctx, http.MethodPost, "/v1/upgrade", map[string]any{"binary": binary, "start": start})
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	return out, json.Unmarshal(b, &out)
+}
+
 // RestartDaemon asks the daemon to restart itself.
 func (c *Client) RestartDaemon(ctx context.Context) error {
 	_, err := c.do(ctx, http.MethodPost, "/v1/daemon/restart", nil)
 	return err
+}
+
+// DaemonVersion returns the version the daemon reports for itself, from
+// the same health answer Ping already asks for. An older daemon that does
+// not report one yields an empty string and no error: absence is not a
+// mismatch, it is just nothing to compare (#265).
+func (c *Client) DaemonVersion(ctx context.Context) (string, error) {
+	b, err := c.do(ctx, http.MethodGet, "/v1/health", nil)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return "", err
+	}
+	return out.Version, nil
 }
 
 // Endpoint returns the daemon's loopback base URL.
@@ -879,6 +1262,7 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 			return err
 		}
 		req.Header.Set("Accept", "text/event-stream")
+		c.authorize(req)
 		// No timeout on a stream; the context bounds it instead. The
 		// client's ordinary timeout would cut a healthy stream off.
 		streamClient := &http.Client{Transport: c.hc.Transport}
@@ -913,7 +1297,7 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 				}
 			}
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	return ctx.Err()
 }

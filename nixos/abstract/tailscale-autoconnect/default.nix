@@ -98,14 +98,13 @@ in
       # Applied on every boot (`tailscaled-set`) so flags also reach an already
       # logged-in node whose persisted prefs predate the config. `tailscale set` does
       # not block waiting for connectivity. exit-node flags are only passed when set.
-      extraSetFlags =
-        [
-          "--accept-routes=${lib.boolToString cfg.acceptRoutes}"
-          "--accept-dns=${lib.boolToString cfg.acceptDns}"
-          "--advertise-exit-node=${lib.boolToString cfg.advertiseExitNode}"
-        ]
-        ++ lib.optional (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"
-        ++ lib.optional cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access";
+      extraSetFlags = [
+        "--accept-routes=${lib.boolToString cfg.acceptRoutes}"
+        "--accept-dns=${lib.boolToString cfg.acceptDns}"
+        "--advertise-exit-node=${lib.boolToString cfg.advertiseExitNode}"
+      ]
+      ++ lib.optional (cfg.exitNode != "") "--exit-node=${cfg.exitNode}"
+      ++ lib.optional cfg.exitNodeAllowLanAccess "--exit-node-allow-lan-access";
       authKeyFile = cfg.authkeyFile;
       useRoutingFeatures = if cfg.advertiseExitNode then "both" else "client"; # both or server?
       # services.tailscale.interfaceName = "userspace-networking";

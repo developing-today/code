@@ -2,8 +2,9 @@
   description = "id - A peer-to-peer file sharing CLI built with Iroh";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs";
-    # nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Track nixos-unstable (cached on cache.nixos.org) so the id devshell and
+    # the root devshell/system all resolve the same tree.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     systems = {
       url = "github:nix-systems/default";
     };
@@ -59,12 +60,19 @@
           opensslEnv
           rustToolchain
           fmtBins
+          rocCompiler
+          buildWasmHost
           ;
         inherit (nixCommon) nativeBuildInputs;
 
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
           lockFile = ./Cargo.lock;
+          # Keyed by crate name-version, not rev: a p2panda rev bump keeps the
+          # key, so these hashes (and default.nix's) must be updated by hand (#643).
+          outputHashes = {
+            "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+          };
         };
 
         # Pre-fetch bun dependencies for sandbox builds (no network access)
@@ -84,7 +92,11 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+          nativeBuildInputs = nativeBuildInputs ++ [
+            bun2nixPkg.hook
+            pkgs.rustPlatform.cargoSetupHook
+          ];
+          inherit cargoDeps;
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
           inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -106,16 +118,6 @@
             # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
             export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-            # Configure cargo to use vendored dependencies (nix sandbox has no network)
-            cat >> .cargo/config.toml << EOF
-
-            [source.crates-io]
-            replace-with = "vendored-sources"
-
-            [source.vendored-sources]
-            directory = "${cargoDeps}"
-            EOF
-
             # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
             (cd web && bun run build)
 
@@ -124,7 +126,7 @@
             cargo test --all-features --test cli_integration --no-run 2>&1
           '';
           installPhase = ''
-            mkdir -p $out/bin
+            mkdir -p $out/bin $out/share/id-test
             # The test binary is in target/debug/deps/cli_integration-<hash>
             TEST_BIN=$(find target/debug/deps -name 'cli_integration-*' -executable -type f | head -1)
             if [ -z "$TEST_BIN" ]; then
@@ -132,6 +134,8 @@
               exit 1
             fi
             cp "$TEST_BIN" $out/bin/cli_integration_test
+            cp -r examples $out/share/id-test/examples
+            cp -r apps $out/share/id-test/apps
           '';
         };
 
@@ -155,14 +159,37 @@
           '';
         };
 
-        # Helper to create a check that runs a just command
-        mkCheck =
-          name: justCmd:
+        # Helper to create a check that runs a just command or direct test
+        # command, with an optional pre-check step and check-specific tools.
+        mkCheck = name: justCmd: mkCheckWith { inherit name justCmd; };
+
+        mkCheckWith =
+          {
+            name,
+            justCmd ? null,
+            checkCommand ? null,
+            extraNativeBuildInputs ? [ ],
+            beforeCheck ? "",
+          }:
           pkgs.stdenv.mkDerivation {
             name = "id-${name}";
+            # Every check builds its own debug test binaries in parallel on a
+            # runner with limited disk. Full debuginfo and the incremental cache
+            # filled the disk (ENOSPC, then a linker bus error). Line tables keep
+            # file:line in panics and backtraces.
+            CARGO_INCREMENTAL = "0";
+            CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
+            CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+            nativeBuildInputs =
+              nativeBuildInputs
+              ++ extraNativeBuildInputs
+              ++ [
+                bun2nixPkg.hook
+                pkgs.rustPlatform.cargoSetupHook
+              ];
+            inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -184,20 +211,14 @@
               # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-              # Configure cargo to use vendored dependencies (nix sandbox has no network)
-              cat >> .cargo/config.toml << EOF
-
-              [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source.vendored-sources]
-              directory = "${cargoDeps}"
-              EOF
-
               # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
               (cd web && bun run build)
 
-              just ${justCmd}
+              ${buildWasmHost}
+
+              ${beforeCheck}
+
+              ${if checkCommand != null then checkCommand else "just ${justCmd}"}
             '';
             installPhase = ''
               mkdir -p $out
@@ -254,7 +275,9 @@
           let
             hasParams = (builtins.length (recipe.parameters or [ ])) > 0;
             script = if hasParams then ''just ${name} "$@"'' else "just ${name}";
-            description = recipe.doc or name;
+            # The or-default catches a missing doc attr but not an explicit null
+            # (just-recipes.json emits "doc": null) -- coalesce both (#5651).
+            description = if (recipe.doc or null) == null then name else recipe.doc;
           in
           mkApp (mkScript name script) { inherit description; };
 
@@ -267,9 +290,30 @@
           mkRecipeApp name targetRecipe;
 
         # Filter: exclude private recipes and 'default' (handled separately)
-        publicRecipes = pkgs.lib.filterAttrs (
-          name: recipe: !(recipe.private or false) && name != "default"
-        ) justRecipes.recipes;
+        filterPublicRecipes =
+          recipes:
+          pkgs.lib.filterAttrs (name: recipe: !(recipe.private or false) && name != "default") recipes;
+
+        publicRecipes = filterPublicRecipes justRecipes.recipes;
+
+        # Admit aliases only when their target is a public recipe and their
+        # name cannot shadow a recipe or a manually defined app.
+        filterAliasApps =
+          recipes: aliases: reservedNames:
+          let
+            publicTargets = filterPublicRecipes recipes;
+          in
+          pkgs.lib.filterAttrs (
+            name: alias:
+            builtins.hasAttr (alias.target or "") publicTargets
+            && !(builtins.hasAttr name recipes)
+            && !(builtins.elem name reservedNames)
+          ) aliases;
+
+        publicAliases = filterAliasApps justRecipes.recipes (justRecipes.aliases or { }) [
+          "default"
+          "just"
+        ];
 
       in
       {
@@ -287,7 +331,7 @@
 
         # =======================================================================
         # Formatter: nix fmt
-        # Uses treefmt to orchestrate rustfmt + biome + prettier + nixfmt + statix + shfmt + taplo
+        # Uses treefmt to orchestrate rustfmt + biome + prettier + nixfmt + statix + shfmt + taplo + just
         # =======================================================================
         formatter = pkgs.writeShellScriptBin "formatter" ''
           export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
@@ -300,7 +344,7 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
+          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test roc-examples doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
           default = mkCheck "ci" "ci";
 
@@ -308,15 +352,144 @@
           cargo-fmt-check = mkCheck "cargo-fmt-check" "cargo-fmt-check";
           web-fmt-check = mkCheck "web-fmt-check" "web-fmt-check";
           clippy-lint = mkCheck "clippy-lint" "clippy-lint";
+          # id-native-shell gate (#5582): the crate is a non-default
+          # workspace member, invisible to the default-member checks.
+          clippy-native-shell = mkCheck "clippy-native-shell" "clippy-native-shell";
           web-lint = mkCheck "web-lint" "web-lint";
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
+          test-native-shell = mkCheck "test-native-shell" "test-native-shell";
           test-int = mkCheck "test-int" "test-int-sandbox";
+          # PR-gate shards of the integration suite (#869): the four
+          # shards together run every target test-sandbox runs, in
+          # parallel jobs instead of one serial ~25-minute check.
+          # (3 → 4 shards in #551: the 3-way shards had drifted to
+          # ~12.5 min, close to the fast-lane exit.)
+          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 4";
+          test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
+          test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
+          test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
           test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
+          # Roc library expect() tests (#813): runs the roc-test just
+          # recipe with the pinned nightly from nix/roc.nix (already in
+          # nativeBuildInputs); fails on a missing compiler or a failing
+          # expect — the world_compile.rs skip path is not reused here.
+          roc-test = mkCheck "roc-test" "roc-test";
+          # Rebuild all checked-in Roc examples with the pinned compiler, then
+          # run the sandbox behavior and fuel-budget tests against them.
+          roc-examples = mkCheckWith {
+            name = "roc-examples";
+            checkCommand = ''
+              cargo test --no-default-features --features sandbox,world --lib sandbox
+              cargo test --test toolchain_pin
+            '';
+            extraNativeBuildInputs = [
+              pkgs.binaryen
+              pkgs.wasm-tools
+            ];
+            beforeCheck = ''
+              ROC=${rocCompiler}/bin/roc \
+                WASM_TOOLS=${pkgs.wasm-tools}/bin/wasm-tools \
+                WASM_OPT=${pkgs.binaryen}/bin/wasm-opt \
+                bash scripts/rebuild-roc-examples.sh
+            '';
+          };
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+          # Production module-size guard (#1411): fails when any
+          # production .rs file exceeds 2,500 production lines
+          # (grandfathered: src/web/markdown.rs, split tracked in #1438).
+          prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
+          crash-gate = mkCheck "crash-gate" "crash-gate";
+          # PR-gate splits of crash-gate (#551): the aggregate above runs
+          # every heavy full sweep serially (~15 min, the slowest PR
+          # check). These four checks partition the same tests by name
+          # filter and run in parallel on PRs; crash-gate itself stays
+          # for local use and the nightly full flake check, and is
+          # excluded from the PR list in check-id-pr-checks.sh.
+          crash-gate-sampled = mkCheck "crash-gate-sampled" "crash-gate-sampled";
+          crash-gate-sweep = mkCheck "crash-gate-sweep" "crash-gate-sweep";
+          crash-gate-control = mkCheck "crash-gate-control" "crash-gate-control";
+          crash-gate-ingest = mkCheck "crash-gate-ingest" "crash-gate-ingest";
+          # Drift guard for the generated just-recipes.json (#2729): fails
+          # when the checked-in JSON disagrees with the justfile on the
+          # semantic recipe fields. The recipe projects out generation
+          # noise (absolute source path, body serialisation), so this is
+          # green on any correctly regenerated file.
+          just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+
+          # Regression pins for scripts/build.sh variant handling (#6869):
+          # the fixture suite stubs cargo and exercises every variant, so a
+          # variant-specific regression fails here instead of in a just recipe.
+          build-sh-test = mkCheckWith {
+            name = "build-sh-test";
+            checkCommand = "bash scripts/build-sh-test.sh";
+          };
+
+          # Exercise the same alias-admission function used by apps against
+          # synthetic recipes/aliases, including dangling targets and names
+          # that would shadow recipe or manual apps.
+          just-recipes-alias-admission =
+            let
+              fixtureRecipes = {
+                public = { };
+                private = {
+                  private = true;
+                };
+                default = { };
+                recipeCollision = { };
+                privateCollision = {
+                  private = true;
+                };
+              };
+              fixtureAliases = {
+                valid = {
+                  target = "public";
+                };
+                privateTarget = {
+                  target = "private";
+                };
+                defaultTarget = {
+                  target = "default";
+                };
+                missingTarget = {
+                  target = "missing";
+                };
+                recipeCollision = {
+                  target = "public";
+                };
+                privateCollision = {
+                  target = "public";
+                };
+                default = {
+                  target = "public";
+                };
+                just = {
+                  target = "public";
+                };
+              };
+              admittedAliases = filterAliasApps fixtureRecipes fixtureAliases [
+                "default"
+                "just"
+              ];
+              fixtureRecipeApps = filterPublicRecipes fixtureRecipes;
+              fixtureApps =
+                (builtins.mapAttrs (_: _: "recipe") fixtureRecipeApps)
+                // (builtins.mapAttrs (_: _: "alias") admittedAliases)
+                // {
+                  default = "manual";
+                  just = "manual";
+                };
+            in
+            assert builtins.attrNames admittedAliases == [ "valid" ];
+            assert fixtureApps.recipeCollision == "recipe";
+            assert fixtureApps.default == "manual";
+            assert fixtureApps.just == "manual";
+            pkgs.runCommand "id-just-recipes-alias-admission" { } ''
+              touch "$out"
+            '';
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {
@@ -325,12 +498,14 @@
             inherit buildInputs;
             nativeBuildInputs = nativeBuildInputs ++ [
               bun2nixPkg.hook
+              pkgs.rustPlatform.cargoSetupHook
               # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
               # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
               # the Node.js-specific ESM hooks that Playwright uses for TypeScript config loading.
               # Tracking: https://github.com/oven-sh/bun/pull/28610
               pkgs.nodejs
             ];
+            inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -351,16 +526,6 @@
 
               # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-              # Configure cargo to use vendored dependencies (nix sandbox has no network)
-              cat >> .cargo/config.toml << EOF
-
-              [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source.vendored-sources]
-              directory = "${cargoDeps}"
-              EOF
 
               # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
               (cd web && bun run build)
@@ -384,11 +549,28 @@
               # causing it to hang on launch in the nix sandbox.
               unset LD_LIBRARY_PATH
 
-              # Run Playwright E2E tests
+              # Run Playwright E2E tests — one invocation per spec file (#229).
+              # playwright.config.ts starts ONE ephemeral server per browser
+              # project for the whole invocation, so a single full-suite run
+              # lets every spec observe the files/state earlier specs created
+              # on that shared server (the Firefox shared-state failure
+              # cluster: e.g. basic.spec's "empty state" test ran after
+              # autosave.spec had already created files). A fresh invocation
+              # per spec file gives each file a fresh ephemeral server.
+              # All files run even if one fails, so one run reports every
+              # failing file; the check fails if any file failed.
               # TODO: Switch to `bunx playwright test` once Bun's ESM loader supports
               # Playwright's .esm.preflight virtual imports for TypeScript config loading.
               # Tracking: https://github.com/oven-sh/bun/pull/28610
-              (cd e2e && node node_modules/@playwright/test/cli.js test)
+              (
+                cd e2e
+                e2e_status=0
+                for spec in tests/*.spec.ts; do
+                  echo "=== test-e2e isolated per-spec run: $spec ==="
+                  node node_modules/@playwright/test/cli.js test "$spec" || e2e_status=1
+                done
+                exit $e2e_status
+              )
             '';
             installPhase = ''
               mkdir -p $out
@@ -413,7 +595,7 @@
             src = ./.;
             nativeBuildInputs = fmtBins;
             buildPhase = ''
-              treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
+              treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1
             '';
             installPhase = ''
               mkdir -p $out
@@ -445,8 +627,7 @@
             nativeBuildInputs = [ rustToolchain ];
             buildPhase = ''
               find . -name '*.rs' -not -path '*/target/*' \
-                -exec rustfmt --check --edition 2024 {} + \
-                || true
+                -exec rustfmt --check --edition 2024 {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -458,9 +639,17 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.statix ];
             buildPhase = ''
-              find . -name '*.nix' -print0 | while IFS= read -r -d "" f; do
-                statix check -- "$f" || true
-              done
+              # Collect failures across files instead of swallowing each
+              # one: a pipe into `while` would run the loop in a subshell
+              # and lose the flag, so feed it via process substitution.
+              fail=0
+              while IFS= read -r -d "" f; do
+                statix check -- "$f" || fail=1
+              done < <(find . -name '*.nix' -print0)
+              if [ "$fail" -ne 0 ]; then
+                echo "statix-check: statix reported problems above" >&2
+                false
+              fi
             '';
             installPhase = ''
               mkdir -p $out
@@ -473,8 +662,7 @@
             nativeBuildInputs = [ pkgs.shfmt ];
             buildPhase = ''
               find . -name '*.sh' -not -path '*/node_modules/*' \
-                -exec shfmt -d -i 2 -s {} + \
-                || true
+                -exec shfmt -d -i 2 -s {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -486,9 +674,14 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.shellcheck ];
             buildPhase = ''
+              # Enforced at warning severity (#702): under sandbox
+              # conditions shellcheck reports only four info findings
+              # (SC2012, `ls` glob picks in the examples' build.sh
+              # files) and no warning-or-above findings, so warnings
+              # and errors fail the gate while those info findings
+              # are worked down separately.
               find . -name '*.sh' -not -path '*/node_modules/*' \
-                -exec shellcheck {} + \
-                || true
+                -exec shellcheck --severity=warning {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -501,12 +694,23 @@
             nativeBuildInputs = [ pkgs.taplo ];
             buildPhase = ''
               find . -name '*.toml' -not -path '*/target/*' \
-                -exec taplo check {} + \
-                || true
+                -exec taplo check {} +
             '';
             installPhase = ''
               mkdir -p $out
               echo "taplo-check passed at $(date)" > $out/result.txt
+            '';
+          };
+          justfmt-check = pkgs.stdenv.mkDerivation {
+            name = "id-justfmt-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.just ];
+            buildPhase = ''
+              just --fmt --check --justfile ./justfile
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "justfmt-check passed at $(date)" > $out/result.txt
             '';
           };
           prettier-check = pkgs.stdenv.mkDerivation {
@@ -518,8 +722,7 @@
                 -o -name '*.scss' -o -name '*.yaml' \) \
                 -not -path '*/node_modules/*' -not -path '*/target/*' \
                 -not -path '*/dist/*' \
-                -exec prettier --check {} + \
-                || true
+                -exec prettier --check {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -563,10 +766,18 @@
             src = ./.;
 
             # Enable the web feature (default features are empty in Cargo.toml)
-            buildFeatures = [ "web" "sandbox" "world" ];
+            buildFeatures = [
+              "web"
+              "sandbox"
+              "ssh"
+              "world"
+            ];
 
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+              };
             };
 
             inherit buildInputs;
@@ -576,6 +787,9 @@
               rustToolchain
               pkgs.bun
               bun2nixPkg.hook
+              # The tests compile roc worlds. zig is not listed: its setup hook would
+              # replace this derivation's build phase (buildWasmHost finds it by path).
+              rocCompiler
             ];
 
             # bun2nix: offline web dependency installation
@@ -598,9 +812,13 @@
               cd web
               bun run build
               cd ..
+
+              ${buildWasmHost}
             '';
 
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"
@@ -620,11 +838,17 @@
 
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+              };
             };
 
             # Disable default web feature for lib-only build
             buildNoDefaultFeatures = true;
-            buildFeatures = [ "sandbox" "world" ];
+            buildFeatures = [
+              "sandbox"
+              "world"
+            ];
             dontUseCmakeConfigure = true;
 
             inherit buildInputs;
@@ -632,13 +856,18 @@
               pkgs.pkg-config
               pkgs.cmake
               rustToolchain
+              rocCompiler
             ];
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
 
+            preBuild = buildWasmHost;
+
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"
@@ -661,7 +890,7 @@
         # =======================================================================
         apps =
           pkgs.lib.mapAttrs mkRecipeApp publicRecipes
-          // pkgs.lib.mapAttrs mkAliasApp (justRecipes.aliases or { })
+          // pkgs.lib.mapAttrs mkAliasApp publicAliases
           // {
             # Default: run the web-enabled CLI binary
             default = {

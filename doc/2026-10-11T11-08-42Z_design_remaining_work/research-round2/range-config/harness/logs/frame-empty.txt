@@ -1,0 +1,6 @@
+| events | K, T | entries in flight 2 | flight 4 bytes (one frame) | over the limit |
+|---|---|---|---|---|
+| 50000 | K16 T16 | 16 | 1600185 | false |
+| events | K, T | entries in flight 2 | flight 4 bytes (one frame) | over the limit |
+|---|---|---|---|---|
+| 550000 | K16 T16 | 16 | 17600201 | true |

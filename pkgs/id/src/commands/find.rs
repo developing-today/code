@@ -23,9 +23,9 @@
 //!
 //! Both commands support multiple output formats via `--format`:
 //!
-//! - **tag**: Shows query tag with each match
+//! - **tag**: Default format, shows query tag with each match
 //! - **group**: Groups matches by query
-//! - **union**: Default format, shows all matches with query suffix
+//! - **union**: Shows all matches with query suffix
 //!
 //! # Filtering and Limiting
 //!
@@ -74,13 +74,12 @@
 
 use anyhow::{Result, bail};
 use futures_lite::StreamExt;
-use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 
 use crate::{
     CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, TaggedMatch, cmd_get_one,
-    cmd_get_one_remote, load_or_create_keypair, match_kind, open_store, print_match_cli,
-    print_matches_cli,
+    cmd_get_one_remote, helpers::download_output_path, load_or_create_keypair, match_kind,
+    open_store, print_match_cli, print_matches_cli,
 };
 
 /// Options for filtering and limiting search results.
@@ -150,6 +149,40 @@ impl SearchOptions {
     }
 }
 
+/// Plan all bulk-download destinations before creating directories or writing files.
+///
+/// Match names are deduplicated the same way as the output loops. Distinct matches
+/// that flatten to the same final-component path are rejected as a batch so a
+/// later download cannot silently overwrite an earlier one.
+fn plan_download_paths<'a>(
+    dir: &str,
+    matches: &'a [TaggedMatch],
+) -> Result<Vec<(&'a TaggedMatch, String)>> {
+    let mut seen_matches = std::collections::HashSet::new();
+    let mut destinations = std::collections::HashMap::new();
+    let mut plan = Vec::new();
+
+    for m in matches {
+        let key = format!("{}:{}", m.hash, m.name);
+        if !seen_matches.insert(key) {
+            continue;
+        }
+
+        let output_path = download_output_path(Some(dir), &m.name)?;
+        if let Some(previous_name) = destinations.insert(output_path.clone(), m.name.as_str()) {
+            bail!(
+                "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
+                previous_name,
+                m.name,
+                output_path
+            );
+        }
+        plan.push((m, output_path));
+    }
+
+    Ok(plan)
+}
+
 /// Find files matching queries and output their content.
 ///
 /// This is the main handler for the `id find` command. It searches for blobs
@@ -178,6 +211,7 @@ impl SearchOptions {
 ///
 /// Returns an error if no matches are found for any query.
 ///
+
 /// # Example
 ///
 /// ```bash
@@ -229,21 +263,16 @@ pub async fn cmd_find(
     // --all mode: output all matches
     if all {
         if let Some(ref dir_path) = dir {
+            let plan = plan_download_paths(dir_path, &all_matches)?;
             std::fs::create_dir_all(dir_path)?;
-            // Deduplicate by hash+name for file output
-            let mut seen = std::collections::HashSet::new();
-            for m in &all_matches {
-                let key = format!("{}:{}", m.hash, m.name);
-                if seen.insert(key) {
-                    let output_path = format!("{}/{}", dir_path, m.name);
-                    if let Some(ref node_str) = node {
-                        let node_id: EndpointId = node_str.parse()?;
-                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
-                    } else {
-                        cmd_get_one(&m.name, &output_path, false, false).await?;
-                    }
-                    print_match_cli(m, format);
+            for (m, output_path) in plan {
+                if let Some(ref node_str) = node {
+                    let node_id: EndpointId = node_str.parse()?;
+                    cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                } else {
+                    cmd_get_one(&m.name, &output_path, false, false).await?;
                 }
+                print_match_cli(m, format);
             }
         } else {
             // Output all to stdout (concatenated)
@@ -266,24 +295,32 @@ pub async fn cmd_find(
     // Single match or first match mode
     if all_matches.len() == 1 {
         let m = &all_matches[0];
-        let output = if to_stdout { "-" } else { &m.name };
+        let output = if to_stdout {
+            "-".to_owned()
+        } else {
+            download_output_path(None, &m.name)?
+        };
         if let Some(node_str) = node {
             let node_id: EndpointId = node_str.parse()?;
-            cmd_get_one_remote(node_id, &m.name, output, no_relay).await?;
+            cmd_get_one_remote(node_id, &m.name, &output, no_relay).await?;
         } else {
-            cmd_get_one(&m.name, output, false, false).await?;
+            cmd_get_one(&m.name, &output, false, false).await?;
         }
     } else {
         // Multiple matches - print them and use first one
         eprintln!("found {} matches (using first):", all_matches.len());
         print_matches_cli(&all_matches, format);
         let m = &all_matches[0];
-        let output = if to_stdout { "-" } else { &m.name };
+        let output = if to_stdout {
+            "-".to_owned()
+        } else {
+            download_output_path(None, &m.name)?
+        };
         if let Some(node_str) = node {
             let node_id: EndpointId = node_str.parse()?;
-            cmd_get_one_remote(node_id, &m.name, output, no_relay).await?;
+            cmd_get_one_remote(node_id, &m.name, &output, no_relay).await?;
         } else {
-            cmd_get_one(&m.name, output, false, false).await?;
+            cmd_get_one(&m.name, &output, false, false).await?;
         }
     }
     Ok(())
@@ -362,20 +399,16 @@ pub async fn cmd_search(
     // --all mode: output all files (like find --all)
     if all {
         if let Some(ref dir_path) = dir {
+            let plan = plan_download_paths(dir_path, &all_matches)?;
             std::fs::create_dir_all(dir_path)?;
-            let mut seen = std::collections::HashSet::new();
-            for m in &all_matches {
-                let key = format!("{}:{}", m.hash, m.name);
-                if seen.insert(key) {
-                    let output_path = format!("{}/{}", dir_path, m.name);
-                    if let Some(ref node_str) = node {
-                        let node_id: EndpointId = node_str.parse()?;
-                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
-                    } else {
-                        cmd_get_one(&m.name, &output_path, false, false).await?;
-                    }
-                    print_match_cli(m, format);
+            for (m, output_path) in plan {
+                if let Some(ref node_str) = node {
+                    let node_id: EndpointId = node_str.parse()?;
+                    cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                } else {
+                    cmd_get_one(&m.name, &output_path, false, false).await?;
                 }
+                print_match_cli(m, format);
             }
         } else {
             // Output all to stdout (concatenated)
@@ -668,6 +701,7 @@ fn print_peek_lines(
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let n = opts.lines;
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     // Print header if not quiet
     if !opts.quiet {
@@ -675,15 +709,13 @@ fn print_peek_lines(
         writeln!(
             out,
             "hash: {}  lines: {}  files: {}",
-            &hash[..12],
-            total_lines,
-            total_files
+            hash_short, total_lines, total_files
         )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
     // If small enough, show all
-    if total_lines <= n * 2 {
+    if total_lines <= n.saturating_mul(2) {
         for line in &lines {
             writeln!(out, "{line}")?;
         }
@@ -712,7 +744,7 @@ fn print_peek_lines(
         writeln!(
             out,
             "... ({} lines omitted)",
-            total_lines.saturating_sub(n * 2)
+            total_lines.saturating_sub(n.saturating_mul(2))
         )?;
         writeln!(out, "...")?;
         for line in lines.iter().skip(total_lines.saturating_sub(n)) {
@@ -734,20 +766,19 @@ fn print_peek_chars(
 ) -> Result<()> {
     let total_chars = content.chars().count();
     let n = opts.lines; // reuse lines as char count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     if !opts.quiet {
         writeln!(out, "─── {name} ───")?;
         writeln!(
             out,
             "hash: {}  chars: {}  files: {}",
-            &hash[..12],
-            total_chars,
-            total_files
+            hash_short, total_chars, total_files
         )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
-    if total_chars <= n * 2 {
+    if total_chars <= n.saturating_mul(2) {
         write!(out, "{content}")?;
     } else if opts.head_only {
         let head: String = content.chars().take(n).collect();
@@ -774,7 +805,7 @@ fn print_peek_chars(
         writeln!(
             out,
             "\n... ({} chars omitted)",
-            total_chars.saturating_sub(n * 2)
+            total_chars.saturating_sub(n.saturating_mul(2))
         )?;
         write!(out, "{tail}")?;
     }
@@ -795,20 +826,19 @@ fn print_peek_words(
     let words: Vec<&str> = content.split_whitespace().collect();
     let total_words = words.len();
     let n = opts.lines; // reuse lines as word count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     if !opts.quiet {
         writeln!(out, "─── {name} ───")?;
         writeln!(
             out,
             "hash: {}  words: {}  files: {}",
-            &hash[..12],
-            total_words,
-            total_files
+            hash_short, total_words, total_files
         )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
 
-    if total_words <= n * 2 {
+    if total_words <= n.saturating_mul(2) {
         writeln!(out, "{}", words.join(" "))?;
     } else if opts.head_only {
         let head: Vec<&str> = words.iter().take(n).copied().collect();
@@ -837,7 +867,7 @@ fn print_peek_words(
         writeln!(
             out,
             "... ({} words omitted)",
-            total_words.saturating_sub(n * 2)
+            total_words.saturating_sub(n.saturating_mul(2))
         )?;
         writeln!(out, "{}", tail.join(" "))?;
     }
@@ -890,13 +920,14 @@ pub async fn cmd_find_matches(
     if let Some(node_str) = node {
         let node_id: EndpointId = node_str.parse()?;
         let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-        let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
-        if no_relay {
-            builder = builder.relay_mode(RelayMode::Disabled);
-        }
-        let endpoint = builder.bind().await?;
+        let endpoint = crate::connectivity::public_builder(
+            crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+        )
+        .secret_key(client_key)
+        .bind()
+        .await?;
 
-        let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
+        let meta_conn = crate::connectivity::connect(&endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Find {
             query: query.to_owned(),
@@ -904,8 +935,8 @@ pub async fn cmd_find_matches(
         })?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         let result = match resp {
@@ -991,6 +1022,83 @@ mod tests {
     #[test]
     fn test_match_kind_no_match() {
         assert_eq!(match_kind("goodbye", "hello"), None);
+    }
+
+    #[test]
+    fn test_download_output_path_ordinary_name_byte_identical() {
+        assert_eq!(
+            download_output_path(None, "plain.txt").unwrap(),
+            "plain.txt"
+        );
+        assert_eq!(
+            download_output_path(Some("out"), "plain.txt").unwrap(),
+            "out/plain.txt"
+        );
+    }
+
+    #[test]
+    fn test_download_output_path_confines_traversal_to_final_component() {
+        assert_eq!(
+            download_output_path(Some("out"), "../victim.txt").unwrap(),
+            "out/victim.txt"
+        );
+        assert_eq!(download_output_path(None, "../../x").unwrap(), "x");
+        assert_eq!(
+            download_output_path(Some("out"), "/tmp/x").unwrap(),
+            "out/x"
+        );
+        assert_eq!(download_output_path(None, "/tmp/x").unwrap(), "x");
+    }
+
+    #[test]
+    #[test]
+    fn test_download_output_path_dash_name_is_not_the_stdout_sentinel() {
+        // A match-derived "-" must name a file, not the stdout sentinel;
+        // only an explicit user-supplied "-" means stdout.
+        assert_eq!(download_output_path(None, "-").unwrap(), "./-");
+        assert_eq!(download_output_path(None, "nested/-").unwrap(), "./-");
+        assert_eq!(
+            download_output_path(Some("out"), "nested/-").unwrap(),
+            "out/-"
+        );
+    }
+
+    #[test]
+    fn test_download_output_path_refuses_names_without_final_component() {
+        for name in ["..", "/", "", "foo/", "../", "."] {
+            assert!(
+                download_output_path(None, name).is_err(),
+                "expected refusal for {name:?}"
+            );
+            assert!(download_output_path(Some("out"), name).is_err());
+        }
+    }
+
+    #[test]
+    fn test_plan_download_paths_rejects_final_component_collisions() {
+        let matches = vec![
+            TaggedMatch {
+                query: "report".to_owned(),
+                hash: Hash::from_bytes([0; 32]),
+                name: "one/report.txt".to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+            TaggedMatch {
+                query: "report".to_owned(),
+                hash: Hash::from_bytes([1; 32]),
+                name: "two/report.txt".to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+        ];
+
+        let error = plan_download_paths("out", &matches)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("destination collision"), "{error}");
+        assert!(error.contains("one/report.txt"), "{error}");
+        assert!(error.contains("two/report.txt"), "{error}");
     }
 
     #[test]
@@ -1311,6 +1419,65 @@ mod tests {
         assert!(result.contains("lines:")); // Header should show line count
     }
 
+    // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
+    // printers' doubling — saturating arithmetic prints short content once,
+    // with no omitted-count line and no panic.
+    #[test]
+    fn test_print_peek_lines_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "line1\nline2\nline3";
+        print_peek_lines(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("line1").count(), 1);
+        assert_eq!(result.matches("line3").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_chars_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: true,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "Hello world";
+        print_peek_chars(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("Hello world").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_words_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: true,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "alpha beta gamma";
+        print_peek_words(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("alpha").count(), 1);
+        assert_eq!(result.matches("gamma").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
     // Test print_peek_chars helper
     #[test]
     fn test_print_peek_chars_small_content() {
@@ -1385,5 +1552,59 @@ mod tests {
         assert!(result.contains("one two")); // First 2 words
         assert!(result.contains("seven eight")); // Last 2 words
         assert!(result.contains("omitted")); // Should show truncation
+    }
+
+    #[test]
+    fn test_print_peek_lines_short_hash() {
+        let opts = PeekOptions {
+            lines: 2,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: false,
+            quiet: false, // Show header, which prints the hash
+        };
+        let mut output = Vec::new();
+        let content = "line1\nline2\nline3";
+        print_peek_lines(&mut output, "test.txt", "abc123", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert!(result.contains("hash: abc123")); // Whole short hash prints, no panic
+        assert!(result.contains("lines:"));
+    }
+
+    #[test]
+    fn test_print_peek_chars_short_hash() {
+        let opts = PeekOptions {
+            lines: 100,
+            head_only: false,
+            tail_only: false,
+            chars: true,
+            words: false,
+            quiet: false, // Show header, which prints the hash
+        };
+        let mut output = Vec::new();
+        let content = "Hello world";
+        print_peek_chars(&mut output, "test.txt", "abc123", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert!(result.contains("hash: abc123")); // Whole short hash prints, no panic
+        assert!(result.contains("chars:"));
+    }
+
+    #[test]
+    fn test_print_peek_words_short_hash() {
+        let opts = PeekOptions {
+            lines: 10,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: true,
+            quiet: false, // Show header, which prints the hash
+        };
+        let mut output = Vec::new();
+        let content = "Hello beautiful world";
+        print_peek_words(&mut output, "test.txt", "abc123", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert!(result.contains("hash: abc123")); // Whole short hash prints, no panic
+        assert!(result.contains("words:"));
     }
 }

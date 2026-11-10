@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
-use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -97,7 +97,7 @@ impl LogRecord {
         let signature = Signature::from_bytes(
             &hex_to_array::<64>(&self.signature).context("malformed record signature")?,
         );
-        key.verify(&body, &signature)
+        key.verify_strict(&body, &signature)
             .context("signature does not verify against the author key")
     }
 }
@@ -288,6 +288,7 @@ pub fn apply(directory: &mut Directory, log: &Log) -> Applied {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
 
     struct Draw(u64);
 
@@ -605,5 +606,33 @@ mod tests {
         let (directory, applied) = rebuild(&log);
         assert_eq!(applied.applied, 2);
         assert!(directory.account(&public(1)).unwrap().verified);
+    }
+
+    #[test]
+    fn a_record_with_a_non_canonical_s_is_refused() {
+        let mut record = LogRecord::sign(
+            &key(2),
+            2,
+            DirectoryEntry::AccountVerified { id: public(2) },
+        )
+        .unwrap();
+        let raw = hex_to_array::<64>(&record.signature).unwrap();
+        record.signature = hex_encode(&with_non_canonical_s(raw));
+        assert!(record.verify().is_err());
+    }
+
+    #[test]
+    fn a_record_under_a_small_order_key_is_refused() {
+        let author = hex_encode(&IDENTITY_KEY);
+        let entry = DirectoryEntry::AccountVerified { id: author.clone() };
+        let body = body_bytes(&author, 1, &entry).unwrap();
+        let record = LogRecord {
+            author,
+            lamport: 1,
+            hash: hex_encode(&Sha256::digest(&body)),
+            entry,
+            signature: hex_encode(&identity_forgery()),
+        };
+        assert!(record.verify().is_err());
     }
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/openapi"
+	"github.com/developing-today/code/pkgs/mcpx/internal/openapi"
 )
 
 const petstore = `{
@@ -161,6 +161,89 @@ func TestARequestBodyBecomesABodyArgument(t *testing.T) {
 	}
 	if len(doc.Required) == 0 || doc.Required[0] != "body" {
 		t.Errorf("a required body should be required: %v", doc.Required)
+	}
+}
+
+func TestDuplicateOperationIDsAreDeterministic(t *testing.T) {
+	const spec = `{
+	  "openapi": "3.0.0",
+	  "info": {"title": "Pet Store", "version": "1.0"},
+	  "servers": [{"url": "https://api.example.com"}],
+	  "paths": {"/pets": {
+	    "get": {"operationId": "listPets"},
+	    "post": {"operationId": "listPets"}
+	  }}
+	}`
+	parsed, err := openapi.Parse([]byte(spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 200; i++ {
+		api, err := openapi.Build(parsed, openapi.Options{Methods: []string{"GET", "POST"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		owners := map[string]string{}
+		for _, tool := range api.Tools {
+			owners[tool.Name] = tool.Method
+		}
+		bare, suffixed := "", ""
+		for name := range owners {
+			if strings.HasSuffix(name, "_2") {
+				suffixed = name
+			} else {
+				bare = name
+			}
+		}
+		if bare == "" || suffixed == "" || owners[bare] != "GET" || owners[suffixed] != "POST" {
+			t.Fatalf("iteration %d: duplicate operation names have unstable ownership: %v", i, owners)
+		}
+	}
+}
+
+func TestRequestBodyJSONMediaPreferenceIsDeterministic(t *testing.T) {
+	tests := []struct {
+		name string
+		spec string
+		want string
+	}{
+		{
+			name: "prefers exact application/json",
+			spec: `{"application/vnd.z+json":{"schema":{"type":"string","title":"last"}},"application/vnd.a+json":{"schema":{"type":"string","title":"first"}},"application/json":{"schema":{"type":"string","title":"exact"}}}`,
+			want: "exact",
+		},
+		{
+			name: "uses lexicographically first JSON media type when exact is absent",
+			spec: `{"application/vnd.z+json":{"schema":{"type":"string","title":"last"}},"application/vnd.a+json":{"schema":{"type":"string","title":"first"}}}`,
+			want: "first",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := `{"openapi":"3.0.0","info":{"title":"Pet Store","version":"1.0"},"servers":[{"url":"https://api.example.com"}],"paths":{"/pets":{"post":{"operationId":"createPet","requestBody":{"content":` + tt.spec + `}}}}}`
+			parsed, err := openapi.Parse([]byte(spec))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for i := 0; i < 200; i++ {
+				api, err := openapi.Build(parsed, openapi.Options{Methods: []string{"POST"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var schema struct {
+					Properties map[string]map[string]any `json:"properties"`
+				}
+				if err := json.Unmarshal(api.Tools[0].InputSchema, &schema); err != nil {
+					t.Fatal(err)
+				}
+				if got := schema.Properties["body"]["title"]; got != tt.want {
+					t.Fatalf("iteration %d: body schema title = %v, want %q", i, got, tt.want)
+				}
+			}
+		})
 	}
 }
 
@@ -384,5 +467,107 @@ func TestARelativeURLWithNoHTTPSourceSaysWhatToDo(t *testing.T) {
 	_, err := openapi.Build(spec, openapi.Options{})
 	if err == nil || !strings.Contains(err.Error(), "--base-url") {
 		t.Errorf("the remedy should be named: %v", err)
+	}
+}
+
+// #1669: a path-level parameter redeclared at operation level is ONE
+// parameter (identity is the (name, in) pair), the operation's version
+// wins, and the generated schema must not list it twice in required --
+// a duplicated required entry is not valid JSON Schema.
+func TestOperationParameterOverridesPathLevel(t *testing.T) {
+	spec, err := openapi.Parse([]byte(`{
+	  "openapi": "3.0.0",
+	  "info": { "title": "Override", "version": "1" },
+	  "servers": [{ "url": "https://api.example.com" }],
+	  "paths": {
+	    "/things/{id}": {
+	      "parameters": [
+	        { "name": "id", "in": "path", "required": true,
+	          "description": "the path-level declaration",
+	          "schema": { "type": "string" } }
+	      ],
+	      "get": {
+	        "operationId": "getThing",
+	        "parameters": [
+	          { "name": "id", "in": "path", "required": true,
+	            "description": "the operation-level declaration",
+	            "schema": { "type": "integer" } }
+	        ]
+	      }
+	    }
+	  }
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := openapi.Build(spec, openapi.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(api.Tools) != 1 {
+		t.Fatalf("tools: %v", names(api))
+	}
+	tool := api.Tools[0]
+	if len(tool.Params) != 1 {
+		t.Fatalf("the override must resolve to one parameter, got %+v", tool.Params)
+	}
+	if got := tool.Params[0].Description; got != "the operation-level declaration" {
+		t.Errorf("the operation-level declaration wins, got %q", got)
+	}
+	var schema struct {
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, r := range schema.Required {
+		if r == "id" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("required lists id %d times (%v); it must appear exactly once", count, schema.Required)
+	}
+	if _, ok := schema.Properties["id"]; !ok {
+		t.Errorf("schema properties missing id: %v", schema.Properties)
+	}
+}
+
+// #1669: the same name in two different locations cannot be one flat
+// argument -- the schema would describe one property while Call sent
+// the value to both places -- so Build refuses it, naming the tool,
+// the parameter and both locations.
+func TestSameNameTwoLocationsIsABuildError(t *testing.T) {
+	spec, err := openapi.Parse([]byte(`{
+	  "openapi": "3.0.0",
+	  "info": { "title": "Collision", "version": "1" },
+	  "servers": [{ "url": "https://api.example.com" }],
+	  "paths": {
+	    "/things": {
+	      "parameters": [
+	        { "name": "key", "in": "query", "schema": { "type": "string" } }
+	      ],
+	      "get": {
+	        "operationId": "listThings",
+	        "parameters": [
+	          { "name": "key", "in": "header", "schema": { "type": "string" } }
+	        ]
+	      }
+	    }
+	  }
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = openapi.Build(spec, openapi.Options{})
+	if err == nil {
+		t.Fatal("a same-name parameter in two locations must fail Build")
+	}
+	for _, want := range []string{"listthings", `"key"`, "query", "header"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must name %s, got: %v", want, err)
+		}
 	}
 }

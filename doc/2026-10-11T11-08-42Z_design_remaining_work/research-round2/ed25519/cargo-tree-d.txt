@@ -1,0 +1,106 @@
+block-buffer v0.10.4
+└── digest v0.10.7
+    ├── curve25519-dalek v4.1.3
+    │   ├── ed25519-dalek v2.2.0
+    │   │   └── ed25519-wire-compat v0.0.0 (/home/user/work/research-round2/ed25519/wire)
+    │   └── ed25519-wire-compat v0.0.0 (/home/user/work/research-round2/ed25519/wire)
+    ├── sha2 v0.10.9
+    │   ├── ed25519-dalek v2.2.0 (*)
+    │   └── ed25519-wire-compat v0.0.0 (/home/user/work/research-round2/ed25519/wire)
+    └── signature v2.2.0
+        ├── ed25519 v2.2.3
+        │   └── ed25519-dalek v2.2.0 (*)
+        └── ed25519-dalek v2.2.0 (*)
+
+block-buffer v0.12.1
+└── digest v0.11.3
+    ├── curve25519-dalek v5.0.0
+    │   └── ed25519-dalek v3.0.0
+    │       └── ed25519-wire-compat v0.0.0 (/home/user/work/research-round2/ed25519/wire)
+    ├── sha2 v0.11.0
+    │   └── ed25519-dalek v3.0.0 (*)
+    └── signature v3.0.0
+        ├── ed25519 v3.0.0
+        │   └── ed25519-dalek v3.0.0 (*)
+        └── ed25519-dalek v3.0.0 (*)
+
+const-oid v0.9.6
+└── der v0.7.10
+    ├── pkcs8 v0.10.2
+    │   └── ed25519 v2.2.3 (*)
+    └── spki v0.7.3
+        └── pkcs8 v0.10.2 (*)
+
+const-oid v0.10.2
+└── der v0.8.2
+    ├── pkcs8 v0.11.0
+    │   └── ed25519 v3.0.0 (*)
+    └── spki v0.8.1
+        └── pkcs8 v0.11.0 (*)
+
+cpufeatures v0.2.17
+├── curve25519-dalek v4.1.3 (*)
+└── sha2 v0.10.9 (*)
+
+cpufeatures v0.3.1
+├── curve25519-dalek v5.0.0 (*)
+└── sha2 v0.11.0 (*)
+
+crypto-common v0.1.7
+└── digest v0.10.7 (*)
+
+crypto-common v0.2.2
+└── digest v0.11.3 (*)
+
+curve25519-dalek v4.1.3 (*)
+
+curve25519-dalek v5.0.0 (*)
+
+der v0.7.10 (*)
+
+der v0.8.2 (*)
+
+digest v0.10.7 (*)
+
+digest v0.11.3 (*)
+
+ed25519 v2.2.3 (*)
+
+ed25519 v3.0.0 (*)
+
+ed25519-dalek v2.2.0 (*)
+
+ed25519-dalek v3.0.0 (*)
+
+getrandom v0.2.17
+└── rand_core v0.6.4
+    ├── ed25519-dalek v2.2.0 (*)
+    └── ed25519-wire-compat v0.0.0 (/home/user/work/research-round2/ed25519/wire)
+
+getrandom v0.4.3
+└── ed25519-wire-compat v0.0.0 (/home/user/work/research-round2/ed25519/wire)
+
+pkcs8 v0.10.2 (*)
+
+pkcs8 v0.11.0 (*)
+
+rand_core v0.6.4 (*)
+
+rand_core v0.10.1
+├── crypto-common v0.2.2 (*)
+├── curve25519-dalek v5.0.0 (*)
+├── ed25519-dalek v3.0.0 (*)
+├── getrandom v0.4.3 (*)
+└── signature v3.0.0 (*)
+
+sha2 v0.10.9 (*)
+
+sha2 v0.11.0 (*)
+
+signature v2.2.0 (*)
+
+signature v3.0.0 (*)
+
+spki v0.7.3 (*)
+
+spki v0.8.1 (*)

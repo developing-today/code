@@ -57,8 +57,9 @@ func RunPatterns() []PkgPattern {
 }
 
 // InputGlobs are the files the matrix is computed from, relative to the
-// module root: the catalogue, its overrides and the coverage registry.
-var InputGlobs = []string{MarkdownPath, OverridesDir + "/*.json", "internal/conformance/coverage*.go"}
+// module root: the catalogue, its overrides, the coverage registry and the
+// authorization split.
+var InputGlobs = []string{MarkdownPath, OverridesDir + "/*.json", "internal/conformance/coverage*.go", AuthSplitPath}
 
 // InputDigest hashes InputGlobs' files, names and contents, in order.
 func InputDigest(root string) (string, error) {

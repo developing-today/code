@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // PluginMethod is a hand-written DaemonClient method and the operation its
@@ -93,6 +93,9 @@ carry instead is a description that says so and MCP annotations
 		tool := "`" + op.ToolName() + "`"
 		if op.Streams {
 			tool = "none: a stream; MCP carries it as `subscriptions/listen`"
+		}
+		if op.NoTool != "" {
+			tool = "none: " + op.NoTool
 		}
 		plugin := append([]string{"`ops." + api.TSMethod(op.Name) + "()`"}, named[op.Name]...)
 		var notes []string

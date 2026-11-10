@@ -13,6 +13,21 @@ import (
 // docs/spec/identity.md.
 const MetaSession = "dev.mcpx/session"
 
+// MetaOpenCodeSession is the _meta key OpenCode v2 names its session with
+// on every tools/call. It is in the default key list because OpenCode is a
+// client mcpx ships against, not because the key is mcpx's: a deployment
+// can drop it via transport.sessionMetaKeys.
+const MetaOpenCodeSession = "ai.opencode/sessionID"
+
+// DefaultSessionMetaKeys is the built-in transport.sessionMetaKeys value:
+// mcpx's own key first, then OpenCode's. The first key in the list that
+// carries a non-empty string names the session.
+var DefaultSessionMetaKeys = []string{MetaSession, MetaOpenCodeSession}
+
+// MetaSessionOpenCode is the same key under the name main's wp11 tests
+// use; both spellings name the one constant above.
+const MetaSessionOpenCode = MetaOpenCodeSession
+
 // IdentitySource says where a request's identity came from, which decides
 // what the backend may build from it.
 type IdentitySource string
@@ -70,9 +85,11 @@ func (c *Conn) identityFor(params json.RawMessage) Identity {
 		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if json.Unmarshal(params, &p) == nil {
-		var named string
-		if json.Unmarshal(p.Meta[MetaSession], &named) == nil && named != "" {
-			return Identity{Source: IdentityClient, Key: named}
+		for _, key := range c.s.sessionMetaKeys() {
+			var named string
+			if json.Unmarshal(p.Meta[key], &named) == nil && named != "" {
+				return Identity{Source: IdentityClient, Key: named}
+			}
 		}
 	}
 	switch {

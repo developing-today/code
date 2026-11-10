@@ -16,17 +16,16 @@
     "maxLines": 200000,
     "maxAge": "24h",
     "keep": 8,
-    "include": [
-      "host",
-      "user",
-      "process",
-      "version"
-    ],
+    "include": ["host", "user", "process", "version"],
     "trace": false
   },
   "daemon": {
     "reapInterval": "30s",
-    "saveInterval": "5m"
+    "saveInterval": "5m",
+    "tsnetUpTimeout": "30s"
+  },
+  "secrets": {
+    "requestRetention": "10m"
   },
   "cli": {
     "cellWidth": 60,
@@ -39,12 +38,32 @@
     "permissions": "all",
     "runtimeOrder": ["deno", "bun", "node"],
     "profiles": {
-      "all": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "none": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "off": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "unsandboxed": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "net": { "deno": ["--allow-net", "--allow-env"] },
-      "read": { "deno": ["--allow-read", "--allow-env"] },
+      "all": {
+        "deno": ["--allow-all"],
+        "bun": [],
+        "node": []
+      },
+      "none": {
+        "deno": ["--allow-all"],
+        "bun": [],
+        "node": []
+      },
+      "off": {
+        "deno": ["--allow-all"],
+        "bun": [],
+        "node": []
+      },
+      "unsandboxed": {
+        "deno": ["--allow-all"],
+        "bun": [],
+        "node": []
+      },
+      "net": {
+        "deno": ["--allow-net", "--allow-env"]
+      },
+      "read": {
+        "deno": ["--allow-read", "--allow-env"]
+      },
       "readnet": {
         "deno": ["--allow-read", "--allow-net", "--allow-env"],
         "node": ["--permission", "--allow-fs-read=*"]
@@ -53,7 +72,9 @@
         "deno": ["--allow-read", "--allow-net", "--allow-env"],
         "node": ["--permission", "--allow-fs-read=*"]
       },
-      "strict": { "deno": ["--allow-net=127.0.0.1", "--allow-env"] }
+      "strict": {
+        "deno": ["--allow-net=127.0.0.1", "--allow-env"]
+      }
     },
     "captureConsole": true,
     "typecheckTimeout": "60s"
@@ -77,18 +98,26 @@
     "eventSubscriberBuffer": 256,
     "streamReconnect": "2s",
     "taskTTL": "10m",
+    "taskMaxAge": "1h",
     "taskResultWait": "2m",
     "statsTop": 20,
-    "registryLimit": 20
+    "registryLimit": 20,
+    "handoffRetryInterval": "10ms"
   },
   "resolve": {
     "dialTimeout": "200ms"
   },
+  "preflight": {
+    "npmTimeout": "5s"
+  },
   "elicit": {
     "ttl": "120s",
+    "maxAge": "30m",
     "pollInterval": "250ms",
     "handlerTimeout": "5m",
-    "inputRounds": 8
+    "inputRounds": 8,
+    "retentionMaxAge": "720h",
+    "retentionMaxTerminalRows": 1000
   },
   "proto": {
     "native": true,
@@ -104,17 +133,16 @@
   "transport": {
     "sseKeepAlive": "15s",
     "stdioDrain": "30s",
-    "loopbackHosts": [
-      "localhost",
-      "127.0.0.1",
-      "::1"
-    ],
-    "allowedOrigins": []
+    "loopbackHosts": ["localhost", "127.0.0.1", "::1"],
+    "allowedOrigins": [],
+    "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"],
+    "sshWaitDelay": "3s"
   },
   "consumer": {
     "disambiguate": "never",
     "disambiguateDefault": "new",
     "confirmDestructive": false,
+    "writePolicy": "ask",
     "askTimeout": "45s",
     "diagnosePreflight": true,
     "historyPerTool": 8,
@@ -131,18 +159,32 @@
     "promptMaxTokens": 1500,
     "runTimeout": "5m"
   },
+  "model": {
+    "timeout": "90s"
+  },
   "exec": {
     "timeout": "120s",
+    "hookTimeout": "60s",
+    "resolveTimeout": "3m",
+    "resolveWaitDelay": "2s",
     "workDirs": 8,
     "programs": 64,
     "entries": 8,
     "stderrLimit": 65536,
+    "stdoutLimit": 65536,
     "output": "text",
     "remoteOutput": "structured",
     "delivery": "reference"
   },
+  "cache": {
+    "maxBytes": "1GiB",
+    "maxAge": "720h",
+    "leaseStaleAge": "1h"
+  },
   "artifacts": {
     "ttl": "24h",
+    "idleTtl": "0s",
+    "maxAge": "168h",
     "maxBytes": "64MiB",
     "quota": "1GiB",
     "inlineMaxBytes": "1MiB",
@@ -169,10 +211,7 @@
   },
   "autostart": {
     "bin": "",
-    "args": [
-      "daemon",
-      "--detached"
-    ],
+    "args": ["daemon", "--detached"],
     "idleExit": "4h",
     "connectTimeout": "20s",
     "pollInterval": "50ms",
@@ -188,6 +227,12 @@
     "registryNameFallback": 10,
     "leaseTTL": "30m",
     "socketProbeTimeout": "500ms",
+    "takeoverTimeout": "15s",
+    "takeoverMaxFrame": "16MB",
+    "takeoverPoll": "5ms",
+    "execHashMax": "1MB",
+    "execCheckInterval": "30s",
+    "execDrainTimeout": "10s",
     "warmTimeout": "3m",
     "refreshTimeout": "3m",
     "inlineStartTimeout": "5s",
@@ -227,7 +272,11 @@
     "taskAfter": "2s"
   },
   "protoTasks": {
-    "pollInterval": "1s"
+    "pollInterval": "1s",
+    "cancelGrace": "5s"
+  },
+  "wasm": {
+    "logLineSize": "64KiB"
   },
   "stdioShutdown": {
     "stdinGrace": "2s",
@@ -241,6 +290,7 @@
     "eraFile": "upstream-eras.json",
     "eraFileVersion": 1,
     "errorBodyLimit": "4KB",
+    "responseBodyLimit": "8MiB",
     "sseReconnectDelay": "1s",
     "sseReconnectAttempts": 5,
     "listenReopenDelay": "1s",
@@ -254,5 +304,11 @@
   "embeddings": {
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
+  },
+  "proxy": {
+    "timeout": "10m"
+  },
+  "hooks": {
+    "timeout": "2s"
   }
 }

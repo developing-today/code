@@ -1,0 +1,155 @@
+[
+  {
+    "skill": "research-workflow",
+    "should_load": [
+      "Where does this research collection stand and what is next?",
+      "Discover the current stage of the intake package and dispatch workers.",
+      "Check the status of all research packages in doc/",
+      "What is the ready frontier for the current research collection?",
+      "Resume the research workflow from where the last session left off."
+    ],
+    "should_not_load": [
+      "Fix this failing rust unit test in pkgs/id",
+      "Write a poem about distributed systems",
+      "Format the nix files using treefmt",
+      "Deploy the latest cloudflare worker",
+      "Update the renovate dependency configuration"
+    ]
+  },
+  {
+    "skill": "request-intake",
+    "should_load": [
+      "Take this user prompt and create a new research package",
+      "Process this noisy voice-transcribed request into a sealed transcript and concepts",
+      "Initialize intake for a multi-topic feature idea",
+      "Scaffold a research collection from this raw input text",
+      "Store this exact transcript and generate the initial main reference document"
+    ],
+    "should_not_load": [
+      "Build the rust crate in release mode",
+      "Reconcile notes between concept 1 and concept 2",
+      "Create the final implementation plan for the feature",
+      "Run the playwright test suite in firefox",
+      "Check why the go module build failed"
+    ]
+  },
+  {
+    "skill": "research-prepare",
+    "should_load": [
+      "Map codebase context and prepare research questions for concept C001",
+      "Prepare preliminary research and create trigger issues for this concept",
+      "Draft the initial exploration map and research angles for C002",
+      "Set up the research brief and question list before deep investigation",
+      "Investigate current repo architecture to position the research for this item"
+    ],
+    "should_not_load": [
+      "Write unit tests for the SSH presenter",
+      "Scaffold a new transcript package from raw text",
+      "Execute the full implementation of the database migration",
+      "Format all markdown files with prettier",
+      "Review the open pull request comments"
+    ]
+  },
+  {
+    "skill": "concept-research",
+    "should_load": [
+      "Perform deep factual research on concept C001 including prior art and alternatives",
+      "Investigate industry best practices and failure modes for this concept",
+      "Research the feasibility, use cases, and technical trade-offs for concept C003",
+      "Steelman alternative approaches and draft a risk mitigation table for C002",
+      "Execute comprehensive online and codebase research for this single concept"
+    ],
+    "should_not_load": [
+      "Merge the ready pull requests into main",
+      "Scaffold the initial package directory",
+      "Create the parent handoff issue on GitHub",
+      "Run git worktree prune across dead branches",
+      "Rebase the feature branch onto master"
+    ]
+  },
+  {
+    "skill": "notes-reconcile",
+    "should_load": [
+      "Reconcile all directed notes sent to concept C001 and record receipts",
+      "Process incoming cross-agent notes and incorporate their findings",
+      "Verify that all notes in notes/ have acknowledged or resolved dispositions",
+      "Scan remote branches for unmerged notes and update the concept document",
+      "Ensure all comments from other workers have been transferred to C002"
+    ],
+    "should_not_load": [
+      "Initialize a new research collection from voice input",
+      "Implement the Wasm sandbox presenter in Zig",
+      "Draft the top-level roadmap item",
+      "Add a new user to the NixOS configuration",
+      "Benchmark the fuel consumption of territory"
+    ]
+  },
+  {
+    "skill": "issue-handoff",
+    "should_load": [
+      "Create a self-contained parent GitHub issue to hand off this concept",
+      "Fan out this parent issue into granular child issues for research facets",
+      "Generate an orchestration issue to coordinate subagents on these issues",
+      "Build a zero-context handoff issue for an agent to pick up this concept",
+      "Populate the initial research stages in design.md from the created issues"
+    ],
+    "should_not_load": [
+      "Format the rust code with rustfmt",
+      "Scaffold the initial transcript and package.json",
+      "Implement the database schema changes",
+      "Reconcile directed notes for C001",
+      "Run the clippy lint suite"
+    ]
+  },
+  {
+    "skill": "design-orchestrate",
+    "should_load": [
+      "Orchestrate subagents across research issues and consolidate the design",
+      "Coordinate parallel workers to research concepts and handle their PRs",
+      "Resolve conflicting worker proposals using reviewer and critic subagents",
+      "Generate the minimal human-review list and record preliminary decisions",
+      "Run the challenge pass on preliminary decisions before planning"
+    ],
+    "should_not_load": [
+      "Write the low-level rust implementation code",
+      "Scaffold the initial raw transcript file",
+      "Clean up temporary files in /tmp",
+      "Update the flake.lock inputs",
+      "Format python files with ruff"
+    ]
+  },
+  {
+    "skill": "feature-plan",
+    "should_load": [
+      "Turn this approved design into a granular implementation plan with phases",
+      "Create an end-to-end plan with numbered steps and automated test criteria",
+      "Map feature phases into parallel PR stacks and worktree partitions",
+      "Build the task graph of implementation issues with explicit blocking edges",
+      "Define rollout, rollback, and verification contracts for this feature"
+    ],
+    "should_not_load": [
+      "Perform the raw text intake of a voice recording",
+      "Merge worker pull requests to the integration branch",
+      "Directly write the production Rust code",
+      "Reconcile cross-concept directed notes",
+      "Check why treefmt failed on pre-commit"
+    ]
+  },
+  {
+    "skill": "implementation-orchestrate",
+    "should_load": [
+      "Orchestrate parallel subagents to build the implementation plan across worktrees",
+      "Dispatch ready tasks from the frontier and monitor worker PR merges",
+      "Verify worker commit SHAs and merge integration pull requests",
+      "Coordinate builders, reviewers, and verifiers to complete the feature phases",
+      "Execute the multi-agent implementation loop until all criteria pass"
+    ],
+    "should_not_load": [
+      "Perform the initial intake of a user prompt",
+      "Re-open the strategic design debate",
+      "Scaffold the package.json manifest",
+      "Map preliminary research questions",
+      "Create the parent concept handoff issues"
+    ]
+  }
+]

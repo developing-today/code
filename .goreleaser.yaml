@@ -1,3 +1,4 @@
+version: 2
 changelog:
   sort: asc
 builds:
@@ -30,10 +31,12 @@ builds:
       # - windows_arm64 # badger compatibility ?
 archives:
   - id: "archives"
-    builds:
+    ids:
       - "graph"
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_v{{ .Version}}_{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ .Arm }}{{ .Mips }}{{ .Amd64 }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip

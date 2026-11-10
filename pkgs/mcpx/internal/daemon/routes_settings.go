@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // CallSettingsHeader carries a client's call-scoped settings with a request.
@@ -29,13 +32,16 @@ import (
 const CallSettingsHeader = "X-Mcpx-Settings"
 
 func (s *Server) routesSettings(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/settings", s.handleSettingsList)
-	mux.HandleFunc("GET /v1/settings/{path}", s.handleSettingsGet)
-	mux.HandleFunc("PUT /v1/settings/{path}", s.handleSettingsSet)
-	mux.HandleFunc("DELETE /v1/settings/{path}", s.handleSettingsUnset)
-	mux.HandleFunc("GET /v1/servers", s.handleServersList)
-	mux.HandleFunc("POST /v1/servers", s.handleServersAdd)
-	mux.HandleFunc("DELETE /v1/servers/{name}", s.handleServersRemove)
+	s.route(mux, "GET /v1/settings", s.handleSettingsList)
+	s.route(mux, "GET /v1/settings/{path}", s.handleSettingsGet)
+	s.route(mux, "PUT /v1/settings/{path}", s.handleSettingsSet)
+	s.route(mux, "DELETE /v1/settings/{path}", s.handleSettingsUnset)
+	s.route(mux, "GET /v1/servers", s.handleServersList)
+	s.route(mux, "GET /v1/servers/{name}", s.handleServerGet)
+	s.route(mux, "POST /v1/servers", s.handleServersAdd)
+	s.route(mux, "DELETE /v1/servers/{name}", s.handleServersRemove)
+	s.route(mux, "POST /v1/adapters", s.handleAdaptersAdd)
+	s.route(mux, "DELETE /v1/adapters/{name}", s.handleAdaptersRemove)
 }
 
 // Settings exposes the daemon's resolved configuration.
@@ -64,7 +70,11 @@ func (s *Server) callSettings(r *http.Request) *settings.Set {
 	ov := map[string]string{}
 	for path, v := range given {
 		decl, ok := sch.Lookup(path)
-		if !ok || decl.Scope != settings.ScopeCall {
+		// CallRequest settings are admitted as requests, not orders:
+		// pool.callTimeout's only reader from a call set clamps it to the
+		// pool's configured value before use (#1864 item 4), so admitting
+		// it here cannot raise the daemon's bound.
+		if !ok || (decl.Scope != settings.ScopeCall && !decl.CallRequest) {
 			continue
 		}
 		nv, err := settings.Normalize(*decl, v)
@@ -211,14 +221,28 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 		persist = "runtime"
 	}
 
+	// The file and the runtime value change together or not at all. Holding the
+	// reload lock keeps the config watcher and any other reload from reading the
+	// file between this write and its rollback, which would apply a value this
+	// request is about to refuse.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
+	var file *fileState
 	if persist != "runtime" {
 		path, err := config.ResolveWritePath(config.WriteScope(persist), "")
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := config.SetKey(path, decl.Path, settings.TypedValue(*decl, req.Value)); err != nil {
+		prior, err := captureFile(path)
+		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		file = &prior
+		if err := config.SetKey(path, decl.Path, settings.TypedValue(*decl, req.Value)); err != nil {
+			s.refused(w, http.StatusInternalServerError, err, file)
 			return
 		}
 		out["written"] = path
@@ -229,8 +253,14 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 	// the old value until a restart, which reads as the write having failed.
 	switch {
 	case decl.Hot || decl.Scope == settings.ScopeCall:
+		prev, had := s.set.RuntimeOverride(decl.Path)
 		if err := s.set.SetRuntime(decl.Path, req.Value); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			s.refused(w, http.StatusBadRequest, err, file)
+			return
+		}
+		if err := s.applyPoolRuntime(decl.Path); err != nil {
+			s.restoreRuntime(decl.Path, prev, had)
+			s.refused(w, http.StatusInternalServerError, reloadFailed(decl.Path, err), file)
 			return
 		}
 		out["applied"] = true
@@ -249,13 +279,148 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// applyPoolRuntime makes a runtime change to a pool setting reach the pools
+// that are already running.
+//
+// ApplyPoolSettings folds the pool knobs into the configuration, and that runs
+// only when a configuration is loaded. Without a reload the change was stored
+// and reported as applied while every running pool kept the value it started
+// with. A reload treats these knobs like an edit to the file: each pool's
+// identity includes them, so the affected servers are replaced. A change to
+// any pool.* setting therefore restarts the servers that inherit it.
+func (s *Server) applyPoolRuntime(path string) error {
+	if !strings.HasPrefix(path, "pool.") {
+		return nil
+	}
+	_, _, err := s.reloadConfig()
+	return err
+}
+
+// restoreRuntime undoes a runtime change that could not be reloaded: the
+// override it replaced comes back, or the one it added is removed. Without
+// this the refused value would stay in force and be applied by whichever
+// later reload happened to run next.
+func (s *Server) restoreRuntime(path, prev string, had bool) {
+	if !had {
+		s.set.ClearRuntime(path)
+		return
+	}
+	if err := s.set.SetRuntime(path, prev); err != nil {
+		s.logger.Printf("restoring %s after a failed reload: %v", path, err)
+	}
+}
+
+// reloadFailed is the error a caller sees when a runtime change was refused.
+func reloadFailed(path string, err error) error {
+	return fmt.Errorf("%s: the configuration could not be reloaded, so the runtime value was rolled back: %w", path, err)
+}
+
+// refused answers a change that was not applied. When the change was also
+// written to a file, that file goes back to what it held before, so the file
+// and the daemon agree again. A file holding a value the daemon refused is the
+// disagreement this exists to prevent: the next reload that read it would apply
+// the value.
+func (s *Server) refused(w http.ResponseWriter, status int, err error, file *fileState) {
+	if file != nil {
+		if rerr := file.restore(); rerr != nil {
+			s.logger.Printf("restoring %s after a refused change: %v", file.target, rerr)
+			writeErr(w, status, fmt.Errorf("%w; %s could not be restored and still holds the refused value: %v",
+				err, file.target, rerr))
+			return
+		}
+		err = fmt.Errorf("%w; %s was restored to its previous contents", err, file.target)
+	}
+	writeErr(w, status, err)
+}
+
+// fileState is a configuration file as it was before a write: its bytes and
+// mode, or that there was no file. A refused write is rolled back to it.
+type fileState struct {
+	target  string // the file written, with symlinks resolved
+	existed bool
+	data    []byte
+	mode    fs.FileMode
+}
+
+func captureFile(path string) (fileState, error) {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fileState{}, err
+	}
+	st, err := os.Stat(target)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fileState{target: target}, nil
+	}
+	if err != nil {
+		return fileState{}, err
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return fileState{}, err
+	}
+	return fileState{target: target, existed: true, data: data, mode: st.Mode().Perm()}, nil
+}
+
+// restore puts the file back as it was captured: the same bytes and mode, or
+// no file at all. The bytes go to a temporary file beside the target and are
+// renamed over it, so a failure partway leaves the refused contents or the
+// captured ones, never a truncated file.
+func (f fileState) restore() error {
+	if !f.existed {
+		if err := os.Remove(f.target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(f.target), "."+filepath.Base(f.target)+".restore-*")
+	if err != nil {
+		return err
+	}
+	if err := writeTemp(tmp, f.data, f.mode); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), f.target); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// writeTemp writes and closes a file that restore is about to rename into place.
+func writeTemp(f *os.File, data []byte, mode fs.FileMode) error {
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 func (s *Server) handleSettingsUnset(w http.ResponseWriter, r *http.Request) {
 	decl, _, err := s.lookupSetting(r.PathValue("path"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	had := s.set.ClearRuntime(decl.Path)
+	prev, had := s.set.RuntimeOverride(decl.Path)
+	if had {
+		s.set.ClearRuntime(decl.Path)
+		if err := s.applyPoolRuntime(decl.Path); err != nil {
+			s.restoreRuntime(decl.Path, prev, true)
+			writeErr(w, http.StatusInternalServerError, reloadFailed(decl.Path, err))
+			return
+		}
+	}
 	v, _ := s.set.Value(decl.Path)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path": decl.Path, "removed": had, "value": v.Raw, "source": v.Origin.String(),
@@ -279,37 +444,84 @@ type serverRecord struct {
 	Disabled  bool              `json:"disabled,omitempty"`
 	From      string            `json:"from,omitempty"`
 	Extra     map[string]string `json:"-"`
+	// RequiresSecrets is what the configuration says this server needs.
+	// MissingSecrets is the part of it with no value. Active is false while
+	// either holds, or while a server it requires cannot run.
+	RequiresSecrets []string `json:"requiresSecrets"`
+	MissingSecrets  []string `json:"missingSecrets"`
+	Active          bool     `json:"active"`
+}
+
+// serverRecords is every configured server, as the configuration writes it,
+// with what it needs and whether it can run now.
+func (s *Server) serverRecords() ([]serverRecord, error) {
+	out := []serverRecord{}
+	cfg := s.reg.Config()
+	if cfg == nil {
+		return out, nil
+	}
+	resolved, err := cfg.ResolveAll()
+	if err != nil {
+		return nil, err
+	}
+	for _, sv := range resolved {
+		// These are fresh views, so they need the daemon's values bound in
+		// before they can say whether anything is missing.
+		s.reg.bindSecrets(sv)
+		rec := serverRecord{
+			Name: sv.Name, Namespace: sv.Namespace,
+			Sharing: string(sv.Sharing), Scope: string(sv.Scope), Max: sv.Max,
+			From: cfg.Origin[sv.Name],
+		}
+		if sv.Stdio() {
+			rec.Transport, rec.Command, rec.Args = "stdio", sv.Command, sv.Args
+		} else {
+			rec.Transport, rec.URL = sv.Transport, sv.URL
+		}
+		// Keys, never values. A server's environment is where its API
+		// tokens are, and an endpoint that lists configured servers is
+		// not a place to leak one.
+		rec.EnvKeys = sortedKeys(sv.Env)
+		rec.Headers = sortedKeys(sv.Headers)
+		rec.RequiresSecrets = nonNil(sv.SecretNames())
+		rec.MissingSecrets = nonNil(sv.MissingSecrets())
+		blocker, _ := s.reg.blocked(sv)
+		rec.Active = blocker == nil
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func nonNil(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
 }
 
 func (s *Server) handleServersList(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.reg.Config()
-	out := []serverRecord{}
-	if cfg != nil {
-		resolved, err := cfg.ResolveAll()
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		for _, sv := range resolved {
-			rec := serverRecord{
-				Name: sv.Name, Namespace: sv.Namespace,
-				Sharing: string(sv.Sharing), Scope: string(sv.Scope), Max: sv.Max,
-				From: cfg.Origin[sv.Name],
-			}
-			if sv.Stdio() {
-				rec.Transport, rec.Command, rec.Args = "stdio", sv.Command, sv.Args
-			} else {
-				rec.Transport, rec.URL = sv.Transport, sv.URL
-			}
-			// Keys, never values. A server's environment is where its API
-			// tokens are, and an endpoint that lists configured servers is
-			// not a place to leak one.
-			rec.EnvKeys = sortedKeys(sv.Env)
-			rec.Headers = sortedKeys(sv.Headers)
-			out = append(out, rec)
-		}
+	out, err := s.serverRecords()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out})
+}
+
+func (s *Server) handleServerGet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	out, err := s.serverRecords()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, rec := range out {
+		if rec.Name == name {
+			writeJSON(w, http.StatusOK, rec)
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, fmt.Errorf("no configured server named %q", name))
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -377,6 +589,19 @@ func ServerEntry(req addServerReq) (map[string]any, error) {
 	return entry, nil
 }
 
+// pointsAtOwnEndpoint reports whether a server entry's URL is this
+// daemon's own HTTP endpoint (or a path under it): the literal
+// self-connection #1877 names, refused at add time and flagged at
+// reload time. The pool's identity guard refuses the same loop for
+// entries that arrive by file edit or report a spoofed path.
+func (s *Server) pointsAtOwnEndpoint(rawURL string) bool {
+	if rawURL == "" || s.endpoint == "" {
+		return false
+	}
+	u := strings.TrimSuffix(rawURL, "/")
+	return u == s.endpoint || strings.HasPrefix(u, s.endpoint+"/")
+}
+
 func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 	var req addServerReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body,
@@ -389,6 +614,18 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if s.pointsAtOwnEndpoint(req.URL) {
+		err := fmt.Errorf("server %q: refusing self-connection: url %s is this daemon's own MCP endpoint; mcpx as its own upstream would grow tools/list on every reload (#1877)", req.Name, req.URL)
+		s.logger.Printf("%v", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// The file write and the reload are one transaction: two live
+	// changes racing would otherwise read the same declarations and
+	// overwrite each other's file edit while both report success
+	// (#2674). The adapters handlers hold reloadMu the same way.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	scope := config.WriteScope(req.Scope)
 	if scope == "" {
 		scope = config.ScopeProject
@@ -414,6 +651,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServersRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// The defining-file lookup, the file write and the reload are one
+	// transaction under reloadMu, like the add handler (#2674): a
+	// concurrent add must not resurrect what this removes, and a
+	// concurrent remove must not be overwritten by this reload.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	path := ""
 	if scope := config.WriteScope(r.URL.Query().Get("scope")); scope != "" {
 		p, err := config.ResolveWritePath(scope, s.configPathFor(scope))
@@ -518,15 +761,30 @@ func (s *Server) watchConfig() {
 }
 
 // stampConfig is a cheap "did anything move" check: no file is read.
+//
+// A symlinked config needs both halves stamped (#368): the followed file's
+// mtime+size (an in-place edit to the target) and the link itself -- its
+// own mtime+size plus where it points. Nix store targets all carry mtime 1,
+// so a re-pointed link whose new target happens to have the same byte
+// length as the old one is invisible to the followed stat alone.
 func stampConfig(paths []string) string {
 	var b strings.Builder
 	for _, p := range paths {
-		st, err := os.Stat(p)
+		st, err := os.Lstat(p)
 		if err != nil {
 			b.WriteString(p + ":gone;")
 			continue
 		}
 		fmt.Fprintf(&b, "%s:%d:%d;", p, st.ModTime().UnixNano(), st.Size())
+		if st.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		if target, err := os.Readlink(p); err == nil {
+			b.WriteString("->" + target + ";")
+		}
+		if tst, err := os.Stat(p); err == nil {
+			fmt.Fprintf(&b, "target:%d:%d;", tst.ModTime().UnixNano(), tst.Size())
+		}
 	}
 	return b.String()
 }
@@ -556,6 +814,15 @@ func (s *Server) reloadConfig() (added, removed []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// Flag a self entry on every reload (#1877): the file may have
+	// been edited behind the API's back, so the add-time refusal
+	// cannot be the only word. The pool refuses to start such an
+	// entry; this line is the reason in the daemon's log.
+	for name, srv := range cfg.MCPServers {
+		if srv != nil && s.pointsAtOwnEndpoint(srv.URL) {
+			s.logger.Printf("self-connection entry %q points at this daemon's own MCP endpoint %s; its pool will refuse to start (#1877)", name, srv.URL)
+		}
+	}
 	// A reload re-reads the file and would otherwise drop whatever the
 	// environment, a flag or a runtime override said about the pool.
 	config.ApplyPoolSettings(cfg, s.set)
@@ -575,4 +842,162 @@ func (s *Server) reloadConfig() (added, removed []string, err error) {
 	s.cfgMu.Unlock()
 	s.logger.Printf("config reloaded: %d added, %d removed", len(added), len(removed))
 	return added, removed, nil
+}
+
+// ---- live adapter add/remove (#2118) ----
+//
+// Servers got live add first because they live in the configuration file
+// the daemon already edits. Adapters live one step away, in the
+// declaration files paths.adapters names, so the same persist + reload
+// shape needs a different writer (config.AddAdapterEntry) and a rule for
+// which file receives a new declaration: the first file paths.adapters
+// names, mirroring how augmentAdapters reads them in order. When no file
+// is configured there is nowhere a reload would find a new declaration,
+// so the request is refused with the remedy rather than written to a
+// file nothing reads.
+
+type addAdapterReq struct {
+	adapter.Spec
+	Replace bool `json:"replace"`
+}
+
+func (s *Server) adapterFiles() []string {
+	var out []string
+	for _, p := range splitPathList(s.set.String("paths.adapters")) {
+		if p != "" && p != settings.NullMarker {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
+	var req addAdapterReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body,
+		s.set.Bytes("http.bodyLimit"))).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// The lookup, the file write and the reload are one transaction: two
+	// live changes racing would otherwise read the same declarations and
+	// overwrite each other's file edit while both report success (Codex
+	// review, PR #2565). The servers handlers hold reloadMu the same way.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	files := s.adapterFiles()
+	if len(files) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf(
+			"no adapters file is configured: set paths.adapters to a declaration file first "+
+				"(for example `mcpx settings set paths.adapters .mcpx/adapters.json`), "+
+				"so the declaration written here is one a reload will find"))
+		return
+	}
+	raw, err := json.Marshal(req.Spec)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// The name is looked up across every configured file, not just the
+	// destination: loadAdapterFiles refuses a name two files declare, so
+	// writing a second definition into the first file would persist a
+	// duplicate the next reload — and the next daemon start — rejects
+	// (Codex review, PR #2565). A replacement edits the file that
+	// defines the adapter, like remove does.
+	path := files[0]
+	if existing, found, err := config.AdapterDefinedIn(files, req.Name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	} else if found {
+		if !req.Replace {
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"%s already declares adapter %q; remove it first or pick another name",
+				existing, req.Name))
+			return
+		}
+		path = existing
+	}
+	// The name must not collide with a server namespace that is not this
+	// adapter: augmentAdapters refuses to load an adapter whose name a
+	// configured server already owns, so persisting one would return 500
+	// on the reload while leaving a declaration that breaks every later
+	// reload and daemon start (Codex review, PR #2565). Adapter-generated
+	// servers carry the declaration fingerprint in their environment;
+	// one of those under this name is this adapter itself (a replace),
+	// anything else -- a configured server, an API -- is a collision.
+	if cfg := s.currentConfig(); cfg != nil {
+		// The comparison is on RESOLVED namespaces, not map keys: a
+		// configured foo-bar and a requested foo_bar are different keys
+		// and the same namespace after config.SanitizeNamespace, and
+		// the reload rejects the pair just the same (Codex review,
+		// PR #2565). The adapter-generated exemption applies only to
+		// this adapter's own exact name, which a replace legitimately
+		// redefines.
+		want := config.SanitizeNamespace(req.Name)
+		for name, srv := range cfg.MCPServers {
+			if srv == nil || config.SanitizeNamespace(name) != want {
+				continue
+			}
+			if name == req.Name {
+				if _, isAdapter := srv.Env["MCPX_ADAPTER_DECLARATION_SHA256"]; isAdapter {
+					continue
+				}
+			}
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"%q resolves to namespace %q, already used by configured server %q; pick another adapter name",
+				req.Name, want, name))
+			return
+		}
+	}
+	if err := config.AddAdapterEntry(path, entry, req.Replace); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	added, removed, rerr := s.reloadConfig()
+	if rerr != nil {
+		writeErr(w, http.StatusInternalServerError, rerr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": req.Name, "written": path, "added": added, "removed": removed,
+	})
+}
+
+func (s *Server) handleAdaptersRemove(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	// Same transaction rule as add: lookup, write and reload under
+	// reloadMu, so a concurrent add cannot resurrect what this removes
+	// (or be discarded by it).
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	path, found, err := config.AdapterDefinedIn(s.adapterFiles(), name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf(
+			"no configured adapters file declares %q", name))
+		return
+	}
+	if _, err := config.RemoveAdapterEntry(path, name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	added, removed, rerr := s.reloadConfig()
+	if rerr != nil {
+		writeErr(w, http.StatusInternalServerError, rerr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "written": path, "added": added, "removed": removed,
+	})
 }

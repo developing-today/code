@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
 )
 
 func asErr(err error, target any) bool { return errors.As(err, target) }
@@ -52,7 +52,7 @@ func TestSanitizedNamesStayInsideTheTargetDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	m, err := s.Put(strings.NewReader("x"), artifacts.PutOptions{Name: "../../escape.txt"})
 	if err != nil {
 		t.Fatal(err)

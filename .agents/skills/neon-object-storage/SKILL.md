@@ -181,17 +181,11 @@ await s3.send(
 );
 
 // Download
-const res = await s3.send(
-  new GetObjectCommand({ Bucket: BUCKET, Key: "generated/cat.jpg" }),
-);
+const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: "generated/cat.jpg" }));
 const bytes = await res.Body?.transformToByteArray();
 
 // Presigned GET — share without exposing credentials
-const url = await getSignedUrl(
-  s3,
-  new GetObjectCommand({ Bucket: BUCKET, Key: "generated/cat.jpg" }),
-  { expiresIn: 3600 },
-);
+const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: "generated/cat.jpg" }), { expiresIn: 3600 });
 ```
 
 ## Pairing Storage with the Database on a Branch

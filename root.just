@@ -140,7 +140,7 @@ strip-whitespace:
     #!/usr/bin/env bash
     set -euo pipefail
     git grep -rl '[[:space:]]$' -- \
-      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \
+      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \
       ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \
       ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \
       ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \
@@ -149,6 +149,7 @@ strip-whitespace:
       ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \
       2>/dev/null | while IFS= read -r f; do
       case "$f" in
+        */transcript.txt) continue ;;
         */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;
         */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;
         */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;
@@ -182,6 +183,12 @@ mcpx-stop:
 [group('util')]
 mcpx-status:
     mcpx status
+
+# Print (or, with --run, execute) the mcpx tests a change affects — the
+# agent test tiers from code#1966 (policy: pkgs/mcpx/TESTING.md)
+[group('util')]
+mcpx-test-affected base="origin/main" *args:
+    python3 pkgs/mcpx/scripts/affected-tests.py --base {{base}} {{args}}
 
 # Recursively chown all files (including hidden) to current user:group (requires sudo)
 [group('util')]
@@ -221,6 +228,14 @@ stage-docs-all *args:
 switch:
     ./s
 
+# Update all flake inputs, then rebuild and switch NixOS configuration
+[group('nixos')]
+rebuild:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just update-inputs-all
+    just switch
+
 # =============================================================================
 # Mail Worker
 # =============================================================================
@@ -229,4 +244,39 @@ switch:
 [group('mail')]
 id-mail-deploy *args:
     nix run .#id-mail-deploy -- {{args}}
+
+# =============================================================================
+# pkarr Worker
+# =============================================================================
+
+# Deploy the pkarr Worker via the nix flake app (cf versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)
+[group('pkarr')]
+deploy-pkarr *args:
+    nix run .#pkarr-deploy -- {{args}}
+
+# =============================================================================
+# GitHub Backup (infra/github-backup)
+# =============================================================================
+
+# Deploy the developing-today-backup Worker via the nix flake app (wrangler versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)
+[group('github-backup')]
+deploy-developing-today-backup *args:
+    nix run .#developing-today-backup-deploy -- {{args}}
+
+# Install or refresh the github-backup laptop systemd units from this checkout
+[group('github-backup')]
+github-backup-units:
+    bash infra/github-backup/systemd/install-units.sh
+
+# Run the github-backup daily fetch now (via the installed systemd unit)
+[group('github-backup')]
+github-backup-fetch:
+    systemctl --user start github-backup-fetch.service
+    @systemctl --user status github-backup-fetch.service --no-pager | head -5
+
+# Run the github-backup weekly reconciliation sweep now (via the installed systemd unit)
+[group('github-backup')]
+github-backup-reconcile:
+    systemctl --user start github-backup-reconcile.service
+    @systemctl --user status github-backup-reconcile.service --no-pager | head -5
 

@@ -16,7 +16,7 @@ package events
 
 import (
 	"encoding/json"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +52,16 @@ const (
 
 	ServerLog Kind = "server.log"
 	Progress  Kind = "progress"
+
+	// CatalogChanged is published by the daemon's consumer registry when
+	// the catalogue moves. It had no constant and was published as a bare
+	// string, which kept it out of every enumerated list of kinds.
+	CatalogChanged Kind = "catalog.changed"
+
+	// HookFailed is published by the declared-hook runner when a hook
+	// exits non-zero or is cut by its timeout. It is not itself hookable:
+	// a hook subscribed to it could retrigger itself forever.
+	HookFailed Kind = "hook.failed"
 )
 
 // Event is one thing that happened.
@@ -207,26 +217,48 @@ func (b *Bus) Subscribe(f Filter, since uint64) (sub *Subscription, gap bool) {
 // knows it missed something and can resynchronise instead of trusting a
 // stream with a hole in it.
 func (b *Bus) SubscribeFrom(f Filter, since uint64, replay bool) (sub *Subscription, gap bool) {
-	ch := make(chan Event, defaults.EventSubscriberBuf)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	sub = &Subscription{C: ch, ch: ch, filter: f, id: b.next, bus: b}
-	b.next++
-
+	// Collect the replay first, under the lock, so its size is known
+	// before the channel exists.
+	var replayEvents []Event
 	if replay {
 		h := b.retained()
-		if since > 0 && len(h) > 0 && h[0].Seq > since+1 {
+		// The formula is uniform, position zero included (#1679):
+		// gating it on since > 0 made an explicit since=0 resume
+		// after a trim replay mid-history with no gap signal, while
+		// since=1 in the same state reported the gap. Untrimmed,
+		// h[0].Seq is 1 and 1 > 0+1 is false, so a from-the-start
+		// replay still reports no gap.
+		if len(h) > 0 && h[0].Seq > since+1 {
 			gap = true
 		}
 		for _, e := range h {
 			if e.Seq > since && f.Matches(e) {
-				select {
-				case ch <- e:
-				default:
-					sub.Dropped.Add(1)
-				}
+				replayEvents = append(replayEvents, e)
 			}
+		}
+	}
+
+	// The replay is owed, not live lag: size the channel for the whole
+	// replay plus the usual live buffer. The old code replayed into the
+	// live buffer with non-blocking sends while holding the lock -- before
+	// the subscriber could read anything -- so a replay larger than
+	// EventSubscriberBuf silently dropped everything past the buffer and
+	// reported no gap (#193). The replay is bounded by the retained
+	// history, so the extra capacity is bounded too.
+	ch := make(chan Event, defaults.EventSubscriberBuf+len(replayEvents))
+	sub = &Subscription{C: ch, ch: ch, filter: f, id: b.next, bus: b}
+	b.next++
+	for _, e := range replayEvents {
+		select {
+		case ch <- e:
+		default:
+			// Unreachable while the channel is sized for the replay, but
+			// if it ever happens the loss must be visible, not silent.
+			sub.Dropped.Add(1)
+			gap = true
 		}
 	}
 	b.subs[sub.id] = sub

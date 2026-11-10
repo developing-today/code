@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/mcpauth"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // #240: a server's `auth` block was parsed and never applied, so a configured

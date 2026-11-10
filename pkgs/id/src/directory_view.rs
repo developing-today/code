@@ -9,11 +9,15 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::artifact::{SignedArtifact, Stored};
 use crate::directory::{
-    Actor, Directory, Envelope, Level, Member, Refusal, normalize_email, normalize_key,
+    Actor, Directory, DirectoryEntry, Envelope, EnvelopeKind, Level, Member, Received, Refusal,
+    normalize_email, normalize_key,
 };
 use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
 use crate::directory_mail::Mail;
+use crate::envelope_outbox::{Entry, Finish, Outbox, Payload, check_target};
+use crate::petname::{Contact, Label, Petnames, labels};
 use crate::world::WorldScopes;
 
 /// Who is looking at the directory.
@@ -79,6 +83,18 @@ pub struct DirectoryView {
     pub accounts: Vec<AccountView>,
     /// Public groups, every group the viewer belongs to, and every group for the admin.
     pub groups: Vec<GroupView>,
+    /// The viewer's own envelopes still in, or recently left, the outbox.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deliveries: Vec<DeliveryView>,
+    /// Events waiting on missing dependencies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<WaitingView>,
+    /// Events voided in causal order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voided: Vec<VoidedView>,
+    /// Chains frozen due to forks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen: Vec<FrozenView>,
 }
 
 /// An account as one viewer sees it.
@@ -88,6 +104,8 @@ pub struct AccountView {
     pub id: String,
     /// The display name.
     pub name: String,
+    /// The viewer's private petname for the account; shown only to the account itself.
+    pub petname: Option<String>,
     /// Whether the account is verified, by an admin or a confirmed email; shown to the account and the admin.
     pub verified: Option<bool>,
     /// Public keys the account signs in with, besides its own ID; shown to the account and the admin.
@@ -193,6 +211,25 @@ pub enum DirectoryAction {
         /// The six-digit code.
         code: String,
     },
+    /// Give an account a petname only the viewer sees, replacing any it had.
+    SetPetname {
+        /// The account, by its ID.
+        account: String,
+        /// The petname.
+        name: String,
+    },
+    /// Change a petname the viewer already gave an account.
+    RenamePetname {
+        /// The account, by its ID.
+        account: String,
+        /// The new petname.
+        name: String,
+    },
+    /// Forget the petname the viewer gave an account.
+    RemovePetname {
+        /// The account, by its ID.
+        account: String,
+    },
     /// Create a group the viewer founds.
     CreateGroup {
         /// The group name.
@@ -234,15 +271,21 @@ pub enum DirectoryAction {
         /// The level to hold, or none to remove.
         level: Option<Level>,
     },
-    /// Ask an account to be friends.
+    /// Ask an account to be friends. A remote account is signed for with the
+    /// viewer's credential and queued for its server.
     RequestFriend {
         /// The account asked.
         to: String,
+        /// Where the account lives, if it is on another server.
+        remote: Option<RemoteFriend>,
     },
-    /// Accept a friend request.
+    /// Accept a friend request. A remote requester is answered through its
+    /// server, signed with the viewer's credential.
     AcceptFriend {
         /// The account that asked.
         from: String,
+        /// Where the requester lives, if it is on another server.
+        remote: Option<RemoteFriend>,
     },
     /// Remove a friend, or withdraw a request.
     RemoveFriend {
@@ -254,6 +297,38 @@ pub enum DirectoryAction {
         /// The envelope.
         envelope: Envelope,
     },
+    /// Store a signed artifact another server holds, and apply what it says.
+    ReceiveArtifact {
+        /// The artifact.
+        artifact: SignedArtifact,
+    },
+    /// Read an account's signed artifacts after a sequence number.
+    ReadArtifacts {
+        /// The account.
+        account: String,
+        /// Only artifacts with a sequence number after this one.
+        after: u64,
+    },
+    /// Publish structured JSON as a signed document of the signed-in account.
+    PublishDocument {
+        /// What the content is, such as `application/json`.
+        media_type: String,
+        /// The content itself.
+        content: serde_json::Value,
+        /// Hashes of artifacts the account had applied before this one.
+        after: Vec<String>,
+    },
+    /// Label an artifact, by its hash, as the signed-in account.
+    PublishTag {
+        /// The hash of the artifact labelled.
+        subject: String,
+        /// The label, such as `author`.
+        name: String,
+        /// The label's value, such as an account key.
+        value: Option<String>,
+        /// Hashes of artifacts the account had applied before this one.
+        after: Vec<String>,
+    },
     /// Verify an account. Admin only.
     Verify {
         /// The account ID.
@@ -261,11 +336,226 @@ pub enum DirectoryAction {
     },
 }
 
+/// Where an account on another server is reached.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteFriend {
+    /// The other server: an endpoint ticket, which carries addresses, or a bare
+    /// node ID, which needs discovery. Envelopes and artifacts go to it over iroh.
+    pub node: String,
+    /// The other server's world ID, which the envelope is addressed to.
+    pub audience: String,
+}
+
 impl DirectoryAction {
     /// Whether the action sends mail, and so needs a mail sink configured.
     #[must_use]
     pub const fn sends_mail(&self) -> bool {
         matches!(self, Self::AddEmail { .. } | Self::SignInEmail { .. })
+    }
+
+    /// Whether the action may queue envelopes or artifacts for other servers.
+    /// Whether it does depends on the directory: see [`Self::queues_for_other_servers`].
+    #[must_use]
+    pub const fn sends_envelope(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestFriend {
+                remote: Some(_),
+                ..
+            } | Self::AcceptFriend {
+                remote: Some(_),
+                ..
+            } | Self::RemoveFriend { .. }
+                | Self::PublishDocument { .. }
+                | Self::PublishTag { .. }
+        )
+    }
+
+    /// Whether the action queues something for another server, judged from the
+    /// directory as it is now. Only such an action needs an outbox. A removal or
+    /// a publish that no home server is declared for queues nothing, so it works
+    /// on a server without one.
+    #[must_use]
+    pub fn queues_for_other_servers(
+        &self,
+        directory: &Directory,
+        auth: &mut DirectoryAuth,
+        caller: &Caller,
+        now: u64,
+    ) -> bool {
+        let signed = caller.credential.is_some();
+        let declared = |account: &str| {
+            directory
+                .artifacts()
+                .declared(account)
+                .is_some_and(|declared| !declared.servers.is_empty())
+        };
+        match self {
+            Self::RequestFriend { remote, .. } | Self::AcceptFriend { remote, .. } => {
+                signed && remote.is_some()
+            }
+            Self::RemoveFriend { other } => signed && declared(other.as_str()),
+            Self::PublishDocument { .. } | Self::PublishTag { .. } => {
+                signed
+                    && matches!(
+                        Viewer::resolve(directory, auth, caller, now),
+                        Ok(Viewer::Account(me)) if declared(&me)
+                    )
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Something an action signed, for the caller to queue for another server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outbound {
+    /// The other server: an endpoint ticket or a bare node ID.
+    pub target: String,
+    /// The signed payload.
+    pub payload: Payload,
+}
+
+/// What became of one of the viewer's envelopes in the outbox.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryView {
+    /// `friend request` or `friend acceptance`.
+    pub kind: String,
+    /// The account the envelope is for.
+    pub to: String,
+    /// `not yet delivered`, `delivered`, `refused: REASON`, or `gave up: REASON`.
+    pub status: String,
+}
+
+/// The viewer's own envelopes in the outbox. The admin sees all of them.
+#[must_use]
+pub fn deliveries(outbox: &Outbox, viewer: &str) -> Vec<DeliveryView> {
+    outbox
+        .entries()
+        .filter_map(|entry| {
+            let Payload::Envelope(envelope) = &entry.payload else {
+                return None;
+            };
+            let shown = match viewer {
+                "admin" => true,
+                "anonymous" => false,
+                account => envelope.from == account,
+            };
+            shown.then(|| delivery(entry, envelope))
+        })
+        .collect()
+}
+
+fn delivery(entry: &Entry, envelope: &Envelope) -> DeliveryView {
+    let kind = match envelope.kind {
+        EnvelopeKind::FriendRequest => "friend request",
+        EnvelopeKind::FriendAccept => "friend acceptance",
+    };
+    let reason = entry.last_error.as_deref().unwrap_or("no reason given");
+    let status = match entry.finish {
+        None => "not yet delivered".to_owned(),
+        Some(Finish::Delivered) => "delivered".to_owned(),
+        Some(Finish::Refused) => format!("refused: {reason}"),
+        Some(Finish::GaveUp) => format!("gave up: {reason}"),
+    };
+    DeliveryView {
+        kind: kind.to_owned(),
+        to: envelope.to.clone(),
+        status,
+    }
+}
+
+/// An event waiting on missing dependencies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingView {
+    /// The event ID.
+    pub id: String,
+    /// The missing dependency hash.
+    pub missing: String,
+    /// The reason formatted as `waiting: missing <hash>`.
+    pub reason: String,
+}
+
+impl WaitingView {
+    /// Create a waiting event view with its reason formatted as `waiting: missing <hash>`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, missing: impl Into<String>) -> Self {
+        let missing = missing.into();
+        Self {
+            id: id.into(),
+            reason: format!("waiting: missing {missing}"),
+            missing,
+        }
+    }
+}
+
+/// An event voided in causal order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoidedView {
+    /// The event ID.
+    pub id: String,
+    /// The voiding authority or removal hash.
+    #[serde(alias = "voided_by", alias = "authority")]
+    pub removal: String,
+    /// The reason formatted as `voided: concurrent with <hash>`.
+    pub reason: String,
+}
+
+impl VoidedView {
+    /// Create a voided event view with its reason formatted as `voided: concurrent with <hash>`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, removal: impl Into<String>) -> Self {
+        let removal = removal.into();
+        Self {
+            id: id.into(),
+            reason: format!("voided: concurrent with {removal}"),
+            removal,
+        }
+    }
+
+    /// The voiding authority or removal hash.
+    #[must_use]
+    pub fn voided_by(&self) -> &str {
+        &self.removal
+    }
+
+    /// The voiding authority or removal hash.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.removal
+    }
+}
+
+/// A chain frozen due to a fork.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrozenView {
+    /// The author or event ID.
+    #[serde(alias = "author")]
+    pub id: String,
+    /// The sequence number where the fork occurred.
+    pub seq: u64,
+    /// The fork proof hash.
+    pub proof: String,
+    /// The reason formatted as `frozen: fork at seq <n>`.
+    pub reason: String,
+}
+
+impl FrozenView {
+    /// Create a frozen chain view with its reason formatted as `frozen: fork at seq <n>`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, seq: u64, proof: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            seq,
+            proof: proof.into(),
+            reason: format!("frozen: fork at seq {seq}"),
+        }
+    }
+
+    /// The author or event ID.
+    #[must_use]
+    pub fn author(&self) -> &str {
+        &self.id
     }
 }
 
@@ -300,8 +590,15 @@ commands:
   group public ID yes|no              show a group to anonymous viewers
   group delete ID
   group member ID account:ID|group:N LEVEL|none
-  friend request|accept|remove ACCOUNT
+  friend request ACCOUNT [at URL for WORLD]   ask an account; a remote one needs its server and world
+  friend accept ACCOUNT [at URL for WORLD]    accept a request, likewise for a remote requester
+  friend remove ACCOUNT
+  petname set ACCOUNT NAME            give an account a name only you see
+  petname rename ACCOUNT NAME         change that name
+  petname remove ACCOUNT              forget it
   receive ENVELOPE_JSON               apply a friend envelope from another server
+  publish document MEDIA_TYPE JSON    sign a JSON document as you, and push it to your home servers
+  publish tag SUBJECT NAME [VALUE]    sign a label on an artifact by its hash, such as author
   verify ACCOUNT                      admin only
   help, quit";
 
@@ -320,16 +617,31 @@ pub fn parse_line(line: &str) -> Result<Line> {
     let (word, rest) = split_first(line);
     let words: Vec<&str> = rest.split_whitespace().collect();
     let (action, pairs) = match word {
-        "help" | "?" => return Ok(Line::Help),
-        "quit" | "exit" => return Ok(Line::Quit),
-        "view" => ("view", Vec::new()),
+        "help" | "?" => {
+            no_args(&words, word)?;
+            return Ok(Line::Help);
+        }
+        "quit" | "exit" => {
+            no_args(&words, word)?;
+            return Ok(Line::Quit);
+        }
+        "view" => {
+            no_args(&words, "view")?;
+            ("view", Vec::new())
+        }
         "signup" => ("sign_up", vec![("name", text_arg(rest, "signup NAME")?)]),
         "keysignup" => (
             "sign_up_key",
             vec![("name", text_arg(rest, "keysignup NAME")?)],
         ),
-        "session" => ("open_session", Vec::new()),
-        "signout" => ("sign_out", Vec::new()),
+        "session" => {
+            no_args(&words, "session")?;
+            ("open_session", Vec::new())
+        }
+        "signout" => {
+            no_args(&words, "signout")?;
+            ("sign_out", Vec::new())
+        }
         "addkey" => {
             let [key] = words_n(&words, "addkey HEX")?;
             ("add_key", vec![("key", key)])
@@ -369,20 +681,65 @@ pub fn parse_line(line: &str) -> Result<Line> {
             "receive",
             vec![("envelope", text_arg(rest, "receive ENVELOPE_JSON")?)],
         ),
+        "publish" => match split_first(rest) {
+            ("document", tail) => {
+                let (media_type, json) = split_first(tail);
+                if media_type.is_empty() || json.is_empty() {
+                    bail!("usage: publish document MEDIA_TYPE JSON");
+                }
+                (
+                    "publish_document",
+                    vec![
+                        ("media_type", media_type.to_owned()),
+                        ("content", json.to_owned()),
+                    ],
+                )
+            }
+            ("tag", tail) => {
+                let (subject, tail) = split_first(tail);
+                let (name, value) = split_first(tail);
+                if subject.is_empty() || name.is_empty() {
+                    bail!("usage: publish tag SUBJECT NAME [VALUE]");
+                }
+                let mut pairs = vec![("subject", subject.to_owned()), ("name", name.to_owned())];
+                if !value.is_empty() {
+                    pairs.push(("value", value.to_owned()));
+                }
+                ("publish_tag", pairs)
+            }
+            _ => bail!("publish takes document or tag"),
+        },
         "friend" => match split_first(rest) {
             ("request", tail) => {
-                let [to] = words_n(&split_words(tail), "friend request ACCOUNT")?;
-                ("request_friend", vec![("to", to)])
+                let (to, remote) =
+                    friend_target(tail, "friend request ACCOUNT [at URL for WORLD]")?;
+                ("request_friend", friend_pairs("to", to, remote))
             }
             ("accept", tail) => {
-                let [from] = words_n(&split_words(tail), "friend accept ACCOUNT")?;
-                ("accept_friend", vec![("from", from)])
+                let (from, remote) =
+                    friend_target(tail, "friend accept ACCOUNT [at URL for WORLD]")?;
+                ("accept_friend", friend_pairs("from", from, remote))
             }
             ("remove", tail) => {
                 let [other] = words_n(&split_words(tail), "friend remove ACCOUNT")?;
                 ("remove_friend", vec![("other", other)])
             }
             _ => bail!("friend takes request, accept or remove"),
+        },
+        "petname" => match split_first(rest) {
+            ("set", tail) => {
+                let (account, name) = petname_args(tail, "petname set ACCOUNT NAME")?;
+                ("set_petname", vec![("account", account), ("name", name)])
+            }
+            ("rename", tail) => {
+                let (account, name) = petname_args(tail, "petname rename ACCOUNT NAME")?;
+                ("rename_petname", vec![("account", account), ("name", name)])
+            }
+            ("remove", tail) => {
+                let [account] = words_n(&split_words(tail), "petname remove ACCOUNT")?;
+                ("remove_petname", vec![("account", account)])
+            }
+            _ => bail!("petname takes set, rename or remove"),
         },
         "group" => group_command(rest)?,
         other => bail!("unknown command {other}; type help"),
@@ -393,6 +750,31 @@ pub fn parse_line(line: &str) -> Result<Line> {
         .collect();
     fields.insert("action".to_owned(), action.to_owned());
     Ok(Line::Action(action_from_fields(&fields)?))
+}
+
+/// `ACCOUNT`, or `ACCOUNT at URL for WORLD` for an account on another server.
+fn friend_target(tail: &str, usage: &str) -> Result<(String, Option<(String, String)>)> {
+    match split_words(tail).as_slice() {
+        [account] => Ok(((*account).to_owned(), None)),
+        [account, "at", server, "for", world] => Ok((
+            (*account).to_owned(),
+            Some(((*server).to_owned(), (*world).to_owned())),
+        )),
+        _ => bail!("usage: {usage}"),
+    }
+}
+
+fn friend_pairs(
+    key: &'static str,
+    account: String,
+    remote: Option<(String, String)>,
+) -> Vec<(&'static str, String)> {
+    let mut pairs = vec![(key, account)];
+    if let Some((node, audience)) = remote {
+        pairs.push(("node", node));
+        pairs.push(("audience", audience));
+    }
+    pairs
 }
 
 fn group_command(rest: &str) -> Result<(&'static str, Vec<(&'static str, String)>)> {
@@ -466,6 +848,19 @@ fn text_arg(rest: &str, usage: &str) -> Result<String> {
     Ok(text.to_owned())
 }
 
+/// The no-argument commands (`view`, `session`, `signout`, `help`,
+/// `quit` and their aliases) refuse any trailing text instead of
+/// silently ignoring it (#1803): a mistyped or pasted line must not
+/// perform an action the user did not ask for -- the worst case is
+/// `signout junk` ending a session the user expected to be refused.
+fn no_args(words: &[&str], command: &str) -> Result<()> {
+    if words.is_empty() {
+        Ok(())
+    } else {
+        bail!("usage: {command} (takes no arguments)")
+    }
+}
+
 fn words_n<const N: usize>(words: &[&str], usage: &str) -> Result<[String; N]> {
     if words.len() != N {
         bail!("usage: {usage}");
@@ -475,6 +870,14 @@ fn words_n<const N: usize>(words: &[&str], usage: &str) -> Result<[String; N]> {
 
 fn split_words(text: &str) -> Vec<&str> {
     text.split_whitespace().collect()
+}
+
+fn petname_args(tail: &str, usage: &str) -> Result<(String, String)> {
+    let (account, name) = split_first(tail);
+    if account.is_empty() {
+        bail!("usage: {usage}");
+    }
+    Ok((account.to_owned(), text_arg(name, usage)?))
 }
 
 fn split_first(text: &str) -> (&str, &str) {
@@ -539,6 +942,32 @@ fn parse_member(text: &str) -> Result<Member> {
     bail!("a member is account:ID or group:N, not {text:?}")
 }
 
+/// The server and world a friend action names. Absent or blank fields mean the
+/// account is on this server.
+fn remote_of(fields: &BTreeMap<String, String>) -> Result<Option<RemoteFriend>> {
+    let node = fields
+        .get("node")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let audience = fields
+        .get("audience")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    match (node, audience) {
+        (None, None) => Ok(None),
+        (Some(node), Some(audience)) => {
+            check_target(node)?;
+            Ok(Some(RemoteFriend {
+                node: node.to_owned(),
+                audience: audience.to_owned(),
+            }))
+        }
+        _ => bail!(
+            "a friend on another server needs both its node (a ticket or node ID) and its world ID"
+        ),
+    }
+}
+
 /// Build an action from named fields. The field `action` names it, in the
 /// `snake_case` of the variant, and the rest are the variant's fields. Lists
 /// are comma-separated, and `-` is an empty list.
@@ -581,6 +1010,17 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
             address: field(fields, "address")?.to_owned(),
             code: field(fields, "code")?.to_owned(),
         },
+        "set_petname" => DirectoryAction::SetPetname {
+            account: field(fields, "account")?.to_owned(),
+            name: field(fields, "name")?.to_owned(),
+        },
+        "rename_petname" => DirectoryAction::RenamePetname {
+            account: field(fields, "account")?.to_owned(),
+            name: field(fields, "name")?.to_owned(),
+        },
+        "remove_petname" => DirectoryAction::RemovePetname {
+            account: field(fields, "account")?.to_owned(),
+        },
         "create_group" => DirectoryAction::CreateGroup {
             name: field(fields, "name")?.to_owned(),
             description: fields.get("description").cloned().unwrap_or_default(),
@@ -606,12 +1046,26 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
         },
         "request_friend" => DirectoryAction::RequestFriend {
             to: field(fields, "to")?.to_owned(),
+            remote: remote_of(fields)?,
         },
         "accept_friend" => DirectoryAction::AcceptFriend {
             from: field(fields, "from")?.to_owned(),
+            remote: remote_of(fields)?,
         },
         "remove_friend" => DirectoryAction::RemoveFriend {
             other: field(fields, "other")?.to_owned(),
+        },
+        "publish_document" => DirectoryAction::PublishDocument {
+            media_type: field(fields, "media_type")?.to_owned(),
+            content: serde_json::from_str(field(fields, "content")?)
+                .context("content is not valid JSON")?,
+            after: after_of(fields),
+        },
+        "publish_tag" => DirectoryAction::PublishTag {
+            subject: field(fields, "subject")?.to_owned(),
+            name: field(fields, "name")?.to_owned(),
+            value: fields.get("value").cloned(),
+            after: after_of(fields),
         },
         "receive" => DirectoryAction::Receive {
             envelope: serde_json::from_str(field(fields, "envelope")?)
@@ -621,6 +1075,16 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
             account: field(fields, "account")?.to_owned(),
         },
         other => bail!("unknown action {other:?}"),
+    })
+}
+
+fn after_of(fields: &BTreeMap<String, String>) -> Vec<String> {
+    fields.get("after").map_or_else(Vec::new, |list| {
+        list.split(',')
+            .map(str::trim)
+            .filter(|hash| !hash.is_empty())
+            .map(str::to_owned)
+            .collect()
     })
 }
 
@@ -641,6 +1105,26 @@ pub struct DirectoryOutcome {
     /// A message to send. Never serialized: it carries a code.
     #[serde(skip)]
     pub mail: Option<Mail>,
+    /// Envelopes and artifacts to queue for other servers. Never serialized.
+    #[serde(skip)]
+    pub outbound: Vec<Outbound>,
+    /// The change behind `outbound`, not yet applied. The caller queues the
+    /// envelope, applies this, and then re-reads the view, which above predates
+    /// the change. Never serialized.
+    #[serde(skip)]
+    pub pending: Option<DirectoryEntry>,
+    /// What receiving an envelope did. Never serialized.
+    #[serde(skip)]
+    pub received: Option<Received>,
+    /// What receiving an artifact did. Never serialized.
+    #[serde(skip)]
+    pub stored: Option<Stored>,
+    /// The artifact a publish signed. Never serialized.
+    #[serde(skip)]
+    pub published: Option<SignedArtifact>,
+    /// The artifacts read by [`DirectoryAction::ReadArtifacts`]. Never serialized.
+    #[serde(skip)]
+    pub artifact_page: Option<Vec<SignedArtifact>>,
 }
 
 impl std::fmt::Debug for DirectoryOutcome {
@@ -654,6 +1138,12 @@ impl std::fmt::Debug for DirectoryOutcome {
             .field("session", &self.session.as_ref().map(|_| "[REDACTED]"))
             .field("mailed", &self.mailed)
             .field("mail", &self.mail.as_ref().map(|_| "[REDACTED]"))
+            .field("outbound", &self.outbound)
+            .field("pending", &self.pending)
+            .field("received", &self.received)
+            .field("stored", &self.stored)
+            .field("published", &self.published.as_ref().map(|_| "[SIGNED]"))
+            .field("artifact_page", &self.artifact_page.as_ref().map(Vec::len))
             .finish()
     }
 }
@@ -666,6 +1156,7 @@ impl std::fmt::Debug for DirectoryOutcome {
 /// plain error for input that is malformed.
 pub fn run(
     directory: &mut Directory,
+    petnames: &mut Petnames,
     auth: &mut DirectoryAuth,
     caller: &Caller,
     world: &str,
@@ -676,6 +1167,12 @@ pub fn run(
     let mut credential = None;
     let mut session = None;
     let mut mail = None;
+    let mut outbound = Vec::new();
+    let mut pending = None;
+    let mut received = None;
+    let mut stored = None;
+    let mut published = None;
+    let mut artifact_page = None;
     match action {
         DirectoryAction::View => {}
         DirectoryAction::SignUp { name } => {
@@ -709,6 +1206,20 @@ pub fn run(
             }
             viewer = Viewer::Anonymous;
         }
+        DirectoryAction::SetPetname { account, name } => {
+            let me = signed_in(&viewer)?;
+            let account = known_account(directory, &account)?;
+            petnames.set(me, &account, &name, alleged_names(directory))?;
+        }
+        DirectoryAction::RenamePetname { account, name } => {
+            let me = signed_in(&viewer)?;
+            let account = known_account(directory, &account)?;
+            petnames.rename(me, &account, &name, alleged_names(directory))?;
+        }
+        DirectoryAction::RemovePetname { account } => {
+            let me = signed_in(&viewer)?;
+            petnames.remove(me, &account)?;
+        }
         DirectoryAction::AddKey { key } => {
             let me = signed_in(&viewer)?;
             let key = normalize_key(&key)?;
@@ -727,7 +1238,10 @@ pub fn run(
         DirectoryAction::AddEmail { address } => {
             let me = signed_in(&viewer)?;
             let address = normalize_email(&address)?;
-            if directory.account_for_email(&address).is_some() {
+            if directory
+                .account_for_email(&address)
+                .is_some_and(|holder| holder.as_str() != me)
+            {
                 return Err(Refusal::Conflict(
                     "that address already belongs to an account".to_owned(),
                 )
@@ -807,36 +1321,145 @@ pub fn run(
         } => {
             directory.set_member(actor_of(&viewer)?, group, member, level)?;
         }
-        DirectoryAction::RequestFriend { to } => {
+        DirectoryAction::RequestFriend { to, remote } => {
             let me = signed_in(&viewer)?;
-            directory.request_friend_as(me, &to)?;
+            match remote {
+                None => {
+                    directory.request_friend_as(me, &to)?;
+                }
+                Some(remote) => {
+                    let (envelope, entry) = directory.prepare_request_friend(
+                        sender_credential(caller)?,
+                        &to,
+                        &remote.audience,
+                        now,
+                    )?;
+                    outbound.push(outbound_to(&remote, envelope));
+                    pending = Some(entry);
+                }
+            }
         }
-        DirectoryAction::AcceptFriend { from } => {
+        DirectoryAction::AcceptFriend { from, remote } => {
             let me = signed_in(&viewer)?;
-            directory.accept_friend_as(me, &from)?;
+            match remote {
+                None => {
+                    directory.accept_friend_as(me, &from)?;
+                }
+                Some(remote) => {
+                    let (envelope, entry) = directory.prepare_accept_friend(
+                        sender_credential(caller)?,
+                        &from,
+                        &remote.audience,
+                        now,
+                    )?;
+                    outbound.push(outbound_to(&remote, envelope));
+                    pending = Some(entry);
+                }
+            }
         }
         DirectoryAction::RemoveFriend { other } => {
             let me = signed_in(&viewer)?;
-            directory.remove_friend_as(me, &other)?;
+            match sender_credential(caller) {
+                Ok(credential) => {
+                    let artifact = directory.remove_friend(credential, &other)?;
+                    outbound.extend(artifact_outbound(directory, &other, &artifact));
+                }
+                Err(_) => {
+                    directory.remove_friend_as(me, &other)?;
+                }
+            }
         }
         DirectoryAction::Receive { envelope } => {
-            directory.receive(&envelope, world, now)?;
+            received = Some(directory.receive(&envelope, world, now)?);
+        }
+        DirectoryAction::ReceiveArtifact { artifact } => {
+            stored = Some(directory.receive_artifact(&artifact)?);
+        }
+        DirectoryAction::ReadArtifacts { account, after } => {
+            artifact_page = Some(directory.artifacts().page(&account, after));
+        }
+        DirectoryAction::PublishDocument {
+            media_type,
+            content,
+            after,
+        } => {
+            let me = signed_in(&viewer)?;
+            let artifact = directory.publish_document(
+                sender_credential(caller)?,
+                &media_type,
+                content,
+                after,
+            )?;
+            outbound.extend(artifact_outbound(directory, me, &artifact));
+            published = Some(artifact);
+        }
+        DirectoryAction::PublishTag {
+            subject,
+            name,
+            value,
+            after,
+        } => {
+            let me = signed_in(&viewer)?;
+            let artifact =
+                directory.publish_tag(sender_credential(caller)?, &subject, &name, value, after)?;
+            outbound.extend(artifact_outbound(directory, me, &artifact));
+            published = Some(artifact);
         }
         DirectoryAction::Verify { account } => {
             directory.verify_account(actor_of(&viewer)?, &account)?;
         }
     }
     Ok(DirectoryOutcome {
-        view: view(directory, &viewer),
+        view: view(directory, petnames, &viewer),
         credential,
         session,
         mailed: false,
         mail,
+        outbound,
+        pending,
+        received,
+        stored,
+        published,
+        artifact_page,
     })
 }
 
 fn unauthenticated(message: &str) -> anyhow::Error {
     anyhow!(Refusal::Unauthenticated(message.to_owned()))
+}
+
+fn sender_credential(caller: &Caller) -> Result<&str> {
+    caller.credential.as_deref().ok_or_else(|| {
+        unauthenticated("sending to an account on another server needs your credential")
+    })
+}
+
+fn outbound_to(remote: &RemoteFriend, envelope: Envelope) -> Outbound {
+    Outbound {
+        target: remote.node.clone(),
+        payload: Payload::Envelope(envelope),
+    }
+}
+
+/// The artifact pushed to each home server `account` declared.
+fn artifact_outbound(
+    directory: &Directory,
+    account: &str,
+    artifact: &SignedArtifact,
+) -> Vec<Outbound> {
+    directory
+        .artifacts()
+        .declared(account)
+        .map_or_else(Vec::new, |declared| {
+            declared
+                .servers
+                .into_iter()
+                .map(|server| Outbound {
+                    target: server.endpoint,
+                    payload: Payload::Artifact(artifact.clone()),
+                })
+                .collect()
+        })
 }
 
 fn signed_in(viewer: &Viewer) -> Result<&str> {
@@ -861,7 +1484,7 @@ fn scopes_of(names: &[String]) -> Result<WorldScopes> {
 /// An account may only grant permissions it holds itself; the admin is not held to this.
 fn within_ceiling(directory: &Directory, actor: Actor<'_>, scopes: WorldScopes) -> Result<()> {
     if let Actor::Account(id) = actor
-        && !directory.ceiling(id).contains(scopes)
+        && !directory.ceiling(id).implied().contains(scopes)
     {
         return Err(Refusal::Forbidden(
             "a group cannot grant permissions you do not hold".to_owned(),
@@ -879,7 +1502,22 @@ fn code_mail(address: &str, code: &str, subject: &str) -> Mail {
     }
 }
 
-fn view(directory: &Directory, viewer: &Viewer) -> DirectoryView {
+fn known_account(directory: &Directory, account: &str) -> Result<String> {
+    let id = normalize_key(account)?;
+    if directory.account(&id).is_none() {
+        return Err(Refusal::NotFound("no account has that ID".to_owned()).into());
+    }
+    Ok(id)
+}
+
+fn alleged_names(directory: &Directory) -> Vec<(&str, &str)> {
+    directory
+        .accounts()
+        .map(|account| (account.id.as_str(), account.name.as_str()))
+        .collect()
+}
+
+fn view(directory: &Directory, petnames: &Petnames, viewer: &Viewer) -> DirectoryView {
     let (label, me, admin) = match viewer {
         Viewer::Anonymous => ("anonymous".to_owned(), None, false),
         Viewer::Account(id) => (id.clone(), Some(id.as_str()), false),
@@ -893,6 +1531,10 @@ fn view(directory: &Directory, viewer: &Viewer) -> DirectoryView {
             AccountView {
                 id: account.id.clone(),
                 name: account.name.clone(),
+                petname: match viewer {
+                    Viewer::Account(me) => petnames.get(me, &account.id).map(str::to_owned),
+                    Viewer::Anonymous | Viewer::Admin => None,
+                },
                 verified: own.then(|| directory.is_verified(&account.id)),
                 keys: own.then(|| account.keys.iter().cloned().collect()),
                 emails: own.then(|| account.emails.iter().cloned().collect()),
@@ -926,6 +1568,10 @@ fn view(directory: &Directory, viewer: &Viewer) -> DirectoryView {
         viewer: label,
         accounts,
         groups,
+        deliveries: Vec::new(),
+        waiting: Vec::new(),
+        voided: Vec::new(),
+        frozen: Vec::new(),
     }
 }
 
@@ -955,6 +1601,7 @@ fn scope_names(scopes: WorldScopes) -> Vec<String> {
     [
         (WorldScopes::JOIN, "join"),
         (WorldScopes::CHAT, "chat"),
+        (WorldScopes::HISTORY, "history"),
         (WorldScopes::INPUT, "input"),
         (WorldScopes::DELEGATE, "delegate"),
     ]
@@ -983,6 +1630,20 @@ fn list(items: &[String]) -> String {
     }
 }
 
+/// How each account is shown: its viewer's petname, or its alleged name marked unverified.
+#[must_use]
+pub fn account_labels(accounts: &[AccountView]) -> Vec<Label> {
+    let contacts: Vec<Contact<'_>> = accounts
+        .iter()
+        .map(|account| Contact {
+            id: &account.id,
+            alleged: &account.name,
+            petname: account.petname.as_deref(),
+        })
+        .collect();
+    labels(&contacts)
+}
+
 /// The view as plain text, for the SSH explorer.
 #[must_use]
 pub fn render_text(view: &DirectoryView) -> String {
@@ -994,8 +1655,8 @@ pub fn render_text(view: &DirectoryView) -> String {
     if view.accounts.is_empty() {
         lines.push("  (none)".to_owned());
     }
-    for account in &view.accounts {
-        lines.push(format!("  {}  {}", account.id, account.name));
+    for (account, label) in view.accounts.iter().zip(account_labels(&view.accounts)) {
+        lines.push(format!("  {}  {}", account.id, label.text()));
         let mut details = Vec::new();
         if let Some(verified) = account.verified {
             details.push(format!("verified: {}", if verified { "yes" } else { "no" }));
@@ -1051,6 +1712,37 @@ pub fn render_text(view: &DirectoryView) -> String {
             ));
         }
     }
+    if !view.deliveries.is_empty() {
+        lines.push(String::new());
+        lines.push("deliveries:".to_owned());
+        for delivery in &view.deliveries {
+            lines.push(format!(
+                "  {}  {}  {}",
+                delivery.kind, delivery.to, delivery.status
+            ));
+        }
+    }
+    if !view.waiting.is_empty() {
+        lines.push(String::new());
+        lines.push("waiting:".to_owned());
+        for item in &view.waiting {
+            lines.push(format!("  {}  {}  {}", item.id, item.missing, item.reason));
+        }
+    }
+    if !view.voided.is_empty() {
+        lines.push(String::new());
+        lines.push("voided:".to_owned());
+        for item in &view.voided {
+            lines.push(format!("  {}  {}  {}", item.id, item.removal, item.reason));
+        }
+    }
+    if !view.frozen.is_empty() {
+        lines.push(String::new());
+        lines.push("frozen:".to_owned());
+        for item in &view.frozen {
+            lines.push(format!("  {}  {}  {}", item.id, item.proof, item.reason));
+        }
+    }
     let mut text = lines.join("\n");
     text.push('\n');
     text
@@ -1060,7 +1752,12 @@ pub fn render_text(view: &DirectoryView) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::artifact::HomeServer;
     use ed25519_dalek::SigningKey;
+
+    fn node() -> String {
+        iroh::SecretKey::from_bytes(&[7; 32]).public().to_string()
+    }
 
     fn sign(directory: &mut Directory, name: &str) -> (String, String) {
         let (credential, _) = directory.sign_up(name).unwrap();
@@ -1116,7 +1813,7 @@ mod tests {
     }
 
     fn view_for(directory: &Directory, viewer: &Viewer) -> DirectoryView {
-        view(directory, viewer)
+        view(directory, &Petnames::new(), viewer)
     }
 
     fn act(
@@ -1126,12 +1823,108 @@ mod tests {
     ) -> Result<DirectoryOutcome> {
         run(
             directory,
+            &mut Petnames::new(),
             &mut DirectoryAuth::default(),
             caller,
             "test-world",
             0,
             action,
         )
+    }
+
+    #[test]
+    fn a_remote_request_is_queued_for_its_server_and_received_there() {
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann_credential, ann) = sign(&mut home, "Ann");
+        let (_, bo) = sign(&mut away, "Bo");
+        let remote = DirectoryAction::RequestFriend {
+            to: bo.clone(),
+            remote: Some(RemoteFriend {
+                node: node(),
+                audience: "lobby".to_owned(),
+            }),
+        };
+        let refused = act(&mut home, &Caller::default(), remote.clone()).unwrap_err();
+        assert!(matches!(
+            refused.downcast_ref::<Refusal>(),
+            Some(Refusal::Unauthenticated(_))
+        ));
+        let caller = Caller {
+            credential: Some(ann_credential),
+            ..Caller::default()
+        };
+        let outbound = act(&mut home, &caller, remote)
+            .unwrap()
+            .outbound
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(outbound.target, node());
+        let Payload::Envelope(envelope) = outbound.payload else {
+            panic!("a friend request is sent as an envelope");
+        };
+        assert_eq!(envelope.audience, "lobby");
+        assert_eq!(envelope.to, bo);
+        assert!(matches!(
+            away.receive(&envelope, "lobby", 0).unwrap(),
+            Received::Applied(_)
+        ));
+        assert_eq!(away.pending_for(&bo).0, vec![ann]);
+    }
+
+    #[test]
+    fn a_queued_remote_request_shows_until_it_is_delivered_or_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann_credential, ann) = sign(&mut home, "Ann");
+        let (_, bo) = sign(&mut away, "Bo");
+        let caller = Caller {
+            credential: Some(ann_credential),
+            ..Caller::default()
+        };
+        let outbound = act(
+            &mut home,
+            &caller,
+            DirectoryAction::RequestFriend {
+                to: bo.clone(),
+                remote: Some(RemoteFriend {
+                    node: node(),
+                    audience: "lobby".to_owned(),
+                }),
+            },
+        )
+        .unwrap()
+        .outbound
+        .into_iter()
+        .next()
+        .unwrap();
+        let Payload::Envelope(envelope) = outbound.payload else {
+            panic!("a friend request is sent as an envelope");
+        };
+        let id = envelope.id.clone();
+        let mut outbox = Outbox::open(dir.path().join("outbox.jsonl")).unwrap();
+        outbox.enqueue(&outbound.target, envelope).unwrap();
+
+        let shown = deliveries(&outbox, &ann);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].to, bo);
+        assert_eq!(shown[0].status, "not yet delivered");
+        assert!(deliveries(&outbox, &bo).is_empty());
+        assert!(deliveries(&outbox, "anonymous").is_empty());
+
+        outbox
+            .record(
+                &id,
+                0,
+                crate::envelope_outbox::Outcome::Refused("no such account".to_owned()),
+            )
+            .unwrap();
+        assert_eq!(
+            deliveries(&outbox, &ann)[0].status,
+            "refused: no such account"
+        );
     }
 
     #[test]
@@ -1180,6 +1973,63 @@ mod tests {
         let ada = view.accounts.iter().find(|a| a.id == s.ada).unwrap();
         assert!(ada.friends.is_none());
         assert!(ada.verified.is_none());
+    }
+
+    #[test]
+    fn a_member_can_view_groups_in_a_diamond_nesting() {
+        let mut s = sample();
+        s.directory
+            .set_member(
+                Actor::Server,
+                s.club,
+                Member::Account { id: s.bo.clone() },
+                Some(Level::Admin),
+            )
+            .unwrap();
+        let mut layers = vec![vec![s.club]];
+
+        for layer in 0..25 {
+            let children = layers.last().unwrap().clone();
+            let mut parents = Vec::new();
+            for branch in 0..2 {
+                let (parent, _) = s
+                    .directory
+                    .create_group(
+                        &s.ada,
+                        &format!("View layer {layer} branch {branch}"),
+                        "",
+                        WorldScopes::GUEST,
+                    )
+                    .unwrap();
+                for child in &children {
+                    let held_at = if layer == 0 {
+                        if branch == 0 {
+                            Level::Read
+                        } else {
+                            Level::Manage
+                        }
+                    } else {
+                        Level::Write
+                    };
+                    s.directory
+                        .set_member(
+                            Actor::Server,
+                            parent,
+                            Member::Group { id: *child },
+                            Some(held_at),
+                        )
+                        .unwrap();
+                }
+                parents.push(parent);
+            }
+            layers.push(parents);
+        }
+
+        let root = layers.last().unwrap()[0];
+        let view = view_for(&s.directory, &Viewer::Account(s.bo.clone()));
+        let root_view = view.groups.iter().find(|group| group.id == root).unwrap();
+        assert_eq!(root_view.level, Some(Level::Write));
+        assert!(root_view.members.is_some());
     }
 
     #[test]
@@ -1275,6 +2125,7 @@ mod tests {
         let mut auth = DirectoryAuth::default();
         let outcome = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed,
             "test-world",
@@ -1295,6 +2146,7 @@ mod tests {
             crate::world::hex_encode(&SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
         let refused = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed_in,
             "test-world",
@@ -1310,6 +2162,7 @@ mod tests {
         let address = "kay@example.com";
         let asked = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed_in,
             "test-world",
@@ -1332,6 +2185,7 @@ mod tests {
 
         run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &signed_in,
             "test-world",
@@ -1342,13 +2196,18 @@ mod tests {
             },
         )
         .unwrap();
-        let shown = view(&s.directory, &Viewer::Account(key.clone()));
+        let shown = view(
+            &s.directory,
+            &Petnames::new(),
+            &Viewer::Account(key.clone()),
+        );
         let me = shown.accounts.iter().find(|a| a.id == key).unwrap();
         assert_eq!(me.emails.as_deref(), Some(&[address.to_owned()][..]));
         assert_eq!(me.verified, Some(true));
 
         let sign_in = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &Caller::default(),
             "test-world",
@@ -1361,6 +2220,7 @@ mod tests {
         assert_eq!(sign_in.mail.unwrap().to, address);
         let missing = run(
             &mut s.directory,
+            &mut Petnames::new(),
             &mut auth,
             &Caller::default(),
             "test-world",
@@ -1406,7 +2266,7 @@ mod tests {
             Viewer::Account(s.bo.clone()),
         ];
         for viewer in viewers {
-            let shown = view(&s.directory, &viewer);
+            let shown = view(&s.directory, &Petnames::new(), &viewer);
             let json = serde_json::to_string(&shown).unwrap();
             let text = render_text(&shown);
             for account in &shown.accounts {
@@ -1475,7 +2335,48 @@ mod tests {
         assert_eq!(
             parse_line("friend request abc").unwrap(),
             Line::Action(DirectoryAction::RequestFriend {
-                to: "abc".to_owned()
+                to: "abc".to_owned(),
+                remote: None,
+            })
+        );
+        assert_eq!(
+            parse_line(&format!("friend accept abc at {} for lobby", node())).unwrap(),
+            Line::Action(DirectoryAction::AcceptFriend {
+                from: "abc".to_owned(),
+                remote: Some(RemoteFriend {
+                    node: node(),
+                    audience: "lobby".to_owned(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn publish_lines_sign_documents_and_tags() {
+        assert_eq!(
+            parse_line(r#"publish document application/json {"a": 1}"#).unwrap(),
+            Line::Action(DirectoryAction::PublishDocument {
+                media_type: "application/json".to_owned(),
+                content: serde_json::json!({"a": 1}),
+                after: Vec::new(),
+            })
+        );
+        assert_eq!(
+            parse_line("publish tag abc author the key with spaces").unwrap(),
+            Line::Action(DirectoryAction::PublishTag {
+                subject: "abc".to_owned(),
+                name: "author".to_owned(),
+                value: Some("the key with spaces".to_owned()),
+                after: Vec::new(),
+            })
+        );
+        assert_eq!(
+            parse_line("publish tag abc verified").unwrap(),
+            Line::Action(DirectoryAction::PublishTag {
+                subject: "abc".to_owned(),
+                name: "verified".to_owned(),
+                value: None,
+                after: Vec::new(),
             })
         );
     }
@@ -1489,9 +2390,52 @@ mod tests {
             "group member 3 account:x wizard",
             "group member 3 pigeon read",
             "friend request",
+            "publish",
+            "publish document application/json",
+            "publish document application/json {not json",
+            "publish tag abc",
         ] {
             assert!(parse_line(line).is_err(), "{line:?} should be refused");
         }
+    }
+
+    #[test]
+    fn a_no_argument_command_refuses_trailing_text() {
+        // #1803: trailing text on a no-argument command is refused
+        // with its usage, never silently ignored.
+        for line in [
+            "view junk",
+            "session junk",
+            "signout junk",
+            "help junk",
+            "? junk",
+            "quit junk",
+            "exit junk",
+            "signout  two words",
+        ] {
+            let err = parse_line(line).unwrap_err();
+            assert!(
+                err.to_string().contains("takes no arguments"),
+                "{line:?} refused with its usage, got: {err}"
+            );
+        }
+        // The bare forms keep working exactly as before.
+        assert_eq!(parse_line("help").unwrap(), Line::Help);
+        assert_eq!(parse_line("?").unwrap(), Line::Help);
+        assert_eq!(parse_line("quit").unwrap(), Line::Quit);
+        assert_eq!(parse_line("exit").unwrap(), Line::Quit);
+        assert_eq!(
+            parse_line("view").unwrap(),
+            Line::Action(DirectoryAction::View)
+        );
+        assert_eq!(
+            parse_line("session").unwrap(),
+            Line::Action(DirectoryAction::OpenSession)
+        );
+        assert_eq!(
+            parse_line("signout").unwrap(),
+            Line::Action(DirectoryAction::SignOut)
+        );
     }
 
     #[test]
@@ -1524,5 +2468,355 @@ mod tests {
         );
         assert!(action_from_fields(&fields(&[("action", "explode")])).is_err());
         assert!(action_from_fields(&fields(&[("name", "Cy")])).is_err());
+    }
+
+    fn keyed(directory: &mut Directory, seed: u8, name: &str) -> String {
+        let key = crate::world::hex_encode(
+            &SigningKey::from_bytes(&[seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        directory.sign_up_keyed(&key, name).unwrap();
+        key
+    }
+
+    fn as_account(id: &str) -> Caller {
+        Caller {
+            key: Some(id.to_owned()),
+            ..Caller::default()
+        }
+    }
+
+    fn petname_act(
+        directory: &mut Directory,
+        petnames: &mut Petnames,
+        auth: &mut DirectoryAuth,
+        caller: &Caller,
+        action: DirectoryAction,
+    ) -> Result<DirectoryOutcome> {
+        run(directory, petnames, auth, caller, "lobby", 0, action)
+    }
+
+    fn shown_petname(outcome: &DirectoryOutcome, id: &str) -> Option<String> {
+        outcome
+            .view
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .and_then(|account| account.petname.clone())
+    }
+
+    #[test]
+    fn a_petname_is_set_renamed_and_removed_by_its_owner_only() {
+        let mut directory = Directory::new();
+        let ada = keyed(&mut directory, 1, "Ada");
+        let bo = keyed(&mut directory, 2, "Bo");
+        let cy = keyed(&mut directory, 3, "Cy");
+        let mut petnames = Petnames::new();
+        let mut auth = DirectoryAuth::default();
+        let me = as_account(&ada);
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: bo.clone(),
+                name: "Robert".to_owned(),
+            },
+        )
+        .unwrap();
+        let view = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&view, &bo).as_deref(), Some("Robert"));
+        assert!(render_text(&view.view).contains(&format!("  {bo}  Robert")));
+        assert!(render_text(&view.view).contains(&format!("  {cy}  Cy (unverified")));
+
+        let bo_view = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &as_account(&bo),
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&bo_view, &bo), None);
+        let anonymous = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &Caller::default(),
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&anonymous, &bo), None);
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RenamePetname {
+                account: bo.clone(),
+                name: "Bobby".to_owned(),
+            },
+        )
+        .unwrap();
+        let renamed = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&renamed, &bo).as_deref(), Some("Bobby"));
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RemovePetname {
+                account: bo.clone(),
+            },
+        )
+        .unwrap();
+        let removed = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::View,
+        )
+        .unwrap();
+        assert_eq!(shown_petname(&removed, &bo), None);
+    }
+
+    #[test]
+    fn petname_actions_refuse_what_they_must() {
+        let mut directory = Directory::new();
+        let ada = keyed(&mut directory, 1, "Ada");
+        let bo = keyed(&mut directory, 2, "Bo");
+        let cy = keyed(&mut directory, 3, "Cy");
+        let dee = keyed(&mut directory, 4, "Dee");
+        let mut petnames = Petnames::new();
+        let mut auth = DirectoryAuth::default();
+        let me = as_account(&ada);
+
+        let anonymous = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &Caller::default(),
+            DirectoryAction::SetPetname {
+                account: bo.clone(),
+                name: "Robert".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            anonymous.downcast_ref::<Refusal>(),
+            Some(Refusal::Unauthenticated(_))
+        ));
+
+        let stranger =
+            crate::world::hex_encode(&SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
+        let unknown = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: stranger,
+                name: "Nobody".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            unknown.downcast_ref::<Refusal>(),
+            Some(Refusal::NotFound(_))
+        ));
+
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: bo,
+                name: "Robert".to_owned(),
+            },
+        )
+        .unwrap();
+        petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::SetPetname {
+                account: cy.clone(),
+                name: "Carl".to_owned(),
+            },
+        )
+        .unwrap();
+        let taken = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RenamePetname {
+                account: cy,
+                name: "robert".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            taken.downcast_ref::<Refusal>(),
+            Some(Refusal::Conflict(_))
+        ));
+
+        let missing = petname_act(
+            &mut directory,
+            &mut petnames,
+            &mut auth,
+            &me,
+            DirectoryAction::RenamePetname {
+                account: dee,
+                name: "Carol".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            missing.downcast_ref::<Refusal>(),
+            Some(Refusal::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn the_explorer_grammar_reads_petname_lines() {
+        let bo = "bb".repeat(32);
+        let Line::Action(DirectoryAction::SetPetname { account, name }) =
+            parse_line(&format!("petname set {bo} Robert Smith")).unwrap()
+        else {
+            panic!("petname set should read as an action");
+        };
+        assert_eq!(
+            (account.as_str(), name.as_str()),
+            (bo.as_str(), "Robert Smith")
+        );
+        assert!(matches!(
+            parse_line(&format!("petname rename {bo} Bobby")).unwrap(),
+            Line::Action(DirectoryAction::RenamePetname { .. })
+        ));
+        assert!(matches!(
+            parse_line(&format!("petname remove {bo}")).unwrap(),
+            Line::Action(DirectoryAction::RemovePetname { .. })
+        ));
+        assert!(parse_line("petname set").is_err());
+        assert!(parse_line("petname remove").is_err());
+        assert!(parse_line("petname forget x").is_err());
+    }
+
+    #[test]
+    fn only_a_change_for_another_server_needs_an_outbox() {
+        let mut directory = Directory::new();
+        let (ada_credential, _) = sign(&mut directory, "Ada");
+        let (bo_credential, bo) = sign(&mut directory, "Bo");
+        let mut auth = DirectoryAuth::default();
+        let as_ada = Caller {
+            credential: Some(ada_credential.clone()),
+            ..Caller::default()
+        };
+        let home = || HomeServer {
+            endpoint: node(),
+            world_id: "lobby".to_owned(),
+        };
+        let remove = DirectoryAction::RemoveFriend { other: bo.clone() };
+        let publish = DirectoryAction::PublishTag {
+            subject: node(),
+            name: "author".to_owned(),
+            value: None,
+            after: Vec::new(),
+        };
+
+        // No home server is declared, so neither a removal nor a publish leaves this server.
+        assert!(!remove.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        assert!(!publish.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+
+        // Bo's home is elsewhere, so ending the friendship must be sent there.
+        directory
+            .declare_home(&bo_credential, vec![home()])
+            .unwrap();
+        assert!(remove.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        // The removal artifact is signed with the caller's credential, so there is none to send.
+        assert!(!remove.queues_for_other_servers(&directory, &mut auth, &Caller::default(), 0));
+
+        // Ada publishes to her own home servers, which she has not declared yet.
+        assert!(!publish.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        directory
+            .declare_home(&ada_credential, vec![home()])
+            .unwrap();
+        assert!(publish.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+
+        // A remote friend request is always sent to its server, and needs the sender's credential.
+        let remote_request = DirectoryAction::RequestFriend {
+            to: bo.clone(),
+            remote: Some(RemoteFriend {
+                node: node(),
+                audience: "lobby".to_owned(),
+            }),
+        };
+        assert!(remote_request.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+        assert!(!remote_request.queues_for_other_servers(
+            &directory,
+            &mut auth,
+            &Caller::default(),
+            0
+        ));
+        let local = DirectoryAction::RequestFriend {
+            to: bo,
+            remote: None,
+        };
+        assert!(!local.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+    }
+
+    #[test]
+    fn waiting_voided_and_frozen_views_render_and_serialize() {
+        let view = DirectoryView {
+            viewer: "admin".to_owned(),
+            accounts: Vec::new(),
+            groups: Vec::new(),
+            deliveries: Vec::new(),
+            waiting: vec![WaitingView::new("w-1", "dep-1")],
+            voided: vec![VoidedView::new("v-1", "rem-1")],
+            frozen: vec![FrozenView::new("f-1", 5, "proof-1")],
+        };
+
+        let rendered = render_text(&view);
+        assert!(rendered.contains("waiting:"));
+        assert!(rendered.contains("  w-1  dep-1  waiting: missing dep-1"));
+        assert!(rendered.contains("voided:"));
+        assert!(rendered.contains("  v-1  rem-1  voided: concurrent with rem-1"));
+        assert!(rendered.contains("frozen:"));
+        assert!(rendered.contains("  f-1  proof-1  frozen: fork at seq 5"));
+
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains("\"waiting\""));
+        assert!(json.contains("\"voided\""));
+        assert!(json.contains("\"frozen\""));
+        assert!(json.contains("waiting: missing dep-1"));
+        assert!(json.contains("voided: concurrent with rem-1"));
+        assert!(json.contains("frozen: fork at seq 5"));
+
+        let roundtrip: DirectoryView = serde_json::from_str(&json).unwrap();
+        assert_eq!(view, roundtrip);
     }
 }

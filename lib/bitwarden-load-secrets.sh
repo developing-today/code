@@ -8,7 +8,7 @@
 #   ./lib/bitwarden-load-secrets.sh --bws --format json
 
 is_sourced() {
-  [[ "${BASH_SOURCE[0]}" != "${0}" ]]
+  [[ ${BASH_SOURCE[0]} != "${0}" ]]
 }
 
 die() {
@@ -39,74 +39,74 @@ AUTO_ENV=true
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --item)
-      ITEM_QUERY="$2"
-      shift 2
-      ;;
-    --field)
-      SPECIFIC_FIELD="$2"
-      shift 2
-      ;;
-    --password)
-      SPECIFIC_FIELD="password"
-      shift 1
-      ;;
-    --username)
-      SPECIFIC_FIELD="username"
-      shift 1
-      ;;
-    --notes)
-      SPECIFIC_FIELD="notes"
-      shift 1
-      ;;
-    --all-fields)
-      SPECIFIC_FIELD=""
-      shift 1
-      ;;
-    --include-login)
-      INCLUDE_LOGIN=true
-      shift 1
-      ;;
-    --include-notes)
-      INCLUDE_NOTES=true
-      shift 1
-      ;;
-    --bws)
-      USE_BWS=true
-      shift 1
-      ;;
-    --secret)
-      USE_BWS=true
-      BWS_SECRET_QUERY="$2"
-      shift 2
-      ;;
-    --project)
-      USE_BWS=true
-      BWS_PROJECT_QUERY="$2"
-      shift 2
-      ;;
-    --prefix)
-      VAR_PREFIX="$2"
-      shift 2
-      ;;
-    --format)
-      FORMAT="$2"
-      shift 2
-      ;;
-    --dotenv|--env)
-      FORMAT="env"
-      shift 1
-      ;;
-    --json)
-      FORMAT="json"
-      shift 1
-      ;;
-    --no-auto-env)
-      AUTO_ENV=false
-      shift 1
-      ;;
-    -h|--help)
-      cat << 'USAGE'
+  --item)
+    ITEM_QUERY="$2"
+    shift 2
+    ;;
+  --field)
+    SPECIFIC_FIELD="$2"
+    shift 2
+    ;;
+  --password)
+    SPECIFIC_FIELD="password"
+    shift 1
+    ;;
+  --username)
+    SPECIFIC_FIELD="username"
+    shift 1
+    ;;
+  --notes)
+    SPECIFIC_FIELD="notes"
+    shift 1
+    ;;
+  --all-fields)
+    SPECIFIC_FIELD=""
+    shift 1
+    ;;
+  --include-login)
+    INCLUDE_LOGIN=true
+    shift 1
+    ;;
+  --include-notes)
+    INCLUDE_NOTES=true
+    shift 1
+    ;;
+  --bws)
+    USE_BWS=true
+    shift 1
+    ;;
+  --secret)
+    USE_BWS=true
+    BWS_SECRET_QUERY="$2"
+    shift 2
+    ;;
+  --project)
+    USE_BWS=true
+    BWS_PROJECT_QUERY="$2"
+    shift 2
+    ;;
+  --prefix)
+    VAR_PREFIX="$2"
+    shift 2
+    ;;
+  --format)
+    FORMAT="$2"
+    shift 2
+    ;;
+  --dotenv | --env)
+    FORMAT="env"
+    shift 1
+    ;;
+  --json)
+    FORMAT="json"
+    shift 1
+    ;;
+  --no-auto-env)
+    AUTO_ENV=false
+    shift 1
+    ;;
+  -h | --help)
+    cat <<'USAGE'
 Usage:
   source lib/bitwarden-load-secrets.sh [options]
   ./lib/bitwarden-load-secrets.sh [options]
@@ -134,11 +134,11 @@ Transform & Output:
   --no-auto-env              Do not auto-run lib/bitwarden-env.sh if locked/missing
   -h, --help                 Show this help message
 USAGE
-      if is_sourced; then return 0; else exit 0; fi
-      ;;
-    *)
-      die "Unknown option: $1"
-      ;;
+    if is_sourced; then return 0; else exit 0; fi
+    ;;
+  *)
+    die "Unknown option: $1"
+    ;;
   esac
 done
 
@@ -176,24 +176,45 @@ sanitize_var_name() {
   local name="$1"
   local clean
   clean="$(echo "$name" | sed -E 's/[^a-zA-Z0-9_]/_/g')"
-  if [[ "$clean" =~ ^[0-9] ]]; then
+  if [[ $clean =~ ^[0-9] ]]; then
     clean="_$clean"
   fi
   echo "$clean"
 }
 
-# Temporary associative-like storage using newline-delimited pairs
-# Format: KEY<TAB>VALUE
+# Temporary associative-like storage using newline-delimited pairs.
+# Format: KEY<TAB>BASE64_VALUE -- values are base64-encoded so a
+# multiline secret (private key, certificate) can never split into
+# bogus variables (#5650). Values are decoded only at output time.
+# jq (already a hard dependency) does the codec, so this is portable.
 PAIRS=""
 
-add_pair() {
+# Encode a raw value for PAIRS storage (single line, no wrapping).
+b64_encode_value() {
+  jq -jn --arg v "$1" '$v | @base64'
+}
+
+# Decode a PAIRS value into $DECODED_VALUE (a global, so a trailing
+# newline in the value survives command-substitution stripping).
+DECODED_VALUE=""
+b64_decode_value() {
+  local tmp
+  tmp="$(jq -jn --arg v "$1" '$v | @base64d'; printf 'x')"
+  DECODED_VALUE="${tmp%x}"
+}
+
+add_pair_encoded() {
   local k="$1"
-  local v="$2"
+  local v_enc="$2"
   local safe_k
   safe_k="$(sanitize_var_name "${VAR_PREFIX}${k}")"
   if [ -n "$safe_k" ]; then
-    PAIRS+="${safe_k}"$'\t'"${v}"$'\n'
+    PAIRS+="${safe_k}"$'\t'"${v_enc}"$'\n'
   fi
+}
+
+add_pair() {
+  add_pair_encoded "$1" "$(b64_encode_value "$2")"
 }
 
 # -------------------------------------------------------------
@@ -220,9 +241,9 @@ if [ "$USE_BWS" = true ]; then
       ARGS+=("$BWS_PROJECT_QUERY")
     fi
     RAW_JSON="$(bws secret list "${ARGS[@]}" 2>/dev/null)" || die "Failed to list secrets from bws."
-    while IFS=$'\t' read -r k v; do
-      [ -n "$k" ] && add_pair "$k" "$v"
-    done < <(echo "$RAW_JSON" | jq -r '.[] | "\(.key)\t\(.value)"')
+    while IFS=$'\t' read -r k v_enc; do
+      [ -n "$k" ] && add_pair_encoded "$k" "$v_enc"
+    done < <(echo "$RAW_JSON" | jq -r '.[] | "\(.key)\t\((.value // "") | @base64)"')
   fi
 
 # -------------------------------------------------------------
@@ -243,34 +264,34 @@ else
   # Handle single specific field
   if [ -n "$SPECIFIC_FIELD" ]; then
     case "$SPECIFIC_FIELD" in
-      password)
-        VAL="$(echo "$ITEM_JSON" | jq -r '.login.password // empty')"
-        add_pair "${SPECIFIC_FIELD^^}" "$VAL"
-        ;;
-      username)
-        VAL="$(echo "$ITEM_JSON" | jq -r '.login.username // empty')"
-        add_pair "${SPECIFIC_FIELD^^}" "$VAL"
-        ;;
-      notes)
-        VAL="$(echo "$ITEM_JSON" | jq -r '.notes // empty')"
-        add_pair "${SPECIFIC_FIELD^^}" "$VAL"
-        ;;
-      *)
-        # Custom field match
-        VAL="$(echo "$ITEM_JSON" | jq -r --arg f "$SPECIFIC_FIELD" '(.fields // [])[] | select(.name == $f) | .value // empty')"
-        if [ -z "$VAL" ]; then
-          die "Field '$SPECIFIC_FIELD' not found on item '$ITEM_NAME'."
-        fi
-        add_pair "$SPECIFIC_FIELD" "$VAL"
-        ;;
+    password)
+      VAL="$(echo "$ITEM_JSON" | jq -r '.login.password // empty')"
+      add_pair "${SPECIFIC_FIELD^^}" "$VAL"
+      ;;
+    username)
+      VAL="$(echo "$ITEM_JSON" | jq -r '.login.username // empty')"
+      add_pair "${SPECIFIC_FIELD^^}" "$VAL"
+      ;;
+    notes)
+      VAL="$(echo "$ITEM_JSON" | jq -r '.notes // empty')"
+      add_pair "${SPECIFIC_FIELD^^}" "$VAL"
+      ;;
+    *)
+      # Custom field match
+      VAL="$(echo "$ITEM_JSON" | jq -r --arg f "$SPECIFIC_FIELD" '(.fields // [])[] | select(.name == $f) | .value // empty')"
+      if [ -z "$VAL" ]; then
+        die "Field '$SPECIFIC_FIELD' not found on item '$ITEM_NAME'."
+      fi
+      add_pair "$SPECIFIC_FIELD" "$VAL"
+      ;;
     esac
 
   # Extract all custom fields and optional login/notes
   else
     # 1. Custom fields
-    while IFS=$'\t' read -r k v; do
-      [ -n "$k" ] && add_pair "$k" "$v"
-    done < <(echo "$ITEM_JSON" | jq -r '(.fields // [])[] | "\(.name)\t\(.value)"')
+    while IFS=$'\t' read -r k v_enc; do
+      [ -n "$k" ] && add_pair_encoded "$k" "$v_enc"
+    done < <(echo "$ITEM_JSON" | jq -r '(.fields // [])[] | "\(.name)\t\((.value // "") | @base64)"')
 
     # 2. Login fields if requested or if no custom fields exist
     NUM_CUSTOM="$(echo "$ITEM_JSON" | jq '(.fields // []) | length')"
@@ -300,44 +321,47 @@ COUNT=0
 LOADED_NAMES=()
 
 case "$FORMAT" in
-  source)
-    while IFS=$'\t' read -r k v; do
-      if [ -n "$k" ]; then
-        export "$k"="$v"
-        LOADED_NAMES+=("$k")
-        COUNT=$((COUNT + 1))
-      fi
-    done <<< "$PAIRS"
-    echo "[bw-load] Exported $COUNT variable(s) into current shell: ${LOADED_NAMES[*]}"
-    ;;
+source)
+  while IFS=$'\t' read -r k v_enc; do
+    if [ -n "$k" ]; then
+      b64_decode_value "$v_enc"
+      export "$k"="$DECODED_VALUE"
+      LOADED_NAMES+=("$k")
+      COUNT=$((COUNT + 1))
+    fi
+  done <<<"$PAIRS"
+  echo "[bw-load] Exported $COUNT variable(s) into current shell: ${LOADED_NAMES[*]}"
+  ;;
 
-  export)
-    while IFS=$'\t' read -r k v; do
-      if [ -n "$k" ]; then
-        escaped_val="$(printf '%s' "$v" | jq -Rr @sh)"
-        printf 'export %s=%s\n' "$k" "$escaped_val"
-      fi
-    done <<< "$PAIRS"
-    ;;
+export)
+  while IFS=$'\t' read -r k v_enc; do
+    if [ -n "$k" ]; then
+      b64_decode_value "$v_enc"
+      escaped_val="$(printf '%s' "$DECODED_VALUE" | jq -Rsr @sh)"
+      printf 'export %s=%s\n' "$k" "$escaped_val"
+    fi
+  done <<<"$PAIRS"
+  ;;
 
-  env)
-    while IFS=$'\t' read -r k v; do
-      if [ -n "$k" ]; then
-        escaped_val="$(printf '%s' "$v" | jq -Rr @sh)"
-        printf '%s=%s\n' "$k" "$escaped_val"
-      fi
-    done <<< "$PAIRS"
-    ;;
+env)
+  while IFS=$'\t' read -r k v_enc; do
+    if [ -n "$k" ]; then
+      b64_decode_value "$v_enc"
+      escaped_val="$(printf '%s' "$DECODED_VALUE" | jq -Rsr @sh)"
+      printf '%s=%s\n' "$k" "$escaped_val"
+    fi
+  done <<<"$PAIRS"
+  ;;
 
-  json)
-    # Build JSON object from pairs
-    jq -n -R '
+json)
+  # Build JSON object from pairs
+  jq -n -R '
       [inputs | select(length > 0) | split("\t")] |
-      map({(.[0]): .[1]}) | add // {}
-    ' <<< "$PAIRS"
-    ;;
+      map({(.[0]): (.[1] | @base64d)}) | add // {}
+    ' <<<"$PAIRS"
+  ;;
 
-  *)
-    die "Unknown format '$FORMAT'. Supported: export, env, json."
-    ;;
+*)
+  die "Unknown format '$FORMAT'. Supported: export, env, json."
+  ;;
 esac

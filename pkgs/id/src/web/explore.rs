@@ -14,9 +14,12 @@ use axum::{
 use crate::directory::{Member, Refusal};
 use crate::directory_auth::{Caller, SESSION_TTL_MS};
 use crate::directory_view::{
-    AccountView, DirectoryAction, DirectoryOutcome, DirectoryView, GroupView, action_from_fields,
-    level_name,
+    AccountView, DeliveryView, DirectoryAction, DirectoryOutcome, DirectoryView, GroupView,
+    account_labels, action_from_fields, level_name,
 };
+use crate::invite::Invite;
+use crate::petname::Label;
+use crate::qr;
 use crate::world_hub::{ResolveError, WorldHub};
 
 use super::security::secure_attribute;
@@ -33,6 +36,7 @@ const STYLE: &str = "body{font-family:system-ui,sans-serif;max-width:52rem;margi
                      form{border:1px solid #888;padding:.5rem .75rem;margin:.75rem 0}\
                      label{display:block;margin:.25rem 0}\
                      .note{background:#eef;padding:.5rem}\
+                     .alleged{font-style:italic;color:#8a5a00}\
                      .error{background:#fee;padding:.5rem}";
 
 pub(super) fn explore_routes() -> Router<WorldWebState> {
@@ -40,6 +44,7 @@ pub(super) fn explore_routes() -> Router<WorldWebState> {
         .route("/explore", get(page_handler))
         .route("/explore/login", post(login_handler))
         .route("/explore/act", post(act_handler))
+        .route("/invite", get(invite_handler))
 }
 
 async fn page_handler(State(state): State<WorldWebState>, headers: HeaderMap) -> Response {
@@ -104,14 +109,20 @@ async fn act_handler(
         Err(error) => return failure(&error, secure),
     };
     let signs_out = matches!(action, DirectoryAction::SignOut);
+    let sends = action.sends_envelope();
     let mailed_to = match &action {
         DirectoryAction::AddEmail { address } | DirectoryAction::SignInEmail { address } => {
             Some(address.clone())
         }
         _ => None,
     };
+    let credential = fields
+        .get("credential")
+        .filter(|credential| !credential.is_empty())
+        .cloned();
     let caller = Caller {
         session: session_of(&headers),
+        credential: credential.filter(|_| sends),
         ..Caller::default()
     };
     let outcome = match run(&hub, caller, action).await {
@@ -256,7 +267,12 @@ fn view_html(view: &DirectoryView) -> String {
     let accounts: String = if view.accounts.is_empty() {
         "<p>(none)</p>".to_owned()
     } else {
-        let items: String = view.accounts.iter().map(account_html).collect();
+        let items: String = view
+            .accounts
+            .iter()
+            .zip(account_labels(&view.accounts))
+            .map(|(account, label)| account_html(account, &label))
+            .collect();
         format!("<ul>{items}</ul>")
     };
     let groups: String = if view.groups.is_empty() {
@@ -266,16 +282,36 @@ fn view_html(view: &DirectoryView) -> String {
         format!("<ul>{items}</ul>")
     };
     format!(
-        "<p>viewer: <code>{}</code></p><h2>Accounts</h2>{accounts}<h2>Groups</h2>{groups}",
-        html_escape(&view.viewer)
+        "<p>viewer: <code>{}</code></p><h2>Accounts</h2>{accounts}<h2>Groups</h2>{groups}{}",
+        html_escape(&view.viewer),
+        deliveries_html(&view.deliveries)
     )
 }
 
-fn account_html(account: &AccountView) -> String {
+fn deliveries_html(deliveries: &[DeliveryView]) -> String {
+    if deliveries.is_empty() {
+        return String::new();
+    }
+    let items: String = deliveries
+        .iter()
+        .map(|delivery| {
+            format!(
+                "<li>{} to <code>{}</code>: {}</li>",
+                html_escape(&delivery.kind),
+                html_escape(&delivery.to),
+                html_escape(&delivery.status)
+            )
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    format!("<h2>Sent to other servers</h2><ul>{items}</ul>")
+}
+
+fn account_html(account: &AccountView, label: &Label) -> String {
     let mut lines = vec![format!(
-        "<code>{}</code> <strong>{}</strong>",
+        "<code>{}</code> {}",
         html_escape(&account.id),
-        html_escape(&account.name)
+        label_html(label)
     )];
     if let Some(verified) = account.verified {
         lines.push(format!("verified: {}", if verified { "yes" } else { "no" }));
@@ -299,6 +335,59 @@ fn account_html(account: &AccountView) -> String {
         lines.push(format!("requests out: {}", codes(outgoing)));
     }
     format!("<li>{}</li>", lines.join("<br>"))
+}
+
+fn label_html(label: &Label) -> String {
+    match label {
+        Label::Petname(name) => format!("<strong>{}</strong>", html_escape(name)),
+        Label::SharedPetname { name, fingerprint } => format!(
+            "<strong>{}</strong> <code>{}</code>",
+            html_escape(name),
+            html_escape(fingerprint)
+        ),
+        Label::Alleged { name, fingerprint } => format!(
+            "<em class=\"alleged\">{}</em> <span class=\"alleged\">unverified {}</span>",
+            html_escape(name),
+            html_escape(fingerprint)
+        ),
+    }
+}
+
+async fn invite_handler(uri: axum::http::Uri) -> Response {
+    let page =
+        Invite::from_query(uri.query().unwrap_or("")).and_then(|invite| invite_page(&invite));
+    match page {
+        Ok(body) => respond(StatusCode::OK, &body, None),
+        Err(error) => respond(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "<h1>Invite</h1><p class=\"error\">{}</p>",
+                html_escape(&format!("{error:#}"))
+            ),
+            None,
+        ),
+    }
+}
+
+fn invite_page(invite: &Invite) -> anyhow::Result<String> {
+    let url = invite.url();
+    let name = html_escape(&invite.name);
+    let key = html_escape(&invite.key);
+    Ok(format!(
+        "<h1>Add {name}</h1>\
+         <p>Account: <code>{key}</code></p><p>Server: <code>{}</code></p>\
+         <div>{}</div>\
+         <p>Invite: <code>{}</code></p>\
+         <form method=\"post\" action=\"/explore/act\"><h3>Petname</h3>\
+         <input type=\"hidden\" name=\"action\" value=\"set_petname\">\
+         <input type=\"hidden\" name=\"account\" value=\"{key}\">\
+         <label>Petname <input name=\"name\" value=\"{name}\" autocomplete=\"off\"></label>\
+         <button>Add {name}</button></form>\
+         <p><a href=\"{COOKIE_PATH}\">Sign in to the directory</a> first. The petname is only yours.</p>",
+        html_escape(&invite.node),
+        qr::svg(&url)?,
+        html_escape(&url),
+    ))
 }
 
 fn group_html(group: &GroupView) -> String {
@@ -390,6 +479,21 @@ const ANONYMOUS_FORMS: &[ActionForm] = &[
 
 const ACCOUNT_FORMS: &[ActionForm] = &[
     ActionForm {
+        title: "Set petname",
+        action: "set_petname",
+        fields: &[("account", "Account ID"), ("name", "Petname")],
+    },
+    ActionForm {
+        title: "Rename petname",
+        action: "rename_petname",
+        fields: &[("account", "Account ID"), ("name", "Petname")],
+    },
+    ActionForm {
+        title: "Remove petname",
+        action: "remove_petname",
+        fields: &[("account", "Account ID")],
+    },
+    ActionForm {
         title: "Add email",
         action: "add_email",
         fields: &[("address", "Email")],
@@ -412,12 +516,22 @@ const ACCOUNT_FORMS: &[ActionForm] = &[
     ActionForm {
         title: "Request friend",
         action: "request_friend",
-        fields: &[("to", "Account ID")],
+        fields: &[
+            ("to", "Account ID"),
+            ("node", "Their node ID (blank for this server)"),
+            ("audience", "Their world ID (with a node ID)"),
+            ("credential", "Your credential (with a node ID)"),
+        ],
     },
     ActionForm {
         title: "Accept friend",
         action: "accept_friend",
-        fields: &[("from", "Account ID")],
+        fields: &[
+            ("from", "Account ID"),
+            ("node", "Their node ID (blank for this server)"),
+            ("audience", "Their world ID (with a node ID)"),
+            ("credential", "Your credential (with a node ID)"),
+        ],
     },
     ActionForm {
         title: "Remove friend",
@@ -553,6 +667,28 @@ mod tests {
             hub: Some(hub),
             cookie_secure,
         })
+    }
+
+    async fn lobby_with_bo() -> (Router, String) {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, None);
+        let bo = service
+            .directory(
+                Caller::default(),
+                DirectoryAction::SignUp {
+                    name: "Bo".to_owned(),
+                },
+            )
+            .await
+            .unwrap()
+            .view
+            .viewer;
+        let hub = WorldHub::single(service);
+        let app = explore_routes().with_state(WorldWebState {
+            hub: Some(hub),
+            cookie_secure: false,
+        });
+        (app, bo)
     }
 
     fn get(path: &str, cookie: Option<&str>) -> Request<Body> {
@@ -782,6 +918,7 @@ mod tests {
 
     #[test]
     fn every_form_builds_the_action_it_names() {
+        let node = iroh::SecretKey::from_bytes(&[7; 32]).public().to_string();
         for form in ANONYMOUS_FORMS
             .iter()
             .chain(ACCOUNT_FORMS)
@@ -797,6 +934,7 @@ mod tests {
                     "scopes" => "-",
                     "level" => "read",
                     "member" => "account:abc",
+                    "node" => &node,
                     "envelope" => {
                         r#"{"kind":"friend_request","from":"a","to":"b","audience":"c","id":"d","at":1,"signature":"e"}"#
                     }
@@ -821,6 +959,7 @@ mod tests {
                 DirectoryAction::SignUp {
                     name: "Ada & <Co>".to_owned(),
                 },
+                false,
             )
             .await
             .unwrap();
@@ -831,6 +970,7 @@ mod tests {
                 DirectoryAction::SignUp {
                     name: "<b>Bo</b>".to_owned(),
                 },
+                false,
             )
             .await
             .unwrap();
@@ -842,11 +982,12 @@ mod tests {
                     description: "members \"only\"".to_owned(),
                     scopes: Vec::new(),
                 },
+                false,
             )
             .await
             .unwrap();
         let view = world
-            .directory(ada_caller, DirectoryAction::View)
+            .directory(ada_caller, DirectoryAction::View, false)
             .await
             .unwrap()
             .view;
@@ -868,5 +1009,103 @@ mod tests {
         let group = &view.groups[0];
         assert!(html.contains(&html_escape(&group.name)));
         assert!(text.contains(&group.name) && json.contains(&group.name));
+    }
+
+    #[tokio::test]
+    async fn the_invite_page_names_the_account_and_carries_its_qr_code() {
+        let app = app(None);
+        let key = "aa11".repeat(16);
+        let node = "bb22".repeat(16);
+        let uri = format!("/invite?key={key}&node={node}&name=Ann%20Lee");
+        let (status, _, body) = send(
+            &app,
+            Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<h1>Add Ann Lee</h1>"));
+        assert!(body.contains("<svg "));
+        assert!(body.contains("value=\"Ann Lee\""));
+        let url = Invite::new(&key, &node, "Ann Lee").unwrap().url();
+        assert!(body.contains(&html_escape(&url)));
+        let bad = format!("/invite?key=zz&node={node}&name=Ann");
+        let (status, _, _) = send(
+            &app,
+            Request::builder().uri(&bad).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // The key and node are raw hex fields, not form-decoded values.
+        let bad_percent = format!(
+            "/invite?key=%61a11{}&node={node}&name=Ann",
+            "a11".repeat(20)
+        );
+        let (status, _, _) = send(
+            &app,
+            Request::builder()
+                .uri(&bad_percent)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let bad_node_percent =
+            format!("/invite?key={key}&node=%62b22{}&name=Ann", "b22".repeat(20));
+        let (status, _, _) = send(
+            &app,
+            Request::builder()
+                .uri(&bad_node_percent)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // '+' and surrounding whitespace are not canonical key/node spellings.
+        let bad_plus = format!("/invite?key=+{key}&node={node}&name=Ann");
+        let (status, _, _) = send(
+            &app,
+            Request::builder()
+                .uri(&bad_plus)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let bad_node_plus = format!("/invite?key={key}&node=+{node}&name=Ann");
+        let (status, _, _) = send(
+            &app,
+            Request::builder()
+                .uri(&bad_node_plus)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let bad_whitespace = format!("/invite?key=%20{key}&node={node}&name=Ann");
+        let (status, _, _) = send(
+            &app,
+            Request::builder()
+                .uri(&bad_whitespace)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let bad_node_whitespace = format!("/invite?key={key}&node=%20{node}&name=Ann");
+        let (status, _, _) = send(
+            &app,
+            Request::builder()
+                .uri(&bad_node_whitespace)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

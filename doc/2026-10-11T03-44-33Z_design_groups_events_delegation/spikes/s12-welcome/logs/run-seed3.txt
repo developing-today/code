@@ -1,0 +1,74 @@
+## build: stock, seed 3
+| K | secrets | welcome B | history B | ciphertext B | recent 1 | recent 8 | recent 32 | empty B | B/secret since prev | welcome us (med) | encode us (med) | re-add B so far |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1 | 734 | 29 | 656 | 744 | 741 | 736 | 596 | - | 295 | 9 | 0 |
+| 1 | 2 | 870 | 29 | 792 | 739 | 877 | 879 | 602 | 136.0 | 279 | 9 | 0 |
+| 2 | 3 | 1025 | 29 | 947 | 738 | 1023 | 1019 | 602 | 155.0 | 315 | 14 | 562 |
+| 5 | 6 | 1463 | 29 | 1385 | 757 | 1456 | 1453 | 598 | 146.0 | 298 | 16 | 1276 |
+| 10 | 11 | 2197 | 29 | 2119 | 741 | 1764 | 2189 | 593 | 146.8 | 404 | 26 | 4333 |
+| 50 | 51 | 8027 | 29 | 7949 | 752 | 1760 | 5243 | 590 | 145.8 | 327 | 98 | 59959 |
+| 100 | 101 | 15402 | 29 | 15324 | 746 | 1768 | 5306 | 602 | 147.5 | 386 | 183 | 215932 |
+| 250 | 251 | 37364 | 29 | 37286 | 751 | 1790 | 5274 | 591 | 146.4 | 596 | 478 | 1260905 |
+| 500 | 501 | 73931 | 29 | 73853 | 740 | 1754 | 5270 | 590 | 146.3 | 961 | 1010 | 4921694 |
+| 750 | 751 | 110517 | 29 | 110439 | 751 | 1777 | 5323 | 596 | 146.3 | 1512 | 1751 | 10979572 |
+| 1000 | 1001 | 147213 | 29 | 147135 | 744 | 1764 | 5332 | 598 | 146.8 | 1840 | 1838 | 19441815 |
+fit welcome = a + b*secrets over 11 samples: b = 146.44 B/secret, a = 583.4 B, max residual = 46.5 B
+joiner learns full history: 1001 secrets, same ids as the adder's bundle: true
+joiner learns recent 1: 1 secrets, same ids as the adder's 1 newest: true
+joiner learns recent 8: 8 secrets, same ids as the adder's 8 newest: true
+joiner learns recent 32: 32 secrets, same ids as the adder's 32 newest: true
+final EncryptionGroup::add (full, K=1000): welcome 147137 B, history 29 B, ciphertext 147059 B
+time at K=1000 (50 runs): Dcgka::add median 1840 us, min 1480 us; encode median 1838 us, min 1636 us; EncryptionGroup::add median 1836 us, min 1428 us
+re-adds of Carol: 500 welcomes, 19441815 B in total
+
+## build: serde-bytes, seed 3
+| K | secrets | welcome B | history B | ciphertext B | recent 1 | recent 8 | recent 32 | empty B | B/secret since prev | welcome us (med) | encode us (med) | re-add B so far |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1 | 489 | 29 | 411 | 489 | 489 | 489 | 448 | - | 278 | 2 | 0 |
+| 1 | 2 | 529 | 29 | 451 | 489 | 529 | 529 | 448 | 40.0 | 309 | 2 | 0 |
+| 2 | 3 | 570 | 29 | 492 | 489 | 570 | 570 | 448 | 41.0 | 307 | 2 | 459 |
+| 5 | 6 | 690 | 29 | 612 | 489 | 690 | 690 | 448 | 40.0 | 301 | 2 | 998 |
+| 10 | 11 | 891 | 29 | 813 | 489 | 771 | 891 | 448 | 40.2 | 286 | 2 | 3098 |
+| 50 | 51 | 2492 | 29 | 2414 | 489 | 771 | 1732 | 448 | 40.0 | 286 | 2 | 35526 |
+| 100 | 101 | 4492 | 29 | 4414 | 489 | 771 | 1732 | 448 | 40.0 | 482 | 2 | 121076 |
+| 250 | 251 | 10492 | 29 | 10414 | 489 | 771 | 1732 | 448 | 40.0 | 504 | 3 | 677726 |
+| 500 | 501 | 20493 | 29 | 20415 | 489 | 771 | 1732 | 448 | 40.0 | 585 | 4 | 2605722 |
+| 750 | 751 | 30493 | 29 | 30415 | 489 | 771 | 1732 | 448 | 40.0 | 646 | 4 | 5783722 |
+| 1000 | 1001 | 40493 | 29 | 40415 | 489 | 771 | 1732 | 448 | 40.0 | 467 | 3 | 10211722 |
+fit welcome = a + b*secrets over 11 samples: b = 40.00 B/secret, a = 450.5 B, max residual = 1.5 B
+joiner learns full history: 1001 secrets, same ids as the adder's bundle: true
+joiner learns recent 1: 1 secrets, same ids as the adder's 1 newest: true
+joiner learns recent 8: 8 secrets, same ids as the adder's 8 newest: true
+joiner learns recent 32: 32 secrets, same ids as the adder's 32 newest: true
+final EncryptionGroup::add (full, K=1000): welcome 40493 B, history 29 B, ciphertext 40415 B
+time at K=1000 (50 runs): Dcgka::add median 467 us, min 448 us; encode median 3 us, min 3 us; EncryptionGroup::add median 499 us, min 451 us
+re-adds of Carol: 500 welcomes, 10211722 B in total
+
+## build: found-as-is, seed 3
+| K | secrets | welcome B | history B | ciphertext B | recent 1 | recent 8 | recent 32 | empty B | B/secret since prev | welcome us (med) | encode us (med) | re-add B so far |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1 | 735 | 29 | 657 | 745 | 738 | 735 | 596 | - | 340 | 9 | 0 |
+| 1 | 2 | 871 | 29 | 793 | 737 | 875 | 874 | 602 | 136.0 | 406 | 12 | 0 |
+| 2 | 3 | 1026 | 29 | 948 | 740 | 1023 | 1023 | 602 | 155.0 | 458 | 15 | 562 |
+| 5 | 6 | 1463 | 29 | 1385 | 758 | 1456 | 1464 | 598 | 145.7 | 410 | 22 | 1276 |
+| 10 | 11 | 2187 | 29 | 2109 | 740 | 1766 | 2183 | 593 | 144.8 | 483 | 35 | 4333 |
+| 50 | 51 | 8039 | 29 | 7961 | 753 | 1762 | 5264 | 590 | 146.3 | 416 | 118 | 59992 |
+| 100 | 101 | 15342 | 29 | 15264 | 747 | 1759 | 5313 | 602 | 146.1 | 580 | 215 | 216015 |
+| 250 | 251 | 37380 | 29 | 37302 | 750 | 1786 | 5294 | 591 | 146.9 | 611 | 533 | 1261137 |
+| 500 | 501 | 73896 | 29 | 73818 | 742 | 1754 | 5272 | 590 | 146.1 | 900 | 1008 | 4922153 |
+| 750 | 751 | 110529 | 29 | 110451 | 748 | 1782 | 5317 | 596 | 146.5 | 1156 | 1344 | 10980257 |
+| 1000 | 1001 | 147113 | 29 | 147035 | 745 | 1767 | 5327 | 598 | 146.3 | 1759 | 1953 | 19442726 |
+fit welcome = a + b*secrets over 11 samples: b = 146.39 B/secret, a = 582.5 B, max residual = 54.1 B
+joiner learns full history: 1001 secrets, same ids as the adder's bundle: true
+joiner learns recent 1: 1 secrets, same ids as the adder's 1 newest: true
+joiner learns recent 8: 8 secrets, same ids as the adder's 8 newest: true
+joiner learns recent 32: 32 secrets, same ids as the adder's 32 newest: true
+final EncryptionGroup::add (full, K=1000): welcome 147119 B, history 29 B, ciphertext 147041 B
+time at K=1000 (50 runs): Dcgka::add median 1759 us, min 1560 us; encode median 1953 us, min 1603 us; EncryptionGroup::add median 1480 us, min 1379 us
+re-adds of Carol: 500 welcomes, 19442726 B in total
+
+## cross-decode (encoded by one build, decoded by the other)
+K=1 welcome, stock -> serde-bytes: Err("incompatible CBOR type Array")
+K=1 welcome, serde-bytes -> stock: Err("expected array, got Bytes")
+re-add welcome, stock -> serde-bytes: Ok(())
+re-add welcome, serde-bytes -> stock: Ok(())

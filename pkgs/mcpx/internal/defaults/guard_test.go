@@ -65,6 +65,7 @@ var allowed = map[string]string{
 	"0o644": "config file mode, read from defaults.Files",
 	"0o755": "world-readable directory mode, read from defaults.Files",
 	"0o777": "a mask, not a mode",
+	"0o111": "the execute bits, a mask for checking a file is runnable",
 
 	// Unit definitions, not defaults. A kibibyte is 1024 by arithmetic; a
 	// configuration key that said otherwise would be describing a different
@@ -76,7 +77,8 @@ var allowed = map[string]string{
 
 	// A unit boundary in a duration renderer: it decides whether to print
 	// hours or days, which is arithmetic rather than policy.
-	"24*time.Hour": "a unit boundary in the duration formatter",
+	"24*time.Hour":       "a unit boundary in the duration formatter",
+	"2*time.Millisecond": "the poll interval in artifacts' schema-migration race guard (ensureLastTouched): a bounded loop waiting out a concurrent opener's ALTER; race arbitration, not a policy value",
 }
 
 // outOfScope names files owned by work happening in parallel. Their inline
@@ -109,7 +111,7 @@ func TestNoPackageRedeclaresADefault(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		sc := bufio.NewScanner(f)
 		n := 0
 		for sc.Scan() {

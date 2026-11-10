@@ -171,7 +171,7 @@ Wrangler:
 ```jsonc
 {
   "workers_dev": false,
-  "preview_urls": false
+  "preview_urls": false,
 }
 ```
 
@@ -179,10 +179,7 @@ Wrangler:
 const FUNCTION_ORIGIN = "https://<invocation-host>"; // neon functions get
 
 export default {
-  async fetch(
-    request: Request,
-    env: { ORIGIN_SECRET: string },
-  ): Promise<Response> {
+  async fetch(request: Request, env: { ORIGIN_SECRET: string }): Promise<Response> {
     const incoming = new URL(request.url);
     const upstream = new URL(FUNCTION_ORIGIN);
     upstream.pathname = incoming.pathname;
@@ -264,9 +261,7 @@ const limiter = new Ratelimit({
   analytics: false,
 });
 
-export async function checkQuota(
-  authenticatedPrincipalId: string,
-): Promise<Response | null> {
+export async function checkQuota(authenticatedPrincipalId: string): Promise<Response | null> {
   let result: Awaited<ReturnType<typeof limiter.limit>>;
   try {
     result = await limiter.limit(authenticatedPrincipalId);
@@ -290,10 +285,7 @@ export async function checkQuota(
 
   if (result.success) return null;
 
-  const retryAfterSeconds = Math.max(
-    1,
-    Math.ceil((result.reset - Date.now()) / 1000),
-  );
+  const retryAfterSeconds = Math.max(1, Math.ceil((result.reset - Date.now()) / 1000));
   return new Response("Too Many Requests", {
     status: 429,
     headers: {

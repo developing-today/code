@@ -8,8 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // The reserved _meta keys a 2026-07-28 request carries.
@@ -31,9 +32,20 @@ type Options struct {
 	// handshake: a handler added later cannot be declared, so a server
 	// would never learn it exists.
 	OnServerRequest ElicitHandler
+	// OnURLElicitationRequired opens the URL elicitations a -32042
+	// tools/call error names (2025-11-25 only). Nil propagates -32042
+	// untouched.
+	OnURLElicitationRequired URLElicitationHandler
 	// Roots are the directories servers may work within, served from the
 	// first request rather than from whenever they happen to be set.
 	Roots []Root
+	// Root is the scope-resolved workspace root this instance serves. When
+	// non-empty, initialize names it as rootUri and workspaceFolders and
+	// declares workspace.workspaceFolders, so workspace servers (gopls)
+	// open a real workspace instead of loading files ad hoc (decision
+	// 0004 §5). Empty leaves initialize byte-for-byte as it was: a
+	// global-scoped instance must not fabricate a daemon-cwd root.
+	Root string
 	// Cached is the era this server configuration was last found to speak,
 	// tried first in place of the preference's order. Ignored when the
 	// preference forces an era.
@@ -44,6 +56,25 @@ type Options struct {
 	// ModernVersions narrows the modern revisions offered, newest first.
 	// Nil means all of ModernVersions.
 	ModernVersions []string
+	// ServerName identifies the server this session belongs to, for the
+	// per-server rate limits on its sampling and elicitation requests
+	// (ratelimit.go). Empty means the session is bounded per session only.
+	ServerName string
+	// RequestLimits bounds this server's sampling and elicitation
+	// requests. The zero value means DefaultRequestLimits, unless
+	// RequestLimitsSet marks the struct as explicitly supplied.
+	RequestLimits RequestLimits
+	// RequestLimitsSet marks RequestLimits as explicitly supplied --
+	// including an all-zero struct, which disables enforcement.
+	// Without it, an all-zero RequestLimits is read as "no opinion"
+	// and the defaults apply: an operator setting every
+	// proto.*PerMinute to 0 must not silently get the defaults back.
+	RequestLimitsSet bool
+	// ServerLimiter is this server's shared rate-limit budget, owned by
+	// whoever runs several sessions to the same server (the pool) and
+	// handed to each of them. Nil means the client builds its own,
+	// which bounds it at per-session strength.
+	ServerLimiter *ServerRequestLimiter
 }
 
 // NewWithOptions connects with everything known up front.
@@ -79,8 +110,26 @@ func (c *Client) capabilities(modern bool) map[string]any {
 		"elicitation": elicitation,
 		"roots":       map[string]any{"listChanged": false},
 	}
+	// A scope-resolved instance serves a workspace, so it declares the
+	// capability that says so (decision 0004 §5). Instances without a root
+	// declare nothing extra: the capability would promise a workspace that
+	// initialize never names.
+	if c.root != "" {
+		caps["workspace"] = map[string]any{"workspaceFolders": true}
+	}
 	if modern {
 		caps["roots"] = map[string]any{}
+		// The 2026 extensions map (register CAP-11): {} declares support
+		// with no settings. An extension key is added only when mcpx
+		// implements that extension: io.modelcontextprotocol/tasks is
+		// declared now that CallTool drives taskSupport-"required"
+		// tools through the extension (tasks.go, #1556); declaring it
+		// before that would have been the advertised-but-unimplemented
+		// failure. The map has no counterpart in legacy initialize, so
+		// it stays in this branch.
+		caps["extensions"] = map[string]any{
+			"io.modelcontextprotocol/tasks": map[string]any{},
+		}
 	}
 	if h != nil {
 		caps["sampling"] = map[string]any{}
@@ -99,9 +148,51 @@ func (c *Client) elicitModeDeclared(mode string) bool {
 	case "", "form":
 		return true
 	case "url":
-		return h != nil && (c.Era == EraModern || c.Negotiated >= "2025-11-25")
+		return h != nil && (c.modernEra() == EraModern || spec.AtOrAfter("2025-11-25")(c.negotiatedVersion()))
 	}
 	return false
+}
+
+// samplingShape enforces the sampling declaration mcpx made upstream.
+//
+// mcpx declares sampling as a bare {} -- no tools, no context (see
+// capabilities). A request that carries tools or toolChoice asks for a
+// capability that was never declared, so it is refused before any handler
+// sees it: "Server sends a sampling/createMessage request with tools when
+// the client did not declare sampling.tools: -32602." Answering anyway
+// would teach the server that undeclared works. includeContext is softer:
+// the field asks for context the client never offered to give, so it is
+// dropped and the request is answered without it, the same way a declared
+// "none" would read. includeContext "none" itself requests nothing, so it
+// passes untouched, like any field this check does not govern. A request
+// carrying none of these is returned untouched.
+func samplingShape(params json.RawMessage) (json.RawMessage, *rpcError) {
+	m := map[string]json.RawMessage{}
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &m); err != nil {
+			// Not an object: not this check's shape to judge. The handler
+			// sees it as it arrived, as before.
+			return params, nil
+		}
+	}
+	carries := func(k string) bool {
+		v, ok := m[k]
+		return ok && string(v) != "null"
+	}
+	if carries("tools") || carries("toolChoice") {
+		return nil, &rpcError{Code: codeInvalidParams,
+			Message: "sampling request carries tools or toolChoice, but sampling.tools was not declared by this client"}
+	}
+	if raw, ok := m["includeContext"]; ok && string(raw) != "null" {
+		var what string
+		if err := json.Unmarshal(raw, &what); err != nil || what != "none" {
+			delete(m, "includeContext")
+			if b, err := json.Marshal(m); err == nil {
+				return b, nil
+			}
+		}
+	}
+	return params, nil
 }
 
 // withMeta adds the per-request metadata 2026-07-28 requires.
@@ -196,7 +287,7 @@ func CallerVersionFrom(ctx context.Context) string {
 // 2026-07-28 -- one that has a session a server can send requests on.
 func CallerLegacy(ctx context.Context) bool {
 	v := CallerVersionFrom(ctx)
-	return v != "" && v < "2026-07-28"
+	return spec.Before("2026-07-28")(v)
 }
 
 // ErrNotRelayed is a handler declining a request it could not pass on, so
@@ -244,6 +335,12 @@ func narrowCapabilities(own map[string]any, relayed json.RawMessage) map[string]
 // elicitation and sampling only -- so with the broker on, which is always,
 // every roots/list got "not implemented" while the roots sat configured.
 func (c *Client) answer(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
+	// Both sampling paths arrive here, so the era the request was made under
+	// is stamped once, for the relay that answers it to validate against.
+	// modern and negotiated are the atomic mirrors rather than Era and
+	// Negotiated: a concurrent recovery's finishLegacy writes both, and
+	// this runs on the server's goroutine.
+	ctx = WithSamplingEra(ctx, SamplingEra{Negotiated: c.negotiatedVersion(), Era: c.modernEra()})
 	c.mu.Lock()
 	h := c.onElicit
 	roots := append([]Root(nil), c.roots...)
@@ -267,7 +364,7 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 				return out, nil
 			}
 			if !errors.Is(err, ErrNotRelayed) {
-				return nil, &rpcError{Code: -32603, Message: err.Error()}
+				return nil, rpcErrorFor(err)
 			}
 		}
 		if roots == nil {
@@ -275,6 +372,12 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 		}
 		return map[string]any{"roots": roots}, nil
 	case "elicitation/create", "sampling/createMessage":
+		// Bounded before anything else is spent on the request: an
+		// over-limit server learns so from the error, and the request
+		// reaches no handler (#2192).
+		if rerr := c.checkServerRequest(method); rerr != nil {
+			return nil, rerr
+		}
 		if method == "elicitation/create" {
 			var p struct {
 				Mode string `json:"mode"`
@@ -288,13 +391,32 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 					Message: fmt.Sprintf("elicitation mode %q was not declared by this client", p.Mode)}
 			}
 		}
+		if method == "sampling/createMessage" {
+			cleaned, serr := samplingShape(params)
+			if serr != nil {
+				return nil, serr
+			}
+			params = cleaned
+		}
 		if h != nil {
 			out, err := h(ctx, method, params)
 			if err != nil {
-				return nil, &rpcError{Code: -32603, Message: err.Error()}
+				// A typed handler error names its own code: a sampling
+				// refusal is -1, a tool-shape violation -32602 (see
+				// CodedError, which Phase 1 gave an RPCCode method for
+				// exactly this). rpcErrorFor relays it instead of
+				// flattening to -32603, which would tell the upstream an
+				// internal failure happened and invite a retry of a
+				// request a person already refused.
+				return nil, rpcErrorFor(err)
 			}
 			if method == "elicitation/create" {
 				out = applyDefaults(out, params)
+				checked, rerr := c.checkElicitationAnswer(out, params)
+				if rerr != nil {
+					return nil, rerr
+				}
+				out = checked
 			}
 			return out, nil
 		}
@@ -463,14 +585,27 @@ func applyDefaults(out any, params json.RawMessage) any {
 //     notification is sent, on its own context so it outlives the request.
 //
 // https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation
-func (c *Client) cancelled(method string, id int64) {
+// cancelled's reason is the truth about why the request died (PC-08,
+// #1924): a deadline is "timeout"; anything the caller did to their own
+// context is reported as what it was, not dressed up as a timeout.
+func cancelReason(cause error) string {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "timeout"
+	case cause != nil:
+		return cause.Error()
+	}
+	return "cancelled"
+}
+
+func (c *Client) cancelled(method string, id int64, cause error) {
 	if method == "initialize" {
 		return
 	}
 	if _, isHTTP := c.t.(*HTTPTransport); isHTTP && c.metaVersion != "" {
 		return
 	}
-	cp, _ := json.Marshal(map[string]any{"requestId": id, "reason": "timeout"})
+	cp, _ := json.Marshal(map[string]any{"requestId": id, "reason": cancelReason(cause)})
 	ctx, cancel := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
 	defer cancel()
 	_ = c.notify(ctx, "notifications/cancelled", cp)
@@ -479,9 +614,13 @@ func (c *Client) cancelled(method string, id int64) {
 // mirrorsHeaders reports whether this connection must mirror x-mcp-header
 // parameters: modern, over HTTP. stdio clients MAY ignore the annotations,
 // and a legacy revision never defined them.
+//
+// The atomic modern mirror, not c.Era: CallTool reaches this on the
+// caller's goroutine while a concurrent call's recovery (finishLegacy)
+// may be writing Era. That pair is the data race #2842 reproduced.
 func (c *Client) mirrorsHeaders() bool {
 	_, isHTTP := c.t.(*HTTPTransport)
-	return isHTTP && c.Era == EraModern
+	return isHTTP && c.modern.Load()
 }
 
 // Warning is something mcpx noticed about a server that is not an error.

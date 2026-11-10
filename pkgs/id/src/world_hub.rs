@@ -135,8 +135,45 @@ impl ResolveError {
 pub struct WorldInfo {
     /// World name.
     pub name: String,
-    /// Whether it is currently open in memory.
+    /// Whether it is currently open in memory. This says nothing about whether the
+    /// world is open to join: a stored world opens when it is next named. The
+    /// directory JSON ([`directory_json`]) names this field `loaded`, for what it
+    /// means; `open` remains the session-wire name for this struct.
     pub open: bool,
+    /// How many sessions are live on this world right now (the hub's lease
+    /// count for the world; 0 for a stored world). This is a count only: the
+    /// directory never names who is present (#812 shape ruling, 2026-10-29).
+    pub presence: usize,
+}
+
+/// The JSON shape of a world directory listing: the shared serializer for the
+/// directory feed (#812). The CLI's `id world list --json` prints exactly this,
+/// and the web UI's directory surface is expected to consume the same shape.
+///
+/// The shape is `{ "default": <name>, "worlds": [{ "name": ..., "loaded": ...,
+/// "default": ..., "presence": ... }] }`. The per-world field for
+/// [`WorldInfo::open`] is named `loaded`, because that is what the value
+/// means — the world is currently open in memory — and not open-to-join: a
+/// world with `loaded: false` is stored and opens when selected. `presence`
+/// is the count of sessions live on the world right now (#812): a count
+/// only, never an identity — who is present is not directory data.
+#[must_use]
+pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value {
+    let worlds: Vec<serde_json::Value> = worlds
+        .iter()
+        .map(|world| {
+            serde_json::json!({
+                "name": world.name,
+                "loaded": world.open,
+                "default": world.name == default,
+                "presence": world.presence,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "default": default,
+        "worlds": worlds,
+    })
 }
 
 struct Slot {
@@ -230,31 +267,53 @@ impl WorldLease {
 }
 
 impl WorldLease {
-    /// Whether this session may read `owner`'s directory. Same-world reads
-    /// always pass. Across worlds, both must be unisolated. A denial is
-    /// reported as an unknown world, like a missing one.
+    /// Whether this session may read `owner`'s directory.
+    ///
+    /// # Errors
+    ///
+    /// See [`WorldLease::authorize`].
+    pub async fn authorize_read(&self, owner: &Self) -> Result<(), ResolveError> {
+        self.authorize(owner, CrossAccess::Read).await
+    }
+
+    /// Whether this session's world may write into `owner`.
+    ///
+    /// # Errors
+    ///
+    /// See [`WorldLease::authorize`].
+    pub async fn authorize_write(&self, owner: &Self) -> Result<(), ResolveError> {
+        self.authorize(owner, CrossAccess::Write).await
+    }
+
+    /// The single cross-world gate. Same-world access always passes. A denial
+    /// is reported as an unknown world, like a missing one.
     ///
     /// # Errors
     ///
     /// [`ResolveError::UnknownWorld`] when denied; [`ResolveError::Unavailable`]
     /// when either world cannot answer.
-    pub async fn authorize_read(&self, owner: &Self) -> Result<(), ResolveError> {
+    async fn authorize(&self, owner: &Self, access: CrossAccess) -> Result<(), ResolveError> {
         if self.name == owner.name {
             return Ok(());
         }
         let reader = self
             .service
             .world()
-            .isolation()
+            .policy()
             .await
             .map_err(|_| ResolveError::Unavailable)?;
-        let owner_isolation = owner
+        let target = owner
             .service
             .world()
-            .isolation()
+            .policy()
             .await
             .map_err(|_| ResolveError::Unavailable)?;
-        if cross_world_read_allowed(reader, owner_isolation) {
+        if cross_world_allowed(
+            access,
+            reader.isolation,
+            target.isolation,
+            target.cross_world_write,
+        ) {
             Ok(())
         } else {
             Err(ResolveError::UnknownWorld)
@@ -262,19 +321,69 @@ impl WorldLease {
     }
 }
 
-/// The cross-world read rule: both worlds must be unisolated.
+/// What one world asks of another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrossAccess {
+    /// Reading the other world's directory.
+    Read,
+    /// Writing into the other world.
+    Write,
+}
+
+/// The cross-world rule. A read needs both worlds unisolated. A write also
+/// needs the target's cross-world write setting on.
 #[must_use]
-pub const fn cross_world_read_allowed(reader: Isolation, owner: Isolation) -> bool {
-    matches!(
+pub const fn cross_world_allowed(
+    access: CrossAccess,
+    reader: Isolation,
+    owner: Isolation,
+    owner_write: bool,
+) -> bool {
+    let both_unisolated = matches!(
         (reader, owner),
         (Isolation::Unisolated, Isolation::Unisolated)
-    )
+    );
+    match access {
+        CrossAccess::Read => both_unisolated,
+        CrossAccess::Write => both_unisolated && owner_write,
+    }
 }
 
 impl Drop for WorldLease {
     fn drop(&mut self) {
         self.slot.touch();
         self.slot.leases.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Releases the lease `acquire_slot` counted if `lease_with` leaves without
+/// handing it to a [`WorldLease`] — on the error path, and on cancellation
+/// of the open await (for example the envelope acceptor's per-stream
+/// deadline dropping a callback mid-lease). Without this, a cancelled open
+/// leaks the count forever: the slot can never be evicted, and an
+/// uninitialized slot is never removed from the map.
+struct SlotLeaseGuard {
+    hub: WorldHub,
+    name: String,
+    slot: Arc<Slot>,
+    armed: bool,
+}
+
+impl Drop for SlotLeaseGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.slot.leases.fetch_sub(1, Ordering::AcqRel);
+        if let Ok(mut slots) = self.hub.inner.slots.lock()
+            && self.slot.leases.load(Ordering::Acquire) == 0
+            && self.slot.service.get().is_none()
+            && slots
+                .get(&self.name)
+                .is_some_and(|held| Arc::ptr_eq(held, &self.slot))
+        {
+            slots.remove(&self.name);
+        }
     }
 }
 
@@ -329,7 +438,7 @@ impl WorldHub {
                 sessions: Arc::new(Semaphore::new(limits.max_sessions.max(1))),
                 slots: StdMutex::new(HashMap::new()),
                 replays: StdMutex::new(crate::directory_auth::ReplayGuard::after_boot(
-                    crate::world::unix_ms(),
+                    crate::time::unix_ms(),
                     limits.signed_boot_window,
                 )),
             }),
@@ -379,7 +488,7 @@ impl WorldHub {
             method,
             target,
             body,
-            crate::world::unix_ms(),
+            crate::time::unix_ms(),
         )
     }
 
@@ -418,6 +527,15 @@ impl WorldHub {
         permit: OwnedSemaphorePermit,
     ) -> Result<WorldLease, ResolveError> {
         let (slot, evicted) = self.acquire_slot(name, create)?;
+        // Armed until the lease is handed to the caller: dropping the guard
+        // (error return, or cancellation of the awaits below) releases the
+        // counted lease exactly once.
+        let mut guard = SlotLeaseGuard {
+            hub: self.clone(),
+            name: name.to_owned(),
+            slot: Arc::clone(&slot),
+            armed: true,
+        };
         for service in evicted {
             let _ = service.world().shutdown().await;
         }
@@ -438,23 +556,18 @@ impl WorldHub {
             })
             .await;
         match opened {
-            Ok(service) => Ok(WorldLease {
-                service: service.clone(),
-                name: name.to_owned(),
-                slot,
-                _permit: permit,
-            }),
-            Err(error) => {
-                slot.leases.fetch_sub(1, Ordering::AcqRel);
-                if let Ok(mut slots) = self.inner.slots.lock()
-                    && slot.leases.load(Ordering::Acquire) == 0
-                    && slot.service.get().is_none()
-                    && slots.get(name).is_some_and(|held| Arc::ptr_eq(held, &slot))
-                {
-                    slots.remove(name);
-                }
-                Err(error)
+            Ok(service) => {
+                guard.armed = false;
+                Ok(WorldLease {
+                    service: service.clone(),
+                    name: name.to_owned(),
+                    slot,
+                    _permit: permit,
+                })
             }
+            // The guard's drop releases the counted lease and removes the
+            // still-uninitialized slot, as the manual cleanup here used to.
+            Err(error) => Err(error),
         }
     }
 
@@ -519,15 +632,20 @@ impl WorldHub {
     ///
     /// Fails if the world cannot be opened.
     pub async fn open_default(&self) -> Result<WorldService> {
+        tracing::info!("serve startup: open_default acquiring session permit (#190 breadcrumb)");
         let permit = Arc::clone(&self.inner.sessions)
             .acquire_owned()
             .await
             .map_err(|e| anyhow::anyhow!("session limiter closed: {e}"))?;
+        tracing::info!(
+            "serve startup: open_default session permit acquired, leasing world (#190 breadcrumb)"
+        );
         let name = self.inner.default_world.clone();
         let lease = self
             .lease_with(&name, true, permit)
             .await
             .map_err(|e| anyhow::anyhow!("open default world: {}", e.message()))?;
+        tracing::info!("serve startup: open_default lease acquired (#190 breadcrumb)");
         Ok(lease.service().clone())
     }
 
@@ -559,25 +677,29 @@ impl WorldHub {
     /// Worlds in storage plus any open ones, sorted by name.
     #[must_use]
     pub fn list(&self) -> Vec<WorldInfo> {
-        let mut names: std::collections::BTreeMap<String, bool> = self
+        let mut names: std::collections::BTreeMap<String, (bool, usize)> = self
             .inner
             .opener
             .as_ref()
             .map(|opener| opener.list())
             .unwrap_or_default()
             .into_iter()
-            .map(|name| (name, false))
+            .map(|name| (name, (false, 0)))
             .collect();
         if let Ok(slots) = self.inner.slots.lock() {
             for (name, slot) in slots.iter() {
                 if slot.service.get().is_some() {
-                    names.insert(name.clone(), true);
+                    names.insert(name.clone(), (true, slot.leases.load(Ordering::Acquire)));
                 }
             }
         }
         names
             .into_iter()
-            .map(|(name, open)| WorldInfo { name, open })
+            .map(|(name, (open, presence))| WorldInfo {
+                name,
+                open,
+                presence,
+            })
             .collect()
     }
 
@@ -630,6 +752,43 @@ impl WorldHub {
                 }
             }
         })
+    }
+
+    /// Attempt the due outbox envelopes of every open world every `period`
+    /// until the hub is dropped.
+    pub fn spawn_outbox_flush(&self, period: Duration, endpoint: iroh::Endpoint) -> JoinHandle<()> {
+        let weak: Weak<HubInner> = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                Self { inner }.flush_outboxes(&endpoint).await;
+            }
+        })
+    }
+
+    async fn flush_outboxes(&self, endpoint: &iroh::Endpoint) {
+        let services: Vec<WorldService> = self
+            .inner
+            .slots
+            .lock()
+            .map(|slots| {
+                slots
+                    .values()
+                    .filter_map(|slot| slot.service.get().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let now = crate::time::unix_ms();
+        for service in services {
+            if let Err(error) = service.flush_outbox(endpoint, now).await {
+                tracing::warn!("world hub: outbox flush failed: {error:#}");
+            }
+        }
     }
 
     /// Shut every open world down (process exit).
@@ -719,12 +878,48 @@ mod tests {
     }
 
     #[test]
-    fn cross_world_reads_need_both_worlds_unisolated() {
+    fn cross_world_truth_table() {
+        use CrossAccess::{Read, Write};
         use Isolation::{Isolated, Unisolated};
-        assert!(cross_world_read_allowed(Unisolated, Unisolated));
-        assert!(!cross_world_read_allowed(Unisolated, Isolated));
-        assert!(!cross_world_read_allowed(Isolated, Unisolated));
-        assert!(!cross_world_read_allowed(Isolated, Isolated));
+        for owner_write in [false, true] {
+            // Reads ignore the target's write setting.
+            assert!(cross_world_allowed(
+                Read,
+                Unisolated,
+                Unisolated,
+                owner_write
+            ));
+            assert!(!cross_world_allowed(
+                Read,
+                Unisolated,
+                Isolated,
+                owner_write
+            ));
+            assert!(!cross_world_allowed(
+                Read,
+                Isolated,
+                Unisolated,
+                owner_write
+            ));
+            assert!(!cross_world_allowed(Read, Isolated, Isolated, owner_write));
+        }
+        // A write needs the writer unisolated, the target unisolated, and its setting on.
+        for (reader, owner, owner_write, expected) in [
+            (Unisolated, Unisolated, true, true),
+            (Unisolated, Unisolated, false, false),
+            (Unisolated, Isolated, true, false),
+            (Unisolated, Isolated, false, false),
+            (Isolated, Unisolated, true, false),
+            (Isolated, Unisolated, false, false),
+            (Isolated, Isolated, true, false),
+            (Isolated, Isolated, false, false),
+        ] {
+            assert_eq!(
+                cross_world_allowed(Write, reader, owner, owner_write),
+                expected,
+                "write from {reader:?} into {owner:?} with write {owner_write}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -818,6 +1013,68 @@ mod tests {
         assert_eq!(
             hub.lease(Some("../etc"), Some("admin")).await.err(),
             Some(ResolveError::InvalidName)
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_write_needs_the_target_setting() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(&opener, HubLimits::default());
+        let arena = hub.lease(Some("arena"), Some("admin")).await.unwrap();
+        let garden = hub.lease(Some("garden"), Some("admin")).await.unwrap();
+        for world in [&arena, &garden] {
+            world
+                .service()
+                .world()
+                .set_isolation(Authority::Admin, Isolation::Unisolated)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            garden.authorize_write(&arena).await,
+            Err(ResolveError::UnknownWorld),
+            "the target's cross-world write is off by default"
+        );
+        arena
+            .service()
+            .world()
+            .set_cross_world_write(Authority::Admin, true)
+            .await
+            .unwrap();
+        assert_eq!(garden.authorize_write(&arena).await, Ok(()));
+        assert_eq!(
+            arena.authorize_write(&garden).await,
+            Err(ResolveError::UnknownWorld),
+            "garden's write setting is still off"
+        );
+
+        garden
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Isolated)
+            .await
+            .unwrap();
+        assert_eq!(
+            garden.authorize_write(&arena).await,
+            Err(ResolveError::UnknownWorld),
+            "an isolated writer writes nowhere"
+        );
+        garden
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        arena
+            .service()
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Isolated)
+            .await
+            .unwrap();
+        assert_eq!(
+            garden.authorize_write(&arena).await,
+            Err(ResolveError::UnknownWorld),
+            "an isolated target takes no writes"
         );
     }
 
@@ -1007,5 +1264,87 @@ mod tests {
             hub.create("../x").await.err(),
             Some(ResolveError::InvalidName)
         );
+    }
+
+    #[test]
+    fn directory_json_shape_names_loaded_not_open() {
+        let worlds = vec![
+            WorldInfo {
+                name: "lobby".to_owned(),
+                open: true,
+                presence: 2,
+            },
+            WorldInfo {
+                name: "attic".to_owned(),
+                open: false,
+                presence: 0,
+            },
+        ];
+        let value = directory_json(&worlds, "lobby");
+        assert_eq!(value["default"], serde_json::json!("lobby"));
+        let list = value["worlds"].as_array().expect("worlds is a list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["name"], serde_json::json!("lobby"));
+        assert_eq!(list[0]["loaded"], serde_json::json!(true));
+        assert_eq!(list[0]["default"], serde_json::json!(true));
+        assert_eq!(list[0]["presence"], serde_json::json!(2));
+        assert_eq!(list[1]["presence"], serde_json::json!(0));
+        assert_eq!(list[1]["name"], serde_json::json!("attic"));
+        assert_eq!(list[1]["loaded"], serde_json::json!(false));
+        assert_eq!(list[1]["default"], serde_json::json!(false));
+        // The honest shape: no entry may claim an "open" field.
+        for entry in list {
+            assert!(entry.get("open").is_none(), "entry must not carry `open`");
+            assert!(entry["name"].is_string());
+            assert!(entry["loaded"].is_boolean());
+            assert!(entry["default"].is_boolean());
+            assert!(entry["presence"].is_u64());
+        }
+        // An empty directory is a default with no worlds.
+        let value = directory_json(&[], "lobby");
+        assert_eq!(value["worlds"], serde_json::json!([]));
+    }
+
+    /// An opener whose open never completes, so the lease future can only
+    /// end by cancellation.
+    struct PendingOpener;
+
+    impl WorldOpener for PendingOpener {
+        fn open<'a>(&'a self, _name: &'a str, _create: bool) -> OpenFuture<'a> {
+            Box::pin(std::future::pending())
+        }
+
+        fn exists(&self, _name: &str) -> bool {
+            true
+        }
+
+        fn list(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn durable(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_lease_releases_its_slot() {
+        let opener: Arc<dyn WorldOpener> = Arc::new(PendingOpener);
+        let hub = WorldHub::new(
+            opener,
+            Some("admin".to_owned()),
+            "lobby",
+            HubLimits::default(),
+        );
+        let lease = hub.lease(Some("arena"), Some("admin"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), lease)
+                .await
+                .is_err(),
+            "the pending open should be cut off by the test deadline"
+        );
+        // The cancelled lease must not leak: its slot is gone, so the world
+        // is neither stuck open nor un-evictable.
+        assert_eq!(hub.open_count(), 0);
     }
 }

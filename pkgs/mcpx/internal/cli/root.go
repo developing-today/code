@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,19 +11,22 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"text/tabwriter"
 	"time"
 
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/spec"
+	mcpx "github.com/developing-today/code/pkgs/mcpx"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/sdnotify"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // newFlagSet creates a command's flag set and registers every setting the
@@ -37,6 +41,11 @@ import (
 func newFlagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	// Nil rather than the package default, so parseFlags can tell a usage
+	// a caller chose (the generated commands set one) from none at all and
+	// install the command's help as the usage. The flag package falls back
+	// to its default when Usage is nil and nothing installs one.
+	fs.Usage = nil
 	flagSetCommand[fs] = name
 	return fs
 }
@@ -62,6 +71,39 @@ func parseFlags(a *App, fs *flag.FlagSet, args []string) error {
 			return err
 		}
 	}
+	// `--help` after a subcommand must behave like `mcpx help <cmd>` (#274).
+	// Left to the flag package it prints "Usage of <cmd>:" followed by every
+	// setting bound above -- hundreds of plumbing flags that bury the
+	// command's own flags -- because the registry binds them all to this
+	// flag set. So a help flag in flag position is answered from the same
+	// declarations `help` uses, and the flag package's usage is replaced
+	// with that text too, so a parse error cannot resurrect the dump.
+	// A caller that set its own usage (the generated operation commands,
+	// whose usage names the one operation) keeps it: the parser prints it
+	// on a help flag and parseFlags passes the resulting ErrHelp through.
+	customUsage := fs.Usage != nil
+	if !customUsage {
+		fs.Usage = func() {
+			if a != nil {
+				if text, herr := a.helpText(cmd); herr == nil {
+					_, _ = fmt.Fprint(fs.Output(), text)
+					return
+				}
+			}
+			_, _ = fmt.Fprintf(fs.Output(), "mcpx %s\n\n  run `mcpx help %s` for this command's help\n",
+				fs.Name(), firstWord(fs.Name()))
+		}
+	}
+	if wantsHelp(fs, args) && !customUsage {
+		delete(flagSetCommand, fs)
+		if a != nil {
+			if err := a.helpFor(cmd); err == nil {
+				return flag.ErrHelp
+			}
+		}
+		fs.Usage()
+		return flag.ErrHelp
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -77,6 +119,62 @@ func parseFlags(a *App, fs *flag.FlagSet, args []string) error {
 		return parseFlagsHook(fs)
 	}
 	return nil
+}
+
+// isHelpToken reports whether one argument is the help flag in any of the
+// spellings the flag package itself treats as a help request.
+func isHelpToken(arg string) bool {
+	name := strings.TrimLeft(arg, "-")
+	if name == arg {
+		return false // no dashes: not a flag at all
+	}
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	return name == "h" || name == "help"
+}
+
+// wantsHelp reports whether args ask for help in flag position: before the
+// first positional argument and before "--", the only places the flag
+// package would act on it. A value a valued flag consumes is not a help
+// request (`--session --help` names a session), and a help flag after a
+// positional belongs to whatever that positional is (`mcpx run x.ts
+// --help` is the script's argument), so the walk mirrors the parser's:
+// boolean flags consume nothing, other flags consume their next argument,
+// and an unknown flag ends the walk so the parser can report it.
+func wantsHelp(fs *flag.FlagSet, args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			return false
+		}
+		if isHelpToken(arg) {
+			// A command that defines its own -h/--help flag owns it.
+			name := strings.TrimLeft(arg, "-")
+			if j := strings.IndexByte(name, '='); j >= 0 {
+				name = name[:j]
+			}
+			return fs.Lookup(name) == nil
+		}
+		if strings.Contains(arg, "=") {
+			continue
+		}
+		f := fs.Lookup(strings.TrimLeft(arg, "-"))
+		if f == nil {
+			return false
+		}
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !bf.IsBoolFlag() {
+			i++ // skip this flag's value
+		}
+	}
+	return false
+}
+
+func firstWord(s string) string {
+	if f := strings.Fields(s); len(f) > 0 {
+		return f[0]
+	}
+	return s
 }
 
 // parseFlagsHook lets a test stop a command the moment its flags are folded
@@ -110,6 +208,31 @@ func (a *App) adoptSettings() {
 	} else if dir := set.String("paths.cache"); dir != "" {
 		a.Paths = daemon.PathsAt(a.Paths.State, dir)
 	}
+	a.warnPathsConfigFile(set)
+}
+
+// warnPathsConfigFile warns when a paths.config entry names nothing
+// that exists.
+//
+// Entries govern the config chain (issue #1842): a directory is
+// searched with the usual spellings, and a file means exactly that
+// file. An entry naming neither is the one case that silently does
+// nothing, so say so rather than leaving the user to debug a
+// configuration that was never read.
+func (a *App) warnPathsConfigFile(set *settings.Set) {
+	if a.warnedPathsConfig {
+		return
+	}
+	for _, entry := range set.List("paths.config") {
+		if _, err := os.Stat(entry); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"mcpx: warning: paths.config entry %q does not exist; "+
+					"it contributes nothing to the config chain.\n",
+				entry)
+			a.warnedPathsConfig = true
+			return
+		}
+	}
 }
 
 // adoptSpec installs the MCP revision policy (spec.precedence, spec.first,
@@ -129,11 +252,37 @@ func (a *App) adoptSpec() error {
 	return nil
 }
 
+var processInstance struct {
+	once sync.Once
+	id   string
+}
+
+// InstanceID is this process's unique mcpx instance identity (#1877):
+// generated once per process, reported by this process's MCP server
+// as serverInfo.instance, and wired into pool.OwnInstanceID so the
+// self-connection guard can tell this daemon apart from a distinct
+// mcpx daemon configured as an upstream. Per-process, never
+// persisted: two daemons from the same install are different
+// instances, and a restarted daemon is a new one.
+func (a *App) InstanceID() string {
+	processInstance.once.Do(func() {
+		b := make([]byte, 16)
+		if _, err := RandSource.Read(b); err == nil {
+			processInstance.id = hex.EncodeToString(b)
+		} else {
+			processInstance.id = fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
+		}
+		pool.OwnInstanceID = processInstance.id
+	})
+	return processInstance.id
+}
+
 // CmdDaemon runs the daemon in the foreground.
 func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	fs := newFlagSet("daemon")
 	cfgPath := fs.String("config", a.ConfigPath, "config file")
 	detached := fs.Bool("detached", false, "internal: started in the background by the CLI")
+	takeover := fs.Bool("takeover", false, "take over the running daemon's listeners and children instead of starting fresh")
 	format := fs.String("format", "", "log rendering: text, json, json-pretty, logfmt, compact, bare")
 	include := fs.String("include", "", "ambient blocks on lifecycle records: host, user, process, network, version, env, all, none")
 	logDir := fs.String("log-dir", "", "durable log directory (default: the state directory)")
@@ -154,6 +303,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	// folded in here before anything resolves a server.
 	config.ApplyPoolSettings(cfg, a.Settings())
 	pool.Version = a.Version
+	pool.OwnInstanceID = a.InstanceID()
 
 	// The daemon keys its socket to the config it loaded, matching what the
 	// CLI computes, so a config edit yields a new daemon rather than a stale
@@ -198,7 +348,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 			sink = nil
 		} else {
 			writer = writer.WithFile(sink, slog.LevelDebug)
-			defer sink.Close()
+			defer func() { _ = sink.Close() }()
 		}
 	}
 	writer = writer.WithBase(map[string]any{logging.KeyTrace: string(daemonTrace)})
@@ -206,6 +356,11 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	handler := logging.NewSlogHandler(writer).WithSourceLevel(
 		logging.SourceLevel(firstSet(logSource.Value(), set.String("logging.source"), cfg.Logging.Source)))
 	logger := slog.NewLogLogger(handler, slog.LevelInfo)
+	// The back-channel socket plugins receive must be the socket this
+	// daemon actually binds (#1886, Codex on PR #2561): with
+	// MCPX_SOCKET set, Listen binds BindSocket(), not the computed
+	// paths.Socket, so record the bind socket here.
+	a.daemonSocket = paths.BindSocket()
 	srv, err := daemon.NewServer(daemon.Options{
 		Sink:     sink,
 		Config:   cfg,
@@ -214,11 +369,17 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		Logger:   logger,
 		IdleExit: a.Settings().Duration("daemon.idleExit"),
 		Settings: a.Settings(),
-		Augment:  a.augmentAdapters,
+		Augment:  a.augmentConfig,
 	})
 	if err != nil {
 		return err
 	}
+	// The daemon's one task store, shared with its MCP surface at
+	// MCPServer() (issue #1555). Set here, where the daemon server
+	// exists in this process; commands that never build one leave it
+	// nil and their MCP servers keep private stores.
+	a.daemonStore = srv.TaskStore()
+
 	// mcpx's own MCP server, on the listeners the daemon already has. Built
 	// here because the daemon cannot import the CLI that builds it, and
 	// mounted rather than given a listener of its own: two HTTP servers with
@@ -232,6 +393,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		}
 	}
 	srv.Address = a.Settings().String("daemon.address")
+	srv.ConfigArg = *cfgPath
 	srv.Origins = a.originPolicy()
 	if h := srv.Address; h != "" && h != "127.0.0.1" && h != "localhost" {
 		// Said once, loudly. The API is unauthenticated, so whoever can
@@ -270,8 +432,26 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		srv.PublishLifecycle(event, attrs)
 	}
 
-	if err := srv.Listen(a.Settings().Int("daemon.port")); err != nil {
-		return err
+	if *takeover {
+		ho, err := srv.TakeOver()
+		if err != nil {
+			return err
+		}
+		// systemd must learn the new main PID before the old one exits, or it
+		// treats the old process's exit as the service stopping.
+		if err := sdnotify.MainPID(os.Getpid()); err != nil {
+			logger.Printf("systemd readiness: %v", err)
+		}
+		if err := ho.Done(); err != nil {
+			logger.Printf("releasing the previous daemon: %v", err)
+		}
+	} else {
+		if err := srv.Listen(a.Settings().Int("daemon.port")); err != nil {
+			return err
+		}
+		if err := sdnotify.Ready(); err != nil {
+			logger.Printf("systemd readiness: %v", err)
+		}
 	}
 	defer func() {
 		stop := map[string]any{logging.KeyEvent: "daemon.stop"}
@@ -294,8 +474,16 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 func (a *App) CmdMan(ctx context.Context, args []string) error {
 	fs := newFlagSet("man")
 	install := fs.String("install", "", "write the page into this directory as man1/mcpx.1")
+	format := fs.String("format", "roff", "output format: roff (the man page) or markdown (the generated reference tree)")
+	out := fs.String("o", "", "write the markdown reference tree into this directory (with --format markdown)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
+	}
+	if *format == "markdown" {
+		return a.writeMarkdownReference(*out)
+	}
+	if *format != "roff" {
+		return fmt.Errorf("unknown --format %q: roff or markdown", *format)
 	}
 	page := ManPage(a.Version)
 	if *install == "" {
@@ -323,7 +511,7 @@ func (a *App) CmdCompletion(_ context.Context, args []string) error {
 	if shell == "" {
 		return errors.New("usage: mcpx completion <bash|zsh|fish>")
 	}
-	text, err := Completion(shell)
+	text, err := Completion(shell, a.Version)
 	if err != nil {
 		return err
 	}
@@ -339,6 +527,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 	showDefaults := fs.Bool("defaults", false, "print the built-in default layer that underlies every config")
 	showSchema := fs.Bool("schema", false, "print every setting, with its flag and variable")
 	withPlumbing := fs.Bool("plumbing", false, "include internal settings in --schema")
+	schemaFormat := fs.String("format", "", "output format for --schema: text, json or markdown (default text, or json with --json)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -353,13 +542,22 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		if serr != nil {
 			return serr
 		}
-		if a.JSON {
-			fmt.Println(sch.JSON(*withPlumbing))
-			return nil
+		format := *schemaFormat
+		if format == "" && a.JSON {
+			format = "json"
 		}
-		fmt.Print(sch.Describe(*withPlumbing))
-		if !*withPlumbing {
-			fmt.Println("\n(--plumbing also lists internal settings)")
+		switch format {
+		case "", "text":
+			fmt.Print(sch.Describe(*withPlumbing))
+			if !*withPlumbing {
+				fmt.Println("\n(--plumbing also lists internal settings)")
+			}
+		case "json":
+			fmt.Println(sch.JSON(*withPlumbing))
+		case "markdown":
+			fmt.Print(sch.Markdown(settings.MarkdownOptions{Plumbing: *withPlumbing}))
+		default:
+			return fmt.Errorf("unknown --format %q for --schema: want text, json or markdown", format)
 		}
 		return nil
 	}
@@ -396,6 +594,11 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		IdleTimeout string `json:"idleTimeout"`
 		CallTimeout string `json:"callTimeout"`
 		Protocol    string `json:"protocol,omitempty"`
+		// Auth is mcpauth.Auth.Describe(): the redacted summary
+		// ("bearer ${VAR}", "none", …) — the reference, never the
+		// resolved value, since this output gets pasted into issues
+		// (#1926).
+		Auth string `json:"auth"`
 	}
 	out := struct {
 		Path    string   `json:"path"`
@@ -408,6 +611,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 			Sharing: string(s.Sharing), Scope: string(s.Scope), Max: s.Max,
 			IdleTimeout: s.IdleTimeout.String(), CallTimeout: s.CallTimeout.String(),
 			Protocol: s.Protocol,
+			Auth:     s.Auth.Describe(),
 		}
 		if s.Stdio() {
 			r.Transport, r.Command = "stdio", s.Command
@@ -433,10 +637,18 @@ func (a *App) configSources(cfg *config.Config) error {
 		From    string `json:"from"`
 	}
 	out := struct {
-		Sources []string    `json:"sources"`
-		Servers []row       `json:"servers"`
-		Presets []presetRow `json:"presets,omitempty"`
+		Sources   []string    `json:"sources"`
+		Discovery []string    `json:"discovery,omitempty"`
+		Load      []string    `json:"load,omitempty"`
+		Divergent []string    `json:"divergent,omitempty"`
+		Servers   []row       `json:"servers"`
+		Presets   []presetRow `json:"presets,omitempty"`
 	}{Sources: cfg.Sources}
+	if cfg.Chain != nil {
+		out.Discovery = cfg.Chain.Discovery
+		out.Load = cfg.Chain.Load
+		out.Divergent = cfg.Chain.Divergent
+	}
 	// A value a preset supplied is a source too, and the one least likely to
 	// be remembered: it came from a name on the command line, not a file.
 	for _, v := range a.Settings().All() {
@@ -464,6 +676,20 @@ func (a *App) configSources(cfg *config.Config) error {
 		}
 		return nil
 	}
+	if cfg.Chain != nil && !cfg.Chain.Bypass {
+		fmt.Println("Discovery pass (searched for paths.config), nearest first:")
+		for _, p := range out.Discovery {
+			fmt.Println("   " + p)
+		}
+		fmt.Println("Load pass (files the chain resolved to), nearest first:")
+		for _, p := range out.Load {
+			fmt.Println("   " + p)
+		}
+		for _, d := range out.Divergent {
+			fmt.Println("  ! " + d)
+		}
+		fmt.Println()
+	}
 	fmt.Println("Files, nearest first:")
 	for i, p := range out.Sources {
 		marker := " "
@@ -475,22 +701,22 @@ func (a *App) configSources(cfg *config.Config) error {
 	if len(out.Presets) > 0 {
 		fmt.Println()
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
+		_, _ = fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
 		for _, r := range out.Presets {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	}
 	if len(out.Servers) == 0 {
 		return nil
 	}
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SERVER\tDEFINED IN")
+	_, _ = fmt.Fprintln(tw, "SERVER\tDEFINED IN")
 	for _, r := range out.Servers {
-		fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -527,6 +753,14 @@ func (a *App) CmdHelp(_ context.Context, args []string) error {
 		fmt.Print(Usage())
 		return nil
 	}
+	if args[0] == "agents" {
+		// A help topic, not a command: the agent documentation embedded
+		// in the binary, printed verbatim -- no heading, no wrapping --
+		// so the output is byte-identical to AGENTS.md and an agent can
+		// consume it exactly as it would the file.
+		fmt.Print(mcpx.AgentDocs)
+		return nil
+	}
 	return a.helpFor(args[0])
 }
 
@@ -534,6 +768,20 @@ func (a *App) CmdHelp(_ context.Context, args []string) error {
 // it. Both come from the same declarations the program runs on, so help
 // cannot describe a flag that does not exist or omit one that does.
 func (a *App) helpFor(name string) error {
+	text, err := a.helpText(name)
+	if err != nil {
+		return err
+	}
+	fmt.Print(text)
+	return nil
+}
+
+// helpText is helpFor as a string, so a flag set's usage can carry the same
+// text instead of the flag package's dump of every bound setting. A name
+// that names no command as a whole is retried by its first word: flag sets
+// for a subcommand are named for both words ("log record"), and the help
+// that covers them is the parent command's.
+func (a *App) helpText(name string) (string, error) {
 	var found *Command
 	for _, c := range Commands() {
 		if c.Name == name {
@@ -547,29 +795,33 @@ func (a *App) helpFor(name string) error {
 			}
 		}
 	}
-	if found == nil {
-		return fmt.Errorf("no command %q; run `mcpx help` for the list", name)
+	if found == nil && firstWord(name) != name {
+		return a.helpText(firstWord(name))
 	}
+	if found == nil {
+		return "", fmt.Errorf("no command %q; run `mcpx help` for the list", name)
+	}
+	var b strings.Builder
 	usageLine := found.Usage
 	if usageLine != "" {
 		usageLine = " " + usageLine
 	}
-	fmt.Printf("mcpx %s%s\n\n  %s\n", found.Name, usageLine, found.Summary)
+	fmt.Fprintf(&b, "mcpx %s%s\n\n  %s\n", found.Name, usageLine, found.Summary)
 	if len(found.Aliases) > 0 {
-		fmt.Printf("  also: %s\n", strings.Join(found.Aliases, ", "))
+		fmt.Fprintf(&b, "  also: %s\n", strings.Join(found.Aliases, ", "))
 	}
 	if found.Detail != "" {
-		fmt.Printf("\n%s\n", wrapAt(found.Detail, 76, "  "))
+		fmt.Fprintf(&b, "\n%s\n", wrapAt(found.Detail, 76, "  "))
 	}
 	if len(found.Examples) > 0 {
-		fmt.Println("\nEXAMPLES")
+		b.WriteString("\nEXAMPLES\n")
 		for _, ex := range found.Examples {
-			fmt.Printf("  %s\n", ex)
+			fmt.Fprintf(&b, "  %s\n", ex)
 		}
 	}
 	sch, err := settings.New(settings.Registry())
 	if err != nil {
-		return err
+		return "", err
 	}
 	applicable := sch.ForCommand(found.Name)
 	var lines []string
@@ -580,11 +832,25 @@ func (a *App) helpFor(name string) error {
 		lines = append(lines, fmt.Sprintf("  --%-26s %s", set.FlagName(), set.Short))
 	}
 	if len(lines) > 0 {
-		fmt.Println("\nSETTINGS (also readable from config and the environment)")
-		fmt.Println(strings.Join(lines, "\n"))
-		fmt.Println("\n  mcpx config --schema   shows every setting with its variable")
+		b.WriteString("\nSETTINGS (also readable from config and the environment)\n")
+		b.WriteString(strings.Join(lines, "\n"))
+		b.WriteString("\n\n  mcpx config --schema   shows every setting with its variable\n")
 	}
-	return nil
+	if groups := handFlagGroups(found.Name); len(groups) > 0 {
+		var flagLines []string
+		for _, g := range groups {
+			if g.Scope != found.Name {
+				flagLines = append(flagLines, "  "+g.Scope+":")
+			}
+			for _, f := range g.Flags {
+				flagLines = append(flagLines, fmt.Sprintf("  --%-26s %s", f.Name, f.Usage))
+			}
+		}
+		b.WriteString("\nFLAGS\n")
+		b.WriteString(strings.Join(flagLines, "\n"))
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }
 
 // wrapAt is a plain greedy wrap. Help that runs off the side of a terminal is
@@ -666,6 +932,8 @@ func Usage() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("HELP TOPICS\n")
+	b.WriteString("  mcpx help agents               print the agent documentation (AGENTS.md) embedded in this binary\n\n")
 	b.WriteString("  mcpx help <command>            usage, flags and settings for one command\n\n")
 	b.WriteString(usageFooter)
 	return b.String()

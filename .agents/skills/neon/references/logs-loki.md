@@ -51,11 +51,7 @@ for await (const record of neon.logs.query(projectId, branchId, {
 }
 
 const { data: fields } = await neon.logs.fields(projectId, branchId);
-const { data: serviceNames } = await neon.logs.fieldValues(
-  projectId,
-  branchId,
-  "service_name",
-);
+const { data: serviceNames } = await neon.logs.fieldValues(projectId, branchId, "service_name");
 ```
 
 `query`'s iterator always throws on error, but `fields` and `fieldValues` follow the client's `throwOnError`, which defaults to `false` and hands back `{ data, error }`. `fieldValues` resolves to the whole response, not a bare array: read `serviceNames.values`, and treat them as an arbitrary subset whenever `serviceNames.is_truncated` is true.

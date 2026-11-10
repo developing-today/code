@@ -1,28 +1,30 @@
-//! A durable queue of friend envelopes waiting to be pushed to the recipient's
-//! server.
+//! A durable queue of what this server sends to other servers: friend envelopes
+//! and signed artifacts, each to a target endpoint.
 //!
 //! Each change is one JSON line, synced before it counts. The file is replayed
-//! on open, so an envelope that was not finished survives a restart. A line cut
+//! on open, so an entry that was not finished survives a restart. A line cut
 //! short by a crash was never acknowledged, so it is dropped on open.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::net::IpAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
-use reqwest::{Client, StatusCode, Url, redirect};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
+use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh_tickets::endpoint::EndpointTicket;
+
+use crate::artifact::{self, SignedArtifact};
 use crate::directory::Envelope;
+use crate::envelope_net::deliver;
 
 /// Deliveries attempted before an envelope is given up.
 pub const MAX_ATTEMPTS: u32 = 12;
 const BASE_DELAY_MS: u64 = 60_000;
 const MAX_DELAY_MS: u64 = 6 * 60 * 60 * 1000;
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How a queued envelope ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,20 +49,40 @@ pub enum Outcome {
     Retry(String),
 }
 
-/// One queued envelope and what has happened to it so far.
+/// What the outbox carries to another server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Payload {
+    /// A friend envelope, for the recipient's server.
+    Envelope(Envelope),
+    /// A signed artifact, for a home server that holds the account's chain.
+    Artifact(SignedArtifact),
+}
+
+impl Payload {
+    /// The key the queue files this payload under, so one payload is queued once.
+    #[must_use]
+    pub fn key(&self, target: &str) -> String {
+        match self {
+            Self::Envelope(envelope) => envelope.id.clone(),
+            Self::Artifact(artifact) => format!("artifact {target} {}", artifact.hash),
+        }
+    }
+}
+
+/// One queued payload and what has happened to it so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// The explorer endpoint on the recipient's server.
-    pub url: String,
-    /// The envelope to deliver.
-    pub envelope: Envelope,
+    /// The recipient: an endpoint ticket or a bare node ID.
+    pub target: String,
+    /// What to deliver.
+    pub payload: Payload,
     /// Attempts made so far.
     pub attempts: u32,
     /// The earliest time the next attempt may run, in Unix milliseconds.
     pub next_at: u64,
     /// The reason for the last failed attempt or the final outcome.
     pub last_error: Option<String>,
-    /// Set once the envelope is no longer queued.
+    /// Set once the payload is no longer queued.
     pub finish: Option<Finish>,
 }
 
@@ -68,8 +90,12 @@ pub struct Entry {
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Record {
     Queued {
-        url: String,
+        target: String,
         envelope: Envelope,
+    },
+    QueuedArtifact {
+        target: String,
+        artifact: SignedArtifact,
     },
     Attempted {
         id: String,
@@ -82,6 +108,9 @@ enum Record {
         attempts: u32,
         outcome: Finish,
         detail: Option<String>,
+    },
+    Withdrawn {
+        id: String,
     },
 }
 
@@ -97,26 +126,46 @@ impl Outbox {
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read, or a complete line is corrupt.
+    /// Fails if the file cannot be read, a complete line is corrupt, or a
+    /// journal record violates the outbox state machine.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let mut outbox = Self {
             path: path.into(),
             entries: BTreeMap::new(),
         };
-        let text = match fs::read_to_string(&outbox.path) {
-            Ok(text) => text,
+        let bytes = match fs::read(&outbox.path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(outbox),
             Err(error) => return Err(error).context("reading the envelope outbox"),
         };
         let mut kept = 0;
-        for (number, line) in text.split_inclusive('\n').enumerate() {
-            let complete = line.ends_with('\n');
-            match serde_json::from_str::<Record>(line.trim_end()) {
+        for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if !line.ends_with(b"\n") {
+                // The final line has no newline: a crash cut the append
+                // short. Parseable or not, it was never completely
+                // written, so it is torn and dropped — the same rule
+                // ArtifactLog::open and Directory::replay apply. Keeping
+                // a parseable torn line would let the next append merge
+                // two records onto one line and brick the queue (#1620).
+                // `kept` stays at the last complete line, so the file is
+                // truncated to it below.
+                break;
+            }
+            let text = std::str::from_utf8(line)
+                .with_context(|| format!("envelope outbox line {} is corrupt", number + 1))?;
+            if text.trim().is_empty() {
+                // Blank lines carry no records, but they are complete bytes in
+                // the journal and must remain before any later torn tail.
+                kept += line.len();
+                continue;
+            }
+            match serde_json::from_str::<Record>(text.trim_end()) {
                 Ok(record) => {
-                    outbox.apply(record)?;
+                    outbox.apply(record).with_context(|| {
+                        format!("envelope outbox line {} is refused", number + 1)
+                    })?;
                     kept += line.len();
                 }
-                Err(_) if !complete => break,
                 Err(error) => {
                     return Err(error).with_context(|| {
                         format!("envelope outbox line {} is corrupt", number + 1)
@@ -124,7 +173,7 @@ impl Outbox {
                 }
             }
         }
-        if kept < text.len() {
+        if kept < bytes.len() {
             OpenOptions::new()
                 .write(true)
                 .open(&outbox.path)?
@@ -133,23 +182,42 @@ impl Outbox {
         Ok(outbox)
     }
 
-    /// Queues `envelope` for delivery to `url`, due immediately.
+    /// Queues `envelope` for delivery to the node `target`, due immediately.
     ///
     /// # Errors
     ///
-    /// Fails if the URL is not allowed, the envelope is already queued, or the
+    /// Fails if the node ID is malformed, the envelope is already queued, or the
     /// record cannot be written.
-    pub fn enqueue(&mut self, url: &str, envelope: Envelope) -> Result<()> {
-        check_url(url)?;
-        ensure!(
-            !self.entries.contains_key(&envelope.id),
-            "envelope {} is already queued",
-            envelope.id
-        );
-        self.commit(Record::Queued {
-            url: url.to_owned(),
-            envelope,
-        })
+    pub fn enqueue(&mut self, target: &str, envelope: Envelope) -> Result<()> {
+        check_target(target)?;
+        self.enqueue_payload(&Payload::Envelope(envelope), target)
+    }
+
+    /// Queues `artifact` for a home server at `target`, due immediately.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the target is malformed, the artifact is already queued for it,
+    /// or the record cannot be written.
+    pub fn enqueue_artifact(&mut self, target: &str, artifact: SignedArtifact) -> Result<()> {
+        check_target(target)?;
+        self.enqueue_payload(&Payload::Artifact(artifact), target)
+    }
+
+    fn enqueue_payload(&mut self, payload: &Payload, target: &str) -> Result<()> {
+        let key = payload.key(target);
+        ensure!(!self.entries.contains_key(&key), "{key} is already queued");
+        let record = match payload {
+            Payload::Envelope(envelope) => Record::Queued {
+                target: target.to_owned(),
+                envelope: envelope.clone(),
+            },
+            Payload::Artifact(artifact) => Record::QueuedArtifact {
+                target: target.to_owned(),
+                artifact: artifact.clone(),
+            },
+        };
+        self.commit(record)
     }
 
     /// The IDs of envelopes that are queued and due at `now`.
@@ -166,6 +234,22 @@ impl Outbox {
     #[must_use]
     pub fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries.get(id)
+    }
+
+    /// Removes an envelope that was queued but never attempted, as if it had
+    /// never been queued.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `id` is not queued, has been attempted, or the record cannot be
+    /// written.
+    pub fn withdraw(&mut self, id: &str) -> Result<()> {
+        let entry = self.entries.get(id).context("envelope is not queued")?;
+        ensure!(
+            entry.attempts == 0 && entry.finish.is_none(),
+            "envelope {id} was already attempted"
+        );
+        self.commit(Record::Withdrawn { id: id.to_owned() })
     }
 
     /// Records the outcome of an attempt made at `now`.
@@ -206,23 +290,9 @@ impl Outbox {
         self.commit(record)
     }
 
-    /// Delivers every envelope due at `now`, recording each outcome as it
-    /// happens. Returns how many attempts were made.
-    ///
-    /// # Errors
-    ///
-    /// Fails if an outcome cannot be written. Envelopes already recorded stay
-    /// recorded.
-    pub async fn flush(&mut self, client: &Client, now: u64) -> Result<usize> {
-        let due = self.due(now);
-        for id in &due {
-            let Some(entry) = self.entries.get(id) else {
-                continue;
-            };
-            let outcome = deliver(client, &entry.url, &entry.envelope).await;
-            self.record(id, now, outcome)?;
-        }
-        Ok(due.len())
+    /// Every queued envelope, finished or not, in ID order.
+    pub fn entries(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.values()
     }
 
     fn commit(&mut self, record: Record) -> Result<()> {
@@ -239,24 +309,11 @@ impl Outbox {
 
     fn apply(&mut self, record: Record) -> Result<()> {
         match record {
-            Record::Queued { url, envelope } => {
-                ensure!(
-                    !self.entries.contains_key(&envelope.id),
-                    "envelope {} is queued twice",
-                    envelope.id
-                );
-                let id = envelope.id.clone();
-                self.entries.insert(
-                    id,
-                    Entry {
-                        url,
-                        envelope,
-                        attempts: 0,
-                        next_at: 0,
-                        last_error: None,
-                        finish: None,
-                    },
-                );
+            Record::Queued { target, envelope } => {
+                self.insert_queued(target, Payload::Envelope(envelope))?;
+            }
+            Record::QueuedArtifact { target, artifact } => {
+                self.insert_queued(target, Payload::Artifact(artifact))?;
             }
             Record::Attempted {
                 id,
@@ -265,6 +322,16 @@ impl Outbox {
                 error,
             } => {
                 let entry = self.entry_mut(&id)?;
+                ensure!(entry.finish.is_none(), "envelope {id} already finished");
+                let expected_attempts = entry.attempts + 1;
+                ensure!(
+                    attempts == expected_attempts,
+                    "outbox record for envelope {id} expected {expected_attempts} attempts, got {attempts}"
+                );
+                ensure!(
+                    attempts < MAX_ATTEMPTS,
+                    "outbox record attempts envelope {id} at the retry limit"
+                );
                 entry.attempts = attempts;
                 entry.next_at = next_at;
                 entry.last_error = Some(error);
@@ -276,11 +343,74 @@ impl Outbox {
                 detail,
             } => {
                 let entry = self.entry_mut(&id)?;
+                ensure!(entry.finish.is_none(), "envelope {id} already finished");
+                let expected_attempts = entry.attempts + 1;
+                ensure!(
+                    attempts == expected_attempts,
+                    "outbox record for envelope {id} expected {expected_attempts} attempts, got {attempts}"
+                );
+                ensure!(
+                    attempts <= MAX_ATTEMPTS,
+                    "outbox record exceeds the retry limit for envelope {id}"
+                );
+                match outcome {
+                    Finish::Delivered => ensure!(
+                        detail.is_none(),
+                        "delivered outbox record for envelope {id} has refusal detail"
+                    ),
+                    Finish::Refused => ensure!(
+                        detail.is_some(),
+                        "refused outbox record for envelope {id} is missing detail"
+                    ),
+                    Finish::GaveUp => {
+                        ensure!(
+                            attempts == MAX_ATTEMPTS,
+                            "gave-up outbox record for envelope {id} is not at the retry limit"
+                        );
+                        ensure!(
+                            detail.is_some(),
+                            "gave-up outbox record for envelope {id} is missing detail"
+                        );
+                    }
+                }
                 entry.attempts = attempts;
                 entry.finish = Some(outcome);
                 entry.last_error = detail;
             }
+            Record::Withdrawn { id } => {
+                let entry = self
+                    .entries
+                    .get(&id)
+                    .with_context(|| format!("outbox record withdraws unknown envelope {id}"))?;
+                ensure!(
+                    entry.attempts == 0 && entry.finish.is_none(),
+                    "envelope {id} was already attempted"
+                );
+                self.entries.remove(&id);
+            }
         }
+        Ok(())
+    }
+
+    fn insert_queued(&mut self, target: String, payload: Payload) -> Result<()> {
+        // The live path checks the target in the enqueue verbs
+        // before committing; replay must hold the same line, or a journal
+        // record the live API could never produce loads as a due entry and
+        // only fails at flush time as a spurious refusal (#5635).
+        check_target(&target)?;
+        let key = payload.key(&target);
+        ensure!(!self.entries.contains_key(&key), "{key} is queued twice");
+        self.entries.insert(
+            key,
+            Entry {
+                target,
+                payload,
+                attempts: 0,
+                next_at: 0,
+                last_error: None,
+                finish: None,
+            },
+        );
         Ok(())
     }
 
@@ -291,74 +421,54 @@ impl Outbox {
     }
 }
 
-/// Accepts `https` URLs, and `http` only for a loopback host.
+/// Delivers every envelope due at `now`, recording each outcome as it happens.
+///
+/// The lock is released while a delivery is in flight, so enqueueing is not
+/// held up by a slow recipient. Returns how many attempts were made.
 ///
 /// # Errors
 ///
-/// Fails for anything else, so an envelope is never sent in the clear to
-/// another machine.
-pub fn check_url(url: &str) -> Result<()> {
-    let parsed = Url::parse(url).context("outbox URL is not a URL")?;
-    match parsed.scheme() {
-        "https" => Ok(()),
-        "http" => {
-            let host = parsed
-                .host_str()
-                .unwrap_or_default()
-                .trim_start_matches('[')
-                .trim_end_matches(']');
-            ensure!(
-                host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
-                "outbox URL must use https unless it is a loopback address"
-            );
-            Ok(())
-        }
-        other => bail!("outbox URL scheme {other:?} is not supported"),
-    }
-}
-
-/// An HTTP client for delivery: bounded in time, and no redirects followed.
-///
-/// # Errors
-///
-/// Fails if the TLS backend cannot be initialised.
-pub fn http_client() -> Result<Client> {
-    // reqwest's rustls backend needs a process-wide provider. If one is already
-    // installed this fails harmlessly, and the installed one is used.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    Client::builder()
-        .timeout(TIMEOUT)
-        .redirect(redirect::Policy::none())
-        .build()
-        .context("building the envelope delivery client")
-}
-
-/// Posts `envelope` to the explorer endpoint at `url`, as the manual receive
-/// form does.
-pub async fn deliver(client: &Client, url: &str, envelope: &Envelope) -> Outcome {
-    let json = match serde_json::to_string(envelope) {
-        Ok(json) => json,
-        Err(error) => return Outcome::Refused(format!("envelope does not encode: {error}")),
+/// Fails if an outcome cannot be written. Envelopes already recorded stay
+/// recorded.
+pub async fn flush(outbox: &Mutex<Outbox>, endpoint: &Endpoint, now: u64) -> Result<usize> {
+    let due: Vec<(String, String, Payload)> = {
+        let queue = outbox.lock().await;
+        queue
+            .due(now)
+            .into_iter()
+            .filter_map(|id| {
+                let entry = queue.entry(&id)?;
+                Some((id.clone(), entry.target.clone(), entry.payload.clone()))
+            })
+            .collect()
     };
-    match client
-        .post(url)
-        .form(&[("action", "receive"), ("envelope", json.as_str())])
-        .send()
-        .await
-    {
-        Ok(response) => classify(response.status()),
-        Err(error) => Outcome::Retry(format!("send failed: {error}")),
+    for (id, target, payload) in &due {
+        let outcome = match check_target(target) {
+            Ok(addr) => match payload {
+                Payload::Envelope(envelope) => deliver(endpoint, addr, envelope).await,
+                Payload::Artifact(artifact) => artifact::push(endpoint, addr, artifact).await,
+            },
+            Err(error) => Outcome::Refused(format!("{error:#}")),
+        };
+        outbox.lock().await.record(id, now, outcome)?;
     }
+    Ok(due.len())
 }
 
-fn classify(status: StatusCode) -> Outcome {
-    if status.is_success() {
-        Outcome::Delivered
-    } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        Outcome::Retry(format!("server answered {status}"))
-    } else {
-        Outcome::Refused(format!("server refused with {status}"))
+/// Reads a recipient: an endpoint ticket, or a bare node ID that resolves
+/// through the discovery services the endpoint uses.
+///
+/// # Errors
+///
+/// Fails if `target` is neither, so nothing is queued for it.
+pub fn check_target(target: &str) -> Result<EndpointAddr> {
+    if let Ok(ticket) = target.parse::<EndpointTicket>() {
+        return Ok(ticket.endpoint_addr().clone());
     }
+    target
+        .parse::<EndpointId>()
+        .map(EndpointAddr::from)
+        .map_err(|error| anyhow!("{target} is neither an endpoint ticket nor a node ID: {error}"))
 }
 
 fn backoff_ms(attempts: u32) -> u64 {
@@ -371,8 +481,6 @@ fn backoff_ms(attempts: u32) -> u64 {
 mod tests {
     use super::*;
     use crate::directory::EnvelopeKind;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
 
     const NOW: u64 = 1_000_000_000;
     const MINUTE: u64 = 60_000;
@@ -390,70 +498,80 @@ mod tests {
         }
     }
 
+    fn target() -> String {
+        iroh::SecretKey::from_bytes(&[7; 32]).public().to_string()
+    }
+
     fn path(dir: &tempfile::TempDir) -> PathBuf {
         dir.path().join("outbox.jsonl")
     }
 
-    /// Accepts one connection, answers `status`, and returns what it read.
-    async fn stub(status: &'static str) -> (String, tokio::task::JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/explore/act", listener.local_addr().unwrap());
-        let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            loop {
-                let read = socket.read(&mut chunk).await.unwrap();
-                if read == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..read]);
-                let text = String::from_utf8_lossy(&buf).into_owned();
-                if let Some(head) = text.find("\r\n\r\n") {
-                    let length = text[..head]
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(str::trim)
-                                .map(str::to_owned)
-                        })
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if buf.len() >= head + 4 + length {
-                        break;
-                    }
-                }
-            }
-            let response =
-                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            socket.write_all(response.as_bytes()).await.unwrap();
-            String::from_utf8_lossy(&buf).into_owned()
-        });
-        (url, handle)
+    fn queued_line(id: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope(id)).unwrap();
+        fs::read_to_string(path(&dir))
+            .unwrap()
+            .trim_end_matches('\n')
+            .to_owned()
+    }
+
+    fn queued_record(id: &str) -> Record {
+        Record::Queued {
+            target: target(),
+            envelope: envelope(id),
+        }
+    }
+
+    fn write_records(dir: &tempfile::TempDir, records: impl IntoIterator<Item = Record>) {
+        let text = records
+            .into_iter()
+            .map(|record| format!("{}\n", serde_json::to_string(&record).unwrap()))
+            .collect::<String>();
+        fs::write(path(dir), text).unwrap();
+    }
+
+    fn assert_replay_error(records: impl IntoIterator<Item = Record>, line: usize, reason: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        write_records(&dir, records);
+        let error = Outbox::open(path(&dir))
+            .err()
+            .expect("invalid replay should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains(&format!("line {line}")), "{message}");
+        assert!(message.contains(reason), "{message}");
+    }
+
+    #[test]
+    fn a_target_is_a_ticket_or_a_bare_node_id() {
+        let id = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let addr = EndpointAddr::from(id);
+        let ticket = EndpointTicket::new(addr.clone()).to_string();
+        assert_eq!(check_target(&ticket).unwrap(), addr);
+        assert_eq!(check_target(&id.to_string()).unwrap(), addr);
+        assert!(check_target("not a target").is_err());
     }
 
     #[test]
     fn queued_envelopes_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
         drop(outbox);
 
         let reopened = Outbox::open(path(&dir)).unwrap();
         assert_eq!(reopened.due(NOW), vec!["e1".to_owned()]);
-        assert_eq!(reopened.entry("e1").unwrap().envelope, envelope("e1"));
+        assert_eq!(
+            reopened.entry("e1").unwrap().payload,
+            Payload::Envelope(envelope("e1"))
+        );
     }
 
     #[test]
     fn a_retry_waits_for_its_backoff_and_then_gives_up() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
 
         outbox
             .record("e1", NOW, Outcome::Retry("down".to_owned()))
@@ -481,9 +599,7 @@ mod tests {
     fn a_refusal_is_final() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
         outbox
             .record("e1", NOW, Outcome::Refused("bad signature".to_owned()))
             .unwrap();
@@ -492,25 +608,120 @@ mod tests {
         assert_eq!(entry.last_error.as_deref(), Some("bad signature"));
         assert!(outbox.due(u64::MAX).is_empty());
         assert!(outbox.record("e1", NOW, Outcome::Delivered).is_err());
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert_eq!(reopened.entry("e1").unwrap().finish, Some(Finish::Refused));
+        assert_eq!(
+            reopened.entry("e1").unwrap().last_error.as_deref(),
+            Some("bad signature")
+        );
+    }
+
+    #[test]
+    fn a_delivery_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
+        outbox.record("e1", NOW, Outcome::Delivered).unwrap();
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert_eq!(
+            reopened.entry("e1").unwrap().finish,
+            Some(Finish::Delivered)
+        );
+        assert!(reopened.entry("e1").unwrap().last_error.is_none());
+    }
+
+    #[test]
+    fn a_withdrawn_envelope_is_gone_and_stays_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
+        outbox.withdraw("e1").unwrap();
+        assert!(outbox.entry("e1").is_none());
+        assert!(outbox.due(u64::MAX).is_empty());
+        assert!(outbox.withdraw("e1").is_err());
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert!(reopened.entry("e1").is_none());
+    }
+
+    #[test]
+    fn test_blank_and_whitespace_lines_are_skipped_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!("{}\n\n \t\r\n{}\n\n", queued_line("e1"), queued_line("e2"));
+        fs::write(path(&dir), &contents).unwrap();
+
+        let outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert!(outbox.entry("e2").is_some());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), contents);
+    }
+
+    #[test]
+    fn test_blank_lines_before_a_torn_tail_are_kept_when_the_tail_is_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = format!("{}\n \t\n", queued_line("e1"));
+        fs::write(path(&dir), format!("{kept}{{\"op\":\"queued\"")).unwrap();
+
+        let outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), kept);
     }
 
     #[test]
     fn a_torn_last_line_is_dropped_and_not_mixed_into_the_next_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox
-            .enqueue("https://bo.example/explore/act", envelope("e1"))
-            .unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
         drop(outbox);
         let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
-        file.write_all(b"{\"op\":\"queued\",\"url\"").unwrap();
+        // The tail is cut after the first byte of a multibyte name.
+        file.write_all(b"{\"name\":\"Jos\xc3").unwrap();
         drop(file);
 
         let mut outbox = Outbox::open(path(&dir)).unwrap();
         assert!(outbox.entry("e1").is_some());
-        outbox
-            .enqueue("https://bo.example/explore/act", envelope("e2"))
+        outbox.enqueue(&target(), envelope("e2")).unwrap();
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert!(reopened.entry("e1").is_some() && reopened.entry("e2").is_some());
+    }
+
+    #[test]
+    fn a_parseable_torn_last_line_is_also_dropped() {
+        // #1620: the torn tail here is a complete JSON record missing
+        // only its trailing newline. Before the fix, open accepted it,
+        // and the next append merged two records onto one line.
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
+        drop(outbox);
+        // A whole record line for e2, written by a healthy outbox, with
+        // its newline stripped to simulate the crash cut.
+        let scratch = tempfile::tempdir().unwrap();
+        let mut other = Outbox::open(path(&scratch)).unwrap();
+        other.enqueue(&target(), envelope("e2")).unwrap();
+        drop(other);
+        let line = fs::read_to_string(path(&scratch)).unwrap();
+        let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
+        file.write_all(line.trim_end_matches('\n').as_bytes())
             .unwrap();
+        drop(file);
+
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert!(
+            outbox.entry("e2").is_none(),
+            "the parseable torn record must be dropped, not accepted"
+        );
+        // The file was truncated to the last complete line, so the next
+        // append starts on its own line and round-trips.
+        outbox.enqueue(&target(), envelope("e2")).unwrap();
         drop(outbox);
 
         let reopened = Outbox::open(path(&dir)).unwrap();
@@ -520,90 +731,156 @@ mod tests {
     #[test]
     fn a_corrupt_complete_line_stops_the_load() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(path(&dir), "not json\n").unwrap();
-        assert!(Outbox::open(path(&dir)).is_err());
+        fs::write(path(&dir), "\nnot json\n").unwrap();
+        let error = Outbox::open(path(&dir)).err().unwrap();
+        assert!(format!("{error:#}").contains("envelope outbox line 2 is corrupt"));
     }
 
     #[test]
-    fn only_https_or_loopback_http_urls_are_accepted() {
-        assert!(check_url("https://bo.example/explore/act").is_ok());
-        assert!(check_url("http://127.0.0.1:9/explore/act").is_ok());
-        assert!(check_url("http://localhost:9/explore/act").is_ok());
-        assert!(check_url("http://[::1]:9/explore/act").is_ok());
-        assert!(check_url("http://bo.example/explore/act").is_err());
-        assert!(check_url("ftp://bo.example/explore/act").is_err());
-        assert!(check_url("not a url").is_err());
-    }
-
-    #[tokio::test]
-    async fn delivery_posts_the_envelope_to_the_act_route() {
-        let client = http_client().unwrap();
-        let (url, request) = stub("200 OK").await;
-        let outcome = deliver(&client, &url, &envelope("e1")).await;
-        assert_eq!(outcome, Outcome::Delivered);
-        let received = request.await.unwrap();
-        assert!(received.starts_with("POST /explore/act "));
-        assert!(received.contains("action=receive"));
-        assert!(received.contains("envelope=%7B"));
-    }
-
-    #[tokio::test]
-    async fn delivery_classifies_responses() {
-        let client = http_client().unwrap();
-
-        let (url, request) = stub("503 Service Unavailable").await;
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Retry(_)
-        ));
-        request.await.unwrap();
-
-        let (url, request) = stub("429 Too Many Requests").await;
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Retry(_)
-        ));
-        request.await.unwrap();
-
-        let (url, request) = stub("401 Unauthorized").await;
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Refused(_)
-        ));
-        request.await.unwrap();
-
-        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/explore/act", closed.local_addr().unwrap());
-        drop(closed);
-        assert!(matches!(
-            deliver(&client, &url, &envelope("e1")).await,
-            Outcome::Retry(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn flush_delivers_due_envelopes_and_keeps_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
-        let client = http_client().unwrap();
-        let (ok_url, ok_request) = stub("200 OK").await;
-        let (busy_url, busy_request) = stub("503 Service Unavailable").await;
-
-        let mut outbox = Outbox::open(path(&dir)).unwrap();
-        outbox.enqueue(&ok_url, envelope("e1")).unwrap();
-        outbox.enqueue(&busy_url, envelope("e2")).unwrap();
-
-        assert_eq!(outbox.flush(&client, NOW).await.unwrap(), 2);
-        ok_request.await.unwrap();
-        busy_request.await.unwrap();
-        assert_eq!(outbox.entry("e1").unwrap().finish, Some(Finish::Delivered));
-        assert_eq!(outbox.entry("e2").unwrap().next_at, NOW + MINUTE);
-        assert!(outbox.due(NOW).is_empty());
-
-        let reopened = Outbox::open(path(&dir)).unwrap();
-        assert_eq!(
-            reopened.entry("e1").unwrap().finish,
-            Some(Finish::Delivered)
+    fn replay_rejects_attempt_after_finish() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    outcome: Finish::Delivered,
+                    detail: None,
+                },
+                Record::Attempted {
+                    id: "e1".to_owned(),
+                    attempts: 2,
+                    next_at: NOW + MINUTE,
+                    error: "down".to_owned(),
+                },
+            ],
+            3,
+            "already finished",
         );
-        assert_eq!(reopened.due(NOW + MINUTE), vec!["e2".to_owned()]);
+    }
+
+    #[test]
+    fn replay_rejects_a_second_finish() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    outcome: Finish::Delivered,
+                    detail: None,
+                },
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 2,
+                    outcome: Finish::Refused,
+                    detail: Some("bad signature".to_owned()),
+                },
+            ],
+            3,
+            "already finished",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_attempt_count_regression() {
+        let mut records = vec![queued_record("e1")];
+        for attempts in 1..=5 {
+            records.push(Record::Attempted {
+                id: "e1".to_owned(),
+                attempts,
+                next_at: NOW + u64::from(attempts) * MINUTE,
+                error: "down".to_owned(),
+            });
+        }
+        records.push(Record::Attempted {
+            id: "e1".to_owned(),
+            attempts: 2,
+            next_at: NOW + 2 * MINUTE,
+            error: "down".to_owned(),
+        });
+
+        assert_replay_error(records, 7, "expected 6 attempts, got 2");
+    }
+
+    #[test]
+    fn replay_rejects_withdrawal_after_an_attempt() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Attempted {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    next_at: NOW + MINUTE,
+                    error: "down".to_owned(),
+                },
+                Record::Withdrawn {
+                    id: "e1".to_owned(),
+                },
+            ],
+            3,
+            "already attempted",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_withdrawal_after_finish() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    outcome: Finish::Delivered,
+                    detail: None,
+                },
+                Record::Withdrawn {
+                    id: "e1".to_owned(),
+                },
+            ],
+            3,
+            "already attempted",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_queued_record_with_a_malformed_target() {
+        assert_replay_error(
+            [Record::Queued {
+                target: "not a target".to_owned(),
+                envelope: envelope("e1"),
+            }],
+            1,
+            "is neither an endpoint ticket nor a node ID",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_queued_artifact_record_with_a_malformed_target() {
+        let artifact = SignedArtifact {
+            author: "00".to_owned(),
+            seq: 1,
+            prev: String::new(),
+            kind: "note".to_owned(),
+            body: serde_json::Value::Null,
+            after: Vec::new(),
+            hash: "00".to_owned(),
+            signature: "00".to_owned(),
+        };
+        assert_replay_error(
+            [Record::QueuedArtifact {
+                target: "not a target".to_owned(),
+                artifact,
+            }],
+            1,
+            "is neither an endpoint ticket nor a node ID",
+        );
+    }
+
+    #[test]
+    fn a_node_id_is_required() {
+        assert!(check_target(&target()).is_ok());
+        assert!(check_target("https://bo.example/envelope").is_err());
+        assert!(check_target("not a node").is_err());
     }
 }

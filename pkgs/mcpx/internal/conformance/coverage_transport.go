@@ -16,6 +16,8 @@ func init() {
 		C("streamable-http-x-mcp-header-client-must-mirror", "mcpclient.TestParamHeaders/2026-07-28/transport/param-headers-mirror-and-omit-null"),
 		C("streamable-http-client-rejects-invalid-x-mcp-header", "mcpclient.TestToolHeaderAnnotations/2026-07-28/transport/client-rejects-invalid-x-mcp-header", "mcpclient.TestModernHTTPHeaders/2026-07-28/transport/client-excludes-tool-with-invalid-x-mcp-header"),
 		C("streamable-http-client-relist-on-header-mismatch", "mcpclient.TestModernHTTPHeaders/2026-07-28/transport/client-relists-and-retries-on-header-mismatch"),
+		C("streamable-http-client-reinit-on-404", "mcpclient.TestLegacySession404Recovery/2025-11-25/transport/client-reinitializes-on-session-404-and-retries-once@2025-03-26,2025-06-18,2025-11-25"),
+		C("streamable-http-client-reissue-broken-request", "mcpclient.TestModernReissueBrokenRequest/2026-07-28/transport/client-reissues-broken-request-once"),
 		C("streamable-http-client-polls-after-close", "mcpclient.TestLegacyHTTPStreamResumption/2025-11-25/transport/client-resumes-closed-stream-with-last-event-id-after-retry"),
 		C("streamable-http-client-respects-retry", "mcpclient.TestLegacyHTTPStreamResumption/2025-11-25/transport/client-resumes-closed-stream-with-last-event-id-after-retry"),
 		C("streamable-http-client-resume-with-last-event-id", "mcpclient.TestLegacyHTTPStreamResumption/2025-11-25/transport/client-resumes-closed-stream-with-last-event-id-after-retry@2025-03-26,2025-06-18,2025-11-25"),
@@ -111,8 +113,6 @@ func init() {
 		),
 	)
 	registerGaps(
-		Gap{ID: "streamable-http-client-reissue-broken-request", Side: Client, Issue: "#203", Why: "a broken 2026-07-28 response stream is reported lost to the caller (http.go); nothing re-issues the request with a new id"},
-		Gap{ID: "streamable-http-client-reinit-on-404", Side: Client, Issue: "#203", Why: "a 404 for the session is returned as an error; no new initialize"},
 		Gap{ID: "stdio-client-restart-crashed-server", Side: Client, Issue: "#257", Why: "unverified: the in-flight call fails and the pool respawns only on the next acquire, subject to its start-failure cooldown"},
 	)
 }

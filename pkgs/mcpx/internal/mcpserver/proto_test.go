@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // The revision matrix is a claim about the specification, and the schemas
@@ -96,7 +96,7 @@ func TestEveryRevisionIsADateSoOrderingWorks(t *testing.T) {
 		if len(v) != len("2025-03-26") || strings.Count(v, "-") != 2 {
 			t.Fatalf("%q is not a date; AtLeast compares revisions lexically", v)
 		}
-		if prev != "" && !(v > prev) {
+		if prev != "" && (v <= prev) {
 			t.Errorf("Supported is not newest-first: %s does not sort after %s", v, prev)
 		}
 		prev = v
@@ -129,6 +129,30 @@ func TestAClientIsNeverSentSomethingItDidNotDeclare(t *testing.T) {
 			peer("2025-11-25", `{"elicitation":{"form":{}}}`), "url", false, false},
 		{"url mode declared on 2025-11-25",
 			peer("2025-11-25", `{"elicitation":{"url":{}}}`), "url", true, false},
+		{"url-only declaration refuses form on 2025-11-25",
+			peer("2025-11-25", `{"elicitation":{"url":{}}}`), "form", false, false},
+		{"form declared on 2025-11-25",
+			peer("2025-11-25", `{"elicitation":{"form":{}}}`), "form", true, false},
+		{"both modes declared on 2025-11-25, form allowed",
+			peer("2025-11-25", `{"elicitation":{"form":{},"url":{}}}`), "form", true, false},
+		{"empty declaration on 2025-11-25 is form-only",
+			peer("2025-11-25", `{"elicitation":{}}`), "form", true, false},
+		{"url-only on 2025-06-18 is still form -- sub-keys do not exist yet",
+			peer("2025-06-18", `{"elicitation":{"url":{}}}`), "form", true, false},
+		{"malformed declaration on 2025-11-25 reads as undeclared",
+			peer("2025-11-25", `{"elicitation":"yes"}`), "form", false, false},
+		{"null declaration on 2025-11-25 grants no form",
+			peer("2025-11-25", `{"elicitation":null}`), "form", false, false},
+		{"null declaration on 2026-07-28 grants no form",
+			peer("2026-07-28", `{"elicitation":null}`), "form", false, false},
+		{"null declaration on 2026-07-28 grants no url",
+			peer("2026-07-28", `{"elicitation":null}`), "url", false, false},
+		{"form null on 2025-11-25 grants no form",
+			peer("2025-11-25", `{"elicitation":{"form":null}}`), "form", false, false},
+		{"url null on 2025-11-25 grants no url",
+			peer("2025-11-25", `{"elicitation":{"url":null}}`), "url", false, false},
+		{"url null on 2025-11-25 grants no form either",
+			peer("2025-11-25", `{"elicitation":{"url":null}}`), "form", false, false},
 		{"nothing declared",
 			peer("2026-07-28", `{}`), "form", false, false},
 		{"sampling only",

@@ -102,6 +102,7 @@ terraform.rc
 
 *tfplan*
 .env.local
+.claude/settings.local.json
 .opencode/worktree-session-state.json
 *_ses_*.json
 ses_*.json
@@ -114,7 +115,15 @@ ses_*/*.json
 .opencode/plugin/subtask2/logs/*.log
 .opencode/worktrees/
 .iroh*
+.id-worlds/
+.identity.db
+.identity.redb
+.ssh-host-key
+events.redb
+events.redb.tmp
+groups.jsonl
 test.*
+!pkgs/mcpx/scripts/test.sh
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
 **/codedb.snapshot
@@ -148,3 +157,29 @@ codedb.snapshot
 
 /dezren39-nix/
 /justbetter-mcp/
+/.unisonHistory
+/*.log
+.opencode/antigravity-accounts.json
+.opencode/opencode-notifier-state.json
+
+# Runtime residue from local tooling (2026-10-29): gh state dir and
+# stray shell redirect captures only. Session working dirs
+# (bin/work/sessions/) and config backups (.opencode/*.bak-*) are NOT
+# ignored: sessions leave real work products there (agent notes, queue
+# packets, probe reports) and config backups are audit references -
+# hiding them behind .gitignore loses work. They are cleaned by moving
+# them to dated residue dirs (e.g. ~/primary-residue-2026-10-29), never
+# by ignoring them. Drews call, 2026-10-29: fix so files arent ignored.
+/.local/
+/r.out
+/r.err
+*.db
+
+# pm-stack aggregator runtime event log (written by the live service; tracking it blocks pm-git-sync fast-forward — #4906)
+pm-stack/aggregator/events.json
+
+# mcpx tooling run from the checkout writes its schema cache in-tree
+# (.cache/mcpx/schemas-<hash>.json); untracked, it made pm-git-sync's
+# dirty-tree refusal fire permanently (#5562). Root-anchored so only the
+# repo-root cache is ignored.
+/.cache/

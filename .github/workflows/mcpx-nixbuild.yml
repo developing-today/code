@@ -1,0 +1,66 @@
+name: mcpx nix build
+
+# CI tier policy: see .github/ci-policy.md
+
+# Narrow package-build verification (#297).
+#
+# The mcpx workflow's PR gate is a direct-Go test job — it no longer builds
+# the Nix package. That removed the only CI build of the package: nix-ci
+# only evaluates the .drvPath, which cannot catch a stale vendorHash in
+# pkgs/mcpx/package.nix (the hash is just a string at eval time; it fails
+# only when the go-modules derivation is actually built), and the
+# vendorHash-repair job covers bot branches only.
+#
+# This workflow restores the build check exactly where the risk lives: it
+# runs only when the dependency inputs change — go.mod, go.sum, or
+# package.nix — so the overwhelming majority of PRs never pay for it and
+# the mcpx speed win stands. It includes itself in the path filter so
+# changes to this workflow are exercised by it, like mcpx.yml does.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392). A conditional
+# cancel-in-progress (the mcpx-conformance pattern) would still let a
+# third rapid merge displace the second merge's pending run, so push
+# runs are keyed by run_id here, matching dezren39/nix PR #495.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix-build:
+    name: "basic: nix build"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      # Warm store: dependency-bump PRs are rare, but when they come the
+      # build should not start from cold (#288).
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Nix build
+        run: nix build .#packages.x86_64-linux.mcpx --print-build-logs
+
+      # Packaging test (#1981): building the package proves it
+      # compiles; this runs the built artifact the way a user does.
+      - name: Packaging test
+        run: nix build .#checks.x86_64-linux.mcpx-packaging --print-build-logs
