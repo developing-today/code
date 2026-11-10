@@ -244,6 +244,25 @@ function adoptEntryWindows(pool: QuotaPool, entry: QuotaCurrentEntry): void {
   if (pool.note && /no (dated|current) read/i.test(pool.note)) delete pool.note;
 }
 
+/**
+ * #7033: are the pool's own windows all dead relative to a read —
+ * every window carries a reset at or before the read's measuredAt?
+ * Such windows describe a period that had already ended when the
+ * read was taken, so they cannot be the pool's standing dated read.
+ * A window with no reset (or an unparseable one) is never dead: the
+ * dated read it belongs to may still be the pool's standing values.
+ */
+function baseWindowsExpired(pool: QuotaPool, entry: QuotaCurrentEntry): boolean {
+  if (pool.windows.length === 0) return false;
+  const readAt = Date.parse(entry.measuredAt);
+  if (!Number.isFinite(readAt)) return false;
+  return pool.windows.every((w) => {
+    if (!w.resetsAt) return false;
+    const reset = Date.parse(w.resetsAt);
+    return Number.isFinite(reset) && reset <= readAt;
+  });
+}
+
 function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState, legError?: string): boolean {
   // Returns true when the pool's windows were replaced by a fresh read.
   const freshness: PoolFreshness = {
@@ -270,6 +289,29 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
       pool.freshness = freshness;
       pool.state = "error";
       adoptEntryWindows(pool, entry);
+      return false;
+    }
+    // #7033: the same leg-error surfacing applies to a pool whose
+    // base windows are all dead — every window's reset is at or
+    // before the retained read's measuredAt, so the base row
+    // describes a period that had already ended when the read was
+    // taken (claude's quota-view weekly row, reset 2026-10-28,
+    // against the read's dated fallback @2026-11-07). That row is
+    // not the pool's dated read standing; it is an older
+    // transcription substituting for the read. The read's dated
+    // fallback windows stand, percentages identical, and the note
+    // written against the substituted row is dropped. A pool with
+    // any live or undated base window keeps the #1268 pin above.
+    if (legError && entry.retainedFromFailedTick && baseWindowsExpired(pool, entry)) {
+      freshness.state = "error";
+      freshness.error = legError;
+      pool.freshness = freshness;
+      pool.state = "error";
+      const windows = pctWindows(entry);
+      if (windows.length > 0) {
+        pool.windows = windows;
+        delete pool.note;
+      }
       return false;
     }
     pool.state = "stale";

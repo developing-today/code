@@ -1158,3 +1158,66 @@ describe("shell-pool stale/retained path (#6942)", () => {
     expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
   });
 });
+
+describe("spec-pool retained path with dead base windows (#7033)", () => {
+  const LEG_ERROR = "Rate limited. Retrying soon.";
+  const VIEW_NOTE = "Freshest dated read in the stewardship quota view; Claude exposes no host-side meter.";
+
+  function claudeView(resetsAt: string | null): QuotaView {
+    const view = baseView();
+    const claude = view.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    claude.windows = [{ name: "weekly", unit: "other", limit: 100, used: 68, percent: 68, resetsAt }];
+    claude.note = VIEW_NOTE;
+    return view;
+  }
+
+  function claudeFile(): QuotaCurrentFile {
+    const f = file([
+      entry({
+        providerId: "claude",
+        serviceId: "anthropic:claude-pro",
+        source: "opencode-quota",
+        measuredAt: iso(45 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [
+          win("5h", 33, iso(45 * 60_000)),
+          win("7d", 61, iso(45 * 60_000)),
+          win("Fable:7d", 0, iso(45 * 60_000)),
+        ],
+      }),
+    ]);
+    f.heartbeat.perProvider = { claude: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } };
+    return f;
+  }
+
+  test("a retained entry whose leg errored supersedes base windows that already reset before the read", () => {
+    // The base row is the quota-view transcription whose weekly reset
+    // (2026-10-26 in fixture time) predates the retained read — a dead
+    // window. The read's dated fallback windows stand instead.
+    const out = overlayQuotaCurrent(claudeView("2026-10-26T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("error");
+    expect(claude.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "error",
+      error: LEG_ERROR,
+    });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 33],
+      ["7d", 61],
+      ["Fable:7d", 0],
+    ]);
+    // The note describes the substituted quota-view row; it must not stand.
+    expect(claude.note).toBeUndefined();
+  });
+
+  test("the same retained entry keeps the #1268 pin when a base window is still live", () => {
+    const out = overlayQuotaCurrent(claudeView("2026-11-02T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("stale");
+    expect(claude.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(claude.note).toBe(VIEW_NOTE);
+  });
+});
