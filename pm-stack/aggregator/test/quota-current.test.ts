@@ -349,6 +349,45 @@ describe("quota-current overlay", () => {
     expect(pool.freshness?.state).toBe("error");
     expect(pool.windows.map((w) => w.percent)).toEqual([11]);
   });
+
+  test("a lapsed entry survives ingest as a terminal lapse, not an error and without stale percentages", () => {
+    const at = iso(5 * 60_000);
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "opencode-go",
+            providerId: "opencode-go",
+            state: "lapsed",
+            measuredAt: at,
+            error: "No active OpenCode Go subscription on the selected Console account",
+            windows: [{ ...win("monthly", 62, at), state: "lapsed" }],
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers[0].state).toBe("lapsed");
+    const view = baseView();
+    view.pools.push(pool("opencode-go", [{ name: "monthly", unit: "other", limit: 100, used: 62, percent: 62, resetsAt: null }]));
+    view.choices = {
+      hasHeadroom: ["opencode-go"],
+      burnBeforeReset: ["opencode-go"],
+      doNotStart: ["opencode-go"],
+    };
+    const out = overlayQuotaCurrent(view, parsed!, NOW);
+    const go = out.pools.find((p) => p.id === "opencode-go")!;
+    expect(go.state).toBe("lapsed");
+    expect(go.freshness?.state).toBe("lapsed");
+    expect(go.freshness?.error).toContain("No active OpenCode Go subscription");
+    // The dated percentage is not presented as a current reading.
+    expect(go.windows).toEqual([]);
+    // Guidance must not continue recommending a cancelled workspace.
+    expect(out.choices.hasHeadroom).not.toContain("opencode-go");
+    expect(out.choices.burnBeforeReset).not.toContain("opencode-go");
+    expect(out.choices.doNotStart).not.toContain("opencode-go");
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "opencode-go")?.state).toBe("lapsed");
+  });
 });
 
 describe("parseQuotaCurrent", () => {

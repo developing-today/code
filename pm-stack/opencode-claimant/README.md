@@ -61,7 +61,7 @@ of waiting for the next claimant fire.
 # Read-only: is this task a launch candidate, and what would happen?
 python3 pm-stack/opencode-claimant/launch_one.py --preflight repo-health-code-pilot:12345
 
-# Live only (mode file must read `live`): collect a parked handoff's
+# Live only (mode file must read `live`): collect a sink row's
 # claim by id if needed, create + verify + bind a session, checkpoint
 # launched, send the prompt, post the agent-note. Prints the bound
 # session_id; any failure exits non-zero and deletes a created
@@ -115,7 +115,7 @@ For bound sessions with:
 - Attempts remaining (`attempts < max_attempts`)
 
 Process:
-1. Verify zero messages via `GET /api/session/{id}/messages`
+1. Verify zero messages via  (singular — the plural endpoint 404s; see the Session Contract inventory)`GET /api/session/{id}/messages`
 2. Delete session via `DELETE /api/session/{id}`
 3. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:zero-message-deleted`
 4. Task becomes unbound and eligible for next fire
@@ -131,7 +131,87 @@ When attempts exhausted:
 2. For gone sessions: fail task terminally
 3. Use `repo-queue fail` with execution record containing session_id
 
+## Session Contract (#4912 — closing audit, Phase 4, 2026-11-10)
+
+The contract the claimant judges and drives sessions by, stated once
+here so it survives prompt edits (design #4912; phases 1–3 are
+#4757/#4870/#4758, this section is the Phase 4 audit, #4916):
+
+1. **Per-id judging.** A session's existence, location and progress
+   are read per-id, and cap counts come from the
+   `GET /api/session/active` id set. A list read is trusted only
+   when its completeness is proven; an unproven or unreadable read
+   fails closed (`cap_room: null`) and launches nothing.
+2. **Verify before bind.** A created session binds only after its
+   create response's `location.directory` equals the requested repo
+   primary. A mismatch is a creation failure: the task stays
+   unbound, the failure is checkpointed, and the misplaced session
+   is deleted per-id.
+3. **Every bound state has one disposition** (table below). The
+   outcome lands on the task's progress, which is what the fleet
+   watchdog reads — agreement via the shared record, no new
+   channel.
+
+### Bound-state table
+
+| Bound state | Judged by | Disposition |
+|---|---|---|
+| Alive, messages/activity present | per-id read + active set | Supervision leaves it; never relaunch over a live session |
+| Gone (absent from the proven-complete list; per-id GET fails) | `GET /api/session/{id}` | Attempts remain: reclaim to unbound (`bind --launched-by opencode-claimant-recovery:gone-session`). Exhausted: terminal fail, session id in the execution record |
+| Zero messages, no markers, silent > `ACTIVE_WINDOW_MS` (30 min), lease expired | `GET /api/session/{id}/message` — an unreadable read is UNKNOWN, never zero | Attempts remain: DELETE the verified-empty session first (a failed delete keeps the binding), reclaim to unbound, checkpoint `launch_failed` with the prior session id in an audit field. Exhausted: DELETE, then terminal fail with the session id |
+| Created with the wrong `location.directory` | create response, before bind | Never bound; session deleted per-id; creation failure checkpointed |
+| Bind failed after create | bind exit status | Created session deleted per-id; task stays unbound |
+| Prompt POST non-2xx | reconcile via the message read before any resend | Resend once only on a proven-empty list; an inconclusive reconcile never resends — the binding stands and the launch is flagged. Never double-prompt |
+
+### Server-call inventory (Phase 4, #4916)
+
+Every OpenCode-server call in `poll.py` and every call `prompt.md`
+prescribes (steps 1–6; `claimant.py` is their deterministic
+implementation), dispositioned against the contract:
+
+| Caller | Call | Disposition |
+|---|---|---|
+| `poll.py` `fetch_sessions()` | `GET /api/session?limit=N`, N escalating 1000 → 10000 → 100000 | List read retained ONLY with a completeness proof: the first read whose count is below its limit is the whole list by construction; if every read lands exactly at its limit the fetch fails closed (`None` → `cap_room: null`). This is the standing form of rule 1 for this reader — stronger than failing closed at page-size equality on a single read |
+| `poll.py` `fetch_active_ids()` | `GET /api/session/active` | Rule 1: cap counts come from the active id set directly. Unreadable → active count UNKNOWN (`None`), `cap_room: null`, fail closed |
+| `claimant.py` | `GET /api/session/{id}` | Rule 1/3: per-id existence for supervision and gone-session recovery |
+| `claimant.py` `_get_messages()` | `GET /api/session/{id}/message` | Rule 3: per-id; non-2xx, transport failure, or a non-list body returns UNKNOWN (`None`), never an empty list. The v2 endpoint is the singular `/message` — the plural `/messages` 404s with an empty body, the fail-open trap closed after #7760/#3026 |
+| `claimant.py` | `DELETE /api/session/{id}` | Rules 2/3: per-id, and only after a verified-empty read, a wrong-location create, or a failed bind; a failed delete keeps the binding |
+| `claimant.py` step 4b | `POST /api/session` with body `{"location": {"directory": …}, …}` | Rule 2: the v2 create shape (a top-level `directory` is stripped by v2 — #4870); the response's `location.directory` is verified equal to the primary clone before bind |
+| `claimant.py` `_post_prompt()` | `POST /api/session/{id}/prompt` | Verified delivery: 2xx is the only success; a failure reconciles via the message read before any resend |
+| `prompt.md` steps 1, 4b, 4d, 5 | prescribes the calls above | No prescribed call lacks an implementation, and no implemented call is unprescribed |
+
+No call is left undispositioned, so the audit files no follow-up
+issues.
+
+### Queue-read disposition (#4916 scope 3)
+
+`poll.py`'s queue-broker `POST /list` reads use `limit=500`
+(`LIST_LIMIT`, the broker's own maximum, `LIST_LIMIT_MAX = 500` in
+the fleet client). Disposition: **exempt** from the session
+fail-closed rule, on this evidence:
+
+- Different service, different failure shape: the broker page is a
+  hard server maximum, not a silent default truncation like the
+  session list's 50. Requesting the maximum is the completeness
+  strategy this API offers; `/list` exposes no offset or count
+  probe to prove more.
+- The failure direction is safe for launches: a truncated page can
+  only under-report candidates and stuck rows, never invent one,
+  and every launch additionally requires the fail-closed session
+  reads above.
+- No truncation evidence: claimed + handed-off rows per queue in
+  live queue-health reads number in the tens, an order of
+  magnitude under the 500 page.
+
+Named residual risk: at exactly 500 claimed rows in one queue,
+supervision could miss a stuck-bound row beyond the page. If
+claimed counts ever approach the page size, this disposition must
+be revisited with a count probe. No code change is made on this
+question — per #4916, no code change without evidence of
+truncation, and none exists.
+
 ## Hard Rules
+
 
 - **Never work tasks directly**: Only claim/bind/launch/record
 - **No credentials in prompts/logs**: Use broker client tokens
