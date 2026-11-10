@@ -260,11 +260,7 @@ pub async fn run_set(
                     plain_field(key),
                     opts.format_value(v)
                 ),
-                None => println!(
-                    "tag set: {} [{}]",
-                    plain_field(subject),
-                    plain_field(key)
-                ),
+                None => println!("tag set: {} [{}]", plain_field(subject), plain_field(key)),
             }
             Ok(())
         }

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 
 	_ "modernc.org/sqlite"
 	"os"
@@ -461,6 +462,47 @@ func (b *Broker) Await(ctx context.Context, id string) (Answer, error) {
 }
 
 // Respond records an answer and wakes anything waiting.
+
+// withSchemaDefaults returns the content with any missing top-level
+// fields filled from the requested schema's defaults, for validation
+// only; the recorded answer is the one the answerer actually gave.
+// This mirrors the mcpclient path (applyDefaults in modern.go, whose
+// checkElicitationAnswer validates after defaults are in): a required
+// field the schema itself defaults is not missing in any meaningful
+// sense, and the daemon path applies those defaults when the answer
+// is relayed. Content that is not a JSON object, and a schema with no
+// usable defaults, pass through unchanged.
+func withSchemaDefaults(schemaRaw, content []byte) []byte {
+	var schema struct {
+		Properties map[string]struct {
+			Default json.RawMessage `json:"default"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(schemaRaw, &schema) != nil || len(schema.Properties) == 0 {
+		return content
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(content, &obj) != nil || obj == nil {
+		return content
+	}
+	changed := false
+	for name, prop := range schema.Properties {
+		if _, set := obj[name]; set || len(prop.Default) == 0 {
+			continue
+		}
+		obj[name] = prop.Default
+		changed = true
+	}
+	if !changed {
+		return content
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return content
+	}
+	return out
+}
+
 func (b *Broker) Respond(a Answer) error {
 	if a.At.IsZero() {
 		a.At = time.Now()
@@ -506,6 +548,26 @@ func (b *Broker) Respond(a Answer) error {
 	if a.Action == Accept && r.Mode == Sample {
 		if err := ValidateSampleResult(a.Content, true, true); err != nil {
 			return err
+		}
+	}
+
+	// An accepted form answer is validated against the question's own
+	// requestedSchema before it is recorded -- and therefore before the
+	// waiter relays it upstream (#1954). The mcpclient path validates
+	// answers mcpx relays as a client; answers entered here (CLI,
+	// dashboard, daemon routes) reached the asker unchecked, so a wrong
+	// type or a missing required field surfaced as an upstream error
+	// against an answer the user had already given. A mismatch refuses
+	// the answer with the failing paths and the question stays pending
+	// for a corrected one, like the refusals above. A requestedSchema
+	// that does not compile is the asker's defect, not the answerer's:
+	// the answer is recorded unvalidated rather than wedging on a
+	// schema the answerer never wrote (the mcpclient rule).
+	if a.Action == Accept && r.Mode == Form && len(r.Schema) > 0 {
+		if schema, err := schemaval.Compile(r.Schema); err == nil {
+			if err := schema.ValidateJSON(withSchemaDefaults(r.Schema, a.Content)); err != nil {
+				return fmt.Errorf("accepted content does not match the requested schema: %w", err)
+			}
 		}
 	}
 

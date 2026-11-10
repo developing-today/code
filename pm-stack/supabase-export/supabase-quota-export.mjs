@@ -80,11 +80,21 @@ export class ExportError extends Error {
   }
 }
 
+/** Parse a measurement as a non-negative integer without Number's string coercions. */
+function parseNonNegativeInteger(value) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 /** Non-secret shape check for the SQL row the db-size query returns. */
 export function parseDbSize(rows) {
   const bytes = rows?.[0]?.bytes;
-  const n = typeof bytes === "string" ? Number(bytes) : bytes;
-  if (typeof n !== "number" || !Number.isFinite(n) || n < 0) {
+  const n = parseNonNegativeInteger(bytes);
+  if (n === null) {
     throw new ExportError("unparseable", 6, "database/query: pg_database_size row missing/invalid");
   }
   return n;
@@ -93,8 +103,7 @@ export function parseDbSize(rows) {
 /** Total requests from usage.api-requests-count ({ result: [{ count }] }). */
 export function parseRequestCount(payload) {
   const count = payload?.result?.[0]?.count;
-  const n = typeof count === "string" ? Number(count) : count;
-  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+  return parseNonNegativeInteger(count);
 }
 
 /** Measured $0 (or more) from billing/addons: selected addons priced fixed

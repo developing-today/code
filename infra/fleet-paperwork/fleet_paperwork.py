@@ -164,9 +164,42 @@ def http_raw(
     raise AssertionError("unreachable")
 
 
+def _shape_name(value: object) -> str:
+    """The JSON shape of a parsed body, for diagnostics (#6864)."""
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
 def http(
-    method: str, path: str, token: str, body: dict | None = None
-) -> tuple[int, dict]:
+    method: str,
+    path: str,
+    token: str,
+    body: dict | None = None,
+    expect: type = dict,
+) -> tuple[int, dict | list]:
+    """Die-on-error wrapper over http_raw with shape validation (#6864).
+
+    A parseable-but-wrong-shaped body — an array, string, or number
+    where the caller needs an object (or the reverse) — dies here with
+    a diagnostic naming the method, URL, HTTP status, and received
+    shape, instead of crashing every consumer downstream with a raw
+    AttributeError/KeyError. The error path is held to the same rule:
+    a non-object error body surfaces the HTTP status, the shape, and
+    the raw excerpt, never a crash inside the error handler itself.
+    `expect` is the one legitimate exception carved out by name:
+    /app/installations returns a top-level array.
+    """
     url = path if path.startswith("http") else API + path
     data = json.dumps(body).encode() if body is not None else None
     status, raw = http_raw(method, path, token, data)
@@ -175,8 +208,36 @@ def http(
             detail = json.loads(raw)
         except Exception:
             detail = {"raw": raw}
-        die(f"{method} {url} -> HTTP {status}: {detail.get('message', raw[:300])}")
-    return status, (json.loads(raw) if raw else {})
+        if isinstance(detail, dict):
+            die(f"{method} {url} -> HTTP {status}: {detail.get('message', raw[:300])}")
+        die(
+            f"{method} {url} -> HTTP {status}: expected a JSON object error "
+            f"body, got {_shape_name(detail)}: {raw[:300]}"
+        )
+    if not raw:
+        payload: object = {}
+    else:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            die(f"{method} {url} -> HTTP {status}: response body is not JSON: {raw[:300]}")
+    if not isinstance(payload, expect):
+        die(
+            f"{method} {url} -> HTTP {status}: expected a JSON "
+            f"{'object' if expect is dict else 'array'}, got {_shape_name(payload)}"
+        )
+    return status, payload
+
+
+def _account_login(inst: dict) -> str:
+    """An installation's account login, or "" for any other shape: an
+    absent account, an explicit null, or a non-string login (#6864)."""
+    account = inst.get("account")
+    if isinstance(account, dict):
+        login = account.get("login")
+        if isinstance(login, str):
+            return login
+    return ""
 
 
 class AppClient:
@@ -189,23 +250,50 @@ class AppClient:
 
     def installations(self) -> list[dict]:
         if self._installations is None:
-            _, data = http("GET", "/app/installations?per_page=100", self.jwt)
-            self._installations = data
+            # /app/installations is paginated: fetching only the first
+            # per_page=100 page silently drops every installation past
+            # 100 (#7930 - the developing-today org sits on page 2, so
+            # the App rate-limit fallback reported no installation for
+            # it). Page through all of them, stopping at a short or
+            # empty page, mirroring assert_repo_in_scope below; the
+            # endpoint returns a top-level array with no total_count.
+            collected: list[dict] = []
+            page = 1
+            while True:
+                _, data = http(
+                    "GET",
+                    f"/app/installations?per_page=100&page={page}",
+                    self.jwt,
+                    expect=list,
+                )
+                for inst in data:
+                    if not isinstance(inst, dict):
+                        die(
+                            "installation entry is not a JSON object "
+                            f"(got {_shape_name(inst)})"
+                        )
+                collected.extend(data)
+                if len(data) < 100:
+                    break
+                page += 1
+            self._installations = collected
         return self._installations
 
     def installation_for(self, owner: str) -> dict:
         for inst in self.installations():
-            if inst.get("account", {}).get("login", "").lower() == owner.lower():
+            if _account_login(inst).lower() == owner.lower():
                 return inst
         die(
             f"no installation of the app found for owner {owner!r} "
-            f"(installations: {[i.get('account', {}).get('login') for i in self.installations()]})"
+            f"(installations: {[_account_login(i) for i in self.installations()]})"
         )
         raise AssertionError("unreachable")
 
     def token_for(self, owner: str) -> str:
         inst = self.installation_for(owner)
-        iid = inst["id"]
+        iid = inst.get("id")
+        if isinstance(iid, bool) or not isinstance(iid, int):
+            die(f"installation for owner {owner!r} has no numeric id")
         if iid not in self._tokens:
             _, data = http(
                 "POST", f"/app/installations/{iid}/access_tokens", self.jwt, {}
@@ -224,8 +312,26 @@ class AppClient:
             _, data = http(
                 "GET", f"/installation/repositories?per_page=100&page={page}", token
             )
-            seen += [r["full_name"] for r in data.get("repositories", [])]
-            if len(seen) >= data.get("total_count", 0) or not data.get("repositories"):
+            repos = data.get("repositories", [])
+            if not isinstance(repos, list):
+                die(
+                    "installation repositories response is not a JSON array "
+                    f"(got {_shape_name(repos)})"
+                )
+            for r in repos:
+                if not isinstance(r, dict) or not isinstance(r.get("full_name"), str):
+                    die(
+                        "installation repository entry has no string "
+                        f"full_name (got {_shape_name(r)}): {str(r)[:120]}"
+                    )
+                seen.append(r["full_name"])
+            total = data.get("total_count", 0)
+            if isinstance(total, bool) or not isinstance(total, (int, float)):
+                die(
+                    "installation repositories total_count is not a number "
+                    f"(got {_shape_name(total)})"
+                )
+            if len(seen) >= total or not repos:
                 break
             page += 1
         if repo not in seen:
@@ -296,7 +402,11 @@ def find_by_exact_title(client: AppClient, repo: str, title: str) -> dict | None
             "GET", f"/search/issues?q={q}&per_page=100&page={page}", token
         )
         items = data.get("items", [])
+        if not isinstance(items, list):
+            die(f"search response items is not a JSON array (got {_shape_name(items)})")
         for item in items:
+            if not isinstance(item, dict):
+                continue
             if "pull_request" in item:
                 continue
             if item.get("title") == title:
@@ -325,7 +435,7 @@ def cmd_check(args) -> int:
     print(f"app id {client.app_id} ({APP_SLUG_HINT})")
     for inst in client.installations():
         print(
-            f"installation {inst['id']}: {inst.get('account', {}).get('login')} "
+            f"installation {inst.get('id')}: {_account_login(inst)} "
             f"permissions={inst.get('permissions')}"
         )
     if args.repo:
@@ -370,10 +480,53 @@ def cmd_create(args) -> int:
             f"create in {args.repo} returned no issue number (response keys: "
             f"{sorted(created) if isinstance(created, dict) else type(created)})"
         )
-    # Verify by readback — an unverified create counts as a failure.
+    # Verify by readback — an unverified create counts as a failure. The
+    # README promises the comparison covers (title, body, state) and the
+    # labels that were sent (#6901): a create whose body was dropped or
+    # mangled, or whose labels were not applied, must not report success.
     _, got = http("GET", f"/repos/{args.repo}/issues/{number}", token)
     if got.get("title") != title or got.get("number") != number:
         die(f"readback mismatch for {args.repo}#{number}: title={got.get('title')!r}")
+    readback_body = got.get("body")
+    if readback_body != body:
+        sent_chars = len(body) if isinstance(body, str) else "n/a"
+        readback_chars = (
+            len(readback_body) if isinstance(readback_body, str) else "n/a"
+        )
+        die(
+            f"readback mismatch for {args.repo}#{number}: body sent "
+            f"{sent_chars} chars, read back {readback_chars} chars "
+            f"(body={_shape_name(readback_body)})"
+        )
+    if got.get("state") != "open":
+        die(
+            f"readback mismatch for {args.repo}#{number}: state={got.get('state')!r}, "
+            f"expected 'open' for a freshly created issue"
+        )
+    if args.label:
+        readback_labels = got.get("labels", [])
+        if not isinstance(readback_labels, list):
+            die(
+                f"readback mismatch for {args.repo}#{number}: labels have invalid "
+                f"shape (expected array, got {_shape_name(readback_labels)})"
+            )
+        have = set()
+        for label in readback_labels:
+            name = label if isinstance(label, str) else (
+                label.get("name") if isinstance(label, dict) else None
+            )
+            if not isinstance(name, str):
+                die(
+                    f"readback mismatch for {args.repo}#{number}: label entry has "
+                    f"no string name (got {_shape_name(label)})"
+                )
+            have.add(name)
+        missing = sorted(set(args.label) - have)
+        if missing:
+            die(
+                f"readback mismatch for {args.repo}#{number}: labels not applied: "
+                f"{missing} (read back {sorted(have)})"
+            )
     ledger_append("create", args.repo, str(number), title)
     print(f"created+verified: {args.repo}#{number} {created.get('html_url')}")
     return 0
@@ -456,6 +609,12 @@ def cmd_close(args) -> int:
     client.assert_repo_in_scope(args.repo)
     token = client.token_for(args.repo.split("/")[0])
     _, current = http("GET", f"/repos/{args.repo}/issues/{args.issue}", token)
+    if "pull_request" in current:
+        die(
+            f"refusing to close {args.repo}#{args.issue}: that number is a "
+            "pull request, not an issue (the issues API returns PRs as "
+            "issues); close it through the pull request workflow instead"
+        )
     if current.get("state") == "closed":
         print(f"already closed: {args.repo}#{args.issue}")
         return 0
