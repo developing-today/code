@@ -62,6 +62,21 @@ outage is recoverable, a double-launch's damage is not.
   (`~/fleet-brokers/bin/repo-queue`; it reaches the queue-broker
   directly — pass `--worker opencode-claimant` on every verb you
   use).
+- Claim-model stamp (#8176): a session that picks up an item
+  itself (a lane section's claim, or your own direct claim) names
+  the model serving it: read your own serving leaf first with the
+  `route_usage` tool (session input; its `lastServing` names
+  provider / model / variant — the leaf that actually served your
+  last step, not your declared route) and pass it on the claim —
+  `--model-provider <provider> --model-id <model>
+  --model-variant <variant>` (variant only when lastServing
+  carries one). The broker stamps it on the task
+  (claim_provider / claim_model / claim_variant): the model AT
+  CLAIM TIME — a later failover does not rewrite it. If the
+  readout is unavailable, claim without the flags; never guess a
+  leaf. The claimant's own collection claims (`claim --handoff`)
+  predate the worker session and carry no stamp; the session's
+  own claims are the stamped ones.
 - Candidate discovery: `python3 pm-stack/opencode-claimant/poll.py`
   (run from the primary clone `~/git/code`). It prints JSON: tasks that
   are claimed, lane-assigned `opencode` in their progress, and carry no
