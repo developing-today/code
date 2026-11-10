@@ -139,7 +139,7 @@ import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
-import { boardJsonBody, boardJsonItemsMap } from "./board-json.ts";
+import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -1891,18 +1891,20 @@ async function handler(req: Request): Promise<Response> {
     if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    // Filter the already-bounded board (same done policy + strip limit as
-    // the page), then report the items those kept cards can resolve —
-    // #5082: the view branch must not reintroduce the full closure.
-    const bounded = boardJsonBody(board, items, { showAllDone });
-    const boundedItems = boardJsonItemsMap(bounded);
-    const keptBoard = bounded.board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, boundedItems, poolByRef, resolved.filters),
+    // Filter the policy-eligible board against the full item lookup
+    // BEFORE the done-strip limit (#8058): limiting first dropped a
+    // view's matching done cards outside the global newest 100.
+    // boardJsonViewBody then applies the limit and restricts the
+    // shipped items to the selected cards, so the response stays
+    // bounded as #5082 requires — the full closure is only a lookup.
+    const bounded = boardJsonViewBody(
+      board,
+      items,
+      (b) =>
+        linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      { showAllDone },
     );
-    const keptRefs = new Set<RefKey>();
-    for (const card of keptBoard) for (const link of card.links) keptRefs.add(link.ref);
-    const keptItems = bounded.items.filter((it) => keptRefs.has(it.ref));
-    return jsonCompact({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();

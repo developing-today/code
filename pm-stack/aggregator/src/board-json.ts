@@ -52,6 +52,32 @@ export function boardJsonBody(
   return { board: visible, items: itemsOut };
 }
 
+/**
+ * The `/api/board.json` body for a view-filtered request (#8058):
+ * filter BEFORE the done-strip limit.
+ *
+ * The order matters. `boardJsonBody` caps the done strip at the
+ * newest `DONE_STRIP_RENDER_LIMIT` cards; filtering after that cap
+ * drops a view's matching done cards whenever they fall outside the
+ * newest 100 globally -- the JSON API then returns no done cards
+ * for a view whose page shows recent completions. So: apply the
+ * done POLICY (age-out + retired class -- eligibility, not the
+ * limit), view-filter the eligible board against the full item
+ * lookup, and only then let `boardJsonBody` apply the strip limit
+ * and restrict the shipped items to the selected cards. The
+ * response stays bounded exactly as #5082 requires -- the full
+ * closure is a lookup here, never part of the body.
+ */
+export function boardJsonViewBody(
+  board: readonly BoardItem[],
+  items: ReadonlyMap<RefKey, GhItem>,
+  keep: (card: BoardItem) => boolean,
+  opts: { showAllDone?: boolean; limit?: number } = {},
+): BoardJsonBody {
+  const eligible = applyBoardDonePolicy([...board]);
+  return boardJsonBody(eligible.filter(keep), items, opts);
+}
+
 /** The items map restricted to the cards the bounded body carries. */
 export function boardJsonItemsMap(body: BoardJsonBody): Map<RefKey, GhItem> {
   return new Map(body.items.map((item) => [item.ref, item] as const));
