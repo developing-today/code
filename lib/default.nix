@@ -1211,13 +1211,30 @@ let
     system:
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
-    in
-    {
-      packages = {
+      pmPackages = {
         pm-projector = pkgs.callPackage ../pkgs/pm-projector/package.nix { };
         pm-aggregator = pkgs.callPackage ../pkgs/pm-aggregator/package.nix { };
         pm-dispatch = pkgs.callPackage ../pkgs/pm-dispatch/package.nix { };
         pm-git-sync = pkgs.callPackage ../pkgs/pm-git-sync/package.nix { };
+      };
+      mkApp = pkg: program: {
+        type = "app";
+        program = "${pkg}/bin/${program}";
+      };
+    in
+    {
+      packages = pmPackages;
+      # One flake app per program the pm-stack services run, so every
+      # unit's ExecStart binary is also `nix run .#<name>`-able and the
+      # deploy surface is uniform: app + derivation + service (#8171).
+      apps = {
+        pm-projector = mkApp pmPackages.pm-projector "pm-projector";
+        pm-projector-cli = mkApp pmPackages.pm-projector "pm-projector-cli";
+        pm-aggregator = mkApp pmPackages.pm-aggregator "pm-aggregator";
+        pm-aggregator-gather-quota = mkApp pmPackages.pm-aggregator "pm-aggregator-gather-quota";
+        pm-aggregator-generate-digest = mkApp pmPackages.pm-aggregator "pm-aggregator-generate-digest";
+        pm-dispatch = mkApp pmPackages.pm-dispatch "pm-dispatch";
+        pm-git-sync = mkApp pmPackages.pm-git-sync "pm-git-sync";
       };
     }
   );
