@@ -340,8 +340,9 @@ export default (async ({ directory, worktree, project, client }, options) => {
       return await fn(c);
     } catch (err) {
       // Stopped, restarted, or its configuration changed and the socket
-      // moved. Forget it; the next call asks again.
-      forget();
+      // moved. Forget it; the next call asks again. A host abort is not
+      // a daemon failure (PLG-38, #1940): the cached discovery stays.
+      if ((err as { name?: string })?.name !== "AbortError") forget();
       throw err;
     }
   };
@@ -620,7 +621,7 @@ export default (async ({ directory, worktree, project, client }, options) => {
           out = await viaDaemon((c) => c.exec(args.source, context?.sessionID, signal));
         } catch (err) {
           if (signal?.aborted) {
-            return "mcpx: exec aborted by the host while the daemon call was in flight." + (await annotation());
+            return "mcpx: exec aborted by the host while the daemon call was in flight.";
           }
           throw err;
         }
