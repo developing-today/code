@@ -237,6 +237,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn builder_installed_requires_v2_and_a_v1_reader_refuses_that_header() {
+        let entry = JournalEntry::BuilderInstalled {
+            by: 7,
+            module_hash: "module".to_owned(),
+            seed: 9,
+        };
+        assert_eq!(
+            journal_version_required_by(&entry),
+            JOURNAL_VERSION_EXECUTION_PROFILE
+        );
+        // This exercises the same header check as restore, with the maximum
+        // version supported by a version-1 binary. It rejects before replaying
+        // any entries from the journal.
+        let error = crate::world::core::check_journal_version(
+            JOURNAL_VERSION_EXECUTION_PROFILE,
+            JOURNAL_VERSION,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported world journal version")
+        );
+    }
+
     fn handoff_event() -> WorldEvent {
         WorldEvent {
             sequence: 0,
@@ -6642,9 +6668,16 @@ mod schedule_tests {
             WorldCore::new_with_clock(id, WorldLimits::default(), clock.clone()).unwrap();
         core.ledger
             .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
-        let (_, token) = core
+        let (ann, token) = core
             .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
+        // Production issuance goes through the actor, which journals the
+        // `Issued` entry as it mints (`record_issued`). Minting directly on
+        // the core must record the same entry: without it the journal uses
+        // the participant before it was issued -- a state no live path can
+        // write, and restore refuses it (#2894).
+        let issued = core.issued_entry(ann.id).unwrap();
+        journal.0.lock().unwrap().push(issued);
         let program = Scheduler {
             refuse_fires,
             ..Scheduler::default()

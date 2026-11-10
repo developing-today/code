@@ -1,4 +1,14 @@
 #!/usr/bin/env node
+// Parsed-shape contract (#3068): parsed is not validated. Every value
+// this tool obtains by parsing (config files, provider/model API
+// responses, local service RPCs) is shape-checked once at the parse
+// boundary before it is dereferenced: a wrong shape is a named shape
+// error in this tool's vocabulary, never a raw TypeError and never a
+// silently half-applied value. Absence is not emptiness — a missing
+// section is absent, not an empty object/array standing in for a
+// measured result. Coercion is not validation. The full statement
+// lives in pm-stack/aggregator/README.md ("Parsed-shape contract
+// (#3068)"); the closing audit is recorded on issue #3069.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -403,6 +413,11 @@ function setJsoncPath(text, keys, value) {
       for (let d = keys.length - 1; d > depth + 1; d--) nested = { [keys[d]]: nested };
       return setJsoncMember(text, object, keys[depth], { [keys[depth + 1]]: nested });
     }
+    if (member.value.type !== 'object') {
+      throw new Error(
+        `cannot set ${keys.join('/')}: ${keys.slice(0, depth + 1).join('/')} is a ${member.value.type}, expected object`,
+      );
+    }
     object = member.value;
   }
   return setJsoncMember(text, object, keys.at(-1), value);
@@ -413,9 +428,15 @@ function setJsoncPath(text, keys, value) {
 // rather than silently discarded.
 function removeJsoncPath(text, keys) {
   let object = parseJsoncTree(text);
-  for (const key of keys.slice(0, -1)) {
-    object = object.members.find(m => m.key === key)?.value;
-    if (!object) return text;
+  for (const [i, key] of keys.slice(0, -1).entries()) {
+    const next = object.members.find(m => m.key === key)?.value;
+    if (!next) return text;
+    if (next.type !== 'object') {
+      throw new Error(
+        `cannot remove ${keys.join('/')}: ${keys.slice(0, i + 1).join('/')} is a ${next.type}, expected object`,
+      );
+    }
+    object = next;
   }
   const member = object.members.find(m => m.key === keys.at(-1));
   if (!member) return text;
@@ -440,6 +461,32 @@ function removeJsoncPath(text, keys) {
   return text.slice(0, lineStart) + text.slice(newline < 0 ? text.length : newline + 1);
 }
 
+// Shape validation at the parse boundary (#2832, design #3068 Phase 2):
+// parseJsonc proves the config parses; this proves the shape run() is about
+// to dereference, before the first deref and before any side effect. A
+// wrong-shaped entry produces one named, actionable error (config path +
+// key path) instead of a raw TypeError that blocks every provider. A
+// missing `provider` key is not an error: it means nothing to sync.
+function validateConfigShape(config, configPath) {
+  const shapeName = value =>
+    value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const fail = (keyPath, expected, value) => {
+    throw new Error(
+      `invalid config shape in ${configPath}: ${keyPath}: expected ${expected}, got ${shapeName(value)}`,
+    );
+  };
+  if (!isObject(config)) fail('(root)', 'object', config);
+  if (config.provider === undefined) return;
+  if (!isObject(config.provider)) fail('provider', 'object', config.provider);
+  for (const [name, prov] of Object.entries(config.provider)) {
+    if (!isObject(prov)) fail(`provider.${name}`, 'object', prov);
+    if (prov.models !== undefined && !isObject(prov.models)) {
+      fail(`provider.${name}.models`, 'object', prov.models);
+    }
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Main Sync Runner
 // -----------------------------------------------------------------------------
@@ -457,6 +504,7 @@ async function run() {
   let config;
   try {
     config = parseJsonc(origConfigText);
+    validateConfigShape(config, OPENCODE_CONFIG_PATH);
   } catch (err) {
     console.error(`[sync-models] Error parsing ${OPENCODE_CONFIG_PATH}: ${err.message}`);
     process.exit(1);
@@ -518,7 +566,7 @@ async function run() {
     };
 
     for (const targetProvider of ['_antigravity']) {
-      if (!config.provider[targetProvider]) continue;
+      if (!config.provider?.[targetProvider]) continue;
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};
       const modelsPath = ['provider', targetProvider, 'models'];
@@ -591,7 +639,7 @@ async function run() {
     // (dead-provider retirement ordered by Drew), so there is nothing to sync.
 
     // Sync OpenAI
-    if (config.provider.openai && modelsDev.openai?.models) {
+    if (config.provider?.openai && modelsDev.openai?.models) {
       const oProv = config.provider.openai;
       oProv.models = oProv.models || {};
       for (const [mId, mSpec] of Object.entries(modelsDev.openai.models)) {

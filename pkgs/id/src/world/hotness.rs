@@ -171,7 +171,9 @@ pub fn evaluate(samples: &[HotnessSample], thresholds: &HotnessThresholds) -> Ho
     }
     fired.sort_by_key(|fired| std::cmp::Reverse(fired.band));
     HotnessReport {
-        band: fired.first().map_or(HotnessBand::Healthy, |fired| fired.band),
+        band: fired
+            .first()
+            .map_or(HotnessBand::Healthy, |fired| fired.band),
         fired,
         samples: samples.len(),
     }
@@ -222,7 +224,10 @@ fn sustained_latency_band(
 
 /// Sustained command rate vs ceiling (§2): the window's average rate —
 /// ≥ 70% of ceiling is critical, ≥ 40% is a warning.
-fn command_rate_band(samples: &[HotnessSample], thresholds: &HotnessThresholds) -> Option<HotnessBand> {
+fn command_rate_band(
+    samples: &[HotnessSample],
+    thresholds: &HotnessThresholds,
+) -> Option<HotnessBand> {
     let first = samples.first()?;
     let last = samples.last()?;
     let elapsed_ms = last.at_ms.checked_sub(first.at_ms)?;
@@ -248,7 +253,13 @@ fn command_rate_band(samples: &[HotnessSample], thresholds: &HotnessThresholds) 
 mod tests {
     use super::*;
 
-    fn sample(at_ms: u64, commands: u64, queue: u64, command_p95: Option<u64>, journal_p95: Option<u64>) -> HotnessSample {
+    fn sample(
+        at_ms: u64,
+        commands: u64,
+        queue: u64,
+        command_p95: Option<u64>,
+        journal_p95: Option<u64>,
+    ) -> HotnessSample {
         HotnessSample {
             at_ms,
             commands_total: commands,

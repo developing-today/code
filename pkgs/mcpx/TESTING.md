@@ -63,6 +63,41 @@ truncates at the cap and says so; CI runs the rest.
    move into CI (#1973's territory), that is the only place mcpx looks
    for order- and timing-dependent flakes.
 
+## The run seed (#1949)
+
+Every randomized input in every test derives from one seed per run,
+carried by the `MCPX_TEST_SEED` env var — the only channel. The
+derivation (root, per-test streams, shuffle) is #1949 section 2,
+implemented in `internal/testsupport/gen` (streams) and
+`internal/testsupport/seed` (this transport: the lazy helper a test
+calls as `seed.Source(t, "name", version)`; it reads the env var
+only when a test actually asks, so unrelated packages stay
+cacheable, and on failure it logs the exact replay command).
+
+- **Locally**, run tests through the wrapper:
+  `pkgs/mcpx/scripts/test.sh [go test args...]`. It mints one
+  UUIDv7 seed if unset, exports it to every test process, derives
+  `-shuffle` from the same seed, prints the seed, and records it in
+  the gitignored `.cache/test-seed/` (`last` + `history`). Replay a
+  failure with one command:
+  `MCPX_TEST_SEED=<id> pkgs/mcpx/scripts/test.sh -run '^TestX$' ./internal/<pkg>`.
+- **Bare `go test`** still works, with a limitation: with no seed
+  set, the helper mints one *per package process* and warns — a
+  bare run is reproducible from the printed id, but it is not one
+  seed per run. Use the wrapper when the run is the unit of
+  reproduction.
+- **In CI** the workflows mint once per run (the `seed` job in
+  `mcpx.yml`, the `init` job in `mcpx-test.yml`) and pass the id to
+  every `go test` job; a `workflow_dispatch` `seed` input replays a
+  previous run exactly, and re-running failed jobs reuses the
+  original seed because the successful seed job is not re-run. CI
+  never mints inside a test process: unset in CI, the helper and
+  the wrapper both fail closed. `mcpx.yml` uploads the run's
+  `seed.json` as the `test-seed` artifact, which the seed collector
+  (#1953) files into `testdata/seeds/v1`.
+- The seed reproduces inputs and test order, not timing (#1949
+  section 6 caveat).
+
 ## Finding the tests that touch a change (Approach C, decided #1966)
 
 `scripts/affected-tests.py` (dry-run by default; `--run` executes):

@@ -741,6 +741,9 @@ async fn store_and_broadcast_cursor(
 
     {
         let mut cursors = doc.cursors.write().await;
+        // #1790: server-side cursor lifecycle logging — a cursor is
+        // first seen when its client_id enters the map.
+        let first_seen = !cursors.contains_key(&client_id_str);
         cursors.insert(
             client_id_str,
             CursorPosition {
@@ -752,6 +755,13 @@ async fn store_and_broadcast_cursor(
                 disconnected_at: None,
             },
         );
+        if first_seen {
+            tracing::info!(
+                "[cursor-lifecycle] first-seen client={} name={:?}",
+                client_id,
+                effective_name
+            );
+        }
     }
 
     let cursor_msg = CollabMessage::Cursor {
@@ -1271,7 +1281,7 @@ async fn handle_collab_socket(
                 if cursor.disconnected_at.is_some() {
                     cursors.remove(&client_id_for_task);
                     tracing::info!(
-                        "[collab] Removed cursor {} after 5m disconnect timeout",
+                        "[cursor-lifecycle] removed client={} after 5m disconnect timeout",
                         client_id_for_task
                     );
                 } else {

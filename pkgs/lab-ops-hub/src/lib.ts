@@ -542,10 +542,73 @@ export function requireNonBlankString(body: Record<string, unknown>, field: stri
 
 export type Validated<T> = { ok: true; values: T } | { ok: false; error: string };
 
-export function validateMachineBody(body: Record<string, unknown>): Validated<{ name: string }> {
+type OptionalField<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function optionalStringField(body: Record<string, unknown>, field: string, fallback: string): OptionalField<string>;
+function optionalStringField(body: Record<string, unknown>, field: string, fallback: null): OptionalField<string | null>;
+function optionalStringField(
+  body: Record<string, unknown>,
+  field: string,
+  fallback: string | null,
+): OptionalField<string | null> {
+  const value = body[field];
+  if (value === undefined || value === null) return { ok: true, value: fallback };
+  if (typeof value !== "string") return { ok: false, error: `${field} must be a string` };
+  return { ok: true, value };
+}
+
+function optionalIntegerField(body: Record<string, unknown>, field: string): OptionalField<number | null> {
+  const value = body[field];
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return { ok: false, error: `${field} must be an integer` };
+  }
+  return { ok: true, value };
+}
+
+export function validateMachineBody(
+  body: Record<string, unknown>,
+): Validated<{
+  name: string;
+  role: string;
+  cpu: string | null;
+  ram_gb: number | null;
+  storage: string | null;
+  gpu: string | null;
+  status: string;
+  notes: string | null;
+}> {
   const name = requireNonBlankString(body, "name");
   if (!name.ok) return name;
-  return { ok: true, values: { name: name.value } };
+
+  const role = optionalStringField(body, "role", "compute");
+  if (!role.ok) return role;
+  const cpu = optionalStringField(body, "cpu", null);
+  if (!cpu.ok) return cpu;
+  const ram_gb = optionalIntegerField(body, "ram_gb");
+  if (!ram_gb.ok) return ram_gb;
+  const storage = optionalStringField(body, "storage", null);
+  if (!storage.ok) return storage;
+  const gpu = optionalStringField(body, "gpu", null);
+  if (!gpu.ok) return gpu;
+  const status = optionalStringField(body, "status", "planned");
+  if (!status.ok) return status;
+  const notes = optionalStringField(body, "notes", null);
+  if (!notes.ok) return notes;
+
+  return {
+    ok: true,
+    values: {
+      name: name.value,
+      role: role.value,
+      cpu: cpu.value,
+      ram_gb: ram_gb.value,
+      storage: storage.value,
+      gpu: gpu.value,
+      status: status.value,
+      notes: notes.value,
+    },
+  };
 }
 
 // True only for the machines.name UNIQUE violation (#2631). D1 surfaces
@@ -562,18 +625,26 @@ export function isMachineNameConflict(error: unknown): boolean {
 
 // Notes check title before body, matching the order the fields are named
 // in the route's contract (and the triage note for #2480).
-export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string }> {
+export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string; tags: string }> {
   const title = requireNonBlankString(body, "title");
   if (!title.ok) return title;
   const text = requireNonBlankString(body, "body");
   if (!text.ok) return text;
-  return { ok: true, values: { title: title.value, text: text.value } };
+  const tags = optionalStringField(body, "tags", "");
+  if (!tags.ok) return tags;
+  return { ok: true, values: { title: title.value, text: text.value, tags: tags.value } };
 }
 
-export function validateTaskBody(body: Record<string, unknown>): Validated<{ title: string }> {
+export function validateTaskBody(
+  body: Record<string, unknown>,
+): Validated<{ title: string; machine_id: number | null; due: string | null }> {
   const title = requireNonBlankString(body, "title");
   if (!title.ok) return title;
-  return { ok: true, values: { title: title.value } };
+  const machine_id = optionalIntegerField(body, "machine_id");
+  if (!machine_id.ok) return machine_id;
+  const due = optionalStringField(body, "due", null);
+  if (!due.ok) return due;
+  return { ok: true, values: { title: title.value, machine_id: machine_id.value, due: due.value } };
 }
 
 // --- Upload R2 keys ---------------------------------------------------------

@@ -660,6 +660,17 @@ let
       ) justRecipes.recipes;
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      mcpxContainer = pkgs.callPackage ../pkgs/mcpx/container-image.nix {
+        mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix {
+          wrapWithRuntimes = false;
+          doCheck = false;
+        };
+      };
+      identity = pkgs.callPackage ../pkgs/identity/package.nix { };
+      identityImage = pkgs.callPackage ../pkgs/identity/container-image.nix {
+        inherit identity;
+      };
+      identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -672,12 +683,16 @@ let
       packages = {
         inherit
           mcpx
+          identity
           idMailDeploy
           pkarrDeploy
           developingTodayBackupDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
+        mcpx-container = mcpxContainer;
+        identity-image = identityImage;
+        identity-provider-image = identityProviderImage;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -1305,6 +1320,42 @@ let
             }
             ''
               python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice2-tests =
+          pkgs.runCommandLocal "check-deploy-slice2-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice3-tests =
+          pkgs.runCommandLocal "check-deploy-slice3-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv =
+          pkgs.runCommandLocal "check-deploy-argv"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv-property =
+          pkgs.runCommandLocal "check-deploy-argv-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv_property.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
         deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''

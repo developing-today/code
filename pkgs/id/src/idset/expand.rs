@@ -54,7 +54,7 @@ use crate::groups::Role;
 use crate::membership::{Membership, MembershipError};
 use crate::waiting::AuthorKey;
 
-use super::view::{expand_set, GroupMembers, ProjectionError};
+use super::view::{GroupMembers, ProjectionError, expand_set};
 use super::{Entry, WriterSet};
 
 /// One set version, pinned for expansion: the set object, the causal

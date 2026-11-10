@@ -107,6 +107,7 @@ id id                   # Print local node ID
 id key export backup.idkey    # Export with a hidden passphrase prompt
 id key import backup.idkey    # Import; existing identities require --replace
 id peers                # List discovered peers
+id peers --abuse        # Per-peer frame/byte abuse counters, by direction (world traffic only; empty when serving without --world)
 ```
 
 ## Client-only boundary
@@ -160,6 +161,7 @@ it is — a valid world capability, minted by the host's admin with
 | `revoke`       |                                | Revoke a delegation by its grant event ID          |
 | `doc`          |                                | Publish documents; list events/frontier/history    |
 | `claim`        |                                | Tag claims on any subject (set, clear, search)     |
+| `writer-sets`  |                                | Writer sets in the event store (show, expand, discover) |
 
 ### Tag Subcommands
 

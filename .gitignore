@@ -123,6 +123,7 @@ events.redb
 events.redb.tmp
 groups.jsonl
 test.*
+!pkgs/mcpx/scripts/test.sh
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
 **/codedb.snapshot

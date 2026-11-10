@@ -1044,3 +1044,117 @@ describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
     expect(parsed?.providers[0].windows).toHaveLength(1);
   });
 });
+
+describe("shell-pool stale/retained path (#6942)", () => {
+  const SHELL_NOTE =
+    "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.";
+  const LEG_ERROR = "Open Design usage API returned HTTP 503";
+
+  function shellView(): QuotaView {
+    const view = baseView();
+    view.pools.push({
+      id: "opendesign",
+      provider: "Open Design",
+      plan: "Go",
+      state: "healthy",
+      windows: [],
+      note: SHELL_NOTE,
+    });
+    return view;
+  }
+
+  function legErrorFile(providers: QuotaCurrentEntry[]): QuotaCurrentFile {
+    const f = file(providers);
+    f.heartbeat = {
+      tickAt: iso(4 * 60_000),
+      ok: true,
+      durationMs: 900,
+      perProvider: { opendesign: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } },
+    };
+    return f;
+  }
+
+  const retainedEntry = () =>
+    entry({
+      serviceId: "opendesign",
+      source: "opencode-quota",
+      measuredAt: iso(45 * 60_000),
+      retainedFromFailedTick: iso(4 * 60_000),
+      windows: [win("5h", 0, iso(45 * 60_000)), win("7d", 0, iso(45 * 60_000))],
+    });
+
+  test("a retained entry whose leg errored renders the leg error as freshness, entry windows standing", () => {
+    const out = overlayQuotaCurrent(shellView(), legErrorFile([retainedEntry()]), NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("error");
+    expect(od.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "error",
+      error: LEG_ERROR,
+    });
+    // The read's dated fallback windows stand, percentages identical.
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["7d", 0],
+    ]);
+    // The read carries a dated read, so the shell note must not stand.
+    expect(od.note).toBeUndefined();
+  });
+
+  test("a retained entry with no leg error stays stale, but its windows still stand and the shell note is suppressed", () => {
+    const out = overlayQuotaCurrent(shellView(), file([retainedEntry()]), NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("stale");
+    expect(od.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
+    expect(od.windows.map((w) => w.percent)).toEqual([0, 0]);
+    expect(od.note).toBeUndefined();
+  });
+
+  test("an aged ok entry for a shell pool surfaces stale with the entry's windows standing", () => {
+    const at = iso(QUOTA_CURRENT_FRESH_MS + 10 * 60_000);
+    const out = overlayQuotaCurrent(
+      shellView(),
+      file([entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("5h", 12, at)] })]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("stale");
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([["5-hour", 12]]);
+    expect(od.note).toBeUndefined();
+  });
+
+  test("an errored shell pool with adopted windows is excluded from model-choice guidance", () => {
+    const out = overlayQuotaCurrent(
+      shellView(),
+      legErrorFile([
+        retainedEntry(),
+        entry({ serviceId: "meta", windows: [win("5h", 1.33, iso(5 * 60_000))] }),
+      ]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.windows.length).toBeGreaterThan(0); // windows stand for display
+    expect(out.choices.hasHeadroom).toContain("meta"); // the fresh read still guides
+    expect(out.choices.hasHeadroom).not.toContain("opendesign");
+    expect(out.choices.burnBeforeReset).not.toContain("opendesign");
+    expect(out.choices.doNotStart).not.toContain("opendesign");
+  });
+
+  test("a spec pool with a leg error keeps the #1268 stale classification and its base dated windows", () => {
+    const f = legErrorFile([
+      entry({
+        serviceId: "cline-pass",
+        measuredAt: iso(5 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("monthly", 71, iso(5 * 60_000))],
+      }),
+    ]);
+    f.heartbeat.perProvider = { "cline-pass": { state: "error", ms: 9, rows: 1, error: "leg boom" } };
+    const out = overlayQuotaCurrent(baseView(), f, NOW);
+    const cline = out.pools.find((p) => p.id === "cline-pass")!;
+    expect(cline.state).toBe("stale");
+    expect(cline.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "stale" });
+    expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+  });
+});

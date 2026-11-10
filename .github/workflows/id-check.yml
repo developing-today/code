@@ -52,6 +52,9 @@ on:
       - ".github/scripts/check-id-pr-checks.sh"
       - ".github/scripts/check-id-pr-checks.test.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
+      - ".github/scripts/check-id-source-snapshot.sh"
+      - ".github/scripts/check-id-source-snapshot.test.sh"
+      - ".github/scripts/check-crash-gate-coverage.test.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -85,6 +88,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Test source-snapshot guard behavior
+        run: bash .github/scripts/check-id-source-snapshot.test.sh
+
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           extra-conf: |
@@ -107,6 +113,9 @@ jobs:
       # of the PR split filters fails here by name.
       - name: Guard crash-gate PR partition coverage
         run: .github/scripts/check-crash-gate-coverage.sh
+
+      - name: Test the crash-gate coverage guard enumeration
+        run: .github/scripts/check-crash-gate-coverage.test.sh
 
       - name: Emit PR check list for the matrix
         id: list

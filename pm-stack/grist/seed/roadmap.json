@@ -154,7 +154,7 @@
       "Notes": "201 open issues+PRs at 2026-10-24. Fleet configuration; cluster design issues #501–#508 live here.",
       "Source": "https://github.com/dezren39/nix",
       "Status": "In progress",
-      "Title": "Repo fleet — dezren39/nix"
+      "Title": "Repo fleet — dezren39/darwin-nix"
     },
     {
       "Title": "id — Path to Phase 12: trusted CI, validation, journal, cost visibility",

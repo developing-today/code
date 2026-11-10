@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::tag_claims::{LocalClaim, TagError, TagScope, check_text, MAX_NAME_BYTES, MAX_VALUE_BYTES};
+use crate::tag_claims::{
+    LocalClaim, MAX_NAME_BYTES, MAX_VALUE_BYTES, TagError, TagScope, check_text,
+};
 use crate::waiting::AuthorKey;
 
 /// The file local claims live in, under the event store's directory.
@@ -121,7 +123,9 @@ impl LocalClaims {
     pub fn matching(&self, name: &str, value: Option<&str>) -> Vec<LocalClaim> {
         self.claims
             .values()
-            .filter(|claim| claim.name == name && value.is_none_or(|want| claim.value.as_deref() == Some(want)))
+            .filter(|claim| {
+                claim.name == name && value.is_none_or(|want| claim.value.as_deref() == Some(want))
+            })
             .cloned()
             .collect()
     }
@@ -145,7 +149,9 @@ impl LocalClaims {
                 Some(text) => check_text("value", text, 0, MAX_VALUE_BYTES),
                 None => Ok(()),
             })
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+            })?;
         let id = LocalClaim::id_for(author, &subject, name, value);
         let claim = LocalClaim {
             id,
@@ -168,7 +174,12 @@ impl LocalClaims {
     /// # Errors
     ///
     /// Fails if the file cannot be written.
-    pub fn clear(&mut self, author: &AuthorKey, subject: Hash, name: &str) -> std::io::Result<usize> {
+    pub fn clear(
+        &mut self,
+        author: &AuthorKey,
+        subject: Hash,
+        name: &str,
+    ) -> std::io::Result<usize> {
         let before = self.claims.len();
         self.claims.retain(|_, claim| {
             !(claim.subject == subject && claim.name == name && claim.author == *author)
@@ -248,11 +259,20 @@ fn hex_bytes(text: &str) -> Result<Vec<u8>, String> {
     if !text.len().is_multiple_of(2) {
         return Err(format!("{text:?} has an odd number of hex digits"));
     }
-    (0..text.len())
-        .step_by(2)
-        .map(|index| {
-            u8::from_str_radix(&text[index..index + 2], 16)
-                .map_err(|_| format!("{text:?} is not hex"))
+    // Every byte must be an ASCII hex digit (#7750, the #2517 gate the
+    // sibling parsers already carry): u8::from_str_radix also accepts a
+    // leading plus sign, so without this gate a byte 0x00-0x0f has two accepted
+    // spellings. Decoding works on bytes, never str slices at byte
+    // offsets, so a multi-byte character in a corrupt line is an error,
+    // not a char-boundary panic.
+    if !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{text:?} is not hex"));
+    }
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair).map_err(|_| format!("{text:?} is not hex"))?;
+            u8::from_str_radix(digits, 16).map_err(|_| format!("{text:?} is not hex"))
         })
         .collect()
 }
@@ -321,7 +341,9 @@ mod tests {
         let dir = temp_dir("roundtrip");
         let id = {
             let mut store = LocalClaims::open(&dir).unwrap();
-            store.set(&author(1), subject(2), "city", Some("Oslo")).unwrap()
+            store
+                .set(&author(1), subject(2), "city", Some("Oslo"))
+                .unwrap()
         };
         let store = LocalClaims::open(&dir).unwrap();
         let claims = store.on_subject(&subject(2));
@@ -383,5 +405,18 @@ mod tests {
         assert_eq!(split_scope_prefix("city"), (TagScope::Shared, "city"));
         assert_eq!(split_scope_prefix("local:"), (TagScope::Shared, "local:"));
         assert!(scope_prefix_error("local:").is_some());
+    }
+
+    #[test]
+    fn test_hex_bytes_refuses_plus_pairs_and_multibyte_input() {
+        // #7750: the plus spelling the #2517 gate refuses in the sibling
+        // parsers, and multi-byte input at a misaligned offset (which used
+        // to panic on a char boundary instead of erroring).
+        assert!(hex_bytes(&"+a".repeat(32)).is_err());
+        assert!(hex_bytes("€a").is_err());
+        assert!(hex_bytes(&format!("{}€a", "0a".repeat(30))).is_err());
+        assert_eq!(hex_bytes(&"0A".repeat(32)).unwrap(), vec![10; 32]);
+        assert!(hex_bytes("abc").is_err());
+        assert!(hex_bytes(&"zz".repeat(32)).is_err());
     }
 }

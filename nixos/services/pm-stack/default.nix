@@ -237,6 +237,9 @@ in
             Type = "oneshot";
             TimeoutStartSec = 300;
             WorkingDirectory = "${repo}/pm-stack/aggregator";
+            # ANTIGRAVITY_OAUTH_CLIENT_SECRET for the quota subcommand's Antigravity token refresh (code#8086);
+            # the file is materialized by the opencode unit's ExecStartPre (home/common).
+            EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
             Environment = [
               "QUOTA_CURRENT_PATH=${aggState}/quota-current.json"
               "QUOTA_HEARTBEAT_PATH=${aggState}/quota-gatherer-heartbeat.json"

@@ -472,6 +472,10 @@ def main():
         if not inputs:
             ref_data["not_found"] = True
             all_ref_data.append(ref_data)
+            # Print this ref's summary now: without it, a run where
+            # every ref is unmatched prints nothing at all, and the
+            # non-zero exit below arrives with no named cause (#6941).
+            print_ref_summary(label, ref_data["results"], [label])
             continue
 
         if not new_inputs:
@@ -584,6 +588,16 @@ def main():
         1 for rd in all_ref_data for r in rd["results"] if r["status"] == "failed"
     )
     if failed_total:
+        sys.exit(1)
+
+    # A requested ref that matched no inputs is also a failure (#6941):
+    # a typo'd ref (or --help) otherwise exits 0 after updating nothing,
+    # and callers proceed as if the pin was refreshed. The summaries
+    # above already name the unmatched refs ("No inputs found for:").
+    # This also pins the no-argument run against a lock with zero
+    # nixpkgs inputs (label "all"): nothing to update is not a success
+    # for a tool whose only job is updating those inputs.
+    if any(rd["not_found"] for rd in all_ref_data):
         sys.exit(1)
 
 

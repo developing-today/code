@@ -48,8 +48,8 @@ const GQL = {
               number: 508,
               title: "EPIC: Basement cluster",
               state: "OPEN",
-              url: "https://github.com/dezren39/nix/issues/508",
-              repository: { nameWithOwner: "dezren39/nix" },
+              url: "https://github.com/dezren39/darwin-nix/issues/508",
+              repository: { nameWithOwner: "dezren39/darwin-nix" },
               updatedAt: "2026-10-20T12:05:58Z",
               author: { login: "dezren39" },
             },
@@ -170,13 +170,13 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     const pool = parseProjectItems(GQL);
     expect(pool.length).toBe(2);
     const epic = pool[0];
-    expect(epic.ref).toBe("dezren39/nix#508");
+    expect(epic.ref).toBe("dezren39/darwin-nix#508");
     expect(epic.state).toBe("open");
     expect(epic.status).toBe("In Progress");
     expect(epic.area).toBe("lab-cluster");
     expect(epic.horizon).toBe("Quarter");
     expect(epic.kind).toBe("Epic");
-    expect(epic.issueUrl).toBe("https://github.com/dezren39/nix/issues/508");
+    expect(epic.issueUrl).toBe("https://github.com/dezren39/darwin-nix/issues/508");
     expect(epic.url).toBe("https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=111");
     expect(pool[1].state).toBe("closed");
   });
@@ -206,7 +206,7 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
       goals: [
         {
           linedUp: [
-            { title: "x", ref: "dezren39/nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
+            { title: "x", ref: "dezren39/darwin-nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
           ],
         },
       ],
@@ -236,7 +236,7 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
 describe("items-from-pool resolution", () => {
   test("pool entry builds a GhItem carrying the Project fields", () => {
     const item = poolItemToGhItem(parseProjectItems(GQL)[0]);
-    expect(item.ref).toBe("dezren39/nix#508");
+    expect(item.ref).toBe("dezren39/darwin-nix#508");
     expect(item.kind).toBe("issue");
     expect(item.state).toBe("open");
     expect(item.projectStatus).toBe("In Progress");
@@ -265,8 +265,8 @@ describe("items-from-pool resolution", () => {
       PM_PROJECTOR_URL: "off",
     });
     const src = liveSource(cfg);
-    const items = await src.items(["dezren39/nix#508", "developing-today/code#910"]);
-    expect(items.get("dezren39/nix#508")?.title).toBe("EPIC: Basement cluster");
+    const items = await src.items(["dezren39/darwin-nix#508", "developing-today/code#910"]);
+    expect(items.get("dezren39/darwin-nix#508")?.title).toBe("EPIC: Basement cluster");
     expect(items.get("developing-today/code#910")?.state).toBe("closed");
     expect(src.provenance().items).toContain("live (project pool");
     const served = await src.projects();
@@ -590,7 +590,7 @@ describe("renderProjects", () => {
     const pool = parseProjectItems(GQL);
     const html = renderProjects(pool, PROV, {});
     expect(html).toContain("EPIC: Basement cluster");
-    expect(html).toContain("dezren39/nix#508");
+    expect(html).toContain("dezren39/darwin-nix#508");
     expect(html).toContain("itemId=111");
     expect(html).toContain("⚠ project: In Progress · derived: Todo");
     expect(html).toContain("/projects?area=lab-cluster");

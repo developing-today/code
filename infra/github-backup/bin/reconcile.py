@@ -27,6 +27,10 @@ from ghb_common import (
     valid_mirror,
     mirror_path,
     clone_status_record,
+    load_plan,
+    report_problems,
+    save_json,
+    atomic_write_text,
 )
 import manifest as manifest_mod
 
@@ -80,9 +84,12 @@ def main():
     plan, excluded, gaps, pending, skipped_empty = build_plan(repos, cfg)
     today = time.strftime("%Y-%m-%d")
     old_plan_path = os.path.join(root, "plan.json")
-    old_items = []
-    if os.path.exists(old_plan_path):
-        old_items = json.load(open(old_plan_path))
+    # #3240: the previous plan is loaded through the tolerant shared
+    # loader — a torn plan.json falls back to its last-good copy with
+    # named problems instead of killing the sweep at startup, and
+    # retention below still sees the last-known-good entries.
+    old_items, problems = load_plan(root)
+    report_problems(problems)
     old = [p["repo"] for p in old_items]
     # Last-known-good (#3229): an owner whose inventory FAILED (null
     # repositoryOwner, SAML-blocked, gh error, ...) keeps its previously
@@ -106,8 +113,7 @@ def main():
     added = sorted(set(new) - set(old))
     removed = sorted(set(old) - set(new))
     missing = [r for r in new if not valid_mirror(mirror_path(root, r))]
-    with open(old_plan_path, "w") as f:
-        json.dump(plan, f, indent=0)
+    save_json(old_plan_path, plan)
     lines = [
         f"# github-backup reconcile {today}",
         "",
@@ -191,8 +197,9 @@ def main():
             )
         lines.append("")
     report_path = os.path.join(root, f"reconcile-{today}.md")
-    with open(report_path, "w") as f:
-        f.write("\n".join(lines))
+    # #3283 disposition (a): the dated reconcile report is generated
+    # state too — atomic write, same helper as FAMILIES.md.
+    atomic_write_text(report_path, "\n".join(lines))
     print("\n".join(lines))
     if clone_rc not in (None, 0):
         print("clone pass had failures; see clone-status.jsonl")

@@ -9,14 +9,15 @@
 #                              exec refuses cleanly ("no usable JavaScript
 #                              runtime") instead of crashing
 #   alpine-bunmusl-exec        alpine + bun's musl build: exec runs a script
+#   alpine-node-exec           alpine + apk nodejs: exec runs or mcpx refuses
+#                              with an actionable TypeScript capability error
 #   scratch-nonexec            FROM scratch (+ CA certs): --version + refusal
 #   distroless-static-nonexec  gcr.io/distroless/static: --version + refusal
 #   distroless-cc-deno-exec    gcr.io/distroless/cc + deno: exec runs a script
 #
-# Deliberately NOT a leg: alpine + nodejs exec. Verified 2026-10-30: mcpx's
-# node path dies with ERR_NO_TYPESCRIPT under Alpine's nodejs build, so the
-# leg would enshrine a failure; it is deferred with the finding recorded on
-# #1987 until the node invocation works on musl node.
+# The alpine + nodejs leg protects both supported outcomes: execution when
+# transform-types is available, or an mcpx-level actionable refusal when it
+# is not (#2699).
 #
 # Usage: scripts/tier2-containers.sh [leg ...]   (default: all legs)
 # Needs: go, docker. Run by .github/workflows/mcpx-tier2-containers.yml.
@@ -73,6 +74,26 @@ EOF
     exec 'console.log("tier2-bunmusl-ok")' | grep -q 'tier2-bunmusl-ok'
 }
 
+leg_alpine_node_exec() {
+  echo "== leg: alpine-node-exec =="
+  cat > Containerfile.alpinenode <<'EOF'
+FROM alpine:3.21
+RUN apk add --no-cache nodejs
+COPY mcpx /usr/local/bin/mcpx
+ENV MCPX_STATE_DIR=/tmp/state MCPX_CACHE_DIR=/tmp/cache MCPX_SCRIPT_RUNTIME=node
+ENTRYPOINT ["/usr/local/bin/mcpx"]
+EOF
+  docker build -q -f Containerfile.alpinenode -t mcpx-tier2-alpinenode . >/dev/null
+  local out
+  out="$(timeout 120 docker run --rm mcpx-tier2-alpinenode \
+    exec 'console.log("tier2-node-ok")' 2>&1 || true)"
+  echo "$out" | head -4
+  if grep -q 'tier2-node-ok' <<<"$out"; then
+    return
+  fi
+  grep -q 'does not support --experimental-transform-types required by mcpx' <<<"$out"
+}
+
 leg_scratch_nonexec() {
   echo "== leg: scratch-nonexec =="
   cat > Containerfile.scratch <<'EOF'
@@ -118,13 +139,14 @@ EOF
 
 legs=("$@")
 if [ "${#legs[@]}" -eq 0 ]; then
-  legs=(alpine-nonexec alpine-bunmusl-exec scratch-nonexec
+  legs=(alpine-nonexec alpine-bunmusl-exec alpine-node-exec scratch-nonexec
         distroless-static-nonexec distroless-cc-deno-exec)
 fi
 for leg in "${legs[@]}"; do
   case "$leg" in
     alpine-nonexec) leg_alpine_nonexec ;;
     alpine-bunmusl-exec) leg_alpine_bunmusl_exec ;;
+    alpine-node-exec) leg_alpine_node_exec ;;
     scratch-nonexec) leg_scratch_nonexec ;;
     distroless-static-nonexec) leg_distroless_static_nonexec ;;
     distroless-cc-deno-exec) leg_distroless_cc_deno_exec ;;

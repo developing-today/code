@@ -395,8 +395,10 @@ mod tests {
                 evidence: Some(&e),
             })
             .collect();
-        let Decision::Deny(r) = evaluate(&Scope::Scoped(policy()), &h, 50, &OK) else {
-            panic!("allowed")
+        let decision = evaluate(&Scope::Scoped(policy()), &h, 50, &OK);
+        assert!(!decision.is_allow());
+        let Decision::Deny(r) = decision else {
+            return;
         };
         assert_eq!(r.len(), 3);
         assert!(

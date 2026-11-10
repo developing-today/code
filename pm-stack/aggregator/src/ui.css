@@ -43,6 +43,7 @@ a { color: #58a6ff; }
   .attention-card-header .badge { white-space: normal; }
   .item-session-records > .session-record-line { box-sizing: border-box; max-width: 100%; min-width: 0; }
   .item-session-records .session-record-meta { display: block; max-width: 100%; overflow-wrap: anywhere; }
+  .item-session-records .session-record-line .badge { box-sizing: border-box; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 }
 .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }
 .badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }

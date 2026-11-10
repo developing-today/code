@@ -18,6 +18,9 @@ on:
       - ".github/actions/**"
       - ".github/scripts/check-workflows.sh"
       - ".github/scripts/check-workflows.test.sh"
+      - ".github/ci-policy.md"
+      - ".github/scripts/check-ci-policy-agreement.sh"
+      - ".github/scripts/check-ci-policy-agreement.test.sh"
   workflow_dispatch:
 
 permissions:
@@ -56,3 +59,7 @@ jobs:
         run: bash .github/scripts/check-workflows.test.sh
       - name: Validate workflows and composite actions
         run: bash .github/scripts/check-workflows.sh
+      - name: Contract tests for the ci-policy agreement checker (#7089)
+        run: bash .github/scripts/check-ci-policy-agreement.test.sh
+      - name: CI-policy agreement check (#7089)
+        run: bash .github/scripts/check-ci-policy-agreement.sh

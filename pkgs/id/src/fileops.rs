@@ -555,7 +555,12 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         if let Err(e) = self
             .tags
-            .copy_all_tags(ns, from.as_bytes(), to.as_bytes())
+            .copy_all_tags_except(
+                ns,
+                from.as_bytes(),
+                to.as_bytes(),
+                &[b"archive.rename", b"archive.replace"],
+            )
             .await
         {
             tracing::warn!("failed to copy tags {from} -> {to}: {e:#}");
@@ -1070,6 +1075,74 @@ mod replacement_metadata_tests {
         assert!(
             has_tag(&source, "source-only", "source-metadata"),
             "{source:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    /// A copy must not become a second owner of the source's archives
+    /// (#4761): deleting the copy must leave the source's archives intact.
+    #[tokio::test]
+    async fn copy_does_not_inherit_source_archive_refs() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source.txt", b"source content").await;
+        put(&node, "other.txt", b"other content").await;
+        // Renaming onto source.txt with archiving enabled adds both
+        // archive.rename and archive.replace refs to the live source.
+        let rename_outcome = node
+            .ops()
+            .rename("other.txt", "source.txt", true)
+            .await
+            .unwrap();
+        let source_archives = [
+            rename_outcome
+                .archived_original
+                .expect("original source archived"),
+            rename_outcome
+                .archived_replaced
+                .expect("replaced source archived"),
+        ];
+        let source_before = tags_of(&node, "source.txt").await;
+        assert!(
+            has_tag(&source_before, "archive.rename", &source_archives[0]),
+            "{source_before:?}"
+        );
+        assert!(
+            has_tag(&source_before, "archive.replace", &source_archives[1]),
+            "{source_before:?}"
+        );
+
+        node.ops().copy("source.txt", "copy.txt").await.unwrap();
+        let copy_tags = tags_of(&node, "copy.txt").await;
+        assert!(
+            values(&copy_tags, "archive.rename").is_empty(),
+            "copy inherited archive.rename refs: {copy_tags:?}"
+        );
+        assert!(
+            values(&copy_tags, "archive.replace").is_empty(),
+            "copy inherited archive.replace refs: {copy_tags:?}"
+        );
+
+        // Deleting the copy must not touch the source's archive.
+        let delete_outcome = node.ops().delete("copy.txt").await.unwrap();
+        assert_eq!(
+            delete_outcome.archives_removed, 0,
+            "copy delete removed archives"
+        );
+        for archive in &source_archives {
+            assert!(
+                !tags_of(&node, archive).await.is_empty(),
+                "source archive {archive} removed by copy delete"
+            );
+        }
+        let source_after = tags_of(&node, "source.txt").await;
+        assert!(
+            has_tag(&source_after, "archive.rename", &source_archives[0]),
+            "source lost its archive.rename ref: {source_after:?}"
+        );
+        assert!(
+            has_tag(&source_after, "archive.replace", &source_archives[1]),
+            "source lost its archive ref: {source_after:?}"
         );
 
         node.shutdown().await.unwrap();

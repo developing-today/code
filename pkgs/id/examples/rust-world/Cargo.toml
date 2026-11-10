@@ -1,0 +1,14 @@
+[package]
+name = "plaza-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust guest SDK for Plaza ABI v1 worlds (F12.8, #1065): screen, json, grid, cap and text helpers equal to the Roc platform libraries, plus the plaza_* export plumbing."
+license = "MIT OR Apache-2.0"
+
+# Standalone crate: intentionally not a member of the pkgs/id workspace,
+# like the other example guests. It builds for the host (unit tests) and
+# for wasm32-unknown-unknown (the guest module).
+[workspace]
+
+[lib]
+crate-type = ["rlib"]

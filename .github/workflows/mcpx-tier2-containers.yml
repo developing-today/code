@@ -53,6 +53,7 @@ jobs:
         leg:
           - alpine-nonexec
           - alpine-bunmusl-exec
+          - alpine-node-exec
           - scratch-nonexec
           - distroless-static-nonexec
           - distroless-cc-deno-exec

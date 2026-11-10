@@ -315,7 +315,12 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
     let mut sets: BTreeMap<[u8; 32], Claim> = BTreeMap::new();
     let mut removed: HashSet<Hash> = HashSet::new();
     for event in by_id.values().copied() {
-        if let TagOp::Set { subject, name, value } = &event.op {
+        if let TagOp::Set {
+            subject,
+            name,
+            value,
+        } = &event.op
+        {
             sets.insert(
                 *event.id.as_bytes(),
                 Claim {
