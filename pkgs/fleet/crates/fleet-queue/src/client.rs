@@ -886,6 +886,37 @@ fn opt_queue(args: &Args) -> String {
     args.get("queue").unwrap_or_else(default_queue)
 }
 
+/// Required queue resolution for claim/list/health (#7358, decision
+/// recorded on the issue): the --queue flag wins, then the
+/// REPO_QUEUE_DEFAULT_QUEUE env, and with neither nonblank the
+/// command fails loudly before contacting the broker. There is
+/// deliberately NO built-in default here, because the old
+/// DEFAULT_QUEUE silently resolved to the shadow queue - the same
+/// trap enqueue was hardened against in #7016. Pure, so the
+/// resolution order is unit-testable.
+fn resolve_required_queue(
+    flag: Option<&str>,
+    env_default: Option<&str>,
+    verb: &str,
+) -> Result<String, String> {
+    for candidate in [flag, env_default] {
+        if let Some(q) = candidate.map(str::trim).filter(|q| !q.is_empty()) {
+            return Ok(q.to_string());
+        }
+    }
+    Err(format!(
+        "{verb}: no queue resolved - pass --queue or set REPO_QUEUE_DEFAULT_QUEUE ({verb} has no default queue; the old shadow default silently misrouted work)"
+    ))
+}
+
+fn required_queue(args: &Args, verb: &str) -> String {
+    let env_default = std::env::var("REPO_QUEUE_DEFAULT_QUEUE").ok();
+    match resolve_required_queue(args.get("queue").as_deref(), env_default.as_deref(), verb) {
+        Ok(q) => q,
+        Err(e) => die(2, &e),
+    }
+}
+
 fn opt_worker(args: &Args) -> String {
     args.get("worker")
         .unwrap_or_else(|| DEFAULT_WORKER.to_string())
@@ -1279,7 +1310,7 @@ fn cmd_list(rest: &[String]) -> i32 {
     let resp = call(
         "/list",
         &json!({
-            "queue": opt_queue(&args),
+            "queue": required_queue(&args, "list"),
             "status": args.get("status"),
             "limit": limit,
             "not_before": args.get("not-before"),
@@ -1326,7 +1357,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
-        "queue": opt_queue(&args),
+        "queue": required_queue(&args, "claim"),
         "worker": worker,
         "lease_seconds": args.get_i64("lease-seconds").unwrap_or(2700),
     });
@@ -1908,10 +1939,8 @@ fn cmd_complete(rest: &[String]) -> i32 {
 fn cmd_health(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue"], &[]);
     reject_extra_pos("health", &args, 0);
-    let mut body = json!({});
-    if let Some(q) = args.get("queue") {
-        body["queue"] = json!(q);
-    }
+    let queue = required_queue(&args, "health");
+    let body = json!({"queue": queue});
     let resp = unwrap_ok_fb(call_fb("/health", &body), "/health");
     let netloc = resp
         .get("project_netloc")
@@ -2179,6 +2208,37 @@ mod tests {
         assert!(resolve_enqueue_queue(None, &json!({}), None).is_err());
         assert!(resolve_enqueue_queue(None, &json!({"queue": "  "}), Some("")).is_err());
         assert!(resolve_enqueue_queue(Some(""), &json!({}), None).is_err());
+    }
+
+    #[test]
+    fn required_queue_resolution_never_falls_back_to_shadow() {
+        // #7358: claim/list/health share this rule - the flag wins
+        // over the env, and with neither nonblank the resolution
+        // fails loudly naming --queue; it never resolves to the
+        // shadow default.
+        assert_eq!(
+            resolve_required_queue(Some("repo-health-nix-pilot"), Some("env-q"), "claim").unwrap(),
+            "repo-health-nix-pilot"
+        );
+        assert_eq!(
+            resolve_required_queue(None, Some("env-q"), "list").unwrap(),
+            "env-q"
+        );
+        assert_eq!(
+            resolve_required_queue(Some("  "), Some(" env-q "), "health").unwrap(),
+            "env-q"
+        );
+        // Explicit shadow stays reachable when passed deliberately.
+        assert_eq!(
+            resolve_required_queue(Some("repo-health-code-shadow"), None, "claim").unwrap(),
+            "repo-health-code-shadow"
+        );
+        for verb in ["claim", "list", "health"] {
+            let err = resolve_required_queue(None, None, verb).unwrap_err();
+            assert!(err.contains("--queue"), "{err}");
+            assert!(err.starts_with(verb), "{err}");
+            assert!(resolve_required_queue(Some(""), Some(" \t\n"), verb).is_err());
+        }
     }
 
     #[test]
