@@ -1316,6 +1316,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "lane",
             "task",
             "platform",
+            "session-id",
             "model-provider",
             "model-id",
             "model-variant",
@@ -1332,15 +1333,20 @@ fn cmd_claim(rest: &[String]) -> i32 {
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
-    // --platform <family>: declare this claim's family (#8097
-    // Rule 2). The broker only hands this claim items whose
-    // platform selector is unset or equal to it. A claim that
-    // declares no family keeps its pre-#8097 reach (unset items).
+    // --platform <family>: declare this claim's platform MARK
+    // (#8097 Rule 2, demoted by #8187). The broker stamps it on
+    // the claimed row and the claimed event; it filters NOTHING —
+    // a mismatched or undeclared claim claims items all the same.
     if let Some(p) = args.get("platform") {
         match platform_flag(&p) {
             Ok(v) => body["platform"] = json!(v),
             Err(e) => die(2, &e),
         }
+    }
+    // --session-id: the claiming session's own id, recorded as a
+    // mark on the claimed event when the surface knows it (#8187).
+    if let Some(sid) = args.get("session-id") {
+        body["session_id"] = json!(sid);
     }
     // --model-provider/--model-id[/--model-variant]: the claiming
     // session's own model, stamped on the task by the broker
@@ -1538,7 +1544,11 @@ fn claim_output(resp: &Value) -> (Value, i32) {
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["worker", "exclusion-reason"], &[]);
+    let args = parse_args(
+        rest,
+        &["worker", "exclusion-reason", "opencode-reason"],
+        &[],
+    );
     reject_extra_pos("lane", &args, 1);
     let resp = unwrap_ok(call(
         "/lane",
@@ -1546,6 +1556,7 @@ fn cmd_lane(rest: &[String]) -> i32 {
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
             "exclusion_reason": args.get("exclusion-reason"),
+            "opencode_reason": args.get("opencode-reason"),
         }),
     ));
     print_json(&require_row(&resp, "assign_repo_task_lane"));

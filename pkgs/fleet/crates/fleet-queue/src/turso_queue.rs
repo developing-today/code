@@ -64,7 +64,7 @@ const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, 
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
-    exclusion_reason, assigned_by, session_id, fallback_reason, \
+    exclusion_reason, opencode_reason, assigned_by, session_id, fallback_reason, \
     assigned_at, executed_at, updated_at";
 /// Task columns whose stored TEXT is JSON (PG jsonb) — parsed back
 /// into values so the wire shape matches the Postgres broker's.
@@ -366,6 +366,23 @@ impl TursoBackend {
                 self.exec(&format!("ALTER TABLE tasks ADD COLUMN {col} TEXT"), &[])?;
             }
         }
+        // #8187: the ledger's opencode_reason column (the recorded
+        // specific reason an opencode assignment exists at all) lands
+        // the same additive way for ledgers created before it.
+        let lcols = self.query_objs(
+            "SELECT name FROM pragma_table_info('repo_task_lane_ledger')",
+            &[],
+            &[],
+        )?;
+        if !lcols
+            .iter()
+            .any(|c| c.get("name").and_then(|v| v.as_str()) == Some("opencode_reason"))
+        {
+            self.exec(
+                "ALTER TABLE repo_task_lane_ledger ADD COLUMN opencode_reason TEXT",
+                &[],
+            )?;
+        }
         Ok(())
     }
 }
@@ -421,7 +438,7 @@ const SCHEMA: [&str; 12] = [
     "CREATE TABLE IF NOT EXISTS repo_task_lane_ledger (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, \
         task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, \
-        exclusion_reason TEXT, assigned_by TEXT, session_id TEXT, \
+        exclusion_reason TEXT, opencode_reason TEXT, assigned_by TEXT, session_id TEXT, \
         fallback_reason TEXT, assigned_at TEXT, executed_at TEXT, \
         updated_at TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS events (\
@@ -489,6 +506,36 @@ fn get_ledger(t: &TursoBackend, task_id: i64) -> Result<Option<Value>, TErr> {
         &[],
     )?;
     Ok(rows.into_iter().next())
+}
+
+/// The audit marks every broker event carries (#8187 amendments):
+/// who is looking at the item — its platform mark, its claim lane,
+/// its pool (the queue), the claiming session's model stamp
+/// (#8176 claim_provider / claim_model / claim_variant), the bound
+/// session id when one exists (progress.session_id), and the task
+/// id itself. Marks are RECORDED, never required and never a
+/// filter: any of them may be null on any given transition. The
+/// events table is append-only (this module exposes no update or
+/// delete path for it), so these marks are the durable audit log.
+fn audit_marks(task: &Value) -> Value {
+    let progress = task.get("progress").cloned().unwrap_or(json!({}));
+    json!({
+        "task_id": task.get("id").cloned().unwrap_or(Value::Null),
+        "queue": task.get("queue").cloned().unwrap_or(Value::Null),
+        "pool": task.get("queue").cloned().unwrap_or(Value::Null),
+        "platform": task.get("platform").cloned().unwrap_or(Value::Null),
+        "lane_id": task.get("lane_id").cloned().unwrap_or(Value::Null),
+        "model_provider": task.get("claim_provider").cloned().unwrap_or(Value::Null),
+        "model_id": task.get("claim_model").cloned().unwrap_or(Value::Null),
+        "model_variant": task.get("claim_variant").cloned().unwrap_or(Value::Null),
+        "session_id": progress.get("session_id").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// An event detail with the audit marks filled in: the detail's
+/// own explicit fields win, the marks supply the rest.
+fn with_marks(detail: &Value, task: &Value) -> Value {
+    merge_obj(&audit_marks(task), detail)
 }
 
 fn event(
@@ -1646,17 +1693,19 @@ fn claim_lease_until(claimed_at_unix: i64, lease_seconds: i64) -> String {
     iso(claimed_at_unix + lease_seconds)
 }
 
-/// The coarse platform families a queue item may be restricted to
-/// (#8097 Rule 2): a task's `platform` is NULL (unset — either
-/// family may claim it) or exactly one of these. A platform names
-/// a FAMILY, never a specific lane.
+/// The coarse platform families a platform MARK may name (#8097
+/// Rule 2, demoted by #8187): a task's `platform` is NULL (unmarked)
+/// or exactly one of these. A platform names a FAMILY, never a
+/// specific lane — and since #8187 it is a MARK ONLY: it records
+/// which platform is looking at / looked at an item, and is never
+/// a claim filter, never an eligibility condition, and never a
+/// lane-assignment routing reason.
 pub const PLATFORM_FAMILIES: [&str; 2] = ["openchamber", "muse"];
 
-/// Parse an optional platform selector (an enqueue request field,
-/// a packet field, or a claim's declared family). Missing/empty
-/// means unset; anything that is not one of PLATFORM_FAMILIES is
-/// an error, so a typo can never silently widen or narrow who may
-/// take an item.
+/// Parse an optional platform mark (an enqueue request field, a
+/// packet field, or a claim's declared platform). Missing/empty
+/// means unmarked; anything that is not one of PLATFORM_FAMILIES
+/// is an error, so a typo can never silently corrupt the mark.
 fn parse_platform(raw: Option<&str>) -> Result<Option<String>, String> {
     match raw.map(str::trim) {
         None | Some("") => Ok(None),
@@ -1664,19 +1713,6 @@ fn parse_platform(raw: Option<&str>) -> Result<Option<String>, String> {
         Some(p) => Err(format!(
             "invalid platform {p:?} (expected \"openchamber\" or \"muse\")"
         )),
-    }
-}
-
-/// Whether a claim declaring `family` may take a row whose
-/// platform selector is `row_platform`. Unset rows are open to
-/// every claim; a set row only to a claim declaring the same
-/// family. A claim that declares NO family therefore only ever
-/// takes unset rows, so pre-#8097 claimants keep exactly their
-/// old reach and selector items wait for their own family.
-fn platform_allows(row_platform: Option<&str>, family: Option<&str>) -> bool {
-    match row_platform {
-        None => true,
-        Some(p) => family == Some(p),
     }
 }
 
@@ -1851,12 +1887,9 @@ fn expired_claim_returns_to_sink(progress: &Value) -> bool {
 /// so it does not gate the claimant collecting its own handoff.
 /// Anything else (claimed, blocked, a genuine wait park, a queued
 /// row parked into the future) is not claimable by id.
-fn by_id_claimable(row: &Value, now: &str, family: Option<&str>) -> bool {
-    // #8097 Rule 2: even the special-case by-id claim respects the
-    // item's platform selector.
-    if !platform_allows(row.get("platform").and_then(|v| v.as_str()), family) {
-        return false;
-    }
+fn by_id_claimable(row: &Value, now: &str) -> bool {
+    // #8187: platform is a mark, not a filter — a by-id claim takes
+    // the row whatever platform either side carries (or none).
     match row.get("status").and_then(|v| v.as_str()) {
         Some("queued") => {
             let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1906,7 +1939,7 @@ fn claim_by_id(
         .to_string();
     let now_unix = now_unix();
     let now = iso(now_unix);
-    if !by_id_claimable(&row, &now, family) {
+    if !by_id_claimable(&row, &now) {
         return Ok(None);
     }
     let lease_until = claim_lease_until(now_unix, lease_seconds);
@@ -1914,7 +1947,8 @@ fn claim_by_id(
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
            lease_until = ?, \
            attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
-           lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
+           lane_id = ?, platform = COALESCE(?, platform), \
+           park_kind = NULL, wait_kind = NULL, not_before = NULL, \
            updated_at = ? \
          WHERE id = ? AND status = ? AND queue = ?",
         &[
@@ -1922,6 +1956,7 @@ fn claim_by_id(
             Arg::Text(now.clone()),
             Arg::Text(lease_until.clone()),
             arg_str(lane.as_deref()),
+            arg_str(family),
             Arg::Text(now.clone()),
             Arg::Int(task_id),
             Arg::Text(status),
@@ -1973,14 +2008,17 @@ fn claim_by_id(
         Some(worker),
         Some(task_id),
         "claimed",
-        &json!({
-            "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
-            "cleared_session_id": cleared, "lane_id": lane,
-            "by_id": true, "task_id": task_id, "platform": family,
-            "model_provider": model.as_ref().map(|m| m.provider.clone()),
-            "model_id": model.as_ref().and_then(|m| m.model.clone()),
-            "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
-        }),
+        &with_marks(
+            &json!({
+                "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
+                "cleared_session_id": cleared, "lane_id": lane,
+                "by_id": true, "task_id": task_id, "platform": family,
+                "model_provider": model.as_ref().map(|m| m.provider.clone()),
+                "model_id": model.as_ref().and_then(|m| m.model.clone()),
+                "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
+            }),
+            &row,
+        ),
     )?;
     Ok(Some(row))
 }
@@ -1996,29 +2034,86 @@ fn claim_update_sql(pick_predicate: &str) -> String {
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
            lease_until = ?, \
            attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
-           lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
+           lane_id = ?, platform = COALESCE(?, platform), \
+           park_kind = NULL, wait_kind = NULL, not_before = NULL, \
            updated_at = ? \
-         WHERE id = ? AND (platform IS NULL OR platform = ?) \
+         WHERE id = ? \
            AND ( {pick_predicate} )"
     )
 }
 
-/// The default (lane) pick predicate (#8184): queued rows due
-/// under the attempts cap, or parked rows whose wait timer has
-/// passed — EXCEPT recorded opencode handoffs. A handed-off row is
-/// claimant-owned: the claimant collects it through the
-/// parked_handoff pick (or by id) with no timer gating, and serving
-/// it to a lane only re-runs the claim -> handoff -> park cycle
-/// that burned attempts across the fleet. Genuine wait parks (a
-/// stage other than the yield stages, or a direct lane) are
-/// unaffected and keep releasing through claim at not_before.
+/// The default (lane) pick predicate (#8184, amended #8187):
+/// queued rows due under the attempts cap, or parked rows whose
+/// wait timer has passed — plus, as a third branch, parked recorded
+/// opencode handoffs (the #8185 handoff sink) WITHOUT the not_before
+/// gate. #8184 excluded sink rows from lanes entirely (they were
+/// claimant-owned, and serving one to a lane only re-ran the
+/// claim -> handoff -> park cycle); #8187 reverses that: a lane is
+/// single-session by default, claims a sink row as an ordinary
+/// parked claim (+0 attempts, per the claim UPDATE's parked CASE),
+/// and verb_lane flips its ledger assignment to direct when the
+/// lane passes --exclusion-reason (see lane_reassignment_flip).
+/// The claimant's parked_handoff pick and by-id claim keep working
+/// unchanged. The timed parked branch keeps its NOT sink exclusion
+/// so a sink row is admitted by exactly one branch, and genuine
+/// wait parks keep releasing through claim at not_before. The sink
+/// branch carries no `?` placeholder, so the pick SELECT and the
+/// claim UPDATE re-check keep their two `now` arguments.
 fn default_pick_predicate() -> String {
     format!(
         "(status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
        OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ? \
-         AND NOT ({PARKED_HANDOFF_SQL}))"
+         AND NOT ({PARKED_HANDOFF_SQL})) \
+       OR ({PARKED_HANDOFF_SQL})"
     )
+}
+
+/// The lane a FRESH ledger assignment gets (#8187): `direct` by
+/// default — the claiming session owns the task, and no task is
+/// routed to opencode (or any specific lane) without a specific
+/// reason recorded at assignment time. The only doors to an
+/// opencode assignment are an explicit `--opencode-reason` from
+/// the caller (recorded on the ledger row) — or, symmetrically, a
+/// caller `--exclusion-reason` forces direct. Exclusion wins when
+/// both are passed: it is the older, stronger contract ("this task
+/// must NOT go to opencode"). Returns (lane, reason) where reason
+/// is the value recorded on the lane_assigned event:
+/// "default_direct" | "exclusion" | "opencode_reason".
+///
+/// tasks.platform plays NO part here, ever (#8187 amendment):
+/// a task's platform stamp is a MARK of which platform is looking
+/// at it (PLATFORM_FAMILIES: "openchamber" | "muse" — a family,
+/// never a specific lane), never a routing reason and never an
+/// eligibility condition. The ONLY door to opencode is the
+/// explicit --opencode-reason above.
+fn lane_decision(
+    exclusion: Option<&str>,
+    opencode_reason: Option<&str>,
+) -> (&'static str, &'static str) {
+    if exclusion.is_some() {
+        ("direct", "exclusion")
+    } else if opencode_reason.is_some() {
+        ("opencode", "opencode_reason")
+    } else {
+        ("direct", "default_direct")
+    }
+}
+
+/// Whether an EXISTING ledger row flips to direct (#8187): only an
+/// opencode row, only when the caller passes --exclusion-reason
+/// (a Muse lane taking a sink/legacy opencode task direct), and
+/// never once a session is bound (session_id set) — a bound row's
+/// assignment is history, not a routing decision. Claimant flows
+/// that pass no exclusion keep their existing assignment.
+fn lane_reassignment_flip(
+    assigned_lane: &str,
+    session_id: Option<&str>,
+    exclusion: Option<&str>,
+) -> bool {
+    assigned_lane == "opencode"
+        && exclusion.is_some()
+        && session_id.map(str::trim).unwrap_or("").is_empty()
 }
 
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
@@ -2026,12 +2121,19 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let queue = req_str(req, "queue").unwrap_or("").to_string();
     let lease_seconds = req_i64(req, "lease_seconds").unwrap_or(CLAIM_DEFAULT_LEASE_SECONDS);
     let lane = req_str(req, "lane").map(str::to_string);
-    // #8097 Rule 2: the claim's declared family. Only items whose
-    // platform selector is unset or equal to it may be claimed.
+    // #8187 (demoting #8097 Rule 2): the claim's declared platform
+    // is a MARK, never a filter — it is stamped on the claimed row
+    // (platform = COALESCE(declared, existing)) and carried on the
+    // claimed event, and it excludes NOTHING: a claim whose
+    // platform mismatches the item's mark claims it all the same,
+    // and a claim declaring no platform works identically.
     let family = match parse_platform(req_str(req, "platform")) {
         Ok(f) => f,
         Err(e) => return fail(2, format!("claim_repo_task: {e}")),
     };
+    // The claiming session's own id, when the surface knows it:
+    // another mark for the claimed event, never required.
+    let claim_session = req_str(req, "session_id").map(str::to_string);
     // #8176: the claiming session's own model, stamped on the row
     // the claim returns (claim_provider / claim_model /
     // claim_variant). Absent fields stamp nothing.
@@ -2128,11 +2230,10 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             // instant, so if a competing claim takes the picked row
             // first — or it is parked into the future in between — this
             // UPDATE affects 0 rows and the loop re-picks.
-            // #8097: the pick predicate is built per pick mode. Both
-            // modes carry the Rule 2 platform gate — an undeclared
-            // family is the empty string here, which no stored
-            // selector equals, so such claims only ever pick unset
-            // items. The default mode keeps the ordinary predicate
+            // #8097: the pick predicate is built per pick mode.
+            // #8187: NEITHER mode filters by platform — the mark a
+            // claim declares (family) is stamped by the claim
+            // UPDATE, never matched against the item. The default mode keeps the ordinary predicate
             // (queued rows due; parked rows whose timer has passed).
             // Handoff mode picks the next parked recorded opencode
             // handoff (PARKED_HANDOFF_SQL) with no caller-named id
@@ -2146,14 +2247,10 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             let pick_sql = format!(
                 "SELECT id FROM tasks WHERE queue = ? \
                AND payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
-               AND (platform IS NULL OR platform = ?) \
                AND ( {pick_predicate} ) \
              ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1"
             );
-            let mut pick_args: Vec<Arg> = vec![
-                Arg::Text(queue.clone()),
-                Arg::Text(family.as_deref().unwrap_or("").to_string()),
-            ];
+            let mut pick_args: Vec<Arg> = vec![Arg::Text(queue.clone())];
             if !handoff_pick {
                 pick_args.push(Arg::Text(now.clone()));
                 pick_args.push(Arg::Text(now.clone()));
@@ -2169,9 +2266,9 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Text(now.clone()),
                 Arg::Text(lease_until.clone()),
                 arg_str(lane.as_deref()),
+                arg_str(family.as_deref()),
                 Arg::Text(now.clone()),
                 Arg::Int(pick_id),
-                Arg::Text(family.as_deref().unwrap_or("").to_string()),
             ];
             if !handoff_pick {
                 upd_args.push(Arg::Text(now.clone()));
@@ -2242,15 +2339,18 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(id),
             "claimed",
-            &json!({
-                "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
-                "cleared_session_id": cleared, "lane_id": lane,
-                "platform": family,
-                "model_provider": model.as_ref().map(|m| m.provider.clone()),
-                "model_id": model.as_ref().and_then(|m| m.model.clone()),
-                "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
-                "pick": if handoff_pick { "parked_handoff" } else { "default" },
-            }),
+            &with_marks(
+                &json!({
+                    "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
+                    "cleared_session_id": cleared, "lane_id": lane,
+                    "platform": family, "session_id": claim_session,
+                    "model_provider": model.as_ref().map(|m| m.provider.clone()),
+                    "model_id": model.as_ref().and_then(|m| m.model.clone()),
+                    "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
+                    "pick": if handoff_pick { "parked_handoff" } else { "default" },
+                }),
+                &row,
+            ),
         )?;
         Ok(Some(row))
     })();
@@ -2266,6 +2366,7 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let exclusion = req_str(req, "exclusion_reason").map(str::to_string);
+    let opencode_reason = req_str(req, "opencode_reason").map(str::to_string);
     let work = (|| -> Result<Value, TErr> {
         let Some(task) = get_task(t, task_id)? else {
             return Err(format!(
@@ -2274,11 +2375,46 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
         };
         if let Some(existing) = get_ledger(t, task_id)? {
             // Idempotent (migration 0021): keep progress.lane in step.
-            let lane = existing
+            let mut lane = existing
                 .get("assigned_lane")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // #8187 reassignment: an unbound opencode row flips to
+            // direct when the caller passes --exclusion-reason (a
+            // Muse lane taking a sink/legacy opencode task direct).
+            // The progress.lane re-sync below then stamps direct.
+            if lane_reassignment_flip(
+                &lane,
+                existing.get("session_id").and_then(|v| v.as_str()),
+                exclusion.as_deref(),
+            ) {
+                t.exec(
+                    "UPDATE repo_task_lane_ledger SET assigned_lane = 'direct', \
+                       exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
+                    &[
+                        arg_str(exclusion.as_deref()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(task_id),
+                    ],
+                )?;
+                event(
+                    t,
+                    Some(&worker),
+                    Some(task_id),
+                    "lane_assigned",
+                    &with_marks(
+                        &json!({
+                            "assigned_lane": "direct", "previous_lane": "opencode",
+                            "exclusion_reason": exclusion, "opencode_reason": Value::Null,
+                            "reason": "exclusion", "reassignment": true,
+                            "via": "assign_repo_task_lane_turso",
+                        }),
+                        &task,
+                    ),
+                )?;
+                lane = "direct".to_string();
+            }
             let cur = task
                 .get("progress")
                 .and_then(|p| p.get("lane"))
@@ -2299,47 +2435,27 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                     ],
                 )?;
             }
-            return Ok(existing);
+            return Ok(get_ledger(t, task_id)?.unwrap_or(existing));
         }
         let queue = task
             .get("queue")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let counts = t.query_objs(
-            "SELECT \
-               COALESCE(SUM(CASE WHEN COALESCE(executed_lane, assigned_lane) = 'opencode' THEN 1 ELSE 0 END), 0) AS o, \
-               COALESCE(SUM(CASE WHEN COALESCE(executed_lane, assigned_lane) = 'direct' THEN 1 ELSE 0 END), 0) AS d \
-             FROM repo_task_lane_ledger WHERE queue = ? AND exclusion_reason IS NULL",
-            &[Arg::Text(queue.clone())],
-            &[],
-        )?;
-        let (o_count, d_count) = counts
-            .first()
-            .map(|r| {
-                (
-                    r.get("o").and_then(|v| v.as_i64()).unwrap_or(0),
-                    r.get("d").and_then(|v| v.as_i64()).unwrap_or(0),
-                )
-            })
-            .unwrap_or((0, 0));
-        let lane = if exclusion.is_some() {
-            "direct"
-        } else if o_count <= d_count {
-            "opencode"
-        } else {
-            "direct"
-        };
+        // #8187: no balancing counts — direct by default; opencode
+        // only for a specific reason recorded at assignment time.
+        let (lane, reason) = lane_decision(exclusion.as_deref(), opencode_reason.as_deref());
         let now = now_iso();
         t.exec(
             "INSERT INTO repo_task_lane_ledger \
-             (queue, task_id, assigned_lane, exclusion_reason, assigned_by, assigned_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (queue, task_id, assigned_lane, exclusion_reason, opencode_reason, assigned_by, assigned_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &[
                 Arg::Text(queue),
                 Arg::Int(task_id),
                 Arg::Text(lane.to_string()),
                 arg_str(exclusion.as_deref()),
+                arg_str(opencode_reason.as_deref()),
                 Arg::Text(worker.clone()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
@@ -2362,11 +2478,14 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "lane_assigned",
-            &json!({
-                "assigned_lane": lane, "exclusion_reason": exclusion,
-                "opencode_count": o_count, "direct_count": d_count,
-                "via": "assign_repo_task_lane_turso",
-            }),
+            &with_marks(
+                &json!({
+                    "assigned_lane": lane, "exclusion_reason": exclusion,
+                    "opencode_reason": opencode_reason, "reason": reason,
+                    "via": "assign_repo_task_lane_turso",
+                }),
+                &task,
+            ),
         )?;
         get_ledger(t, task_id).map(|r| r.unwrap_or(Value::Null))
     })();
@@ -2444,10 +2563,13 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "lane_session_bound",
-            &json!({
-                "session_id": session_id, "launched_by": launched_by,
-                "via": "bind_repo_task_lane_session_turso",
-            }),
+            &with_marks(
+                &json!({
+                    "session_id": session_id, "launched_by": launched_by,
+                    "via": "bind_repo_task_lane_session_turso",
+                }),
+                &task,
+            ),
         )?;
         get_ledger(t, task_id).map(|r| r.unwrap_or(Value::Null))
     })();
@@ -2709,10 +2831,14 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "parked",
-            &json!({
-                "reason": reason, "park_kind": park_kind, "wait_kind": wk,
-                "not_before": not_before, "ready_condition": condition,
-            }),
+            &with_marks(
+                &json!({
+                    "reason": reason, "park_kind": park_kind, "wait_kind": wk,
+                    "not_before": not_before, "ready_condition": condition,
+                    "cleared_session_id": cleared,
+                }),
+                &row,
+            ),
         )?;
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
         verb_with_execution(t, req, row)
@@ -2775,11 +2901,14 @@ fn verb_wake(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "woken",
-            &json!({
-                "reason": reason, "previous_status": status,
-                "previous_wait_kind": prev_wait_kind,
-                "via": "wake_task_turso",
-            }),
+            &with_marks(
+                &json!({
+                    "reason": reason, "previous_status": status,
+                    "previous_wait_kind": prev_wait_kind,
+                    "via": "wake_task_turso",
+                }),
+                &row,
+            ),
         )
         .map_err(|e| e)?;
         get_task(t, task_id)
@@ -2960,10 +3089,13 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "failed",
-            &json!({
-                "error": error, "reason_class": reason_class, "requeued": requeue,
-                "via": "fail_repo_task_turso",
-            }),
+            &with_marks(
+                &json!({
+                    "error": error, "reason_class": reason_class, "requeued": requeue,
+                    "via": "fail_repo_task_turso",
+                }),
+                &row,
+            ),
         )?;
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
         verb_with_execution(t, req, row)
@@ -3146,7 +3278,7 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "completed",
-            &json!({"via": "complete_task_turso"}),
+            &with_marks(&json!({"via": "complete_task_turso"}), &row),
         )?;
         // Triage doctrine (#7016): a triage completion is not the
         // issue being done — the issue goes back in the queue as a
@@ -3616,7 +3748,7 @@ mod tests {
             "not_before": null, "platform": null, "lane_id": null,
         });
         // Both lanes see the row as claimable before the race.
-        assert!(by_id_claimable(&task, now, None));
+        assert!(by_id_claimable(&task, now));
         // Lane code-f wins: its claim flips the row and stamps
         // code-f's lane id (the state lane code-m's losing claim
         // call observed on task 11895).
@@ -3626,13 +3758,13 @@ mod tests {
         // The loser (code-m, same shared worker id) can no longer
         // claim this row by id, and the pick predicate's status
         // terms ('queued'/'parked') no longer match it either.
-        assert!(!by_id_claimable(&task, now, None));
+        assert!(!by_id_claimable(&task, now));
         // The next eligible task remains claimable for the loser.
         let next = json!({
             "status": "queued", "attempts": 0, "max_attempts": 6,
             "not_before": null, "platform": null, "lane_id": null,
         });
-        assert!(by_id_claimable(&next, now, None));
+        assert!(by_id_claimable(&next, now));
     }
 
     #[test]
@@ -3784,21 +3916,124 @@ mod tests {
     }
 
     #[test]
-    fn default_pick_never_serves_parked_handoffs_8184() {
-        // #8184 regression pin: the lane pick's parked branch must
-        // exclude the recorded-handoff shape (the claimant's own
-        // parked_handoff pick is the only collection path), while
-        // the queued branch keeps its attempts cap.
+    fn default_pick_drains_parked_handoff_sink_8187() {
+        // #8187 (amending #8184): the lane pick now ADMITS parked
+        // recorded opencode handoffs (the handoff sink) through a
+        // third branch with NO not_before gate, so lanes can claim
+        // stranded sink tasks and work them direct. The timed parked
+        // branch keeps its NOT sink exclusion (a sink row is admitted
+        // by exactly one branch), the queued branch keeps its
+        // attempts cap, and the sink branch adds no placeholder: the
+        // predicate still carries exactly the two `now` arguments
+        // the pick SELECT and claim UPDATE bind.
         let pred = default_pick_predicate();
         assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
-        assert!(pred.contains("status = 'parked'"));
+        assert!(pred.contains("status = 'parked' AND not_before IS NOT NULL AND not_before <= ?"));
         assert!(pred.contains("NOT ("));
         assert!(pred.contains("json_extract(progress, '$.lane') = 'opencode'"));
         assert!(pred.contains("'handed_off', 'launch_failed'"));
-        // And the claim UPDATE re-check carries the same exclusion.
+        // Third branch: the full sink predicate, ungated.
+        let sink_branch = format!("OR ({PARKED_HANDOFF_SQL})");
+        assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
+        assert_eq!(pred.matches("not_before <= ?").count(), 2);
+        assert_eq!(pred.matches('?').count(), 2, "no new placeholders: {pred}");
+        // And the claim UPDATE re-check carries the same sink branch.
         let upd = claim_update_sql(&pred);
+        assert!(upd.contains(&sink_branch));
         assert!(upd.contains("NOT ("));
-        assert!(upd.contains("json_extract(progress, '$.lane') = 'opencode'"));
+        assert_eq!(upd.matches("not_before <= ?").count(), 2);
+    }
+
+    #[test]
+    fn fresh_lane_assignment_defaults_direct_8187() {
+        // #8187: no reason -> direct (the claiming session owns the
+        // task); NO balancing, NO opencode routing by default.
+        assert_eq!(lane_decision(None, None), ("direct", "default_direct"));
+        // --exclusion-reason forces direct, as before.
+        assert_eq!(
+            lane_decision(Some("claude-only work"), None),
+            ("direct", "exclusion")
+        );
+        // --opencode-reason is the only door to opencode, recorded.
+        assert_eq!(
+            lane_decision(None, Some("needs opencode session")),
+            ("opencode", "opencode_reason")
+        );
+        // Both passed: exclusion (the must-NOT-go-to-opencode
+        // contract) wins over the opencode reason.
+        assert_eq!(
+            lane_decision(Some("no opencode"), Some("wants opencode")),
+            ("direct", "exclusion")
+        );
+    }
+
+    #[test]
+    fn lane_reassignment_flips_only_unbound_opencode_with_exclusion_8187() {
+        // Sink/legacy opencode row + exclusion -> flip to direct.
+        assert!(lane_reassignment_flip(
+            "opencode",
+            None,
+            Some("lane takes it direct")
+        ));
+        assert!(lane_reassignment_flip("opencode", Some(""), Some("x")));
+        // No exclusion: claimant flows keep their assignment.
+        assert!(!lane_reassignment_flip("opencode", None, None));
+        // A session-bound row NEVER flips, exclusion or not.
+        assert!(!lane_reassignment_flip(
+            "opencode",
+            Some("ses_123"),
+            Some("x")
+        ));
+        assert!(!lane_reassignment_flip("opencode", Some("ses_123"), None));
+        // Direct rows are already direct; nothing to flip.
+        assert!(!lane_reassignment_flip("direct", None, Some("x")));
+        assert!(!lane_reassignment_flip("direct", None, None));
+    }
+
+    #[test]
+    fn opencode_reason_is_recorded_on_the_ledger_8187() {
+        // Source oracle: the reason column exists on the read
+        // surface, the fresh schema, the additive migration, and
+        // the fresh-assignment INSERT; the client exposes the flag.
+        assert!(LEDGER_COLS.contains("opencode_reason"));
+        let schema = SCHEMA.join(" ");
+        assert!(schema.contains("opencode_reason TEXT"));
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            impl_src.contains("ALTER TABLE repo_task_lane_ledger ADD COLUMN opencode_reason TEXT")
+        );
+        assert!(impl_src.contains("assigned_lane, exclusion_reason, opencode_reason, assigned_by"));
+        assert!(impl_src.contains("\"reason\": reason"));
+        assert!(impl_src.contains("\"reassignment\": true"));
+        // No balancing artifact survives in the lane decision path.
+        assert!(!impl_src.contains("opencode_count"));
+        assert!(!impl_src.contains("o_count <= d_count"));
+        let client_src = include_str!("client.rs");
+        assert!(client_src.contains("\"opencode-reason\""));
+        assert!(client_src.contains("\"opencode_reason\": args.get(\"opencode-reason\")"));
+    }
+
+    #[test]
+    fn platform_is_a_mark_not_a_lane_input_8187() {
+        // #8187 platform audit: tasks.platform holds only the two
+        // platform marks and lane_decision takes no platform input
+        // (its signature is exclusion + opencode_reason only), so a
+        // platform selector can never route a task to opencode.
+        assert_eq!(PLATFORM_FAMILIES, ["openchamber", "muse"]);
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        let lane_fn = impl_src
+            .split("fn verb_lane")
+            .nth(1)
+            .expect("verb_lane exists")
+            .split("fn verb_bind")
+            .next()
+            .unwrap_or("");
+        assert!(
+            !lane_fn.contains("platform"),
+            "verb_lane must not read tasks.platform: {lane_fn}"
+        );
     }
 
     #[test]
@@ -4183,14 +4418,14 @@ mod tests {
             }),
         );
         assert!(is_parked_handoff(&row));
-        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z", None));
+        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z"));
         // Top-level stage and the launch_failed recovery yield are
         // the same recorded handoff in their other spellings.
         let row2 = handoff_row(
             "parked",
             json!({"lane": "opencode", "stage": "launch_failed"}),
         );
-        assert!(by_id_claimable(&row2, "2026-11-09T23:20:00Z", None));
+        assert!(by_id_claimable(&row2, "2026-11-09T23:20:00Z"));
     }
 
     #[test]
@@ -4201,10 +4436,10 @@ mod tests {
             "parked",
             json!({"lane": "opencode", "stage": "parked", "gate": "#3801 OPEN"}),
         );
-        assert!(!by_id_claimable(&gated, "2026-11-09T23:20:00Z", None));
+        assert!(!by_id_claimable(&gated, "2026-11-09T23:20:00Z"));
         // A direct-lane yield is the direct lane's own business.
         let direct = handoff_row("parked", json!({"lane": "direct", "stage": "handed_off"}));
-        assert!(!by_id_claimable(&direct, "2026-11-09T23:20:00Z", None));
+        assert!(!by_id_claimable(&direct, "2026-11-09T23:20:00Z"));
         // A bound session id means a launch already happened; the
         // binding is supervision's, never a fresh claim's.
         let bound = handoff_row(
@@ -4214,13 +4449,13 @@ mod tests {
                 "session_id": "ses_abc",
             }),
         );
-        assert!(!by_id_claimable(&bound, "2026-11-09T23:20:00Z", None));
+        assert!(!by_id_claimable(&bound, "2026-11-09T23:20:00Z"));
         // A claimed row is owned; by-id never steals a live claim.
         let claimed = handoff_row(
             "claimed",
             json!({"lane": "opencode", "stage": "handed_off"}),
         );
-        assert!(!by_id_claimable(&claimed, "2026-11-09T23:20:00Z", None));
+        assert!(!by_id_claimable(&claimed, "2026-11-09T23:20:00Z"));
     }
 
     #[test]
@@ -4239,33 +4474,79 @@ mod tests {
     }
 
     #[test]
-    fn platform_allows_matrix() {
-        // Unset rows are open to every claim, family declared or not.
-        assert!(platform_allows(None, None));
-        assert!(platform_allows(None, Some("muse")));
-        assert!(platform_allows(None, Some("openchamber")));
-        // A set row answers only to its own family; an undeclared
-        // claim never takes a selector item.
-        assert!(platform_allows(Some("muse"), Some("muse")));
-        assert!(!platform_allows(Some("muse"), Some("openchamber")));
-        assert!(!platform_allows(Some("muse"), None));
-        assert!(platform_allows(Some("openchamber"), Some("openchamber")));
-        assert!(!platform_allows(Some("openchamber"), Some("muse")));
-        assert!(!platform_allows(Some("openchamber"), None));
-    }
-
-    #[test]
-    fn by_id_claim_respects_the_platform_selector() {
-        // #8097 Rule 2: the special-case by-id claim honors the
-        // selector too — a muse item is not claimable by an
-        // openchamber (or undeclared) by-id claim, and vice versa.
+    fn platform_is_a_mark_not_a_claim_filter_8187() {
+        // #8187 amendment (demoting #8097 Rule 2): platform is a
+        // MARK, never a filter or a requirement.
+        // (a) A claim facing a MISMATCHED platform mark still
+        // claims the item: by-id eligibility takes no platform
+        // input at all, so a muse-marked queued row is claimable
+        // by any claim (an openchamber claimant's included).
         let mut row = handoff_row("queued", json!({}));
         row["not_before"] = json!("2026-11-09T00:00:00Z");
         row["platform"] = json!("muse");
         let now = "2026-11-09T23:20:00Z";
-        assert!(by_id_claimable(&row, now, Some("muse")));
-        assert!(!by_id_claimable(&row, now, Some("openchamber")));
-        assert!(!by_id_claimable(&row, now, None));
+        assert!(by_id_claimable(&row, now));
+        // (b) A claim declaring NO platform works identically:
+        // unmarked and marked rows are equally claimable, and the
+        // pick path binds no platform argument to match against.
+        let mut unmarked = handoff_row("queued", json!({}));
+        unmarked["not_before"] = json!("2026-11-09T00:00:00Z");
+        assert!(by_id_claimable(&unmarked, now));
+        // (c) The mark is RECORDED on the claimed row: both claim
+        // UPDATEs stamp the declared platform over the row's mark
+        // (COALESCE keeps the existing mark when none is declared)
+        // and NEITHER carries a platform filter.
+        let upd = claim_update_sql("(status = 'queued')");
+        assert!(upd.contains("platform = COALESCE(?, platform)"), "{upd}");
+        assert!(!upd.contains("platform IS NULL"), "{upd}");
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(!impl_src.contains("platform IS NULL OR platform = ?"));
+        assert!(!impl_src.contains("platform_allows"));
+        assert!(impl_src.matches("platform = COALESCE(?, platform)").count() >= 2);
+    }
+
+    #[test]
+    fn claim_event_carries_lane_pool_model_session_marks_8187() {
+        // #8187 amendments 2+3: the audit marks name who is looking
+        // at the item — platform, lane, pool (= queue), model, the
+        // bound session, and the task id.
+        let task = json!({
+            "id": 4242, "queue": "repo-health-code-pilot",
+            "platform": "openchamber", "lane_id": "code-a",
+            "claim_provider": "_claude", "claim_model": "claude-sonnet-5-5",
+            "claim_variant": "medium",
+            "progress": {"session_id": "ses_test_1", "lane": "direct"},
+        });
+        let detail = with_marks(&json!({"via": "claim_repo_task_turso"}), &task);
+        assert_eq!(detail["task_id"], json!(4242));
+        assert_eq!(detail["pool"], json!("repo-health-code-pilot"));
+        assert_eq!(detail["queue"], json!("repo-health-code-pilot"));
+        assert_eq!(detail["platform"], json!("openchamber"));
+        assert_eq!(detail["lane_id"], json!("code-a"));
+        assert_eq!(detail["model_provider"], json!("_claude"));
+        assert_eq!(detail["model_id"], json!("claude-sonnet-5-5"));
+        assert_eq!(detail["model_variant"], json!("medium"));
+        assert_eq!(detail["session_id"], json!("ses_test_1"));
+        // Explicit detail fields win over the marks.
+        let d2 = with_marks(&json!({"session_id": "ses_bound_now"}), &task);
+        assert_eq!(d2["session_id"], json!("ses_bound_now"));
+        // Unmarked rows still emit the fields — as nulls. Marks are
+        // recorded when available, never required.
+        let bare = with_marks(&json!({}), &json!({"id": 7}));
+        assert_eq!(bare["task_id"], json!(7));
+        assert_eq!(bare["platform"], Value::Null);
+        assert_eq!(bare["session_id"], Value::Null);
+        // Source oracle: every audited transition (claim pick +
+        // by-id, lane assign + flip, bind, park, wake, complete,
+        // fail) routes its event through with_marks.
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            impl_src.matches("with_marks(").count() >= 9,
+            "audited transitions must carry marks: {}",
+            impl_src.matches("with_marks(").count()
+        );
     }
 
     #[test]
@@ -4273,15 +4554,15 @@ mod tests {
         // Queued + attempts left + not_before passed: claimable.
         let mut row = handoff_row("queued", json!({}));
         row["not_before"] = json!("2026-11-09T00:00:00Z");
-        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z", None));
+        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z"));
         // Queued but parked into the future: not claimable by id.
         let future = handoff_row("queued", json!({}));
-        assert!(!by_id_claimable(&future, "2026-11-09T23:20:00Z", None));
+        assert!(!by_id_claimable(&future, "2026-11-09T23:20:00Z"));
         // Queued at the attempts cap: not claimable by id.
         let mut capped = handoff_row("queued", json!({}));
         capped["not_before"] = json!("2026-11-09T00:00:00Z");
         capped["attempts"] = json!(4);
-        assert!(!by_id_claimable(&capped, "2026-11-09T23:20:00Z", None));
+        assert!(!by_id_claimable(&capped, "2026-11-09T23:20:00Z"));
     }
 
     #[test]
