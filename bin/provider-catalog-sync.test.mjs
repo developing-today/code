@@ -21,6 +21,7 @@ import {
   openPrCommands,
   runSync,
   resolveConfigPath,
+  defaultRuntimeConfigPath,
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
 } from './provider-catalog-sync.mjs';
@@ -31,7 +32,7 @@ const FIXTURE = `{
   "provider": {
     "proxy-a": {
       "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "http://127.0.0.1:18744/v1" },
+      "options": { "baseURL": "http://127.0.0.1:18799/v1" },
       "models": {
         "gpt-1-sol": {
           "name": "GPT-1 Sol (codex)",
@@ -52,6 +53,49 @@ const FIXTURE = `{
   "experimental": { "model_routes": { "workhorse": { "targets": ["proxy-a/gpt-1-sol"] } } }
 }
 `;
+
+const runSnapshot = async (snapshot) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-catalog-sync-'));
+  const sourceDir = path.join(dir, 'sources');
+  fs.mkdirSync(sourceDir);
+  const configPath = path.join(dir, 'config.jsonc');
+  fs.writeFileSync(configPath, JSON.stringify({
+    provider: {
+      'fixture-proxy': { models: { 'model-a': {}, 'model-b': {} } },
+    },
+  }));
+  fs.writeFileSync(path.join(sourceDir, '18799.json'), JSON.stringify(snapshot));
+  try {
+    return await runSync({ configPath, modelsDevSpec: null, sourceDir });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+for (const [name, snapshot] of [
+  ['missing data', { unexpected: [] }],
+  ['non-array data', { data: 'oops' }],
+  ['entry without an id', { data: [{ name: 'no-id' }] }],
+  ['null entry', { data: [null] }],
+]) {
+  test(`runSync marks proxy snapshot with ${name} as not-enumerable`, async () => {
+    const { report } = await runSnapshot(snapshot);
+    const entry = report.providers['fixture-proxy'];
+    assert.equal(entry.status, 'not-enumerable');
+    assert.match(entry.note, /proxy :18799 enumeration failed:/);
+    assert.equal(entry.live_count, undefined);
+    assert.equal(entry.vanishings_basis, undefined);
+  });
+}
+
+test('runSync preserves the valid proxy snapshot report', async () => {
+  const { report } = await runSnapshot({ data: [{ id: 'model-a' }, { id: 'model-b' }] });
+  const entry = report.providers['fixture-proxy'];
+  assert.equal(entry.live_count, 2);
+  assert.deepEqual(entry.additions_validated, []);
+  assert.deepEqual(entry.vanishings, []);
+  assert.equal(entry.vanishings_basis, 'live');
+});
 
 test('parseJsonc strips comments and trailing commas', () => {
   const cfg = parseJsonc(FIXTURE);
@@ -153,6 +197,14 @@ test('makeEntry: variant block clones the nearest sibling and prefers models.dev
   assert.equal(e.name, 'GPT 1 Terra (codex)');
   assert.deepEqual(e.limit, { context: 2000, output: 200 });
   assert.deepEqual(e.variants, { low: { options: { reasoning_effort: 'low' } } });
+});
+
+test('makeEntry: a sibling with variants:null is not a clone source - name-only entry, no throw (#6907)', () => {
+  const siblings = { 'gpt-1-luna': { name: 'GPT-1 Luna (codex)', variants: null } };
+  const e = makeEntry('proxy-a', 'gpt-1-terra', siblings, null);
+  assert.deepEqual(e, { name: 'GPT 1 Terra (codex)' });
+  const withLimit = makeEntry('proxy-a', 'gpt-1-terra', siblings, { limit: { context: 2000, output: 200 } });
+  assert.deepEqual(withLimit, { name: 'GPT 1 Terra (codex)', limit: { context: 2000, output: 200 } });
 });
 
 test('insertModelEntry matches the file indentation style', () => {
@@ -313,10 +365,10 @@ function controlFixture() {
   const configPath = path.join(dir, 'opencode.jsonc');
   const configText = `{
   "provider": {
-    "commandcode": {
+    "fixture-proxy": {
       "npm": "@ai-sdk/openai-compatible",
       "models": {
-        "acme-1": { "name": "Acme 1 (commandcode)" }
+        "acme-1": { "name": "Acme 1 (fixture-proxy)" }
       }
     }
   }
@@ -325,7 +377,7 @@ function controlFixture() {
   fs.writeFileSync(configPath, configText);
   const sourceDir = path.join(dir, 'src');
   fs.mkdirSync(sourceDir);
-  fs.writeFileSync(path.join(sourceDir, '18748.json'), JSON.stringify({ data: [{ id: 'acme-1' }, { id: 'acme-2' }] }));
+  fs.writeFileSync(path.join(sourceDir, '18799.json'), JSON.stringify({ data: [{ id: 'acme-1' }, { id: 'acme-2' }] }));
   const modelsDev = path.join(dir, 'models-dev.json');
   fs.writeFileSync(modelsDev, '{}');
   return { configPath, configText, sourceDir, modelsDev };
@@ -346,6 +398,17 @@ test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes',
 // #4588: config resolution — OPENCODE_CONFIG_PATH names the runtime overlay
 // since #4544 and must never become this tool's target
 // ---------------------------------------------------------------------------
+
+test('defaultRuntimeConfigPath: home-resolution contract probe matrix (#5762/#5763)', () => {
+  // Oracle: the contract - unset and empty HOME are both a named
+  // error; a set HOME yields exactly the historical path.
+  assert.throws(() => defaultRuntimeConfigPath({}), /HOME is not set or is empty/);
+  assert.throws(() => defaultRuntimeConfigPath({ HOME: '' }), /HOME is not set or is empty/);
+  assert.equal(
+    defaultRuntimeConfigPath({ HOME: '/home/someone' }),
+    path.join('/home/someone', '.local/state/opencode/opencode-runtime.jsonc'),
+  );
+});
 
 test('resolveConfigPath: --config beats env, catalog env beats default, OPENCODE_CONFIG_PATH ignored (#4588)', () => {
   const root = '/repo';
@@ -375,14 +438,14 @@ test('CLI: OPENCODE_CONFIG_PATH pointing at the overlay does not redirect the ta
     ['--config', configPath, '--runtime-config', overlayPath, '--models-dev', modelsDev, '--source-dir', sourceDir, '--json'],
     { OPENCODE_CONFIG_PATH: overlayPath },
   );
-  // The tracked file carries commandcode/acme-1 and the snapshot adds acme-2:
+  // The tracked file carries fixture-proxy/acme-1 and the snapshot adds acme-2:
   // a run against the tracked default reports the validated addition (exit 3).
   // Against the overlay (the bug) it would report config=overlay and exit 0.
   assert.equal(r.status, 3, `stdout: ${r.stdout} stderr: ${r.stderr}`);
   const report = JSON.parse(r.stdout);
   assert.equal(report.config, configPath);
   assert.equal(report.runtime_overlay, overlayPath);
-  assert.ok(report.providers.commandcode, `providers: ${Object.keys(report.providers)}`);
+  assert.ok(report.providers['fixture-proxy'], `providers: ${Object.keys(report.providers)}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -390,10 +453,10 @@ test('CLI: OPENCODE_CONFIG_PATH pointing at the overlay does not redirect the ta
 // configured default)
 // ---------------------------------------------------------------------------
 
-test('SYNC_OWNED_PROVIDERS names exactly the five sync-models-owned providers (#4544)', () => {
+test('SYNC_OWNED_PROVIDERS names exactly the four sync-models-owned providers (#4544)', () => {
   assert.deepEqual(
     [...SYNC_OWNED_PROVIDERS].sort(),
-    ['antigravity-direct', 'cloudflare-gateway', 'google', 'openai', 'openai-codex'],
+    ['_antigravity', 'cloudflare-gateway', 'google', 'openai'],
   );
 });
 
@@ -405,6 +468,46 @@ test('deepMergeProviders merges catalogs per model, overlay wins on conflict (#4
   assert.equal(merged.google.models.b.name, 'B2');
   assert.equal(merged.google.models.a.name, 'A');
   assert.deepEqual(Object.keys(merged.x.models), ['m']);
+});
+
+test('deepMergeProviders defines external keys at depth >= 2 instead of assigning (#4957)', () => {
+  // Design #2953 corollary 4 probe matrix, one level deeper than the merge
+  // root: the overlay is an external file, so every key it spells must be
+  // an own data property rather than a [[Set]] write that can reach a
+  // prototype. JSON.parse (not object-literal syntax) creates the own
+  // __proto__ key exactly as the config parser does.
+  const base = { p: { models: { m: { limit: { context: 1 } } } } };
+  const over = JSON.parse(
+    '{"p":{"models":{"m":{"limit":{' +
+      '"__proto__":{"polluted":true},"constructor":"c","toString":"t","ordinary":42}}}}}',
+  );
+  const merged = deepMergeProviders(base, over);
+  const leaf = merged.p.models.m.limit;
+  assert.equal(Object.getPrototypeOf(leaf), Object.prototype);
+  assert.ok(Object.prototype.hasOwnProperty.call(leaf, '__proto__'));
+  assert.deepEqual(leaf.__proto__, { polluted: true });
+  assert.equal(leaf.constructor, 'c');
+  assert.equal(leaf.toString, 't');
+  assert.equal(leaf.ordinary, 42);
+  assert.equal(leaf.context, 1);
+  assert.equal(Object.prototype.polluted, undefined);
+  // JSON round-trip: the own key survives serialization and the prototype
+  // stays put.
+  const roundTrip = JSON.parse(JSON.stringify(merged));
+  assert.equal(Object.getPrototypeOf(roundTrip.p.models.m.limit), Object.prototype);
+  assert.ok(Object.prototype.hasOwnProperty.call(roundTrip.p.models.m.limit, '__proto__'));
+  assert.deepEqual(roundTrip.p.models.m.limit.__proto__, { polluted: true });
+});
+
+test('deepMergeProviders defines a string __proto__ at depth 3 without moving prototypes (#4957)', () => {
+  const base = { p: { models: { m: { variants: { low: { options: {} } } } } } };
+  const over = JSON.parse('{"p":{"models":{"m":{"variants":{"low":{"options":{"__proto__":"text"}}}}}}}');
+  const merged = deepMergeProviders(base, over);
+  const options = merged.p.models.m.variants.low.options;
+  assert.equal(Object.getPrototypeOf(options), Object.prototype);
+  assert.ok(Object.prototype.hasOwnProperty.call(options, '__proto__'));
+  assert.equal(options.__proto__, 'text');
+  assert.equal(Object.getPrototypeOf(merged.p.models.m.variants.low), Object.prototype);
 });
 
 test('runSync diffs the merged effective config when a runtime overlay exists (#4544)', async () => {

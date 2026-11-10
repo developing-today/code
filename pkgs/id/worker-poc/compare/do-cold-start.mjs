@@ -6,8 +6,8 @@
 //   POST /step inc x2     -> steps 1, 2
 //   POST /cold-start      -> in-memory guest dropped; GET /state must
 //                            restore step 2 from the SQLite journal
-//   wrangler dev restart  -> a genuinely fresh DO instance; GET /state
-//                            must again restore step 2 from the journal
+//   wrangler dev restart  -> a genuinely fresh DO instance; POST /cold-start
+//                            must report step 2 before GET /state restores it
 //   POST /step inc        -> step 3; its snapshotHash must equal the
 //                            native reference hash for counter step 3
 //                            (compare/native-reference.jsonl).
@@ -46,6 +46,16 @@ async function waitReady(tries = 60) {
     await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error("wrangler dev did not become ready");
+}
+async function waitForColdStart(tries = 60) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url("/cold-start"), { method: "POST" });
+      if (res.ok) return await res.json();
+    } catch {}
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error("wrangler dev did not answer POST /cold-start");
 }
 async function stopDev() {
   if (!child) return;
@@ -106,7 +116,9 @@ try {
 
   await stopDev();
   startDev();
-  const revived = await waitReady();
+  const freshCold = await waitForColdStart();
+  assertEq(freshCold.journaledStep, 2, "journaled step at /cold-start on fresh DO instance");
+  const revived = await state();
   assertEq(revived.step, 2, "step restored after wrangler restart (fresh DO instance)");
   assertEq(revived.snapshotHash, s2.snapshotHash, "snapshot hash restored after wrangler restart");
 

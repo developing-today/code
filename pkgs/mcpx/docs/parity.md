@@ -23,7 +23,7 @@ Each direction is also held by a test:
 A command marked *generated* is built from the operation's declaration --
 flags from its parameters, positionals for its path -- so it exists the
 moment the operation does. The plugin reaches every operation through
-`DaemonClient.ops` (`plugin/opencode/mcpx/ops.gen.ts`, generated the same way);
+`DaemonClient.ops` (`plugin/core/ops.gen.ts`, generated the same way);
 the named methods beside it are conveniences with typed answers.
 
 Privileged operations are offered rather than hidden. A caller that can reach
@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (83)
+## /v1 operations (87)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -46,6 +46,8 @@ carry instead is a description that says so and MCP annotations
 | `ask_poll` | `GET /v1/ask/{id}` | `mcpx ask poll` *generated* | `mcpx_ask_poll` | `ops.askPoll()` |  |
 | `ask_abandon` | `POST /v1/ask/{id}/abandon` | `mcpx ask abandon` *generated* | `mcpx_ask_abandon` | `ops.askAbandon()` | Privileged. Destructive. |
 | `ask_answers` | `POST /v1/ask/{id}/answers` | `mcpx ask answers` *generated* | `mcpx_ask_answers` | `ops.askAnswers()` | Privileged. |
+| `authz_decisions_clear` | `DELETE /v1/authz/decisions` | `mcpx authz decisions clear` *generated* | `mcpx_authz_decisions_clear` | `ops.authzDecisionsClear()` | Privileged. |
+| `authz_decisions` | `GET /v1/authz/decisions` | `mcpx authz decisions` *generated* | `mcpx_authz_decisions` | `ops.authzDecisions()` |  |
 | `batch` | `POST /v1/batch` | `mcpx batch` | `mcpx_batch` | `ops.batch()` |  |
 | `call` | `POST /v1/call` | `mcpx call` | `mcpx_call` | `ops.call()`, `call()`, `callAsTask()` |  |
 | `call_path` | `POST /v1/call/{server}/{tool}` | `mcpx call` | `mcpx_call` | `ops.callPath()` |  |
@@ -105,6 +107,7 @@ carry instead is a description that says so and MCP annotations
 | `servers_remove` | `DELETE /v1/servers/{name}` | `mcpx servers remove` | `mcpx_servers_remove` | `ops.serversRemove()` | Privileged. Destructive. |
 | `servers_get` | `GET /v1/servers/{name}` | `mcpx servers show` | `mcpx_servers_get` | `ops.serversGet()` |  |
 | `session_release` | `POST /v1/session/release` | `mcpx session release` *generated* | `mcpx_session_release` | `ops.sessionRelease()` | Privileged. |
+| `sessions_read` | `GET /v1/sessions` | `mcpx sessions read` *generated* | `mcpx_sessions_read` | `ops.sessionsRead()` |  |
 | `settings_list` | `GET /v1/settings` | `mcpx settings list` | `mcpx_settings_list` | `ops.settingsList()` |  |
 | `settings_unset` | `DELETE /v1/settings/{path}` | `mcpx settings unset` | `mcpx_settings_unset` | `ops.settingsUnset()` | Privileged. |
 | `settings_get` | `GET /v1/settings/{path}` | `mcpx settings get` | `mcpx_settings_get` | `ops.settingsGet()` |  |
@@ -119,8 +122,9 @@ carry instead is a description that says so and MCP annotations
 | `tools` | `GET /v1/tools` | `mcpx tools` *generated* | `mcpx_tools` | `ops.tools()` |  |
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
+| `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
-## CLI commands (69)
+## CLI commands (72)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -131,6 +135,7 @@ that reaches none says why: those are decisions, not gaps.
 | `api` | – | OpenAPI declarations are files the CLI reads; the tools they produce are served over MCP, and are not yet a tool source the daemon owns (#83). |
 | `artifact` / `artifacts` | `artifacts_list`, `artifact_put`, `artifact_delete`, `artifact_get` | Generated from the operation table. |
 | `ask` | `ask_begin`, `ask_poll`, `ask_abandon`, `ask_answers` | Generated from the operation table. |
+| `authz` | `authz_decisions_clear`, `authz_decisions` | Generated from the operation table. |
 | `batch` | `batch` |  |
 | `cache` | – | Reads and prunes the cache directory on this machine; no daemon is involved. |
 | `call` | `call`, `call_path` |  |
@@ -183,6 +188,7 @@ that reaches none says why: those are decisions, not gaps.
 | `serve` | – | It is the MCP surface: a stdio shim over the daemon, which serves the same tools at `/mcp` itself. |
 | `servers` | `servers_list`, `servers_add`, `servers_remove`, `servers_get` |  |
 | `session` | `session_release` | Generated from the operation table. |
+| `sessions` | `sessions_read` | Generated from the operation table. |
 | `settings` | `settings_list`, `settings_unset`, `settings_get`, `settings_set` |  |
 | `skills` | – | Manages embedded agent skills. |
 | `stats` | `stats_query` |  |
@@ -196,6 +202,7 @@ that reaches none says why: those are decisions, not gaps.
 | `tui` | – | An interactive interface over the reads above; it consumes the API rather than extending it. |
 | `types` | `types` |  |
 | `upgrade` | – | Replaces the running daemon with another binary, a decision for whoever runs the CLI rather than a tool a model can call. |
+| `writes` | `writes_clear` | Generated from the operation table. |
 
 ## Hand-written MCP tools (12)
 

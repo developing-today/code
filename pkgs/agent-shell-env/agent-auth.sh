@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # agent-auth -- check and bootstrap the auth that every hidden shell inherits.
 #
-#   agent-auth status   OK/FAIL for bws, 1Password (op) and Jules, from a hidden-shell view
+#   agent-auth status   OK/FAIL for bws and 1Password (op), from a hidden-shell view
 #   agent-auth login    interactively fix whatever `status` reports as missing
 #   agent-auth env      which auth variables the hook exports (names only)
 #
 # See pkgs/agent-shell-env/env.sh for the hook itself.
 set -uo pipefail
-# coreutils/grep pinned; `op` (setgid wrapper in /run/wrappers/bin), `bws` and
-# `jules` deliberately come from the system PATH.
+# coreutils/grep pinned; `op` (setgid wrapper in /run/wrappers/bin) and `bws`
+# deliberately come from the system PATH.
 export PATH="@toolsPath@:/run/wrappers/bin:${PATH:-/run/current-system/sw/bin}"
 
 HOOK="@out@/share/agent-shell-env/env.sh"
@@ -65,31 +65,11 @@ check_op() {
   return 1
 }
 
-check_jules() {
-  if ! command -v jules >/dev/null 2>&1; then
-    bad 'Jules: `jules` not on PATH'
-    return 1
-  fi
-  local out
-  out="$(timeout 30 jules remote list --repo 2>&1)"
-  local rc=$?
-  if [ $rc -eq 0 ] && ! printf '%s' "$out" | grep -qiE 'login|valid client|error'; then
-    ok "Jules: CLI logged in (keyring via ${DBUS_SESSION_BUS_ADDRESS:-no DBus})"
-    return 0
-  fi
-  bad "Jules: CLI not logged in"
-  note "$(printf '%s' "$out" | head -n 2)"
-  note "run: agent-auth login   (one-time Google OAuth, persists in gnome-keyring)"
-  return 1
-}
-
 cmd_status() {
   echo "agent-auth status (hook: $HOOK)"
   local rc=0
   check_bws || rc=1
   check_op || rc=1
-  check_jules || rc=1
-  if [ -n "${JULES_API_KEY:-}" ]; then ok "JULES_API_KEY exported (REST API / jules-mcp)"; else bad "JULES_API_KEY not set"; fi
   if [ -n "${META_API_KEY:-}" ]; then ok "META_API_KEY / MUSE_API_KEY exported (Muse Code & AI SDK)"; else note "META_API_KEY not set"; fi
   return $rc
 }
@@ -111,21 +91,13 @@ cmd_login() {
       fi
     fi
   fi
-  if ! check_jules >/dev/null 2>&1; then
-    if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
-      jules login
-    else
-      jules login --no-launch-browser
-    fi
-    check_jules || true
-  fi
   echo
   cmd_status
 }
 
 cmd_env() {
   local v
-  for v in BASH_ENV BWS_ACCESS_TOKEN OP_SERVICE_ACCOUNT_TOKEN JULES_API_KEY META_API_KEY MUSE_API_KEY CLOUDFLARE_API_TOKEN DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR; do
+  for v in BASH_ENV BWS_ACCESS_TOKEN OP_SERVICE_ACCOUNT_TOKEN META_API_KEY MUSE_API_KEY CLOUDFLARE_API_TOKEN DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR; do
     if [ -n "${!v:-}" ]; then echo "$v=set"; else echo "$v=unset"; fi
   done
 }
@@ -138,7 +110,7 @@ env) cmd_env ;;
   cat <<'EOF'
 agent-auth -- check and bootstrap the auth that every hidden shell inherits.
 
-  agent-auth status   OK/FAIL for bws, 1Password (op) and Jules, from a hidden-shell view
+  agent-auth status   OK/FAIL for bws and 1Password (op), from a hidden-shell view
   agent-auth login    interactively fix whatever `status` reports as missing
   agent-auth env      which auth variables the hook exports (names only)
 EOF

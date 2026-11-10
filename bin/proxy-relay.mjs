@@ -118,7 +118,14 @@ const tryTargets = async (ports) => {
   for (const p of ports) {
     try {
       const sock = await connectViaTunnel(p);
-      preferred = p;
+      if (p !== preferred) {
+        // Failover: the discovery file must follow the live target,
+        // otherwise endpoint.json names a dead target indefinitely
+        // while /health reports the new preferred (#4224). Republish
+        // on change only, not on every connection.
+        preferred = p;
+        publishEndpoint();
+      }
       return sock;
     } catch (e) {
       lastErr = e;

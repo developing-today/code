@@ -11,8 +11,8 @@
 ## The four repos (kept healthy by continuous sweeps)
 
 1. `developing-today/code` — the monorepo: laptop NixOS flake, provider proxies (`bin/*-proxy.mjs`), mcpx, the id project, PM stack. **All new code goes here.**
-2. `developing-today/opencode` — OpenCode fork (model routing / route pools work).
-3. `developing-today/openchamber` — OpenChamber.
+2. `developing-today-forks/opencode` — OpenCode fork (model routing / route pools work).
+3. `developing-today-forks/openchamber` — OpenChamber.
 4. `dezren39/nix` — nix config/packages (incl. mcpx packaging).
 
 Sweep discipline: fix one issue per pass when you can; open PRs are first-class work items; triage and prioritize the backlog otherwise. Labels: `user/owned`, `user/review` (Muse triages first), `user/escalated`; lifecycle labels `work/*`, `effort/*`, `queue/blocked`, `meta/*` with the agent-note:v1 standard.
@@ -21,7 +21,7 @@ Standing repo rules: merge commits only · never force-push main · **never touc
 
 ## Other standing context
 
-- **mcpx** — Drew's MCP gateway: one daemon fronts the fleet's MCP servers (codedb, fff, chrome-devtools, context7, jules, desktop-commander, …). This gateway also has direct MCP wiring to the most useful of those (see openclaw.json `mcp.servers`).
+- **mcpx** — Drew's MCP gateway: one daemon fronts the fleet's MCP servers (codedb, fff, chrome-devtools, context7, desktop-commander, …). This gateway also has direct MCP wiring to the most useful of those (see openclaw.json `mcp.servers`).
 - **Notes system** — Emanote Zettelkasten: `dezren39/zettel` + `developing-today/zettel`. Drew brain-dumps; agents explode into small interlinked notes and push.
 - **Basement lab cluster** (goal, in progress) — Talos + Cozystack + TALM, Postgres (CNPG), RustFS, ~12 Threadripper machines. **Hard rule: no HashiCorp tooling.**
 - **Supabase `muse-dev`** — Muse's platform project (backups to R2). Not OpenClaw's concern unless asked.

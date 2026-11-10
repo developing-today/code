@@ -26,20 +26,14 @@ function baseView(): QuotaView {
       pool("anthropic:claude-pro", [
         { name: "weekly", unit: "other", limit: 100, used: 68, percent: 68, resetsAt: null },
       ]),
-      pool("openai:codex", [{ name: "7-day", unit: "other", limit: 100, used: 11, percent: 11, resetsAt: null }]),
-      pool(
-        "meta:high-usage",
-        [{ name: "weekly", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: null }],
-        "walled",
-      ),
-      pool("deepseek:api", []),
-      pool("cline-pass:cline-pass", [
-        { name: "monthly", unit: "other", limit: 100, used: 69, percent: 69, resetsAt: null },
-      ]),
-      pool("commandcode:go", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
+      pool("openai", [{ name: "7-day", unit: "other", limit: 100, used: 11, percent: 11, resetsAt: null }]),
+      pool("meta", [{ name: "weekly", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: null }], "walled"),
+      pool("deepseek", []),
+      pool("cline-pass", [{ name: "monthly", unit: "other", limit: 100, used: 69, percent: 69, resetsAt: null }]),
+      pool("_commandcode", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
     ],
     burn: [],
-    choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: ["meta:high-usage"] },
+    choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: ["meta"] },
   };
 }
 
@@ -85,14 +79,14 @@ describe("quota-current overlay", () => {
       baseView(),
       file([
         entry({
-          serviceId: "meta:high-usage",
+          serviceId: "meta",
           source: "file-export/meta-laptop",
           windows: [win("5h", 1.33, iso(5 * 60_000)), win("weekly", 8.93, iso(5 * 60_000))],
         }),
       ]),
       NOW,
     );
-    const meta = out.pools.find((p) => p.id === "meta:high-usage")!;
+    const meta = out.pools.find((p) => p.id === "meta")!;
     expect(meta.windows.map((w) => [w.name, w.percent])).toEqual([
       ["5-hour", 1.33],
       ["weekly", 8.93],
@@ -103,7 +97,7 @@ describe("quota-current overlay", () => {
       source: "file-export/meta-laptop",
       state: "ok",
     });
-    expect(out.choices.doNotStart).not.toContain("meta:high-usage");
+    expect(out.choices.doNotStart).not.toContain("meta");
     expect(out.gatherer?.providers).toHaveLength(1);
   });
 
@@ -112,14 +106,14 @@ describe("quota-current overlay", () => {
       baseView(),
       file([
         entry({
-          serviceId: "openai:codex",
+          serviceId: "openai",
           state: "error",
           measuredAt: iso(1 * 60_000),
           error: "Sign in with ChatGPT only",
           credentialLabel: "OpenAI 2",
         }),
         entry({
-          serviceId: "openai:codex",
+          serviceId: "openai",
           measuredAt: iso(3 * 60_000),
           windows: [win("weekly", 17, iso(3 * 60_000))],
           credentialLabel: "OpenAI",
@@ -127,7 +121,7 @@ describe("quota-current overlay", () => {
       ]),
       NOW,
     );
-    const codex = out.pools.find((p) => p.id === "openai:codex")!;
+    const codex = out.pools.find((p) => p.id === "openai")!;
     expect(codex.freshness?.state).toBe("ok");
     expect(codex.windows).toHaveLength(1);
     expect(codex.windows[0].percent).toBe(17);
@@ -153,19 +147,17 @@ describe("quota-current overlay", () => {
     // The dated-read windows stay visible under the error badge — not
     // replaced by invented zeros.
     expect(claude.windows[0].percent).toBe(68);
-    expect(out.choices.doNotStart).toContain("meta:high-usage"); // choices untouched: no fresh windows anywhere
+    expect(out.choices.doNotStart).toContain("meta"); // choices untouched: no fresh windows anywhere
   });
 
   test("an ok entry past the freshness bound surfaces as stale, windows untouched", () => {
     const staleAt = iso(QUOTA_CURRENT_FRESH_MS + 5 * 60_000);
     const out = overlayQuotaCurrent(
       baseView(),
-      file([
-        entry({ serviceId: "cline-pass:cline-pass", measuredAt: staleAt, windows: [win("monthly", 71, staleAt)] }),
-      ]),
+      file([entry({ serviceId: "cline-pass", measuredAt: staleAt, windows: [win("monthly", 71, staleAt)] })]),
       NOW,
     );
-    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    const cline = out.pools.find((p) => p.id === "cline-pass")!;
     expect(cline.state).toBe("stale");
     expect(cline.freshness).toEqual({ measuredAt: staleAt, source: "openchamber-quota", state: "stale" });
     expect(cline.windows[0].percent).toBe(69); // dated read, not the aged gatherer value
@@ -180,7 +172,7 @@ describe("quota-current overlay", () => {
       baseView(),
       file([
         entry({
-          serviceId: "cline-pass:cline-pass",
+          serviceId: "cline-pass",
           measuredAt: at,
           windows: [win("monthly", 71, at)],
           retainedFromFailedTick: iso(1 * 60_000),
@@ -188,11 +180,11 @@ describe("quota-current overlay", () => {
       ]),
       NOW,
     );
-    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    const cline = out.pools.find((p) => p.id === "cline-pass")!;
     expect(cline.state).toBe("stale");
     expect(cline.freshness).toEqual({ measuredAt: at, source: "openchamber-quota", state: "stale" });
     expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
-    expect(out.gatherer?.providers.find((p) => p.serviceId === "cline-pass:cline-pass")?.state).toBe("stale");
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "cline-pass")?.state).toBe("stale");
   });
 
   test("an ok entry dated past the future-skew tolerance is stale, windows untouched (#1541)", () => {
@@ -200,16 +192,14 @@ describe("quota-current overlay", () => {
       const futureAt = iso(-futureMs);
       const out = overlayQuotaCurrent(
         baseView(),
-        file([
-          entry({ serviceId: "cline-pass:cline-pass", measuredAt: futureAt, windows: [win("monthly", 71, futureAt)] }),
-        ]),
+        file([entry({ serviceId: "cline-pass", measuredAt: futureAt, windows: [win("monthly", 71, futureAt)] })]),
         NOW,
       );
-      const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+      const cline = out.pools.find((p) => p.id === "cline-pass")!;
       expect(cline.state).toBe("stale");
       expect(cline.freshness).toEqual({ measuredAt: futureAt, source: "openchamber-quota", state: "stale" });
       expect(cline.windows[0].percent).toBe(69); // dated read, not the future-dated gatherer value
-      expect(out.gatherer?.providers.find((p) => p.serviceId === "cline-pass:cline-pass")?.state).toBe("stale");
+      expect(out.gatherer?.providers.find((p) => p.serviceId === "cline-pass")?.state).toBe("stale");
     }
   });
 
@@ -217,10 +207,10 @@ describe("quota-current overlay", () => {
     const at = iso(-(QUOTA_CURRENT_FUTURE_SKEW_MS - 30_000));
     const out = overlayQuotaCurrent(
       baseView(),
-      file([entry({ serviceId: "cline-pass:cline-pass", measuredAt: at, windows: [win("monthly", 71, at)] })]),
+      file([entry({ serviceId: "cline-pass", measuredAt: at, windows: [win("monthly", 71, at)] })]),
       NOW,
     );
-    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    const cline = out.pools.find((p) => p.id === "cline-pass")!;
     expect(cline.freshness?.state).toBe("ok");
     expect(cline.windows[0].percent).toBe(71);
   });
@@ -230,16 +220,16 @@ describe("quota-current overlay", () => {
     const out = overlayQuotaCurrent(
       baseView(),
       file([
-        entry({ serviceId: "cline-pass:cline-pass", measuredAt: futureAt, windows: [win("monthly", 99, futureAt)] }),
+        entry({ serviceId: "cline-pass", measuredAt: futureAt, windows: [win("monthly", 99, futureAt)] }),
         entry({
-          serviceId: "cline-pass:cline-pass",
+          serviceId: "cline-pass",
           measuredAt: iso(5 * 60_000),
           windows: [win("monthly", 71, iso(5 * 60_000))],
         }),
       ]),
       NOW,
     );
-    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    const cline = out.pools.find((p) => p.id === "cline-pass")!;
     expect(cline.freshness?.state).toBe("ok");
     expect(cline.freshness?.measuredAt).toBe(iso(5 * 60_000));
     expect(cline.windows[0].percent).toBe(71); // the genuinely fresh read, not the future-dated 99
@@ -250,21 +240,21 @@ describe("quota-current overlay", () => {
       baseView(),
       file([
         entry({
-          serviceId: "deepseek:api",
+          serviceId: "deepseek",
           windows: [{ ...win("credits_balance", null, iso(5 * 60_000)), valueLabel: "¥44.29" }],
         }),
       ]),
       NOW,
     );
-    const ds = out.pools.find((p) => p.id === "deepseek:api")!;
+    const ds = out.pools.find((p) => p.id === "deepseek")!;
     expect(ds.freshness?.state).toBe("ok");
     expect(ds.windows).toEqual([]);
     expect(ds.state).toBe("healthy");
   });
 
   test("pools with no gatherer entry are untouched and carry no freshness", () => {
-    const out = overlayQuotaCurrent(baseView(), file([entry({ serviceId: "meta:high-usage", windows: [] })]), NOW);
-    const cc = out.pools.find((p) => p.id === "commandcode:go")!;
+    const out = overlayQuotaCurrent(baseView(), file([entry({ serviceId: "meta", windows: [] })]), NOW);
+    const cc = out.pools.find((p) => p.id === "_commandcode")!;
     expect(cc.freshness).toBeUndefined();
     expect(cc.windows[0].used).toBe(6.57);
     expect(cc.state).toBe("healthy");
@@ -287,12 +277,8 @@ describe("quota-current overlay", () => {
 
   test("the input view is not mutated", () => {
     const view = baseView();
-    overlayQuotaCurrent(
-      view,
-      file([entry({ serviceId: "meta:high-usage", windows: [win("weekly", 9, iso(60_000))] })]),
-      NOW,
-    );
-    expect(view.pools.find((p) => p.id === "meta:high-usage")!.windows[0].percent).toBe(100);
+    overlayQuotaCurrent(view, file([entry({ serviceId: "meta", windows: [win("weekly", 9, iso(60_000))] })]), NOW);
+    expect(view.pools.find((p) => p.id === "meta")!.windows[0].percent).toBe(100);
     expect(view.gatherer).toBeUndefined();
   });
 
@@ -300,8 +286,8 @@ describe("quota-current overlay", () => {
     const doc = JSON.parse(
       JSON.stringify(
         file([
-          entry({ serviceId: "meta:high-usage", windows: [win("weekly", 42, iso(5 * 60_000))] }),
-          entry({ serviceId: "openai:codex", windows: [win("7-day", 17, iso(5 * 60_000))] }),
+          entry({ serviceId: "meta", windows: [win("weekly", 42, iso(5 * 60_000))] }),
+          entry({ serviceId: "openai", windows: [win("7-day", 17, iso(5 * 60_000))] }),
         ]),
       ),
     );
@@ -316,12 +302,8 @@ describe("quota-current overlay", () => {
     expect(parsed?.sanitized).toEqual({ droppedProviders: 1, droppedWindows: 3 });
     expect(parsed?.providers).toHaveLength(2);
     const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
-    expect(out.pools.find((p) => p.id === "meta:high-usage")?.windows.map((w) => [w.name, w.percent])).toEqual([
-      ["weekly", 42],
-    ]);
-    expect(out.pools.find((p) => p.id === "openai:codex")?.windows.map((w) => [w.name, w.percent])).toEqual([
-      ["7-day", 17],
-    ]);
+    expect(out.pools.find((p) => p.id === "meta")?.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 42]]);
+    expect(out.pools.find((p) => p.id === "openai")?.windows.map((w) => [w.name, w.percent])).toEqual([["7-day", 17]]);
   });
 
   test("an ok entry whose windows are entirely malformed is downgraded so a valid fresh sibling supplies the headline", () => {
@@ -329,12 +311,12 @@ describe("quota-current overlay", () => {
       JSON.stringify(
         file([
           entry({
-            serviceId: "openai:codex",
+            serviceId: "openai",
             measuredAt: iso(1 * 60_000),
             windows: [win("7-day", 55, iso(1 * 60_000))],
           }),
           entry({
-            serviceId: "openai:codex",
+            serviceId: "openai",
             measuredAt: iso(5 * 60_000),
             windows: [win("7-day", 80, iso(5 * 60_000))],
           }),
@@ -346,7 +328,7 @@ describe("quota-current overlay", () => {
     const parsed = parseQuotaCurrent(doc);
     expect(parsed?.providers[0].state).toBe("error");
     const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
-    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    const pool = out.pools.find((p) => p.id === "openai")!;
     // The base pool's dated 11% must not be re-stamped as fresh, and the
     // older valid read (80%) supplies the headline instead.
     expect(pool.windows.map((w) => [w.name, w.percent])).toEqual([["7-day", 80]]);
@@ -356,22 +338,61 @@ describe("quota-current overlay", () => {
 
   test("a sole ok entry whose windows are entirely malformed surfaces as an error, never as fresh provenance", () => {
     const doc = JSON.parse(
-      JSON.stringify(file([entry({ serviceId: "openai:codex", windows: [win("7-day", 55, iso(5 * 60_000))] })])),
+      JSON.stringify(file([entry({ serviceId: "openai", windows: [win("7-day", 55, iso(5 * 60_000))] })])),
     );
     doc.providers[0].windows = [null, { bogus: true }];
 
     const parsed = parseQuotaCurrent(doc);
     const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
-    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    const pool = out.pools.find((p) => p.id === "openai")!;
     expect(pool.state).toBe("error");
     expect(pool.freshness?.state).toBe("error");
     expect(pool.windows.map((w) => w.percent)).toEqual([11]);
+  });
+
+  test("a lapsed entry survives ingest as a terminal lapse, not an error and without stale percentages", () => {
+    const at = iso(5 * 60_000);
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "opencode-go",
+            providerId: "opencode-go",
+            state: "lapsed",
+            measuredAt: at,
+            error: "No active OpenCode Go subscription on the selected Console account",
+            windows: [{ ...win("monthly", 62, at), state: "lapsed" }],
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers[0].state).toBe("lapsed");
+    const view = baseView();
+    view.pools.push(pool("opencode-go", [{ name: "monthly", unit: "other", limit: 100, used: 62, percent: 62, resetsAt: null }]));
+    view.choices = {
+      hasHeadroom: ["opencode-go"],
+      burnBeforeReset: ["opencode-go"],
+      doNotStart: ["opencode-go"],
+    };
+    const out = overlayQuotaCurrent(view, parsed!, NOW);
+    const go = out.pools.find((p) => p.id === "opencode-go")!;
+    expect(go.state).toBe("lapsed");
+    expect(go.freshness?.state).toBe("lapsed");
+    expect(go.freshness?.error).toContain("No active OpenCode Go subscription");
+    // The dated percentage is not presented as a current reading.
+    expect(go.windows).toEqual([]);
+    // Guidance must not continue recommending a cancelled workspace.
+    expect(out.choices.hasHeadroom).not.toContain("opencode-go");
+    expect(out.choices.burnBeforeReset).not.toContain("opencode-go");
+    expect(out.choices.doNotStart).not.toContain("opencode-go");
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "opencode-go")?.state).toBe("lapsed");
   });
 });
 
 describe("parseQuotaCurrent", () => {
   test("accepts a well-formed document", () => {
-    const doc = JSON.parse(JSON.stringify(file([entry({ serviceId: "meta:high-usage" })])));
+    const doc = JSON.parse(JSON.stringify(file([entry({ serviceId: "meta" })])));
     expect(parseQuotaCurrent(doc)?.providers).toHaveLength(1);
   });
 
@@ -457,6 +478,42 @@ describe("overlayTursoUsage (#1049)", () => {
     expect(out[0].conflicts).toHaveLength(1);
     expect(out[0].conflicts[0]).toContain("HTTP 401");
   });
+  test("a partial fresh entry preserves the metrics it omits, marked stale (#6227)", () => {
+    // The 2026-11-05 live shape from issue #6227: the fresh turso
+    // entry carried databases / rows-written / sync only, and the
+    // overlay erased the card's dated storage and rows-read values.
+    const svc = tursoSvc();
+    svc.metrics = [
+      { id: "databases", label: "Databases", used: 40, limit: 100, unit: "count", percent: 40, highlight: true },
+      { id: "storage", label: "Storage", used: 7.358009, limit: 5, unit: "gb", highlight: true },
+      { id: "rows-read", label: "Rows read / month", used: 821_437_321, limit: 500_000_000, unit: "rows", highlight: true },
+    ];
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [svc],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "opencode-quota",
+          measuredAt: at,
+          windows: [tursoWin("databases", 44, 44, at), tursoWin("rows-written", 1_672_071, 16.721, at), tursoWin("sync", 0, 0, at)],
+        }),
+      ]),
+      NOW,
+    );
+    const byId = new Map(out[0].metrics.map((m) => [m.id, m]));
+    expect(byId.get("databases")?.used).toBe(44);
+    expect(byId.get("databases")?.note).toBeUndefined();
+    expect(byId.get("rows-written")?.used).toBe(1_672_071);
+    // Omitted metrics keep their last dated values, flagged stale —
+    // never erased, never presented as fresh.
+    expect(byId.get("storage")?.used).toBe(7.358009);
+    expect(byId.get("storage")?.note).toContain("stale: last measured 2026-10-20T00:00:00.000Z");
+    expect(byId.get("rows-read")?.used).toBe(821_437_321);
+    expect(byId.get("rows-read")?.note).toContain("stale:");
+    expect(out[0].measuredAt).toBe(at);
+  });
   test("no turso entry or no turso card passes through unchanged", () => {
     const services = [tursoSvc()];
     expect(overlayTursoUsage(services, file([]), NOW)).toBe(services);
@@ -485,13 +542,13 @@ describe("per-credential quota rows (#1113)", () => {
   const twoLogins = (aPct: number, bPct: number, bMeasured = iso(2 * 60_000)) =>
     file([
       entry({
-        serviceId: "openai:codex",
+        serviceId: "openai",
         providerId: "openai-main",
         credentialLabel: "OpenAI",
         windows: [win("weekly", aPct, iso(5 * 60_000))],
       }),
       entry({
-        serviceId: "openai:codex",
+        serviceId: "openai",
         providerId: "openai-second",
         credentialLabel: "OpenAI 2",
         measuredAt: bMeasured,
@@ -501,7 +558,7 @@ describe("per-credential quota rows (#1113)", () => {
 
   test("two logins with genuinely differing quotas split into rows; headline stays the newest read", () => {
     const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
-    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    const pool = out.pools.find((p) => p.id === "openai")!;
     expect(pool.windows.map((w) => w.percent)).toEqual([80]);
     expect(pool.credentials).toHaveLength(2);
     const byLabel = new Map(pool.credentials!.map((c) => [c.label, c]));
@@ -512,7 +569,7 @@ describe("per-credential quota rows (#1113)", () => {
 
   test("two logins sharing one pool read do not split", () => {
     const out = overlayQuotaCurrent(baseView(), twoLogins(42, 42), NOW);
-    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    const pool = out.pools.find((p) => p.id === "openai")!;
     expect(pool.credentials).toBeUndefined();
   });
 
@@ -521,13 +578,13 @@ describe("per-credential quota rows (#1113)", () => {
       baseView(),
       file([
         entry({
-          serviceId: "openai:codex",
+          serviceId: "openai",
           providerId: "openai-main",
           credentialLabel: "OpenAI",
           windows: [win("weekly", 30, iso(5 * 60_000))],
         }),
         entry({
-          serviceId: "openai:codex",
+          serviceId: "openai",
           providerId: "openai-second",
           credentialLabel: "OpenAI 2",
           state: "error",
@@ -537,7 +594,7 @@ describe("per-credential quota rows (#1113)", () => {
       ]),
       NOW,
     );
-    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    const pool = out.pools.find((p) => p.id === "openai")!;
     expect(pool.windows.map((w) => w.percent)).toEqual([30]); // headline from the ok login
     const err = pool.credentials!.find((c) => c.label === "OpenAI 2")!;
     expect(err.freshness.state).toBe("error");
@@ -550,7 +607,7 @@ describe("per-credential quota rows (#1113)", () => {
       baseView(),
       file([
         entry({
-          serviceId: "openai:codex",
+          serviceId: "openai",
           providerId: "openai-main",
           credentialLabel: "OpenAI",
           windows: [win("weekly", 30, iso(5 * 60_000))],
@@ -558,7 +615,7 @@ describe("per-credential quota rows (#1113)", () => {
       ]),
       NOW,
     );
-    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+    expect(out.pools.find((p) => p.id === "openai")!.credentials).toBeUndefined();
   });
 
   test("pool card renders one line per credential row", async () => {
@@ -590,14 +647,14 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
       baseView(),
       file([
         entry({
-          serviceId: "openai:codex",
+          serviceId: "openai",
           providerId: "openai-main",
           credentialId: "cred-a",
           credentialLabel: "OpenAI",
           windows: [win("weekly", 30, iso(5 * 60_000))],
         }),
         entry({
-          serviceId: "openai:codex",
+          serviceId: "openai",
           providerId: "openai-main",
           credentialId: "cred-b",
           credentialLabel: "OpenAI",
@@ -607,16 +664,16 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
       ]),
       NOW,
     );
-    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    const pool = out.pools.find((p) => p.id === "openai")!;
     expect(pool.credentials).toHaveLength(2);
     expect(pool.credentials!.map((c) => c.credentialId).sort()).toEqual(["cred-a", "cred-b"]);
-    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => a - b)).toEqual([30, 80]);
+    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([30, 80]);
   });
 
   test("reset drift under the tolerance does not split a shared read", () => {
     const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
       entry({
-        serviceId: "openai:codex",
+        serviceId: "openai",
         providerId: "openai-main",
         credentialId: cred,
         credentialLabel: label,
@@ -631,13 +688,13 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
       ]),
       NOW,
     );
-    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+    expect(out.pools.find((p) => p.id === "openai")!.credentials).toBeUndefined();
   });
 
   test("resets genuinely apart still split even at equal percent", () => {
     const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
       entry({
-        serviceId: "openai:codex",
+        serviceId: "openai",
         providerId: "openai-main",
         credentialId: cred,
         credentialLabel: label,
@@ -652,38 +709,36 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
       ]),
       NOW,
     );
-    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toHaveLength(2);
+    expect(out.pools.find((p) => p.id === "openai")!.credentials).toHaveLength(2);
   });
 });
 
 describe("stale-path newest pick is finite-gated (#2253)", () => {
-  const staleRead = () =>
-    entry({ serviceId: "meta:high-usage", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
-  const garbageRead = () =>
-    entry({ serviceId: "meta:high-usage", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
+  const staleRead = () => entry({ serviceId: "meta", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
+  const garbageRead = () => entry({ serviceId: "meta", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
 
   test("a garbage measuredAt listed first does not shadow the real stale read", () => {
     const out = overlayQuotaCurrent(baseView(), file([garbageRead(), staleRead()]), NOW);
-    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    const p = out.pools.find((x) => x.id === "meta")!;
     expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
   });
 
   test("a garbage measuredAt listed last gives the same winner (order independence)", () => {
     const out = overlayQuotaCurrent(baseView(), file([staleRead(), garbageRead()]), NOW);
-    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    const p = out.pools.find((x) => x.id === "meta")!;
     expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
   });
 
   test("a +30d future entry does not outrank a real 1h-old stale read", () => {
     const future = entry({
-      serviceId: "meta:high-usage",
+      serviceId: "meta",
       measuredAt: new Date(NOW.getTime() + 30 * 86_400_000).toISOString(),
       source: "future-src",
       windows: [],
     });
-    const real = entry({ serviceId: "meta:high-usage", measuredAt: iso(3_600_000), source: "real-src", windows: [] });
+    const real = entry({ serviceId: "meta", measuredAt: iso(3_600_000), source: "real-src", windows: [] });
     const out = overlayQuotaCurrent(baseView(), file([future, real]), NOW);
-    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    const p = out.pools.find((x) => x.id === "meta")!;
     expect(p.freshness).toEqual({ measuredAt: iso(3_600_000), source: "real-src", state: "stale" });
   });
 
@@ -715,8 +770,150 @@ describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
       ["weekly", 42],
     ]);
     // The main account's pool keeps its own read, untouched.
-    const main = out.pools.find((p) => p.id === "openai:codex")!;
+    const main = out.pools.find((p) => p.id === "openai")!;
     expect(main.windows[0].percent).toBe(11);
+  });
+});
+
+describe("overlay: split gatherer rows land on the four split hub pools (#1331)", () => {
+  test("Go per-workspace + Antigravity per-pool rows map with freshness and values", () => {
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go.drewrypope", []),
+      pool("opencode-go.popesdrew", []),
+      pool("_antigravity.gemini", []),
+      pool("_antigravity.claude-gpt", []),
+    );
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go.drewrypope",
+          credentialId: "cred_personal",
+          credentialLabel: "drewrypope",
+          windows: [win("monthly", 62.5, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go.popesdrew",
+          credentialId: "cred_lab",
+          credentialLabel: "popesdrew",
+          windows: [win("monthly", 50, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "_antigravity.gemini",
+          windows: [win("weekly", 40, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "_antigravity.claude-gpt",
+          windows: [win("weekly", 90, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const byId = new Map(out.pools.map((p) => [p.id, p]));
+    expect(byId.get("opencode-go.drewrypope")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
+    expect(byId.get("opencode-go.popesdrew")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
+    expect(byId.get("_antigravity.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("_antigravity.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["weekly", 90],
+    ]);
+    for (const id of [
+      "opencode-go.drewrypope",
+      "opencode-go.popesdrew",
+      "_antigravity.gemini",
+      "_antigravity.claude-gpt",
+    ]) {
+      expect(byId.get(id)!.freshness).toEqual({
+        measuredAt: iso(5 * 60_000),
+        source: "openchamber-quota",
+        state: "ok",
+      });
+    }
+  });
+});
+
+describe("overlay: pass-through of the read itself (Drew, 2026-11-03)", () => {
+  test("a fresh ok read clears the base pool's dated-prose note", () => {
+    const view = baseView();
+    const meta = view.pools.find((p) => p.id === "meta")!;
+    meta.note = "BLOCKED 2026-10-26 — API returns 402 billing_not_configured (stale steward prose).";
+    const out = overlayQuotaCurrent(
+      view,
+      file([entry({ serviceId: "meta", windows: [win("weekly", 98, iso(5 * 60_000))] })]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "meta")!;
+    expect(p.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 98]]);
+    expect(p.note).toBeUndefined();
+  });
+
+  test("an error read keeps the dated note — it still describes the dated values on display", () => {
+    const view = baseView();
+    const meta = view.pools.find((p) => p.id === "meta")!;
+    meta.note = "Dated read context.";
+    const out = overlayQuotaCurrent(
+      view,
+      file([entry({ serviceId: "meta", state: "error", error: "HTTP 402", windows: [] })]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "meta")!;
+    expect(p.state).toBe("error");
+    expect(p.note).toBe("Dated read context.");
+  });
+
+  test("an entry with no matching pool synthesizes one under the reported id", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "brand-new-pool",
+          providerId: "brand-new",
+          providerName: "Brand New",
+          planLabel: "Pro",
+          windows: [win("weekly", 42, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "brand-new-pool")!;
+    expect(p).toBeDefined();
+    expect(p.provider).toBe("Brand New");
+    expect(p.plan).toBe("Pro");
+    expect(p.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 42]]);
+    expect(p.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "ok" });
+  });
+
+  test("an unmatched entry in error still renders — as an errored pool, not a vanished one", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ serviceId: "flaky-pool", state: "error", error: "HTTP 503", windows: [] })]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "flaky-pool")!;
+    expect(p).toBeDefined();
+    expect(p.state).toBe("error");
+    expect(p.freshness?.state).toBe("error");
+  });
+
+  test("combined/non-pool rows never synthesize pools (turso, antigravity, opencode-go)", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({ serviceId: "turso", windows: [win("databases", 3, iso(5 * 60_000))] }),
+        entry({ serviceId: "antigravity", windows: [win("weekly", 26, iso(5 * 60_000))] }),
+        entry({ serviceId: "opencode-go", windows: [win("monthly", 10, iso(5 * 60_000))] }),
+      ]),
+      NOW,
+    );
+    const ids = out.pools.map((p) => p.id);
+    expect(ids).not.toContain("turso");
+    expect(ids).not.toContain("antigravity");
+    expect(ids).not.toContain("opencode-go");
+    expect(out.pools).toHaveLength(baseView().pools.length);
   });
 });
 
@@ -837,5 +1034,229 @@ describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
       expect(tursoPct(0).percent).toBe(0);
       expect(tursoPct(100).percent).toBe(100);
     });
+  });
+});
+
+describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
+  test("an entry whose measuredAt is impossible or non-ISO is dropped; valid siblings survive", () => {
+    for (const bad of ["2026-02-30T07:00:00.000Z", "2026-04-31T07:00:00.000Z", "March 2, 2026"]) {
+      const doc = JSON.parse(
+        JSON.stringify(
+          file([
+            entry({ serviceId: "meta", measuredAt: bad, windows: [win("weekly", 42, iso(5 * 60_000))] }),
+            entry({ serviceId: "openai", windows: [win("7-day", 17, iso(5 * 60_000))] }),
+          ]),
+        ),
+      );
+      const parsed = parseQuotaCurrent(doc);
+      expect(parsed?.sanitized?.droppedProviders).toBe(1);
+      expect(parsed?.providers.map((p) => p.serviceId)).toEqual(["openai"]);
+    }
+  });
+
+  test("a window whose measuredAt is impossible or non-ISO is dropped without dropping valid sibling windows", () => {
+    for (const bad of ["2026-02-30T07:00:00.000Z", "2026-04-31T07:00:00.000Z", "March 2, 2026"]) {
+      const doc = JSON.parse(
+        JSON.stringify(
+          file([
+            entry({
+              serviceId: "openai",
+              windows: [win("7-day", 17, iso(5 * 60_000)), win("weekly", 42, bad)],
+            }),
+          ]),
+        ),
+      );
+      const parsed = parseQuotaCurrent(doc);
+      expect(parsed?.sanitized?.droppedWindows).toBe(1);
+      expect(parsed?.providers[0].windows.map((w) => w.name)).toEqual(["7-day"]);
+    }
+  });
+
+  test("leap-date and normal measuredAt stamps still validate", () => {
+    const leap = "2024-02-29T07:00:00.000Z";
+    const doc = JSON.parse(
+      JSON.stringify(file([entry({ serviceId: "openai", measuredAt: leap, windows: [win("7-day", 17, leap)] })])),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.sanitized).toEqual({ droppedProviders: 0, droppedWindows: 0 });
+    expect(parsed?.providers).toHaveLength(1);
+    expect(parsed?.providers[0].windows).toHaveLength(1);
+  });
+});
+
+describe("shell-pool stale/retained path (#6942)", () => {
+  const SHELL_NOTE =
+    "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.";
+  const LEG_ERROR = "Open Design usage API returned HTTP 503";
+
+  function shellView(): QuotaView {
+    const view = baseView();
+    view.pools.push({
+      id: "opendesign",
+      provider: "Open Design",
+      plan: "Go",
+      state: "healthy",
+      windows: [],
+      note: SHELL_NOTE,
+    });
+    return view;
+  }
+
+  function legErrorFile(providers: QuotaCurrentEntry[]): QuotaCurrentFile {
+    const f = file(providers);
+    f.heartbeat = {
+      tickAt: iso(4 * 60_000),
+      ok: true,
+      durationMs: 900,
+      perProvider: { opendesign: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } },
+    };
+    return f;
+  }
+
+  const retainedEntry = () =>
+    entry({
+      serviceId: "opendesign",
+      source: "opencode-quota",
+      measuredAt: iso(45 * 60_000),
+      retainedFromFailedTick: iso(4 * 60_000),
+      windows: [win("5h", 0, iso(45 * 60_000)), win("7d", 0, iso(45 * 60_000))],
+    });
+
+  test("a retained entry whose leg errored renders the leg error as freshness, entry windows standing", () => {
+    const out = overlayQuotaCurrent(shellView(), legErrorFile([retainedEntry()]), NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("error");
+    expect(od.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "error",
+      error: LEG_ERROR,
+    });
+    // The read's dated fallback windows stand, percentages identical.
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["7d", 0],
+    ]);
+    // The read carries a dated read, so the shell note must not stand.
+    expect(od.note).toBeUndefined();
+  });
+
+  test("a retained entry with no leg error stays stale, but its windows still stand and the shell note is suppressed", () => {
+    const out = overlayQuotaCurrent(shellView(), file([retainedEntry()]), NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("stale");
+    expect(od.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
+    expect(od.windows.map((w) => w.percent)).toEqual([0, 0]);
+    expect(od.note).toBeUndefined();
+  });
+
+  test("an aged ok entry for a shell pool surfaces stale with the entry's windows standing", () => {
+    const at = iso(QUOTA_CURRENT_FRESH_MS + 10 * 60_000);
+    const out = overlayQuotaCurrent(
+      shellView(),
+      file([entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("5h", 12, at)] })]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("stale");
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([["5-hour", 12]]);
+    expect(od.note).toBeUndefined();
+  });
+
+  test("an errored shell pool with adopted windows is excluded from model-choice guidance", () => {
+    const out = overlayQuotaCurrent(
+      shellView(),
+      legErrorFile([
+        retainedEntry(),
+        entry({ serviceId: "meta", windows: [win("5h", 1.33, iso(5 * 60_000))] }),
+      ]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.windows.length).toBeGreaterThan(0); // windows stand for display
+    expect(out.choices.hasHeadroom).toContain("meta"); // the fresh read still guides
+    expect(out.choices.hasHeadroom).not.toContain("opendesign");
+    expect(out.choices.burnBeforeReset).not.toContain("opendesign");
+    expect(out.choices.doNotStart).not.toContain("opendesign");
+  });
+
+  test("a spec pool with a leg error keeps the #1268 stale classification and its base dated windows", () => {
+    const f = legErrorFile([
+      entry({
+        serviceId: "cline-pass",
+        measuredAt: iso(5 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("monthly", 71, iso(5 * 60_000))],
+      }),
+    ]);
+    f.heartbeat.perProvider = { "cline-pass": { state: "error", ms: 9, rows: 1, error: "leg boom" } };
+    const out = overlayQuotaCurrent(baseView(), f, NOW);
+    const cline = out.pools.find((p) => p.id === "cline-pass")!;
+    expect(cline.state).toBe("stale");
+    expect(cline.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "stale" });
+    expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+  });
+});
+
+describe("spec-pool retained path with dead base windows (#7033)", () => {
+  const LEG_ERROR = "Rate limited. Retrying soon.";
+  const VIEW_NOTE = "Freshest dated read in the stewardship quota view; Claude exposes no host-side meter.";
+
+  function claudeView(resetsAt: string | null): QuotaView {
+    const view = baseView();
+    const claude = view.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    claude.windows = [{ name: "weekly", unit: "other", limit: 100, used: 68, percent: 68, resetsAt }];
+    claude.note = VIEW_NOTE;
+    return view;
+  }
+
+  function claudeFile(): QuotaCurrentFile {
+    const f = file([
+      entry({
+        providerId: "claude",
+        serviceId: "anthropic:claude-pro",
+        source: "opencode-quota",
+        measuredAt: iso(45 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [
+          win("5h", 33, iso(45 * 60_000)),
+          win("7d", 61, iso(45 * 60_000)),
+          win("Fable:7d", 0, iso(45 * 60_000)),
+        ],
+      }),
+    ]);
+    f.heartbeat.perProvider = { claude: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } };
+    return f;
+  }
+
+  test("a retained entry whose leg errored supersedes base windows that already reset before the read", () => {
+    // The base row is the quota-view transcription whose weekly reset
+    // (2026-10-26 in fixture time) predates the retained read — a dead
+    // window. The read's dated fallback windows stand instead.
+    const out = overlayQuotaCurrent(claudeView("2026-10-26T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("error");
+    expect(claude.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "error",
+      error: LEG_ERROR,
+    });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 33],
+      ["7d", 61],
+      ["Fable:7d", 0],
+    ]);
+    // The note describes the substituted quota-view row; it must not stand.
+    expect(claude.note).toBeUndefined();
+  });
+
+  test("the same retained entry keeps the #1268 pin when a base window is still live", () => {
+    const out = overlayQuotaCurrent(claudeView("2026-11-02T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("stale");
+    expect(claude.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(claude.note).toBe(VIEW_NOTE);
   });
 });

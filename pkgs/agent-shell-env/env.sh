@@ -62,13 +62,6 @@ if [ -z "${AGENT_SHELL_ENV_DISABLE:-}" ]; then
     "${__ase_sec}/op-service-account-token" \
     "${__ase_cfg}/op/service-account-token"
 
-  # --- Jules REST API / @google/jules-mcp ---
-  # The `jules` CLI itself ignores this; it uses the OAuth token that
-  # `jules login` stored in gnome-keyring (reached over DBus, see below).
-  __ase_load JULES_API_KEY \
-    "${__ase_sec}/jules-api-key" \
-    "${__ase_cfg}/jules/api-key"
-
   # --- Cloudflare AI gateway (inference-scoped token, not the account one) ---
   __ase_load CLOUDFLARE_ACCOUNT_ID \
     "${__ase_sec}/cloudflare-account-id" \
@@ -88,7 +81,7 @@ if [ -z "${AGENT_SHELL_ENV_DISABLE:-}" ]; then
     export MUSE_API_KEY="${META_API_KEY}"
   fi
 
-  # --- Session bus, so keyring-backed logins (jules, op app integration) work
+  # --- Session bus, so keyring-backed logins (op app integration) work
   # from units, `env -i` shells and anything else that lost the session env.
   # shellcheck disable=SC3028 # bash sets UID; plain sh falls back to id -u
   __ase_uid="${UID:-}"

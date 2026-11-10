@@ -30,6 +30,26 @@ pub struct Mail {
     pub body: String,
 }
 
+impl Mail {
+    /// Validate fields that sinks serialize into mail headers.
+    fn validate_header_fields(&self) -> Result<()> {
+        ensure!(
+            self.to.is_ascii(),
+            "cannot mail {}: it is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the message was not sent",
+            self.to
+        );
+        ensure!(
+            plain_address(&self.to),
+            "the recipient is not a plain address"
+        );
+        ensure!(
+            !self.subject.chars().any(char::is_control),
+            "the subject has a line break or control character"
+        );
+        Ok(())
+    }
+}
+
 /// Something that takes a message out of the world.
 pub trait MailSink: Debug + Send + Sync {
     /// Hand the message off.
@@ -57,6 +77,7 @@ impl OutboxSink {
 
 impl MailSink for OutboxSink {
     fn send(&self, mail: &Mail) -> Result<()> {
+        mail.validate_header_fields()?;
         use std::os::unix::fs::OpenOptionsExt as _;
         let mut name = [0_u8; 8];
         rand::rng().fill(&mut name);
@@ -111,6 +132,7 @@ impl CommandSink {
     }
 
     fn send_with_timeout(&self, mail: &Mail, timeout: Duration) -> Result<()> {
+        mail.validate_header_fields()?;
         let mut command = Command::new(&self.program);
         command
             .args(&self.args)
@@ -233,19 +255,7 @@ impl SmtpSink {
 
 impl SmtpSink {
     fn send_with_timeout(&self, mail: &Mail, timeout: Duration) -> Result<()> {
-        ensure!(
-            mail.to.is_ascii(),
-            "cannot mail {}: it is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the message was not sent",
-            mail.to
-        );
-        ensure!(
-            plain_address(&mail.to),
-            "the recipient is not a plain address"
-        );
-        ensure!(
-            !mail.subject.chars().any(char::is_control),
-            "the subject has a line break or control character"
-        );
+        mail.validate_header_fields()?;
         let deadline = Instant::now() + timeout;
         let stream = TcpStream::connect_timeout(&self.relay, RELAY_TIMEOUT)
             .context("connect to the mail relay")?;
@@ -470,6 +480,28 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn assert_outbox_refuses_without_file(mail: &Mail, expected_error: &str) {
+        let dir = scratch("outbox-invalid");
+        let error = OutboxSink::new(dir.clone()).send(mail).unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error:#}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_outbox_refuses_subject_header_injection_before_creating_file() {
+        let mut mail = sample();
+        mail.subject = "Your code\nBcc: attacker@evil.example".to_owned();
+        assert_outbox_refuses_without_file(&mail, "subject");
+    }
+
+    #[test]
+    fn the_outbox_refuses_crlf_recipient_before_creating_file() {
+        let mut mail = sample();
+        mail.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
+        assert_outbox_refuses_without_file(&mail, "recipient");
+    }
+
     #[test]
     fn the_command_sink_passes_the_message_in_the_environment() {
         let dir = scratch("command");
@@ -486,6 +518,32 @@ mod tests {
             "a@b.co|Your code|Code 123456"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn assert_command_sink_refuses_without_running(mail: &Mail, expected_error: &str) {
+        let dir = scratch("command-invalid");
+        let out = dir.join("out.txt");
+        let script = format!("printf ran > {}", out.display());
+        let error = CommandSink::new(PathBuf::from("/bin/sh"), vec!["-c".to_owned(), script])
+            .send(mail)
+            .unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error:#}");
+        assert!(!out.exists(), "the program must never be invoked");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_command_sink_refuses_subject_header_injection_before_spawning() {
+        let mut mail = sample();
+        mail.subject = "Your code\nBcc: attacker@evil.example".to_owned();
+        assert_command_sink_refuses_without_running(&mail, "subject");
+    }
+
+    #[test]
+    fn the_command_sink_refuses_crlf_recipient_before_spawning() {
+        let mut mail = sample();
+        mail.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
+        assert_command_sink_refuses_without_running(&mail, "recipient");
     }
 
     #[test]

@@ -502,6 +502,14 @@ func CallError(in CallErrorInput, cat Catalog) []Diagnostic {
 			}
 		}
 	}
+	// Rung 1's second half (#1927): when a supplied name does not fit
+	// the called tool at all, a unique argument-shape fit -- another
+	// tool whose schema the names satisfy, or one declared parameter
+	// the name prefixes -- explains the rejection better than the
+	// missing-argument list does, so it is answered first.
+	if d, ok := shapeFit(in, tool, sent, cat); ok {
+		return []Diagnostic{d}
+	}
 	var out []Diagnostic
 	for _, req := range tool.Shape.Required {
 		if sent[req] {

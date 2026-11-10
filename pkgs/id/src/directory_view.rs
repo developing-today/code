@@ -1238,7 +1238,10 @@ pub fn run(
         DirectoryAction::AddEmail { address } => {
             let me = signed_in(&viewer)?;
             let address = normalize_email(&address)?;
-            if directory.account_for_email(&address).is_some() {
+            if directory
+                .account_for_email(&address)
+                .is_some_and(|holder| holder.as_str() != me)
+            {
                 return Err(Refusal::Conflict(
                     "that address already belongs to an account".to_owned(),
                 )
@@ -2035,6 +2038,63 @@ mod tests {
         let ada = view.accounts.iter().find(|a| a.id == s.ada).unwrap();
         assert!(ada.friends.is_none());
         assert!(ada.verified.is_none());
+    }
+
+    #[test]
+    fn a_member_can_view_groups_in_a_diamond_nesting() {
+        let mut s = sample();
+        s.directory
+            .set_member(
+                Actor::Server,
+                s.club,
+                Member::Account { id: s.bo.clone() },
+                Some(Level::Admin),
+            )
+            .unwrap();
+        let mut layers = vec![vec![s.club]];
+
+        for layer in 0..25 {
+            let children = layers.last().unwrap().clone();
+            let mut parents = Vec::new();
+            for branch in 0..2 {
+                let (parent, _) = s
+                    .directory
+                    .create_group(
+                        &s.ada,
+                        &format!("View layer {layer} branch {branch}"),
+                        "",
+                        WorldScopes::GUEST,
+                    )
+                    .unwrap();
+                for child in &children {
+                    let held_at = if layer == 0 {
+                        if branch == 0 {
+                            Level::Read
+                        } else {
+                            Level::Manage
+                        }
+                    } else {
+                        Level::Write
+                    };
+                    s.directory
+                        .set_member(
+                            Actor::Server,
+                            parent,
+                            Member::Group { id: *child },
+                            Some(held_at),
+                        )
+                        .unwrap();
+                }
+                parents.push(parent);
+            }
+            layers.push(parents);
+        }
+
+        let root = layers.last().unwrap()[0];
+        let view = view_for(&s.directory, &Viewer::Account(s.bo.clone()));
+        let root_view = view.groups.iter().find(|group| group.id == root).unwrap();
+        assert_eq!(root_view.level, Some(Level::Write));
+        assert!(root_view.members.is_some());
     }
 
     #[test]

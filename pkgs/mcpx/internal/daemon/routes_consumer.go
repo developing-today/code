@@ -425,7 +425,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	// call on every unmatched prompt. A caller naming a provider or model
 	// on this request has asked, for this request.
 	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != "" ||
-		(pol.ModelProvider != "" && pol.ModelProvider != "none")
+		modelLayerConfigured(pol)
 	// The legacy guard must not gate the model layer: a request whose
 	// only provider is model.provider (#1925) has prov == nil here
 	// whenever no legacy repair provider, recognised env credential, or
@@ -433,7 +433,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	// model-layer backend is never called (Codex P1, PR #2592). The
 	// layer's availability is judged by its own settings; if it was
 	// configured but cannot resolve, generate answers errNoModel.
-	layerSet := pol.ModelProvider != "" && pol.ModelProvider != "none"
+	layerSet := modelLayerConfigured(pol)
 	if !asked || (prov == nil && !layerSet) {
 		out.Model = "none"
 		if !asked {

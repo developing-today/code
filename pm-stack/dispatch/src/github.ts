@@ -3,8 +3,8 @@
 // Primary route: the pm-stack GitHub App (installation token minted from
 // the app id + private key rendered into the service env from
 // ~/secrets/pm-stack.sops.yaml — the same material connect-repo.sh uses).
-// The installations cover developing-today/code, developing-today/opencode,
-// developing-today/openchamber and dezren39/nix; callers skip repos with no
+// The installations cover developing-today/code, developing-today-forks/opencode
+// and dezren39/nix; callers skip repos with no
 // installation (developing-today/zettel, dezren39/dezren39) before reaching
 // here.
 //
@@ -18,6 +18,73 @@ const GH_API = "https://api.github.com";
 
 export class GitHubError extends Error {
   status = 502;
+}
+
+/**
+ * A 2xx response body whose shape does not match the endpoint's contract
+ * (#7101). The dispatch sibling of the projector fix in #6954: a
+ * wrong-shape body must surface as a GitHubError naming the endpoint and
+ * the malformed field — never a raw TypeError/SyntaxError, never a
+ * coerced or undefined value flowing downstream.
+ */
+export class MalformedBodyError extends GitHubError {}
+
+/** The app create-issue call answered 2xx with a malformed body: the
+ * issue may already exist server-side, so the gh fallback create must
+ * NOT run (it would file a duplicate tracking issue). */
+class MalformedCreateBodyError extends MalformedBodyError {}
+
+function describeValue(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array";
+  return typeof v;
+}
+
+async function jsonBody(res: Response, endpoint: string): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    throw new MalformedBodyError(`github ${endpoint} returned a non-JSON body`);
+  }
+}
+
+function bodyObject(body: unknown, endpoint: string): Record<string, unknown> {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new MalformedBodyError(
+      `github ${endpoint} returned a malformed body: expected a JSON object, got ${describeValue(body)}`,
+    );
+  }
+  return body as Record<string, unknown>;
+}
+
+function reqPositiveInt(obj: Record<string, unknown>, field: string, endpoint: string): number {
+  const v = obj[field];
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+    throw new MalformedBodyError(
+      `github ${endpoint} returned a malformed body: field '${field}' must be a positive integer, got ${describeValue(v)}`,
+    );
+  }
+  return v;
+}
+
+function reqInt(obj: Record<string, unknown>, field: string, endpoint: string): number {
+  const v = obj[field];
+  if (typeof v !== "number" || !Number.isInteger(v)) {
+    throw new MalformedBodyError(
+      `github ${endpoint} returned a malformed body: field '${field}' must be an integer, got ${describeValue(v)}`,
+    );
+  }
+  return v;
+}
+
+function reqString(obj: Record<string, unknown>, field: string, endpoint: string, nonEmpty = false): string {
+  const v = obj[field];
+  if (typeof v !== "string" || (nonEmpty && v === "")) {
+    throw new MalformedBodyError(
+      `github ${endpoint} returned a malformed body: field '${field}' must be a ${nonEmpty ? "non-empty " : ""}string, got ${describeValue(v)}`,
+    );
+  }
+  return v;
 }
 
 /** Label -> color/description when dispatch has to create it. Colors match
@@ -101,15 +168,25 @@ export class GitHubClient {
           `github app installation lookup for ${repo} failed (HTTP ${res.status}) — app not installed there?`,
         );
       }
-      const data = (await res.json()) as { id: number };
-      installationId = data.id;
+      const endpoint = `GET /repos/${repo}/installation`;
+      const data = bodyObject(await jsonBody(res, endpoint), endpoint);
+      installationId = reqPositiveInt(data, "id", endpoint);
       this.installationIdCache.set(repo, installationId);
     }
     const res = await this.appApi("POST", `/app/installations/${installationId}/access_tokens`, jwt);
     if (!res.ok) throw new GitHubError(`github app token mint failed (HTTP ${res.status})`);
-    const data = (await res.json()) as { token: string; expires_at: string };
-    this.tokenCache.set(repo, { token: data.token, expiresAt: Date.parse(data.expires_at) });
-    return data.token;
+    const endpoint = `POST /app/installations/${installationId}/access_tokens`;
+    const data = bodyObject(await jsonBody(res, endpoint), endpoint);
+    const token = reqString(data, "token", endpoint, true);
+    const expiresAtRaw = reqString(data, "expires_at", endpoint, true);
+    const expiresAt = Date.parse(expiresAtRaw);
+    if (Number.isNaN(expiresAt)) {
+      throw new MalformedBodyError(
+        `github ${endpoint} returned a malformed body: field 'expires_at' is not a parseable timestamp`,
+      );
+    }
+    this.tokenCache.set(repo, { token, expiresAt });
+    return token;
   }
 
   // --- gh CLI fallback -------------------------------------------------------
@@ -180,9 +257,31 @@ export class GitHubClient {
         if (!res.ok) {
           throw new GitHubError(`github issue create failed (HTTP ${res.status}): ${(await res.text()).slice(0, 200)}`);
         }
-        const data = (await res.json()) as { number: number; html_url: string };
-        return { number: data.number, url: data.html_url };
+        const endpoint = `POST /repos/${repo}/issues`;
+        let data: Record<string, unknown>;
+        try {
+          data = bodyObject(await jsonBody(res, endpoint), endpoint);
+        } catch (shapeErr) {
+          throw new MalformedCreateBodyError(
+            shapeErr instanceof Error ? shapeErr.message : String(shapeErr),
+          );
+        }
+        let number: number;
+        let url: string;
+        try {
+          number = reqInt(data, "number", endpoint);
+          url = reqString(data, "html_url", endpoint);
+        } catch (shapeErr) {
+          throw new MalformedCreateBodyError(
+            shapeErr instanceof Error ? shapeErr.message : String(shapeErr),
+          );
+        }
+        return { number, url };
       } catch (e) {
+        // A malformed 2xx create body is NOT a fallback case: the app
+        // POST may already have created the issue server-side, so a gh
+        // create would file a duplicate tracking issue (#7101).
+        if (e instanceof MalformedCreateBodyError) throw e;
         // Fall through to gh with the app error preserved in the message
         // if gh fails too.
         try {
@@ -227,17 +326,13 @@ export class GitHubClient {
         const res = await this.appApi("GET", `/repos/${repo}/issues/${issueNumber}`, token);
         if (res.status === 404) return null;
         if (!res.ok) throw new GitHubError(`github issue lookup failed (HTTP ${res.status})`);
-        const data = (await res.json()) as {
-          number: number;
-          state: string;
-          html_url: string;
-          pull_request?: unknown;
-        };
+        const endpoint = `GET /repos/${repo}/issues/${issueNumber}`;
+        const data = bodyObject(await jsonBody(res, endpoint), endpoint);
         return {
-          number: data.number,
-          state: data.state,
+          number: reqInt(data, "number", endpoint),
+          state: reqString(data, "state", endpoint),
           isPullRequest: Boolean(data.pull_request),
-          url: data.html_url,
+          url: reqString(data, "html_url", endpoint),
         };
       } catch (e) {
         appError = e;
@@ -246,17 +341,19 @@ export class GitHubClient {
     }
     try {
       const out = await this.gh(["api", `repos/${repo}/issues/${issueNumber}`]);
-      const data = JSON.parse(out) as {
-        number: number;
-        state: string;
-        html_url: string;
-        pull_request?: unknown;
-      };
+      const endpoint = `gh api repos/${repo}/issues/${issueNumber}`;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(out);
+      } catch {
+        throw new MalformedBodyError(`github ${endpoint} returned a non-JSON body`);
+      }
+      const data = bodyObject(parsed, endpoint);
       return {
-        number: data.number,
-        state: data.state,
+        number: reqInt(data, "number", endpoint),
+        state: reqString(data, "state", endpoint),
         isPullRequest: Boolean(data.pull_request),
-        url: data.html_url,
+        url: reqString(data, "html_url", endpoint),
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -283,6 +380,42 @@ export class GitHubClient {
       }
     }
     await this.gh(["issue", "edit", String(issueNumber), "--repo", repo, ...labels.flatMap((l) => ["--add-label", l])]);
+  }
+
+  /**
+   * Close an issue with a state reason (#4917). Used to compensate a
+   * dispatch-created tracking issue when the launch fails before the
+   * dispatch becomes real, so the issue does not linger open as an
+   * orphan. Only ever called on issues this service created itself —
+   * never on attach targets a caller supplied.
+   */
+  async closeIssue(
+    repo: string,
+    issueNumber: number,
+    stateReason: "not_planned" | "completed" = "not_planned",
+  ): Promise<void> {
+    if (this.appConfigured) {
+      try {
+        const token = await this.installationToken(repo);
+        const res = await this.appApi("PATCH", `/repos/${repo}/issues/${issueNumber}`, token, {
+          state: "closed",
+          state_reason: stateReason,
+        });
+        if (!res.ok) throw new GitHubError(`issue close failed (HTTP ${res.status})`);
+        return;
+      } catch {
+        /* fall through to gh */
+      }
+    }
+    await this.gh([
+      "issue",
+      "close",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--reason",
+      stateReason === "not_planned" ? "not planned" : "completed",
+    ]);
   }
 
   async comment(repo: string, issueNumber: number, body: string): Promise<void> {

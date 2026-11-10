@@ -313,7 +313,6 @@ EOF
 check plugins-merge "$tmp/plugins-merge.fixture" \
   '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b",["opencode-plugin-c",{"opt":1}]]}' 0
 
-
 # Case 14 (#4612, probe B): `agents` inline empty object with a
 # standard v1 `agent` block — the old regex splice demanded a
 # newline + two-space closing brace, so this exited 1 forever.
@@ -500,10 +499,6 @@ grep -qF 'https://example.com/docs */' "$tmp/plugins-merge-url-comment.jsonc" ||
   failures=$((failures + 1))
 }
 
-if [ "$failures" -ne 0 ]; then
-  echo "normalize_test: $failures failure(s)"
-  exit 1
-fi
 # Case: agent as the last entry, with an inline comment between the
 # preceding entry's comma and the agent key (PR #4625 Codex P2). The
 # backward separator scan in delete_top_level_entry must skip the
@@ -521,5 +516,75 @@ cat >"$tmp/comment-before-agent-last.fixture" <<'EOF'
 EOF
 check comment-before-agent-last "$tmp/comment-before-agent-last.fixture" \
   '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+
+# Case 24 (#4770): a block comment containing a literal /* before the
+# final legacy `agent` entry — the backward separator scan must match
+# the comment's actual opening delimiter, not the inner literal, so
+# the fold succeeds and the comment text is preserved byte-identical.
+cat >"$tmp/block-comment-inner-delimiter.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  /* example syntax: /* text */
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check block-comment-inner-delimiter "$tmp/block-comment-inner-delimiter.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+grep -qF '/* example syntax: /* text */' "$tmp/block-comment-inner-delimiter.jsonc" || {
+  echo "FAIL block-comment-inner-delimiter: comment text not preserved"
+  failures=$((failures + 1))
+}
+
+# Case 7: a repair preserves the config's original permission bits.
+# (Input is the v1 `plugin` spelling — the canonical direction since
+# the v2 rename — so the run performs a real rewrite.)
+cat >"$tmp/mode.fixture" <<'EOF'
+{
+  "plugin": ["opencode-plugin-x"]
+}
+EOF
+cp "$tmp/mode.fixture" "$tmp/mode.jsonc"
+chmod 0600 "$tmp/mode.jsonc"
+OPENCODE_CONFIG="$tmp/mode.jsonc" bash "$script" 2>/dev/null
+if [ "$?" -ne 0 ] || [ "$(stat -c '%a' "$tmp/mode.jsonc")" != "600" ] ||
+  [ "$(parsed_doc "$tmp/mode.jsonc")" != '{"plugins": ["opencode-plugin-x"]}' ]; then
+  echo "FAIL mode-preserved: repair must preserve 0600 and normalize plugins"
+  failures=$((failures + 1))
+else
+  echo "PASS mode-preserved"
+fi
+
+# Case 8: a symlinked config is refused before writes; keep both the link
+# target and its contents unchanged.
+cat >"$tmp/symlink-target.jsonc" <<'EOF'
+{
+  "plugin": ["opencode-plugin-x"]
+}
+EOF
+ln -s symlink-target.jsonc "$tmp/symlink.jsonc"
+link_before="$(readlink "$tmp/symlink.jsonc")"
+target_before="$(sha256sum "$tmp/symlink-target.jsonc" | cut -d' ' -f1)"
+OPENCODE_CONFIG="$tmp/symlink.jsonc" bash "$script" 2>"$tmp/symlink.stderr"
+symlink_exit=$?
+target_after="$(sha256sum "$tmp/symlink-target.jsonc" | cut -d' ' -f1)"
+if [ "$symlink_exit" -eq 0 ] || [ ! -L "$tmp/symlink.jsonc" ] ||
+  [ "$(readlink "$tmp/symlink.jsonc")" != "$link_before" ] ||
+  [ "$target_before" != "$target_after" ] ||
+  ! grep -q 'refusing symlinked config' "$tmp/symlink.stderr"; then
+  echo "FAIL symlink-refused: expected a clear refusal with link and target unchanged"
+  failures=$((failures + 1))
+else
+  echo "PASS symlink-refused"
+fi
+
+if [ "$failures" -ne 0 ]; then
+  echo "normalize_test: $failures failure(s)"
+  exit 1
+fi
 
 echo "normalize_test: all cases passed"
