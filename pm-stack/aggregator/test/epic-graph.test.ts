@@ -437,7 +437,7 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain("additional unresolved blockers");
     expect(html).toContain("not a promise that every item is immediately unblocked");
     expect(html).toContain("longest blocked chain");
-    expect(html).toContain("Open items by current unresolved direct-blocker count");
+    expect(html).toContain("Open items by their worst blocker's downstream reach");
   });
 
   test("a pool with no eligible epic says unavailable, not an empty graph", () => {
