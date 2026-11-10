@@ -826,6 +826,16 @@ impl BoardGraph {
                         value.version == 1,
                         "the first listing for a host starts at version 1"
                     );
+                    let duplicate_first = self.objects.values().any(|signed| {
+                        matches!(&signed.object,
+                            BoardObject::BoardListing(existing)
+                                if existing.board == value.board
+                                    && existing.host == value.host)
+                    });
+                    ensure!(
+                        !duplicate_first,
+                        "a first listing already exists for this host"
+                    );
                 }
             }
             BoardObject::Tombstone(value) => {
@@ -3100,6 +3110,45 @@ mod tests {
         let (_, latest) = &graph.latest_listings(&root)[&host_hex];
         assert_eq!(latest.version, 2);
         assert!(!latest.listed);
+    }
+
+    #[test]
+    fn second_first_listing_for_same_host_is_rejected() {
+        let owner = key(7);
+        let host = key(9);
+        let other_host = key(10);
+        let mut graph = BoardGraph::default();
+        let root = graph.insert(board(&owner)).unwrap();
+
+        // The first listing for a host is accepted ...
+        graph
+            .insert(listing(&owner, 1, root.clone(), &host, 1, true, None))
+            .unwrap();
+
+        // ... but a second chain-less v1 for the same host is rejected,
+        // whether the copy publishes or withdraws.
+        for (seq, listed) in [(2, true), (3, false)] {
+            let second_first = listing(&owner, seq, root.clone(), &host, 1, listed, None);
+            let err = graph.insert(second_first).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("a first listing already exists for this host"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A first listing for a different host on the same board is fine.
+        graph
+            .insert(listing(
+                &owner,
+                4,
+                root.clone(),
+                &other_host,
+                1,
+                false,
+                None,
+            ))
+            .unwrap();
     }
 
     #[test]
