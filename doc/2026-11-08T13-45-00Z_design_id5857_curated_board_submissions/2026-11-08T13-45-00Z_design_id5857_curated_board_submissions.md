@@ -140,8 +140,26 @@ signature system.
   pinning, presentation, commentary and widening are fixed at submission,
   not at approval, so an approved post is exactly the post that was
   submitted — approval cannot rewrite it.
+- **A submission is bound to the intake policy it was made under.** The
+  board-share record that submits the post cites the `IntakePolicy`
+  revision in force at submission time (`submitted_under_policy`). The
+  citation is part of the signed submission, not metadata a peer infers
+  from arrival order: two posts with no `IntakeDecision` are
+  distinguishable by the policy revision each cites, forever. A
+  submission made while the board's policy was `open` cites an
+  open-mode revision; one made under `curated` cites a curated-mode
+  revision. This binding is what lets the projection rules in this
+  section and §4 survive mode switches (§3, "No silent admission")
+  without consulting wall-clock order.
 - **The intake decision is its own signed object**, `IntakeDecision`:
-  `{board, submission, decision: admit | decline, reason, policy_revision}`.
+  `{board, submission, decision: admit | decline | unadmit, kind:
+  initial | reversal, reverses: decision_id | null, reason,
+  policy_revision}`. An `initial` decision has `reverses: null`. A
+  `reversal` (§4) must cite, in `reverses`, the exact decision it
+  supersedes; a decision that cites nothing is an initial decision
+  whatever its author intended. The shape therefore distinguishes a
+  deliberate reversal from a competing initial decision in the data,
+  not in prose.
   It is append-only and attributable, in the same family as
   `ModerationAction`, and it cites the `IntakePolicy` revision it was
   made under. It is **not** a `ModerationAction`: nothing is being hidden
@@ -154,15 +172,28 @@ signature system.
   in the `hidden` list with the layer that excluded them — the same
   transparency rule the three-layer view already applies: hidden is not
   erased, and the reason is visible.
-- **First decision wins; later decisions are recorded, not applied.** Two
-  intake decisions for one submission are legal signed history (two
-  deciders, or a retry), but the outcome is the earliest decision by the
-  same deterministic order the graph already uses for duplicate `Rules`
-  revisions (content-hash order within the same cited frontier), so
-  every peer holding the same set projects the same outcome. A later
-  decision is visible in the audit surface and changes nothing on its
-  own. Reversing an outcome is a new act with its own name (§4), not a
-  quiet second decision.
+- **One resolution algorithm: earliest initial wins; only a citing
+  reversal supersedes.** Two intake decisions for one submission are
+  legal signed history (two deciders, or a retry). Projection is a
+  single deterministic procedure every peer runs over the same signed
+  set: (1) order all decisions for the submission by the same
+  deterministic order the graph already uses for duplicate `Rules`
+  revisions (content-hash order within the same cited frontier); (2)
+  the earliest `initial` decision is the standing outcome — every
+  later `initial` decision is recorded, not applied, exactly as
+  before; (3) a `reversal` applies only when its `reverses` field
+  cites the currently standing decision and its signer is the board
+  owner or an active `Intake` holder at decision time; an applying
+  reversal becomes the standing outcome, superseding its predecessor;
+  (4) a reversal citing a decision that is not standing (a stale,
+  competing, or never-applied one) is recorded, not applied; of two
+  reversals citing the same standing decision, the earliest by the
+  order in (1) applies and the other is recorded, not applied. No
+  other decision ever changes the projection. "Latest decision wins"
+  is therefore never the rule: the standing outcome changes only along
+  an unbroken chain of citing reversals rooted at the earliest
+  initial decision, so every peer holding the same set projects the
+  same outcome.
 - **A declined submission stays in the graph.** It is not deleted, not
   tombstoned, and not hidden from its author or from the board's audit
   surface. The author may submit a new post (a new share event, per
@@ -173,15 +204,23 @@ signature system.
   until decided, and the policy revision records the switch. A board
   owner who wants to clear the queue does so by deciding, or by a
   separate, explicit bulk-admit act that names each submission it admits.
-- **`open` boards have no pending state at all.** A post with no
-  `IntakeDecision` on an `open` board is simply published. The same post
-  object is valid on both modes; only the projection differs.
+- **`open` boards have no pending state for posts submitted under
+  an open policy.** A post with no `IntakeDecision` is published by
+  the open-board projection only when its `submitted_under_policy`
+  citation names an open-mode revision. A post submitted under a
+  curated-mode revision keeps the pending projection of the policy it
+  was submitted under — including after a `curated` → `open` switch —
+  until an `IntakeDecision` or an explicit bulk-admit act (§3, "No
+  silent admission") disposes of it. The same post object is valid on
+  both modes; the projection follows the policy the submission cites,
+  not the board's current mode and not arrival order.
 
 ## Decision 4 — Reversal is a new signed act: `unadmit`
 
 - **An admitted post can be removed from the board view by an intake
   decision, not by a moderation action.** `IntakeDecision { decision:
-  unadmit }` by the owner or an active `Intake` holder removes the post
+  unadmit, kind: reversal, reverses: <the standing admit> }` by the
+  owner or an active `Intake` holder removes the post
   from the board view from that point on, with a reason, and leaves the
   post, the admission, the unadmission and the chain in the graph.
 - **Why not reuse `ModerationAction::Hide`:** a hide is a moderation
@@ -195,10 +234,14 @@ signature system.
   withdrawal power (#5856 §4), which acts on the post's rendering of the
   target and propagates to reposts; the two powers are independent and
   neither erases the other's record.
-- **A declined or unadmitted post cannot be re-admitted by the same
-  decider without a new decision** — which is exactly what a second
-  `admit` is. The graph records the sequence; the view follows the
-  latest decision by the same deterministic order as §3.
+- **Re-admitting a declined or unadmitted post is a reversal, not a
+  second initial decision.** It takes a new `IntakeDecision` with
+  `kind: reversal` citing the standing decline (or the standing
+  `unadmit`) in `reverses`, per the single resolution algorithm in
+  §3. A bare second `admit` — an initial decision citing nothing —
+  is recorded, not applied, whoever signs it. The graph records the
+  whole sequence; the view follows the standing decision produced by
+  §3's algorithm, never simply the latest decision.
 
 ## Decision 5 — Notifications are intake events delivered by the subscription machinery, and nothing more
 
