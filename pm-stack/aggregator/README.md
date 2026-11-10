@@ -426,6 +426,34 @@ The contract's existing embodiment is `src/token-adapter.ts` (#1153):
 it validates its document once at the boundary and rejects-and-retains
 on failure, and new boundaries are written to its standard.
 
+## Parsed-shape contract (#3068)
+
+Sibling to the ingest contract above, stated here by reference: the
+parsed-shape contract from design #3068 — *parsed is not validated* —
+applies at every JSON trust boundary in this repo (`bin/`, `scripts/`,
+`pkgs/` tools, pm-stack's non-aggregator handlers, and id web), not
+only at aggregator ingest. Its recorded terms:
+
+- A successful parse proves syntax, never shape. Before a parsed
+  value is dereferenced, its relied-on shape is checked once, at the
+  boundary, in the surface's own error vocabulary — a wrong shape is
+  a named shape error, never a raw `TypeError`, never a silently
+  half-applied value, and never fabricated data.
+- The vocabulary is exact: a plain object is not an array, an array
+  is not a catalogue, and a present-but-wrong-typed field is a shape
+  error — coercion is not validation.
+- Absence is not emptiness: a missing field, section, or collection
+  is *absent* (the boundary's recorded outcome for absence applies),
+  never silently rewritten as an empty object or array that later
+  reads as a measured empty result.
+- Each surface records its own outcome for a shape failure (refuse
+  the run, drop the element and count it, reject and retain), chosen
+  per boundary as in the ingest contract above.
+
+The closing inventory audit for this contract, with the per-surface
+dispositions, is recorded on #3069; the design and its decisions are
+#3068.
+
 ## Measurement grammar (#3005)
 
 A measurement string is a **plain decimal**. Everywhere the PM stack

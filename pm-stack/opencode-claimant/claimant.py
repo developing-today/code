@@ -72,6 +72,89 @@ def _auth_header_args() -> List[str]:
     except Exception:
         return []
 
+
+# --- Verified-read server transport (#7770 Phase 2: #7367, #7760) ---
+#
+# The seam contract (design #7770, decision 3): EVERY OpenCode server
+# call in this module goes through _server_request - one authenticated
+# transport - and every verdict is taken from the HTTP status plus the
+# body's shape. A curl exit code is never a verdict: curl -s exits 0
+# on a 401/404, which is how an auth error body used to read as a gone
+# session and a failed DELETE as a completed one (#7367).
+
+def _server_request(method: str, path: str, body: Any = None,
+                    timeout: int = 5):
+    """One authenticated server call. Returns (status, payload):
+    status is the HTTP status int, or None when no status was
+    captured (transport failure - the reply is UNKNOWN); payload is
+    the parsed JSON body, or None when the body is empty or not
+    JSON. The auth header rides on every call; its value is never
+    logged or returned."""
+    cmd = ["curl", "-s", "-m", str(timeout), "-w", "\n%{http_code}"]
+    if method != "GET":
+        cmd += ["-X", method]
+    if body is not None:
+        cmd += ["-H", "Content-Type: application/json",
+                "-d", json.dumps(body)]
+    cmd += _auth_header_args()
+    cmd.append(f"{OPENCODE_URL}{path}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except Exception:
+        return None, None
+    raw = result.stdout or ""
+    text, sep, status_text = raw.rpartition("\n")
+    if not sep or not status_text.strip().isdigit():
+        # No status captured: without it there is no verified read,
+        # whatever curl's exit code says.
+        return None, None
+    payload = None
+    if text.strip():
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = None
+    return int(status_text.strip()), payload
+
+
+def _unwrap_envelope(payload):
+    """The writer's envelope: {"data": ...} unwraps to its data;
+    anything else passes through unchanged."""
+    if isinstance(payload, dict) and "data" in payload:
+        return payload["data"]
+    return payload
+
+
+def _is_2xx(status) -> bool:
+    return status is not None and 200 <= status < 300
+
+
+def _get_session(session_id: str):
+    """Verified per-id session read. Returns (verdict, session):
+    "ok" with the session dict on a 2xx carrying a session object
+    with an id; "gone" only on a 404 from this GET (contract
+    decision 3: gone is a 404 verdict, never a body-shape
+    accident); "unknown" with None for every other outcome - auth
+    failures, 5xx, transport failures and mis-shaped 2xx bodies
+    never authorize an action."""
+    status, payload = _server_request(
+        "GET", f"/api/session/{session_id}", timeout=5)
+    if status == 404:
+        return "gone", None
+    if _is_2xx(status):
+        session = _unwrap_envelope(payload)
+        if isinstance(session, dict) and session.get("id"):
+            return "ok", session
+    return "unknown", None
+
+
+def _delete_session(session_id: str) -> bool:
+    """DELETE through the verified transport: True only on a 2xx
+    verdict. A non-2xx delete did not happen, whatever curl said."""
+    status, _payload = _server_request(
+        "DELETE", f"/api/session/{session_id}", timeout=5)
+    return _is_2xx(status)
+
 # Concurrency cap
 CONCURRENCY_CAP = 36
 
@@ -99,8 +182,13 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: int, skips: List[Dict]) -> None:
-    """Append a fire log entry to fires.jsonl."""
+def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
+    """Append a fire log entry to fires.jsonl.
+
+    cap_room is the measured available-slot count, or None when the
+    fire exited before the cap step ran (#7732): null means unknown,
+    never a placeholder 0, which would read as a saturated fleet.
+    """
     ensure_state_dir()
     
     fire_entry = {
@@ -114,20 +202,6 @@ def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: 
     
     with FIRES_FILE.open("a") as f:
         f.write(json.dumps(fire_entry) + "\n")
-
-
-def _http_get(url: str, timeout: int = 10) -> Optional[Dict]:
-    """Helper to make HTTP GET requests using urllib."""
-    try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read())
-            if isinstance(data, dict) and "data" in data:
-                return data["data"]
-            return data
-    except (urllib.error.URLError, json.JSONDecodeError, Exception) as e:
-        print(f"Warning: HTTP GET {url} failed: {e}")
-        return None
 
 
 def run_poll() -> Dict[str, Any]:
@@ -227,64 +301,57 @@ def supervision_step(mode: str) -> List[Dict]:
                 session_id = prog.get("session_id") or task.get("session_id")
                 if lane == "opencode" and session_id:
 
-                    # Check if session exists and is progressing
-                    try:
-                        session_response = subprocess.run(
-                            ["curl", "-s", "-m", "5", *_auth_header_args(),
-                             f"{OPENCODE_URL}/api/session/{session_id}"],
-                            capture_output=True,
-                            text=True
-                        )
-
-                        if session_response.returncode == 0:
-                            session = json.loads(session_response.stdout)
-                            if isinstance(session, dict) and "data" in session:
-                                session = session["data"]
-                            if not isinstance(session, dict) or not session.get("id"):
-                                # Error body, not a session object:
-                                # the session is gone from the server.
-                                session = None
-                            else:
-                                # Check for terminal state
-                                has_terminal = any(
-                                    marker in str(session.get("outcome", "") or "") or
-                                    marker in str((session.get("time") or {}).get("idle", "") or "")
-                                    for marker in ["idle", "outcome", "completed", "failed"]
-                                )
-
-                                if not has_terminal:
-                                    # Session exists and is active - nothing to do
-                                    continue
-                        # else: Session gone from server or error
-                    except Exception:
-                        # Could not verify session - leave bound
+                    # Check if session exists and is progressing.
+                    # The verdict comes from the verified transport:
+                    # "gone" is a 404 from the per-id GET; "unknown"
+                    # (auth failure, 5xx, transport failure, mis-shaped
+                    # body) never authorizes recovery - the task stays
+                    # bound (#7367, #7770 decision 3).
+                    verdict, session = _get_session(session_id)
+                    if verdict == "unknown":
                         continue
+                    if verdict == "ok":
+                        # Check for terminal state
+                        has_terminal = any(
+                            marker in str(session.get("outcome", "") or "") or
+                            marker in str((session.get("time") or {}).get("idle", "") or "")
+                            for marker in ["idle", "outcome", "completed", "failed"]
+                        )
+                        if not has_terminal:
+                            # Session exists and is active - nothing to do
+                            continue
 
                     # Session is gone or stuck - check if recovery is possible
                     # Check task attempts and lease
                     if task.get("attempts", 0) < task.get("max_attempts", 5):
-                        # Verify zero messages first
-                        try:
-                            messages_response = subprocess.run(
-                                ["curl", "-s", "-m", "5", *_auth_header_args(),
-                                 f"{OPENCODE_URL}/api/session/{session_id}/messages"],
-                                capture_output=True,
-                                text=True
-                            )
+                        # Only an expired lease is recoverable: a live
+                        # lease is still owned by a worker that may be
+                        # executing, and recovery would double-launch
+                        # over it. An unreadable lease is not expired
+                        # (poll.py's rule: never act on a fact we lack).
+                        lease_ms = poll.parse_lease_ms(task.get("lease_until"))
+                        if lease_ms is None or lease_ms > int(time.time() * 1000):
+                            continue
 
-                            if messages_response.returncode == 0:
-                                messages = json.loads(messages_response.stdout or "[]")
-                                if isinstance(messages, dict) and "data" in messages:
-                                    messages = messages["data"]
-                                if isinstance(messages, list) and len(messages) == 0:
-                                    recovery_candidates.append({
-                                        "task_id": task["id"],
-                                        "session_id": session_id,
-                                        "reason": "zero_message"
-                                    })
-                        except Exception:
-                            # Could not read messages - treat as unknown state
-                            pass
+                        # Verify zero messages first. An unreadable
+                        # session is UNKNOWN, never empty: only a
+                        # confirmed [] may be deleted and rebound, or a
+                        # session that actually had messages gets
+                        # deleted and its task relaunched (#3026).
+                        messages = _get_messages(session_id)
+                        if messages is None:
+                            print(
+                                f"Supervision: message read for session "
+                                f"{session_id} was unknown; leaving task "
+                                f"{task['id']} bound"
+                            )
+                            continue
+                        if len(messages) == 0:
+                            recovery_candidates.append({
+                                "task_id": task["id"],
+                                "session_id": session_id,
+                                "reason": "zero_message"
+                            })
         except Exception as e:
             print(f"Warning: Supervision check failed for queue {queue}: {e}")
     
@@ -294,15 +361,10 @@ def supervision_step(mode: str) -> List[Dict]:
         session_id = candidate["session_id"]
         
         try:
-            # Delete the zero-message session
-            delete_result = subprocess.run(
-                ["curl", "-s", "-m", "5", "-X", "DELETE", *_auth_header_args(),
-                 f"{OPENCODE_URL}/api/session/{session_id}"],
-                capture_output=True,
-                text=True
-            )
-            
-            if delete_result.returncode == 0:
+            # Delete the zero-message session. Only a verified 2xx
+            # DELETE counts: a non-2xx delete did not happen, and the
+            # binding must not be cleared over a live session (#7367).
+            if _delete_session(session_id):
                 # Attempt recovery via atomic bind operation
                 bind_result = subprocess.run(
                     [
@@ -368,41 +430,33 @@ def cap_step() -> int:
 
 
 def _post_prompt(session_id: str, prompt: str) -> bool:
-    """One prompt POST; True iff the server accepted it."""
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-f", "-m", "15", "-X", "POST",
-             "-H", "Content-Type: application/json",
-             *_auth_header_args(),
-             "-d", json.dumps({"text": prompt}),
-             f"{OPENCODE_URL}/api/session/{session_id}/prompt"],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    """One prompt POST through the verified transport; True iff the
+    server answered 2xx. A non-2xx POST did not land, whatever
+    curl's exit code says."""
+    status, _payload = _server_request(
+        "POST", f"/api/session/{session_id}/prompt",
+        body={"text": prompt}, timeout=15)
+    return _is_2xx(status)
 
 
 def _get_messages(session_id: str) -> Optional[List]:
     """The session's message list, or None when it cannot be read
-    (transport failure, non-JSON body, error object): an unreadable
-    session is an UNKNOWN delivery state, never an empty one."""
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-m", "5", *_auth_header_args(),
-             f"{OPENCODE_URL}/api/session/{session_id}/messages"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout or "[]")
-        if isinstance(data, dict) and "data" in data:
-            data = data["data"]
-        return data if isinstance(data, list) else None
-    except Exception:
+    (transport failure, non-2xx status, non-JSON body, error object,
+    or any body without a list of messages): an unreadable session
+    is an UNKNOWN delivery state, never an empty one.
+
+    The v2 endpoint is /message, not /messages: on the standing
+    server the latter 404s with an empty body, which without -f used
+    to parse as [] and turn every unknown read into "zero messages"
+    (#3026). The verified transport makes that non-2xx a non-read
+    and strict parsing keeps an empty or error body from
+    masquerading as a confirmed list."""
+    status, payload = _server_request(
+        "GET", f"/api/session/{session_id}/message", timeout=5)
+    if not _is_2xx(status):
         return None
+    data = _unwrap_envelope(payload)
+    return data if isinstance(data, list) else None
 
 
 def _send_prompt(session_id: str, prompt: str) -> bool:
@@ -422,6 +476,104 @@ def _send_prompt(session_id: str, prompt: str) -> bool:
     if len(messages) > 0:
         return True
     return _post_prompt(session_id, prompt)
+
+
+CLAIMANT_WORKER = "opencode-claimant"
+
+
+def _collect_parked_handoffs(queue: str, want: int) -> Dict[int, Dict]:
+    """Collect up to `want` parked recorded handoffs from `queue`
+    WITHOUT naming a task id (#8097 Rule 1): each
+    `repo-queue claim --handoff` lets the BROKER pick the next
+    parked handoff (its ordinary pick order), claimed as the
+    claimant, so the launch flow below has a live claim to bind
+    against. Returns {task_id: claimed row}.
+
+    The handing-off lane parks the task as its handoff sink, so
+    without collection the task is never in the claimed state the
+    launch flow binds against — it waited out the park timer, was
+    re-claimed by the next shift wave, handed off, and parked again
+    (#7907/#6533). Collection used to name the task
+    (`claim --task <id>`); that by-id claim is now the special-case
+    verb (one-off revivals), and this default path does not depend
+    on it — the broker's handoff pick only ever returns a parked
+    recorded opencode handoff (unbound yield progress), never a
+    live claim or a genuine wait park.
+
+    The claim declares the claimant's family, --platform
+    openchamber (#8097 Rule 2): a parked handoff whose item
+    carries the `muse` selector is not the opencode claimant's
+    to collect.
+    """
+    collected: Dict[int, Dict] = {}
+    for _ in range(max(want, 0)):
+        try:
+            result = subprocess.run(
+                [
+                    str(REPO_QUEUE_CMD),
+                    "claim",
+                    "--queue", queue,
+                    "--worker", CLAIMANT_WORKER,
+                    "--platform", "openchamber",
+                    "--handoff",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except Exception:
+            break
+        # cmd_claim prints the claimed row itself ({"task": null}
+        # when nothing was claimed).
+        row = data if isinstance(data, dict) else None
+        claimed_id = row.get("id") if isinstance(row, dict) else None
+        if claimed_id is None:
+            break
+        collected[claimed_id] = row
+    return collected
+
+
+HELD_ISSUE_LABELS = {"held", "user/owned", "do-not-merge", "do-not-auto-edit"}
+
+_CREDENTIAL_KEY_PARTS = ("password", "secret", "token", "credential",
+                         "api_key", "apikey", "private_key")
+
+
+def _github_issue_labels(repo: str, issue_number: int) -> set:
+    """Live label names on an issue, read through the gh CLI.
+    Raises on any failure so the caller can fail closed (#7670)."""
+    result = subprocess.run(
+        ["gh", "issue", "view", str(issue_number), "--repo", repo,
+         "--json", "labels", "--jq", "[.labels[].name]"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh issue view failed: {result.stderr.strip()[:200]}")
+    names = json.loads(result.stdout)
+    if not isinstance(names, list):
+        raise RuntimeError("gh issue view returned a non-list label set")
+    return {str(n) for n in names}
+
+
+def _prompt_safe_packet(packet):
+    """Deep-copy a packet for the execution prompt with any
+    credential-shaped values redacted (#7670): a credential must
+    never enter a prompt, log, or payload surface, and packets are
+    assembled by many hands - strip by key name, recursively."""
+    if isinstance(packet, dict):
+        safe = {}
+        for key, value in packet.items():
+            lowered = str(key).lower()
+            if any(part in lowered for part in _CREDENTIAL_KEY_PARTS):
+                safe[key] = "[redacted]"
+                continue
+            safe[key] = _prompt_safe_packet(value)
+        return safe
+    if isinstance(packet, list):
+        return [_prompt_safe_packet(v) for v in packet]
+    return packet
 
 
 def launch_step(mode: str, cap_room: int) -> List[Dict]:
@@ -479,6 +631,22 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             and c.get("stage") in ("handed_off", "launch_failed")
         ]
         
+        # Parked handoff sink (#8097 Rule 1): collect this fire's
+        # parked candidates' claims up front, grouped by queue,
+        # without naming any task id — one broker-picked handoff
+        # claim per discovered parked candidate. A parked
+        # candidate whose id is not in `collected` when its turn
+        # comes was not collected (its pick lost a race or the
+        # broker had nothing claimable) and is skipped below —
+        # the binding is never improvised.
+        parked_by_queue: Dict[str, int] = {}
+        for c in unbound_opencode:
+            if c.get("status") == "parked":
+                parked_by_queue[c["queue"]] = parked_by_queue.get(c["queue"], 0) + 1
+        collected: Dict[int, Dict] = {}
+        for queue_name, want in parked_by_queue.items():
+            collected.update(_collect_parked_handoffs(queue_name, want))
+
         for candidate in unbound_opencode:
             if cap_room <= 0:
                 skips.append({
@@ -491,7 +659,25 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             worker_id = candidate.get("worker_id", "unknown")
             issue = candidate.get("issue", "")
             packet = candidate.get("packet", {})
-            
+
+            # Parked handoff sink: the candidate was handed off and
+            # then parked by its claiming lane, so no live claim
+            # existed to bind against until the collection above
+            # claimed it (as the claimant; the launched session
+            # then works under the claimant's worker identity). A
+            # candidate the collection did not claim is skipped —
+            # the binding is never improvised.
+            if candidate.get("status") == "parked":
+                if task_id not in collected:
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": "parked_claim_failed"
+                    })
+                    continue
+                candidate["status"] = "claimed"
+                candidate["worker_id"] = CLAIMANT_WORKER
+                worker_id = CLAIMANT_WORKER
+
             # Step 4a: Re-verify task state
             try:
                 poll_data = run_poll()
@@ -510,6 +696,37 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 })
                 continue
             
+            # Step 4a2: Held-label gate (#7670). A candidate whose
+            # issue carries a held label (held, user/owned,
+            # do-not-merge, do-not-auto-edit) must never be launched:
+            # the queue-side hard stop is label-based, and the
+            # claimant is the last line of defense before a session
+            # exists. The check fails closed: an unreadable label set
+            # is a skip, never a launch. Candidates without a
+            # repo/issue reference have nothing to check.
+            _packet = packet if isinstance(packet, dict) else {}
+            _repo = _packet.get("repo") or ""
+            _issue_no = candidate.get("issue_number")
+            if _issue_no is None and isinstance(_packet.get("issue"), dict):
+                _issue_no = _packet["issue"].get("number")
+            if _repo and _issue_no:
+                try:
+                    _labels = _github_issue_labels(
+                        str(_repo), int(str(_issue_no).lstrip("#")))
+                except Exception as e:
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": f"held_label_check_failed: {str(e)}"
+                    })
+                    continue
+                _held = sorted(_labels & HELD_ISSUE_LABELS)
+                if _held:
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": f"held_issue_labels: {','.join(_held)}"
+                    })
+                    continue
+
             # Step 4b: Create worker session
             session_create_body = {
                 "location": {
@@ -524,38 +741,29 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             }
             
             try:
-                # Create session using curl (POST), with the server's
-                # Basic auth — unauthenticated calls are rejected.
-                create_cmd = ["curl", "-s", "-m", "10", "-X", "POST",
-                             "-H", "Content-Type: application/json",
-                             *_auth_header_args(),
-                             "-d", json.dumps(session_create_body),
-                             f"{OPENCODE_URL}/api/session"]
+                # Create session through the verified transport,
+                # with the server's Basic auth - unauthenticated
+                # calls are rejected (#7367).
+                status, create_payload = _server_request(
+                    "POST", "/api/session", body=session_create_body,
+                    timeout=10)
+                if not _is_2xx(status):
+                    raise RuntimeError(
+                        f"Session creation failed: http status "
+                        f"{status if status is not None else 'unknown'}"
+                        + (" (unauthorized)" if status == 401 else ""))
 
-                create_result = subprocess.run(
-                    create_cmd,
-                    capture_output=True,
-                    text=True
-                )
-
-                if create_result.returncode != 0:
-                    raise RuntimeError(f"Session creation failed: {create_result.stderr}")
-
-                session = json.loads(create_result.stdout)
-                if isinstance(session, dict) and "data" in session:
-                    session = session["data"]
+                session = _unwrap_envelope(create_payload)
                 session_id = session.get("id") if isinstance(session, dict) else None
                 if not session_id:
                     raise RuntimeError(
-                        f"Session creation returned no id: {create_result.stdout[:200]}")
+                        f"Session creation returned no id: "
+                        f"{str(create_payload)[:200]}")
 
                 # Verify location before proceeding
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
-                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
-                                 *_auth_header_args(),
-                                 f"{OPENCODE_URL}/api/session/{session_id}"]
-                    subprocess.run(delete_cmd, capture_output=True)
+                    _delete_session(session_id)
                     skips.append({
                         "task_id": task_id,
                         "reason": "session_wrong_location"
@@ -578,10 +786,7 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 
                 if bind_result.returncode != 0:
                     # Bind failed - delete session and skip
-                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
-                                 *_auth_header_args(),
-                                 f"{OPENCODE_URL}/api/session/{session_id}"]
-                    subprocess.run(delete_cmd, capture_output=True)
+                    _delete_session(session_id)
                     skips.append({
                         "task_id": task_id,
                         "reason": "bind_failed"
@@ -602,7 +807,7 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 prompt = f"""
 Execute queue task {task_id}
 Issue: {issue}
-Packet: {json.dumps(packet, indent=2)}
+Packet: {json.dumps(_prompt_safe_packet(packet), indent=2)}
 
 You are a build agent working on this opencode-lane task.
 Use --worker {worker_id} for all queue CLI operations.
@@ -651,7 +856,7 @@ def main():
     
     if not has_candidates:
         print("No unbound opencode-lane candidates found. Exiting.")
-        log_fire(mode, [], [], 0, [{"reason": "no_candidates"}])
+        log_fire(mode, [], [], None, [{"reason": "no_candidates"}])
         return 0
     
     # Step 3: Cap
