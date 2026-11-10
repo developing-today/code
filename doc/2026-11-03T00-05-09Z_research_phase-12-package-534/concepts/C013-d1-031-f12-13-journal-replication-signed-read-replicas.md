@@ -75,6 +75,7 @@ current `Records` projection.
   #4708 (read-only replica world service and spectators) — all
   four verified MERGED. Issue #806 remains open for its remaining
   scope.
+- Companion research package: doc/2026-11-10T21-50-00Z_research_id806_d1-031-journal-replication/ (full D1-031 research package, committed on this same branch by lane code-k, 2026-11-10).
 - Research package: this concept is the committed D1-031
   research-package artifact for tracker #536 (2026-11-10, task
   14072); with it, #536's D1-031 criterion (research package
