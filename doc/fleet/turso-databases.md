@@ -71,7 +71,15 @@ conversion. Until then, this debt is tracked, not worked.
 This is the only working conversion in CLI v1.0.33. It is a full data move; plan
 for downtime on the producer side.
 
-1. **Export the source database.**
+1. **Freeze the source writers.** Stop and drain every producer that
+   writes to the source database, and verify no writes are in flight.
+   Keep the writers stopped until step 6 passes: a write accepted
+   between export and repointing is lost at cutover, and the step 6
+   row-count checks need not detect it (in-place updates, e.g. queue
+   heartbeat progress writes, change no row counts). Resume writers
+   only against the imported destination, never the source.
+
+2. **Export the source database.**
 
    ```bash
    turso db export <source-db>
@@ -79,11 +87,20 @@ for downtime on the producer side.
 
    This produces dump files in the current directory.
 
-2. **Copy the export files to the target basename.** The new database is named
+3. **Copy the export files to the target basename.** The new database is named
    after the *file* basename, so rename the exported `.db` file to the name you
    want the new database to have (`<target>.db`).
 
-3. **Import with `--tursodb`.**
+   The export is a pair, not a single file: CLI v1.0.33 also writes the
+   WAL sidecar `<source>.db-wal`, which can hold committed transactions
+   the `.db` file alone does not. Never rename the `.db` away from its
+   `-wal` sidecar. Before renaming, checkpoint the exported pair into a
+   standalone database (open the exported `.db` with its `-wal` in
+   place and run `PRAGMA wal_checkpoint(TRUNCATE);`), verify the `-wal`
+   is folded in (empty or gone), and only then rename the single
+   standalone `.db` file.
+
+4. **Import with `--tursodb`.**
 
    ```bash
    turso db import <target>.db --tursodb
@@ -92,17 +109,17 @@ for downtime on the producer side.
    The resulting database is named `<target>` and is in TursoDB mode. Confirm
    with `turso db list` — `TYPE` must read `Turso`.
 
-4. **Repoint every producer.** Update each consumer's connection URL and token
+5. **Repoint every producer.** Update each consumer's connection URL and token
    (the new database has its own token; mint it and vault it in BWS). Producers
    for the queue are listed in
    [queue-turso-cutover.md](queue-turso-cutover.md); for `agent.events`, in
    [agent-events-turso.md](agent-events-turso.md).
 
-5. **Confirm.** Run a live read against the new database from each producer
+6. **Confirm.** Run a live read against the new database from each producer
    (`SELECT 1` through the real client path, not just the CLI) and check the row
    counts against the source.
 
-6. **Delete the old database.**
+7. **Delete the old database.**
 
    ```bash
    turso db destroy <source-db>
