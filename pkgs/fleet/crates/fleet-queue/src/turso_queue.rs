@@ -1858,6 +1858,24 @@ fn claim_by_id(
     Ok(Some(row))
 }
 
+/// The pick path's claim UPDATE (#7068, #7617): keyed to the
+/// picked row's id and re-checking the full pick predicate at claim
+/// instant, so a claim that loses the race for a row affects 0 rows
+/// and the caller re-picks — it can never be handed the winner's
+/// row. Extracted as a builder so the regression tests below pin
+/// the statement's shape without a live store.
+fn claim_update_sql(pick_predicate: &str) -> String {
+    format!(
+        "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
+           lease_until = ?, \
+           attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
+           lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
+           updated_at = ? \
+         WHERE id = ? AND (platform IS NULL OR platform = ?) \
+           AND ( {pick_predicate} )"
+    )
+}
+
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let queue = req_str(req, "queue").unwrap_or("").to_string();
@@ -1995,15 +2013,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             return Ok(None);
         };
         let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let upd_sql = format!(
-            "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
-               lease_until = ?, \
-               attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
-               lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
-               updated_at = ? \
-             WHERE id = ? AND (platform IS NULL OR platform = ?) \
-               AND ( {pick_predicate} )"
-        );
+        let upd_sql = claim_update_sql(&pick_predicate);
         let mut upd_args: Vec<Arg> = vec![
             Arg::Text(worker.clone()),
             Arg::Text(now.clone()),
@@ -3276,6 +3286,96 @@ mod tests {
     }
 
     #[test]
+    fn claim_update_sql_rechecks_pick_eligibility_for_the_picked_id() {
+        // #7068 oracle, statement shape: the claim UPDATE is keyed
+        // to the picked row's id and re-checks the full pick
+        // predicate, so when two lanes pick the same row in the
+        // same instant the loser's UPDATE matches 0 rows (the
+        // winner already flipped the row to 'claimed', which the
+        // predicate excludes) and the claim loop re-picks instead
+        // of handing the loser the winner's row.
+        let predicate = "(status = 'queued' AND attempts < max_attempts \
+             AND (not_before IS NULL OR not_before <= ?)) \
+           OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)";
+        let sql = claim_update_sql(predicate);
+        assert!(sql.starts_with("UPDATE tasks SET status = 'claimed'"));
+        assert!(sql.contains("WHERE id = ?"), "claim is keyed by id: {sql}");
+        assert!(sql.contains("status = 'queued'"), "predicate re-checked: {sql}");
+        assert!(sql.contains("status = 'parked'"), "predicate re-checked: {sql}");
+        assert!(sql.contains("attempts < max_attempts"), "cap re-checked: {sql}");
+        assert!(sql.contains("lane_id = ?"), "winner's lane stamp is the claim's own: {sql}");
+    }
+
+    #[test]
+    fn claim_race_two_lanes_exactly_one_winner_per_task() {
+        // #7068 fixture (task 11895, lanes code-m/code-f,
+        // 2026-11-08): two lanes with distinct lane ids race one
+        // queued task in the same queue. Exactly one claim wins;
+        // the loser's eligibility view of that row closes the
+        // instant the winner's claim lands, and the next queued
+        // row stays claimable so the loser moves on to it (or to
+        // a no-task answer) instead of receiving the winner's row.
+        let now = "2026-11-08T02:32:59Z";
+        let mut task = json!({
+            "status": "queued", "attempts": 0, "max_attempts": 6,
+            "not_before": null, "platform": null, "lane_id": null,
+        });
+        // Both lanes see the row as claimable before the race.
+        assert!(by_id_claimable(&task, now, None));
+        // Lane code-f wins: its claim flips the row and stamps
+        // code-f's lane id (the state lane code-m's losing claim
+        // call observed on task 11895).
+        task["status"] = json!("claimed");
+        task["lane_id"] = json!("code-f");
+        task["worker_id"] = json!("repo-worker-code");
+        // The loser (code-m, same shared worker id) can no longer
+        // claim this row by id, and the pick predicate's status
+        // terms ('queued'/'parked') no longer match it either.
+        assert!(!by_id_claimable(&task, now, None));
+        // The next eligible task remains claimable for the loser.
+        let next = json!({
+            "status": "queued", "attempts": 0, "max_attempts": 6,
+            "not_before": null, "platform": null, "lane_id": null,
+        });
+        assert!(by_id_claimable(&next, now, None));
+    }
+
+    #[test]
+    fn claim_paths_never_reread_a_workers_newest_claimed_row() {
+        // #7068 source oracle: the pre-#7617 claim shape claimed
+        // via a subquery and re-read the result as the newest
+        // claimed row for (queue, worker_id) — with every lane
+        // sharing worker_id repo-worker-code, a losing claim was
+        // handed another lane's just-claimed task, lane stamp and
+        // all. That re-read must never come back: both claim paths
+        // (pick and by-id) read the claimed row back by its own id.
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        let code: String = impl_src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in [
+            "ORDER BY claimed_at",
+            "WHERE queue = ? AND worker_id",
+            "worker_id = ? ORDER BY",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "claim path must not re-read by worker: found {forbidden}"
+            );
+        }
+        assert!(
+            code.contains("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
+            "claim read-back is by the claimed row's own id"
+        );
+        assert!(
+            code.contains("claim_update_sql(&pick_predicate)"),
+            "pick path claims through the id-keyed conditional UPDATE"
+        );
+    }
+
     fn iso_epoch_and_known_instants() {
         assert_eq!(iso(0), "1970-01-01T00:00:00Z");
         // 2026-11-07T03:00:00Z == 1794020400 (the night this landed).
