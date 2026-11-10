@@ -404,7 +404,7 @@ export function entryFromFileExport(
  */
 export function isGoLapseResult(result: QuotaProviderResult): boolean {
   return (
-    result.providerId === "opencode-go" &&
+    canonicalProviderId(result.providerId) === "opencode-go" &&
     !result.ok &&
     result.configured &&
     typeof result.error === "string" &&
