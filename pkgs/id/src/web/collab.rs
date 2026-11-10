@@ -1760,6 +1760,101 @@ mod tests {
         }
     }
 
+    // Property coverage for the #6349 framing invariant (Codex P1 on PR
+    // #6553): for every generated valid message and every nonempty suffix,
+    // the message round-trips and the suffixed frame is rejected.
+    use proptest::prelude::*;
+
+    fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
+        let leaf = prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::Bool),
+            any::<i64>().prop_map(|n| serde_json::json!(n)),
+            any::<String>().prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(3, 16, 4, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(serde_json::Value::Array),
+                proptest::collection::vec((any::<String>(), inner), 0..4)
+                    .prop_map(|pairs| { serde_json::Value::Object(pairs.into_iter().collect()) }),
+            ]
+        })
+    }
+
+    fn arb_collab_message() -> impl Strategy<Value = CollabMessage> {
+        prop_oneof![
+            (any::<u64>(), arb_json_value(), any::<String>())
+                .prop_map(|(version, doc, mode)| CollabMessage::Init { version, doc, mode },),
+            (
+                any::<u64>(),
+                proptest::collection::vec(arb_json_value(), 0..4),
+                any::<u64>(),
+            )
+                .prop_map(|(version, steps, client_id)| CollabMessage::Steps {
+                    version,
+                    steps,
+                    client_id,
+                }),
+            (
+                proptest::collection::vec(arb_json_value(), 0..4),
+                proptest::collection::vec(any::<u64>(), 0..4),
+            )
+                .prop_map(|(steps, client_ids)| CollabMessage::Update { steps, client_ids }),
+            any::<u64>().prop_map(|version| CollabMessage::Ack { version }),
+            (
+                any::<u64>(),
+                any::<u32>(),
+                any::<u32>(),
+                proptest::option::of(any::<String>()),
+                proptest::option::of(any::<u64>()),
+            )
+                .prop_map(|(client_id, head, anchor, name, idle_secs)| {
+                    CollabMessage::Cursor {
+                        client_id,
+                        head,
+                        anchor,
+                        name,
+                        idle_secs,
+                    }
+                }),
+            any::<String>().prop_map(|error| CollabMessage::Error { error }),
+            any::<u64>().prop_map(|client_id| CollabMessage::CursorRemove { client_id }),
+            (any::<String>(), any::<String>())
+                .prop_map(|(hash, name)| CollabMessage::NewVersion { hash, name }),
+            any::<String>().prop_map(|token| CollabMessage::Auth { token }),
+            (
+                any::<String>(),
+                proptest::option::of(any::<String>()),
+                proptest::option::of(any::<String>()),
+            )
+                .prop_map(|(client_id, name, token)| CollabMessage::AuthOk {
+                    client_id,
+                    name,
+                    token,
+                }),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn test_collab_message_decode_refuses_arbitrary_suffixes(
+            msg in arb_collab_message(),
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            let bytes = msg.encode();
+            // The valid message round-trips byte-for-byte.
+            prop_assert_eq!(
+                CollabMessage::decode(&bytes).map(|d| d.encode()),
+                Some(bytes.clone())
+            );
+            // Any nonempty suffix makes the frame undecodable: the frame is
+            // exactly one MessagePack value (#6349).
+            let mut suffixed = bytes;
+            suffixed.extend_from_slice(&suffix);
+            prop_assert!(CollabMessage::decode(&suffixed).is_none());
+        }
+    }
+
     #[test]
     fn test_collab_message_type_tags() {
         // Verify the first byte is the correct type tag
