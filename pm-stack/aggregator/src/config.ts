@@ -61,6 +61,10 @@ export interface Config {
   digestsDir: string;
   /** Append-only notification state/send/suppression log (#3317). */
   notificationsFile: string;
+  /** Versioned item-history JSONL (#3981) the forecast contract
+   * (#3984) derives from: one cutoff per line, read via
+   * ItemHistoryStore. */
+  itemHistoryFile: string;
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
@@ -79,6 +83,13 @@ export interface Config {
   coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
+  /** The standing OpenCode server's own state file (service-prod.json):
+   * url + password for the server the fleet actually runs on. The
+   * aggregator reads it as the second laptop attention leg (#1116) —
+   * the OpenChamber-managed server it used to read has been gone since
+   * 2026-10-29, which left attention single-legged on the collector
+   * feed until the 2026-11-10 fixture incident. */
+  opencodeServerStateFile: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -185,10 +196,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    itemHistoryFile: s(
+      env.PM_AGG_ITEM_HISTORY_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "item-history.jsonl"),
+    ),
     coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
+    ),
+    opencodeServerStateFile: s(
+      env.PM_AGG_OPENCODE_SERVER_STATE,
+      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),

@@ -1,5 +1,6 @@
-# The deploy registry + CLI — issue #5766, slices 1-2 (registry + list;
-# unit/plist rendering, --dry-run plans, generation log, status/rollback logic).
+# The deploy registry + CLI — issue #5766, slices 1-3 (registry + list;
+# unit/plist rendering, --dry-run plans, generation log, status/rollback logic;
+# real systemd activation with health-check flip-back).
 #
 # deployTargets: this repo's service definitions (services.nix) in the
 # design §3 shape, with each definition's `package` still a derivation —
@@ -44,7 +45,7 @@ in
       {
         nativeBuildInputs = [ makeWrapper ];
         meta = {
-          description = "Deploy CLI (slices 1-2: registry list + validation, unit rendering, dry-run plans, generation log, status/rollback logic) for the services deployment layer";
+          description = "Deploy CLI (slices 1-3: registry list + validation, unit rendering, dry-run plans, generation log, status/rollback logic, real systemd activation) for the services deployment layer";
           mainProgram = "deploy";
         };
       }

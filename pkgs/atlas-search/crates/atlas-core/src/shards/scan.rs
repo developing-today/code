@@ -30,7 +30,8 @@ pub struct ShardHit {
 
 pub struct FanoutQuery<'a> {
     pub qvec: &'a [f32],
-    pub k: usize,
+    pub shard_top_k: usize,
+    pub global_top_k: usize,
     pub filters: &'a Filters,
     /// Manifest topics to scope to (`None` = every topic).
     pub topics: Option<&'a [String]>,
@@ -119,7 +120,12 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
         ));
     }
     let shards = set.select(q.ceiling, q.topics)?;
-    let stmt = turso_vector_scan_stmt(set.vec_table(), q.filters, &qvec_json(q.qvec), q.k);
+    let stmt = turso_vector_scan_stmt(
+        set.vec_table(),
+        q.filters,
+        &qvec_json(q.qvec),
+        q.shard_top_k,
+    );
     let per_shard: Vec<Result<Vec<ShardHit>>> = std::thread::scope(|scope| {
         let handles: Vec<_> = shards
             .iter()
@@ -138,7 +144,7 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
         all.extend(r?);
     }
     Ok(FanoutResult {
-        hits: merge_top_k(all, q.k),
+        hits: merge_top_k(all, q.global_top_k),
         scanned: shards.iter().map(|s| s.name.clone()).collect(),
     })
 }
@@ -201,7 +207,8 @@ fn vector_pool(
         set,
         &FanoutQuery {
             qvec,
-            k: q.pool,
+            shard_top_k: q.shard_top_k,
+            global_top_k: q.global_top_k,
             filters,
             topics,
             ceiling: TierCeiling::from_sensitivity(filters.max_sensitivity),
@@ -247,6 +254,8 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
             match_expr: q.match_expr.clone(),
             query_vector: None,
             pool: q.pool,
+            shard_top_k: q.shard_top_k,
+            global_top_k: q.global_top_k,
             vector_backend: q.vector_backend,
         };
         let (set, topics) = (&*self.set, self.topics.as_deref());
