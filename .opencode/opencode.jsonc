@@ -2141,7 +2141,12 @@
           "opendesign/deepseek-v4.1-flash": 1,
           "_commandcode/deepseek/deepseek-v4.1-flash": 1,
           "mistral-plan/deepseek-v4-1-flash-1017": 1
-        }
+        },
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "deepseek-flash": {
         "name": "DeepSeek Flash - plan providers only",
@@ -2159,7 +2164,12 @@
         // second target (one block).
         "targets": ["opencode-route/deepseek-flash-plan"],
         "selection": "ordered",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "deepseek-pro-plan": {
         "name": "DeepSeek V4 Pro - plan providers",
@@ -2691,7 +2701,12 @@
         // an addition, not a move.
         "targets": ["opencode-route/deepseek-flash-plan#high"],
         "selection": "ordered",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-primary": {
         "name": "Workhorse primary - EMPTIED 2026-11-07 (Drew): no legs; chain stage kept, contributes nothing",
@@ -2832,7 +2847,12 @@
         // is in the comment block above and in git history.
         "targets": [],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse": {
         "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
@@ -2870,7 +2890,12 @@
           "opencode-route/workhorse-weighted"
         ],
         "selection": "ordered",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-weighted": {
         "name": "Workhorse weighted - Luna #xhigh, Spark contributor #high, Gemini 3.8 Flash #high, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
@@ -2991,7 +3016,12 @@
           "_antigravity/gemini-3.8-flash": 10,
           "_antigravity/claude-sonnet-5-5": 10
         },
-        "autonomy": "rules"
+        "autonomy": "rules",
+        // #7927 (task 14574): the 10s default first-output deadline mass-killed
+        // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
+        // 60000 sizes the deadline above the observed leg maxima (~15.7s)
+        // while still bounding a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
       },
       "specialist": {
         "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
