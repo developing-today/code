@@ -139,11 +139,34 @@ import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
+import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
+import { ItemHistoryStore } from "./item-history.ts";
+import {
+  FORECAST_CONTRACT_VERSION,
+  quotaForecastContract,
+  subjectForecastContracts,
+  type ForecastContract,
+} from "./forecast-contract.ts";
+
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
 
 async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
   const targets = [...items.values()].filter((item) =>
@@ -447,6 +470,16 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** Same response shape as {@link json} without the 2-space pretty-print:
+ *  the board JSON legitimately carries seconds of data and the pretty
+ *  form adds ~10% bytes for nothing a machine consumer reads (#5082). */
+function jsonCompact(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
@@ -514,6 +547,72 @@ async function boardContext() {
   const refs = allRefs(board);
   const items = await source.items(refs).catch(() => new Map());
   return { board, items };
+}
+
+/** All shared forecast contracts (#3984): epic-completion + stall-risk
+ * per epic subject from the stored item history (#3981), and one
+ * quota-exhaustion contract per quota pool. The rate for a pool is
+ * only usable when the gatherer measured a token burn for a token
+ * window with ok freshness — anything else stays the contract's
+ * first-class quota_rate_unavailable state, never an invented date. */
+async function allForecastContracts(
+  pool: ProjectPoolItem[],
+): Promise<{ byRef: Map<RefKey, ForecastContract[]>; contracts: ForecastContract[] }> {
+  const byRef = new Map<RefKey, ForecastContract[]>();
+  const contracts: ForecastContract[] = [];
+  const add = (c: ForecastContract) => {
+    contracts.push(c);
+    byRef.set(c.subjectRef, [...(byRef.get(c.subjectRef) ?? []), c]);
+  };
+  const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+  if (cutoffs.length) {
+    const poolByRef = new Map(pool.map((it) => [it.ref, it]));
+    const subjects = new Set<RefKey>();
+    for (const cutoff of cutoffs) {
+      for (const item of cutoff.items) {
+        if (item.parentRef) subjects.add(item.parentRef);
+      }
+    }
+    for (const subjectRef of subjects) {
+      const poolItem = poolByRef.get(subjectRef);
+      const statusDisagreement =
+        poolItem && poolItem.status && ((poolItem.state === "closed" && poolItem.status !== "Done") || (poolItem.state === "open" && poolItem.status === "Done"))
+          ? `GitHub state ${poolItem.state} disagrees with Project Status ${poolItem.status}; both are shown, neither is preferred`
+          : null;
+      for (const c of subjectForecastContracts(cutoffs, subjectRef, {
+        updatedAt: poolItem?.updatedAt ?? null,
+        statusDisagreement,
+        scope: `direct native children of ${subjectRef} in the Project #4 pool item history (curated pool scope, not a repo-wide backlog)`,
+      })) {
+        add(c);
+      }
+    }
+  }
+  const quota = await source.quota().catch(() => emptyQuotaView());
+  const asOf = new Date().toISOString();
+  for (const qpool of quota.pools) {
+    const window = qpool.windows
+      .filter((w) => w.limit !== null && w.limit > 0)
+      .sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))[0];
+    const rate =
+      window && window.unit === "tokens" && qpool.burnTokensPerMin != null && qpool.freshness?.state === "ok"
+        ? { amountPerHour: qpool.burnTokensPerMin * 60, observedAt: qpool.freshness.measuredAt }
+        : null;
+    add(
+      quotaForecastContract({
+        poolId: qpool.id,
+        provider: qpool.provider,
+        asOf,
+        unit: window?.unit ?? "tokens",
+        remainingAmount: window ? window.limit! - window.used : null,
+        limitAmount: window?.limit ?? null,
+        nextReset: window?.resetsAt ?? null,
+        rate,
+        scope: `quota pool ${qpool.id} (${qpool.provider}/${qpool.plan})`,
+      }),
+    );
+  }
+  return { byRef, contracts };
 }
 
 async function roadmapContext() {
@@ -1245,13 +1344,14 @@ async function handler(req: Request): Promise<Response> {
         // Fire-and-forget: the response never waits on, and is never
         // failed by, the event append.
         recordStreamEvent({
-          actor: updated.appliedByRun ?? body.byRun.slice(0, 200),
+          actor: updated.appliedByRun ?? capUnits(body.byRun, 200),
           kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
           ref: updated.objectRef,
-          summary: (
+          summary: capUnits(
             `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
-            (typeof body.note === "string" && body.note ? ` — ${body.note}` : "")
-          ).slice(0, 500),
+              (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+            500,
+          ),
         });
       }
       const updated = result?.action;
@@ -1502,6 +1602,7 @@ async function handler(req: Request): Promise<Response> {
       orchestration,
       orchestrationStatus,
     });
+    const forecasts = (await allForecastContracts(pool)).byRef;
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1532,6 +1633,7 @@ async function handler(req: Request): Promise<Response> {
           await annotationsFor(rows),
           viewQuery,
           briefs,
+          forecasts,
         ),
       );
     }
@@ -1568,8 +1670,22 @@ async function handler(req: Request): Promise<Response> {
         await annotationsFor(keptRows),
         viewQuery,
         briefs,
+        forecasts,
       ),
     );
+  }
+
+  if (path === "/api/forecasts.json") {
+    // #3984: the shared forecast contract — the identical objects the
+    // Roadmap and Projects pages render as one-line summaries.
+    const pool = await source.projects().catch(() => []);
+    const { contracts } = await allForecastContracts(pool);
+    const subject = url.searchParams.get("subject");
+    return json({
+      contractVersion: FORECAST_CONTRACT_VERSION,
+      generatedAt: new Date().toISOString(),
+      contracts: subject ? contracts.filter((c) => c.subjectRef === subject) : contracts,
+    });
   }
 
   if (path === "/quota") {
@@ -1816,6 +1932,7 @@ async function handler(req: Request): Promise<Response> {
         actionsByObject,
         identities: formOpts.identities,
         briefs,
+        forecasts: (await allForecastContracts(viewPool)).byRef,
       }),
     );
   }
@@ -1884,17 +2001,25 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
+    const showAllDone = url.searchParams.get("done") === "all";
     const resolved = await resolveView(url);
-    if (!resolved) return json({ board, items: [...items.values()] });
+    if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    // Filter the policy-eligible board against the full item lookup
+    // BEFORE the done-strip limit (#8058): limiting first dropped a
+    // view's matching done cards outside the global newest 100.
+    // boardJsonViewBody then applies the limit and restricts the
+    // shipped items to the selected cards, so the response stays
+    // bounded as #5082 requires — the full closure is only a lookup.
+    const bounded = boardJsonViewBody(
+      board,
+      items,
+      (b) =>
+        linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      { showAllDone },
     );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
-    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();

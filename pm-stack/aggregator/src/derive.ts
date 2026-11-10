@@ -1097,7 +1097,12 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
     if (Number.isFinite(candidate.getTime())) projectedExhaustionAt = candidate.toISOString();
   }
   let projectedPercentAtReset: number | null = null;
-  if (last.resetsAt) {
+  // Same out-of-domain guard as projectedExhaustionAt above (#6316):
+  // a negative last pct cannot support a percent-at-reset projection
+  // either -- the unguarded extrapolation rendered absurd values
+  // (e.g. -999999995.5) for poisoned series whose last record carried
+  // a future resetsAt. Slope and points are still reported.
+  if (lastVal >= 0 && last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;
     if (toReset > 0) projectedPercentAtReset = Math.round((lastVal + slope * toReset) * 10) / 10;
   }
