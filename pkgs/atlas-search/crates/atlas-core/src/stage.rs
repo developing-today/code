@@ -548,8 +548,14 @@ mod tests {
 
     fn provision_unit(dir: &Path, reg: &Registry, unit_id: &str) -> std::path::PathBuf {
         let db = dir.join(format!("{unit_id}.db"));
-        reg.provision(&db, unit_id, "repo-worker-code", Tier::Internal, "2026-11-10T00:00:00Z")
-            .expect("provision unit");
+        reg.provision(
+            &db,
+            unit_id,
+            "repo-worker-code",
+            Tier::Internal,
+            "2026-11-10T00:00:00Z",
+        )
+        .expect("provision unit");
         db
     }
 
