@@ -274,11 +274,17 @@ def exhausted(row):
 
 # --- Prompt / agent note (the helper's shapes, claimant-safe) --------
 
-def build_prompt(row, ref, repo, directory, sid, worker_id):
+def build_prompt(row, ref, repo, directory, sid, worker_id, sender_notes=None):
     prog = claimant._prompt_safe_packet(row.get("progress") or {})
     prov, mdl = route_for(row)
     reftext = f"{ref[0]} #{ref[1]}" if ref else "none recorded"
     rq = repo_queue_cmd()
+    notes_section = ""
+    if sender_notes:
+        notes_section = f"""
+SENDER NOTES (from the Muse session that sent this task — follow these)
+{sender_notes}
+"""
     return f"""You are an OpenCode queue worker launched by the opencode claimant for an already-claimed queue task. Work ONLY this task. Do NOT claim another task and do NOT run `repo-queue claim`.
 
 TASK
@@ -292,7 +298,7 @@ TASK
 - Claiming worker (pass --worker {worker_id} on EVERY repo-queue verb): {worker_id}
 - Bound session id (use this exact id in every --execution record): {sid}
 - Target repo: {repo}
-- Work in the laptop primary: {directory}
+- Session directory (this session was created here; work here): {directory}
 - Route: {prov}/{mdl}
 
 QUEUE CLI
@@ -315,7 +321,7 @@ RULES
 - Never put a credential value in a prompt, log, PR, issue, or task record.
 - The task is already claimed and lane-bound to this session. It must not be claimed again.
 
-RECORDED TASK PROGRESS / PACKET CONTEXT (JSON)
+{notes_section}RECORDED TASK PROGRESS / PACKET CONTEXT (JSON)
 {json.dumps(prog, indent=2, sort_keys=True)}
 """
 

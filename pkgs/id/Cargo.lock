@@ -3963,6 +3963,7 @@ name = "id-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "cbor-core",
  "futures-lite",
  "iroh",
@@ -3971,6 +3972,7 @@ dependencies = [
  "p2panda-auth",
  "p2panda-core",
  "postcard",
+ "proptest",
  "qrcode",
  "rqrr",
  "serde",
