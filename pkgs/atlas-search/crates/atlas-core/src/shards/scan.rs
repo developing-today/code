@@ -120,6 +120,20 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
         ));
     }
     let shards = set.select(q.ceiling, q.topics)?;
+    // M1 (#7646): never merge across embedding models. Discovery
+    // already refused shards that disagree with the consumer, but
+    // the scanned set itself is checked here so a set assembled
+    // from more than one discovery still cannot mix identities.
+    if let Some(first) = shards.first() {
+        for s in &shards[1..] {
+            if s.embedding_model != first.embedding_model {
+                return Err(Error::fatal(format!(
+                    "shard fan-out: scanned set mixes embedding models — shard {} records `{}` but shard {} records `{}`; vectors from different embedding models are not comparable, refusing to merge",
+                    first.name, first.embedding_model, s.name, s.embedding_model
+                )));
+            }
+        }
+    }
     let stmt = turso_vector_scan_stmt(
         set.vec_table(),
         q.filters,
@@ -361,6 +375,7 @@ mod tests {
             topic: "main".into(),
             part: 1,
             expected_chunks: None,
+            embedding_model: crate::shards::EMBEDDING_MODEL_ID.to_string(),
             chunks: 0,
             endpoint: ShardEndpoint {
                 name: "atlas-core-secret-main-01".into(),
