@@ -7,7 +7,7 @@
  * stale info file, a socket with nothing behind it, two daemons at once. A
  * mocked fetch would pass every one of them.
  *
- *   bun test plugin/opencode/mcpx/daemon.test.ts
+ *   bun test plugin/core/daemon.test.ts
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
