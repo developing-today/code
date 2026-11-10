@@ -29,6 +29,12 @@ name: mcpx test
 # adding a seventh shard there would have bought ~25 s of test time and
 # more queue pressure. Target leg and max shards live in the init step.
 #
+# 2026-11-10 (#7795): PR + main triggers restored per .github/ci-policy.md
+# (they were removed in 5a94833ea3), and the unit leg regained its
+# `needs: init` -- without it the file was invalid (unit consumes
+# needs.init.outputs.seed), which failed every run at startup while
+# the workflow sat dispatch-only and disabled.
+#
 # Reconciliation with the live workflows (#1998): mcpx.yml keeps its
 # direct-Go push test + bot vendorhash-repair, mcpx-nixbuild.yml keeps
 # the nix build leg, mcpx-conformance.yml keeps conformance. This
@@ -36,6 +42,9 @@ name: mcpx test
 # vendorHash repair.
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -79,6 +88,7 @@ jobs:
 
   unit:
     name: "basic: mcpx-test unit"
+    needs: init
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -144,7 +154,7 @@ jobs:
 
   plugin-ts:
     name: "basic: mcpx-test plugin-ts"
-    if: github.event_name != pull_request || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
