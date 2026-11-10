@@ -529,6 +529,22 @@ left join ainventory.ingest_batches ib on ib.id = s.import_batch
 where s.kind = 'drive-workbook'
 `;
 
+/** The current-price overlay alone, in exactly the shape and order
+ * aaPayloadSql embeds it as `prices` (#3302): the collector hashes
+ * this every tick to validity-key the per-batch caches, because the
+ * overlay is current data, not batch-bound data. */
+export const AA_PRICES_SQL = `
+select coalesce((
+  select jsonb_agg(jsonb_build_object(
+    'modelName', model_name, 'inputPer1M', input_usd_per_1m, 'outputPer1M', output_usd_per_1m,
+    'cacheReadPer1M', cached_input_usd_per_1m, 'cacheWritePer1M', cache_write_usd_per_1m,
+    'contextMinTokens', context_min_tokens, 'contextMaxTokens', context_max_tokens,
+    'windowKind', window_kind
+  ) order by model_name, context_min_tokens nulls first)
+  from ainventory.v_current_prices
+), '[]'::jsonb) as prices
+`;
+
 /**
  * The full AA section payload for one batch (null = latest). This mirrors the
  * collector's previous AA_SQL exactly except that every batch predicate and

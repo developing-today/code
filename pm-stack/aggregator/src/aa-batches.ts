@@ -29,6 +29,11 @@ export interface AaBatchCacheEntry {
   batch: string;
   configFingerprint: string;
   fingerprint: string;
+  /** sha256 of the current-price overlay the section was built
+   * with (aaPricesFingerprint). Absent/null on entries written
+   * before the overlay was validity-keyed; such entries are
+   * treated as stale and rebuilt. */
+  pricesFingerprint?: string | null;
   builtAt: string;
   section: AaSection;
 }
@@ -70,6 +75,40 @@ export function parseBatchIndex(raw: unknown): AaBatchIndexRow[] {
     });
   }
   return rows.sort((a, b) => (b.importedAt ?? "").localeCompare(a.importedAt ?? ""));
+}
+
+/**
+ * Fingerprint of the current-price overlay (v_current_prices) a
+ * section was built with. Prices are NOT batch-bound data — the
+ * page presents them as the current overlay — so they stay out of
+ * aaBatchFingerprint (batch identity) and carry their own validity
+ * key instead: when the live overlay changes, every cached
+ * section's prices (and its price-derived catalog) are stale and
+ * the cache must rebuild, however fresh its batch data and config
+ * still are. Rows are normalized to the AaPrice field set and
+ * sorted, so a raw payload row and a parsed section price hash
+ * identically.
+ */
+export function aaPricesFingerprint(prices: unknown): string {
+  const rows = Array.isArray(prices) ? prices : [];
+  const numOrNull = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const norm = rows
+    .map((p) => {
+      const r = (p ?? {}) as Record<string, unknown>;
+      return {
+        modelName: str(r.modelName),
+        inputPer1M: numOrNull(r.inputPer1M),
+        outputPer1M: numOrNull(r.outputPer1M),
+        cacheReadPer1M: numOrNull(r.cacheReadPer1M),
+        cacheWritePer1M: numOrNull(r.cacheWritePer1M),
+        contextMinTokens: numOrNull(r.contextMinTokens),
+        contextMaxTokens: numOrNull(r.contextMaxTokens),
+        windowKind: str(r.windowKind),
+      };
+    })
+    .sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
+  return createHash("sha256").update(canonicalJson(norm)).digest("hex");
 }
 
 /** Human label: import date plus a shortened workbook name. */
@@ -172,6 +211,9 @@ export function isAaBatchCacheEntry(v: unknown): v is AaBatchCacheEntry {
     isBatchUuid(e.batch) &&
     typeof e.configFingerprint === "string" &&
     typeof e.fingerprint === "string" &&
+    (e.pricesFingerprint === undefined ||
+      e.pricesFingerprint === null ||
+      typeof e.pricesFingerprint === "string") &&
     typeof e.builtAt === "string" &&
     typeof e.section === "object" &&
     e.section !== null

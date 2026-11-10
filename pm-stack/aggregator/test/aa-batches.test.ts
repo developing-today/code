@@ -8,6 +8,7 @@ import { AA_BATCH_INDEX_SQL, aaPayloadSql, batchExpression, isBatchUuid } from "
 import {
   aaBatchFingerprint,
   aaCacheFileName,
+  aaPricesFingerprint,
   batchLabel,
   canonicalJson,
   isAaBatchCacheEntry,
@@ -108,6 +109,34 @@ describe("semantic fingerprint", () => {
   test("the current-price overlay is not part of the fingerprint", () => {
     const withPrices = { ...base, prices: [{ modelName: "A", inputPer1M: 1 }] } as typeof base;
     expect(aaBatchFingerprint(withPrices)).toBe(aaBatchFingerprint(base));
+  });
+
+  test("prices fingerprint is stable across key order and row order", () => {
+    // Oracle (#3302 review): the overlay validity key must depend
+    // only on the price values — the same overlay fetched twice
+    // (raw rows) or read back from a built section (parsed rows)
+    // hashes identically.
+    const a = [
+      { modelName: "A", inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: null, cacheWritePer1M: null, contextMinTokens: 0, contextMaxTokens: 100, windowKind: "fixed" },
+      { modelName: "B", inputPer1M: 3, outputPer1M: 4, cacheReadPer1M: 1, cacheWritePer1M: 2, contextMinTokens: null, contextMaxTokens: null, windowKind: null },
+    ];
+    const b = [
+      { windowKind: null, contextMaxTokens: null, contextMinTokens: null, cacheWritePer1M: 2, cacheReadPer1M: 1, outputPer1M: 4, inputPer1M: 3, modelName: "B" },
+      { windowKind: "fixed", contextMaxTokens: 100, contextMinTokens: 0, cacheWritePer1M: null, cacheReadPer1M: null, outputPer1M: 2, inputPer1M: 1, modelName: "A" },
+    ];
+    expect(aaPricesFingerprint(a)).toBe(aaPricesFingerprint(b));
+  });
+
+  test("prices fingerprint changes when any price changes", () => {
+    // Oracle (#3302 review): a price-only change — no new workbook,
+    // no config change — produces a different validity key, so
+    // cached sections rebuild instead of serving stale prices as
+    // the current overlay.
+    const base = [{ modelName: "A", inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: null, cacheWritePer1M: null, contextMinTokens: null, contextMaxTokens: null, windowKind: null }];
+    const changed = [{ ...base[0], inputPer1M: 5 }];
+    expect(aaPricesFingerprint(base)).not.toBe(aaPricesFingerprint(changed));
+    expect(aaPricesFingerprint([])).not.toBe(aaPricesFingerprint(base));
+    expect(aaPricesFingerprint(undefined)).toBe(aaPricesFingerprint([]));
   });
 
   test("canonical JSON sorts keys at every level", () => {

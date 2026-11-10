@@ -1765,7 +1765,7 @@ export function liveSource(
                   batches: batchList,
                   stale: true,
                   staleReason:
-                    "this version was built from a different opencode config — the collector is rebuilding it",
+                    "this version is awaiting rebuilding — its opencode config or the current-price overlay changed since it was built",
                 }
               : { ...parsed.section, batches: batchList };
           }

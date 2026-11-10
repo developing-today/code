@@ -88,10 +88,11 @@ import {
   isAaSection,
   type AaRawPayload,
 } from "../src/aa.ts";
-import { AA_BATCH_INDEX_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
+import { AA_BATCH_INDEX_SQL, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
 import {
   aaBatchFingerprint,
   aaCacheFileName,
+  aaPricesFingerprint,
   isAaBatchCacheEntry,
   parseBatchIndex,
   summarizeBatches,
@@ -586,6 +587,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       batch: section.batch,
       configFingerprint: fingerprint,
       fingerprint: contentFingerprint,
+      pricesFingerprint: aaPricesFingerprint(section.prices ?? []),
       builtAt: generatedAt,
       section,
     });
@@ -615,11 +617,30 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   }
   if (index.length === 0) return degrade("no workbook batches in ainventory.sources");
 
-  // Read every batch cache once; a changed config invalidates all of them.
+  // The current-price overlay, hashed once per tick: it is the
+  // validity key for every cached section's prices and price-derived
+  // catalog (#3302 review). A price-only change — no new workbook,
+  // no config change — must still rebuild the caches, because the
+  // page presents these prices as current.
+  let currentPricesFingerprint: string;
+  try {
+    const rows = (await supabaseQuery(token, ref, AA_PRICES_SQL)) as { prices?: unknown }[];
+    currentPricesFingerprint = aaPricesFingerprint(Array.isArray(rows) ? rows[0]?.prices : null);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
+  }
+
+  // Read every batch cache once; a changed config — or a changed
+  // current-price overlay — invalidates all of them.
   const cachedSections = new Map<string, AaSection>();
   for (const row of index) {
     const cached = await readAaBatchCache(row.importBatch);
-    if (cached && cached.configFingerprint === fingerprint) {
+    if (
+      cached &&
+      cached.configFingerprint === fingerprint &&
+      (cached.pricesFingerprint ?? null) === currentPricesFingerprint
+    ) {
       cacheMeta.set(row.importBatch, { fingerprint: cached.fingerprint, cached: true });
       cachedSections.set(row.importBatch, cached.section);
     } else {
@@ -644,6 +665,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       batch: latestBatch,
       configFingerprint: fingerprint,
       fingerprint: lastGood.fingerprint,
+      pricesFingerprint: aaPricesFingerprint(lastGood.section.prices ?? []),
       builtAt: latestSection.generatedAt,
       section: latestSection,
     });
