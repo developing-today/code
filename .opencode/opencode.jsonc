@@ -3125,24 +3125,30 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-last-resort": {
-        "name": "Workhorse last resort - Fable #low from Claude, only if all else is down",
+        "name": "Workhorse last resort - Sonnet #medium from Claude first, then Fable #low, only if all else is down",
         // NEW 2026-11-10 (Drew, direct order): the fourth and final
-        // stage of the workhorse chain. Its only target is Fable
-        // #low on the _claude door (via fable-plan), reached only
-        // when workhorse-ordered, workhorse-primary, and
-        // workhorse-weighted all yield nothing. This is a
-        // deliberate, named exception to Drew's 2026-11-06 rule
-        // ("do not add Claude to workhorse") - last-resort only,
+        // stage of the workhorse chain, reached only when
+        // workhorse-ordered, workhorse-primary, and
+        // workhorse-weighted all yield nothing. Two members,
+        // ordered: FIRST the DIRECT real-Claude leaf
+        // _claude/claude-sonnet-5-5 at #medium (Drew confirmed
+        // direct, 2026-11-10 09:04 CST - NOT sonnet-plan and NOT
+        // the Antigravity leaf), THEN Fable #low on the same door
+        // (via fable-plan). Sonnet leads despite the lower score
+        // (AA v5 #medium II 30.8 vs Fable #low II 53.9 at
+        // $3.10/task, TTFT 6.4s): it is the cheaper everyday
+        // fallback and spends the shared Claude Max allowance,
+        // while Fable behind it draws the dedicated Fable quota
+        // (Drew, 2026-11-07) and is spent only when Sonnet also
+        // yields nothing. Both members are Drew's deliberate,
+        // named exception to his 2026-11-06 rule ("do not add
+        // Claude to workhorse") - this last-resort stage only,
         // ordered by Drew explicitly today (2026-11-10). The burn
         // case is the point: when every other pool is walled at
         // once (the 2026-11-09/10 pattern, code#8086), workhorse
-        // sessions land here instead of dying on no-candidates, and
-        // they draw the dedicated Fable quota (Drew, 2026-11-07),
-        // not the shared Claude Max allowance. AA v5 #low II 53.9
-        // at $3.10/task (TTFT 6.4s) - stronger than any workhorse
-        // member; it is seated last by COST and quota role, not by
-        // score.
+        // sessions land here instead of dying on no-candidates.
         "targets": [
+          "_claude/claude-sonnet-5-5#medium",
           "opencode-route/fable-plan#low"
         ],
         "selection": "ordered",
