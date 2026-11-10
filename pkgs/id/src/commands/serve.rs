@@ -897,7 +897,12 @@ impl ServeWorlds {
             "serve startup: records ready, building world service (#190 breadcrumb)"
         );
         let service = if self.ephemeral {
-            make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
+            make(WorldHandle::spawn_with_device_manifest(
+                WorldCore::new(name, limits)?,
+                Box::<crate::world::EmptyWorldProgram>::default(),
+                Some(WorldHandle::host_device_manifest()),
+            ))
+            .with_records_store(records)
         } else {
             let (service, report) =
                 crate::world_store::open_world(&dir, name, limits, runtime, make).await?;

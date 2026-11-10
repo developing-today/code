@@ -1020,6 +1020,18 @@ fn validate_via_broker(packet: &Value, quiet: bool) -> Vec<String> {
 // Subcommands
 // ---------------------------------------------------------------------------
 
+/// #8097 Rule 2: a --platform value is a coarse FAMILY selector,
+/// never a lane name: exactly "openchamber" or "muse". Shared by
+/// the enqueue and claim verbs so both spell the rule once.
+fn platform_flag(v: &str) -> Result<String, String> {
+    match v {
+        "openchamber" | "muse" => Ok(v.to_string()),
+        other => Err(format!(
+            "invalid --platform {other:?} (expected \"openchamber\" or \"muse\")"
+        )),
+    }
+}
+
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -1070,7 +1082,7 @@ fn resolve_enqueue_queue(
 }
 
 fn cmd_enqueue(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &["dry-run", "shadow-intent"]);
+    let args = parse_args(rest, &["queue", "platform"], &["dry-run", "shadow-intent"]);
     reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
@@ -1089,6 +1101,15 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         Ok(q) => q,
         Err(e) => die(2, &e),
     };
+    // #8097 Rule 2: the platform selector is optional; when given
+    // it restricts the item to that family. Absent = unset.
+    let platform = match args.get("platform") {
+        None => None,
+        Some(p) => match platform_flag(&p) {
+            Ok(v) => Some(v),
+            Err(e) => die(2, &e),
+        },
+    };
     let shadow_intent = args.has("shadow-intent");
     if queue.ends_with("-shadow") && !shadow_intent {
         die(
@@ -1104,7 +1125,7 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         "/enqueue",
         &json!({
             "packet": packet, "queue": queue, "dry_run": dry_run,
-            "shadow_intent": shadow_intent,
+            "shadow_intent": shadow_intent, "platform": platform,
         }),
     );
     let resp = unwrap_ok(resp);
@@ -1247,7 +1268,11 @@ fn cmd_list(rest: &[String]) -> i32 {
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane"], &[]);
+    let args = parse_args(
+        rest,
+        &["queue", "worker", "lease-seconds", "lane", "task", "platform"],
+        &["handoff"],
+    );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
@@ -1257,6 +1282,31 @@ fn cmd_claim(rest: &[String]) -> i32 {
     });
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
+    }
+    // --platform <family>: declare this claim's family (#8097
+    // Rule 2). The broker only hands this claim items whose
+    // platform selector is unset or equal to it. A claim that
+    // declares no family keeps its pre-#8097 reach (unset items).
+    if let Some(p) = args.get("platform") {
+        match platform_flag(&p) {
+            Ok(v) => body["platform"] = json!(v),
+            Err(e) => die(2, &e),
+        }
+    }
+    // --handoff: the no-id collection of the next parked recorded
+    // opencode handoff (#8097 Rule 1) — the claimant's default
+    // parked-handoff path. The BROKER picks the row; the caller
+    // names no task id. (--task remains the special-case claim.)
+    if args.has("handoff") {
+        body["pick"] = json!("parked_handoff");
+    }
+    // --task <id>: by-id claim — take exactly that row when the
+    // broker's by-id predicate allows it (a queued row under the
+    // ordinary predicate, or a parked recorded opencode handoff).
+    // The opencode claimant uses this to collect handed-off tasks
+    // out of the parked sink; a plain claim never names a task.
+    if let Some(task) = args.get_i64("task") {
+        body["task_id"] = json!(task);
     }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
     let (mut out, code) = claim_output(&resp);
@@ -1903,6 +1953,16 @@ pub fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn platform_flag_accepts_only_the_two_families() {
+        // #8097 Rule 2: the selector is a coarse family, never a
+        // lane name — a lane id as --platform is a usage error.
+        assert_eq!(platform_flag("openchamber"), Ok("openchamber".to_string()));
+        assert_eq!(platform_flag("muse"), Ok("muse".to_string()));
+        assert!(platform_flag("code-a").is_err());
+        assert!(platform_flag("").is_err());
+    }
 
     #[test]
     fn fallback_switch_json_shape() {

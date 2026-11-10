@@ -498,7 +498,12 @@ pub async fn open_world(
         },
     };
     report.sequence = restored.core.current_sequence();
-    let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
+    let handle = WorldHandle::spawn_durable_with_device_manifest(
+        restored.core,
+        program,
+        Some(Box::new(journal)),
+        Some(WorldHandle::host_device_manifest()),
+    );
     let service = service(handle).with_module_dir(modules).with_outbox(outbox);
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
