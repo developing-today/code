@@ -290,9 +290,30 @@
           mkRecipeApp name targetRecipe;
 
         # Filter: exclude private recipes and 'default' (handled separately)
-        publicRecipes = pkgs.lib.filterAttrs (
-          name: recipe: !(recipe.private or false) && name != "default"
-        ) justRecipes.recipes;
+        filterPublicRecipes =
+          recipes:
+          pkgs.lib.filterAttrs (name: recipe: !(recipe.private or false) && name != "default") recipes;
+
+        publicRecipes = filterPublicRecipes justRecipes.recipes;
+
+        # Admit aliases only when their target is a public recipe and their
+        # name cannot shadow a recipe or a manually defined app.
+        filterAliasApps =
+          recipes: aliases: reservedNames:
+          let
+            publicTargets = filterPublicRecipes recipes;
+          in
+          pkgs.lib.filterAttrs (
+            name: alias:
+            builtins.hasAttr (alias.target or "") publicTargets
+            && !(builtins.hasAttr name recipes)
+            && !(builtins.elem name reservedNames)
+          ) aliases;
+
+        publicAliases = filterAliasApps justRecipes.recipes (justRecipes.aliases or { }) [
+          "default"
+          "just"
+        ];
 
       in
       {
@@ -385,6 +406,10 @@
           };
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+          # Production module-size guard (#1411): fails when any
+          # production .rs file exceeds 2,500 production lines
+          # (grandfathered: src/web/markdown.rs, split tracked in #1438).
+          prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs
           # every heavy full sweep serially (~15 min, the slowest PR
@@ -402,6 +427,77 @@
           # noise (absolute source path, body serialisation), so this is
           # green on any correctly regenerated file.
           just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+
+          # Regression pins for scripts/build.sh variant handling (#6869):
+          # the fixture suite stubs cargo and exercises every variant, so a
+          # variant-specific regression fails here instead of in a just recipe.
+          build-sh-test = mkCheckWith {
+            name = "build-sh-test";
+            checkCommand = "bash scripts/build-sh-test.sh";
+          };
+
+          # Exercise the same alias-admission function used by apps against
+          # synthetic recipes/aliases, including dangling targets and names
+          # that would shadow recipe or manual apps.
+          just-recipes-alias-admission =
+            let
+              fixtureRecipes = {
+                public = { };
+                private = {
+                  private = true;
+                };
+                default = { };
+                recipeCollision = { };
+                privateCollision = {
+                  private = true;
+                };
+              };
+              fixtureAliases = {
+                valid = {
+                  target = "public";
+                };
+                privateTarget = {
+                  target = "private";
+                };
+                defaultTarget = {
+                  target = "default";
+                };
+                missingTarget = {
+                  target = "missing";
+                };
+                recipeCollision = {
+                  target = "public";
+                };
+                privateCollision = {
+                  target = "public";
+                };
+                default = {
+                  target = "public";
+                };
+                just = {
+                  target = "public";
+                };
+              };
+              admittedAliases = filterAliasApps fixtureRecipes fixtureAliases [
+                "default"
+                "just"
+              ];
+              fixtureRecipeApps = filterPublicRecipes fixtureRecipes;
+              fixtureApps =
+                (builtins.mapAttrs (_: _: "recipe") fixtureRecipeApps)
+                // (builtins.mapAttrs (_: _: "alias") admittedAliases)
+                // {
+                  default = "manual";
+                  just = "manual";
+                };
+            in
+            assert builtins.attrNames admittedAliases == [ "valid" ];
+            assert fixtureApps.recipeCollision == "recipe";
+            assert fixtureApps.default == "manual";
+            assert fixtureApps.just == "manual";
+            pkgs.runCommand "id-just-recipes-alias-admission" { } ''
+              touch "$out"
+            '';
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {
@@ -802,7 +898,7 @@
         # =======================================================================
         apps =
           pkgs.lib.mapAttrs mkRecipeApp publicRecipes
-          // pkgs.lib.mapAttrs mkAliasApp (justRecipes.aliases or { })
+          // pkgs.lib.mapAttrs mkAliasApp publicAliases
           // {
             # Default: run the web-enabled CLI binary
             default = {

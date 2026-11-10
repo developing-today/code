@@ -215,7 +215,7 @@ func (s *Store) RunSQL(query string) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err

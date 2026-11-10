@@ -60,25 +60,23 @@ count="$(decimal_in_bash_range "$2")" || invalid 'COUNT exceeds the supported in
 shard=$((10#${shard}))
 count=$((10#${count}))
 
+
 targets=()
 shopt -s nullglob
 for f in tests/*.rs; do
-  targets+=("$(basename "${f}" .rs)")
+  targets+=("$(basename "$f" .rs)")
 done
 for d in tests/*/; do
-  if [[ -f "${d}/main.rs" ]]; then
-    targets+=("$(basename "${d}")")
+  if [ -f "$d/main.rs" ]; then
+    targets+=("$(basename "$d")")
   fi
 done
-if ((${#targets[@]} > 0)); then
-  sorted_targets="$(printf '%s\n' "${targets[@]}" | sort)"
-  mapfile -t targets <<<"${sorted_targets}"
-fi
+mapfile -t targets < <(printf '%s\n' "${targets[@]}" | sort)
 
 args=()
 for i in "${!targets[@]}"; do
-  if ((i % count == shard)); then
-    args+=(--test "${targets[${i}]}")
+  if [ $((i % count)) -eq "$shard" ]; then
+    args+=(--test "${targets[$i]}")
   fi
 done
 
@@ -88,10 +86,12 @@ if ((${#args[@]} == 0)); then
   exit 1
 fi
 
-echo "test-shard-sandbox ${shard}/${count} targets: ${args[*]}"
-cargo test --all-features "${args[@]}" -- --skip serve_tests
+echo "test-shard-sandbox $shard/$count targets: ${args[*]}"
+cargo nextest run --all-features "${args[@]}" -E 'not test(serve_tests)'
 
-if [[ ${shard} -eq 0 ]]; then
-  cargo test --all-features --bins -- --skip serve_tests
+if [ "$shard" -eq 0 ]; then
+  cargo nextest run --all-features --bins -E 'not test(serve_tests)'
+  # nextest does not run doc tests; keep them on cargo test so shard 0
+  # still covers exactly what it covered before (#6378).
   cargo test --all-features --doc
 fi

@@ -64,7 +64,7 @@
 //     snapshot store (SnapshotStore.append dedupes). Setting
 //     USAGE_SNAPSHOT_OUTBOX_PATH switches the sink to the writers'
 //     outbox JSONL instead (the sandbox collector's drain path).
-//   - Turso agent_quota_records rows (muse-platform), one per pool
+//   - Turso agent_quota_records rows (fleet-platform), one per pool
 //     entry per tick, source "opencode-quota" — Drew's rule that all
 //     quota info lands in the quota ledger on a regular basis in
 //     addition to the dashboard. (The previous writer of pool rows,
@@ -100,7 +100,7 @@
 //      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
 //      disables the Turso sink (default on; token resolved by name
 //      via the resolveBwsSecret plumbing:
-//      turso.muse-platform-rw-token).
+//      turso.fleet-platform-rw-token).
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -342,7 +342,7 @@ async function runMetaRenewal(tickAt: string): Promise<void> {
 
 interface ProviderRun {
   id: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
   ms: number;
   entries: QuotaCurrentEntry[];
   error?: string;
@@ -376,13 +376,24 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     }
     return { id, state: "error", ms: Date.now() - t0, entries, error: reason };
   }
-  const firstBad = entries.find((e) => e.state !== "ok");
+  const firstFailure = entries.find((e) => e.state !== "ok" && e.state !== "lapsed");
+  // A run whose only non-ok rows are planned lapses is terminal, not
+  // failed: reporting it as "error" would trip #1268 retention and
+  // replace the lapsed rows with last-known ok readings, hiding the
+  // lapse the hub must show.
+  const onlyLapsed = entries.length > 0 && entries.every((e) => e.state === "lapsed");
   return {
     id,
-    state: anyOk ? "ok" : "error",
+    state: anyOk ? "ok" : onlyLapsed ? "lapsed" : "error",
     ms: Date.now() - t0,
     entries,
-    ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
+    // A partially-failed run still surfaces its first failure: a
+    // folded provider (codex answers one row per OpenAI credential)
+    // must not let one credential's ok row hide a sibling credential's
+    // error from the heartbeat — 2026-11-10 the codex run read "ok"
+    // with no error while the openai.main and _openai credentials were
+    // both failing token_expired at the provider.
+    ...(firstFailure?.error ? { error: firstFailure.error } : {}),
   };
 }
 
@@ -576,8 +587,8 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   return runs;
 }
 
-const TURSO_TOKEN_NAME = "turso.muse-platform-rw-token";
-const TURSO_URL = "https://muse-platform-dezren39.aws-us-east-1.turso.io";
+const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
+const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
@@ -593,7 +604,7 @@ function sqlString(v: string): string {
  * failure is logged, never fails the tick, never zeroes a row).
  * Until the 2026-11-06 Wave 3 cutover (code#5690) this wrote to
  * Supabase agent.quota_records (muse-dev2) via the Management API;
- * the table now lives in Turso muse-platform and is written through
+ * the table now lives in Turso fleet-platform and is written through
  * the libsql HTTP pipeline with INSERT OR IGNORE on the
  * (source, id, ts) PK.
  */
@@ -687,16 +698,29 @@ async function main(): Promise<number> {
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
-  // whole-fetch timeout). The heartbeat below still reports the run
-  // as an error, with its reason and the retained row count.
+  // whole-fetch timeout). Preserve confirmed lapse rows alongside
+  // retained siblings: retention must never erase a terminal state
+  // reported by this tick.
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
       if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
-        run.entries = markRetained(retained, tickAt);
-        run.retained = true;
+        const lapsed = run.entries.filter((e) => e.state === "lapsed");
+        // Do not retain the previous ok reading for the same credential
+        // that has just reported a lapse. Other credentials in the same
+        // provider run may still retain their last-known readings.
+        const retainedSiblings = retained.filter(
+          (previous) =>
+            !lapsed.some((current) =>
+              (current.credentialId && previous.credentialId === current.credentialId) ||
+              (current.credentialLabel &&
+                previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+            ),
+        );
+        run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
+        run.retained = retainedSiblings.length > 0;
       }
     }
   }

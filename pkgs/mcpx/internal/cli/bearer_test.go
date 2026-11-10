@@ -96,6 +96,19 @@ func TestEveryDaemonRequestIsAuthorized(t *testing.T) {
 // invoking project's token, so a daemon configured with its own
 // file token 401'd the probe and was skipped / reported stopped.
 func TestTargetBearerTokenResolvesTheTargetDaemon(t *testing.T) {
+	// Hermetic config resolution (#6819): targetBearerToken applies
+	// the ambient environment (settings.Environ) after the file
+	// chain, and targetConfigFiles discovery walks HOME/XDG — on a
+	// host with a real mcpx deployment, MCPX_CONFIG names the
+	// deployed config, whose (tokenless) settings then override the
+	// fixture chain and this test fails for reasons that have
+	// nothing to do with the code. Isolate the whole surface the
+	// resolution reads, matching the sibling pattern in
+	// adapter_add_test.go / flagreach_test.go.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("MCPX_CONFIG", "")
 	const targetTok = "target-token-0123456789abcdef0123"
 	const invokerTok = "invoker-token-0123456789abcdef01"
 	write := func(name, tok string) string {

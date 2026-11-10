@@ -46,14 +46,14 @@ check_shard() {
 
 # Sorted targets are a,b,c,d,e,f,g,h,nested; the reference partition is
 # index modulo four. Shard zero also retains the existing bins/doc calls.
-check_shard 0 'cargo test --all-features --test a --test e --test nested -- --skip serve_tests' 3
-grep -Fqx 'cargo test --all-features --bins -- --skip serve_tests' "${CARGO_LOG}" ||
+check_shard 0 'cargo nextest run --all-features --test a --test e --test nested -E not test(serve_tests)' 3
+grep -Fqx 'cargo nextest run --all-features --bins -E not test(serve_tests)' "${CARGO_LOG}" ||
   fail 'shard 0 lost its --bins invocation'
 grep -Fqx 'cargo test --all-features --doc' "${CARGO_LOG}" ||
   fail 'shard 0 lost its --doc invocation'
-check_shard 1 'cargo test --all-features --test b --test f -- --skip serve_tests' 1
-check_shard 2 'cargo test --all-features --test c --test g -- --skip serve_tests' 1
-check_shard 3 'cargo test --all-features --test d --test h -- --skip serve_tests' 1
+check_shard 1 'cargo nextest run --all-features --test b --test f -E not test(serve_tests)' 1
+check_shard 2 'cargo nextest run --all-features --test c --test g -E not test(serve_tests)' 1
+check_shard 3 'cargo nextest run --all-features --test d --test h -E not test(serve_tests)' 1
 
 # Decimal arguments with leading zeroes remain decimal, not Bash octal.
 : >"${CARGO_LOG}"
@@ -61,7 +61,7 @@ bash ./test-shard-sandbox.sh 00 04 >"${tmp}/out" 2>"${tmp}/err" || {
   cat "${tmp}/err" >&2
   fail 'leading-zero decimal invocation failed'
 }
-grep -Fqx 'cargo test --all-features --test a --test e --test nested -- --skip serve_tests' "${CARGO_LOG}" ||
+grep -Fqx 'cargo nextest run --all-features --test a --test e --test nested -E not test(serve_tests)' "${CARGO_LOG}" ||
   fail 'leading-zero decimal invocation selected the wrong targets'
 cargo_calls="$(wc -l <"${CARGO_LOG}")"
 [[ ${cargo_calls} -eq 3 ]] ||
@@ -74,7 +74,7 @@ bash ./test-shard-sandbox.sh 0 0009223372036854775807 >"${tmp}/out" 2>"${tmp}/er
   cat "${tmp}/err" >&2
   fail 'maximum signed integer count was rejected'
 }
-grep -Fqx 'cargo test --all-features --test a -- --skip serve_tests' "${CARGO_LOG}" ||
+grep -Fqx 'cargo nextest run --all-features --test a -E not test(serve_tests)' "${CARGO_LOG}" ||
   fail 'maximum signed integer count selected the wrong targets'
 cargo_calls="$(wc -l <"${CARGO_LOG}")"
 [[ ${cargo_calls} -eq 3 ]] ||

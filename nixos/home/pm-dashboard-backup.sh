@@ -334,6 +334,9 @@ required file aggregator/registry.json
 required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
 required file aggregator/events.json
+optional file aggregator/events.json.outbox.jsonl
+optional tree aggregator/events.json.archive
+optional file aggregator/activity-ingestion.json
 required file aggregator/coverage-snapshot.json
 required file aggregator/aa-last-good.json
 optional file aggregator/views.json
@@ -356,9 +359,26 @@ optional file journals/quota-gatherer.log"
 # the run here via fail(), naming the source, before any upload and
 # before the cursor can advance. A missing file stays a WARN, as
 # before: absent and present-but-unreadable are different events.
+# Copy order matters (#3322 Codex review, PR #7665): the ingestion
+# state acknowledges events, and IngestionStore.ingestSerialized()
+# persists the event BEFORE it marks the delivery seen. Copy the
+# ingestion checkpoint/seen state FIRST, then the event stream, so a
+# generation can never contain a seen ID or checkpoint whose event is
+# missing — that would make a restore skip the delivery as a
+# duplicate and lose the record permanently. The same reasoning puts
+# the retry outbox (records not yet in events.json) before the hot
+# file: an outbox record that also landed is merged by stable id, so
+# an extra copy is harmless while a missing one is loss.
+for f in activity-ingestion.json events.json.outbox.jsonl; do
+  if [ -f "$AGG/$f" ]; then
+    cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
+      fail "dataset copy failed: $AGG/$f"
+  else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
+done
 for f in actions.json comments.json fleet-feed.json quota-current.json \
   registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
-  events.json views.json coverage-snapshot.json aa-last-good.json; do
+  events.json \
+  views.json coverage-snapshot.json aa-last-good.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
       fail "dataset copy failed: $AGG/$f"
@@ -368,6 +388,12 @@ if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snaps
   fail "dataset copy failed: $AGG/snapshots"; fi
 if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
   fail "dataset copy failed: $AGG/charge-inputs"; fi
+# Audit archive partitions (#3322 retention contract): the pruned
+# history of the event stream lives beside events.json, not in it —
+# a backup generation without the partitions cannot restore the
+# retained+archived chain.
+if [ -d "$AGG/events.json.archive" ]; then cp -a "$AGG/events.json.archive" "$STAGE/aggregator/events.json.archive" ||
+  fail "dataset copy failed: $AGG/events.json.archive"; fi
 for f in latest.json history.jsonl; do
   if [ -f "$META/$f" ]; then
     cp -a "$META/$f" "$STAGE/meta-quota-export/$f" ||
@@ -379,41 +405,119 @@ if [ -d "$DUMP_DIR" ]; then cp -a "$DUMP_DIR" "$STAGE/db-dumps" ||
   fail "dataset copy failed: $DUMP_DIR"; fi
 
 # --- pmp_links export (code#1744 P0) ----------------------------------
-# Source: the ACTUAL configured projector database — DATABASE_URL in the
-# pm-projector env file when it names a file: URL, else the deployed
-# default ~/.local/state/pm-projector/projector.db (a relative file:
-# value resolves against the projector unit's working directory).
+# Source: the ACTUAL configured projector database — the LAST DATABASE_URL
+# assignment in the pm-projector env file when it names a file: URL
+# (percent-decoded) or a local path, else <PM_PROJECTOR_DIR>/data/projector.db
+# when that directory is named, else the deployed default
+# ~/.local/state/pm-projector/projector.db (a relative value resolves
+# against PM_PROJECTOR_DIR). A remote (non-file) DATABASE_URL fails the
+# run: exporting a stale local DB instead would make the archive evidence
+# claim a source it never read.
 # PM_PROJECTOR_DB / PM_PROJECTOR_ENV override both (tests, relocation).
 # Only the pmp_links table is exported (schema + rows as SQL): the rest
 # of projector.db is a rebuildable projection and credentials never
 # enter the archive — the .env file itself is NOT read beyond the
 # DATABASE_URL line and is never staged.
+# Env-file value -> path/URL: strip one trailing CR, edge whitespace and a
+# single matching quote pair, leaving interior characters (spaces, quotes)
+# untouched — only the value's edges are syntax, the path itself is data.
+pmp_trim_value() {
+  local v="$1"
+  v="${v%$'\r'}"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  if ((${#v} >= 2)); then
+    case "$v" in
+      \"*\") v="${v:1:${#v}-2}" ;;
+      \'*\') v="${v:1:${#v}-2}" ;;
+    esac
+  fi
+  printf '%s' "$v"
+}
+# Percent-decode a file: URL path (%20 -> space, %2F -> /, ...). Malformed
+# escapes are kept literally rather than dropped.
+pmp_url_decode() {
+  local in="$1" out="" byte
+  while [[ "$in" == *%* ]]; do
+    out+="${in%%\%*}"
+    in="${in#*\%}"
+    if [[ "${in:0:2}" =~ ^[0-9A-Fa-f]{2}$ ]]; then
+      printf -v byte "\\x${in:0:2}"
+      out+="$byte"
+      in="${in:2}"
+    else
+      out+="%"
+    fi
+  done
+  printf '%s' "$out$in"
+}
 PMP_DB="${PM_PROJECTOR_DB:-}"
 if [ -z "$PMP_DB" ]; then
   PMP_ENV="${PM_PROJECTOR_ENV:-$HOME/.local/state/pm-projector/.env}"
+  PMP_URL=""
   if [ -f "$PMP_ENV" ]; then
-    _url="$(grep -m1 '^DATABASE_URL=' "$PMP_ENV" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')" 
-    case "$_url" in
-      file:*) PMP_DB="${_url#file:}"; PMP_DB="${PMP_DB%%\?*}" ;;
+    # The LAST assignment wins: a later line is what the service loads.
+    PMP_URL="$(grep -E '^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=' "$PMP_ENV" 2>/dev/null |
+      tail -n 1 | sed -E 's/^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=//')"
+  fi
+  PMP_URL="$(pmp_trim_value "$PMP_URL")"
+  PMP_DIR="${PM_PROJECTOR_DIR:-}"
+  if [ -n "$PMP_URL" ]; then
+    case "$PMP_URL" in
+      file:*)
+        PMP_DB="${PMP_URL#file:}"
+        PMP_DB="${PMP_DB%%\?*}"
+        PMP_DB="${PMP_DB%%#*}"
+        # file://host/path -> /path: drop an empty or localhost
+        # authority, then decode the path before any existence check.
+        case "$PMP_DB" in
+          //localhost/*) PMP_DB="/${PMP_DB#//localhost/}" ;;
+          ///*) PMP_DB="/${PMP_DB#///}" ;;
+        esac
+        PMP_DB="$(pmp_url_decode "$PMP_DB")"
+        ;;
+      *://*)
+        # Remote DSN (postgres://, libsql://, ...): this export cannot
+        # read it, and silently archiving a local file instead would make
+        # the archive claim a source it never read. Name the scheme only
+        # — a DSN may embed credentials.
+        fail "pmp_links export failed: DATABASE_URL in $PMP_ENV uses '${PMP_URL%%://*}://', which is not supported (only file: URLs or local paths); remote export is not implemented"
+        ;;
+      *)
+        PMP_DB="$PMP_URL" # local path, absolute or relative
+        ;;
     esac
   fi
-  [ -n "$PMP_DB" ] || PMP_DB="$HOME/.local/state/pm-projector/projector.db"
-  case "$PMP_DB" in
-    /*) ;;
-    *) PMP_DB="${PM_PROJECTOR_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
-  esac
+  if [ -z "$PMP_DB" ]; then
+    # Nothing configured: the projector's own default is
+    # file:data/projector.db relative to its working directory
+    # (pm-stack/projector/src/store.ts), so the active DB is
+    # <PM_PROJECTOR_DIR>/data/projector.db when that dir is named,
+    # else the deployed state-directory default. A projector.db at
+    # the directory root is NOT the active DB and is never picked.
+    if [ -n "$PMP_DIR" ] && [ -f "$PMP_DIR/data/projector.db" ]; then
+      PMP_DB="$PMP_DIR/data/projector.db"
+    else
+      PMP_DB="$HOME/.local/state/pm-projector/projector.db"
+    fi
+  else
+    case "$PMP_DB" in
+      /*) ;;
+      *) PMP_DB="${PMP_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
+    esac
+  fi
 fi
 if [ -f "$PMP_DB" ]; then
   command -v sqlite3 >/dev/null 2>&1 ||
     fail "sqlite3 not found — cannot export pmp_links from $PMP_DB"
-  PMP_ROWS="$(sqlite3 "file:$PMP_DB?mode=ro" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
+  PMP_ROWS="$(sqlite3 -readonly "$PMP_DB" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
     fail "pmp_links export failed: cannot read pmp_links in $PMP_DB"
   mkdir -p "$STAGE/projector"
-  sqlite3 "file:$PMP_DB?mode=ro" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
+  sqlite3 -readonly "$PMP_DB" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
     fail "pmp_links export failed: .dump of $PMP_DB"
   # .dump omits the table's indexes on this sqlite build — append them
   # from sqlite_master so a restore reproduces the full table shape.
-  sqlite3 "file:$PMP_DB?mode=ro" \
+  sqlite3 -readonly "$PMP_DB" \
     "SELECT sql || ';' FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pmp_links' AND sql IS NOT NULL;" \
     >>"$STAGE/projector/pmp_links.sql" ||
     fail "pmp_links export failed: index definitions of $PMP_DB"
