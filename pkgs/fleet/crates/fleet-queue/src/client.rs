@@ -1876,6 +1876,16 @@ fn cmd_block(rest: &[String]) -> i32 {
             "blocker",
             "progress",
             "progress-file",
+            // #8276: typed dependency blocks — the broker watches
+            // these and releases the task itself when they clear
+            // (or when the max TTL expires). Comma-separated for
+            // several deps of one kind.
+            "blocked-by-pr",
+            "blocked-by-issue",
+            "blocked-by-task",
+            "blocked-by-ci",
+            "dep-recheck-seconds",
+            "dep-max-ttl-seconds",
         ],
         &[],
     );
@@ -1886,17 +1896,111 @@ fn cmd_block(rest: &[String]) -> i32 {
     let blocker = args
         .get("blocker")
         .unwrap_or_else(|| die(2, "block: --blocker is required"));
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason_class": rc,
+        "blocker": blocker,
+        "progress": progress_arg(&args).unwrap_or(json!({})),
+    });
+    let deps = dep_flags(&args);
+    if !deps.is_empty() {
+        body["deps"] = json!(deps);
+    }
+    if let Some(s) = args.get_i64("dep-recheck-seconds") {
+        body["dep_recheck_seconds"] = json!(s);
+    }
+    if let Some(s) = args.get_i64("dep-max-ttl-seconds") {
+        body["dep_max_ttl_seconds"] = json!(s);
+    }
+    let resp = unwrap_ok(call("/block", &body));
+    print_json(&require_row(&resp, "block_task"));
+    0
+}
+
+/// #8276: parse the --blocked-by-* flags into the broker's deps
+/// array. Refs are owner/repo#N for pr/issue/ci (the number is a
+/// PR/issue number or an Actions run id) and bare ids for tasks;
+/// comma-separated lists allow several deps of one kind. Bad
+/// refs die here, at the caller's terminal — never as a prose
+/// block the broker cannot watch.
+fn dep_flags(args: &Args) -> Vec<Value> {
+    let mut deps = Vec::new();
+    for (flag, kind) in [
+        ("blocked-by-pr", "pr"),
+        ("blocked-by-issue", "issue"),
+        ("blocked-by-ci", "ci"),
+    ] {
+        if let Some(v) = args.get(flag) {
+            for item in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                let Some((repo, num)) = item.rsplit_once('#') else {
+                    die(
+                        2,
+                        &format!("block: --{flag} expects owner/repo#N, got '{item}'"),
+                    );
+                };
+                let n: i64 = num.parse().unwrap_or_else(|_| {
+                    die(
+                        2,
+                        &format!("block: --{flag} expects owner/repo#N, got '{item}'"),
+                    )
+                });
+                if kind == "ci" {
+                    deps.push(json!({"kind": kind, "repo": repo, "run_id": n}));
+                } else {
+                    deps.push(json!({"kind": kind, "repo": repo, "number": n}));
+                }
+            }
+        }
+    }
+    if let Some(v) = args.get("blocked-by-task") {
+        for item in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let n: i64 = item.parse().unwrap_or_else(|_| {
+                die(
+                    2,
+                    &format!("block: --blocked-by-task expects a task id, got '{item}'"),
+                )
+            });
+            deps.push(json!({"kind": "task", "task_id": n}));
+        }
+    }
+    deps
+}
+
+/// unblock (#8276): the manual override — release a blocked
+/// task now, dep-blocked or classic. The broker audits who
+/// overrode and what dep record was discarded.
+fn cmd_unblock(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("unblock", &args, 1);
     let resp = unwrap_ok(call(
-        "/block",
+        "/unblock",
         &json!({
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
-            "reason_class": rc,
-            "blocker": blocker,
-            "progress": progress_arg(&args).unwrap_or(json!({})),
+            "reason": args.get("reason").unwrap_or_default(),
         }),
     ));
-    print_json(&require_row(&resp, "block_task"));
+    print_json(&require_row(&resp, "unblock_task"));
+    0
+}
+
+/// dep-recheck (#8276): run the broker's dep recheck pass now,
+/// or force one task's recheck with --task. Production cadence
+/// is the sweep's (the expire timer fires it every minute);
+/// this is the manual trigger.
+fn cmd_dep_recheck(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["task", "limit"], &[]);
+    reject_extra_pos("dep-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/dep-recheck", &body));
+    print_json(&require_row(&resp, "dep_recheck"));
     0
 }
 
@@ -2204,6 +2308,8 @@ pub fn run(args: &[String]) -> i32 {
         "park" => cmd_park(rest),
         "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
+        "unblock" => cmd_unblock(rest),
+        "dep-recheck" => cmd_dep_recheck(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
