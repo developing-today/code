@@ -272,6 +272,31 @@ describe("uploadImageFile", () => {
     const file = new File(["data"], "photo.png", { type: "image/png" });
     await expect(uploadImageFile(file)).rejects.toThrow("Network error");
   });
+
+  // Regression (#7823): a wrong-shape 200 must reject at the fetch
+  // boundary so the caller takes the upload-failure path; pre-fix these
+  // payloads resolved and inserted an image node with src undefined
+  // (or made the caller deref null and report "Insertion failed").
+  it.each([
+    ["null body", null],
+    ["string body", "abc"],
+    ["array body", []],
+    ["empty object", {}],
+    ["missing url", { hash: "abc123", name: "photo.png" }],
+    ["missing hash", { name: "photo.png", url: "/blob/abc123" }],
+    ["missing name", { hash: "abc123", url: "/blob/abc123" }],
+    ["non-string url", { hash: "abc123", name: "photo.png", url: 123 }],
+    ["non-string hash", { hash: 42, name: "photo.png", url: "/blob/abc123" }],
+  ])("rejects a malformed /api/upload payload: %s", async (_label, payload) => {
+    const mockResponse = {
+      ok: true,
+      json: () => Promise.resolve(payload),
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse as Response);
+
+    const file = new File(["fake image data"], "photo.png", { type: "image/png" });
+    await expect(uploadImageFile(file)).rejects.toThrow("Upload failed: malformed /api/upload response");
+  });
 });
 
 // ============================================================================

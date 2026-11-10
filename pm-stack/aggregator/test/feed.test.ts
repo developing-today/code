@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   feedSectionStatus,
+  coverageFromFeed,
+  feedSectionStatus,
   isBurnSegment,
   isChargeRow,
   isFleetFeed,
@@ -26,6 +28,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
 import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow, SessionRecord } from "../src/model.ts";
+
+describe("feed stale-issue census", () => {
+  test("preserves timestamped counts, accepts older census rows, and rejects malformed optional fields", () => {
+    const current = {
+      repo: "developing-today/code",
+      openIssues: 10,
+      gateNow: 1,
+      gateNext: 2,
+      staleOpenIssues: 3,
+      staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+      staleIssuesError: null,
+    };
+    expect(coverageFromFeed({ coverage: [current] })).toEqual([current]);
+    expect(coverageFromFeed({ coverage: [{ repo: "old/repo", openIssues: 1, gateNow: 0, gateNext: 0 }] })).toEqual([
+      { repo: "old/repo", openIssues: 1, gateNow: 0, gateNext: 0 },
+    ]);
+    expect(coverageFromFeed({ coverage: [{ ...current, staleIssuesCollectedAt: "not-a-timestamp" }] })).toBeNull();
+    expect(coverageFromFeed({})).toBeNull();
+  });
+});
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).

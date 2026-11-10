@@ -23,6 +23,7 @@ import {
   validateNewIncident,
   validateNewSubscription,
   AlertsStore,
+  type AlertTickOptions,
   type AlertsStore as AlertsStoreType,
   type Incident,
   type PushSubscriptionRow,
@@ -32,6 +33,7 @@ import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
 import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
 import type { Config } from "../src/config.ts";
+import type { NotificationHistoryEntry, NotificationSnapshot } from "../src/notifications.ts";
 
 describe("getAlertsStore retry-after-null memoization", () => {
   test("retries a null client, shares the next in-flight attempt, and caches success", async () => {
@@ -91,15 +93,24 @@ describe("sql literals", () => {
 
 describe("class + quiet merges (design §1/§2)", () => {
   test("incident defaults on; explicit off survives", () => {
-    expect(mergeClasses(undefined)).toEqual({ incident: true });
-    expect(mergeClasses({ incident: false })).toEqual({ incident: false });
-    expect(mergeClasses({ incident: true, "quota-wall": false })).toEqual({ incident: true, "quota-wall": false });
-    expect(mergeClasses({ incident: "yes" })).toEqual({ incident: true }); // non-boolean ignored
+    expect(mergeClasses(undefined)).toEqual({
+      incident: true,
+      "needs-drew": true,
+      "quota-wall": true,
+      "quota-near-wall": true,
+      "stack-health": true,
+      "blocked-age": true,
+    });
+    expect(mergeClasses({ incident: false }).incident).toBe(false);
+    expect(mergeClasses({ incident: true, "quota-wall": false })["quota-wall"]).toBe(false);
+    expect(mergeClasses({ incident: "yes" }).incident).toBe(true); // non-boolean ignored
   });
-  test("classEnabled: only an explicit false disables", () => {
+  test("classEnabled preserves old rows while new rows get defaults", () => {
     expect(classEnabled({ classes: {} }, "incident")).toBe(true);
     expect(classEnabled({ classes: { incident: false } }, "incident")).toBe(false);
     expect(classEnabled({ classes: { incident: true } }, "incident")).toBe(true);
+    expect(classEnabled({ classes: {} }, "needs-drew")).toBe(false);
+    expect(classEnabled({ classes: mergeClasses(undefined) }, "needs-drew")).toBe(true);
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {
     expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });
@@ -294,7 +305,14 @@ describe("validation", () => {
     });
     expect(ok.ok).toBe(true);
     if (ok.ok) {
-      expect(ok.value.classes).toEqual({ incident: true });
+      expect(ok.value.classes).toEqual({
+        incident: true,
+        "needs-drew": true,
+        "quota-wall": true,
+        "quota-near-wall": true,
+        "stack-health": true,
+        "blocked-age": true,
+      });
       expect(ok.value.quiet.tz).toBe("America/Chicago");
     }
     expect(
@@ -469,6 +487,107 @@ describe("pending alert batch fairness", () => {
 });
 
 describe("alert tick delivery state", () => {
+  test("dashboard candidates are delivered once and their state is persisted for dedupe", async () => {
+    const now = Date.parse("2026-11-03T18:00:00Z");
+    const { store } = alertTickStore({ deliveries: [], escalations: [] });
+    const sub: PushSubscriptionRow = {
+      id: "sub-dashboard",
+      endpoint: "https://push.example/sub-dashboard",
+      p256dh: "p256dh",
+      auth: "auth",
+      classes: { incident: true, "needs-drew": true },
+      quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+      user_agent: null,
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T00:00:00Z",
+      gone_count: 0,
+    };
+    store.listSubscriptions = async () => [sub];
+    const historyRows: NotificationHistoryEntry[] = [];
+    const notificationHistory: NonNullable<AlertTickOptions["notificationHistory"]> = {
+      read: async () => [...historyRows],
+      append: async (entry) => {
+        historyRows.push(entry);
+      },
+    };
+    let dashboardPushes = 0;
+    const push: typeof successfulSend = async (_target, payload) => {
+      if ((payload as { class: string }).class === "needs-drew") dashboardPushes += 1;
+      return successfulSend(_target, payload);
+    };
+    const item = {
+      id: "task-1",
+      kind: "task",
+      title: "Needs-Drew task",
+      since: new Date(now - 60_000).toISOString(),
+      state: "open",
+    };
+    const dashboardSnapshot = async (): Promise<NotificationSnapshot> => ({
+      attention: { drew: [item], drewExtra: [] } as unknown as NotificationSnapshot["attention"],
+      quota: { pools: [] } as unknown as NotificationSnapshot["quota"],
+      health: { services: [] },
+    });
+
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now });
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: now + 60_000 });
+
+    expect(dashboardPushes).toBe(1);
+    expect(historyRows.map((row) => row.outcome)).toEqual(["sent", "suppressed-dedupe"]);
+    expect(historyRows.every((row) => row.subscriptionId === sub.id)).toBe(true);
+  });
+
+  test("quiet-hour candidates persist across ticks and drain as one digest at window end", async () => {
+    const now = Date.parse("2026-11-04T01:00:00Z");
+    const { store } = alertTickStore({ deliveries: [], escalations: [] });
+    const sub: PushSubscriptionRow = {
+      id: "sub-digest",
+      endpoint: "https://push.example/sub-digest",
+      p256dh: "p256dh",
+      auth: "auth",
+      classes: { incident: true, "needs-drew": true },
+      quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+      user_agent: null,
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T00:00:00Z",
+      gone_count: 0,
+    };
+    store.listSubscriptions = async () => [sub];
+    const historyRows: NotificationHistoryEntry[] = [];
+    const notificationHistory: NonNullable<AlertTickOptions["notificationHistory"]> = {
+      read: async () => [...historyRows],
+      append: async (entry) => {
+        historyRows.push(entry);
+      },
+    };
+    const pushed: unknown[] = [];
+    const push: typeof successfulSend = async (_target, payload) => {
+      pushed.push(payload);
+      return successfulSend(_target, payload);
+    };
+    const item = {
+      id: "quiet-task",
+      kind: "task",
+      title: "Quiet-hour task",
+      since: new Date(now - 60_000).toISOString(),
+      state: "open",
+    };
+    const dashboardSnapshot = async (): Promise<NotificationSnapshot> => ({
+      attention: { drew: [item], drewExtra: [] } as unknown as NotificationSnapshot["attention"],
+      quota: { pools: [] } as unknown as NotificationSnapshot["quota"],
+      health: { services: [] },
+    });
+
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now });
+    expect(pushed).toHaveLength(0);
+    expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued"]);
+
+    // Recreate the tick over the same durable history at quiet-window end.
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: Date.parse("2026-11-04T07:00:00Z") });
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toMatchObject({ class: "digest", items: [{ title: "Quiet-hour task" }] });
+    expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued", "sent"]);
+  });
+
   test("all-error delivery stays pending and a later successful tick marks it delivered once", async () => {
     const { store, calls } = alertTickStore();
 
@@ -886,5 +1005,28 @@ describe("push subscription redaction (#3693)", () => {
     const verbatim = JSON.stringify({ subscriptions: [row] });
     expect(verbatim).toContain(sentinelP256dh);
     expect(verbatim).toContain(sentinelAuth);
+  });
+});
+
+describe("subscription class preservation (#7193 Codex)", () => {
+  test("validateNewSubscription records only the explicitly sent class keys", () => {
+    const parsed = validateNewSubscription({
+      endpoint: "https://push.example/x",
+      keys: { p256dh: "p", auth: "a" },
+      classes: { incident: true },
+      quiet: { start: "22:00", end: "06:00" },
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value.providedClasses).toEqual({ incident: true });
+      // The expanded map is still the full default set for NEW rows.
+      expect(parsed.value.classes["quota-wall"]).toBe(true);
+    }
+  });
+
+  test("no classes sent records an empty provided set", () => {
+    const parsed = validateNewSubscription({ endpoint: "https://push.example/x", keys: { p256dh: "p", auth: "a" } });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.providedClasses).toEqual({});
   });
 });
