@@ -493,6 +493,49 @@ def _collect_parked_handoffs(queue: str, want: int) -> Dict[int, Dict]:
     return collected
 
 
+
+HELD_ISSUE_LABELS = {"held", "user/owned", "do-not-merge", "do-not-auto-edit"}
+
+_CREDENTIAL_KEY_PARTS = ("password", "secret", "token", "credential",
+                         "api_key", "apikey", "private_key")
+
+
+def _github_issue_labels(repo: str, issue_number: int) -> set:
+    """Live label names on an issue, read through the gh CLI.
+    Raises on any failure so the caller can fail closed (#7670)."""
+    result = subprocess.run(
+        ["gh", "issue", "view", str(issue_number), "--repo", repo,
+         "--json", "labels", "--jq", "[.labels[].name]"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh issue view failed: {result.stderr.strip()[:200]}")
+    names = json.loads(result.stdout)
+    if not isinstance(names, list):
+        raise RuntimeError("gh issue view returned a non-list label set")
+    return {str(n) for n in names}
+
+
+def _prompt_safe_packet(packet):
+    """Deep-copy a packet for the execution prompt with any
+    credential-shaped values redacted (#7670): a credential must
+    never enter a prompt, log, or payload surface, and packets are
+    assembled by many hands - strip by key name, recursively."""
+    if isinstance(packet, dict):
+        safe = {}
+        for key, value in packet.items():
+            lowered = str(key).lower()
+            if any(part in lowered for part in _CREDENTIAL_KEY_PARTS):
+                safe[key] = "[redacted]"
+                continue
+            safe[key] = _prompt_safe_packet(value)
+        return safe
+    if isinstance(packet, list):
+        return [_prompt_safe_packet(v) for v in packet]
+    return packet
+
+
 def launch_step(mode: str, cap_room: int) -> List[Dict]:
     """
     Step 4: Launch - create sessions and bind tasks.
@@ -613,6 +656,37 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 })
                 continue
             
+            # Step 4a2: Held-label gate (#7670). A candidate whose
+            # issue carries a held label (held, user/owned,
+            # do-not-merge, do-not-auto-edit) must never be launched:
+            # the queue-side hard stop is label-based, and the
+            # claimant is the last line of defense before a session
+            # exists. The check fails closed: an unreadable label set
+            # is a skip, never a launch. Candidates without a
+            # repo/issue reference have nothing to check.
+            _packet = packet if isinstance(packet, dict) else {}
+            _repo = _packet.get("repo") or ""
+            _issue_no = candidate.get("issue_number")
+            if _issue_no is None and isinstance(_packet.get("issue"), dict):
+                _issue_no = _packet["issue"].get("number")
+            if _repo and _issue_no:
+                try:
+                    _labels = _github_issue_labels(
+                        str(_repo), int(str(_issue_no).lstrip("#")))
+                except Exception as e:
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": f"held_label_check_failed: {str(e)}"
+                    })
+                    continue
+                _held = sorted(_labels & HELD_ISSUE_LABELS)
+                if _held:
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": f"held_issue_labels: {','.join(_held)}"
+                    })
+                    continue
+
             # Step 4b: Create worker session
             session_create_body = {
                 "location": {
@@ -705,7 +779,7 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 prompt = f"""
 Execute queue task {task_id}
 Issue: {issue}
-Packet: {json.dumps(packet, indent=2)}
+Packet: {json.dumps(_prompt_safe_packet(packet), indent=2)}
 
 You are a build agent working on this opencode-lane task.
 Use --worker {worker_id} for all queue CLI operations.
