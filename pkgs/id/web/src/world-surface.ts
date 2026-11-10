@@ -52,8 +52,12 @@ const MAX_SCREEN_WIDTH = 120;
 const MAX_SCREEN_HEIGHT = 50;
 const MAX_SCREEN_CELLS = MAX_SCREEN_WIDTH * MAX_SCREEN_HEIGHT;
 
-function xtermColor(index: number): string | null {
-  if (!Number.isInteger(index) || index < 0 || index > 255 || index === 0) return null;
+// ⚡ Bolt optimization: renderWorldSurface calls xtermColor twice per cell —
+// up to 12,000 calls for a full 120x50 frame, once per incoming screen patch.
+// The 256-entry xterm palette is fixed, so resolve it once at module load
+// instead of rebuilding the 16-entry basic-colour array and formatting strings
+// on every call. Index 0 means "no explicit colour" (null), as before.
+const XTERM_PALETTE: ReadonlyArray<string | null> = (() => {
   const basic = [
     "#000000",
     "#800000",
@@ -72,17 +76,40 @@ function xtermColor(index: number): string | null {
     "#00ffff",
     "#ffffff",
   ];
-  if (index <= 15) return basic[index];
-  if (index <= 231) {
+  const palette: Array<string | null> = new Array(256).fill(null);
+  for (let index = 1; index < 16; index++) palette[index] = basic[index] ?? null;
+  for (let index = 16; index <= 231; index++) {
     const value = index - 16;
     const level = (component: number) => (component === 0 ? 0 : 55 + component * 40);
     const r = level(Math.floor(value / 36));
     const g = level(Math.floor((value % 36) / 6));
     const b = level(value % 6);
-    return `#${[r, g, b].map((part) => part.toString(16).padStart(2, "0")).join("")}`;
+    palette[index] = `#${[r, g, b].map((part) => part.toString(16).padStart(2, "0")).join("")}`;
   }
-  const gray = 8 + (index - 232) * 10;
-  return `#${gray.toString(16).padStart(2, "0").repeat(3)}`;
+  for (let index = 232; index < 256; index++) {
+    const gray = 8 + (index - 232) * 10;
+    palette[index] = `#${gray.toString(16).padStart(2, "0").repeat(3)}`;
+  }
+  return palette;
+})();
+
+function xtermColor(index: number): string | null {
+  if (!Number.isInteger(index) || index < 0 || index > 255) return null;
+  return XTERM_PALETTE[index] ?? null;
+}
+
+/**
+ * True when every code point in `symbol` is a printable, non-control char.
+ * Iterates code units instead of allocating an array via Array.from(): control
+ * characters (C0, DEL, C1) all live in the BMP, so a surrogate half always
+ * passes here exactly as its code point did before.
+ */
+function isPrintableSymbol(symbol: string): boolean {
+  for (let i = 0; i < symbol.length; i++) {
+    const code = symbol.charCodeAt(i);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return false;
+  }
+  return true;
 }
 
 // Wide code-point ranges matching Rust unicode-width 0.2's wide table,
@@ -649,10 +676,7 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
     if (
       !cell ||
       typeof cell.symbol !== "string" ||
-      Array.from(cell.symbol).some((character) => {
-        const codePoint = character.codePointAt(0) ?? 0;
-        return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
-      }) ||
+      !isPrintableSymbol(cell.symbol) ||
       !Number.isInteger(cell.fg) ||
       !Number.isInteger(cell.bg) ||
       cell.fg < 0 ||
@@ -680,11 +704,22 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
     }
     if (cell.columns !== 1 && cell.columns !== 2) return false;
 
-    const graphemes = segmenter ? Array.from(segmenter.segment(cell.symbol)) : Array.from(cell.symbol);
-    if (graphemes.length !== 1) return false;
+    // ⚡ Bolt optimization: a printable ASCII cell is a single code unit in
+    // U+0020..U+007E — exactly one grapheme and exactly one column wide under
+    // unicode-width 0.2. Terminal frames are overwhelmingly ASCII, so this
+    // skips Intl.Segmenter (a full grapheme segmentation per cell) and the
+    // unicode-width regexes on the common path. Every other cell keeps the
+    // existing general path unchanged, so validation semantics are identical.
+    const ascii = cell.symbol.length === 1 ? cell.symbol.charCodeAt(0) : 0;
+    if (ascii >= 0x20 && ascii <= 0x7e) {
+      if (cell.columns !== 1) return false;
+    } else {
+      const graphemes = segmenter ? Array.from(segmenter.segment(cell.symbol)) : Array.from(cell.symbol);
+      if (graphemes.length !== 1) return false;
 
-    const terminalWidth = graphemeWidth(cell.symbol);
-    if (terminalWidth !== cell.columns) return false;
+      const terminalWidth = graphemeWidth(cell.symbol);
+      if (terminalWidth !== cell.columns) return false;
+    }
 
     if (cell.columns === 2) {
       const continuation = surface.cells[index + 1];

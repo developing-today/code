@@ -660,6 +660,17 @@ let
       ) justRecipes.recipes;
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      mcpxContainer = pkgs.callPackage ../pkgs/mcpx/container-image.nix {
+        mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix {
+          wrapWithRuntimes = false;
+          doCheck = false;
+        };
+      };
+      identity = pkgs.callPackage ../pkgs/identity/package.nix { };
+      identityImage = pkgs.callPackage ../pkgs/identity/container-image.nix {
+        inherit identity;
+      };
+      identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -672,12 +683,16 @@ let
       packages = {
         inherit
           mcpx
+          identity
           idMailDeploy
           pkarrDeploy
           developingTodayBackupDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
+        mcpx-container = mcpxContainer;
+        identity-image = identityImage;
+        identity-provider-image = identityProviderImage;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -1095,8 +1110,8 @@ let
       ))
     ];
 
-  # Flake checks for the laptop-backups shell suites (#1841): the seven
-  # suites in nixos/home drive the real backup and watchdog scripts with
+  # Flake checks for the laptop-backups shell suites (#1841): the suites
+  # in nixos/home drive the real backup and watchdog scripts with
   # stubbed systemctl/bws/journalctl/rclone, so each is a runCommandLocal
   # that copies nixos/home somewhere writable and runs one suite. Until
   # this wiring they ran only by hand on the laptop, so a regression in
@@ -1108,11 +1123,17 @@ let
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       suites = [
+        "laptop-autocommit-in-progress"
+        "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"
+        "laptop-repo-keeper"
+        "laptop-untracked-review"
+        "openclaw-backup"
         "pm-dashboard-backup"
         "pm-dashboard-backup-copy"
         "pm-dashboard-backup-date"
         "pm-dashboard-backup-manifest"
+        "pm-dashboard-backup-pmp-links"
         "pm-dashboard-backup-prune"
         "pm-dashboard-backup-record"
       ];
@@ -1131,10 +1152,12 @@ let
                   pkgs.findutils
                   pkgs.gnugrep
                   pkgs.gnused
+                  pkgs.git
                   pkgs.gnutar
                   pkgs.gzip
                   pkgs.jq
                   pkgs.python3
+                  pkgs.sqlite
                   pkgs.util-linux
                   pkgs.zstd
                 ];
@@ -1166,10 +1189,229 @@ let
     in
     {
       packages = {
-        inherit (fleetPkgs) fleet fleet-serve fleet-connect fleet-brokers;
+        inherit (fleetPkgs)
+          fleet
+          fleet-serve
+          fleet-connect
+          fleet-brokers
+          ;
       }
       // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
         inherit (fleetPkgs) fleet-connect-static fleet-static;
+      };
+    }
+  );
+
+  # deploy registry + CLI (pkgs/deploy; issue #5766 slice 1):
+  # deployTargets merges this repo's service definitions (design
+  # 2026-11-04 section 3); the checks pin the packet's acceptance --
+  # `deploy list` enumerates the real registry and refuses a malformed one.
+  make-deploy = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      deployPkgs = pkgs.callPackage ../pkgs/deploy {
+        sourceRev = inputs.self.rev or "dirty";
+      };
+      badRegistry = pkgs.writeText "deploy-targets-malformed.json" (
+        builtins.toJSON {
+          broken = {
+            entryPoint = 3;
+            ports = [ 70000 ];
+          };
+        }
+      );
+      validationService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      # Keep each registry valid except for the exact issue #6383 shape.
+      newlineNameRegistry = pkgs.writeText "deploy-targets-newline-name.json" ''
+        {"svc\n": ${builtins.toJSON validationService}}
+      '';
+      duplicateSecretsRegistry = pkgs.writeText "deploy-targets-duplicate-secrets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            secrets = [
+              "secret.name"
+              "secret.name"
+            ];
+          };
+        }
+      );
+      duplicateTargetsRegistry = pkgs.writeText "deploy-targets-duplicate-targets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            targets = [
+              "laptop"
+              "laptop"
+            ];
+          };
+        }
+      );
+      hostlessHealthCheckRegistry = pkgs.writeText "deploy-targets-hostless-health-check.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            healthCheck = "http://";
+          };
+        }
+      );
+      duplicatePortsRegistry = pkgs.writeText "deploy-targets-duplicate-ports.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            ports = [
+              8080
+              8080
+            ];
+          };
+        }
+      );
+      # Duplicate keys cannot be expressed as a Nix attrset, so these
+      # registries are raw JSON text (issue #6384): load_registry must
+      # reject them naming the duplicated key.
+      dupServiceRegistry = pkgs.writeText "deploy-targets-dup-service.json" ''
+        {"svc": {"class": "bogus-class"}, "svc": {"class": "systemd"}}
+      '';
+      dupFieldRegistry = pkgs.writeText "deploy-targets-dup-field.json" ''
+        {"svc": {"ports": "notalist", "ports": []}}
+      '';
+      # Unhashable restart/class values (issue #6388): arrays/objects
+      # where validate() expects a string. validate() must report
+      # them by field, not crash with a TypeError, and one
+      # crashing-shape service must not suppress another service's
+      # ordinary field reports.
+      unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
+        {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
+      '';
+    in
+    {
+      packages.deploy = deployPkgs.deploy;
+      deployTargets = deployPkgs.deployTargets;
+      checks = {
+        deploy-list =
+          pkgs.runCommandLocal "check-deploy-list"
+            {
+              nativeBuildInputs = [ pkgs.gnugrep ];
+            }
+            ''
+              ${deployPkgs.deploy}/bin/deploy list > list.txt
+              cat list.txt
+              grep -q "queue-broker" list.txt
+              grep -q "secrets-broker" list.txt
+              grep -q "session-proxy" list.txt
+              grep -q "mcpx" list.txt
+              grep -q "laptop" list.txt
+              mkdir -p $out
+              cp list.txt $out/list.txt
+            '';
+        deploy-dupkeys-property =
+          pkgs.runCommandLocal "check-deploy-dupkeys-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice2-tests =
+          pkgs.runCommandLocal "check-deploy-slice2-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice3-tests =
+          pkgs.runCommandLocal "check-deploy-slice3-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv =
+          pkgs.runCommandLocal "check-deploy-argv"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv-property =
+          pkgs.runCommandLocal "check-deploy-argv-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
+          expect_invalid() {
+            registry="$1"
+            expected="$2"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > out.txt 2> err.txt; then
+              echo "deploy list accepted a malformed registry: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "$expected" err.txt; then
+              echo "deploy list did not report '$expected' for $registry" >&2
+              cat err.txt >&2
+              exit 1
+            fi
+            test ! -s out.txt
+          }
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${badRegistry} > out.txt 2> err.txt; then
+            echo "deploy list accepted a malformed registry" >&2
+            exit 1
+          fi
+          grep -q "entryPoint" err.txt
+          grep -q "ports" err.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupServiceRegistry} > dup-svc-out.txt 2> dup-svc-err.txt; then
+            echo "deploy list accepted a registry with a duplicate service key" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'svc'" dup-svc-err.txt
+          test ! -s dup-svc-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupFieldRegistry} > dup-field-out.txt 2> dup-field-err.txt; then
+            echo "deploy list accepted a registry with a duplicate field" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'ports'" dup-field-err.txt
+          test ! -s dup-field-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${unhashableRegistry} > unhash-out.txt 2> unhash-err.txt; then
+            echo "deploy list accepted a registry with unhashable restart/class values" >&2
+            exit 1
+          fi
+          grep -q "service 'bad': restart must be one of" unhash-err.txt
+          grep -q "service 'bad': class must be one of" unhash-err.txt
+          grep -q "service 'other': class must be one of" unhash-err.txt
+          grep -q "service 'other': restart must be one of" unhash-err.txt
+          if grep -q "Traceback" unhash-err.txt; then
+            echo "deploy list crashed with a traceback on unhashable values" >&2
+            exit 1
+          fi
+          test ! -s unhash-out.txt
+          expect_invalid ${newlineNameRegistry} "name must match"
+          expect_invalid ${duplicateSecretsRegistry} "secrets must not repeat a secret name"
+          expect_invalid ${duplicateTargetsRegistry} "targets must not repeat a target"
+          expect_invalid ${hostlessHealthCheckRegistry} "healthCheck must be an http(s) URL with a host"
+          expect_invalid ${duplicatePortsRegistry} "ports must not repeat a port"
+          mkdir -p $out
+          cp err.txt $out/errors.txt
+        '';
       };
     }
   );
@@ -1253,6 +1495,7 @@ let
         make-mcpx-modules
         make-laptop-backups-checks
         make-fleet
+        make-deploy
         ;
     }
   ];

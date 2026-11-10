@@ -25,6 +25,7 @@ rec {
       lib.make-mcpx-modules
       lib.make-laptop-backups-checks
       lib.make-fleet
+      lib.make-deploy
     ];
   inputs = {
     nixgl = {
@@ -86,7 +87,7 @@ rec {
     };
     #arunoruto.url = "github:arunoruto/flake"; #?shallow=1";
     # # TODO: update! way out of date even as of 2026-03
-    unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
+    unattended-installer.url = "github:developing-today-vendored/nixos-unattended-installer"; # ?shallow=1";
 
     # 2026-08-21: rebased fork patch (neededForBoot) onto latest master
     # neededForBoot patch applied via patches/nixpkgs/neededforboot-nixos-unstable.patch (see lib/default.nix)
@@ -268,13 +269,22 @@ rec {
     opencode = {
       url = "github:developing-today-forks/opencode";
     };
-    # OpenChamber. Its opencode input deliberately does NOT follow
-    # this flake's `opencode` above: the service cascade's module
-    # chain (openchamber -> opencode fork -> mcpx) is governed by
-    # OpenChamber's own lock file, so the modules and the packages
-    # they manage always come from the same, upstream-paired pins.
+    # OpenChamber. Its opencode input follows this flake's
+    # `opencode` above: there is ONE opencode source in this flake
+    # graph (the developing-today fork), and the service cascade's
+    # module chain (openchamber -> opencode fork -> mcpx) builds
+    # from that same pin. This reverses the earlier paired-pin
+    # arrangement after code#5519: while the cascade input was left
+    # to OpenChamber's own declaration (a pre-transfer URL that no
+    # longer matches this lock), every evaluation silently
+    # re-resolved it to that repo's current HEAD -- the deployed
+    # server was built from an unlocked rev (generation 530 runs
+    # opencode-2.0.30+c1dea59 against a committed cascade pin of
+    # 4175c630). Following the root input makes the committed lock
+    # the single statement of the fork rev for CLI and server.
     openchamber = {
       url = "github:developing-today-forks/openchamber";
+      inputs.opencode.follows = "opencode";
     };
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer
     # intelligence source on the laptop). Home Manager module + overlay;

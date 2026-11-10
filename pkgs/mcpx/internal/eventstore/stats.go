@@ -36,7 +36,7 @@ func (s *Store) CallStats() ([]CallStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type key struct{ server, tool string }
 	durations := map[key][]float64{}

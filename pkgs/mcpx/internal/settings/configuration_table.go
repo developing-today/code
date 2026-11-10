@@ -12,7 +12,7 @@ import (
 // generated region from a single place (#4909). The rendering is
 // unchanged.
 
-// settingsTable renders every setting, grouped by the first segment of its
+// ConfigurationTable renders every setting, grouped by the first segment of its
 // path, which is how someone looks one up: they know the area, not the leaf.
 func ConfigurationTable(all []Setting) string {
 	groups := map[string][]Setting{}
@@ -48,6 +48,9 @@ func ConfigurationTable(all []Setting) string {
 				envs = append(envs, "`"+a+"`")
 			}
 			governs := set.Short
+			if len(set.PathAliases) > 0 {
+				governs += "; path alias: " + strings.Join(set.PathAliases, ", ")
+			}
 			if len(set.EnumAliases) > 0 {
 				// Only where aliases exist: the canonical names are what a
 				// reader should write, and the aliases are what they may

@@ -11,8 +11,8 @@
 ## The four repos (kept healthy by continuous sweeps)
 
 1. `developing-today/code` — the monorepo: laptop NixOS flake, provider proxies (`bin/*-proxy.mjs`), mcpx, the id project, PM stack. **All new code goes here.**
-2. `developing-today/opencode` — OpenCode fork (model routing / route pools work).
-3. `developing-today/openchamber` — OpenChamber.
+2. `developing-today-forks/opencode` — OpenCode fork (model routing / route pools work).
+3. `developing-today-forks/openchamber` — OpenChamber.
 4. `dezren39/nix` — nix config/packages (incl. mcpx packaging).
 
 Sweep discipline: fix one issue per pass when you can; open PRs are first-class work items; triage and prioritize the backlog otherwise. Labels: `user/owned`, `user/review` (Muse triages first), `user/escalated`; lifecycle labels `work/*`, `effort/*`, `queue/blocked`, `meta/*` with the agent-note:v1 standard.

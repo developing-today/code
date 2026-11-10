@@ -33,6 +33,9 @@
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
+//   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
+//                                         (default 3000 ms; below the client
+//                                         no-output window)
 //   OPENCODE_ROUTE_PROXY_CONFIG      opencode.jsonc path (default:
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
@@ -60,6 +63,10 @@ import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
 const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
+const LEAF_TIMEOUT_MS = parseProxyMillis(
+  "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
+  3_000,
+);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
@@ -329,8 +336,14 @@ const leafCredential = (cfg, providerId) => {
 };
 const hasCredential = (cfg, providerId) => Boolean(leafCredential(cfg, providerId));
 
-// (provider,model) pairs demoted by the doctrine: >=3 quota failures
-// (quota detail recorded, or a RateLimit tag) inside the last 4 hours.
+// (provider,model) pairs demoted by the doctrine: >=3 qualifying
+// failures (quota detail recorded, a RateLimit tag, or an
+// Authentication tag) inside the last 4 hours, counting only the
+// current failure run: a success on the pair clears the run and
+// lifts the demotion. The Authentication arm is #8048: a leg whose
+// credential is dead fails 100% with provider.auth and never
+// carried quota detail, so the quota-only filter never demoted it
+// and it stayed first-choice while killing sessions.
 const demotedPairs = () => {
   let db = null;
   try {
@@ -339,7 +352,12 @@ const demotedPairs = () => {
       .prepare(
         `SELECT provider_id, model_id FROM route_attempt
          WHERE time_started > ? AND outcome != 'success'
-           AND (quota IS NOT NULL OR error_tag = 'RateLimit')
+           AND (quota IS NOT NULL OR error_tag IN ('RateLimit', 'Authentication'))
+           AND time_started > COALESCE(
+             (SELECT MAX(s.time_started) FROM route_attempt s
+              WHERE s.provider_id = route_attempt.provider_id
+                AND s.model_id = route_attempt.model_id
+                AND s.outcome = 'success'), 0)
          GROUP BY provider_id, model_id HAVING COUNT(*) >= ?`,
       )
       .all(Date.now() - DEMOTE_WINDOW_MS, DEMOTE_THRESHOLD);
@@ -1205,10 +1223,27 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       const next = attempts[i + 1];
       const failedOverTo = next ? `${next.providerId}/${next.modelKey}` : null;
       let res;
+      const leafDeadlineCtl = new AbortController();
+      const leafTimer = setTimeout(
+        () =>
+          leafDeadlineCtl.abort(
+            new Error("opencode-route-proxy leaf first-response timeout"),
+          ),
+        LEAF_TIMEOUT_MS,
+      );
+      const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
       try {
-        res = await callLeaf(cfg, leaf, body, wantStream, signal, sessionLabel);
+        res = await callLeaf(
+          cfg,
+          leaf,
+          body,
+          wantStream,
+          leafSignal,
+          sessionLabel,
+        );
       } catch (err) {
         const ended = Date.now();
+        const leafTimedOut = !signal.aborted && leafDeadlineCtl.signal.aborted;
         recordAttempt({
           started,
           ended,
@@ -1216,7 +1251,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
           providerId: leaf.providerId,
           modelId: leaf.modelKey,
           variant: leaf.variant,
-          outcome: signal.aborted ? "timeout" : "failure",
+          outcome: signal.aborted || leafTimedOut ? "timeout" : "failure",
           errorTag: err.tag || "Transport",
           errorCode: err.code ?? null,
           errorMessage: String(err.message || err).slice(0, 500),
@@ -1229,6 +1264,8 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
         lastErr = err;
         if (signal.aborted) throw err;
         continue;
+      } finally {
+        clearTimeout(leafTimer);
       }
       if (!res.ok) {
         const ended = Date.now();

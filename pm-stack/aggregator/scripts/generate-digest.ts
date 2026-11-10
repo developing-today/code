@@ -20,9 +20,65 @@ import { liveSource } from "../src/sources/live.ts";
 import { classEnabled, getAlertsStore, inQuietHours } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
 
+const USAGE = "usage: generate-digest.ts [--kind daily|weekly] [--no-deliver] [--strict-deliver]";
+
+// A flag's value is the next argv token — but never another flag and
+// never nothing (#3723, the post-alert.ts guard). The unconditional
+// read used to make a present-but-valueless --kind indistinguishable
+// from an absent one: the ?? default in main() then silently archived
+// a daily digest for an invocation that named --kind and supplied no
+// value, and a flag token in the value slot was blamed as a bad kind
+// (#6926).
+// Unknown or duplicated arguments are usage errors, never silently
+// ignored (#7097): argv is probed token-by-token below, so a typo'd
+// --knd weekly fell through to the daily default and a typo'd
+// --no-delivre made the includes() check false and delivered anyway.
+// Mirrors rejectUnknownArgs in append-usage-snapshots.ts (#6961) /
+// compact-usage-snapshots.ts (#6967). Runs before any config load,
+// archive write, or delivery attempt.
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (token === "--kind") {
+      if (seen.has(token)) {
+        console.error("generate-digest: duplicate --kind");
+        console.error(USAGE);
+        process.exit(2);
+      }
+      seen.add(token);
+      i++; // skip the value; arg() validates it
+      continue;
+    }
+    if (token === "--no-deliver" || token === "--strict-deliver") {
+      if (seen.has(token)) {
+        console.error(`generate-digest: duplicate ${token}`);
+        console.error(USAGE);
+        process.exit(2);
+      }
+      seen.add(token);
+      continue;
+    }
+    console.error(`generate-digest: unknown argument ${JSON.stringify(token)}`);
+    console.error(USAGE);
+    process.exit(2);
+  }
+}
+rejectUnknownArgs();
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value === "" || value.startsWith("--")) {
+    console.error(
+      `generate-digest: --${name} requires a value that is not a flag (got ${value === undefined ? "no value" : JSON.stringify(value)})`,
+    );
+    console.error(USAGE);
+    process.exit(2);
+  }
+  return value;
 }
 
 async function main(): Promise<void> {
@@ -72,9 +128,7 @@ async function main(): Promise<void> {
     objectRef: digest.archiveRoute,
     url: digest.archiveRoute,
     title: `PM ${kind} digest — ${digest.date}`,
-    body: digest.sections
-      .map((s) => `${s.title}: ${s.items.length}${s.stale ? " (stale)" : ""}`)
-      .join(" · "),
+    body: digest.sections.map((s) => `${s.title}: ${s.items.length}${s.stale ? " (stale)" : ""}`).join(" · "),
   };
   let sent = 0;
   const now = new Date();

@@ -7,7 +7,13 @@
 # (platform crates + the bin's dispatch/stub machinery + variant
 # builds); step 2 (#5430) the queue domain (crates/fleet-queue);
 # step 3 (#5431) the proxy domain (crates/fleet-proxy); step 4
-# (#5432) the dispatch thin client (crates/fleet-dispatch).
+# (#5432) the dispatch thin client (crates/fleet-dispatch); step 6
+# (#5554) the secrets verb (in the bin crate, over fleet-secrets);
+# step 5 (#5433) the search client domain (crates/fleet-search),
+# gated on the #5350 step-6 Atlas cutover; #5604 the search serve
+# role (crates/fleet-search `serve` feature), the one member that
+# consumes crates outside this workspace (atlas-core / atlas-embed /
+# atlas-proto by path, ../atlas-search/crates/*, untouched).
 [workspace]
 members = [
   "crates/fleet-registry",
@@ -16,7 +22,9 @@ members = [
   "crates/fleet-proxy-proto",
   "crates/fleet-queue",
   "crates/fleet-dispatch",
+  "crates/fleet-dispatch-test",
   "crates/fleet-proxy",
+  "crates/fleet-search",
   "crates/fleet",
 ]
 resolver = "2"
@@ -34,7 +42,9 @@ fleet-secrets = { path = "crates/fleet-secrets" }
 fleet-proxy-proto = { path = "crates/fleet-proxy-proto" }
 fleet-queue = { path = "crates/fleet-queue" }
 fleet-dispatch = { path = "crates/fleet-dispatch" }
+fleet-dispatch-test = { path = "crates/fleet-dispatch-test" }
 fleet-proxy = { path = "crates/fleet-proxy" }
+fleet-search = { path = "crates/fleet-search", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"

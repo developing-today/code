@@ -17,10 +17,11 @@ use serde::{Deserialize, Serialize};
 use super::AppState;
 use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, get_content_type};
 use super::markdown::prosemirror_to_markdown;
+use super::security::{self, WebSecurity};
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
-    render_peers, render_settings,
+    render_peers, render_peers_content, render_settings,
 };
 use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use crate::tags::TagStore;
@@ -484,23 +485,76 @@ const fn is_leap_year(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
-/// Create the main router with all web routes.
-pub fn create_router(state: AppState) -> Router {
-    create_router_for_app(state, &super::app_interface::WebInterface::world_app())
+/// Create the guarded main router with all web routes.
+///
+/// `security` is applied to every request before any route handler runs. Choose
+/// an explicit policy appropriate to the listener; `WebSecurity::default()`
+/// does not require a token or restrict hosts.
+pub fn create_router(state: AppState, security: WebSecurity) -> Router {
+    create_router_for_app(
+        state,
+        &super::app_interface::WebInterface::world_app(),
+        security,
+    )
 }
 
 /// Create the main router for one packaged app, binding the world
 /// page at the app's [interfaces.web] route and the live channel at
 /// its socket (#2325, adapter mode). With the world app's own
-/// interface the result is byte-identical to create_router: same
-/// routes, same handlers, same state.
+/// interface the result has the same routes, handlers, and state as
+/// [`create_router`]. The supplied security policy guards every route.
+///
+/// # Migration
+///
+/// Callers must now pass an explicit [`WebSecurity`] policy. The default
+/// policy does not require a token or restrict hosts.
 pub fn create_router_for_app(
     mut state: AppState,
     interface: &super::app_interface::WebInterface,
+    security: WebSecurity,
 ) -> Router {
     state.web_route = interface.route.clone();
     state.web_socket = interface.socket.clone();
-    create_router_inner(state)
+    security::protect(create_router_inner(state), security)
+}
+
+/// Create the program-only router for one hosted world (#2146
+/// phase 2): the world program frontend at `/`, the static assets
+/// the trusted presenter loads, and the world session bridge (the
+/// shared world HTTP surface plus the live channel at the app's
+/// socket) -- and nothing else. Explorer pages and APIs (files,
+/// settings, peers, identity, collab, tags, save/upload) are absent
+/// from this router, so a program listener cannot serve them; the
+/// session authority is unchanged (a valid world guest capability,
+/// never the world admin token). The supplied [`WebSecurity`] policy
+/// guards every request to this router as well.
+///
+/// # Migration
+///
+/// Callers must now pass an explicit [`WebSecurity`] policy. The default
+/// policy does not require a token or restrict hosts.
+pub fn create_program_router(
+    mut state: AppState,
+    world_name: &str,
+    security: WebSecurity,
+) -> Router {
+    state.program_world = Some(world_name.to_owned());
+    let world_socket = state
+        .web_socket
+        .clone()
+        .unwrap_or_else(|| "/ws/world".to_owned());
+    let world_state = super::world_ws::WorldWebState {
+        hub: state.world.clone(),
+        cookie_secure: state.cookie_secure,
+    };
+    let router = Router::new()
+        .route("/", get(program_page_handler))
+        .route("/assets/{*path}", get(assets_handler))
+        .merge(super::world_ws::world_routes_at(&world_socket).with_state(world_state));
+    let router = router
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        .with_state(state);
+    security::protect(router, security)
 }
 
 fn create_router_inner(state: AppState) -> Router {
@@ -513,6 +567,7 @@ fn create_router_inner(state: AppState) -> Router {
         .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
+        .route("/groups", get(super::groups::groups_page_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
         .route("/hash/{hash}", get(hash_redirect_handler))
         .route("/view/{*name}", get(view_handler))
@@ -577,6 +632,30 @@ fn create_router_inner(state: AppState) -> Router {
     router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state)
+}
+
+/// The program-only surface's root: the program frontend for the
+/// world this router's binding names (#2146 phase 2). A hub that
+/// does not host that world (not its default and not in its world
+/// list) is a 404 -- never a lobby for a different world.
+async fn program_page_handler(State(state): State<AppState>) -> Response {
+    let Some(world_name) = state.program_world.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(hub) = state.world.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let hosted = hub.default_world() == world_name
+        || hub.list().iter().any(|world| world.name == world_name);
+    if !hosted {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Html(super::templates::render_program_page(
+        &state.assets,
+        world_name,
+        state.web_socket.as_deref(),
+    ))
+    .into_response()
 }
 
 async fn world_page_handler(State(state): State<AppState>) -> Response {
@@ -1003,7 +1082,10 @@ async fn peers_partial_handler(State(state): State<AppState>) -> impl IntoRespon
         Vec::new()
     };
 
-    Html(render_peers(&peers_data))
+    // Return only the inner content: fetchPartial assigns this as
+    // innerHTML of #peers-content, so the wrapper must not be included
+    // (issue #6956).
+    Html(render_peers_content(&peers_data))
 }
 
 /// Static assets handler.
@@ -1165,15 +1247,20 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         });
     }
 
-    // Deduplicate files with the same hash, display name, and user tags
+    // Deduplicate files with the same hash, display name, user tags, and
+    // recorded origin (#5382). Origin is part of the key: the origin filter
+    // in get_file_list_page runs after this deduplication, so collapsing
+    // same-content files from distinct origins here would make the
+    // discarded origin unqueryable.
     {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         files.retain(|f| {
             let dedup_key = format!(
-                "{}|{}|{:?}",
+                "{}|{}|{:?}|{:?}",
                 f.hash,
                 f.display_name.as_deref().unwrap_or(&f.name),
-                f.tags
+                f.tags,
+                f.origin_node
             );
             seen.insert(dedup_key)
         });
@@ -2594,9 +2681,9 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
 /// text verbatim when non-empty, otherwise its `src` verbatim when
-/// non-empty, otherwise nothing. Known remaining gap: `footnote_reference`
-/// atoms are not yet rendered — they contribute nothing; that is
-/// explicitly out of scope for the #1491 fix.
+/// non-empty, otherwise nothing; a `footnote_reference` contributes
+/// `[^<label>]` when its label is non-empty. A `front_matter` block
+/// contributes its `text` attr verbatim (#5639).
 fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
@@ -2630,6 +2717,24 @@ fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>
                     }
                 }
             }
+            // Front matter (#1369) carries no PM child content: its
+            // payload is the `text` attr, fences included, so the
+            // catch-all below (which needs a content array or a
+            // top-level text field) would drop the whole block - the
+            // block-level twin of the #1491 image-atom loss (#5639).
+            // Render it verbatim as one block entry: the authored
+            // text's trailing newline is the block terminator the
+            // line join re-adds.
+            "front_matter" => {
+                if let Some(text) = node
+                    .get("attrs")
+                    .and_then(|attrs| attrs.get("text"))
+                    .and_then(|text| text.as_str())
+                    && !text.is_empty()
+                {
+                    lines.push(text.strip_suffix("\n").unwrap_or(text).to_owned());
+                }
+            }
             // Lists, list items, blockquote, table rows/cells reached
             // outside a table, and every other container block: recurse
             // into the block content so nothing is dropped.
@@ -2655,7 +2760,9 @@ fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>
 /// as a newline, and any other inline node recursed into (its own
 /// inline content contributes its text instead of being dropped).
 /// The `image` atom has no content — its payload is `attrs`, rendered
-/// per the pinned policy on `extract_plain_text` (#1491).
+/// per the pinned policy on `extract_plain_text` (#1491). A
+/// `footnote_reference` atom similarly renders its non-empty label
+/// using the Markdown footnote-reference form.
 fn extract_inline_text(node: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -2680,6 +2787,18 @@ fn extract_inline_text(node: &serde_json::Value) -> String {
                         attrs.and_then(|a| a.get("src")).and_then(|v| v.as_str())
                     {
                         out.push_str(src);
+                    }
+                }
+                "footnote_reference" => {
+                    if let Some(label) = inline
+                        .get("attrs")
+                        .and_then(|attrs| attrs.get("label"))
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|label| !label.is_empty())
+                    {
+                        out.push_str("[^");
+                        out.push_str(label);
+                        out.push(']');
                     }
                 }
                 _ => out.push_str(&extract_inline_text(inline)),
@@ -2958,6 +3077,74 @@ mod save_publication_tests {
     }
 
     #[tokio::test]
+    async fn file_list_dedup_preserves_same_content_files_with_distinct_origins() {
+        let (state, _endpoint, _docs) = state().await;
+        let outcome = state
+            .store
+            .blobs()
+            .add_bytes(b"shared content".to_vec())
+            .await
+            .unwrap();
+        let hash = outcome.hash;
+        for name in ["alpha.md", "beta.md"] {
+            state
+                .store
+                .tags()
+                .set(iroh_blobs::api::Tag::from(name.to_owned()), hash)
+                .await
+                .unwrap();
+        }
+        // Same display name and same user tag for both files; only the
+        // recorded origin differs (#5382).
+        for (subject, origin) in [("alpha.md", "node-alpha"), ("beta.md", "node-beta")] {
+            for (key, value) in [
+                ("name", "shared.md"),
+                ("topic", "shared"),
+                ("origin", origin),
+            ] {
+                state
+                    .tag_store
+                    .set_singleton(
+                        &state.tag_store.global,
+                        subject.as_bytes(),
+                        key.as_bytes(),
+                        Some(value.as_bytes()),
+                        b"",
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let files = get_file_list(&state).await;
+        let mut origins: Vec<String> = files
+            .iter()
+            .filter(|f| f.hash == hash.to_string())
+            .filter_map(|f| f.origin_node.clone())
+            .collect();
+        origins.sort();
+        assert_eq!(
+            origins,
+            vec!["node-alpha".to_owned(), "node-beta".to_owned()],
+            "both distinct-origin rows must survive deduplication: {files:?}"
+        );
+
+        // Filtering by either recorded origin returns its own row.
+        for (origin, expected_name) in [("node-alpha", "alpha.md"), ("node-beta", "beta.md")] {
+            let page = get_file_list_page(
+                &state,
+                &FileListQuery {
+                    origin: Some(origin.to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert_eq!(page.total, 1, "origin filter {origin}");
+            assert_eq!(page.files[0].name, expected_name, "origin filter {origin}");
+        }
+    }
+
+    #[tokio::test]
     async fn refused_filename_tag_does_not_return_a_success_response() {
         let (state, _endpoint, _docs) = state().await;
         let response = save(state.clone(), &format!("{}.md", "x".repeat(600)), "content").await;
@@ -3027,7 +3214,107 @@ mod upload_router_tests {
         )
         .await
         .unwrap();
-        (create_router(state.clone()), state, dir, endpoint, docs)
+        (
+            create_router(state.clone(), WebSecurity::default()),
+            state,
+            dir,
+            endpoint,
+            docs,
+        )
+    }
+
+    fn hub_with_world(name: &str, admin: Option<&str>) -> crate::world_hub::WorldHub {
+        crate::world_hub::WorldHub::single_named(
+            name,
+            crate::world_session::WorldService::new(
+                crate::world::WorldHandle::spawn(
+                    crate::world::WorldCore::new(name, crate::world::WorldLimits::default())
+                        .unwrap(),
+                ),
+                admin.map(str::to_owned),
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn program_router_serves_only_the_program_surface() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_program_router(state, "arena", WebSecurity::default());
+
+        // Root: the program page, pinned to the bound world.
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        let body = to_bytes(root.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("data-world-program=\"arena\""), "{text}");
+        assert!(text.contains("data-world-view"), "{text}");
+        assert!(!text.contains("data-world-admin"), "{text}");
+
+        // Explorer pages and APIs are absent from the program surface.
+        for path in [
+            "/files",
+            "/settings",
+            "/peers",
+            "/world",
+            "/api/files",
+            "/api/save",
+            "/api/identity/me",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+
+        // The world session surface is present with its gates intact:
+        // minting an invite without the admin secret is refused
+        // (401), not missing (404) and never satisfied by the web
+        // layer -- the program surface adds no authority of its own.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/world/invite")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"display_name\":\"guest\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn program_router_404s_for_a_world_the_hub_does_not_host() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", None));
+        let app = create_program_router(state, "missing", WebSecurity::default());
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn program_router_404s_without_a_hub() {
+        let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let app = create_program_router(state, "arena", WebSecurity::default());
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -3054,7 +3341,7 @@ mod upload_router_tests {
         )
         .unwrap()
         .unwrap();
-        let app = crate::web::create_router_for_app(state, &interface);
+        let app = crate::web::create_router_for_app(state, &interface, WebSecurity::default());
         let arena = app
             .clone()
             .oneshot(
@@ -3919,6 +4206,7 @@ async fn identity_update_name_handler(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
         let content: Vec<serde_json::Value> = blocks
@@ -3979,6 +4267,37 @@ mod tests {
 
     fn para(text: &str) -> serde_json::Value {
         serde_json::json!({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn test_extract_plain_text_front_matter_renders_verbatim() {
+        // #5639: a front_matter block's payload is its text attr
+        // (#1369 node shape); extraction must keep it, fences and
+        // all, at its document position - not drop the block whole.
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "front_matter", "attrs": {"text": "---\ntitle: Hello\n---\n"}}),
+            para("Body"),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "---\ntitle: Hello\n---\nBody");
+        // Front matter as the only block.
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "front_matter", "attrs": {"text": "---\ntitle: Hello\n---\n"}}),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "---\ntitle: Hello\n---");
+    }
+
+    #[test]
+    fn test_extract_plain_text_front_matter_missing_or_empty_text_is_nothing() {
+        // #5639: no attrs, no text attr, or an empty one contributes
+        // nothing and does not panic (the #1491 empty-payload rule).
+        for fm in [
+            serde_json::json!({"type": "front_matter"}),
+            serde_json::json!({"type": "front_matter", "attrs": {}}),
+            serde_json::json!({"type": "front_matter", "attrs": {"text": ""}}),
+        ] {
+            let doc = plain_doc(vec![fm, para("Body")]);
+            assert_eq!(extract_plain_text(&doc), "Body");
+        }
     }
 
     #[test]
@@ -4091,6 +4410,10 @@ mod tests {
         serde_json::json!({"type": "image", "attrs": attrs})
     }
 
+    fn footnote_reference(label: &str) -> serde_json::Value {
+        serde_json::json!({"type": "footnote_reference", "attrs": {"label": label}})
+    }
+
     #[test]
     fn test_extract_plain_text_image_only_paragraph_saves_as_alt() {
         // #1491: an image atom's only text is its alt.
@@ -4143,6 +4466,88 @@ mod tests {
             {"type": "text", "text": "y"}
         ]})]);
         assert_eq!(extract_plain_text(&doc), "xy");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_between_text_runs() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "before "},
+            footnote_reference("note:α"),
+            {"type": "text", "text": " after"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "before [^note:α] after");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_in_recursive_container() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+            {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "listed "},
+                footnote_reference("1"),
+                {"type": "text", "text": " text"}
+            ]})]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "listed [^1] text");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_missing_or_empty_label_is_nothing() {
+        for reference in [
+            serde_json::json!({"type": "footnote_reference"}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {}}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {"label": ""}}),
+        ] {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x"},
+                reference,
+                {"type": "text", "text": "y"}
+            ]})]);
+            assert_eq!(extract_plain_text(&doc), "xy");
+        }
+    }
+
+    // Oracle for the two proptests below (#5366, Codex P1 on PR #6427):
+    // plain-text serialization concatenates inline text runs verbatim, so
+    // a footnote_reference with a non-empty label L between runs B and A
+    // must serialize to exactly B + "[^" + L + "]" + A, at any nesting
+    // depth — the implementation only ever push_str's the label between
+    // the fixed "[^" and "]" markers.
+    proptest! {
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_label_verbatim(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": before.clone()},
+                footnote_reference(&label),
+                {"type": "text", "text": after.clone()}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
+        }
+
+        #[test]
+        fn prop_extract_plain_text_footnote_reference_in_recursive_container(
+            before in "\\PC{0,24}",
+            label in "\\PC{1,24}",
+            after in "\\PC{0,24}",
+        ) {
+            let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                    {"type": "text", "text": before.clone()},
+                    footnote_reference(&label),
+                    {"type": "text", "text": after.clone()}
+                ]})]}
+            ]})]);
+            prop_assert_eq!(
+                extract_plain_text(&doc),
+                format!("{before}[^{label}]{after}")
+            );
+        }
     }
 
     #[test]

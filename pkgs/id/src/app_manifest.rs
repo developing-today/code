@@ -29,8 +29,8 @@
 //! | `program.module_hash` | Gated (parse): exactly one of `source`/`module_hash`; 1 to 64 plain hex digits (the world-apply shape). |
 //! | `interfaces.cli.commands` | Gated (parse): at least one of `cli`/`web` must be present; a present `cli` needs at least one command; the one entry rule (non-blank, unpadded, no duplicates). |
 //! | `interfaces.web.mode` | Gated (parse): exactly `adapter` or `direct`. |
-//! | `interfaces.web.route` | Gated (parse): the web-path shape rule (`is_safe_web_path`). Gated (discovery): unique across the discovered set; first folder in sort order wins, the loser is a named error. Host-table collisions are gated at the binding layer (disposition 6). |
-//! | `interfaces.web.socket` | Gated (parse): the web-path shape rule when present. Gated (discovery): unique across the discovered set, same first-wins rule. |
+//! | `interfaces.web.route` | Gated (parse): the web-path shape rule (`is_safe_web_path`); a manifest whose route equals its own socket is rejected (route and socket both bind the path). Gated (discovery): unique across the discovered set in the single route/socket namespace — a route colliding with a registered app's route or socket (and vice versa) is rejected; first folder in sort order wins, the loser is a named error. Host-table collisions are gated at the binding layer (disposition 6). |
+//! | `interfaces.web.socket` | Gated (parse): the web-path shape rule when present; a manifest whose socket equals its own route is rejected (route and socket both bind the path). Gated (discovery): unique across the discovered set in the single route/socket namespace — a socket colliding with a registered app's socket or route (and vice versa) is rejected, same first-wins rule. |
 //! | `capabilities.request` | Gated (parse): the one entry rule. Vocabulary deliberately ungated: capability names are an open vocabulary; the gate guarantees only the exact-match shape (non-blank, unpadded, distinct). |
 //! | `resources.files` | Gated (parse): the one entry rule plus folder confinement: non-empty, relative, every component a plain name, no empty/`.`/`..` segment (`is_confined_relative_path`); glob segments are ordinary names. Empty `files = []` is deliberately legal (required disposition 2): the section is optional and packages nothing, and no consumer in this crate reads the list as a defect. |
 //! | Unknown fields, any level | Gated (parse): `deny_unknown_fields` on every struct; missing required fields fail the TOML parse. |
@@ -270,6 +270,14 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
                 is_safe_web_path(socket),
                 "interfaces.web.socket must be an absolute path without traversal, empty or dot segments, whitespace, ? or #"
             );
+            // One namespace at the binding layer (#6454): a section whose
+            // route and socket name the same path can never bind, so parse
+            // rejects it with the binding layer's own rule wording.
+            ensure!(
+                socket != &web.route,
+                "[interfaces.web] route and socket both bind {:?}; they must differ",
+                web.route
+            );
         }
     }
     Ok(manifest)
@@ -388,6 +396,26 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         ));
                         continue;
                     }
+                    // Cross-kind (#6454): routes and sockets share one
+                    // binding namespace, so a new route must also differ
+                    // from every registered app's socket.
+                    if let Some(existing) = discovery.apps.iter().find(|app| {
+                        app.manifest
+                            .interfaces
+                            .web
+                            .as_ref()
+                            .and_then(|existing| existing.socket.as_deref())
+                            == Some(web.route.as_str())
+                    }) {
+                        discovery.errors.push(format!(
+                            "{}: app {:?} route {:?} (interfaces.web.route) collides with interfaces.web.socket already registered by app {:?}; app not registered",
+                            manifest_path.display(),
+                            manifest.app.id,
+                            web.route,
+                            existing.manifest.app.id
+                        ));
+                        continue;
+                    }
                     if let Some(socket) = &web.socket {
                         if let Some(existing) = discovery.apps.iter().find(|app| {
                             app.manifest
@@ -399,6 +427,25 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         }) {
                             discovery.errors.push(format!(
                                 "{}: app {:?} duplicates interfaces.web.socket {:?} already registered by app {:?}; app not registered",
+                                manifest_path.display(),
+                                manifest.app.id,
+                                socket,
+                                existing.manifest.app.id
+                            ));
+                            continue;
+                        }
+                        // Cross-kind (#6454): a new socket must also
+                        // differ from every registered app's route.
+                        if let Some(existing) = discovery.apps.iter().find(|app| {
+                            app.manifest
+                                .interfaces
+                                .web
+                                .as_ref()
+                                .map(|existing| existing.route.as_str())
+                                == Some(socket.as_str())
+                        }) {
+                            discovery.errors.push(format!(
+                                "{}: app {:?} socket {:?} (interfaces.web.socket) collides with interfaces.web.route already registered by app {:?}; app not registered",
                                 manifest_path.display(),
                                 manifest.app.id,
                                 socket,
@@ -504,6 +551,7 @@ fn is_kebab_id(id: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     const MANIFEST: &str = r#"
 [app]
@@ -672,6 +720,195 @@ route = "/tic-tac-toe"
         assert!(discovery.errors[0].contains("b-second"));
         assert!(discovery.errors[0].contains("interfaces.web.socket"));
         assert!(discovery.errors[0].contains("/ws/shared"));
+    }
+
+    #[test]
+    fn parse_rejects_self_route_equal_socket() {
+        // #6454 (X3): the binding layer rejects a single section whose
+        // route and socket name the same path; parse rejects it too.
+        let source = manifest_with_web("solo", "/same", Some("/same"));
+        let error = parse_app_manifest(&source, "solo").unwrap_err();
+        assert!(
+            error.to_string().contains("both bind"),
+            "self route==socket rejection names the rule: {error:#}"
+        );
+        assert!(error.to_string().contains("/same"));
+    }
+
+    #[test]
+    fn discovery_rejects_route_colliding_with_registered_socket() {
+        // #6454 (X1): a-first registers socket /shared; b-second's route
+        // /shared collides in the single binding namespace.
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-first",
+            &manifest_with_web("a-first", "/a", Some("/shared")),
+        );
+        write_discoverable_app(
+            root.path(),
+            "b-second",
+            &manifest_with_web("b-second", "/shared", None),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 1);
+        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("b-second"));
+        assert!(discovery.errors[0].contains("interfaces.web.route"));
+        assert!(discovery.errors[0].contains("/shared"));
+    }
+
+    #[test]
+    fn discovery_rejects_socket_colliding_with_registered_route() {
+        // #6454 (X2): a-first registers route /shared; b-second's socket
+        // /shared collides in the single binding namespace.
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-first",
+            &manifest_with_web("a-first", "/shared", None),
+        );
+        write_discoverable_app(
+            root.path(),
+            "b-second",
+            &manifest_with_web("b-second", "/b", Some("/shared")),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 1);
+        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("b-second"));
+        assert!(discovery.errors[0].contains("interfaces.web.socket"));
+        assert!(discovery.errors[0].contains("/shared"));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// #6454 Codex finding on PR #6470: the cross-kind uniqueness
+        /// invariant needs generated coverage, not only fixed examples.
+        /// Generate app sequences whose routes/sockets collide across
+        /// kinds and compare discovery against a sorted, first-wins
+        /// reference model over the single binding namespace.
+        #[test]
+        fn discovery_cross_kind_namespace_matches_first_wins_model(
+            specs in proptest::collection::vec(
+                (0usize..4, proptest::option::of(0usize..4)),
+                0..9,
+            )
+        ) {
+            const PATHS: [&str; 4] = ["/a", "/b", "/c", "/d"];
+            let root = tempfile::tempdir().unwrap();
+            for (index, (route, socket)) in specs.iter().enumerate() {
+                let id = format!("app-{index:02}");
+                write_discoverable_app(
+                    root.path(),
+                    &id,
+                    &manifest_with_web(&id, PATHS[*route], (*socket).map(|s| PATHS[s])),
+                );
+            }
+            // Reference model: folders scan in sort order (the
+            // zero-padded ids sort in generation order); an app is
+            // rejected when its route or socket is already claimed in
+            // the shared namespace, or when route == socket (the parse
+            // rejection); otherwise it claims both of its paths.
+            let mut claimed: Vec<&str> = Vec::new();
+            let mut accepted: Vec<String> = Vec::new();
+            let mut rejected: Vec<String> = Vec::new();
+            for (index, (route, socket)) in specs.iter().enumerate() {
+                let id = format!("app-{index:02}");
+                let route = PATHS[*route];
+                let socket = (*socket).map(|s| PATHS[s]);
+                let self_collision = socket == Some(route);
+                let namespace_collision = claimed.contains(&route)
+                    || socket.is_some_and(|s| claimed.contains(&s));
+                if self_collision || namespace_collision {
+                    rejected.push(id);
+                } else {
+                    claimed.push(route);
+                    if let Some(s) = socket {
+                        claimed.push(s);
+                    }
+                    accepted.push(id);
+                }
+            }
+            let discovery = discover_apps(root.path());
+            let found: Vec<&str> = discovery
+                .apps
+                .iter()
+                .map(|app| app.manifest.app.id.as_str())
+                .collect();
+            prop_assert_eq!(
+                found,
+                accepted.iter().map(String::as_str).collect::<Vec<_>>()
+            );
+            // Rejection isolation: exactly one named error per rejected
+            // app, in scan order, and no other errors.
+            prop_assert_eq!(discovery.errors.len(), rejected.len());
+            for (error, id) in discovery.errors.iter().zip(&rejected) {
+                prop_assert!(
+                    error.contains(id.as_str()),
+                    "error names the rejected app {id}: {error}"
+                );
+            }
+            // Namespace uniqueness across the registered set.
+            let mut bound: Vec<&str> = Vec::new();
+            for app in &discovery.apps {
+                let web = app.manifest.interfaces.web.as_ref().unwrap();
+                bound.push(web.route.as_str());
+                if let Some(socket) = &web.socket {
+                    bound.push(socket.as_str());
+                }
+            }
+            let mut unique = bound.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            prop_assert_eq!(bound.len(), unique.len());
+        }
+    }
+
+    #[test]
+    fn discovery_rejects_self_route_equal_socket() {
+        // #6454 (X3) at discovery: the app is not registered and the
+        // named parse error surfaces as its per-app error.
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-solo",
+            &manifest_with_web("a-solo", "/same", Some("/same")),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 0);
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("both bind"));
+    }
+
+    #[test]
+    fn discovery_registers_distinct_cross_kind_paths() {
+        // #6454 (C3 control): route/socket pairs that share no path
+        // across kinds register fully.
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-first",
+            &manifest_with_web("a-first", "/a", Some("/ws/a")),
+        );
+        write_discoverable_app(
+            root.path(),
+            "b-second",
+            &manifest_with_web("b-second", "/b", Some("/ws/b")),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 2);
+        assert!(discovery.errors.is_empty());
     }
 
     #[test]

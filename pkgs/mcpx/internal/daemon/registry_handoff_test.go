@@ -19,11 +19,12 @@ import (
 // on initialize and counts the DELETEs that end sessions.
 type orphanUpstream struct {
 	*httptest.Server
-	mu      sync.Mutex
-	live    map[string]bool
-	issued  int
-	deletes int
-	deleted []string
+	mu            sync.Mutex
+	live          map[string]bool
+	issued        int
+	deletes       int
+	deleted       []string
+	deleteMarkers []string
 	// blockDelete, when non-nil, holds a DELETE in the handler until it is
 	// closed (or the request goes away); deleteStarted is signalled when a
 	// blocked DELETE arrives. They simulate a blackholed upstream (#291).
@@ -60,6 +61,7 @@ func (u *orphanUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		u.deletes++
 		u.deleted = append(u.deleted, sid)
+		u.deleteMarkers = append(u.deleteMarkers, r.Header.Get("X-Reload-Marker"))
 		if u.live[sid] {
 			delete(u.live, sid)
 			w.WriteHeader(http.StatusOK)
@@ -104,6 +106,12 @@ func (u *orphanUpstream) counts() (deletes int, deleted []string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.deletes, append([]string(nil), u.deleted...)
+}
+
+func (u *orphanUpstream) deletedMarkers() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.deleteMarkers...)
 }
 
 // detachRemote starts a session on a registry whose only server is the
