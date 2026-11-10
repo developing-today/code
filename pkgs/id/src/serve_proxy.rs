@@ -36,7 +36,7 @@
 //! invariant on both directions and a chunking oracle for the streaming
 //! decoder (any split of the byte stream yields the same frames).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Maximum DATA frame payload, in bytes (decision §2, invariant 4).
 pub const MAX_DATA_PAYLOAD: usize = 16 * 1024;

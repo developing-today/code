@@ -19,6 +19,7 @@
 //!   for its CLI argument struct.
 
 pub mod access;
+pub mod boundary;
 pub mod connectivity;
 pub mod discovery;
 pub mod json_unique;

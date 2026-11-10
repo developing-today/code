@@ -23,6 +23,7 @@ import {
   liveCandidates,
   rank,
   readInfoFiles,
+  runBin,
   splitArgs,
   targetKey,
   writeRemembered,
@@ -545,5 +546,30 @@ describe("withDaemonAuth (#1975)", () => {
     process.env.MCPX_TRANSPORT_BEARER_TOKEN = TOKEN;
     const out = withDaemonAuth({ headers: { Authorization: "Bearer stale" } });
     expect(new Headers(out.headers as any).get("Authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+});
+
+describe("runBin abort signal (PLG-38, #1940)", () => {
+  test("an abort kills the child instead of waiting for it", async () => {
+    const dir = tempRoot();
+    const bin = join(dir, "slow-bin");
+    writeFileSync(bin, ["#!/bin/sh", "sleep 30", "echo should-not-print"].join(String.fromCharCode(10)));
+    chmodSync(bin, 0o755);
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = runBin({ bin, env: envFor(dir) }, [], undefined, controller.signal);
+    setTimeout(() => controller.abort(), 150);
+    const out = await pending;
+    expect(out).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("without a signal the child runs to completion", async () => {
+    const dir = tempRoot();
+    const bin = join(dir, "fast-bin");
+    writeFileSync(bin, ["#!/bin/sh", "echo hello-from-bin"].join(String.fromCharCode(10)));
+    chmodSync(bin, 0o755);
+    const out = await runBin({ bin, env: envFor(dir) }, []);
+    expect(out).toBe("hello-from-bin");
   });
 });
