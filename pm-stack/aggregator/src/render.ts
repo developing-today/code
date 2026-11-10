@@ -6773,6 +6773,24 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
+  const rankedBlockersHtml = g.rankedBlockers.length
+    ? `<ol class="epic-graph-list">${g.rankedBlockers
+        .map((blocker) => {
+          const stateText = blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
+          const downstream = blocker.downstreamItems
+            .map((item) => {
+              const weightText = item.effortWeight === null ? "unsized" : `effort weight ${item.effortWeight}`;
+              const additionalBlockers = item.additionalBlockers.length
+                ? `additional unresolved blockers: ${item.additionalBlockers.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}`
+                : "no additional unresolved blockers";
+              return `<li><a href="${esc(item.issueUrl)}">${esc(item.ref)}</a> (${weightText}) — ${additionalBlockers}</li>`;
+            })
+            .join("");
+          return `<li><a href="${esc(blocker.issueUrl)}">${esc(blocker.ref)}</a> (${stateText}) — ${blocker.downstreamCount} distinct open downstream item${blocker.downstreamCount === 1 ? "" : "s"}; known effort weight ${blocker.knownEffortWeight}; ${blocker.unsizedCount} unsized contributor${blocker.unsizedCount === 1 ? "" : "s"}: <ul>${downstream}</ul></li>`;
+        })
+        .join("")}</ol>`
+    : `<p class="muted">No unresolved blocker has open downstream work in this epic.</p>`;
+
   // SVG: hierarchy edges solid grey, dependency edges dashed amber —
   // distinct by dash and color, and named in the legend text.
   const pos = new Map(g.nodes.map((n) => [n.ref, n]));
@@ -6835,7 +6853,7 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
 export function renderProgramProject(
