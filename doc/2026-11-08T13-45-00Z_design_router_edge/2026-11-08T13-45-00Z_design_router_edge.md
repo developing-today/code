@@ -105,6 +105,29 @@ the pair shares a virtual IP that is the default gateway (as `10.0.200.1` is
 today for VLAN 30). On the WAN VLAN the pair shares the **virtual MAC**
 (`00:00:5E:00:01:VRID`) so the ISP sees one client, not two.
 
+**How the shared MAC is implemented matters (Codex review, PR #7712).**
+The stock way to present a VRRP virtual MAC with keepalived is
+`use_vmac`, which puts the virtual address on a **MACVLAN** interface —
+and the ASK VLAN/flowtable documentation explicitly rejects MACVLAN
+paths, so that shape silently drops the WAN path out of hardware
+offload into software forwarding: the same offload loss this design
+removes by abandoning the bond (D1), reintroduced through the back
+door. So: **no `use_vmac`, no MACVLAN on any offload-carrying VLAN.**
+Instead, both routers carry the *same cloned MAC* on the plain WAN
+VLAN interface; only the VRRP master brings the WAN address and the
+DHCP client up, and the backup keeps its WAN interface address-less
+with its DHCP client disabled. On promotion the backup enables the
+interface and sends a gratuitous ARP; the ISP sees the one cloned MAC
+(now on the other switch port, which relearns it from the GARP) and
+the lease survives. The split-brain interlock is VRRP itself plus the
+`eth4` peer-check (D2): a router that can still see its peer as master
+must never enable its WAN MAC. At install time, verify from the ASK
+flowtable counters that the WAN VLAN path is actually offloaded; if a
+future ASK version refuses even this shape, the accepted fallback is
+software forwarding on the WAN VLAN **only** — WAN rates are
+ISP-bound (~2G today), inside the LS1046A's software-forwarding
+budget — never a silent MACVLAN.
+
 Priority and tracking are set so that a router which has lost its trunk
 demotes itself and the peer takes over. The failover ladder is
 A(10G) → B(10G) → A(1G RJ45 fallback) → B(1G), mirroring the existing
@@ -144,10 +167,17 @@ What this design does about it:
 1. **The new edge terminates IPv6 natively.** The Mono runs OpenWrt with full
    IPv6 (DHCPv6-PD, SLAAC, RA, NPTv6 per inventory). Prefix delegation from
    Brightspeed is handled on the router, not by the Deco.
-2. **MTU is correct end to end.** If the handoff is PPPoE (VLAN 201), the
-   WAN VLAN is set to baby-jumbo (1508/1512) so a full 1500-byte inner MTU
-   survives PPPoE's 8-byte header — removing the need for MSS clamping and
-   removing the PMTUD trap at its source (D5).
+2. **MTU is correct end to end.** If the handoff is PPPoE (VLAN 201) **and
+   RFC 4638 is negotiated** — both endpoints must indicate PPP-Max-Payload
+   support during PPPoE discovery; a larger local MTU alone cannot create
+   a 1500-byte path (Codex review, PR #7712) — the WAN VLAN is set to
+   baby-jumbo (1508/1512) so a full 1500-byte inner MTU survives PPPoE's
+   8-byte header, verified end to end (a 1500-byte do-not-fragment probe
+   across the WAN) before it is relied on. If RFC 4638 support is absent
+   or the probe fails, the PPP MTU stays **1492**, RAs advertise 1492,
+   and the PMTUD trap is instead closed by item 3 (unfiltered ICMPv6
+   Packet Too Big) plus MSS clamping on the WAN — the 1492 path is a
+   designed outcome, not a degraded accident (D5).
 3. **ICMPv6 is not filtered.** The edge must pass ICMPv6 type 2 (Packet Too
    Big) unfiltered in both directions; that is what makes PMTUD work at all.
 4. **RA MTU matches the real path.** Router advertisements carry the true MTU
@@ -242,7 +272,11 @@ Each is a real choice with a recommendation. None is made here.
   every established connection drops.
 - **Recommendation:** confirm the protocol before the cutover. If PPPoE, plan
   for disruptive failover and lean harder on D2 (state sync) and on a static
-  IP block if the ISP offers one.
+  IP block if the ISP offers one. Confirming PPPoE also means confirming
+  **RFC 4638** (PPP-Max-Payload) support on the BNG: with it, baby-jumbo
+  gives a true 1500-byte inner MTU; without it, the design runs 1492 +
+  PMTUD/MSS clamping as specified in the IPv6 section — do not raise the
+  WAN MTU on the assumption the far end will take it.
 
 ### D6 — Third Mono's role?
 
