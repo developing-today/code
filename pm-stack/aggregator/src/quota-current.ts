@@ -62,7 +62,7 @@ function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["provid
     (value.resetsAt === null || isIsoDate(value.resetsAt)) &&
     isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
-    (value.state === "ok" || value.state === "error")
+    (value.state === "ok" || value.state === "error" || value.state === "lapsed")
   );
 }
 
@@ -72,7 +72,7 @@ function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
     typeof value.providerId === "string" &&
     typeof value.providerName === "string" &&
     typeof value.serviceId === "string" &&
-    (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
+    (value.state === "ok" || value.state === "error" || value.state === "lapsed" || value.state === "unconfigured") &&
     isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
     (value.credentialWatch === undefined || typeof value.credentialWatch === "boolean") &&
@@ -138,6 +138,7 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
 type FreshState = PoolFreshness["state"];
 
 function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
+  if (entry.state === "lapsed") return "lapsed";
   if (entry.state === "ok") {
     // #1268: retained last-known entries are stale by definition —
     // the provider's latest run failed, however recent the retained
@@ -271,11 +272,21 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
     state,
   };
   if (state === "error") freshness.error = !entry.error && legError ? legError : errorText(entry);
+  if (state === "lapsed") freshness.error = errorText(entry);
   pool.freshness = freshness;
   if (state === "error") {
     pool.state = "error";
     adoptEntryWindows(pool, entry);
     return false;
+  }
+  if (state === "lapsed") {
+    // A known subscription lapse is not a provider failure. The dated
+    // quota has no current meaning, so clear it instead of leaving old
+    // percentages beside a terminal lapsed badge.
+    pool.state = "lapsed";
+    pool.windows = [];
+    delete pool.wallLiftsAt;
+    return true;
   }
   if (state === "stale") {
     // #6942: a retained entry whose gatherer leg errored is that
@@ -387,7 +398,7 @@ function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCrede
   const rows: QuotaCredentialRow[] = [...byCred.values()].map((e) => {
     const state = entryState(e, nowMs);
     const freshness: PoolFreshness = { measuredAt: e.measuredAt, source: e.source, state };
-    if (state === "error") freshness.error = errorText(e);
+    if (state === "error" || state === "lapsed") freshness.error = errorText(e);
     return {
       label: e.credentialLabel ?? e.providerName ?? e.providerId,
       ...(e.credentialId ? { credentialId: e.credentialId } : {}),
@@ -415,7 +426,7 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
         source: e.source,
       };
       if (e.credentialLabel) s.credentialLabel = e.credentialLabel;
-      if (s.state === "error") s.error = errorText(e);
+      if (s.state === "error" || s.state === "lapsed") s.error = errorText(e);
       return s;
     }),
   };
@@ -448,20 +459,20 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     else byService.set(e.serviceId, [e]);
   }
 
-  let anyFreshWindows = false;
+  let recomputeChoices = false;
   const pools = view.pools.map((orig) => {
     const entries = byService.get(orig.id);
     if (!entries || entries.length === 0) return orig;
     const pool: QuotaPool = { ...orig, windows: [...orig.windows] };
     const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
-      if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      if (applyEntry(pool, freshOk[0], "ok")) recomputeChoices = true;
       const rows = credentialRows(entries, nowMs);
       if (rows) pool.credentials = rows;
       return pool;
     }
     const newest = [...entries].sort(newestFirst(nowMs))[0];
-    applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest));
+    if (applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest))) recomputeChoices = true;
     return pool;
   });
 
@@ -491,11 +502,11 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     };
     const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
-      if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      if (applyEntry(pool, freshOk[0], "ok")) recomputeChoices = true;
       const rows = credentialRows(entries, nowMs);
       if (rows) pool.credentials = rows;
     } else {
-      applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest));
+      if (applyEntry(pool, newest, entryState(newest, nowMs), legErrorFor(file, newest))) recomputeChoices = true;
     }
     synthesized.push(pool);
   }
@@ -510,7 +521,7 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     .filter((entry) => entry.credentialWatch === true)
     .map((entry) => lifecycleForEntry(entry, now));
   if (credentialLifecycle.length) out.credentialLifecycle = credentialLifecycle;
-  if (anyFreshWindows) out.choices = computeChoices(allPools, nowMs);
+  if (recomputeChoices) out.choices = computeChoices(allPools, nowMs);
   return out;
 }
 

@@ -29,10 +29,10 @@ export interface RefreshStatus {
 
 export type RefreshTrigger = (reason: "stale" | "manual") => void | Promise<void>;
 
-/** Newest non-error provider/pool measurement in the view, in epoch ms, or null. */
+/** Newest provider/pool measurement stamp in the view, in epoch ms, or null. Error reads are excluded; a lapsed read contributes its stamp (it is a current terminal state, not a measurement of usage). */
 export function newestMeasurement(view: QuotaView, nowMs = Date.now()): number | null {
   const times: number[] = [];
-  const add = (raw: string | null | undefined, state?: "ok" | "stale" | "error") => {
+  const add = (raw: string | null | undefined, state?: "ok" | "stale" | "error" | "lapsed") => {
     if (!raw || state === "error") return;
     const t = Date.parse(raw);
     // Future timestamps (clock skew) count as fresh, not as very stale.
