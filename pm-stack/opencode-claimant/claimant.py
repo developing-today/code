@@ -99,8 +99,13 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: int, skips: List[Dict]) -> None:
-    """Append a fire log entry to fires.jsonl."""
+def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
+    """Append a fire log entry to fires.jsonl.
+
+    cap_room is the measured available-slot count, or None when the
+    fire exited before the cap step ran (#7732): null means unknown,
+    never a placeholder 0, which would read as a saturated fleet.
+    """
     ensure_state_dir()
     
     fire_entry = {
@@ -754,7 +759,7 @@ def main():
     
     if not has_candidates:
         print("No unbound opencode-lane candidates found. Exiting.")
-        log_fire(mode, [], [], 0, [{"reason": "no_candidates"}])
+        log_fire(mode, [], [], None, [{"reason": "no_candidates"}])
         return 0
     
     # Step 3: Cap
