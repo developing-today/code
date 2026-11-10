@@ -3488,3 +3488,235 @@ class TestListingBounds6602S3(S3TestBase):
                 self.store.s3_list_objects("supabase-backups")
         self.assertIn("supabase-backups", str(ctx.exception))
         self.assertEqual(calls["n"], 5)
+
+
+# ---------------------------------------------------------------------------
+# Property-based coverage for the Drive response parsers (#6855, Codex P1
+# on PR #7135). Oracles are stated per validator as reference predicates
+# written from the Drive contract, not from the implementation: a value is
+# accepted iff the oracle accepts it, and the only exception that may ever
+# escape a validator is ColdStoreError. Generation is seeded stdlib
+# `random` (no new dependency); every failure reproduces from the seed.
+# ---------------------------------------------------------------------------
+
+import random as _random
+
+_DRIVE_PBT_SEED = 6855
+
+
+def _pbt_json_value(rng, depth=0):
+    kinds = ["dict", "list", "str", "int", "float", "bool", "none"]
+    if depth >= 2:
+        kinds = ["str", "int", "bool", "none"]
+    kind = rng.choice(kinds)
+    if kind == "dict":
+        return {
+            rng.choice(["id", "name", "size", "files", "x", ""]): _pbt_json_value(
+                rng, depth + 1
+            )
+            for _ in range(rng.randrange(3))
+        }
+    if kind == "list":
+        return [_pbt_json_value(rng, depth + 1) for _ in range(rng.randrange(3))]
+    if kind == "str":
+        return rng.choice(["", "a", "file-1", "123", " 1", "-1", "1.5", "²", "٤"])
+    if kind == "int":
+        return rng.choice([0, 1, -1, 7, 10**20, -(10**20)])
+    if kind == "float":
+        return rng.choice([0.0, 1.5, -2.5])
+    if kind == "bool":
+        return rng.choice([True, False])
+    return None
+
+
+def _pbt_size_candidate(rng):
+    return rng.choice(
+        [
+            0,
+            1,
+            42,
+            10**25,
+            -1,
+            -(10**10),
+            True,
+            False,
+            "0",
+            "007",
+            "123456789012345678901234567890",
+            "",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e3",
+            "abc",
+            "²",
+            "٤",
+            "１２",
+            None,
+            1.5,
+            [],
+            {},
+        ]
+    )
+
+
+def _pbt_size_oracle(value):
+    """Reference oracle for _drive_size: (accepted, expected_int)."""
+    if isinstance(value, bool):
+        return False, None
+    if isinstance(value, int):
+        return (value >= 0), (value if value >= 0 else None)
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return True, int(value)
+    return False, None
+
+
+def _pbt_file_entry(rng):
+    entry = {}
+    if rng.random() < 0.85:
+        entry["id"] = rng.choice(["f1", "folder-9", "x", "", 7, None, True])
+    if rng.random() < 0.85:
+        entry["name"] = rng.choice(["backup", "n", "", 3, None, False])
+    if rng.random() < 0.6:
+        entry["size"] = _pbt_size_candidate(rng)
+    if rng.random() < 0.2:
+        entry["extra"] = _pbt_json_value(rng)
+    return entry
+
+
+def _pbt_entry_oracle(entry, require_size):
+    """Reference oracle for one files[] entry of _drive_files."""
+    if not isinstance(entry, dict):
+        return False
+    for key in ("id", "name"):
+        value = entry.get(key)
+        if not isinstance(value, str) or not value:
+            return False
+    if require_size or "size" in entry:
+        accepted, _ = _pbt_size_oracle(entry.get("size"))
+        if not accepted:
+            return False
+    return True
+
+
+class TestDriveResponseShapesProperty(ColdStoreTestBase):
+    def test_drive_size_matches_oracle_for_generated_values(self):
+        rng = _random.Random(_DRIVE_PBT_SEED)
+        for _ in range(600):
+            value = _pbt_size_candidate(rng)
+            accepted, expected = _pbt_size_oracle(value)
+            with self.subTest(value=repr(value)):
+                if accepted:
+                    self.assertEqual(
+                        cold_store._drive_size(value, "pbt.size"), expected
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_size(value, "pbt.size")
+
+    def test_drive_parse_object_only_accepts_json_objects(self):
+        rng = _random.Random(_DRIVE_PBT_SEED + 1)
+        for _ in range(400):
+            value = _pbt_json_value(rng)
+            body = json.dumps(value).encode()
+            if rng.random() < 0.25:  # mutate: truncation / garbage / bad bytes
+                body = rng.choice(
+                    [body[: rng.randrange(len(body) + 1)], body + b"x", b"\xff\xfe{"]
+                )
+            with self.subTest(body=body[:60]):
+                try:
+                    parsed = cold_store._drive_parse_object(body, "pbt.parse")
+                except cold_store.ColdStoreError:
+                    # Oracle: rejection is correct iff the body is not a
+                    # JSON object.
+                    try:
+                        reference = json.loads(body)
+                    except (ValueError, TypeError):
+                        reference = None
+                    self.assertNotIsInstance(reference, dict)
+                except Exception as exc:  # noqa: BLE001 - invariant: no leaks
+                    self.fail(f"non-ColdStoreError escaped: {exc!r}")
+                else:
+                    self.assertEqual(parsed, json.loads(body))
+                    self.assertIsInstance(parsed, dict)
+
+    def test_drive_files_matches_entry_oracle_for_generated_payloads(self):
+        rng = _random.Random(_DRIVE_PBT_SEED + 2)
+        for _ in range(400):
+            require_size = rng.random() < 0.5
+            if rng.random() < 0.1:
+                # Non-list files values are always rejected.
+                payload = {"files": rng.choice(["nope", 7, None, {}])}
+                with self.assertRaises(cold_store.ColdStoreError):
+                    cold_store._drive_files(payload, "pbt.files", require_size)
+                continue
+            entries = [_pbt_file_entry(rng) for _ in range(rng.randrange(4))]
+            if rng.random() < 0.1:
+                entries.insert(rng.randrange(len(entries) + 1), 7)
+            payload = {"files": entries}
+            expect_ok = all(
+                _pbt_entry_oracle(entry, require_size) for entry in entries
+            )
+            with self.subTest(payload=repr(payload)[:80], require_size=require_size):
+                if expect_ok:
+                    self.assertIs(
+                        cold_store._drive_files(payload, "pbt.files", require_size),
+                        entries,
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_files(payload, "pbt.files", require_size)
+        # Missing files key is the empty list, whatever require_size says.
+        self.assertEqual(cold_store._drive_files({}, "pbt.files", True), [])
+
+    def test_drive_string_helpers_match_oracles_for_generated_payloads(self):
+        rng = _random.Random(_DRIVE_PBT_SEED + 3)
+        for _ in range(400):
+            payload = _pbt_json_value(rng)
+            if not isinstance(payload, dict):
+                continue
+            key = rng.choice(["id", "name", "absent"])
+            with self.subTest(payload=repr(payload)[:60], key=key):
+                # Required-string oracle: non-empty str value or rejection.
+                value = payload.get(key)
+                if isinstance(value, str) and value:
+                    self.assertEqual(
+                        cold_store._drive_required_string(payload, key, "pbt.req"),
+                        value,
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_required_string(payload, key, "pbt.req")
+                # Optional-string oracle: absent -> default; None -> None
+                # only when the default is None; str -> itself; else reject.
+                if key not in payload:
+                    self.assertEqual(
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        ),
+                        "dflt",
+                    )
+                elif payload[key] is None:
+                    self.assertIsNone(
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", None
+                        )
+                    )
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        )
+                elif isinstance(payload[key], str):
+                    self.assertEqual(
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        ),
+                        payload[key],
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        )
