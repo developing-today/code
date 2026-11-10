@@ -447,7 +447,8 @@ fn fanout_equals_monolith_oracle_over_random_queries() {
                 &set,
                 &FanoutQuery {
                     qvec: &q,
-                    k,
+                    shard_top_k: 40,
+                    global_top_k: k,
                     filters: &f,
                     topics: None,
                     ceiling: TierCeiling::from_sensitivity(f.max_sensitivity),
@@ -492,7 +493,8 @@ fn physical_ceiling_never_connects_to_tiers_above() {
         &set,
         &FanoutQuery {
             qvec: &q,
-            k: 100,
+            shard_top_k: 100,
+            global_top_k: 100,
             filters: &f,
             topics: None,
             ceiling: TierCeiling::from_sensitivity(f.max_sensitivity),
@@ -512,7 +514,8 @@ fn physical_ceiling_never_connects_to_tiers_above() {
         &set,
         &FanoutQuery {
             qvec: &q,
-            k: 5,
+            shard_top_k: 5,
+            global_top_k: 5,
             filters: &f,
             topics: None,
             ceiling: TierCeiling::from_sensitivity(f.max_sensitivity),
@@ -541,7 +544,8 @@ fn physical_ceiling_never_connects_to_tiers_above() {
         &set,
         &FanoutQuery {
             qvec: &q,
-            k: 3,
+            shard_top_k: 3,
+            global_top_k: 3,
             filters: &f,
             topics: None,
             ceiling: TierCeiling(Tier::Secret),
@@ -558,7 +562,8 @@ fn physical_ceiling_never_connects_to_tiers_above() {
         &set,
         &FanoutQuery {
             qvec: &q,
-            k: 100,
+            shard_top_k: 100,
+            global_top_k: 100,
             filters: &f,
             topics: None,
             ceiling: TierCeiling::from_sensitivity(f.max_sensitivity),
@@ -574,7 +579,8 @@ fn physical_ceiling_never_connects_to_tiers_above() {
         &set,
         &FanoutQuery {
             qvec: &q,
-            k: 100,
+            shard_top_k: 100,
+            global_top_k: 100,
             filters: &f,
             topics: None,
             ceiling: TierCeiling::from_sensitivity(f.max_sensitivity),
@@ -597,7 +603,8 @@ fn topic_scope_touches_only_that_topics_shards() {
         &set,
         &FanoutQuery {
             qvec: &q,
-            k: 10,
+            shard_top_k: 10,
+            global_top_k: 10,
             filters: &f,
             topics: Some(&topics),
             ceiling: TierCeiling(Tier::Internal),
@@ -624,7 +631,8 @@ fn scans_run_in_parallel() {
         &set,
         &FanoutQuery {
             qvec: &q,
-            k: 10,
+            shard_top_k: 10,
+            global_top_k: 10,
             filters: &f,
             topics: None,
             ceiling: TierCeiling(Tier::Internal),
@@ -664,7 +672,8 @@ fn unsupported_filters_fail_loudly_instead_of_dropping_them() {
         &set,
         &FanoutQuery {
             qvec: &Rng(1).vec(),
-            k: 5,
+            shard_top_k: 5,
+            global_top_k: 5,
             filters: &f,
             topics: None,
             ceiling: TierCeiling(Tier::Internal),
@@ -693,7 +702,8 @@ fn failing_shard_fails_the_query() {
         &set,
         &FanoutQuery {
             qvec: &Rng(2).vec(),
-            k: 5,
+            shard_top_k: 5,
+            global_top_k: 5,
             filters: &f,
             topics: None,
             ceiling: TierCeiling(Tier::Internal),
@@ -775,6 +785,8 @@ fn sharded_backend_takes_vector_from_shards_and_fts_from_the_monolith() {
                 match_expr: Some("nix".into()),
                 query_vector: Some(q.clone()),
                 pool: 10,
+                shard_top_k: 10,
+                global_top_k: 10,
                 vector_backend: VectorBackend::Scan,
             },
             &f,
@@ -802,6 +814,8 @@ fn sharded_backend_takes_vector_from_shards_and_fts_from_the_monolith() {
                 match_expr: None,
                 query_vector: Some(q.clone()),
                 pool: 10,
+                shard_top_k: 10,
+                global_top_k: 10,
                 vector_backend: VectorBackend::Scan,
             },
             &filters("secret-bearing"),
@@ -817,6 +831,8 @@ fn sharded_backend_takes_vector_from_shards_and_fts_from_the_monolith() {
                 match_expr: None,
                 query_vector: Some(q),
                 pool: 10,
+                shard_top_k: 10,
+                global_top_k: 10,
                 vector_backend: VectorBackend::IndexFill,
             },
             &f,
@@ -832,12 +848,106 @@ fn sharded_backend_takes_vector_from_shards_and_fts_from_the_monolith() {
                 match_expr: Some("x".into()),
                 query_vector: None,
                 pool: 5,
+                shard_top_k: 10,
+                global_top_k: 10,
                 vector_backend: VectorBackend::Scan,
             },
             &f,
         )
         .unwrap();
     assert!(pools.vector.is_empty() && pools.fts.len() == 1);
+}
+
+#[test]
+fn sharded_backend_routes_filtered_queries_to_the_monolith() {
+    // #6665: a query carrying session-level filters must not die in
+    // the fan-out (scan shards carry no sessions/labels): BOTH
+    // branches come from the wrapped monolith, and the fallback is
+    // reported as a diagnostic note.
+    let c = corpus("backend-filtered", 97);
+    let set = Arc::new(
+        c.discover(&LogConnector::new(vec![Tier::Secret]), Tier::Internal)
+            .unwrap(),
+    );
+    let be = ShardedBackend::new(
+        Monolith {
+            seen: Mutex::new(vec![]),
+        },
+        set,
+    );
+    let q = Rng(5).vec();
+    let f = Filters::new(
+        vec!["code".to_string()],
+        vec![],
+        vec![],
+        vec![],
+        "personal",
+        None,
+        None,
+    )
+    .unwrap();
+    // fanout_scan itself still refuses the same filters loudly.
+    assert!(
+        fanout_scan(
+            be.shard_set(),
+            &FanoutQuery {
+                qvec: &q,
+                k: 10,
+                filters: &f,
+                topics: None,
+                ceiling: TierCeiling(Tier::Internal),
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("does not support classification/date filters")
+    );
+    let pools = be
+        .branch_pools(
+            &BranchQuery {
+                match_expr: Some("nix".into()),
+                query_vector: Some(q.clone()),
+                pool: 10,
+                vector_backend: VectorBackend::Scan,
+            },
+            &f,
+        )
+        .unwrap();
+    assert_eq!(pools.fts[0].chunk_id, 999);
+    assert_eq!(
+        pools.vector.iter().map(|h| h.chunk_id).collect::<Vec<_>>(),
+        vec![888],
+        "filtered vector pool comes from the monolith, not the shards"
+    );
+    // The monolith saw exactly one call, carrying both branches.
+    assert_eq!(
+        *be.inner().seen.lock().unwrap(),
+        vec![(Some("nix".to_string()), true)]
+    );
+    // The diagnostic names the filters and the reason.
+    let notes = be.notes();
+    assert!(
+        notes.iter().any(|n| {
+            n.contains("served by the wrapped monolith")
+                && n.contains("no sessions or labels")
+                && n.contains("\"kind\"")
+        }),
+        "{notes:?}"
+    );
+    // Vector-only filtered queries fall back the same way.
+    let pools = be
+        .branch_pools(
+            &BranchQuery {
+                match_expr: None,
+                query_vector: Some(q),
+                pool: 10,
+                vector_backend: VectorBackend::Scan,
+            },
+            &f,
+        )
+        .unwrap();
+    assert_eq!(pools.vector[0].chunk_id, 888);
+    assert!(pools.fts.is_empty());
 }
 
 fn be_inner_seen(

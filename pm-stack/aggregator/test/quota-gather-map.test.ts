@@ -719,6 +719,63 @@ describe("entryFromTurso (#1049)", () => {
     expect(byMetric.get("storage")).toMatchObject({ value: 7.358009, unit: "gb", limit: 5 });
     expect(byMetric.get("rows-read")).toMatchObject({ value: 164.287, unit: "pct" });
   });
+  test("dynamic limits: a /plans doc matched by plan name supplies the denominators (#5468)", () => {
+    // The 2026-11-08 live shape: org on Scaler since 2026-11-04, but
+    // Starter denominators made rows-read read ~235% and storage
+    // ~213%. /plans is the source of truth.
+    const plansDoc = {
+      plans: [
+        { name: "starter", quotas: { rowsRead: 500_000_000, rowsWritten: 10_000_000, databases: 100, storage: 5_000_000_000, bytesSynced: 3_000_000_000 } },
+        { name: "Scaler", quotas: { rowsRead: 100_000_000_000, rowsWritten: 100_000_000, databases: 1_000_000_000, storage: 24_000_000_000, bytesSynced: 24_000_000_000 } },
+      ],
+    };
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 40,
+            storage_bytes: 10_800_000_000,
+            rows_read: 1_180_000_000,
+            rows_written: 4_000_000,
+            bytes_synced: 1_200_000_000,
+          },
+        },
+      },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at, plansDoc },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.planLabel).toBe("scaler");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("rows-read")?.valueLabel).toBe("1,180,000,000 / 100,000,000,000");
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    expect(byName.get("rows-written")?.pctOfLimit).toBe(4);
+    expect(byName.get("sync")?.pctOfLimit).toBe(5);
+    expect(byName.get("sync")?.valueLabel).toBe("1.2 GB / 24 GB");
+    // Native-unit snapshot records carry the plan's limits too.
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 10.8, unit: "gb", limit: 24 });
+    expect(byMetric.get("sync")).toMatchObject({ value: 1.2, unit: "gb", limit: 24 });
+    expect(byMetric.get("databases")).toMatchObject({ value: 40, unit: "count", limit: 1_000_000_000 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 1.18, unit: "pct", limit: 100 });
+  });
+  test("plans doc absent: the per-plan fallback applies, so Scaler never regresses to Starter (#5468)", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { rows_read: 1_180_000_000, storage_bytes: 10_800_000_000 } } },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at },
+    );
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 24 });
+  });
 });
 
 describe("entryFromTurso period stamps (#5091)", () => {
@@ -862,7 +919,7 @@ describe("pool splits (#1331)", () => {
     ]);
   });
 
-  test("Go lapse: an errored drewrypope row splits as a pool error; unconfigured rows never split", () => {
+  test("Go lapse: a lapsed drewrypope row splits as a pool lapsed; unconfigured rows never split", () => {
     const lapsed: QuotaProviderResult = {
       providerId: "opencode-go",
       providerName: "OpenCode Go",
@@ -872,7 +929,9 @@ describe("pool splits (#1331)", () => {
       credentialId: "cred_personal",
       credentialLabel: "drewrypope",
       error: "No active OpenCode Go subscription on the selected Console account",
-      usage: null,
+      // Even if a provider includes old usage alongside the lapse error,
+      // it must not be published as a current quota window or snapshot.
+      usage: { windows: { monthly: { usedPercent: 100 } } },
     };
     const unconfigured: QuotaProviderResult = {
       providerId: "opencode-go",
@@ -887,8 +946,40 @@ describe("pool splits (#1331)", () => {
     const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
     expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_DREWRYPOPE_SERVICE_ID]);
     const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
-    expect(personal.state).toBe("error");
+    expect(personal.state).toBe("lapsed");
     expect(personal.error).toContain("No active OpenCode Go subscription");
+    expect(personal.windows).toEqual([]);
+    expect(recordsFromEntries(split, new Map(), "quota-gatherer").records).toEqual([]);
+    // Control: a configured Go failure without the lapse signal stays an error.
+    const failed = entryFromResult(
+      {
+        providerId: "opencode-go",
+        providerName: "OpenCode Go",
+        ok: false,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        credentialId: "cred_personal",
+        credentialLabel: "drewrypope",
+        error: "timeout",
+        usage: null,
+      },
+      TICK,
+    );
+    expect(failed.state).toBe("error");
+    expect(failed.error).toContain("timeout");
+    // The signal only maps for the opencode-go provider itself: a
+    // different provider with the same words still throws an error.
+    const sameReason = entryFromResult(
+      {
+        providerId: "claude",
+        ok: false,
+        configured: true,
+        error: "No active OpenCode Go subscription on the selected Console account",
+        usage: null,
+      },
+      TICK,
+    );
+    expect(sameReason.state).toBe("error");
   });
 
   test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {

@@ -5,6 +5,7 @@ export type CredentialLifecycleState =
   | "ok"
   | "expiring"
   | "expired"
+  | "lapsed"
   | "rejected"
   | "provider-error"
   | "not-configured"
@@ -26,17 +27,29 @@ export interface CredentialLifecycleRow {
 
 const EXPIRING_WITHIN_MS = 48 * 60 * 60_000;
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7741, mirroring the #7694 capUnits guard in actions.ts):
+// an astral character straddling the cap is dropped whole. Local copy, like
+// comments.ts (#7731) — a shared import would tangle module dependencies.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 /** Provider errors are useful evidence, but must never turn a credential value into feed data. */
 export function safeProviderReason(reason: string): string {
-  return reason
+  return capUnits(reason
     .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
     .replace(/\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}(?:\.[a-zA-Z0-9_-]+)?\b/g, "[redacted]")
     .replace(
       /\b((?:access|refresh|api|auth)?[_-]?(?:token|secret|password|cookie|api[_-]?key))\s*[:=]\s*["']?[^\s,;"'}]+/gi,
       "$1=[redacted]",
     )
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
-    .slice(0, 240);
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]"), 240);
 }
 
 export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): CredentialLifecycleRow {
@@ -46,7 +59,8 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
   const error = entry.error ? safeProviderReason(entry.error) : undefined;
   let state: CredentialLifecycleState;
 
-  if (entry.state === "unconfigured") state = "not-configured";
+  if (entry.state === "lapsed") state = "lapsed";
+  else if (entry.state === "unconfigured") state = "not-configured";
   else if (entry.state === "error" && /\bClaude session expired\b/i.test(error ?? "")) state = "expired";
   else if (
     entry.state === "error" &&
@@ -95,6 +109,7 @@ export function isCredentialLifecycleRow(value: unknown): value is CredentialLif
     "ok",
     "expiring",
     "expired",
+    "lapsed",
     "rejected",
     "provider-error",
     "not-configured",

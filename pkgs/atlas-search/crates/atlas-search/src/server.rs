@@ -203,11 +203,19 @@ pub struct ServeSettings {
     pub limits: RuntimeLimits,
 }
 
+fn home_dir() -> PathBuf {
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
+}
+
 pub fn default_service_config_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".local/state/atlas-search/service.json")
+    home_dir().join(".local/state/atlas-search/service.json")
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
@@ -526,6 +534,9 @@ fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
     if req.k == 0 {
         return Err(ServerError::bad_request("k must be at least 1"));
     }
+    req.parameters
+        .validate(req.expand)
+        .map_err(ServerError::bad_request)?;
     if let Some(limit) = req.page_limit
         && limit == 0
     {
@@ -619,6 +630,7 @@ where
             embedder_label: request.embedder.clone(),
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
+            parameters: request.parameters.clone(),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -801,12 +813,16 @@ where
             match_expr: query.match_expr.clone(),
             query_vector: None,
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         let vector_query = BranchQuery {
             match_expr: None,
             query_vector: query.query_vector.clone(),
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         // Fast path (Drew's usage profile, 2026-11-04): the
@@ -880,6 +896,7 @@ struct CacheKey {
     pool: usize,
     group_by_session: bool,
     expand: usize,
+    parameters: String,
     with_message: bool,
     model: String,
     embedder: String,
@@ -903,6 +920,8 @@ impl CacheKey {
             pool: req.pool,
             group_by_session: req.group_by_session,
             expand: req.expand,
+            parameters: serde_json::to_string(&req.parameters)
+                .expect("query parameters are serializable"),
             with_message: req.with_message,
             model: req.model.clone(),
             embedder: req.embedder.clone(),
@@ -1721,6 +1740,18 @@ fn format_cursor(offset: usize) -> String {
 }
 
 fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
+    // Every byte must be an ASCII hex digit and the length even (#7761,
+    // the #2517 gate the sibling hex parsers already carry): slicing the
+    // string at byte offsets without this gate panics on an odd-length
+    // cursor (final pair out of range) or on a multi-byte character at a
+    // misaligned offset, killing the per-connection thread instead of
+    // returning the malformed-cursor 400 below. u8::from_str_radix also
+    // accepts a leading plus sign, so the gate is what makes a pair two
+    // hex digits and nothing else.
+    let raw = cursor.as_bytes();
+    if raw.len() % 2 != 0 || !raw.iter().all(u8::is_ascii_hexdigit) {
+        return Err(ServerError::bad_request("malformed cursor"));
+    }
     let bytes: Result<Vec<u8>, _> = (0..cursor.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&cursor[i..i + 2], 16))
@@ -3327,5 +3358,19 @@ mod tests {
             None,
         );
         assert_eq!(result_ids(&pq.body), vec![2]);
+    }
+    #[test]
+    fn parse_cursor_refuses_malformed_input_without_panicking() {
+        // #7761: odd-length, single-char, and multibyte cursors used to
+        // panic on byte-offset slicing; every malformed shape must be
+        // the malformed-cursor error instead.
+        let valid = format_cursor(42);
+        assert_eq!(parse_cursor(&valid).ok(), Some(42));
+        assert!(parse_cursor("").is_err());
+        assert!(parse_cursor("zzzz").is_err());
+        assert!(parse_cursor("a").is_err());
+        assert!(parse_cursor(&valid[..valid.len() - 1]).is_err());
+        assert!(parse_cursor("6162aé").is_err());
+        assert!(parse_cursor("+a").is_err());
     }
 }

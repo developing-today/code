@@ -5,10 +5,12 @@
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { isAaSection } from "../aa.ts";
+import { aaCacheFileName, isAaBatchCacheEntry } from "../aa-batches.ts";
+import { isBatchUuid } from "../aa-batch-sql.ts";
 import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
@@ -36,6 +38,7 @@ import {
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
@@ -56,6 +59,20 @@ import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../qu
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type AaFeedSection,
@@ -222,7 +239,16 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
             // refs are never invented from a guessed repo.
             const m = /github\.com\/([\w.-]+\/[\w.-]+)\//.exec(l.url);
             if (!m) return [];
-            return [{ ref: `${m[1]}#${l.externalId}`, relation: "tracks" as const }];
+            const ref = `${m[1]}#${l.externalId}` as RefKey;
+            // #6243 (ref contract rule 3): a producer mints only valid
+            // refs - an externalId parseRef would reject (unsafe integer,
+            // non-numeric) must not become a board link renderers throw
+            // on; the card survives, the drop is traced.
+            if (!isValidRef(ref)) {
+              console.error(`[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`);
+              return [];
+            }
+            return [{ ref, relation: "tracks" as const }];
           });
         out.push({
           // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
@@ -250,9 +276,33 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
 
 // --- Grist --------------------------------------------------------------
 
-interface GristRecord {
+export interface GristRecord {
   id: number;
   fields: Record<string, unknown>;
+}
+
+/** Map a live Grist row without dropping or rewriting an invalid Horizon value. */
+export function mapGristRoadmapRecord(docId: string, rec: GristRecord): RoadmapRow {
+  const f = rec.fields;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const source = str(f.Source);
+  const notes = str(f.Notes);
+  const horizon = str(f.Horizon);
+  const horizonValidation = validateRoadmapHorizon(horizon);
+  const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
+  return {
+    id: rec.id,
+    subject: `grist:${docId}/Roadmap/${rec.id}`,
+    title: str(f.Title),
+    area: str(f.Area),
+    status: str(f.Status),
+    horizon,
+    ...(!horizonValidation.valid ? { horizonError: horizonValidation.error } : {}),
+    source,
+    notes,
+    links,
+    gristUrl: gristDocUrl(docId),
+  };
 }
 
 async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
@@ -262,25 +312,7 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
   });
   if (!r.ok) throw new Error("grist roadmap read failed");
   const records = (r.json as { records?: GristRecord[] }).records ?? [];
-  return records.map((rec) => {
-    const f = rec.fields;
-    const str = (v: unknown) => (typeof v === "string" ? v : "");
-    const source = str(f.Source);
-    const notes = str(f.Notes);
-    const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
-    return {
-      id: rec.id,
-      subject: `grist:${cfg.grist.docId}/Roadmap/${rec.id}`,
-      title: str(f.Title),
-      area: str(f.Area),
-      status: str(f.Status),
-      horizon: str(f.Horizon),
-      source,
-      notes,
-      links,
-      gristUrl: gristDocUrl(cfg.grist.docId),
-    };
-  });
+  return records.map((rec) => mapGristRoadmapRecord(cfg.grist.docId, rec));
 }
 
 // --- Projector (J's service, pm-stack/projector) -------------------------
@@ -368,7 +400,11 @@ export function mapProjectorComment(row: ProjectorCommentRow): Comment {
     author: row.author ?? "",
     body: row.body ?? "",
     createdAt: row.created_at,
-    url: row.url ?? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr"),
+    // #6243 (ref contract rule 4): row.ref is stored projector data; the
+    // stored url wins, and the refUrl fallback fires only for a ref the
+    // shared rule accepts - an invalid stored ref yields no URL instead
+    // of throwing out of the map (cf. the #6211 read gate for links).
+    url: row.url ?? (isValidRef(row.ref) ? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr") : ""),
     path: row.path ?? undefined,
     line: row.line ?? undefined,
     reviewState: row.review_state ?? undefined,
@@ -538,7 +574,7 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
   code: "developing-today/code",
   opencode: "developing-today-forks/opencode",
   openchamber: "developing-today-forks/openchamber",
-  nix: "dezren39/nix",
+  nix: "dezren39/darwin-nix",
 };
 
 /**
@@ -550,10 +586,15 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
  * also carries queue/task numbers — so it is left unlinked rather
  * than guessed at.
  */
-export function titleRefs(title: string): RefKey[] {
+export function titleRefs(title: string, onInvalid?: (ref: string) => void): RefKey[] {
   const out: RefKey[] = [];
   const add = (ref: RefKey) => {
-    if (!isValidRef(ref)) return;
+    // #6243 (ref contract rule 2): a dropped candidate is traced, never
+    // silent - callers that own a trace surface pass onInvalid.
+    if (!isValidRef(ref)) {
+      onInvalid?.(ref);
+      return;
+    }
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
@@ -643,7 +684,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
       if (!refs.includes(ref)) refs.push(ref);
     };
     if (item.ref !== undefined && item.ref !== null && item.ref !== "") add(item.ref);
-    for (const ref of titleRefs(item.title)) add(ref);
+    for (const ref of titleRefs(item.title, (bad) => add(bad))) add(ref);
     const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
     if (refs.length > 0 && remainingRefs.length === 0) continue;
     const titleKey = normTitle(item.title);
@@ -985,25 +1026,75 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #1116: a laptop leg's health, tracked per state file so the
+  // attention provenance can say which legs are dead instead of the
+  // failure staying silent. Before this, the OpenChamber-managed
+  // server's state file went stale on 2026-10-29 and the leg died
+  // unnoticed for days, leaving attention single-legged.
+  const laptopLegs: { standing: boolean | null; openchamber: boolean | null } = {
+    standing: null,
+    openchamber: null,
+  };
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
-    const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
-      port?: number;
-      password?: string;
-    };
-    if (!state.port || !state.password) return null;
-    const mapped = await mapServerSessions(
-      {
-        baseUrl: `http://127.0.0.1:${state.port}`,
-        password: state.password,
-      },
-      Date.now(),
-      { source: "opencode-laptop" },
-    );
-    if (!mapped) return null;
-    laptopCache = { value: mapped, at: Date.now() };
-    return mapped;
+    // Leg 1: the standing OpenCode server (opencode.service) — its own
+    // state file carries the current url + password and is rewritten
+    // on every restart, so this leg survives the restart churn that
+    // emptied the collector feed in the 2026-11-10 fixture incident.
+    try {
+      const state = JSON.parse(await readFile(cfg.opencodeServerStateFile, "utf8")) as {
+        url?: string;
+        password?: string;
+      };
+      if (state.url && state.password) {
+        const mapped = await mapServerSessions(
+          { baseUrl: state.url, password: state.password },
+          Date.now(),
+          { source: "opencode-laptop" },
+        );
+        laptopLegs.standing = mapped !== null;
+        if (mapped) {
+          laptopCache = { value: mapped, at: Date.now() };
+          return mapped;
+        }
+      } else {
+        laptopLegs.standing = false;
+      }
+    } catch {
+      laptopLegs.standing = false;
+      /* this leg fails soft; the OpenChamber leg is tried next */
+    }
+    // Leg 2: the OpenChamber-managed server, when one is running.
+    try {
+      const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
+        port?: number;
+        password?: string;
+      };
+      if (!state.port || !state.password) {
+        laptopLegs.openchamber = false;
+        return null;
+      }
+      const mapped = await mapServerSessions(
+        { baseUrl: "http://127.0.0.1:" + state.port, password: state.password },
+        Date.now(),
+        { source: "opencode-laptop" },
+      );
+      laptopLegs.openchamber = mapped !== null;
+      if (!mapped) return null;
+      laptopCache = { value: mapped, at: Date.now() };
+      return mapped;
+    } catch {
+      laptopLegs.openchamber = false;
+      return null;
+    }
   }
+  function laptopLegsNote(): string {
+    const bits: string[] = [];
+    if (laptopLegs.standing === false) bits.push("standing-server leg down");
+    if (laptopLegs.openchamber === false) bits.push("openchamber leg down");
+    return bits.length ? " [laptop legs: " + bits.join(", ") + "]" : "";
+  }
+
   async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
     const mapped = await laptopMapped();
     return mapped ? mapped.entries : null;
@@ -1044,7 +1135,7 @@ export function liveSource(
             actor: "aggregator",
             kind: "session-outcome",
             ref: `session:${r.source}:${r.id}`,
-            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+            summary: capUnits(`session ${r.label} (${r.agentLabel}) merged into the registry`, 500),
           });
         } catch (err) {
           console.error(
@@ -1555,11 +1646,27 @@ export function liveSource(
       }
 
       if (byId.size > 0) {
-        provenance.attention = `live (${parts.join(" + ")})`;
+        provenance.attention = "live (" + parts.join(" + ") + ")" + laptopLegsNote();
         return [...byId.values()];
       }
-      provenance.attention = "fixtures (no live attention source reachable)";
-      return fix.attention();
+      // #1116 (2026-11-10): production attention must never serve the
+      // demo fixtures. Both live legs being empty/down is an outage
+      // state, not content: serve an empty list with the cause named
+      // in provenance (and logged), so consumers see "no data" rather
+      // than a plausible fake fleet whose synthetic session IDs 404
+      // against the real server. The incident: OpenCode server
+      // restarts emptied the collector feed for two runs and this
+      // branch served FIXTURE_ATTENTION for ~10 minutes.
+      console.error(
+        "[attention] no live attention source reachable (feed " +
+          (feed ? "present, " + feed.attention.length + " entries" : "unreadable") +
+          ";" +
+          (laptopLegsNote() || " laptop legs untested") +
+          ") — serving empty, NOT fixtures",
+      );
+      provenance.attention =
+        "unavailable (no live attention source reachable; fixtures withheld in live mode)" + laptopLegsNote();
+      return [];
     },
     async orchestration(): Promise<OrchestrationSection | null> {
       // #899: the orchestration section rides the fleet feed, embedded
@@ -1609,7 +1716,7 @@ export function liveSource(
                 actor: "orchestrator",
                 kind: action.kind,
                 ref: orchestrationActionRef(action.target),
-                summary: action.summary.slice(0, 500),
+                summary: capUnits(action.summary, 500),
               });
             }
             if (lastOrchEventRunId !== null) {
@@ -1622,7 +1729,7 @@ export function liveSource(
                     actor: "orchestrator",
                     kind: "tier-change",
                     ref: id,
-                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
+                    summary: capUnits(`tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`, 500),
                   });
                 }
               }
@@ -1689,13 +1796,55 @@ export function liveSource(
               : "fixtures (no fleet feed file yet)";
       return null;
     },
-    async aa(): Promise<AaFeedSection | null> {
+    async aa(batch?: string | null): Promise<AaFeedSection | null> {
       // AA cost explorer: the section rides the fleet feed, read from
       // Supabase ainventory by the collector. Its absent form is a real
       // section (the page renders the reason); a missing section means
       // the collector has not embedded one yet.
       const feed = await getFeed();
       const collection = feed?.meta?.sections.aa;
+      // #3302: a selected historical batch is a collector-built cache file
+      // beside the feed. The feed's latest section carries the index, so the
+      // historical render keeps the same selector list.
+      if (batch !== undefined && batch !== null && batch !== "") {
+        const batchList =
+          feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? (feed.aa.batches ?? []) : [];
+        if (!isBatchUuid(batch)) {
+          provenance.aa = "live (fleet feed · invalid ?batch value)";
+          return { status: "absent", reason: "invalid batch id", generatedAt: feed?.generatedAt ?? new Date().toISOString() };
+        }
+        try {
+          const parsed: unknown = JSON.parse(
+            await readFile(join(dirname(cfg.feedFile), "aa-batches", aaCacheFileName(batch)), "utf8"),
+          );
+          if (isAaBatchCacheEntry(parsed) && isAaSection(parsed.section) && parsed.section.status === "ok") {
+            // #3302: the collector marks a cache stale when the opencode config
+            // changed under it (configFingerprint mismatch) and rebuilds a few
+            // per tick. Serving such a payload as ordinary success would show
+            // the old catalog and coverage with no warning, so honour the
+            // index's cache-validity flag.
+            const staleCache = batchList.find((b) => b.importBatch === batch)?.cached === false;
+            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt}${staleCache ? " · awaiting rebuild" : ""})`;
+            return staleCache
+              ? {
+                  ...parsed.section,
+                  batches: batchList,
+                  stale: true,
+                  staleReason:
+                    "this version is awaiting rebuilding — its opencode config or the current-price overlay changed since it was built",
+                }
+              : { ...parsed.section, batches: batchList };
+          }
+        } catch {
+          // No cache file yet — fall through to the honest absent form.
+        }
+        provenance.aa = `live (fleet feed · batch ${batch.slice(0, 8)} not cached yet)`;
+        return {
+          status: "absent",
+          reason: `batch ${batch} is indexed but its payload has not been built yet — the collector builds a few versions per tick`,
+          generatedAt: feed?.generatedAt ?? new Date().toISOString(),
+        };
+      }
       if (feed?.aa && isAaSection(feed.aa)) {
         const detail =
           feed.aa.status === "ok"

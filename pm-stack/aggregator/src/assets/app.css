@@ -4323,6 +4323,12 @@ a {
     max-width: 100%;
     overflow-wrap: anywhere;
   }
+  .item-session-records .session-record-line .badge {
+    box-sizing: border-box;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 .badge {
   display: inline-block;
@@ -5123,6 +5129,11 @@ pre {
   background: #d2992233;
   border-color: #d29922;
   color: #e3b341;
+}
+.badge.lapsed {
+  background: #6e768133;
+  border-color: #6e7681;
+  color: #8b949e;
 }
 .badge.conflict {
   background: #bc8cff33;

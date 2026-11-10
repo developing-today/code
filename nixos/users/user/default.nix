@@ -18,6 +18,16 @@
   users.users.user = {
     uid = 1337;
     isNormalUser = true;
+    # Start the systemd user manager at boot instead of at first login, so
+    # user services (e.g. the OpenClaw gateway) run unattended after a reboot.
+    # This declares state that had only ever been set imperatively with
+    # `loginctl enable-linger user` (code#5443), which a reinstall or a config
+    # rebuild would silently have lost.
+    #
+    # Linger does NOT unlock the GNOME keyring: keyring-held credentials still
+    # need a graphical login, so boot-independent services must use file-based
+    # secrets (sops / Bitwarden), never the keyring or the interactive gh token.
+    linger = true;
     hashedPasswordFile = config.sops.secrets."users/user/passwordHash".path;
     description = "user";
     extraGroups = [
