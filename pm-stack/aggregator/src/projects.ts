@@ -6,11 +6,12 @@
 // first and renders it on /projects. Read-only everywhere: nothing
 // in this codebase writes to the Project.
 //
-// This module is pure parsing/mapping (no I/O except fetchProjectPool,
+// This module is pure parsing/mapping (no I/O except fetchProjectSnapshot,
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
-import type { GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { refKey } from "./model.ts";
+import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolItem, RefKey } from "./model.ts";
+import { isValidRef, refKey } from "./model.ts";
+import { isRecord, isTimestampNotFuture } from "./validate.ts";
 import { workItemRefSet } from "./work-items.ts";
 
 export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
@@ -18,15 +19,20 @@ export const PROJECT_URL = "https://github.com/orgs/developing-today/projects/4"
 export const PROJECT_ORG = "developing-today";
 export const PROJECT_NUMBER = 4;
 
-/** GraphQL for one page of project items. Field values are single-
- * select (Status/Area/Horizon/Kind) plus the Title text value; other
- * field types arrive as `{}` nodes and are ignored by the parser. */
+/** GraphQL for one page of project items plus the board's audit schema. */
 export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
   node(id: $id) {
     ... on ProjectV2 {
       title
       number
       url
+      fields(first: 100) {
+        nodes {
+          ... on ProjectV2FieldCommon { id name dataType }
+          ... on ProjectV2SingleSelectField { options { id name } }
+        }
+      }
+      views(first: 100) { nodes { id name layout filter } }
       items(first: 100, after: $cursor) {
         totalCount
         pageInfo { hasNextPage endCursor }
@@ -35,11 +41,11 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
-            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt author { login } isDraft }
+            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt author { login } isDraft }
             ... on DraftIssue { title }
           }
-          fieldValues(first: 30) {
+          fieldValues(first: 100) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
               ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
@@ -68,6 +74,8 @@ interface GqlContent {
   url?: string;
   repository?: { nameWithOwner?: string } | null;
   updatedAt?: string;
+  closedAt?: string;
+  mergedAt?: string;
   author?: { login?: string } | null;
   isDraft?: boolean;
   labels?: { nodes?: { name?: string }[] } | null;
@@ -86,12 +94,26 @@ interface GqlItem {
   content?: GqlContent | null;
   fieldValues?: { nodes?: (GqlFieldValue | null)[] } | null;
 }
+interface GqlProjectField {
+  id?: string;
+  name?: string;
+  dataType?: string;
+  options?: { id?: string; name?: string }[] | null;
+}
+interface GqlProjectView {
+  id?: string;
+  name?: string;
+  layout?: string;
+  filter?: string | null;
+}
 export interface GqlProjectPage {
   data?: {
     node?: {
       title?: string;
       number?: number;
       url?: string;
+      fields?: { nodes?: (GqlProjectField | null)[] } | null;
+      views?: { nodes?: (GqlProjectView | null)[] } | null;
       items?: {
         totalCount?: number;
         pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
@@ -148,7 +170,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       // number: null becomes absent, so a valid item is never dropped by
       // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
       databaseId: item.databaseId ?? undefined,
-      url: projectItemUrl(item.databaseId, projectUrl),
+      url: projectItemUrl(item.databaseId ?? undefined, projectUrl),
       projectUrl,
       ref: refKey({ repo, number: c.number }),
       repo,
@@ -161,6 +183,8 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       labels: (c.labels?.nodes ?? []).map((l) => l?.name).filter((x): x is string => typeof x === "string"),
       author: c.author?.login ?? "",
       updatedAt: c.updatedAt ?? "",
+      ...(c.closedAt ? { closedAt: c.closedAt } : {}),
+      ...(c.mergedAt ? { mergedAt: c.mergedAt } : {}),
       status: singleSelect(item, "Status"),
       area: singleSelect(item, "Area"),
       horizon: singleSelect(item, "Horizon"),
@@ -202,8 +226,161 @@ export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCurso
   };
 }
 
+function fieldValue(item: GqlItem, name: string): string {
+  const value = (item.fieldValues?.nodes ?? []).find((v) => v?.field?.name === name);
+  const label = typeof value?.name === "string" ? value.name : value?.text;
+  return typeof label === "string" && label.length > 0 ? label : "(unset)";
+}
+
+function distribution(items: GqlItem[], value: (item: GqlItem) => string): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const key = value(item);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return Object.fromEntries([...counts.entries()].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/** Build the public audit snapshot from the first page's board schema and every item node. */
+export function parseProjectAudit(json: unknown, items: GqlItem[], generatedAt: string): ProjectAudit {
+  const node = (json as GqlProjectPage)?.data?.node;
+  const itemConnection = node?.items;
+  const totalItems = itemConnection?.totalCount;
+  if (!node || !itemConnection || !node.fields || !node.views || !Number.isInteger(totalItems) || totalItems! < 0) {
+    throw new Error("github GraphQL response omitted Project metadata, fields, views, or item totalCount");
+  }
+  const fields = (node.fields?.nodes ?? []).flatMap((field) => {
+    if (!field?.id || !field.name || !field.dataType) return [];
+    const options = (field.options ?? []).flatMap((option) =>
+      option?.id && option.name ? [{ id: option.id, name: option.name }] : [],
+    );
+    return [{ id: field.id, name: field.name, dataType: field.dataType, ...(options.length ? { options } : {}) }];
+  });
+  const views = (node.views?.nodes ?? []).flatMap((view) =>
+    view?.id && view.name && view.layout
+      ? [{ id: view.id, name: view.name, layout: view.layout, filter: view.filter ?? null }]
+      : [],
+  );
+  return {
+    title: node.title ?? "Developing Today",
+    number: node.number ?? PROJECT_NUMBER,
+    url: node.url ?? PROJECT_URL,
+    generatedAt,
+    totalItems: totalItems as number,
+    fields,
+    views,
+    counts: {
+      status: distribution(items, (item) => fieldValue(item, "Status")),
+      area: distribution(items, (item) => fieldValue(item, "Area")),
+      repo: distribution(items, (item) => item.content?.repository?.nameWithOwner ?? "(unlinked)"),
+    },
+  };
+}
+
+/** Runtime gate for audit snapshots read from the collector-owned feed. */
+export function isProjectAudit(value: unknown): value is ProjectAudit {
+  if (!isRecord(value) || !isRecord(value.counts)) return false;
+  const validDistribution = (v: unknown) =>
+    isRecord(v) && Object.values(v).every((n) => Number.isInteger(n) && (n as number) >= 0);
+  const distributionTotal = (v: unknown): number | null => {
+    if (!isRecord(v) || !Object.values(v).every((n) => Number.isInteger(n) && (n as number) >= 0)) return null;
+    return Object.values(v).reduce<number>((sum, n) => sum + (n as number), 0);
+  };
+  return (
+    typeof value.title === "string" &&
+    Number.isInteger(value.number) &&
+    typeof value.url === "string" &&
+    isTimestampNotFuture(value.generatedAt) &&
+    Number.isInteger(value.totalItems) &&
+    (value.totalItems as number) >= 0 &&
+    Array.isArray(value.fields) &&
+    value.fields.every((field) =>
+      isRecord(field) &&
+      typeof field.id === "string" &&
+      typeof field.name === "string" &&
+      typeof field.dataType === "string" &&
+      (field.options === undefined ||
+        (Array.isArray(field.options) &&
+          field.options.every((option) => isRecord(option) && typeof option.id === "string" && typeof option.name === "string"))),
+    ) &&
+    Array.isArray(value.views) &&
+    value.views.every(
+      (view) =>
+        isRecord(view) &&
+        typeof view.id === "string" &&
+        typeof view.name === "string" &&
+        typeof view.layout === "string" &&
+        (typeof view.filter === "string" || view.filter === null),
+    ) &&
+    validDistribution(value.counts.status) &&
+    validDistribution(value.counts.area) &&
+    validDistribution(value.counts.repo) &&
+    distributionTotal(value.counts.status) === value.totalItems &&
+    distributionTotal(value.counts.area) === value.totalItems &&
+    distributionTotal(value.counts.repo) === value.totalItems
+  );
+}
+
+export interface ProjectSnapshot {
+  items: ProjectPoolItem[];
+  audit: ProjectAudit;
+}
+
+/** Fetch the whole pool, board schema, views, and distributions (paginated). */
+export async function fetchProjectSnapshot(
+  token: string,
+  fetchFn: typeof fetch = fetch,
+  generatedAt = new Date().toISOString(),
+): Promise<ProjectSnapshot> {
+  const parsedItems: ProjectPoolItem[] = [];
+  const auditItems: GqlItem[] = [];
+  let firstPage: unknown;
+  let cursor: string | null = null;
+  let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
+  for (let page = 0; page < 10; page++) {
+    const res = await fetchFn("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "pm-fleet-feed-collector",
+      },
+      body: JSON.stringify({ query: PROJECT_QUERY, variables: { id: PROJECT_ID, cursor } }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`github GraphQL HTTP ${res.status}`);
+    const json: unknown = await res.json();
+    if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
+    if (!firstPage) firstPage = json;
+    const nodes = (json as GqlProjectPage).data?.node?.items?.nodes ?? [];
+    auditItems.push(...nodes.filter((node): node is GqlItem => node !== null));
+    parsedItems.push(...parseProjectItems(json));
+    const info = projectPageInfo(json);
+    if (!info.hasNextPage) {
+      if (auditItems.length < info.totalCount) {
+        // Shortfall only: overlapping pages can over-deliver nodes, but
+        // fewer nodes than the board total means the export lost items.
+        throw new Error(`github GraphQL project export incomplete (${auditItems.length}/${info.totalCount} items)`);
+      }
+      return {
+        items: resolveEpicRefs(parsedItems),
+        audit: parseProjectAudit(firstPage, auditItems, generatedAt),
+      };
+    }
+    if (!info.endCursor || info.endCursor === cursor) throw new Error("github GraphQL project pagination did not advance");
+    if (page === 9) throw new Error(`github project pool truncated at 10-page cap (totalCount: ${info.totalCount})`);
+    cursor = info.endCursor;
+  }
+  throw new Error("github GraphQL project pagination ended unexpectedly");
+}
+
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
- * the collector can fail-soft and omit the section. Never logs the token. */
+ * the collector can fail-soft and omit the section. Never logs the token.
+ * Pool-only path: it must NOT route through fetchProjectSnapshot — the
+ * audit parser requires board fields/views metadata that pool-only
+ * responses (e.g. the contract corpus) do not carry, and a missing audit
+ * must never cost the pool. The collector uses fetchProjectSnapshot
+ * for the audited section instead. */
 export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
@@ -237,9 +414,9 @@ export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fe
 
 /** Structural check for a pool entry in a feed (collector + live share
  * it, and the feed.ts section gate delegates to it — the two sides can
- * never drift). Edge fields (#2399) are absence-friendly but
- * shape-strict when present: a malformed edge fails the item, never
- * the section. */
+ * never drift). Edge fields (#2399) are absence-friendly, but every
+ * present ref must satisfy the shared isValidRef rule: a malformed edge
+ * fails the item, never the section. */
 export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
   if (typeof v !== "object" || v === null) return false;
   const p = v as Partial<ProjectPoolItem>;
@@ -270,11 +447,13 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
     (p.author === undefined || typeof p.author === "string") &&
     (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
+    (p.closedAt === undefined || typeof p.closedAt === "string") &&
+    (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
-    (p.parentRef === undefined || typeof p.parentRef === "string") &&
-    (p.epicRef === undefined || typeof p.epicRef === "string") &&
-    (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every((x) => typeof x === "string"))) &&
-    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every((x) => typeof x === "string")))
+    (p.parentRef === undefined || isValidRef(p.parentRef)) &&
+    (p.epicRef === undefined || isValidRef(p.epicRef)) &&
+    (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every(isValidRef))) &&
+    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef)))
   );
 }
 

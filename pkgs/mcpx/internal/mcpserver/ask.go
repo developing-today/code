@@ -558,17 +558,6 @@ func (s *Server) states() *stateSigner {
 	return s.signer
 }
 
-// mayBlockOnClient reports whether answering this request could require a
-// frame from the client, which decides whether it can be handled in line.
-func (s *Server) mayBlockOnClient(c *Conn, req request) bool {
-	switch req.Method {
-	case "tools/call", "prompts/get", "resources/read":
-	default:
-		return false
-	}
-	return s.canAsk(context.Background(), c, c.peerFor(req.Params))
-}
-
 // wireKey is the inputRequests key q is sent under: the upstream's own key
 // where it has one no other pending question shares, otherwise mcpx's id.
 func wireKey(q Question, qs []Question) string {

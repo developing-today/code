@@ -34,9 +34,6 @@ declare -A GRANDFATHERED=(
   # 2,504 production lines; the F11.10 file itself, regrown. Split:
   # https://github.com/developing-today/code/issues/4715
   ["pkgs/id/src/cli.rs"]="https://github.com/developing-today/code/issues/4715"
-  # 2,573 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4716
-  ["pkgs/id/src/web/routes.rs"]="https://github.com/developing-today/code/issues/4716"
   # 2,821 production lines; split tracked by
   # https://github.com/developing-today/code/issues/4717
   ["pkgs/id/src/world_session/mod.rs"]="https://github.com/developing-today/code/issues/4717"
@@ -184,10 +181,10 @@ for base in pkgs apps; do
   while IFS= read -r -d "" file; do
     rel="${file#"$ROOT"/}"
     case "/$rel" in
-      */tests/*) continue ;;
+    */tests/*) continue ;;
     esac
     case "$(basename "$file")" in
-      tests.rs) continue ;;
+    tests.rs) continue ;;
     esac
     prod=$(production_lines "$file")
     checked=$((checked + 1))

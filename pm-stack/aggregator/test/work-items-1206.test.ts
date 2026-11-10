@@ -199,14 +199,26 @@ describe("canonical work-item projection (#1206)", () => {
     // under Goal B (fixture order is the reverse; rebuild explicitly).
     section.goals = [
       {
-        goalId: "goal-a", goal: "Goal A", momentum: "moving", summary: "one goal",
-        linedUp: [{ title: "Ship the thing", ref: REF, status: "done-recently", horizon: "today", horizonWhy: "shipped?" }],
-        progressedSinceLastRun: [], stalled: [], gaps: [],
+        goalId: "goal-a",
+        goal: "Goal A",
+        momentum: "moving",
+        summary: "one goal",
+        linedUp: [
+          { title: "Ship the thing", ref: REF, status: "done-recently", horizon: "today", horizonWhy: "shipped?" },
+        ],
+        progressedSinceLastRun: [],
+        stalled: [],
+        gaps: [],
       },
       {
-        goalId: "goal-b", goal: "Goal B", momentum: "moving", summary: "another goal",
+        goalId: "goal-b",
+        goal: "Goal B",
+        momentum: "moving",
+        summary: "another goal",
         linedUp: [{ title: "Ship the thing", ref: REF, status: "queued", horizon: "today", horizonWhy: "reopened" }],
-        progressedSinceLastRun: [], stalled: [], gaps: [],
+        progressedSinceLastRun: [],
+        stalled: [],
+        gaps: [],
       },
     ];
     section.tiers = { needsDrew: [], needsOrchestrator: [] };
@@ -225,7 +237,15 @@ describe("canonical work-item projection (#1206)", () => {
     const base = section.tiers!.needsDrew![0]!;
     section.tiers = {
       needsDrew: [{ ...base, id: "session-S", ref: REF }],
-      needsOrchestrator: [{ ...base, id: "session-S", ref: undefined, title: "Ship the thing (orchestrator view)", reason: "orchestrator also sees it" }],
+      needsOrchestrator: [
+        {
+          ...base,
+          id: "session-S",
+          ref: undefined,
+          title: "Ship the thing (orchestrator view)",
+          reason: "orchestrator also sees it",
+        },
+      ],
     };
 
     const items = assembleWorkItems(section);
@@ -242,14 +262,34 @@ describe("canonical work-item projection (#1206)", () => {
     const section = fixtureSection();
     section.goals = [
       {
-        goalId: "goal-a", goal: "Goal A", momentum: "moving", summary: "one goal",
-        linedUp: [{ title: "Ship the thing", ref: REF, status: "queued", horizon: "tomorrow", horizonWhy: "planned tomorrow" }],
-        progressedSinceLastRun: [], stalled: [], gaps: [],
+        goalId: "goal-a",
+        goal: "Goal A",
+        momentum: "moving",
+        summary: "one goal",
+        linedUp: [
+          { title: "Ship the thing", ref: REF, status: "queued", horizon: "tomorrow", horizonWhy: "planned tomorrow" },
+        ],
+        progressedSinceLastRun: [],
+        stalled: [],
+        gaps: [],
       },
       {
-        goalId: "goal-b", goal: "Goal B", momentum: "moving", summary: "another goal",
-        linedUp: [{ title: "Ship the thing", ref: REF, status: "queued", horizon: "today", horizonWhy: "pulled forward to today" }],
-        progressedSinceLastRun: [], stalled: [], gaps: [],
+        goalId: "goal-b",
+        goal: "Goal B",
+        momentum: "moving",
+        summary: "another goal",
+        linedUp: [
+          {
+            title: "Ship the thing",
+            ref: REF,
+            status: "queued",
+            horizon: "today",
+            horizonWhy: "pulled forward to today",
+          },
+        ],
+        progressedSinceLastRun: [],
+        stalled: [],
+        gaps: [],
       },
     ];
     section.tiers = { needsDrew: [], needsOrchestrator: [] };

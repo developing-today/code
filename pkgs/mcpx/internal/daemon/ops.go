@@ -39,6 +39,7 @@ func (s *Server) routesV1Ops(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/tasks/{id}", s.handleTaskGet)
 	s.route(mux, "GET /v1/tasks/{id}/result", s.handleTaskResult)
 	s.route(mux, "POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
+	s.route(mux, "POST /v1/writes/{server}/clear", s.handleWriteClear)
 	s.route(mux, "GET /v1/openapi.json", s.handleOpenAPI)
 }
 
@@ -77,7 +78,7 @@ func (s *Server) openStore() (*logstore.Store, error) {
 	}
 	if s.set.Bool("plumbing.indexOnQuery") {
 		if _, err := st.Ingest(); err != nil {
-			st.Close()
+			_ = st.Close()
 			return nil, err
 		}
 	}
@@ -156,7 +157,7 @@ func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	if chain := q.Get("chain"); chain != "" {
 		// Chain walks a trace tree by id and takes no filters. Accepting
@@ -230,7 +231,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	var rows any
 	switch dim {
@@ -548,7 +549,7 @@ func rankCompletions(candidates []string, value string) []string {
 			hits = append(hits, scored{c, fc, 1, 0})
 		case strings.HasPrefix(fc, q):
 			hits = append(hits, scored{c, fc, 2, 0})
-		case q != "" && strings.Index(fc, q) >= 0:
+		case q != "" && strings.Contains(fc, q):
 			hits = append(hits, scored{c, fc, 3, strings.Index(fc, q)})
 		}
 	}
@@ -581,20 +582,29 @@ func rankCompletions(candidates []string, value string) []string {
 
 // ---- tasks ----
 
-// taskStore is the daemon's own, created on first use so a daemon that never
-// runs one carries nothing.
 // TaskStore returns the daemon's one task store, creating it on first
 // use exactly as the /v1 handlers do. internal/cli uses it to share
 // the same instance with the daemon's MCP surface (issue #1555): a
 // task started over MCP is then visible via /v1, and a /v1 task lives
 // in the same store the MCP surface reads.
+// taskStore is the daemon's own, created on first use so a daemon that never
+// runs one carries nothing.
 func (s *Server) TaskStore() *tasks.Store { return s.taskStore() }
 
 func (s *Server) taskStore() *tasks.Store {
 	s.taskOnce.Do(func() {
 		if s.paths.State != "" {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
-			if store, err := tasks.Open(dbPath); err == nil {
+			// Retention must reach the store before Open migrates
+			// legacy rows, or startup deletes results the configured
+			// retention promises to keep (issue #6248). The hot
+			// Configure refresh below still applies later updates.
+			var cfgTTL, cfgMaxAge time.Duration
+			if s.set != nil {
+				cfgTTL = s.set.Duration("tasks.ttl")
+				cfgMaxAge = s.set.Duration("tasks.maxAge")
+			}
+			if store, err := tasks.OpenWithRetention(dbPath, cfgTTL, cfgMaxAge); err == nil {
 				s.tasks = store
 			} else if s.logger != nil {
 				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)
@@ -624,6 +634,12 @@ func (s *Server) taskStore() *tasks.Store {
 			}
 		}
 	})
+	// Retention settings are hot: refresh them on access so runtime updates
+	// affect new tasks and subsequent item/result reads without replacing the
+	// shared store.
+	if s.set != nil {
+		s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
+	}
 	return s.tasks
 }
 
@@ -668,7 +684,7 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 	store := s.taskStore()
 	id := r.PathValue("id")
 	store.RecordRetrieval("v1", "tasks/get", id)
-	t, ok := store.Get(id)
+	t, ok := store.Read(id)
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: id})
 		return
@@ -691,7 +707,7 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
 
-	result, fault, err := store.Result(ctx, id)
+	result, fault, err := store.ReadResult(ctx, id)
 	switch {
 	case err != nil:
 		var missing tasks.ErrNoTask
@@ -826,9 +842,4 @@ func firstSentence(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
-}
-
-// hasPrefixFold matches the way a person types: case is not a filter.
-func hasPrefixFold(s, prefix string) bool {
-	return strings.HasPrefix(strings.ToLower(s), strings.ToLower(prefix))
 }

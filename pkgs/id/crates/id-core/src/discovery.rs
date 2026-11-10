@@ -363,7 +363,7 @@ pub const MAX_PEER_NAME_BYTES: usize = 256;
 // ============================================================================
 
 /// A peer's presence claim. Gossip carries it inside the id crate's signed,
-/// versioned envelope; this plain structure is also nested in `/iroh-meta/2`.
+/// versioned envelope; this plain structure is also nested in `/iroh-meta/3`.
 ///
 /// Serialized with [postcard](https://docs.rs/postcard) for compact binary
 /// encoding. Typical size: ~50-100 bytes depending on name length.

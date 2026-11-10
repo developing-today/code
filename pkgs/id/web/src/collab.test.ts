@@ -1,6 +1,14 @@
 import { Packr, Unpackr } from "msgpackr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, buildCollabWsUrl, initCollab, stepBatch } from "./collab";
+import {
+  MAX_STEPS_MESSAGE_BYTES,
+  MAX_STEPS_PER_MESSAGE,
+  buildCollabWsUrl,
+  initCollab,
+  stepBatch,
+  stepWireSize,
+} from "./collab";
+import { getSendableSteps, getVersion } from "./editor";
 
 // Same MessagePack configuration as collab.ts
 const packr = new Packr({ useRecords: false, structuredClone: true });
@@ -176,6 +184,87 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
     conn.disconnect();
   });
 
+  it("caps repeated open-then-drop failures until Init succeeds", () => {
+    const statuses: string[] = [];
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", null, undefined, (status) =>
+        statuses.push(status),
+      ),
+    );
+
+    let socket = FakeWebSocket.instances[0];
+    // The initial connection plus ten reconnects all reach OPEN, but the
+    // server drops each one before sending Init.
+    for (let i = 0; i < 11; i++) {
+      socket.open();
+      socket.drop();
+      if (i < 10) {
+        vi.advanceTimersToNextTimer();
+        socket = FakeWebSocket.instances.at(-1)!;
+      }
+    }
+
+    expect(FakeWebSocket.instances).toHaveLength(11);
+    expect(statuses.at(-1)).toBe("error");
+    conn.disconnect();
+  });
+
+  it("starts a fresh retry budget after receiving Init", () => {
+    const statuses: string[] = [];
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", null, undefined, (status) =>
+        statuses.push(status),
+      ),
+    );
+
+    let socket = FakeWebSocket.instances[0];
+    for (let i = 0; i < 10; i++) {
+      socket.open();
+      socket.drop();
+      vi.advanceTimersToNextTimer();
+      socket = FakeWebSocket.instances.at(-1)!;
+    }
+
+    socket.open();
+    socket.deliver([0, 0, { type: "doc", content: [{ type: "paragraph" }] }, "raw"]);
+    socket.drop();
+    vi.advanceTimersToNextTimer();
+    socket = FakeWebSocket.instances.at(-1)!;
+
+    // Ten failures after successful initialization may still schedule the
+    // tenth retry; the following failed connection reaches the cap.
+    for (let i = 0; i < 9; i++) {
+      socket.open();
+      socket.drop();
+      if (i < 8) {
+        vi.advanceTimersToNextTimer();
+        socket = FakeWebSocket.instances.at(-1)!;
+      }
+    }
+    expect(statuses.at(-1)).toBe("connecting");
+
+    vi.advanceTimersToNextTimer();
+    socket = FakeWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.drop();
+    expect(statuses.at(-1)).toBe("error");
+    conn.disconnect();
+  });
+
+  it("does not reconnect after an intentional disconnect", () => {
+    const conn = track(initCollab("ws://example.test/collab", makeContainer(), "doc-1"));
+    const socket = FakeWebSocket.instances[0];
+
+    socket.open();
+    conn.disconnect();
+    // A failed close handshake can surface as an abnormal close after the
+    // client has already requested a normal, intentional close.
+    socket.drop();
+    vi.advanceTimersByTime(10_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
   it("drops non-array frames and still initializes from a later valid INIT (#2824)", () => {
     const onEditorReady = vi.fn();
     const { conn, socket } = openCollab(onEditorReady);
@@ -266,6 +355,67 @@ describe("stepBatch (client side of the server step cap, #1965)", () => {
     const steps = ["exact", "later"];
     const batch = stepBatch(steps, (s) => (s === "exact" ? MAX_STEPS_MESSAGE_BYTES : 1));
     expect(batch).toEqual(["exact"]);
+  });
+});
+
+describe("large text insertion collaboration (#4119)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    while (liveConnections.length > 0) liveConnections.pop()?.disconnect();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  it("sends and confirms all bounded steps from a single oversized paste", () => {
+    const { conn, socket } = openCollab();
+    socket.deliver([MSG_INIT, 0, { type: "doc", content: [{ type: "code_block" }] }, "raw"]);
+    expect(conn.editor).not.toBeNull();
+
+    const view = conn.editor!.view;
+    const text = "x".repeat(1_100_000);
+    view.dispatch(view.state.tr.insertText(text, 1));
+
+    let confirmed = 0;
+    for (let frameIndex = 0; frameIndex < 100; frameIndex++) {
+      const frames = socket.sent.map((data) => unpackr.unpack(data as Uint8Array) as unknown[]);
+      const stepFrames = frames.filter((frame) => frame[0] === 1);
+      const frame = stepFrames[frameIndex];
+      if (!frame) break;
+
+      const steps = frame[2] as unknown[];
+      const clientID = frame[3] as number;
+      expect(steps.length).toBeGreaterThan(0);
+      expect(steps.length).toBeLessThanOrEqual(MAX_STEPS_PER_MESSAGE);
+      expect(steps.every((step) => stepWireSize(step) <= MAX_STEPS_MESSAGE_BYTES)).toBe(true);
+
+      confirmed += steps.length;
+      socket.deliver([2, steps, steps.map(() => clientID)]);
+    }
+
+    const allFrames = socket.sent.map((data) => unpackr.unpack(data as Uint8Array) as unknown[]);
+    const stepFrameData = socket.sent.filter((data) => (unpackr.unpack(data as Uint8Array) as unknown[])[0] === 1);
+    const sentSteps = allFrames.filter((frame) => frame[0] === 1).flatMap((frame) => frame[2] as unknown[]);
+    expect(stepFrameData.every((data) => (data as Uint8Array).byteLength <= 1024 * 1024)).toBe(true);
+    expect(sentSteps.length).toBeGreaterThan(1);
+    expect(
+      sentSteps
+        .map((step) =>
+          (step as { slice: { content: Array<{ text?: string }> } }).slice.content
+            .map((node) => node.text ?? "")
+            .join(""),
+        )
+        .join(""),
+    ).toBe(text);
+    expect(confirmed).toBe(sentSteps.length);
+    expect(getSendableSteps(view)).toBeNull();
+    expect(getVersion(view.state)).toBe(confirmed);
+    expect(view.state.doc.textContent).toBe(text);
   });
 });
 

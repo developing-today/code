@@ -37,7 +37,7 @@ use p2panda_store::topics::TopicStore;
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Event;
-use crate::event_store::{EventStore, Ingest, StoreError};
+use crate::event_store::{BlockKind, BlockList, EventStore, Ingest, StoreError};
 use crate::waiting::AuthorKey;
 
 /// Entries read per page. A page takes the read lock once, so a stream never holds the lock
@@ -301,6 +301,19 @@ impl SharedEventStore {
             resolved.insert(VerifyingKey::from_bytes(&author)?, vec![ChainLog]);
         }
         Ok(resolved)
+    }
+}
+
+impl BlockList for SharedEventStore {
+    /// Whether (`kind`, `value`) is on the store's operator block list
+    /// and still enforced, under the read lock, taken for this one call.
+    /// The wall clock judges expiry, and a read error or a poisoned lock
+    /// invents no block.
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        self.read(|store| {
+            Ok(EventStore::is_blocked(store, kind, value, crate::time::unix_ms()).unwrap_or(false))
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -792,6 +805,8 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
+            chat: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }
