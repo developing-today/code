@@ -1,0 +1,18 @@
+[Unit]
+Description=Supabase usage exporter — code#1050
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+# Start through bash so the laptop auth hook loads: systemd user units get
+# BASH_ENV from the manager environment (home/common/default.nix
+# sessionVariables -> agent-shell-env env.sh), and a non-interactive bash
+# sources $BASH_ENV before running the command — that hook is what puts
+# BWS_ACCESS_TOKEN in the environment for the producer's Bitwarden token
+# resolution. Starting bun directly skipped the hook and every tick failed
+# no-token. The placeholders in ExecStart are rendered by
+# install-laptop.sh from the selected installation directory and the
+# laptop's bash/bun found on PATH at install time (this NixOS laptop has
+# no /bin/bash, so a hardcoded shell path would not even start).
+ExecStart=@BASH@ -c "exec @BUN@ @EXPORT_DIR@/supabase-quota-export.mjs --out-dir @EXPORT_DIR@"

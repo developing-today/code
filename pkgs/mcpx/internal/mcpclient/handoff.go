@@ -2,25 +2,24 @@ package mcpclient
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // StdioHandoff is a stdio child's identity and pipes, enough for another
 // process to take the child over without restarting it.
 type StdioHandoff struct {
 	PID int `json:"pid"`
-	// StartTime is the child's start time from /proc. With the pid it names
-	// one process, so a recycled pid is not mistaken for the child.
+	// StartTime is the child's process start time (see procStat; the
+	// units are platform-defined). With the pid it names one process,
+	// so a recycled pid is not mistaken for the child.
 	StartTime uint64 `json:"startTime"`
 	Label     string `json:"label"`
 	// Stdin, Stdout and Stderr are this process's ends of the child's pipes.
@@ -69,17 +68,23 @@ func (t *StdioTransport) Detach() (*StdioHandoff, error) {
 		return nil, fmt.Errorf("child %d: %w", t.pid, err)
 	}
 	t.writeMu.Lock()
-	if t.closed.Load() || t.detached {
+	if t.closed.Load() || t.detached.Load() {
 		t.writeMu.Unlock()
 		return nil, errors.New("stdio transport is not attached")
 	}
-	t.detached = true
+	t.detached.Store(true)
 	t.writeMu.Unlock()
 
 	_ = t.outR.SetReadDeadline(aLongTimeAgo)
 	_ = t.errR.SetReadDeadline(aLongTimeAgo)
+	// Hold readMu across the snapshot, not just as a wait for a read in
+	// progress: a read loop whose Recv just returned can start the next
+	// one and write pending while Detach reads it below -- the
+	// readLine/Detach data race in #2842. A loop still waiting on
+	// readMu when Detach returns meets the detached check in Recv
+	// instead of consuming the successor's frames.
 	t.readMu.Lock()
-	t.readMu.Unlock()
+	defer t.readMu.Unlock()
 	<-t.stderrDone
 
 	buffered, _ := t.stdout.Peek(t.stdout.Buffered())
@@ -98,19 +103,19 @@ func (t *StdioTransport) Detach() (*StdioHandoff, error) {
 // Reattach resumes reading after a Detach that was not handed on.
 func (t *StdioTransport) Reattach() {
 	t.writeMu.Lock()
-	t.detached = false
+	t.detached.Store(false)
 	t.writeMu.Unlock()
 	_ = t.outR.SetReadDeadline(time.Time{})
 	_ = t.errR.SetReadDeadline(time.Time{})
 	t.startStderr()
 }
 
-// AdoptStdio takes over a child a predecessor process detached. It fails if
-// the child is no longer running, so a dead child is never resumed.
 // ErrChildGone is returned by AdoptStdio when the child has exited, so a
 // successor can drop it instead of failing the whole handoff over it.
 var ErrChildGone = errors.New("child is not running")
 
+// AdoptStdio takes over a child a predecessor process detached. It fails if
+// the child is no longer running, so a dead child is never resumed.
 func AdoptStdio(h StdioHandoff) (*StdioTransport, error) {
 	if !childAlive(h.PID, h.StartTime) {
 		return nil, fmt.Errorf("child %d (%s): %w", h.PID, h.Label, ErrChildGone)
@@ -163,34 +168,12 @@ func childAlive(pid int, start uint64) bool {
 	return st == start && state != 'Z'
 }
 
-// ProcessStartTime is the start time of pid, in clock ticks since boot.
+// ProcessStartTime is the start time of pid, in the platform's
+// procStat units (Linux: clock ticks since boot; darwin: microseconds
+// since the epoch). It is only compared for equality on one machine.
 func ProcessStartTime(pid int) (uint64, error) {
 	st, _, err := procStat(pid)
 	return st, err
-}
-
-// procStat reads a process's start time and state from /proc/<pid>/stat.
-func procStat(pid int) (uint64, byte, error) {
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, 0, err
-	}
-	// The command name is parenthesised and may contain spaces or parens,
-	// so fields are counted from the last ')'.
-	i := bytes.LastIndexByte(raw, ')')
-	if i < 0 {
-		return 0, 0, fmt.Errorf("unparseable /proc/%d/stat", pid)
-	}
-	fields := strings.Fields(string(raw[i+1:]))
-	// fields[0] is field 3 (state); starttime is field 22.
-	if len(fields) < 20 || len(fields[0]) != 1 {
-		return 0, 0, fmt.Errorf("unparseable /proc/%d/stat", pid)
-	}
-	start, err := strconv.ParseUint(fields[19], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("unparseable /proc/%d/stat: %w", pid, err)
-	}
-	return start, fields[0][0], nil
 }
 
 // Detach stops the read loop and gives the transport to the caller. Nothing
@@ -246,6 +229,15 @@ func (c *Client) HTTPSession() (HTTPHandoff, bool) {
 // SessionState is the protocol state a resumed client needs, without a handshake.
 func (c *Client) SessionState() Session { return c.session() }
 
+// MarkResumedSession arms the first application-request recovery for a
+// successfully probed cold-restored session. The probe itself is not the
+// caller's first request; after that request succeeds or gets one recovery
+// attempt, later 404s keep the session's ordinary behavior.
+func (c *Client) MarkResumedSession() {
+	c.resumedSession.Store(true)
+	c.resumedFirstRequest.Store(true)
+}
+
 func (c *Client) session() Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -268,25 +260,27 @@ func (c *Client) session() Session {
 // commits can hand the pipes back with no bytes consumed.
 func Resume(t Transport, s Session, o Options) *Client {
 	c := &Client{
-		t:              t,
-		pending:        map[int64]chan *rpcResponse{},
-		closeCh:        make(chan struct{}),
-		loopDone:       make(chan struct{}),
-		clientName:     o.ClientName,
-		clientVersion:  o.ClientVersion,
-		onElicit:       o.OnServerRequest,
-		roots:          append([]Root(nil), o.Roots...),
-		modernVersions: o.ModernVersions,
-		probeTimeout:   o.ProbeTimeout,
-		ServerInfo:     s.ServerInfo,
-		Capabilities:   s.Capabilities,
-		Era:            s.Era,
-		Negotiated:     s.Negotiated,
-		Instructions:   s.Instructions,
-		Source:         s.Source,
-		CachedEraWrong: s.CachedEraWrong,
-		metaVersion:    s.MetaVersion,
-		logLevel:       s.LogLevel,
+		t:                        t,
+		pending:                  map[int64]chan *rpcResponse{},
+		closeCh:                  make(chan struct{}),
+		loopDone:                 make(chan struct{}),
+		clientName:               o.ClientName,
+		clientVersion:            o.ClientVersion,
+		onElicit:                 o.OnServerRequest,
+		onURLElicitationRequired: o.OnURLElicitationRequired,
+		roots:                    append([]Root(nil), o.Roots...),
+		root:                     o.Root,
+		modernVersions:           o.ModernVersions,
+		probeTimeout:             o.ProbeTimeout,
+		ServerInfo:               s.ServerInfo,
+		Capabilities:             s.Capabilities,
+		Era:                      s.Era,
+		Negotiated:               s.Negotiated,
+		Instructions:             s.Instructions,
+		Source:                   s.Source,
+		CachedEraWrong:           s.CachedEraWrong,
+		metaVersion:              s.MetaVersion,
+		logLevel:                 s.LogLevel,
 	}
 	if len(c.modernVersions) == 0 {
 		c.modernVersions = ModernVersions
@@ -294,7 +288,9 @@ func Resume(t Transport, s Session, o Options) *Client {
 	if c.probeTimeout <= 0 {
 		c.probeTimeout = defaults.UpstreamProbeTimeout
 	}
+	c.setupRequestLimits(o)
 	c.modern.Store(s.Era == EraModern)
+	c.negotiated.Store(s.Negotiated)
 	return c
 }
 
@@ -304,5 +300,13 @@ func (c *Client) Activate() {
 	go c.recvLoop()
 	if c.modern.Load() {
 		c.startListen()
+		return
+	}
+	// A resumed legacy session needs its standalone GET stream reopened,
+	// exactly as finishLegacy opens it on a fresh initialize: without it,
+	// server-initiated requests and list-change notifications that arrive
+	// outside a request's own stream go nowhere after a cold resume.
+	if h, ok := c.t.(interface{ listen() }); ok && spec.AtOrAfter("2025-03-26")(c.Negotiated) {
+		h.listen()
 	}
 }

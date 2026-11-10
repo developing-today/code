@@ -11,12 +11,17 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/dezren39/mcpx/internal/cli"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
-var version = "0.1.0"
+// The default is a sentinel, not a release number (decision 0005 §3):
+// the release version's single source is pkgs/mcpx/VERSION, and a
+// binary built without ldflags must announce that it is not a release
+// instead of impersonating one.
+var version = "0.0.0-dev"
 
 // splitList accepts comma or space separated values.
 func splitList(s string) []string {
@@ -92,6 +97,15 @@ func main() {
 			args = args[2:]
 		case strings.HasPrefix(args[0], "--config="):
 			app.ConfigPath = strings.TrimPrefix(args[0], "--config=")
+			args = args[1:]
+		case args[0] == "--paths-config" && len(args) > 1:
+			// A bootstrap flag like --config: it decides which files
+			// the settings are read from, so it is captured here,
+			// before any settings exist (issue #1842).
+			config.AddPathsConfigSeed(splitList(args[1]))
+			args = args[2:]
+		case strings.HasPrefix(args[0], "--paths-config="):
+			config.AddPathsConfigSeed(splitList(strings.TrimPrefix(args[0], "--paths-config=")))
 			args = args[1:]
 		case args[0] == "--version" || args[0] == "-v":
 			fmt.Println("mcpx", version)

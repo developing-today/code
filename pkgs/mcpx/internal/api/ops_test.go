@@ -1,11 +1,12 @@
 package api_test
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 func op(t *testing.T, name string) api.Op {
@@ -15,6 +16,18 @@ func op(t *testing.T, name string) api.Op {
 		t.Fatalf("no operation %q", name)
 	}
 	return o
+}
+
+func TestOperationFingerprintIsStableSHA256(t *testing.T) {
+	want := api.OperationFingerprint()
+	if decoded, err := hex.DecodeString(want); err != nil || len(decoded) != 32 {
+		t.Fatalf("OperationFingerprint() = %q, want a 32-byte hex digest (err %v)", want, err)
+	}
+	for i := 0; i < 3; i++ {
+		if got := api.OperationFingerprint(); got != want {
+			t.Fatalf("OperationFingerprint() changed: first %q, then %q", want, got)
+		}
+	}
 }
 
 func TestArgumentsLandWhereTheRouteExpectsThem(t *testing.T) {

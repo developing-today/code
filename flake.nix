@@ -22,6 +22,11 @@ rec {
       lib.make-root-apps
       lib.make-id
       lib.make-mcpx-overlay
+      lib.make-mcpx-modules
+      lib.make-pm-stack
+      lib.make-laptop-backups-checks
+      lib.make-fleet
+      lib.make-deploy
     ];
   inputs = {
     nixgl = {
@@ -83,7 +88,7 @@ rec {
     };
     #arunoruto.url = "github:arunoruto/flake"; #?shallow=1";
     # # TODO: update! way out of date even as of 2026-03
-    unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
+    unattended-installer.url = "github:developing-today-vendored/nixos-unattended-installer"; # ?shallow=1";
 
     # 2026-08-21: rebased fork patch (neededForBoot) onto latest master
     # neededForBoot patch applied via patches/nixpkgs/neededforboot-nixos-unstable.patch (see lib/default.nix)
@@ -93,9 +98,19 @@ rec {
     # the two can never drift apart again.
     nixpkgs.follows = "nixpkgs-unstable";
     nixpkgs-25.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
-    nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable"; # channel branch: fully cached on cache.nixos.org (master is not)
-    nixpkgs-master.url = "github:NixOS/nixpkgs"; # ?shallow=1";
+    # 2026-11-02: nixpkgs-unstable now follows the fleet-wide pin in
+    # dezren39/fleet, so code, opencode and openchamber all build
+    # against the SAME nixpkgs revision and share one store closure.
+    # The pin is always a nixpkgs-unstable channel TIP revision, which
+    # keeps the property the old branch URL was chosen for ("channel
+    # branch: fully cached on cache.nixos.org (master is not)") while
+    # freezing it at a known, shared rev. To move the fleet's pin,
+    # update dezren39/fleet's flake, then re-lock here.
+    fleet.url = "github:dezren39/fleet";
+    nixpkgs-unstable.follows = "fleet/nixpkgs";
+    # No master or stable-channel nixpkgs inputs (#3327, Drew directive 2026-10-31):
+    # amd draws only from the nixos-unstable set (nixpkgs-unstable, fleet-pinned).
+    # Master revs skip Hydra and force source builds; do not re-add a master input.
 
     sops-nix = {
       # TODO: update! way out of date even as of 2026-03
@@ -106,16 +121,6 @@ rec {
     };
     home-manager = {
       url = "github:nix-community/home-manager"; # ?shallow=1";
-    };
-    # Drew's personal flake (Darwin). Retained as an input only as
-    # a pin source: other inputs follow its nixpkgs-hoisted. Its
-    # laptop home-manager modules (laptop-backups,
-    # codex-remote-control) moved into this flake on 2026-10-28
-    # (nixos/home/; code#1723) — nothing here consumes its
-    # homeModules output anymore. Its package set targets darwin
-    # and nothing here builds from it.
-    dezren39-nix = {
-      url = "github:dezren39/nix";
     };
     systems = {
       # TODO: use this?
@@ -132,20 +137,9 @@ rec {
       url = "github:edolstra/flake-compat"; # ?shallow=1
       flake = false;
     };
-    gitignore = {
-      # TODO: use this?
-      url = "github:hercules-ci/gitignore.nix"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
     waybar = {
       # TODO: use this?
       url = "github:Alexays/Waybar"; # ?shallow=1";
-    };
-    neovim-src = {
-      url = "github:neovim/neovim"; # ?shallow=1";
-      flake = false;
     };
     flake-parts = {
       # TODO: use this?
@@ -161,6 +155,10 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
+    neovim-src = {
+      url = "github:neovim/neovim"; # ?shallow=1";
+      flake = false;
+    };
     neovim-nightly-overlay = {
       url = "github:nix-community/neovim-nightly-overlay"; # ?shallow=1";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
@@ -174,7 +172,6 @@ rec {
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.gitignore.follows = "gitignore";
       inputs.flake-compat.follows = "flake-compat";
     };
     zig-overlay = {
@@ -214,15 +211,7 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-utils.follows = "flake-utils";
-      inputs.devshell.follows = "devshell";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
-    };
-    devshell = {
-      # TODO: use this?
-      url = "github:numtide/devshell"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     pre-commit-hooks = {
       # TODO: use this?
@@ -231,7 +220,6 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.gitignore.follows = "gitignore";
     };
     # hyprlang = {
     #   url = "github:hyprwm/hyprlang";
@@ -280,11 +268,23 @@ rec {
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
     # OpenCode 2.x line: developing-today's fork, carrying the model-routing work; the default branch tracks it.
     opencode = {
-      url = "github:developing-today/opencode";
+      url = "github:developing-today-forks/opencode";
     };
-    # OpenChamber, built from its own flake against the opencode input above.
+    # OpenChamber. Its opencode input follows this flake's
+    # `opencode` above: there is ONE opencode source in this flake
+    # graph (the developing-today fork), and the service cascade's
+    # module chain (openchamber -> opencode fork -> mcpx) builds
+    # from that same pin. This reverses the earlier paired-pin
+    # arrangement after code#5519: while the cascade input was left
+    # to OpenChamber's own declaration (a pre-transfer URL that no
+    # longer matches this lock), every evaluation silently
+    # re-resolved it to that repo's current HEAD -- the deployed
+    # server was built from an unlocked rev (generation 530 runs
+    # opencode-2.0.30+c1dea59 against a committed cascade pin of
+    # 4175c630). Following the root input makes the committed lock
+    # the single statement of the fork rev for CLI and server.
     openchamber = {
-      url = "github:developing-today/openchamber";
+      url = "github:developing-today-forks/openchamber";
       inputs.opencode.follows = "opencode";
     };
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer

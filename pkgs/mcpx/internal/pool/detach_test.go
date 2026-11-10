@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 func TestDetachRefusesWhileACallIsInFlight(t *testing.T) {
@@ -15,7 +15,7 @@ func TestDetachRefusesWhileACallIsInFlight(t *testing.T) {
 	p := pool.New(resolved(t, bin, &config.Extras{Sharing: config.SharingExclusive, Scope: config.ScopeSession, Max: 2}))
 	defer p.Close()
 
-	lease, err := p.Acquire(context.Background(), "s1")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "s1"})
 	if err != nil {
 		t.Fatal(err)
 	}

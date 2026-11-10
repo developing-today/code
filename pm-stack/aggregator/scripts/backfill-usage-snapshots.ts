@@ -1,16 +1,28 @@
 #!/usr/bin/env bun
-// One-shot backfill for the usage snapshot store (hub design §4): seed
-// history from the dated observations already recorded in
-// quota-view.md and provider-quota-registry.md (2026-10-20 → today).
+// One-shot recovery/seed for the usage snapshot store (hub design §4):
+// normal live history lands via the server's background feed-ingest
+// writer tick. This script seeds history from dated observations already
+// recorded in quota-view.md and provider-quota-registry.md (2026-10-20 → today).
 // Each record keeps its ORIGINAL date and source class; the prose
 // stays the citation, snapshots are derived data. Fail-soft per fact:
 // a pattern that no longer matches is skipped with a warning, never
 // guessed. Re-running is safe — the store dedupes on (service, metric,
 // ts, value).
 //
-// The DeepSeek balance (¥44.63) is deliberately NOT backfilled: the
-// §4 unit enum (pct|usd|count|gb|tokens) has no CNY, and recording it
-// as USD would corrupt the record.
+// The DeepSeek PAYG reserve balance (#1052) is backfilled as a unit
+// "cny" record at its own dated read — ¥44.63, 2026-10-25, the value
+// and date this script's own pooled note carries. It is stored in yuan
+// and never converted: recording it as USD is exactly the corruption
+// the v1 deviation avoided. Issue #1052 also quotes a 2026-10-24 read
+// of CNY 44.64; that is a different observation with no dated source
+// line here, so no record is invented for it.
+//
+// NOTE (2026-11-03 config-name alignment): the service ids below are
+// the pool ids in use on these records' 2026-10-20..25 observation
+// dates (meta:high-usage, openai:codex, opencode-go:personal, ...).
+// They are kept verbatim on purpose: this seed writes HISTORY, and
+// the live rename starts new snapshot series under the config
+// provider ids rather than rewriting the old series.
 //
 // Usage: bun run scripts/backfill-usage-snapshots.ts [--dir <storeDir>]
 // Env: PM_AGG_SNAPSHOTS_DIR, QUOTA_VIEW_PATH, QUOTA_REGISTRY_PATH.
@@ -19,13 +31,49 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sectionOf } from "../src/quota-extract.ts";
+import { recordsFromDeepseekBalance } from "../src/snapshot-records.ts";
 import { SnapshotStore } from "../src/snapshots.ts";
 import type { SnapshotRecord } from "../src/model.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
-const dirArg = process.argv.indexOf("--dir");
-const storeDir = dirArg >= 0 ? process.argv[dirArg + 1] : (process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots"));
+// Strict operator-argument contract (#6973): the only accepted forms are
+// no arguments or one documented separated `--dir <storeDir>`. Every other
+// token - an unknown or misspelled flag, a positional, the joined
+// `--dir=<path>` form, or a duplicate `--dir` - is a usage error (exit 2)
+// raised here, before any input is read or any store is written: a typo'd
+// `--dirr <dir>` used to fall through to the default store and seed the
+// rebuilt history there, exit 0. Mirrors rejectUnknownArgs in
+// append-usage-snapshots.ts (#6961) / compact-usage-snapshots.ts (#6967);
+// the `--dir` value guard itself is #3330.
+function parseStoreDirArg(): string | undefined {
+  const args = process.argv.slice(2);
+  let dir: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === "--dir") {
+      if (dir !== undefined) {
+        console.error("backfill-usage-snapshots: duplicate --dir; the documented form is a single --dir <storeDir>");
+        process.exit(2);
+      }
+      const value: string | undefined = args[i + 1];
+      if (!value?.trim() || value.trimStart().startsWith("--")) {
+        console.error("backfill-usage-snapshots: --dir requires a directory value (not another option)");
+        process.exit(2);
+      }
+      dir = value;
+      i++;
+      continue;
+    }
+    console.error(
+      "backfill-usage-snapshots: unknown argument '" + arg + "' (usage: [--dir <storeDir>]); refusing to run, store untouched",
+    );
+    process.exit(2);
+  }
+  return dir;
+}
+const dirValue = parseStoreDirArg();
+const storeDir = dirValue ?? process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(
@@ -416,6 +464,11 @@ async function main(): Promise<void> {
       "github comped minutes (October)",
     );
   }
+
+  // --- DeepSeek PAYG reserve balance (#1052) --------------------------------
+  // The dated ¥ read the v1 backfill skipped; the cny unit exists now,
+  // so the balance keeps its own yuan value and date.
+  for (const r of recordsFromDeepseekBalance(doc, BY_VIEW)) push(r, "deepseek balance (cny)");
 
   const store = new SnapshotStore(storeDir);
   const appended = await store.append(records);

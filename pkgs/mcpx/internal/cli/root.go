@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,20 +11,22 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"text/tabwriter"
 	"time"
 
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/sdnotify"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/spec"
+	mcpx "github.com/developing-today/code/pkgs/mcpx"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/sdnotify"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // newFlagSet creates a command's flag set and registers every setting the
@@ -83,11 +86,11 @@ func parseFlags(a *App, fs *flag.FlagSet, args []string) error {
 		fs.Usage = func() {
 			if a != nil {
 				if text, herr := a.helpText(cmd); herr == nil {
-					fmt.Fprint(fs.Output(), text)
+					_, _ = fmt.Fprint(fs.Output(), text)
 					return
 				}
 			}
-			fmt.Fprintf(fs.Output(), "mcpx %s\n\n  run `mcpx help %s` for this command's help\n",
+			_, _ = fmt.Fprintf(fs.Output(), "mcpx %s\n\n  run `mcpx help %s` for this command's help\n",
 				fs.Name(), firstWord(fs.Name()))
 		}
 	}
@@ -208,25 +211,24 @@ func (a *App) adoptSettings() {
 	a.warnPathsConfigFile(set)
 }
 
-// warnPathsConfigFile warns when a paths.config entry names a file.
+// warnPathsConfigFile warns when a paths.config entry names nothing
+// that exists.
 //
-// The entries are directories that are searched for configuration files,
-// so pointing one at a file -- a natural reading of --paths-config -- is
-// silently ignored and the default configuration loads instead (#278).
-// Naming the file directly is what MCPX_CONFIG and --config are for, so
-// say so rather than leaving the user to debug a configuration that was
-// never read.
+// Entries govern the config chain (issue #1842): a directory is
+// searched with the usual spellings, and a file means exactly that
+// file. An entry naming neither is the one case that silently does
+// nothing, so say so rather than leaving the user to debug a
+// configuration that was never read.
 func (a *App) warnPathsConfigFile(set *settings.Set) {
 	if a.warnedPathsConfig {
 		return
 	}
 	for _, entry := range set.List("paths.config") {
-		if st, err := os.Stat(entry); err == nil && !st.IsDir() {
+		if _, err := os.Stat(entry); err != nil {
 			fmt.Fprintf(os.Stderr,
-				"mcpx: warning: paths.config entry %q is a file; entries are "+
-					"directories searched for config files, so it is ignored. "+
-					"To use that file directly, pass --config %s or set MCPX_CONFIG.\n",
-				entry, entry)
+				"mcpx: warning: paths.config entry %q does not exist; "+
+					"it contributes nothing to the config chain.\n",
+				entry)
 			a.warnedPathsConfig = true
 			return
 		}
@@ -248,6 +250,31 @@ func (a *App) adoptSpec() error {
 	}
 	spec.Set(p)
 	return nil
+}
+
+var processInstance struct {
+	once sync.Once
+	id   string
+}
+
+// InstanceID is this process's unique mcpx instance identity (#1877):
+// generated once per process, reported by this process's MCP server
+// as serverInfo.instance, and wired into pool.OwnInstanceID so the
+// self-connection guard can tell this daemon apart from a distinct
+// mcpx daemon configured as an upstream. Per-process, never
+// persisted: two daemons from the same install are different
+// instances, and a restarted daemon is a new one.
+func (a *App) InstanceID() string {
+	processInstance.once.Do(func() {
+		b := make([]byte, 16)
+		if _, err := RandSource.Read(b); err == nil {
+			processInstance.id = hex.EncodeToString(b)
+		} else {
+			processInstance.id = fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
+		}
+		pool.OwnInstanceID = processInstance.id
+	})
+	return processInstance.id
 }
 
 // CmdDaemon runs the daemon in the foreground.
@@ -276,6 +303,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	// folded in here before anything resolves a server.
 	config.ApplyPoolSettings(cfg, a.Settings())
 	pool.Version = a.Version
+	pool.OwnInstanceID = a.InstanceID()
 
 	// The daemon keys its socket to the config it loaded, matching what the
 	// CLI computes, so a config edit yields a new daemon rather than a stale
@@ -320,7 +348,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 			sink = nil
 		} else {
 			writer = writer.WithFile(sink, slog.LevelDebug)
-			defer sink.Close()
+			defer func() { _ = sink.Close() }()
 		}
 	}
 	writer = writer.WithBase(map[string]any{logging.KeyTrace: string(daemonTrace)})
@@ -328,6 +356,11 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	handler := logging.NewSlogHandler(writer).WithSourceLevel(
 		logging.SourceLevel(firstSet(logSource.Value(), set.String("logging.source"), cfg.Logging.Source)))
 	logger := slog.NewLogLogger(handler, slog.LevelInfo)
+	// The back-channel socket plugins receive must be the socket this
+	// daemon actually binds (#1886, Codex on PR #2561): with
+	// MCPX_SOCKET set, Listen binds BindSocket(), not the computed
+	// paths.Socket, so record the bind socket here.
+	a.daemonSocket = paths.BindSocket()
 	srv, err := daemon.NewServer(daemon.Options{
 		Sink:     sink,
 		Config:   cfg,
@@ -336,7 +369,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		Logger:   logger,
 		IdleExit: a.Settings().Duration("daemon.idleExit"),
 		Settings: a.Settings(),
-		Augment:  a.augmentAdapters,
+		Augment:  a.augmentConfig,
 	})
 	if err != nil {
 		return err
@@ -441,8 +474,16 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 func (a *App) CmdMan(ctx context.Context, args []string) error {
 	fs := newFlagSet("man")
 	install := fs.String("install", "", "write the page into this directory as man1/mcpx.1")
+	format := fs.String("format", "roff", "output format: roff (the man page) or markdown (the generated reference tree)")
+	out := fs.String("o", "", "write the markdown reference tree into this directory (with --format markdown)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
+	}
+	if *format == "markdown" {
+		return a.writeMarkdownReference(*out)
+	}
+	if *format != "roff" {
+		return fmt.Errorf("unknown --format %q: roff or markdown", *format)
 	}
 	page := ManPage(a.Version)
 	if *install == "" {
@@ -470,7 +511,7 @@ func (a *App) CmdCompletion(_ context.Context, args []string) error {
 	if shell == "" {
 		return errors.New("usage: mcpx completion <bash|zsh|fish>")
 	}
-	text, err := Completion(shell)
+	text, err := Completion(shell, a.Version)
 	if err != nil {
 		return err
 	}
@@ -486,6 +527,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 	showDefaults := fs.Bool("defaults", false, "print the built-in default layer that underlies every config")
 	showSchema := fs.Bool("schema", false, "print every setting, with its flag and variable")
 	withPlumbing := fs.Bool("plumbing", false, "include internal settings in --schema")
+	schemaFormat := fs.String("format", "", "output format for --schema: text, json or markdown (default text, or json with --json)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -500,13 +542,22 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		if serr != nil {
 			return serr
 		}
-		if a.JSON {
-			fmt.Println(sch.JSON(*withPlumbing))
-			return nil
+		format := *schemaFormat
+		if format == "" && a.JSON {
+			format = "json"
 		}
-		fmt.Print(sch.Describe(*withPlumbing))
-		if !*withPlumbing {
-			fmt.Println("\n(--plumbing also lists internal settings)")
+		switch format {
+		case "", "text":
+			fmt.Print(sch.Describe(*withPlumbing))
+			if !*withPlumbing {
+				fmt.Println("\n(--plumbing also lists internal settings)")
+			}
+		case "json":
+			fmt.Println(sch.JSON(*withPlumbing))
+		case "markdown":
+			fmt.Print(sch.Markdown(settings.MarkdownOptions{Plumbing: *withPlumbing}))
+		default:
+			return fmt.Errorf("unknown --format %q for --schema: want text, json or markdown", format)
 		}
 		return nil
 	}
@@ -543,6 +594,11 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		IdleTimeout string `json:"idleTimeout"`
 		CallTimeout string `json:"callTimeout"`
 		Protocol    string `json:"protocol,omitempty"`
+		// Auth is mcpauth.Auth.Describe(): the redacted summary
+		// ("bearer ${VAR}", "none", …) — the reference, never the
+		// resolved value, since this output gets pasted into issues
+		// (#1926).
+		Auth string `json:"auth"`
 	}
 	out := struct {
 		Path    string   `json:"path"`
@@ -555,6 +611,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 			Sharing: string(s.Sharing), Scope: string(s.Scope), Max: s.Max,
 			IdleTimeout: s.IdleTimeout.String(), CallTimeout: s.CallTimeout.String(),
 			Protocol: s.Protocol,
+			Auth:     s.Auth.Describe(),
 		}
 		if s.Stdio() {
 			r.Transport, r.Command = "stdio", s.Command
@@ -580,10 +637,18 @@ func (a *App) configSources(cfg *config.Config) error {
 		From    string `json:"from"`
 	}
 	out := struct {
-		Sources []string    `json:"sources"`
-		Servers []row       `json:"servers"`
-		Presets []presetRow `json:"presets,omitempty"`
+		Sources   []string    `json:"sources"`
+		Discovery []string    `json:"discovery,omitempty"`
+		Load      []string    `json:"load,omitempty"`
+		Divergent []string    `json:"divergent,omitempty"`
+		Servers   []row       `json:"servers"`
+		Presets   []presetRow `json:"presets,omitempty"`
 	}{Sources: cfg.Sources}
+	if cfg.Chain != nil {
+		out.Discovery = cfg.Chain.Discovery
+		out.Load = cfg.Chain.Load
+		out.Divergent = cfg.Chain.Divergent
+	}
 	// A value a preset supplied is a source too, and the one least likely to
 	// be remembered: it came from a name on the command line, not a file.
 	for _, v := range a.Settings().All() {
@@ -611,6 +676,20 @@ func (a *App) configSources(cfg *config.Config) error {
 		}
 		return nil
 	}
+	if cfg.Chain != nil && !cfg.Chain.Bypass {
+		fmt.Println("Discovery pass (searched for paths.config), nearest first:")
+		for _, p := range out.Discovery {
+			fmt.Println("   " + p)
+		}
+		fmt.Println("Load pass (files the chain resolved to), nearest first:")
+		for _, p := range out.Load {
+			fmt.Println("   " + p)
+		}
+		for _, d := range out.Divergent {
+			fmt.Println("  ! " + d)
+		}
+		fmt.Println()
+	}
 	fmt.Println("Files, nearest first:")
 	for i, p := range out.Sources {
 		marker := " "
@@ -622,22 +701,22 @@ func (a *App) configSources(cfg *config.Config) error {
 	if len(out.Presets) > 0 {
 		fmt.Println()
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
+		_, _ = fmt.Fprintln(tw, "SETTING\tVALUE\tFROM PRESET")
 		for _, r := range out.Presets {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Setting, r.Value, r.From)
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	}
 	if len(out.Servers) == 0 {
 		return nil
 	}
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SERVER\tDEFINED IN")
+	_, _ = fmt.Fprintln(tw, "SERVER\tDEFINED IN")
 	for _, r := range out.Servers {
-		fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\n", r.Server, r.From)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -672,6 +751,14 @@ func joinLines(ss []string) string {
 func (a *App) CmdHelp(_ context.Context, args []string) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Print(Usage())
+		return nil
+	}
+	if args[0] == "agents" {
+		// A help topic, not a command: the agent documentation embedded
+		// in the binary, printed verbatim -- no heading, no wrapping --
+		// so the output is byte-identical to AGENTS.md and an agent can
+		// consume it exactly as it would the file.
+		fmt.Print(mcpx.AgentDocs)
 		return nil
 	}
 	return a.helpFor(args[0])
@@ -748,6 +835,20 @@ func (a *App) helpText(name string) (string, error) {
 		b.WriteString("\nSETTINGS (also readable from config and the environment)\n")
 		b.WriteString(strings.Join(lines, "\n"))
 		b.WriteString("\n\n  mcpx config --schema   shows every setting with its variable\n")
+	}
+	if groups := handFlagGroups(found.Name); len(groups) > 0 {
+		var flagLines []string
+		for _, g := range groups {
+			if g.Scope != found.Name {
+				flagLines = append(flagLines, "  "+g.Scope+":")
+			}
+			for _, f := range g.Flags {
+				flagLines = append(flagLines, fmt.Sprintf("  --%-26s %s", f.Name, f.Usage))
+			}
+		}
+		b.WriteString("\nFLAGS\n")
+		b.WriteString(strings.Join(flagLines, "\n"))
+		b.WriteString("\n")
 	}
 	return b.String(), nil
 }
@@ -831,6 +932,8 @@ func Usage() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("HELP TOPICS\n")
+	b.WriteString("  mcpx help agents               print the agent documentation (AGENTS.md) embedded in this binary\n\n")
 	b.WriteString("  mcpx help <command>            usage, flags and settings for one command\n\n")
 	b.WriteString(usageFooter)
 	return b.String()

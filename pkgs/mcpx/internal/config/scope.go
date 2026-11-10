@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // CallContext is what a caller knows about itself. The daemon resolves a
@@ -30,11 +31,22 @@ type CallContext struct {
 	// safe to stop the instance the moment that caller exits instead of
 	// waiting out an idle timer.
 	Ephemeral bool `json:"ephemeral,omitempty"`
+	// PIDShared marks a PID that names a process shared by many callers
+	// rather than the caller's own: the mcpx daemon's own PID, which
+	// every /v1/exec run it serves reports (the script env carries the
+	// daemon's os.Getpid()). A pid: key resolved from it is a shared
+	// instance key, never caller-private, however ephemeral the run is.
+	PIDShared bool `json:"pidShared,omitempty"`
 }
 
 // CallerOwned reports whether a resolved key belongs solely to this caller and
 // may be torn down when the caller finishes: a per-call key, or one built from
 // an identity the caller minted for itself.
+//
+// The pid: case has the same trap in daemon clothing: an ephemeral
+// /v1/exec run reports the *daemon's* PID, which every overlapping run
+// shares, so PIDShared keeps that key out of caller ownership -- releasing
+// it at one run's end closed an instance another run still needed.
 //
 // Ephemeral says the *session id* is private, not that everything the caller
 // touched is. Treating it as the latter stopped the shared global, repo and
@@ -49,67 +61,116 @@ func (c CallContext) CallerOwned(key string) bool {
 		return false
 	}
 	return (c.SessionID != "" && key == "session:"+c.SessionID) ||
-		(c.PID > 0 && key == "pid:"+strconv.Itoa(c.PID))
+		(c.PID > 0 && !c.PIDShared && key == "pid:"+strconv.Itoa(c.PID))
+}
+
+// ResolvedScope is the full result of resolving a Scope against a
+// CallContext: the instance Key, the directory the scope resolved to
+// (Root, "" when the scope has none), and Degraded, exactly as Key
+// reports it. Root is a pure function of the key for repo, worktree and
+// cwd scopes, so two callers who share a key always resolve the same
+// root (decision 0004 Â§1).
+type ResolvedScope struct {
+	Key      string
+	Root     string
+	Degraded string
+	// Cwd is the creating caller's working directory, canonicalized as
+	// in §1: the value ${mcpx.cwd} substitutes at spawn (decision 0004
+	// §4). It rides along for the same reason Root does — an instance's
+	// spawn definition is fixed at creation and never re-resolved.
+	Cwd string
+}
+
+// Resolve resolves the scope against ctx: the instance key, the
+// scope-resolved root, and whether resolution degraded to something
+// weaker than the scope asked for.
+func (s Scope) Resolve(ctx CallContext) ResolvedScope {
+	rs := s.resolve(ctx)
+	if ctx.Cwd != "" {
+		rs.Cwd = canonical(ctx.Cwd)
+	}
+	return rs
+}
+
+func (s Scope) resolve(ctx CallContext) ResolvedScope {
+	switch s {
+	case ScopeGlobal:
+		return ResolvedScope{Key: "global"}
+
+	case ScopeCwd:
+		if ctx.Cwd == "" {
+			return ResolvedScope{Key: fallback(ctx), Degraded: "cwd is unknown"}
+		}
+		root := keyPath(ctx.Cwd)
+		return ResolvedScope{Key: "cwd:" + root, Root: root}
+
+	case ScopeRepo, ScopeWorktree:
+		if ctx.Cwd == "" {
+			return ResolvedScope{Key: fallback(ctx), Degraded: "cwd is unknown"}
+		}
+		// A directory outside any repository -- or one whose repository
+		// cannot be read -- keys by itself: narrower than the scope asked
+		// for, never wider. The degraded key is a cwd key, so the root
+		// follows it: the instance is effectively per-cwd.
+		w, _, err := locateGit(ctx.Cwd)
+		switch {
+		case err != nil:
+			root := keyPath(ctx.Cwd)
+			return ResolvedScope{Key: "cwd:" + root, Root: root, Degraded: err.Error()}
+		case s == ScopeRepo:
+			// The main worktree is the parent of the common dir, but
+			// only when that dir is a worktree's .git: a bare repo's
+			// common dir, or a submodule-style one, has no worktree
+			// root to name, and guessing one would root an instance
+			// in the wrong checkout.
+			root := ""
+			if filepath.Base(w.commonDir) == ".git" {
+				root = canonical(filepath.Dir(w.commonDir))
+			}
+			return ResolvedScope{Key: "repo:" + keyPath(w.commonDir), Root: root}
+		case w.worktree != "":
+			return ResolvedScope{Key: "worktree:" + keyPath(w.worktree), Root: canonical(w.worktree)}
+		default:
+			root := keyPath(ctx.Cwd)
+			return ResolvedScope{Key: "cwd:" + root, Root: root, Degraded: "no worktree: " + w.noWorktree}
+		}
+
+	case ScopeSession:
+		if ctx.SessionID != "" {
+			return ResolvedScope{Key: "session:" + ctx.SessionID}
+		}
+		return ResolvedScope{Key: fallback(ctx), Degraded: "no session id; set MCPX_SESSION_ID or pass --session"}
+
+	case ScopeParentSession:
+		if ctx.ParentSessionID != "" {
+			return ResolvedScope{Key: "psession:" + ctx.ParentSessionID}
+		}
+		if ctx.SessionID != "" {
+			return ResolvedScope{Key: "session:" + ctx.SessionID, Degraded: "no parent session id; using the session id"}
+		}
+		return ResolvedScope{Key: fallback(ctx), Degraded: "no parent or session id; set MCPX_PARENT_SESSION_ID"}
+
+	case ScopePid:
+		if ctx.PID > 0 {
+			return ResolvedScope{Key: "pid:" + strconv.Itoa(ctx.PID)}
+		}
+		return ResolvedScope{Key: fallback(ctx), Degraded: "caller pid is unknown"}
+
+	case ScopeCall:
+		return ResolvedScope{Key: fallback(ctx)}
+	}
+	return ResolvedScope{Key: fallback(ctx), Degraded: fmt.Sprintf("unknown scope %q", s)}
 }
 
 // Key resolves the instance key for a scope. The returned key is opaque; only
 // equality matters. Degraded reports whether a more specific scope fell back
 // to something weaker, which the daemon logs once so the cause is visible.
+//
+// Key is Resolve's key and nothing else, so there is one resolution
+// path, not two that can drift (decision 0004 Â§1).
 func (s Scope) Key(ctx CallContext) (key string, degraded string) {
-	switch s {
-	case ScopeGlobal:
-		return "global", ""
-
-	case ScopeCwd:
-		if ctx.Cwd == "" {
-			return fallback(ctx), "cwd is unknown"
-		}
-		return "cwd:" + canonical(ctx.Cwd), ""
-
-	case ScopeRepo, ScopeWorktree:
-		if ctx.Cwd == "" {
-			return fallback(ctx), "cwd is unknown"
-		}
-		// A directory outside any repository -- or one whose repository
-		// cannot be read -- keys by itself: narrower than the scope asked
-		// for, never wider.
-		w, _, err := locateGit(ctx.Cwd)
-		switch {
-		case err != nil:
-			return "cwd:" + canonical(ctx.Cwd), err.Error()
-		case s == ScopeRepo:
-			return "repo:" + w.commonDir, ""
-		case w.worktree != "":
-			return "worktree:" + w.worktree, ""
-		default:
-			return "cwd:" + canonical(ctx.Cwd), "no worktree: " + w.noWorktree
-		}
-
-	case ScopeSession:
-		if ctx.SessionID != "" {
-			return "session:" + ctx.SessionID, ""
-		}
-		return fallback(ctx), "no session id; set MCPX_SESSION_ID or pass --session"
-
-	case ScopeParentSession:
-		if ctx.ParentSessionID != "" {
-			return "psession:" + ctx.ParentSessionID, ""
-		}
-		if ctx.SessionID != "" {
-			return "session:" + ctx.SessionID, "no parent session id; using the session id"
-		}
-		return fallback(ctx), "no parent or session id; set MCPX_PARENT_SESSION_ID"
-
-	case ScopePid:
-		if ctx.PID > 0 {
-			return "pid:" + strconv.Itoa(ctx.PID), ""
-		}
-		return fallback(ctx), "caller pid is unknown"
-
-	case ScopeCall:
-		return fallback(ctx), ""
-	}
-	return fallback(ctx), fmt.Sprintf("unknown scope %q", s)
+	rs := s.Resolve(ctx)
+	return rs.Key, rs.Degraded
 }
 
 // fallback is per-call isolation: the safe direction to fail, since sharing a
@@ -153,4 +214,53 @@ func canonical(p string) string {
 		return resolved
 	}
 	return filepath.Clean(p)
+}
+
+// keyPath is canonical plus directory identity, for use as a scope key
+// (#1912). canonical keeps the caller's spelling, so on a case-insensitive
+// volume (APFS by default, SMB/vfat mounts) /Users/x/Repo and /users/x/repo
+// -- one directory -- keyed separately and spawned a second instance. The
+// error was always over-isolation, never accidental sharing.
+//
+// The fix keys on identity, not spelling: stat the canonical path and look
+// its (device, inode) up in a side table that remembers the first spelling
+// seen for that identity; every spelling of the directory keys to the
+// first. The key stays a plain readable path, which is what `mcpx daemons`
+// and the degraded-scope log print. Two genuinely different directories
+// that differ only by case have different inodes, so a case-sensitive
+// volume can never merge them -- the unsafe direction is impossible.
+//
+// When the stat fails (a deleted or unreadable cwd) or the platform has
+// no identity to give, the canonical path alone is the key: today's
+// behaviour, and still the safe direction. Keys are computed by the
+// daemon and held in memory for its lifetime, never persisted, so an
+// identity that changes across a filesystem rebuild needs no migration;
+// the table holds one entry per distinct directory actually scoped.
+var identitySpellings = struct {
+	sync.Mutex
+	byID map[[2]uint64]string
+}{byID: map[[2]uint64]string{}}
+
+func keyPath(p string) string {
+	c := canonical(p)
+	dev, ino, ok := dirIdentity(c)
+	if !ok {
+		return c
+	}
+	id := [2]uint64{dev, ino}
+	identitySpellings.Lock()
+	defer identitySpellings.Unlock()
+	if first, seen := identitySpellings.byID[id]; seen && first != c {
+		// Reuse is only sound while the remembered spelling still names
+		// this identity. An inode is recycled when its directory is
+		// deleted, and the recycled number must not resurrect the dead
+		// directory's spelling as a live directory's key.
+		if fdev, fino, fok := dirIdentity(first); !fok || fdev != dev || fino != ino {
+			identitySpellings.byID[id] = c
+			return c
+		}
+		return first
+	}
+	identitySpellings.byID[id] = c
+	return c
 }

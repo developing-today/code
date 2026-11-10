@@ -164,7 +164,56 @@ pub fn render_file_list(page: &FileListPage) -> String {
          value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
+    // Sort + origin filter (#4973): a plain GET form to /files so sorting
+    // and filtering by origin node and upload time work without JS.
+    let sort_current = page.sort.as_deref().unwrap_or("");
+    let origin_value = page
+        .origin_filter
+        .as_deref()
+        .map(html_escape)
+        .unwrap_or_default();
+    html.push_str("<form method=\"get\" action=\"/files\" class=\"flex items-center gap-1\">");
+    // Preserve the current search + show-deleted state across this GET
+    // submit (Codex review, PR #5191): without these hidden fields,
+    // applying a sort/origin silently cleared the other constraints.
+    if !search_value.is_empty() {
+        let _ = write!(
+            html,
+            "<input type=\"hidden\" name=\"search\" value=\"{}\" />",
+            search_value
+        );
+    }
+    if page.show_deleted {
+        html.push_str("<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />");
+    }
+    html.push_str("<select id=\"file-sort\" name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
+    for (value, label) in [
+        ("", "sort: default"),
+        ("uploaded", "sort: upload time"),
+        ("origin", "sort: origin node"),
+    ] {
+        let selected = if value == sort_current {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(
+            html,
+            "<option value=\"{}\"{}>{}</option>",
+            value, selected, label
+        );
+    }
+    html.push_str("</select>");
+    let _ = write!(
+        html,
+        "<input type=\"text\" id=\"file-origin\" name=\"origin\" aria-label=\"Filter by origin node\" class=\"input input-bordered input-xs w-28 bg-base-100\" placeholder=\"origin / unknown\" value=\"{}\" />",
+        origin_value
+    );
+    html.push_str(
+        "<button type=\"submit\" class=\"btn btn-ghost btn-xs font-mono\">apply</button>",
+    );
+    html.push_str("</form>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -204,8 +253,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<span class=\"font-bold\" id=\"bulk-count\">0 selected</span>");
         html.push_str("<input type=\"text\" id=\"bulk-tag-key\" aria-label=\"Bulk tag key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
         html.push_str("<input type=\"text\" id=\"bulk-tag-value\" aria-label=\"Bulk tag value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add bulk tag\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" aria-label=\"Clear file selection\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
         html.push_str("</div>");
 
         html.push_str("<ul class=\"list-none m-0 p-0\">");
@@ -291,6 +340,21 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 format!("<span class=\"flex gap-1 flex-wrap\">{}</span>", tag_pills)
             };
 
+            // Origin + upload time (#4973): origin is the node that first
+            // wrote the file (`unknown` when unrecorded); uploaded is the
+            // `created` stamp. Refs only — bytes never travel in a surface.
+            let origin_str = file.origin_node.as_deref().unwrap_or("unknown");
+            let uploaded_str = file
+                .created_at
+                .map(format_unix_timestamp)
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "unknown".to_owned());
+            let origin_html = format!(
+                "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">origin {} \u{00b7} uploaded {}</span>",
+                html_escape(origin_str),
+                uploaded_str
+            );
+
             // Timestamp display — prefer modified_at, fall back to created_at, then tag-parsed
             let display_ts = file.modified_at.or(file.created_at).or(file.timestamp);
             let date_str = display_ts.map(format_unix_timestamp).unwrap_or_default();
@@ -315,7 +379,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                     <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
                     <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
-                    {}{}{}{}\
+                    {}{}{}{}{}\
                     <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
                 deleted_class,
@@ -329,6 +393,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 deleted_badge,
                 tags_html,
                 date_html,
+                origin_html,
                 short_hash,
             );
         }
@@ -344,6 +409,17 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             .as_deref()
             .map(|s| format!("&search={}", urlencoding::encode(s)))
             .unwrap_or_default();
+        let sort_param = page
+            .sort
+            .as_deref()
+            .map(|s| format!("&sort={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let origin_param = page
+            .origin_filter
+            .as_deref()
+            .map(|s| format!("&origin={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let search_param = format!("{search_param}{sort_param}{origin_param}");
 
         html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
@@ -455,7 +531,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
     // Save button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" aria-label=\"Save document\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
     html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\">dl</button>\n");
@@ -472,9 +548,9 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("                </span>\n");
     html.push_str("            </span>\n");
     // Rename button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
     // Copy button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     html.push_str("            <a href=\"/files\" data-nav>files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
@@ -641,8 +717,8 @@ pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> S
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -691,8 +767,8 @@ pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -716,8 +792,18 @@ pub fn render_settings(node_id: &str) -> String {
     );
     html.push_str("    <div class=\"p-4\">\n");
 
-    // Display Name section (client identity)
-    html.push_str("        <h3>Display Name</h3>\n");
+    // Client Identity section (#1792): the client id is issued by the
+    // server at registration and persisted in localStorage by the web
+    // client, so it is stable across in-site navigation;
+    // initSettingsIdentity fills the element in.
+    html.push_str("        <h3>Client Identity</h3>\n");
+    html.push_str("        <p class=\"text-muted mb-4\">Your client ID identifies this browser to other clients.</p>\n");
+    html.push_str("        <code id=\"client-id-value\" class=\"font-mono text-base-content/40 break-all\">Not registered yet</code>\n");
+    html.push_str("        \n");
+
+    // Display Name section (client identity): shown under the client id,
+    // above theme selection (#1792).
+    html.push_str("        <h3 class=\"mt-8\">Display Name</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Set a name that appears on your cursor when collaborating.</p>\n");
     html.push_str("        <div class=\"flex gap-2 items-center\">\n");
     html.push_str("            <input type=\"text\" id=\"display-name-input\" aria-label=\"Display name\" class=\"input input-sm input-bordered w-48\" placeholder=\"Anonymous\" />\n");
@@ -740,9 +826,9 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3 class=\"mt-8\">Theme</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Choose your preferred visual theme.</p>\n");
     html.push_str("        <div class=\"flex gap-4\">\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\">Sneak</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\">Arch</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\">Mech</button>\n");
+    html.push_str("            <button class=\"theme-btn theme-choice theme-choice-sneak\" data-theme=\"sneak\" aria-label=\"Sneak theme\" title=\"Sneak theme\"><span class=\"theme-dot\" aria-hidden=\"true\"></span><span class=\"theme-label\">Sneak</span></button>\n");
+    html.push_str("            <button class=\"theme-btn theme-choice theme-choice-arch\" data-theme=\"arch\" aria-label=\"Arch theme\" title=\"Arch theme\"><span class=\"theme-dot\" aria-hidden=\"true\"></span><span class=\"theme-label\">Arch</span></button>\n");
+    html.push_str("            <button class=\"theme-btn theme-choice theme-choice-mech\" data-theme=\"mech\" aria-label=\"Mech theme\" title=\"Mech theme\"><span class=\"theme-dot\" aria-hidden=\"true\"></span><span class=\"theme-label\">Mech</span></button>\n");
     html.push_str("        </div>\n");
     html.push_str("        \n");
     html.push_str("        <h3 class=\"mt-8\">Keyboard Shortcuts</h3>\n");
@@ -767,7 +853,7 @@ pub fn render_settings(node_id: &str) -> String {
 }
 
 /// Render a browser presentation for the optional multiplayer world.
-pub fn render_world_page(assets: &AssetUrls) -> String {
+pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> String {
     let content = r#"
 <section data-world-app class="space-y-5" aria-labelledby="world-title">
   <nav aria-label="World documents" class="text-sm">
@@ -786,41 +872,45 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     <h2 class="font-bold">Join or invite</h2>
     <label class="form-control max-w-xl">
       <span class="label-text">Display name</span>
-      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
-      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*" aria-label="World name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">Guest capability</span>
-      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-host-view class="btn btn-secondary" type="button">View as host (read-only)</button>
       <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
     </div>
     <div data-world-invite-output hidden>
       <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
     </div>
-    <details>
-      <summary class="cursor-pointer text-sm">Host: create a guest invite</summary>
-      <div class="mt-3 flex flex-wrap gap-2">
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Host controls</h2>
+      <div class="flex flex-wrap gap-2">
         <input data-world-admin class="input input-bordered font-mono" type="password" autocomplete="off" aria-label="World admin token" placeholder="World admin token">
-        <button data-world-invite class="btn btn-secondary" type="button">Create invite</button>
+        <button data-world-invite class="btn btn-secondary" type="button">Create guest invite</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+    </section>
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Install or update program</h2>
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-module class="file-input file-input-bordered" type="file" accept=".wasm,application/wasm" aria-label="Wasm world module">
         <input data-world-seed class="input input-bordered w-24" type="number" value="1" aria-label="World seed">
         <button data-world-install class="btn btn-warning" type="button">Install Wasm module</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-source class="file-input file-input-bordered" type="file" accept=".roc,text/plain" multiple aria-label="Roc world sources">
         <button data-world-compile class="btn btn-warning" type="button">Compile &amp; install Roc sources</button>
       </div>
       <p class="text-xs opacity-60">Choose main.roc and up to 7 additional .roc files. Each file is limited to 128 KiB and all sources together to 256 KiB. Compilation runs on the host (up to 120 seconds).</p>
       <p class="text-xs opacity-60">Uploads run in the host's import-free Wasmtime sandbox. The current world restarts at its module seed.</p>
-    </details>
+    </section>
   </section>
 
   <section class="grid gap-4 md:grid-cols-2">
@@ -853,7 +943,160 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
   </section>
 </section>
 "#;
-    render_page("World", content, "", assets)
+    // The frontend connects to the app's configured live channel:
+    // the socket travels on the root element as a data attribute
+    // (data-world-socket), which world.ts reads instead of a
+    // hardcoded path (Codex P1 on #3894). No socket declared: no
+    // attribute, and the frontend keeps its historical default.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content.to_owned(),
+    };
+    render_page("World", &content, "", assets)
+}
+
+/// Render the program-only surface for one hosted world (#2146
+/// phase 2): the world program frontend at a program binding's root.
+///
+/// Unlike the Explorer world page ([`render_world_page`]), this page
+/// is a guest surface for exactly one world: the world name is pinned
+/// by the server (`data-world-program` on the root element, and the
+/// world input is rendered read-only with that name), there is no
+/// link into the Explorer file browser, and the host controls (admin
+/// token, invite minting, module install) are absent -- a program
+/// visitor is a guest, authorized by a guest capability alone. The
+/// presentation hooks are the same `data-world-*` contract the
+/// trusted presenter in `world.ts` drives, so guest output is
+/// rendered as inert text/screen data exactly as on the Explorer
+/// page.
+pub fn render_program_page(
+    assets: &AssetUrls,
+    world_name: &str,
+    world_socket: Option<&str>,
+) -> String {
+    let content = r#"
+<section data-world-app data-world-program="__WORLD__" class="space-y-5" aria-labelledby="world-title">
+  <header class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <p class="font-mono text-xs uppercase tracking-widest text-primary">p2p / live session</p>
+      <h1 id="world-title" class="text-2xl font-bold">__WORLD__</h1>
+      <p class="text-sm opacity-70">The host is authoritative. Chat and game inputs share one sequenced world.</p>
+    </div>
+    <output data-world-status role="status" aria-live="polite" class="badge badge-outline">Not connected</output>
+  </header>
+
+  <section class="card border border-base-300 bg-base-100 p-4 space-y-3" aria-label="Join world">
+    <h2 class="font-bold">Join</h2>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Display name</span>
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">World</span>
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" value="__WORLD__" readonly aria-label="World name">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Guest capability</span>
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
+    </label>
+    <div class="flex flex-wrap gap-2">
+      <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
+    </div>
+    <div data-world-invite-output hidden>
+      <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
+    </div>
+  </section>
+
+  <section class="grid gap-4 md:grid-cols-2">
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">World view</h2>
+      <div data-world-view tabindex="0" aria-label="World screen. Focus here to send keyboard input." class="min-h-32 max-h-[70vh] overflow-auto whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg leading-none" aria-live="polite">Waiting for a world view…</div>
+      <p class="text-xs opacity-60">Rendered by the host's world program; clients do not decide authoritative state.</p>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Records</h2>
+        <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
+        <code>id world mirror</code>.</p>
+    </div>
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">Participants</h2>
+      <div data-world-participants class="min-h-8" aria-live="polite"></div>
+      <h2 class="font-bold">Chat &amp; events</h2>
+      <ol data-world-log class="h-48 overflow-auto rounded bg-base-200 p-3 font-mono text-sm" aria-live="polite"></ol>
+      <form data-world-chat-form class="flex gap-2">
+        <input data-world-chat class="input input-bordered min-w-0 flex-1" maxlength="2048" aria-label="Chat message" placeholder="Say something…">
+        <button class="btn btn-primary" type="submit">Chat</button>
+      </form>
+      <form data-world-input-form class="flex gap-2">
+        <input data-world-input class="input input-bordered min-w-0 flex-1 font-mono" maxlength="4096" value="inc" aria-label="Game input">
+        <button class="btn btn-secondary" type="submit">Send input</button>
+      </form>
+    </div>
+  </section>
+</section>
+"#;
+    // The pinned world travels in the markup in three places (root
+    // attribute, heading, world input value); the name is escaped
+    // once and substituted everywhere, like the socket below.
+    let content = content.replace("__WORLD__", &html_escape(world_name));
+    // Same socket contract as the Explorer world page: the frontend
+    // reads data-world-socket instead of a hardcoded path.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content,
+    };
+    render_program_shell(&format!("Program: {world_name}"), &content, assets)
+}
+
+/// The program surface's page shell: the same head (assets, theme)
+/// as [`render_page`] but WITHOUT the Explorer chrome -- the shared
+/// wrapper's header links to /files, /peers and /settings, which do
+/// not exist on a program-only listener and must not be offered to
+/// a program visitor.
+fn render_program_shell(title: &str, content: &str, assets: &AssetUrls) -> String {
+    let title_escaped = html_escape(title);
+    let mut html = String::with_capacity(4096);
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en\" data-theme=\"sneak\">\n<head>\n");
+    html.push_str("    <meta charset=\"UTF-8\">\n");
+    html.push_str(
+        "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
+    );
+    let _ = write!(html, "    <title>{} - id</title>\n", title_escaped);
+    let _ = write!(
+        html,
+        "    <link rel=\"stylesheet\" href=\"{}\">\n",
+        assets.styles_css
+    );
+    let _ = write!(
+        html,
+        "    <script type=\"module\" src=\"{}\"></script>\n",
+        assets.main_js
+    );
+    html.push_str("\n</head>\n<body class=\"crt-scanlines crt-flicker\">\n");
+    html.push_str("    <main class=\"min-h-screen\" id=\"main\">\n");
+    html.push_str("        <div class=\"max-w-4xl mx-auto px-4 py-4\">\n");
+    html.push_str(content);
+    html.push_str("\n        </div>\n");
+    html.push_str("    </main>\n");
+    html.push_str("</body>\n</html>");
+    html
 }
 
 /// Render the peers page showing discovered peers.
@@ -868,6 +1111,19 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
 pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
     let mut html = String::with_capacity(2048);
     html.push_str("<div id=\"peers-content\" data-auto-refresh=\"10\">\n");
+    html.push_str(&render_peers_content(peers));
+    html.push_str("</div>");
+    html
+}
+
+/// Render just the peers content (card) without the `#peers-content` wrapper.
+///
+/// This is the replaceable inner content of the peers page.
+/// Used by `/api/peers` for auto-refresh partial updates: the client's
+/// `fetchPartial` assigns the response as `innerHTML` of `#peers-content`,
+/// so the partial must not carry the wrapper itself (issue #6956).
+pub fn render_peers_content(peers: &[(String, String, u64, u64)]) -> String {
+    let mut html = String::with_capacity(2048);
     html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
     html.push_str("    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Discovered Peers</div>\n");
     html.push_str("    <div class=\"p-4\">\n");
@@ -901,7 +1157,6 @@ pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
 
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
-    html.push_str("</div>");
 
     html
 }
@@ -1004,6 +1259,27 @@ mod tests {
     use crate::web::routes::FileInfo;
 
     #[test]
+    fn test_render_settings_shows_client_id_and_theme_labels() {
+        // #1792: the settings page carries a client-id element (filled by
+        // initSettingsIdentity from the persisted identity), the display
+        // name section sits under it, and theme names render below their
+        // icons in per-theme colour classes — not as uniform text buttons.
+        let html = render_settings("node-123");
+        assert!(html.contains("id=\"client-id-value\""));
+        let client_pos = html.find("Client Identity").unwrap();
+        let name_pos = html.find("Display Name").unwrap();
+        let theme_pos = html.find("Theme").unwrap();
+        assert!(client_pos < name_pos && name_pos < theme_pos);
+        for theme in ["sneak", "arch", "mech"] {
+            assert!(html.contains(&format!("theme-choice-{theme}")));
+            assert!(html.contains(&format!("data-theme=\"{theme}\"")));
+        }
+        assert!(html.contains("class=\"theme-dot\""));
+        assert!(html.contains("class=\"theme-label\">Sneak</span>"));
+        assert!(!html.contains("btn-outline btn-primary\" data-theme"));
+    }
+
+    #[test]
     fn test_html_escape() {
         assert_eq!(html_escape("<script>"), "&lt;script&gt;");
         assert_eq!(html_escape("a & b"), "a &amp; b");
@@ -1071,17 +1347,52 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_render_program_page_pins_the_world_and_omits_host_controls() {
+        let html = render_program_page(&AssetUrls::default(), "arena", Some("/ws/world"));
+        // Pinned to the one world this surface serves.
+        assert!(html.contains("data-world-program=\"arena\""));
+        assert!(html.contains("data-world-socket=\"/ws/world\""));
+        assert!(html.contains("value=\"arena\" readonly"));
+        // The guest presenter contract is present.
+        assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-capability"));
+        assert!(html.contains("data-world-view"));
+        assert!(html.contains("data-world-chat-form"));
+        assert!(html.contains("data-world-input-form"));
+        // No Explorer link and no host controls on a guest surface.
+        assert!(!html.contains("href=\"/files\""));
+        assert!(!html.contains("data-world-admin"));
+        assert!(!html.contains("data-world-invite class"));
+        assert!(!html.contains("data-world-install"));
+        assert!(!html.contains("data-world-host-view"));
+    }
+
+    #[test]
+    fn test_render_program_page_escapes_the_world_name() {
+        let html = render_program_page(&AssetUrls::default(), "a\"<b>", None);
+        assert!(!html.contains("data-world-program=\"a\"<b>\""));
+        assert!(html.contains("data-world-program=\"a&quot;&lt;b&gt;\""));
+    }
+
+    #[test]
     fn test_render_world_page_exposes_presentation_controls() {
-        let html = render_world_page(&AssetUrls::default());
+        let html = render_world_page(&AssetUrls::default(), Some("/ws/arena"));
+        assert!(html.contains("data-world-socket=\"/ws/arena\""));
         assert!(html.contains("data-world-app"));
         assert!(html.contains("data-world-invite"));
         assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-host-view"));
+        assert!(html.contains("Install or update program"));
         assert!(html.contains("data-world-world"));
         assert!(html.contains("data-world-chat-form"));
         assert!(html.contains("data-world-input-form"));
         assert!(html.contains("data-world-view"));
         assert!(html.contains("href=\"/files\""));
         assert!(html.contains("ProseMirror collaborative editor/viewer"));
+        assert!(html.contains("aria-label=\"Display name\""));
+        assert!(html.contains("aria-label=\"World name\""));
+        assert!(html.contains("aria-label=\"Guest capability\""));
     }
 
     #[test]
@@ -1106,6 +1417,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("No files stored yet"));
@@ -1124,6 +1437,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1133,6 +1447,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("test.txt"));
@@ -1156,6 +1472,7 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 tags: vec![],
+                origin_node: None,
                 is_deleted: false,
             })
             .collect();
@@ -1166,6 +1483,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("51-100 of 300"), "html: {html}");
@@ -1182,6 +1501,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1196,6 +1517,8 @@ mod tests {
             per_page: 200,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1219,6 +1542,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![("note".to_owned(), Some(value))],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1228,6 +1552,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         // Truncated on the char boundary before 'é', with the ellipsis.
@@ -1258,6 +1584,33 @@ mod tests {
     }
 
     #[test]
+    fn test_render_peers_content_has_no_wrapper() {
+        // Regression for #6956: the /api/peers partial is assigned as
+        // innerHTML of #peers-content, so the inner renderer must not
+        // carry the wrapper (duplicate id + data-auto-refresh nesting).
+        let peers = vec![(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            "test-node".to_owned(),
+            42,
+            30,
+        )];
+        for html in [render_peers_content(&[]), render_peers_content(&peers)] {
+            assert!(!html.contains("peers-content"), "inner partial must not contain #peers-content wrapper: {html}");
+            assert!(!html.contains("data-auto-refresh"), "inner partial must not contain data-auto-refresh: {html}");
+            assert!(html.contains("Discovered Peers"));
+        }
+        assert!(render_peers_content(&peers).contains("test-node"));
+        assert!(render_peers_content(&[]).contains("No peers discovered yet"));
+    }
+
+    #[test]
+    fn test_render_peers_wrapper_exactly_once() {
+        let html = render_peers(&[]);
+        assert_eq!(html.matches("id=\"peers-content\"").count(), 1);
+        assert_eq!(html.matches("data-auto-refresh").count(), 1);
+    }
+
+    #[test]
     fn test_format_age() {
         assert_eq!(format_age(5), "5s ago");
         assert_eq!(format_age(90), "1m ago");
@@ -1268,6 +1621,59 @@ mod tests {
     // ========================================================================
     // Editor page rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_editor_action_buttons_have_aria_labels() {
+        let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
+        assert!(
+            html.contains("aria-label=\"Save document\""),
+            "save button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "copy button should have aria-label"
+        );
+    }
+
+    #[test]
+    fn test_render_file_list_bulk_action_buttons_have_aria_labels() {
+        let page = FileListPage {
+            total: 1,
+            files: vec![FileInfo {
+                name: "test.txt".to_owned(),
+                display_name: None,
+                hash: "abc123def456".to_owned(),
+                size: 1024,
+                kind: FileKind::Primary,
+                parent_name: None,
+                timestamp: None,
+                created_at: None,
+                modified_at: None,
+                tags: vec![],
+                origin_node: None,
+                is_deleted: false,
+            }],
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+            sort: None,
+            origin_filter: None,
+        };
+        let html = render_file_list_content(&page);
+        assert!(
+            html.contains("aria-label=\"Add bulk tag\""),
+            "bulk tag button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Clear file selection\""),
+            "clear selection button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_editor_has_rename_button() {
@@ -1322,6 +1728,19 @@ mod tests {
     // ========================================================================
     // Media viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_media_viewer_action_buttons_have_aria_labels() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "media viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "media viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_media_viewer_has_rename_button() {
@@ -1423,6 +1842,19 @@ mod tests {
     // ========================================================================
     // Binary viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_binary_viewer_action_buttons_have_aria_labels() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "binary viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "binary viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_binary_viewer_has_rename_button() {

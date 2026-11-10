@@ -6,14 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 var update = flag.Bool("update", false, "rewrite generated files instead of comparing them")
 
 const (
 	parityPath   = "../../docs/parity.md"
-	daemonTSPath = "../../plugin/opencode/mcpx/daemon.ts"
+	daemonTSPath = "../../plugin/core/daemon.ts"
 )
 
 // TestParityDocumentIsCurrent fails when docs/parity.md no longer matches the

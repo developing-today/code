@@ -3,14 +3,20 @@
 // projections, and the hub/detail renders. The sample view below
 // carries the same dated-read phrasing quota-view.md uses, trimmed.
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
-import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
-import { renderQuota, renderServiceDetail } from "../src/render.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
-import { SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
+import { countedEstimate, type QuotaView, type SnapshotRecord, type UsageView } from "../src/model.ts";
+import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
+import {
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+  extractUninstrumentedServices,
+} from "../src/saas-extract.ts";
+import { isSnapshotRecord, SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 
 const VIEW = `
@@ -57,6 +63,16 @@ const REGISTRY = `
 - [observed] Cloudflare gateway DeepSeek V4 Pro accrual Oct 24–25: $29.60 per budget alert vs $45.10 per gateway cost attribution; final figure lands on the Nov 2 invoice.
 `;
 
+const FREE_SERVICES = `
+## Evaluated 2026-10-29
+
+| Service | What for | Status | Overage behavior | Guardrail notes |
+|---|---|---|---|---|
+| boats.cloud | Unknown — named to check | checked 2026-10-29 — verdict: unverified — no official site resolves | unverified | Do NOT adopt or enter payment details |
+| Render | PaaS | checked 2026-10-29 | wall | Keep no payment method on free workspaces |
+| Future service | Testing | unchecked — no official review yet | unknown | Verify before adoption |
+`;
+
 describe("saas extraction (Part b)", () => {
   const services = extractSaasServices(VIEW);
   const byId = new Map(services.map((s) => [s.id, s]));
@@ -90,6 +106,51 @@ describe("saas extraction (Part b)", () => {
     expect(t.nextDate).toBe("2026-10-31 cycle end");
   });
 
+  test("cloudflare: grouped counts preserve every count", () => {
+    const view = VIEW.replace(
+      "- **Usage / pace:** Tracker: small, 3 Workers, 2 R2 buckets ~2 GB, 2 D1, 2 KV, 2 Queues; far behind, mostly unused.",
+      "- **Usage / pace:** Tracker: small, 1,234 Workers, 56 R2 buckets ~2 GB; 7 D1, 8 KV, 9 Queues; far behind, mostly unused.",
+    );
+    const cloudflare = extractSaasServices(view).find((service) => service.id === "cloudflare")!;
+    const metrics = new Map(cloudflare.metrics.map((metric) => [metric.id, metric]));
+    expect(metrics.get("workers-count")?.used).toBe(1234);
+    expect(metrics.get("r2-buckets")?.used).toBe(56);
+    expect(metrics.get("d1-count")?.used).toBe(7);
+    expect(metrics.get("kv-count")?.used).toBe(8);
+    expect(metrics.get("queues-count")?.used).toBe(9);
+  });
+
+  test("cloudflare: grouped KV count keeps the whole count line", () => {
+    const view = VIEW.replace(
+      "- **Usage / pace:** Tracker: small, 3 Workers, 2 R2 buckets ~2 GB, 2 D1, 2 KV, 2 Queues; far behind, mostly unused.",
+      "- **Usage / pace:** Tracker: small, 3 Workers, 2 R2 buckets ~2 GB; 2 D1, 1,234 KV, 2 Queues; far behind, mostly unused.",
+    );
+    const cloudflare = extractSaasServices(view).find((service) => service.id === "cloudflare")!;
+    const metrics = new Map(cloudflare.metrics.map((metric) => [metric.id, metric]));
+    expect(metrics.get("workers-count")?.used).toBe(3);
+    expect(metrics.get("r2-buckets")?.used).toBe(2);
+    expect(metrics.get("d1-count")?.used).toBe(2);
+    expect(metrics.get("kv-count")?.used).toBe(1234);
+    expect(metrics.get("queues-count")?.used).toBe(2);
+  });
+
+  test("turso: grouped database count is parsed whole", () => {
+    const view = VIEW.replace("1 DB `great-star-lord`", "1,234 DB `great-star-lord`");
+    const turso = extractSaasServices(view).find((service) => service.id === "turso")!;
+    expect(turso.metrics.find((metric) => metric.id === "databases")?.used).toBe(1234);
+  });
+
+  test("github: grouped comped minute counts are both parsed whole", () => {
+    const view = `${VIEW}
+### GitHub
+- **Plan / price / allowance:** Pro $4/mo.
+- **Usage / dates:** 5,000 Linux + 1,234 macOS minutes.
+- **Last checked:** 2026-10-25.
+`;
+    const github = extractSaasServices(view).find((service) => service.id === "github")!;
+    expect(github.metrics.find((metric) => metric.id === "actions-comped-minutes")?.used).toBe(6234);
+  });
+
   test("modal: not-estimable stays a note, never a number", () => {
     const modal = byId.get("modal")!;
     expect(modal.paygEstimate).toBeNull();
@@ -105,8 +166,157 @@ describe("saas extraction (Part b)", () => {
 
   test("fail-soft on an empty document", () => {
     const shells = extractSaasServices("nothing here");
-    expect(shells.length).toBe(8);
+    expect(shells.length).toBe(11);
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
+  });
+
+  test("candidates: B2, Fly.io, Baseten are explicit candidate shells, never held (#1058)", () => {
+    for (const id of ["backblaze-b2", "fly-io", "baseten"]) {
+      const s = byId.get(id)!;
+      expect(s).toBeDefined();
+      expect(s.status).toBe("candidate");
+      expect(s.metrics).toEqual([]);
+      expect(s.measuredAt).toBeNull();
+      expect(s.plan).toContain("Candidate — not held");
+    }
+  });
+
+  test("sources provenance: tracker row, baseline, quota-view section (#1058)", () => {
+    const t = byId.get("turso")!;
+    expect(t.sources?.quotaViewSection).toBe("### Turso");
+    expect(t.sources?.trackerRow).toBe("Turso");
+    expect(t.sources?.baselineDoc).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
+  });
+
+  test("free-services tracker rows preserve state, date, and guardrail text", () => {
+    expect(extractUninstrumentedServices(FREE_SERVICES)).toEqual([
+      {
+        name: "boats.cloud",
+        whatFor: "Unknown — named to check",
+        status: "checked — verdict: unverified — no official site resolves",
+        checkedAt: "2026-10-29",
+        overageBehavior: "unverified",
+        guardrailNotes: "Do NOT adopt or enter payment details",
+      },
+      {
+        name: "Render",
+        whatFor: "PaaS",
+        status: "checked",
+        checkedAt: "2026-10-29",
+        overageBehavior: "wall",
+        guardrailNotes: "Keep no payment method on free workspaces",
+      },
+      {
+        name: "Future service",
+        whatFor: "Testing",
+        status: "unchecked — no official review yet",
+        checkedAt: null,
+        overageBehavior: "unknown",
+        guardrailNotes: "Verify before adoption",
+      },
+    ]);
+  });
+
+  test("free-services tracker rows: escaped pipes stay inside their cell (Codex P2, PR #3939)", () => {
+    const doc = `
+| Service | What for | Status | Overage behavior | Guardrail notes |
+|---|---|---|---|---|
+| Webby | Web \\| worker hosting | checked 2026-10-29 | wall | Keep no payment method on file |
+`;
+    expect(extractUninstrumentedServices(doc)).toEqual([
+      {
+        name: "Webby",
+        whatFor: "Web | worker hosting",
+        status: "checked",
+        checkedAt: "2026-10-29",
+        overageBehavior: "wall",
+        guardrailNotes: "Keep no payment method on file",
+      },
+    ]);
+  });
+
+  test("modal: monthly console read carries a dated used-credits value", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** $12.50 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
+    ).replace("- **Last checked:** 2026-10-22 (Tracker).", "- **Last checked:** console read 2026-10-24.");
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBe(12.5);
+    expect(credits.limit).toBe(30);
+    expect(credits.percent).toBeCloseTo(41.7, 1);
+    expect(modal.measuredAt).toBe("2026-10-24");
+  });
+
+  test("modal: grouped dollar amounts are parsed for allowance and usage", () => {
+    const view = VIEW.replace(
+      "- **Plan / price / allowance:** Starter $0/mo, Drew confirmed 2026-10-22; $30 monthly compute-credit grant, per-second billing past credits.",
+      "- **Plan / price / allowance:** Starter $0/mo, Drew confirmed 2026-10-22; $1,250 monthly compute-credit grant, per-second billing past credits.",
+    ).replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** $1,234.56 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.limit).toBe(1250);
+    expect(credits.used).toBe(1234.56);
+  });
+
+  test("modal: percentage read is not mistaken for dollars", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** used 50% of monthly compute credits on 2026-10-24; monthly grant, exact reset unknown.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBeNull();
+  });
+
+  test("modal: no used figure stays an allowance-only shell", () => {
+    const modal = byId.get("modal")!;
+    expect(modal.metrics.find((m) => m.id === "compute-credits")?.used).toBeNull();
+  });
+
+  test("bitwarden: bws count-only read yields dated secrets/projects metrics", () => {
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** 121 secrets, 1 project (bws count-only read 2026-10-26).
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** bws count-only read 2026-10-26.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
+    const m = new Map(bw.metrics.map((x) => [x.id, x]));
+    expect(m.get("secrets-count")?.used).toBe(121);
+    expect(m.get("projects-count")?.used).toBe(1);
+    expect(bw.measuredAt).toBe("2026-10-26");
+  });
+
+  test("bitwarden: grouped count-only values preserve the full counts", () => {
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** 1,121 secrets, 1,000 projects (bws count-only read 2026-10-26).
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** bws count-only read 2026-10-26.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
+    const m = new Map(bw.metrics.map((x) => [x.id, x]));
+    expect(m.get("secrets-count")?.used).toBe(1121);
+    expect(m.get("projects-count")?.used).toBe(1000);
+  });
+
+  test("bitwarden: no dated count stays an empty shell, names/values never parsed", () => {
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** Count unavailable; names and values are never recorded.
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** tracker.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
+    expect(bw.metrics).toEqual([]);
   });
 });
 
@@ -148,8 +358,21 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
     ]);
   });
 
+  test("subscriptions: a non-calendar renews date is null, a leap day is kept (#2206)", () => {
+    const wispr = (date: string) =>
+      extractSubscriptions(`### Wispr Flow
+- **Plan:** Flow Pro annual $151.91/yr charged; renews ${date}.`).find((s) => s.name === "Wispr Flow");
+    expect(wispr("2026-02-30")?.renewsAt).toBeNull();
+    expect(wispr("2026-04-31")?.renewsAt).toBeNull();
+    expect(wispr("2026-13-01")?.renewsAt).toBeNull();
+    expect(wispr("2024-02-29")?.renewsAt).toBe("2024-02-29");
+    expect(wispr("2027-10-09")?.renewsAt).toBe("2027-10-09");
+  });
+
   test("subscriptions strip is renewal-only rows from the records", () => {
-    const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
+    const subs = extractSubscriptions(
+      `${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`,
+    );
     expect(subs).toEqual([
       { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null },
       { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" },
@@ -183,7 +406,15 @@ describe("bubble rules (§1.3)", () => {
       services: [],
       payg: [
         { id: "a", label: "A", accruedUsd: null, unbilledUsd: 5, note: "", measuredAt: null, sourceClass: "estimate" },
-        { id: "b", label: "B", accruedUsd: null, unbilledUsd: 5.01, note: "", measuredAt: null, sourceClass: "estimate" },
+        {
+          id: "b",
+          label: "B",
+          accruedUsd: null,
+          unbilledUsd: 5.01,
+          note: "",
+          measuredAt: null,
+          sourceClass: "estimate",
+        },
       ],
     });
     expect(flags.filter((f) => f.kind === "payg-unbilled").map((f) => f.label)).toEqual(["B"]);
@@ -205,6 +436,30 @@ describe("snapshot store (§4)", () => {
     expect(snapshotFileFor("2026-10-25T09:38:00-05:00")).toBe("usage-2026-10.jsonl");
     expect(snapshotFileFor("2026-09-30T12:00:00Z")).toBe("usage-2026-09.jsonl");
   });
+  test("validator refuses negative numeric pct values, other units unchanged (#2346)", () => {
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", -1))).toBe(false);
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", -1e9))).toBe(false);
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", 0))).toBe(true);
+    expect(isSnapshotRecord({ ...rec("2026-10-25T12:00:00Z", -5), unit: "usd" })).toBe(true);
+  });
+  test("stored poisoned pct records read back through readAll never make projectPace throw (#2346)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hub-snaps-"));
+    try {
+      // Written directly to the month file, bypassing append: records
+      // stored before the validator guard existed.
+      const poison = [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)];
+      await writeFile(join(dir, "usage-2026-10.jsonl"), poison.map((r) => JSON.stringify(r)).join("\n") + "\n");
+      const all = await new SnapshotStore(dir).readAll();
+      expect(() => projectPace(all, "usage")).not.toThrow();
+      // The primary guard itself, for a poisoned set that reaches
+      // projectPace in memory: no projection, no throw.
+      const pace = projectPace(poison, "usage")!;
+      expect(pace.projectedExhaustionAt).toBeNull();
+      expect(pace.slopePerDay).toBe(0.5);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("append is idempotent and reads survive a fresh store instance", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hub-snaps-"));
     try {
@@ -222,7 +477,15 @@ describe("snapshot store (§4)", () => {
     try {
       const store = new SnapshotStore(dir);
       await store.append([
-        { ts: "2026-10-25T12:00:00Z", serviceId: "cloudflare", metricId: "est", value: { low: 29.6, high: 45.1 }, unit: "usd-est", source: "estimate", observedBy: "test" },
+        {
+          ts: "2026-10-25T12:00:00Z",
+          serviceId: "cloudflare",
+          metricId: "est",
+          value: { low: 29.6, high: 45.1 },
+          unit: "usd-est",
+          source: "estimate",
+          observedBy: "test",
+        },
       ]);
       const all = await store.readAll();
       expect(all[0].value).toEqual({ low: 29.6, high: 45.1 });
@@ -257,17 +520,93 @@ describe("pace + freshness (§4, §1.1)", () => {
     expect(pace.projectedPercentAtReset).toBe(80);
     expect(resetMarkers(recs, "weekly")).toHaveLength(1);
   });
+  test("pace: out-of-domain pct yields no projection and never throws (#2346)", () => {
+    // -1e9 -> -999999999 over 2 days: slope 0.5/day passes the slope
+    // gate; the unguarded extrapolation threw RangeError.
+    const poison = projectPace([rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)], "weekly")!;
+    expect(poison.projectedExhaustionAt).toBeNull();
+    expect(poison.slopePerDay).toBe(0.5);
+    // -5000 -> -4999.88 over 2 days: slope 0.06/day; previously
+    // projected exhaustion in the year 2259.
+    const far = projectPace([rec("2026-10-22T00:00:00Z", -5000), rec("2026-10-24T00:00:00Z", -4999.88)], "weekly")!;
+    expect(far.projectedExhaustionAt).toBeNull();
+    // Happy-path control: 30 -> 40 over 2 days projects as before.
+    const ok = projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 40)], "weekly")!;
+    expect(ok.projectedExhaustionAt?.slice(0, 10)).toBe("2026-11-05");
+  });
+  test("pace: negative pct with a future resetsAt yields no percent-at-reset projection (#6316)", () => {
+    // The #2346 poison fixture, now with resetsAt on the last record:
+    // -1e9 -> -999999999 over 2 days, reset +7 days. Before the guard,
+    // projectPace returned projectedPercentAtReset -999999995.5.
+    const poison = projectPace(
+      [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999, "2026-10-31T00:00:00Z")],
+      "weekly",
+    )!;
+    expect(poison.projectedPercentAtReset).toBeNull();
+    expect(poison.projectedExhaustionAt).toBeNull();
+    expect(poison.slopePerDay).toBe(0.5);
+    expect(poison.points).toBe(2);
+  });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
-    expect(
-      projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly"),
-    ).toBeNull();
+    expect(projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
   });
   test("freshness: older than cadence is stale; same-day is not", () => {
     const now = new Date("2026-10-26T12:00:00Z");
     expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
     expect(freshness("2026-10-01", 7, now).stale).toBe(true);
     expect(freshness(null, 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: date-only stamps age by the Chicago calendar day (#1629)", () => {
+    // 19:30 CDT on 2026-10-25 is already 2026-10-26 in UTC. A read
+    // dated today (Chicago) is 0 days old for the whole Chicago day;
+    // the UTC-day age called it 1d old -- and stale at cadence 0 --
+    // from 19:00 Chicago onward.
+    const cdtEvening = new Date("2026-10-26T00:30:00Z");
+    expect(freshness("2026-10-25", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-25", 0, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-24", 7, cdtEvening)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-24", 0, cdtEvening)).toEqual({ stale: true, ageDays: 1 });
+    // Still today at 23:59 Chicago.
+    expect(freshness("2026-10-25", 7, new Date("2026-10-26T04:59:00Z"))).toEqual({
+      stale: false,
+      ageDays: 0,
+    });
+    // The CST evening of the same shape: 19:00 CST on 2026-01-14 is
+    // 2026-01-15 in UTC.
+    const cstEvening = new Date("2026-01-15T01:00:00Z");
+    expect(freshness("2026-01-14", 7, cstEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-01-13", 7, cstEvening)).toEqual({ stale: false, ageDays: 1 });
+    // Tomorrow's Chicago date is still within the future tolerance.
+    expect(freshness("2026-10-26", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+  });
+  test("freshness: a far-future stamp is stale with unknown age (#1568)", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    // Date-only form: +30d and +365d are beyond the 1-day tolerance.
+    expect(freshness("2026-11-25", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2027-10-26", 7, now)).toEqual({ stale: true, ageDays: null });
+    // Datetime form: +30d, +365d, and even +2d are beyond tolerance.
+    expect(freshness("2026-11-25T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2027-10-26T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2026-10-28T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    // Garbage is the same honest unknown-age shape.
+    expect(freshness("not-a-date-at-all", 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: a near-future stamp within tolerance is today, not stale (#1568)", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    // Date-only granularity: tomorrow's date is exactly at the tolerance.
+    expect(freshness("2026-10-27", 7, now)).toEqual({ stale: false, ageDays: 0 });
+    // Datetime: +12h of timezone/clock noise clamps to age 0.
+    expect(freshness("2026-10-27T00:00:00Z", 7, now)).toEqual({ stale: false, ageDays: 0 });
+    // Past controls unchanged.
+    expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-18", 7, now)).toEqual({ stale: true, ageDays: 8 });
+  });
+  test("freshnessStamp: a far-future stamp renders the stale badge, never 'today' (#1568)", () => {
+    const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const html = freshnessStamp(future, "console", 7);
+    expect(html).toContain("stale — as of");
+    expect(html).not.toContain("· today");
   });
 });
 
@@ -282,10 +621,80 @@ describe("hub renders", () => {
     expect(html).toContain("/quota/service/turso");
     expect(html).toContain("measured");
   });
+  test("PAYG card shows the DeepSeek ¥ balance with its measured-at (#1052)", async () => {
+    const src = fixtureSource();
+    const usage = await src.usage();
+    const rec: SnapshotRecord = {
+      ts: "2026-10-25T12:00:00Z",
+      serviceId: "deepseek",
+      metricId: "credits_balance",
+      value: 44.63,
+      unit: "cny",
+      source: "api",
+      observedBy: "backfill:quota-view.md",
+    };
+    usage.history = { ...usage.history, deepseek: [rec] };
+    const html = renderQuota(await src.quota(), src.provenance(), usage);
+    expect(html).toContain("DeepSeek PAYG reserve balance");
+    expect(html).toContain("¥44.63");
+    expect(html).toContain("measured 2026-10-25");
+  });
+  test("no cny record → no balance line; fmtMetricValue renders cny in yuan", async () => {
+    const src = fixtureSource();
+    const html = renderQuota(await src.quota(), src.provenance(), await src.usage());
+    expect(html).not.toContain("DeepSeek PAYG reserve balance");
+    expect(fmtMetricValue(44.63, "cny")).toBe("¥44.63");
+    expect(fmtMetricValue(null, "cny")).toBe("not measured");
+  });
   test("legacy two-arg renderQuota still renders the pools page", async () => {
     const src = fixtureSource();
     const html = renderQuota(await src.quota(), src.provenance());
     expect(html).toContain("Quota + throughput");
+  });
+  test("hub sources section + candidate cards visible; detail sources block (#1058)", async () => {
+    const src = fixtureSource();
+    const usage: UsageView = {
+      services: extractSaasServices(VIEW),
+      uninstrumentedServices: extractUninstrumentedServices(FREE_SERVICES),
+      payg: extractPaygLines(VIEW, REGISTRY),
+      charges: [],
+      attention: [],
+      domains: null,
+      subscriptions: [],
+      history: {},
+    };
+    const quota: QuotaView = { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+    const html = renderQuota(quota, src.provenance(), usage);
+    expect(html).toContain("free-services-to-check.md");
+    expect(html).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(html).toContain("Backblaze B2");
+    expect(html).toContain("Fly.io");
+    expect(html).toContain("Baseten");
+    expect(html).toContain("candidate");
+    expect(html).toContain("Tracker services without instrumented quotas");
+    expect(html).toContain("<details><summary>3 evaluated services");
+    expect(html).toContain("boats.cloud");
+    expect(html).toContain("checked — verdict: unverified — no official site resolves");
+    expect(html).toContain("2026-10-29");
+    const turso = usage.services.find((s) => s.id === "turso")!;
+    const detail = renderServiceDetail(turso, [], src.provenance());
+    expect(detail).toContain("Sources");
+    expect(detail).toContain("Summary (b) — Turso");
+    expect(detail).toContain("### Turso");
+    expect(detail).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    const fly = usage.services.find((s) => s.id === "fly-io")!;
+    const flyDetail = renderServiceDetail(fly, [], src.provenance());
+    expect(flyDetail).toContain("candidate / not held");
+    // An active service with no Summary (b) row is not thereby a candidate:
+    // ownership is never inferred from a missing tracker row (Codex, PR #3677).
+    const rowless = {
+      ...turso,
+      sources: turso.sources ? { ...turso.sources, trackerRow: null } : turso.sources,
+    };
+    expect(rowless.status).toBe("active");
+    const rowlessDetail = renderServiceDetail(rowless, [], src.provenance());
+    expect(rowlessDetail).toContain("none — no Summary (b) row");
+    expect(rowlessDetail).not.toContain("candidate / not held");
   });
   test("service detail: full metrics, chart, reads, conflicts", async () => {
     const src = fixtureSource();
@@ -300,5 +709,42 @@ describe("hub renders", () => {
     const cfHtml = renderServiceDetail(cf, [], src.provenance());
     expect(cfHtml).toContain("Conflicts (shown, not resolved)");
     expect(cfHtml).toContain("counted as used");
+  });
+  test("service detail: stored snapshot freshness follows the service cadence", () => {
+    const turso = extractSaasServices(VIEW).find((s) => s.id === "turso")!;
+    const now = new Date("2026-11-01T12:00:00Z");
+    const record = (ts: string): SnapshotRecord => ({
+      ts,
+      serviceId: "turso",
+      metricId: "databases",
+      value: 1,
+      unit: "count",
+      source: "manual",
+      observedBy: "test",
+    });
+    const current = renderServiceDetail(
+      turso,
+      [record("2026-10-30T12:00:00Z")],
+      fixtureSource().provenance(),
+      undefined,
+      now,
+    );
+    expect(current).toContain("Latest stored snapshot:");
+    expect(current).toContain("2026-10-30");
+    expect(current).toContain("7-day expected cadence");
+    expect(current).toContain("within cadence");
+
+    const stale = renderServiceDetail(
+      turso,
+      [record("2026-10-01T12:00:00Z")],
+      fixtureSource().provenance(),
+      undefined,
+      now,
+    );
+    expect(stale).toContain("stale");
+
+    const empty = renderServiceDetail(turso, [], fixtureSource().provenance(), undefined, now);
+    expect(empty).toContain("No snapshot writer has landed a record for this service yet");
+    expect(empty).toContain("one-shot recovery");
   });
 });

@@ -3,15 +3,17 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/opencode"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/hooks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/opencode"
 )
 
 // check is one diagnosis.
@@ -121,8 +123,29 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 		// A server whose command is not installed is the single most common
 		// cause of "mcpx does not work", and it is invisible until a call.
 		var missing []string
+		var nixSpecs int
 		for _, s := range servers {
 			if s.Command == "" {
+				continue
+			}
+			if progspec.IsNix(s.Command) {
+				// Resolved by nix at launch (progspec, #1921); a PATH
+				// lookup would report it missing even on a machine
+				// where it runs fine, and doctor does not build. A
+				// malformed spec is still a config error here: it is
+				// rejected at launch, so report it like one.
+				if _, err := progspec.Parse(s.Command); err != nil {
+					missing = append(missing, s.Name+": "+err.Error())
+					continue
+				}
+				// A valid nix spec is only runnable where nix itself
+				// is: launch resolves through the nix binary, so its
+				// absence is a missing prerequisite, not an ok.
+				if _, err := exec.LookPath("nix"); err != nil {
+					missing = append(missing, fmt.Sprintf("%s: %s requires the nix binary, which is not on PATH", s.Name, s.Command))
+					continue
+				}
+				nixSpecs++
 				continue
 			}
 			if _, err := exec.LookPath(s.Command); err != nil {
@@ -133,8 +156,23 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 			add(check{"server commands", "fail", strings.Join(missing, "; "),
 				"install them, or remove those servers from the configuration"})
 		} else if len(servers) > 0 {
-			add(check{"server commands", "ok",
-				fmt.Sprintf("all %d runnable", len(servers)), ""})
+			detail := fmt.Sprintf("all %d runnable", len(servers))
+			if nixSpecs > 0 {
+				detail += fmt.Sprintf("; %d via nix: program specs, resolved to store paths at launch", nixSpecs)
+			}
+			add(check{"server commands", "ok", detail, ""})
+		}
+
+		// Auth posture, from the same redacted summary `mcpx config`
+		// prints (#1926): which credential shape each server declares,
+		// by variable reference only — doctor output gets pasted into
+		// issues too, so the resolved value must never appear here.
+		if len(servers) > 0 {
+			var parts []string
+			for _, s := range servers {
+				parts = append(parts, fmt.Sprintf("%s: %s", s.Name, s.Auth.Describe()))
+			}
+			add(check{"auth", "ok", strings.Join(parts, "; "), ""})
 		}
 	}
 
@@ -236,6 +274,13 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 		_ = st.Close()
 	}
 
+	// Slow remotes (#1936): the log's measured latency and error figures
+	// for configured remote servers, with a local alternative when the
+	// registry offers one. Read-only; see doctor_remote.go.
+	for _, c := range a.doctorSlowRemotes(ctx) {
+		add(c)
+	}
+
 	// Optional integrations. Absent is not a problem, so these are only
 	// reported when present or when configured and broken.
 	if path, oerr := opencode.Find(""); oerr == nil {
@@ -261,6 +306,32 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 		add(check{"api specs", "fail", aerr.Error(), "fix the declaration file"})
 	} else if len(apis) > 0 {
 		add(check{"api specs", "ok", fmt.Sprintf("%d declared", len(apis)), ""})
+	}
+
+	// Declared hooks. A hook whose declaration does not parse, or whose
+	// executor cannot run, fails silently at fire time -- the daemon
+	// logs it and carries on, which is right for the daemon and useless
+	// for the person wondering why nothing happened. Doctor is where
+	// that silence ends. (Runtime slow/failing counts live on the
+	// daemon's hook runner and surface as hook.failed events.)
+	if raw := a.Settings().String("hooks"); raw != "" {
+		declared, herr := hooks.Parse(raw, a.Settings().Duration("hooks.timeout"))
+		switch {
+		case herr != nil:
+			add(check{"hooks", "fail", herr.Error(), "fix the `hooks` setting; `mcpx hook ls` shows the same error"})
+		default:
+			var unready []string
+			for _, h := range declared {
+				if r := hookReady(h); r != "yes" {
+					unready = append(unready, h.Name+": "+strings.TrimPrefix(r, "no: "))
+				}
+			}
+			if len(unready) > 0 {
+				add(check{"hooks", "warn", strings.Join(unready, "; "), "install the command or fix the module path"})
+			} else {
+				add(check{"hooks", "ok", fmt.Sprintf("%d declared, all executors ready", len(declared)), ""})
+			}
+		}
 	}
 
 	if a.JSON {

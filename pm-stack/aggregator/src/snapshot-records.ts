@@ -3,7 +3,8 @@
 //   (a) the fleet-feed collector derives records from the hub sections
 //       of the feed it is about to publish (SaaS services, PAYG lines,
 //       the DNS register totals) and embeds them in the feed; the
-//       laptop aggregator ingests them into its local store.
+//       laptop aggregator's background writer tick lands them in its
+//       local store (never a page/read path).
 //   (b) stewardship-cycle, after a quota-view refresh, runs
 //       scripts/append-usage-snapshots.ts, which derives records from
 //       the same extractors (pools included) into the outbox the
@@ -17,14 +18,8 @@
 // (service, metric, ts, value), so an unchanged read re-derives the
 // identical record and appends nothing.
 import { POOL_SPECS, sectionOf } from "./quota-extract.ts";
-import type {
-  DnsSection,
-  PaygLine,
-  QuotaPool,
-  SaasService,
-  SnapshotRecord,
-  UsageUnit,
-} from "./model.ts";
+import { isPercentOf, isRecord, parseIsoDate } from "./validate.ts";
+import type { DnsSection, PaygLine, QuotaPool, SaasService, SnapshotRecord, UsageUnit } from "./model.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
@@ -38,9 +33,14 @@ export function tsFor(measuredAt: string): string {
   return measuredAt.length <= 10 ? dayTs(measuredAt.slice(0, 10)) : measuredAt;
 }
 
-/** The freshest ISO date in a text, or null. */
+/** The freshest ISO date in a text, or null. Only REAL calendar
+ * dates compete (#2264): an impossible date like 2026-02-30 or
+ * 2026-13-01 in prose must not win the freshness comparison. */
 export function freshestDate(text: string): string | null {
-  const ds = [...text.matchAll(DATE_RE)].map((m) => m[0]).sort();
+  const ds = [...text.matchAll(DATE_RE)]
+    .map((m) => m[0])
+    .filter((d) => parseIsoDate(d) !== null)
+    .sort();
   return ds.length ? ds[ds.length - 1] : null;
 }
 
@@ -74,7 +74,10 @@ const UNIT_MAP: Partial<Record<UsageUnit, SnapshotRecord["unit"]>> = {
   count: "count",
   gb: "gb",
   usd: "usd",
+  cny: "cny",
   pct: "pct",
+  minutes: "minutes",
+  hours: "hours",
 };
 
 /** Family-2 services: every measured metric becomes one record at the
@@ -126,7 +129,7 @@ export function recordsFromPaygLines(lines: PaygLine[], observedBy: string): Sna
     if (line.accruedUsd != null) {
       out.push({
         ts,
-        serviceId: line.id === "meta-payg" ? "meta:high-usage" : line.id,
+        serviceId: line.id === "meta-payg" ? "meta" : line.id,
         metricId: "payg-accrued",
         value: line.accruedUsd,
         unit: "usd",
@@ -151,6 +154,43 @@ export function recordsFromPaygLines(lines: PaygLine[], observedBy: string): Sna
     }
   }
   return out;
+}
+
+/**
+ * The DeepSeek PAYG reserve's balance read (#1052): the dated ¥
+ * observation the v1 backfill skipped because the unit enum had no
+ * CNY. It is stored as unit "cny" with the yuan figure kept exactly
+ * as read — there is no FX rate here and never a converted USD value.
+ * The metric id is the gatherer's own window name ("credits_balance")
+ * so a backfilled point and a live gathered point are one series.
+ *
+ * Fail-soft: a section without a ¥ balance, or without any date to
+ * stamp it, yields no record — the caller warns instead of guessing.
+ */
+export function recordsFromDeepseekBalance(quotaViewText: string, observedBy: string): SnapshotRecord[] {
+  const section = sectionOf(quotaViewText, /DeepSeek/i);
+  if (!section) return [];
+  const line = section.split("\n").find((l) => /¥/.test(l));
+  if (!line) return [];
+  const amount = /¥\s*([\d,]+(?:\.\d+)?)/.exec(line);
+  if (!amount) return [];
+  const value = Number(amount[1].replace(/,/g, ""));
+  if (!Number.isFinite(value)) return [];
+  const raw = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? null;
+  const onLine = raw !== null && parseIsoDate(raw) !== null ? raw : null;
+  const date = onLine ?? lastCheckedDate(section) ?? freshestDate(section);
+  if (!date) return [];
+  return [
+    {
+      ts: dayTs(date),
+      serviceId: "deepseek",
+      metricId: "credits_balance",
+      value,
+      unit: "cny",
+      source: "api",
+      observedBy,
+    },
+  ];
 }
 
 /** Family-1 pools: window percentages / USD usage, stamped with the
@@ -239,7 +279,10 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     codex_usage?: { usage?: { rate_limit?: { primary_window?: unknown; secondary_window?: unknown } } };
   };
   const ts = typeof s.generated_at === "string" ? s.generated_at : null;
-  if (!ts || Number.isNaN(Date.parse(ts))) return [];
+  // Strict gate, same as isSnapshotRecord's isIsoDate check on r.ts:
+  // Date.parse alone accepts impossible dates (2026-02-30) and non-ISO
+  // strings the store then refuses, silently dropping the snapshot (#5140).
+  if (!ts || parseIsoDate(ts) === null) return [];
   const out: SnapshotRecord[] = [];
   if (Array.isArray(s.sessions)) {
     out.push({
@@ -253,18 +296,20 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     });
   }
   const rl = s.codex_usage?.usage?.rate_limit;
+  const isQuotaPercent = isPercentOf(100);
   const windowMetric = (w: unknown): void => {
-    if (typeof w !== "object" || w === null) return;
+    if (!isRecord(w)) return;
     const win = w as { used_percent?: unknown; limit_window_seconds?: unknown };
-    if (typeof win.used_percent !== "number") return;
+    const usedPercent = win.used_percent;
+    if (!isQuotaPercent(usedPercent)) return;
     const metricId =
       win.limit_window_seconds === 604_800 ? "7-day" : win.limit_window_seconds === 18_000 ? "5-hour" : null;
     if (!metricId) return;
     out.push({
       ts,
-      serviceId: "openai:codex",
+      serviceId: "openai.main",
       metricId,
-      value: win.used_percent,
+      value: usedPercent,
       unit: "pct",
       limit: 100,
       source: "api",

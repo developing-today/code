@@ -17,7 +17,8 @@ func resolveOps() []Op {
 	return []Op{
 		{
 			Name: "resolve", Method: "GET", Path: "/v1/resolve",
-			Summary: "Which daemon serves a directory",
+			Permission: PermissionRead,
+			Summary:    "Which daemon serves a directory",
 			Description: "Resolves mcpx's configuration search path as if the caller " +
 				"were in the named directory, fingerprints every file that " +
 				"contributed, and reports the socket, endpoint and config that " +

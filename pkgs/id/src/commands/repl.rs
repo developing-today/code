@@ -92,12 +92,46 @@ use crate::commands::client::create_local_client_endpoint;
 use crate::commands::put::{add_raw, push_and_name};
 use crate::commands::serve::get_serve_info;
 use crate::commands::tag::{self as tag, TagDisplayOptions};
+use crate::commands::text::{list_tsv_row, plain_field};
+use crate::discovery::PeerAnnouncement;
 use crate::local::LocalNode;
 use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
 use crate::{
-    CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
-    export_blob, is_node_id, load_or_create_keypair, open_store,
+    CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, StoreType, export_blob,
+    is_node_id, load_or_create_keypair, open_store,
 };
+
+/// Trim names entered at the forgiving REPL surface before calling FileOps.
+fn trim_file_name(name: &str) -> &str {
+    name.trim()
+}
+
+/// The current Unix time in seconds, or `0` if the clock is before the epoch.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// One peer as the four tab-separated fields of a REPL `peers` row:
+/// `<node_id>\t<name>\t<blob_count> blobs\t<age>s ago`.
+///
+/// Shared by `peers` and `peers_on_node` so both REPL printers render an
+/// announced name the same way. The name is untrusted gossip input stored and
+/// served verbatim, so it goes through [`plain_field`]: a tab, CR, LF or other
+/// structure-breaking character is quoted and escaped rather than shifting a
+/// column or forging a row (#1613).
+pub(crate) fn format_peer_line(peer: &PeerAnnouncement, now_secs: u64) -> String {
+    let name = peer
+        .name
+        .as_deref()
+        .map_or_else(|| "-".to_owned(), plain_field);
+    let age = now_secs.saturating_sub(peer.timestamp_secs);
+    format!(
+        "{}\t{}\t{} blobs\t{}s ago",
+        peer.node_id, name, peer.blob_count, age
+    )
+}
 
 /// REPL execution context managing connections and store access.
 ///
@@ -412,8 +446,9 @@ impl ReplContext {
 
     /// List all stored blobs.
     ///
-    /// Prints a tab-separated list of hash and name for each stored blob.
-    /// Output format: `<hash>\t<name>`
+    /// Prints a tab-separated list for each stored blob with its origin
+    /// node and upload time (#4973; `unknown` when not recorded).
+    /// Output format: `<hash>\t<name>\t<origin>\t<uploaded_at>`
     ///
     /// In connected modes, sends `MetaRequest::List` to the server.
     /// In local mode, directly iterates the store's tags.
@@ -427,33 +462,49 @@ impl ReplContext {
             let req = postcard::to_allocvec(&MetaRequest::List)?;
             send.write_all(&req).await?;
             send.finish()?;
-            let resp_buf = recv.read_to_end(1024 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            let resp_buf = read_capped_response(&mut recv).await?;
+            let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
             match resp {
                 MetaResponse::List { items } => {
                     if items.is_empty() {
                         println!("(no files stored)");
                     } else {
-                        for (hash, name) in items {
-                            println!("{hash}\t{name}");
+                        for entry in &items {
+                            println!(
+                                "{}",
+                                list_tsv_row(
+                                    entry.hash,
+                                    &entry.name,
+                                    entry.origin.as_deref(),
+                                    entry.uploaded_at
+                                )
+                            );
                         }
                     }
                 }
                 _ => bail!("unexpected response"),
             }
         } else if let ReplContextInner::Local { node } = &self.inner {
-            let store_handle = node.blobs();
-            let mut list = store_handle.tags().list().await?;
-            let mut count = 0;
-            while let Some(item) = list.next().await {
-                let item = item?;
-                let name = String::from_utf8_lossy(item.name.as_ref());
-                println!("{}\t{}", item.hash, name);
-                count += 1;
-            }
-            if count == 0 {
-                println!("(no files stored)");
+            match node.request(MetaRequest::List).await {
+                MetaResponse::List { items } => {
+                    if items.is_empty() {
+                        println!("(no files stored)");
+                    } else {
+                        for entry in &items {
+                            println!(
+                                "{}",
+                                list_tsv_row(
+                                    entry.hash,
+                                    &entry.name,
+                                    entry.origin.as_deref(),
+                                    entry.uploaded_at
+                                )
+                            );
+                        }
+                    }
+                }
+                _ => bail!("unexpected response"),
             }
         }
         Ok(())
@@ -504,6 +555,10 @@ impl ReplContext {
             );
             (data, filename)
         };
+
+        // Forgiving REPL surface: trim what the user typed. FileOps stores
+        // names verbatim and refuses padding (#4102 / design #4766 Phase 3).
+        let filename = trim_file_name(&filename).to_owned();
 
         let store_handle = self.store_handle();
         let (hash, _guard) = add_raw(&store_handle, data).await?;
@@ -558,8 +613,8 @@ impl ReplContext {
             })?;
             send.write_all(&req).await?;
             send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            let resp_buf = read_capped_response(&mut recv).await?;
+            let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
             match resp {
                 MetaResponse::Get { hash: Some(hash) } => {
@@ -642,6 +697,7 @@ impl ReplContext {
     ///
     /// Returns an error if `from` is not found.
     pub async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = trim_file_name(to);
         let req = MetaRequest::Rename {
             from: from.to_owned(),
             to: to.to_owned(),
@@ -668,6 +724,7 @@ impl ReplContext {
     ///
     /// Returns an error if `from` is not found.
     pub async fn copy(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = trim_file_name(to);
         let req = MetaRequest::Copy {
             from: from.to_owned(),
             to: to.to_owned(),
@@ -704,7 +761,7 @@ impl ReplContext {
             send.write_all(&req).await?;
             send.finish()?;
             let resp_buf = read_capped_response(&mut recv).await?;
-            let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+            let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
             match resp {
                 MetaResponse::Find { matches } => matches,
@@ -836,16 +893,24 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::List)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::List { items } => {
                 if items.is_empty() {
                     println!("(no files stored on @{})", &node_str[..8]);
                 } else {
-                    for (hash, name) in items {
-                        println!("{hash}\t{name}");
+                    for entry in &items {
+                        println!(
+                            "{}",
+                            list_tsv_row(
+                                entry.hash,
+                                &entry.name,
+                                entry.origin.as_deref(),
+                                entry.uploaded_at
+                            )
+                        );
                     }
                 }
             }
@@ -902,6 +967,9 @@ impl ReplContext {
             (data, filename)
         };
 
+        // The remote REPL path is still a forgiving user-facing surface.
+        let filename = trim_file_name(&filename).to_owned();
+
         let store_handle = self.store_handle();
         let (hash, _guard) = add_raw(&store_handle, data).await?;
         // Bytes first, name second (see `put`).
@@ -950,8 +1018,8 @@ impl ReplContext {
         })?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::Get { hash: Some(hash) } => {
@@ -994,8 +1062,8 @@ impl ReplContext {
         })?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::Delete { success: true } => {
@@ -1016,6 +1084,10 @@ impl ReplContext {
     /// to the server and prints the results in tab-separated format:
     /// `<node_id>\t<name>\t<blob_count>\t<age>`
     ///
+    /// A name containing a tab, CR, LF or other structure-breaking character
+    /// is quoted and escaped ([`plain_field`]) so it cannot shift a column or
+    /// forge an extra row (#1613).
+    ///
     /// In Local mode, prints a message indicating peers are unavailable
     /// (peer discovery requires a running serve instance).
     pub async fn peers(&mut self) -> Result<()> {
@@ -1029,8 +1101,8 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::ListPeers { peers } => {
@@ -1038,17 +1110,7 @@ impl ReplContext {
                     println!("(no peers discovered)");
                 } else {
                     for peer in &peers {
-                        let name = peer.name.as_deref().unwrap_or("-");
-                        let age = {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map_or(0, |d| d.as_secs());
-                            now.saturating_sub(peer.timestamp_secs)
-                        };
-                        println!(
-                            "{}\t{}\t{} blobs\t{}s ago",
-                            peer.node_id, name, peer.blob_count, age
-                        );
+                        println!("{}", format_peer_line(peer, now_secs()));
                     }
                 }
             }
@@ -1080,8 +1142,8 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp_buf = read_capped_response(&mut recv).await?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
 
         match resp {
             MetaResponse::ListPeers { peers } => {
@@ -1089,17 +1151,7 @@ impl ReplContext {
                     println!("(no peers discovered on @{})", &node_str[..8]);
                 } else {
                     for peer in &peers {
-                        let name = peer.name.as_deref().unwrap_or("-");
-                        let age = {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map_or(0, |d| d.as_secs());
-                            now.saturating_sub(peer.timestamp_secs)
-                        };
-                        println!(
-                            "{}\t{}\t{} blobs\t{}s ago",
-                            peer.node_id, name, peer.blob_count, age
-                        );
+                        println!("{}", format_peer_line(peer, now_secs()));
                     }
                 }
             }
@@ -1164,5 +1216,58 @@ impl MetaRequester for ReplContext {
         }
         let conn = self.meta_conn().await?;
         request_over(conn, &req).await
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use iroh_base::SecretKey;
+
+    #[test]
+    fn user_entered_file_targets_are_trimmed_before_fileops() {
+        for input in [" report.txt", "report.txt ", "\treport.txt\n"] {
+            assert_eq!(trim_file_name(input), "report.txt");
+        }
+        assert_eq!(trim_file_name("my report.txt"), "my report.txt");
+    }
+
+    fn announcement(name: Option<&str>) -> PeerAnnouncement {
+        PeerAnnouncement {
+            node_id: SecretKey::from_bytes(&[9u8; 32]).public(),
+            name: name.map(ToOwned::to_owned),
+            blob_count: 3,
+            timestamp_secs: 1_700_000_000,
+        }
+    }
+
+    /// `format_peer_line` is the single print helper behind both REPL sites,
+    /// `peers` and `peers_on_node`.
+    #[test]
+    fn test_peer_line_control_character_names_stay_one_row() {
+        for name in ["a\nb", "a\rb", "a\tb", "x\r\nforged\trow", "\n", "\u{0}"] {
+            let row = format_peer_line(&announcement(Some(name)), 1_700_000_060);
+            assert!(!row.contains('\n'), "row must be one line: {row:?}");
+            assert!(!row.contains('\r'), "row must be one line: {row:?}");
+            assert_eq!(row.split('\t').count(), 4, "four fields: {row:?}");
+            assert!(!row.contains(name), "raw name must not reach the row");
+        }
+    }
+
+    #[test]
+    fn test_peer_line_ordinary_names_display_unchanged() {
+        for name in ["my-server", "my server", "naïve-✦", "サーバー"] {
+            let row = format_peer_line(&announcement(Some(name)), 1_700_000_060);
+            assert_eq!(row.split('\t').nth(1), Some(name));
+        }
+    }
+
+    #[test]
+    fn test_peer_line_age_and_missing_name() {
+        let row = format_peer_line(&announcement(None), 1_700_000_060);
+        let fields: Vec<&str> = row.split('\t').collect();
+        assert_eq!(fields[1], "-");
+        assert_eq!(fields[3], "60s ago");
     }
 }

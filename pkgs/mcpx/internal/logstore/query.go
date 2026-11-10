@@ -4,12 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 )
 
 // Record is one indexed line, rehydrated far enough to be rendered by the
@@ -167,7 +167,7 @@ func reverse(rs []Record) {
 }
 
 func scanRecords(rows *sql.Rows) ([]Record, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Record
 	for rows.Next() {
 		var (

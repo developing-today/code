@@ -16,7 +16,15 @@ const encoder = new TextEncoder();
 function decodePem(pem: string): string {
   const trimmed = pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
   if (/^[A-Za-z0-9+/]+=*$/.test(trimmed) && !trimmed.includes("PRIVATE")) {
-    // already base64 of the DER key
+    // Base64 input: either base64 of the DER key, or base64 of PEM text.
+    // A single unwrap distinguishes them: if it decodes to text starting
+    // with a PEM marker, it was base64-of-PEM — strip the markers and use
+    // the body. DER bytes never decode to ASCII "-----BEGIN", so
+    // base64-of-DER passes through byte-identical.
+    const decoded = Buffer.from(trimmed, "base64").toString("utf8");
+    if (decoded.trimStart().startsWith("-----BEGIN")) {
+      return decoded.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
+    }
     return trimmed;
   }
   return trimmed;
@@ -59,10 +67,26 @@ async function importRsaKey(der: Uint8Array): Promise<CryptoKey> {
   }
 }
 
+function parsePositiveDecimalId(raw: string, envName: string): number {
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(`Invalid ${envName} ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${envName} ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  return value;
+}
+
 export async function appJwt(env: Record<string, string | undefined>): Promise<string> {
   const appId = env.GITHUB_APP_ID;
   const rawKey = env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !rawKey) throw new Error("github_app_credentials_missing");
+  // Validate the app id's shape before signing: a mistyped id otherwise
+  // produces a correctly signed JWT that GitHub rejects downstream, and the
+  // failure surfaces as a misleading credentials problem. Same rule as
+  // GITHUB_APP_INSTALL_ID (parseConfiguredInstallId).
+  parsePositiveDecimalId(appId, "GITHUB_APP_ID");
   const b64 = decodePem(rawKey);
   const der = Uint8Array.from(Buffer.from(b64, "base64"));
   const key = await importRsaKey(der);
@@ -80,6 +104,11 @@ export interface GitHubAuth {
 }
 
 const discoveredInstallations = new Map<string, number>();
+
+function parseConfiguredInstallId(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  return parsePositiveDecimalId(raw, "GITHUB_APP_INSTALL_ID");
+}
 
 /**
  * Resolve the installation id for one repo via GET /repos/{repo}/installation
@@ -99,10 +128,15 @@ async function discoverInstallationId(
     headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json", "user-agent": "pm-projector" },
   });
   if (!res.ok) return undefined;
-  const body = (await res.json()) as { id?: number };
-  if (typeof body.id === "number") {
-    discoveredInstallations.set(repo, body.id);
-    return body.id;
+  const body: unknown = await res.json();
+  // A wrong-shape 200 (null, a scalar, an array) carries no installation
+  // id: return undefined like the non-200 case above, so apiTokenFor
+  // falls through to the configured id / plain-token fallbacks instead
+  // of dying on a property access against null (#6954).
+  if (body !== null && typeof body === "object" && typeof (body as { id?: unknown }).id === "number") {
+    const id = (body as { id: number }).id;
+    discoveredInstallations.set(repo, id);
+    return id;
   }
   return undefined;
 }
@@ -114,11 +148,12 @@ export async function apiTokenFor(
   fetchFn: typeof fetch = fetch,
   installationIds?: Record<string, number>,
 ): Promise<GitHubAuth> {
+  const configuredInstallId = parseConfiguredInstallId(env.GITHUB_APP_INSTALL_ID);
   let installId = installationIds?.[repo];
   if (!installId && env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
     installId = await discoverInstallationId(env, repo, fetchFn);
   }
-  if (!installId && env.GITHUB_APP_INSTALL_ID) installId = Number(env.GITHUB_APP_INSTALL_ID);
+  if (!installId) installId = configuredInstallId;
   if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && installId) {
     const jwt = await appJwt(env);
     const res = await fetchFn(`https://api.github.com/app/installations/${installId}/access_tokens`, {
@@ -126,8 +161,18 @@ export async function apiTokenFor(
       headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json" },
     });
     if (!res.ok) throw new Error(`installation_token_failed_${res.status}`);
-    const body = (await res.json()) as { token: string };
-    return { kind: "app", token: body.token };
+    const body: unknown = await res.json();
+    // Only a non-empty string token is an app credential: a token-less,
+    // mistyped, or null reply must fail here in the module's vocabulary
+    // instead of returning { token: undefined } as success (every later
+    // call would 401 as "Bearer undefined") or throwing a raw
+    // property-access TypeError on null (#6954).
+    const token =
+      body !== null && typeof body === "object" ? (body as { token?: unknown }).token : undefined;
+    if (typeof token !== "string" || token === "") {
+      throw new Error("installation_token_failed_shape: access_tokens response carried no string token");
+    }
+    return { kind: "app", token };
   }
   if (env.GITHUB_TOKEN) return { kind: "token", token: env.GITHUB_TOKEN };
   throw new Error(`no_github_credentials_for_${repo}`);
@@ -172,8 +217,17 @@ export async function listResource<T>(auth: GitHubAuth, initialPath: string, fet
       },
     });
     if (!res.ok) throw new Error(`github_api_${res.status}`);
-    const page = (await res.json()) as T[];
-    out.push(...page);
+    const page: unknown = await res.json();
+    // List endpoints return arrays; any other 200 shape is an API
+    // error in disguise. Reject it in the module's vocabulary instead
+    // of a raw spread TypeError (null/object/number) or, worse,
+    // silently spreading a string page into per-character rows (#6954).
+    if (!Array.isArray(page)) {
+      throw new Error(
+        `github_api_unexpected_shape: ${url} returned ${page === null ? "null" : typeof page}, expected an array`,
+      );
+    }
+    out.push(...(page as T[]));
     path = nextPageFromLink(res.headers.get("link"));
   }
   return out;

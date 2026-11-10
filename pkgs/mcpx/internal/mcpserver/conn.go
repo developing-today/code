@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Conn is one client's connection.
@@ -30,6 +30,14 @@ type Conn struct {
 	// the specification says a server MUST NOT infer them from an earlier
 	// request.
 	caps map[string]json.RawMessage
+	// advertised is the server-capabilities map this connection's peer
+	// was actually given, snapshotted when initialize (or
+	// server/discover) answered. The dispatch capability gate (#2436)
+	// reads it for legacy peers: re-evaluating capabilities() at
+	// dispatch time can disagree with what was advertised, because
+	// capabilities() depends on canPush() and push functions are
+	// installed and mutated after advertisement.
+	advertised map[string]any
 	// version is what the initialize handshake settled on. Empty until a
 	// legacy client has shaken hands, and empty forever for a modern one.
 	version string
@@ -129,6 +137,22 @@ func (c *Conn) SetCapabilities(caps map[string]json.RawMessage, version string) 
 	c.mu.Unlock()
 }
 
+// setAdvertised snapshots the server-capabilities map an advertisement
+// answer (initialize / server/discover) gave this connection's peer.
+func (c *Conn) setAdvertised(caps map[string]any) {
+	c.mu.Lock()
+	c.advertised = caps
+	c.mu.Unlock()
+}
+
+// advertisedCaps returns the snapshotted advertised capabilities, or
+// nil when this connection has not been advertised to yet.
+func (c *Conn) advertisedCaps() map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.advertised
+}
+
 // Version is the revision this connection settled on, for a legacy client.
 func (c *Conn) Version() string {
 	c.mu.Lock()
@@ -211,8 +235,8 @@ func (p Peer) DeclaredExtension(name string) bool {
 	if json.Unmarshal(p.Caps["extensions"], &ext) != nil {
 		return false
 	}
-	_, ok := ext[name]
-	return ok
+	raw, ok := ext[name]
+	return ok && declaredValue(raw)
 }
 
 // Declared reports whether the client declared a capability.
@@ -221,20 +245,47 @@ func (p Peer) Declared(name string) bool {
 	return ok
 }
 
+// declaredValue reports whether a raw capability value is a usable
+// declaration: present and not JSON null. A client that serializes an
+// unset capability as null has declared nothing, but Go reads the
+// literal null into a struct as a no-op and stores it in a
+// json.RawMessage as four non-empty bytes, so a bare presence or
+// length check counts it as declared (#2474).
+func declaredValue(raw json.RawMessage) bool {
+	return len(raw) > 0 && strings.TrimSpace(string(raw)) != "null"
+}
+
 // CanElicit reports whether mcpx may send this client an elicitation in the
 // given mode.
 //
 // Three gates, and all three are needed. The revision has to define
 // elicitation at all -- 2025-03-26 does not. The client has to have declared
-// it. And url mode has to be separately declared, because it arrived in
-// 2025-11-25 and a client that knows only form mode receives a request with
-// no `requestedSchema` and no way to render it.
+// it. And each mode has to be separately declared from 2025-11-25, when the
+// declaration gained sub-keys: url mode because it arrived then and a client
+// that knows only form mode receives a request with no `requestedSchema` and
+// no way to render it, and form mode because a client that declared only
+// url never agreed to a form -- {} remains the form-only declaration, and
+// below 2025-11-25 presence of the capability is the form declaration.
 func (p Peer) CanElicit(mode string) bool {
 	if !AtLeast(p.Version, "2025-06-18") || !p.Declared("elicitation") {
 		return false
 	}
+	if !declaredValue(p.Caps["elicitation"]) {
+		return false
+	}
 	if mode != "url" {
-		return true
+		if !AtLeast(p.Version, "2025-11-25") {
+			return true
+		}
+		var e map[string]json.RawMessage
+		if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
+			return false
+		}
+		if raw, ok := e["form"]; ok {
+			return declaredValue(raw)
+		}
+		_, hasURL := e["url"]
+		return !hasURL
 	}
 	if !AtLeast(p.Version, "2025-11-25") {
 		return false
@@ -245,7 +296,7 @@ func (p Peer) CanElicit(mode string) bool {
 	if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
 		return false
 	}
-	return len(e.URL) > 0
+	return declaredValue(e.URL)
 }
 
 // CanSample reports whether mcpx may ask this client for a model completion.
@@ -266,9 +317,9 @@ func (p Peer) samplingSub(name string) bool {
 	}
 	switch name {
 	case "tools":
-		return len(s.Tools) > 0
+		return declaredValue(s.Tools)
 	case "context":
-		return len(s.Context) > 0
+		return declaredValue(s.Context)
 	}
 	return false
 }
@@ -293,6 +344,55 @@ func (q Question) carriesSamplingTools() bool {
 	_, tools := m["tools"]
 	_, choice := m["toolChoice"]
 	return tools || choice
+}
+
+// carriesMultiSelect reports whether an elicitation question's
+// requestedSchema carries a multi-select property: type:array with an
+// items.enum (untitled) or items.anyOf (titled). Presence is what
+// matters, following carriesSamplingTools: the shape is what a
+// pre-2025-11-25 host cannot be sent, whatever the values are (#2078).
+func (q Question) carriesMultiSelect() bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(q.Params, &m) != nil {
+		return false
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(m["requestedSchema"], &schema) != nil {
+		return false
+	}
+	for _, raw := range schema.Properties {
+		var prop map[string]json.RawMessage
+		if json.Unmarshal(raw, &prop) != nil {
+			continue
+		}
+		var typ string
+		var types []string
+		array := json.Unmarshal(prop["type"], &typ) == nil && typ == "array"
+		if !array && json.Unmarshal(prop["type"], &types) == nil {
+			for _, t := range types {
+				if t == "array" {
+					array = true
+					break
+				}
+			}
+		}
+		if !array {
+			continue
+		}
+		var items map[string]json.RawMessage
+		if json.Unmarshal(prop["items"], &items) != nil {
+			continue
+		}
+		if _, ok := items["enum"]; ok {
+			return true
+		}
+		if _, ok := items["anyOf"]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // AnswersInline reports whether this client can answer a question raised
@@ -378,13 +478,6 @@ func (c *Conn) deliver(id int64, result json.RawMessage, rerr *rpcError) bool {
 	}
 	ch <- &clientReply{Result: result, Error: rerr}
 	return true
-}
-
-// isReply reports whether a frame is a response rather than a request: an id
-// and no method. The client's own recvLoop had this bug in reverse, and it
-// cost a release of silent elicitation failures.
-func isReply(req request) bool {
-	return len(req.ID) > 0 && req.Method == ""
 }
 
 // replyOf reads the result or error from a response frame.
@@ -492,18 +585,86 @@ type Question struct {
 func (q Question) Sendable(p Peer) bool {
 	switch q.Method {
 	case "elicitation/create":
-		return p.CanElicit(q.Mode)
+		// A multi-select question goes only to a 2025-11-25-or-later
+		// host. It is refused whole for an older host, never flattened
+		// or downgraded: flattening would change the answer's type
+		// (string[] to string) and the upstream would reject the
+		// elicited answer. Unsendable questions stay with the broker
+		// via sendableTo (#2078).
+		return p.CanElicit(q.Mode) && (!q.carriesMultiSelect() || AtLeast(p.Version, "2025-11-25"))
 	case "sampling/createMessage":
 		// A tools-carrying question goes only to a client that declared
 		// sampling.tools. It is refused whole, never stripped and
 		// degraded: the upstream asked for a tool loop, and a plain
 		// completion is not the answer to that question. Unsendable
 		// questions stay with the broker via sendableTo.
-		return p.CanSample() && !(q.carriesSamplingTools() && !p.CanSampleTools())
+		return p.CanSample() && (!q.carriesSamplingTools() || p.CanSampleTools())
 	case "roots/list":
 		return p.Declared("roots")
 	}
 	return false
+}
+
+// downgradeEnumSchemaForOldHost rewrites a requestedSchema in place
+// into the shapes a pre-2025-11-25 host's schema defines (#2078,
+// register ELI-04/ELI-05):
+//
+//   - a titled single-select property (oneOf of {const, title}) becomes
+//     {type: string, enum: [const...], enumNames: [title...]} -- the
+//     legacy titled shape the old host already understands. The host's
+//     answer is the const string, the value in both eras, so no answer
+//     back-mapping is needed. Untitled single-select (enum) and legacy
+//     titled (enum+enumNames) properties are already old shapes and
+//     pass through unchanged.
+//   - the default key is stripped from every non-boolean property:
+//     2025-06-18 allows default only on a boolean schema (ELI-05), so a
+//     2025-11-25 string/enum/number default is a field a strict old
+//     host rejects the whole request over. Boolean defaults stay.
+func downgradeEnumSchemaForOldHost(schema map[string]any) {
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, raw := range props {
+		prop, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		downgradeTitledSingleSelect(prop)
+		if prop["type"] != "boolean" {
+			delete(prop, "default")
+		}
+	}
+}
+
+// downgradeTitledSingleSelect rewrites one property's titled
+// single-select oneOf into enum+enumNames. A oneOf whose entries are
+// not all {const: string, title: string} is not that shape and is left
+// exactly as the upstream sent it.
+func downgradeTitledSingleSelect(prop map[string]any) {
+	arr, ok := prop["oneOf"].([]any)
+	if !ok || len(arr) == 0 {
+		return
+	}
+	enums := make([]any, 0, len(arr))
+	names := make([]any, 0, len(arr))
+	for _, e := range arr {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			return
+		}
+		c, cok := entry["const"].(string)
+		title, tok := entry["title"].(string)
+		if !cok || !tok {
+			return
+		}
+		enums = append(enums, c)
+		names = append(names, title)
+	}
+	delete(prop, "oneOf")
+	prop["type"] = "string"
+	prop["enum"] = enums
+	prop["enumNames"] = names
 }
 
 // paramsFor renders a question into the shape the client's revision defines.
@@ -534,6 +695,9 @@ func (q Question) paramsFor(p Peer) (json.RawMessage, error) {
 			// refused it.
 			delete(m, "mode")
 			delete(m, "elicitationId")
+			if schema, ok := m["requestedSchema"].(map[string]any); ok {
+				downgradeEnumSchemaForOldHost(schema)
+			}
 		case p.Modern:
 			// 2026-07-28 dropped elicitationId along with the
 			// notifications/elicitation/complete it correlated: a url

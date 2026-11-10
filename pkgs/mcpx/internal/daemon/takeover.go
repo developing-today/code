@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // A takeover moves the running daemon's listening sockets and its stdio
@@ -218,7 +218,7 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	if hc, ok := conn.(*handoffConn); ok {
 		conn = hc.Conn
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	uc, ok := conn.(*net.UnixConn)
 	if !ok || rw.Reader.Buffered() > 0 {
 		return
@@ -260,13 +260,13 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	}
 	tcpDup, err := tl.file()
 	if err != nil {
-		unixDup.Close()
+		_ = unixDup.Close()
 		return err
 	}
 	// The successor holds its own copies once it has them, and the duplicates
 	// are only needed here for putting the listeners back.
-	defer unixDup.Close()
-	defer tcpDup.Close()
+	defer func() { _ = unixDup.Close() }()
+	defer func() { _ = tcpDup.Close() }()
 
 	if err := exchange(c, kindListener, takeoverListener{Network: "unix"}, unixDup); err != nil {
 		return err
@@ -312,6 +312,14 @@ func (s *Server) handOver(c *net.UnixConn) error {
 		_ = restore(ho)
 		return err
 	}
+	// The tsnet node is in-process state: no descriptor passes it to
+	// the successor. Close it here — after the connections are drained
+	// — so the tailnet identity is free for the successor to claim in
+	// its commit, which recreates the listener from the same settings
+	// and state directory. A handover that does not commit restores it
+	// (restoreHTTP), so this is not the point of no return it looks
+	// like.
+	s.closeTSNetNode()
 	if err := send(c, kindEnd, nil, nil); err != nil {
 		_ = restore(ho)
 		return err
@@ -354,6 +362,17 @@ func (s *Server) passConns(ul, tl *connListener, grace time.Duration) ([]*handof
 	s.conns.setHandingOver(true)
 	ul.stop()
 	tl.stop()
+	// The tailnet listener stops accepting here too, before the sweep
+	// below and long before Registry.Detach: a tailnet connection
+	// accepted after the sweep would be gathered by nobody, then reach
+	// a pool Detach has already closed — or be cut by the node shutdown
+	// in closeTSNetNode instead of drained. Stopping the tracked
+	// wrapper closes only its inner listener; the node stays this
+	// process's until closeTSNetNode, and restoreHTTP listens on the
+	// same node again if the handover does not commit.
+	if cl, ok := s.tsnetLn.(*connListener); ok && cl != nil {
+		cl.stop()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	tick := time.NewTicker(defaults.TakeoverPoll)
@@ -400,7 +419,19 @@ func (s *Server) sendConns(c *net.UnixConn, passing []*handoffConn) error {
 	for _, hc := range passing {
 		f, err := hc.file()
 		if err != nil {
-			return err
+			// A connection with no descriptor — a tsnet gonet
+			// connection, which lives in userspace netstack rather
+			// than in a kernel socket — cannot be passed. Draining
+			// it (closing, so its client reconnects to the
+			// successor) is the honest substitute; failing the
+			// whole takeover because a tailnet client happened to
+			// hold an idle keep-alive is not.
+			s.logger.Printf("takeover: closing a connection that cannot be passed: %v", err)
+			// release, not Close: a frozen connection's Close is a
+			// no-op by design (the handover owns it), and this one
+			// is being given up, not handed on.
+			hc.release()
+			continue
 		}
 		err = exchange(c, kindConn, nil, f)
 		closeFile(f)
@@ -416,6 +447,32 @@ func (s *Server) sendConns(c *net.UnixConn, passing []*handoffConn) error {
 func (s *Server) releasePassed(passing []*handoffConn) {
 	for _, hc := range passing {
 		hc.release()
+	}
+}
+
+// closeTSNetNode shuts the daemon's tsnet node down during a handover,
+// releasing the tailnet identity for the successor. s.tsnetLn is
+// cleared, which is how restoreHTTP knows the route has to be
+// recreated if the handover does not commit.
+func (s *Server) closeTSNetNode() {
+	cl, ok := s.tsnetLn.(*connListener)
+	if !ok || cl == nil {
+		return
+	}
+	tl, ok := cl.inner.(*tsnetListener)
+	if !ok {
+		return
+	}
+	s.tsnetLn = nil
+	// Stop the tracked wrapper before closing the node. stop marks the
+	// listener stopped, so the serve loop's blocked Accept converts the
+	// tsnet listener-close error to http.ErrServerClosed instead of
+	// forwarding it to httpErr, where Serve would treat it as fatal and
+	// shut this predecessor down (socket and info file included) while
+	// the successor is still committing.
+	cl.stop()
+	if err := tl.CloseNode(); err != nil {
+		s.logger.Printf("takeover: closing the tsnet node: %v", err)
 	}
 }
 
@@ -442,7 +499,7 @@ func (s *Server) restoreHTTP(unixF, tcpF *os.File, passing []*handoffConn) error
 	tl, err := net.FileListener(tcpF)
 	if err != nil {
 		s.logger.Printf("takeover: restoring the tcp listener: %v", err)
-		ul.Close()
+		_ = ul.Close()
 		s.releasePassed(back)
 		return err
 	}
@@ -456,6 +513,27 @@ func (s *Server) restoreHTTP(unixF, tcpF *os.File, passing []*handoffConn) error
 	}
 	s.unixLn = newConnListener(ul, &s.conns, unixQ)
 	s.tcpLn = newConnListener(tl, &s.conns, tcpQ)
+	if s.tsnetLn == nil {
+		// A handover that got as far as closing the tsnet node must
+		// give the identity route back when it does not commit. The
+		// failure is logged, not fatal: the local routes are already
+		// restored, and a daemon that serves nothing helps no one.
+		if err := s.listenTSNet(); err != nil {
+			s.logger.Printf("takeover: restoring the tsnet listener: %v", err)
+		}
+	} else if cl, ok := s.tsnetLn.(*connListener); ok && cl != nil && cl.isStopped() {
+		// passConns stopped the tailnet listener but the node was
+		// never closed (closeTSNetNode runs only on the commit
+		// path): listen on the same node again instead of joining
+		// a second one.
+		if tl, ok := cl.inner.(*tsnetListener); ok {
+			if ln, err := tl.node.Listen(); err != nil {
+				s.logger.Printf("takeover: restoring the tsnet listener: %v", err)
+			} else {
+				s.tsnetLn = newConnListener(ln, &s.conns, nil)
+			}
+		}
+	}
 	s.startHTTP()
 	return nil
 }
@@ -497,7 +575,27 @@ func (in *takeoverIn) close() {
 // It returns once the predecessor has committed and the HTTP listeners are
 // serving. Until then the predecessor is unchanged, and a failure leaves it
 // running while this process reports the reason.
+// takeoverRequest renders the raw HTTP takeover request the successor
+// writes to the predecessor's socket. #1975: with bearer auth on, the
+// predecessor's gate protects /v1/takeover too, so the successor must
+// present the configured token or the handover is refused 401. Unset,
+// the request is byte-for-byte what it always was.
+func takeoverRequest(tok string) string {
+	req := "POST " + takeoverRoute + " HTTP/1.1\r\nHost: mcpx\r\nContent-Length: 0\r\n"
+	if tok != "" {
+		req += "Authorization: Bearer " + tok + "\r\n"
+	}
+	return req + "\r\n"
+}
+
 func (s *Server) TakeOver() (*Handover, error) {
+	// Takeover is a bind-side lifecycle too (#1886, Codex on PR
+	// #2561): a successor started with MCPX_SOCKET takes over the
+	// daemon listening on that socket, not the computed default.
+	// Resolve the bind socket first and retain it in s.paths, so the
+	// dial, and publication and cleanup after the handover, all name
+	// the socket actually served.
+	s.paths.Socket = s.paths.BindSocket()
 	timeout := s.set.Duration("daemon.takeoverTimeout")
 	conn, err := net.DialTimeout("unix", s.paths.Socket, timeout)
 	if err != nil {
@@ -505,11 +603,11 @@ func (s *Server) TakeOver() (*Handover, error) {
 	}
 	uc := conn.(*net.UnixConn)
 	fail := func(err error) (*Handover, error) {
-		uc.Close()
+		_ = uc.Close()
 		return nil, err
 	}
 	_ = uc.SetDeadline(time.Now().Add(timeout))
-	if _, err := io.WriteString(uc, "POST "+takeoverRoute+" HTTP/1.1\r\nHost: mcpx\r\nContent-Length: 0\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(uc, takeoverRequest(BearerToken(s.set))); err != nil {
 		return fail(err)
 	}
 	// The predecessor sends nothing after its headers until it has our hello,
@@ -519,7 +617,7 @@ func (s *Server) TakeOver() (*Handover, error) {
 	if err != nil {
 		return fail(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != takeoverMediaType {
 		return fail(fmt.Errorf("daemon refused takeover: %s", resp.Status))
 	}
@@ -605,7 +703,7 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	fail := func(err error) (*Handover, error) {
 		in.close()
 		_ = sendFrame(uc, takeoverFrame{Kind: kindNack, Error: err.Error()}, nil)
-		uc.Close()
+		_ = uc.Close()
 		return nil, err
 	}
 	if in.state == nil || in.state.Endpoint == "" {
@@ -626,27 +724,39 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	closeFile(tcpF)
 	delete(in.listeners, "tcp")
 	if err != nil {
-		ul.Close()
+		_ = ul.Close()
 		return fail(err)
 	}
 	if err := attachPipes(in); err != nil {
-		ul.Close()
-		tl.Close()
+		_ = ul.Close()
+		_ = tl.Close()
 		return fail(err)
 	}
 	ad, err := s.reg.Adopt(in.pools)
 	if err != nil {
 		closePipes(in.pools)
-		ul.Close()
-		tl.Close()
+		_ = ul.Close()
+		_ = tl.Close()
 		return fail(err)
+	}
+	// The predecessor closed its tsnet node before kindEnd (see
+	// handOver): recreate the identity listener from this daemon's own
+	// settings before committing, so a successor that cannot restore
+	// the tailnet route refuses the takeover and the predecessor keeps
+	// serving — a committed successor silently missing the route the
+	// daemon was configured for is the failure this prevents.
+	if err := s.listenTSNet(); err != nil {
+		ad.Abort()
+		_ = ul.Close()
+		_ = tl.Close()
+		return fail(fmt.Errorf("takeover: restoring the tsnet listener: %w", err))
 	}
 	if err := sendFrame(uc, takeoverFrame{Kind: kindCommit}, nil); err != nil {
 		ad.Abort()
-		ul.Close()
-		tl.Close()
+		_ = ul.Close()
+		_ = tl.Close()
 		in.close()
-		uc.Close()
+		_ = uc.Close()
 		return nil, err
 	}
 	_ = uc.SetDeadline(time.Time{})

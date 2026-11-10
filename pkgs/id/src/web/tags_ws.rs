@@ -37,6 +37,7 @@
 //! - otherwise — delete the exact `(subject, key, value)` tag (a request with
 //!   no value deletes the value-less key-only tag)
 
+use crate::frames::MAX_FRAME_BYTES;
 use axum::{
     Json,
     extract::{Query, State, WebSocketUpgrade, ws::Message},
@@ -205,7 +206,8 @@ pub async fn ws_tags_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_tags_socket(socket, state))
+    ws.max_message_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| handle_tags_socket(socket, state))
 }
 
 /// Handle a tag WebSocket connection.
@@ -218,7 +220,7 @@ async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppStat
     let mut rx = state.tag_store.subscribe();
 
     // Spawn a task to drain inbound messages (keeps the socket alive).
-    let drain_handle = tokio::spawn(async move {
+    let mut drain_handle = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             // Respond to pings, ignore everything else.
             if let Message::Close(_) = msg {
@@ -227,9 +229,16 @@ async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppStat
         }
     });
 
-    // Forward broadcast events to the WebSocket.
+    // Forward broadcast events to the WebSocket. The loop also ends
+    // when the inbound side finishes (a disconnect, a close frame, or
+    // a protocol error such as an oversized message): nobody is
+    // reading any more, so the socket must close instead of lingering.
     loop {
-        match rx.recv().await {
+        let received = tokio::select! {
+            received = rx.recv() => received,
+            _ = &mut drain_handle => break,
+        };
+        match received {
             Ok(event) => {
                 let json = match serde_json::to_string(&event) {
                     Ok(j) => j,
@@ -277,6 +286,14 @@ pub async fn get_tags_handler(
         query.key.as_deref(),
         query.value.as_deref(),
     ) {
+        // value without key is not a value search — refuse rather than
+        // silently dropping the filter (see /api/tags/search for `:value`).
+        (Some(_), None, Some(_)) | (None, None, Some(_)) => {
+            return bad_ns(
+                "value filter requires the `key` query parameter (use /api/tags/search?q=:value for a value-only search)".to_owned(),
+            )
+            .into_response();
+        }
         // Subject + key + value → exact lookup
         (Some(subject), Some(key), value) => tag_store
             .get_by_key(ns, subject.as_bytes(), key.as_bytes())
@@ -445,6 +462,10 @@ pub async fn search_tags_handler(
         Err(message) => return bad_ns(message).into_response(),
     };
 
+    if let Err(e) = crate::tags::parse_search_query(&query.q) {
+        return bad_ns(format!("invalid search query: {e}")).into_response();
+    }
+
     match tag_store.search_by_query(ns, &query.q).await {
         Ok(tags) => {
             let response: Vec<TagResponse> = tags.into_iter().map(to_response).collect();
@@ -462,5 +483,223 @@ pub async fn search_tags_handler(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use futures::{SinkExt as _, StreamExt as _};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+    use std::{net::SocketAddr, time::Duration};
+    use tokio_tungstenite::tungstenite::Message as ClientMessage;
+    use tower::ServiceExt as _;
+
+    use super::*;
+    use crate::frames::MAX_FRAME_BYTES;
+    use crate::tags::TagStore;
+    use crate::web::AppState;
+
+    async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "tags-ws-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        // Seed: a.md has label=rust + label=go, b.md has label=rust.
+        tags.set_tag(&tags.global, b"a.md", b"label", Some(b"rust"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"a.md", b"label", Some(b"go"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"b.md", b"label", Some(b"rust"), b"")
+            .await
+            .unwrap();
+        let state = AppState::new(
+            store,
+            None,
+            "tags-ws-test".to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        (
+            super::super::routes::create_router(
+                state,
+                super::super::security::WebSecurity::default(),
+            ),
+            dir,
+            endpoint,
+            docs,
+        )
+    }
+
+    async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json)
+    }
+
+    async fn serve(app: Router) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn value_without_key_is_rejected() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?value=rust").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("key"),
+            "message must name the missing key parameter: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_plus_value_without_key_is_rejected() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?subject=a.md&value=rust").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("key"),
+            "message must name the missing key parameter: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn key_plus_value_still_filters() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?key=label&value=rust").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn subject_key_value_still_filters() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?subject=a.md&key=label&value=rust").await;
+        assert_eq!(status, StatusCode::OK);
+        let tags = body.as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["subject"], "a.md");
+        assert_eq!(tags[0]["value"], "rust");
+    }
+
+    #[tokio::test]
+    async fn subject_only_key_only_and_unfiltered_are_unchanged() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        // Web UI call shape (?subject= at main.ts:909) returns the subject's tags.
+        let (status, body) = get(&app, "/api/tags?subject=a.md").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+
+        let (status, body) = get(&app, "/api/tags?key=label").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+
+        let (status, body) = get(&app, "/api/tags").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn websocket_caps_inbound_messages_and_keeps_tag_events_working() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let address = serve(app.clone()).await;
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws/tags"))
+            .await
+            .unwrap();
+
+        client
+            .send(ClientMessage::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+        let pong = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("timed out waiting for ping response")
+            .expect("WebSocket closed after ping")
+            .expect("WebSocket failed after ping");
+        assert!(matches!(pong, ClientMessage::Pong(payload) if payload == vec![1, 2, 3]));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tags")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"subject":"ws.md","key":"label","value":"rust"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let event = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("timed out waiting for tag event")
+            .expect("WebSocket closed before tag event")
+            .expect("WebSocket failed before tag event");
+        let ClientMessage::Text(event) = event else {
+            panic!("expected tag event text frame, got {event:?}");
+        };
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["type"], "set");
+        assert_eq!(event["subject"], "ws.md");
+        assert_eq!(event["key"], "label");
+        assert_eq!(event["value"], "rust");
+
+        client
+            .send(ClientMessage::Text("x".repeat(MAX_FRAME_BYTES + 1).into()))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("oversized message did not close the WebSocket");
+        assert!(
+            matches!(
+                closed,
+                None | Some(Err(_)) | Some(Ok(ClientMessage::Close(_)))
+            ),
+            "oversized message was not rejected: {closed:?}"
+        );
     }
 }

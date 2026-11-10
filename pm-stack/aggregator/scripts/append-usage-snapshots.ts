@@ -45,20 +45,63 @@ const quotaViewPath =
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
 const registryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const providerUsagePath =
-  process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
+const providerUsagePath = process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 
-async function main(): Promise<void> {
-  const fromProviderUsage = process.argv.includes("--from-provider-usage");
+// Resolve the --by value BEFORE any file is read or written (#3295).
+// A missing, empty, or flag-like value used to flow into every derived
+// record as an empty observedBy, fail isSnapshotRecord for all of them,
+// and exit 0 with nothing appended — a silent loss of the whole run.
+// Now it is a usage error (exit 2) and the outbox stays untouched.
+function resolveObservedBy(defaultName: string): string {
   const byArg = process.argv.indexOf("--by");
+  if (byArg < 0) return defaultName;
+  const value: string | undefined = process.argv[byArg + 1];
+  if (value === undefined || value.trim() === "" || value.startsWith("-")) {
+    console.error(
+      "append-usage-snapshots: --by requires a non-empty name as its value " +
+        `(got ${value === undefined ? "no value" : JSON.stringify(value)}); refusing to run, outbox untouched`,
+    );
+    process.exit(2);
+  }
+  return value;
+}
+
+// Reject unknown arguments BEFORE any file is read or written (#6961).
+// The argv used to be probed token-by-token and everything unrecognized
+// silently dropped: a misspelled --from-provider-usage fell through to
+// the default derivation mode and lost (or replaced) the whole run's
+// records with exit 0, and a typo'd --byy silently discarded the
+// requested observedBy. The token after --by is its value slot: it is
+// consumed here and judged by resolveObservedBy (#3295), never
+// re-interpreted as a flag.
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === "--from-provider-usage") continue;
+    if (arg === "--by") {
+      i++;
+      continue;
+    }
+    console.error(
+      `append-usage-snapshots: unknown argument '${arg}' ` +
+        "(usage: [--from-provider-usage] [--by <name>]); refusing to run, outbox untouched",
+    );
+    process.exit(2);
+  }
+}
+
+async function main(): Promise<void> {
+  rejectUnknownArgs();
+  const fromProviderUsage = process.argv.includes("--from-provider-usage");
   let records: SnapshotRecord[] = [];
   if (fromProviderUsage) {
-    const observedBy = byArg >= 0 ? process.argv[byArg + 1] : "check-usage";
+    const observedBy = resolveObservedBy("check-usage");
     const parsed: unknown = JSON.parse(await readFile(providerUsagePath, "utf8"));
     records = recordsFromProviderUsage(parsed, observedBy);
   } else {
-    const observedBy = byArg >= 0 ? process.argv[byArg + 1] : "stewardship-cycle";
+    const observedBy = resolveObservedBy("stewardship-cycle");
     const doc = await readFile(quotaViewPath, "utf8");
     const registryText = await readFile(registryPath, "utf8").catch(() => "");
     const now = new Date();

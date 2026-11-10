@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // routePattern finds every route the daemon registers.
@@ -18,7 +18,10 @@ import (
 // will not say what has been registered on it and the alternative -- a
 // parallel list of patterns kept by hand -- is exactly the drift this test
 // exists to catch.
-var routePattern = regexp.MustCompile(`mux\.HandleFunc\("([A-Z]+) (/v1[^"]*)"`)
+// Both registration idioms: mux.HandleFunc for the unfunneled past, s.route
+// for the authorisation funnel (every declared operation registers through
+// s.route, which records the permission decision before the handler runs).
+var routePattern = regexp.MustCompile(`(?:mux\.HandleFunc|s\.route\(mux),\s*"([A-Z]+) (/v1[^"]*)"`)
 
 func daemonRoutes(t *testing.T) map[string]string {
 	t.Helper()
@@ -59,9 +62,18 @@ func TestEveryDaemonRouteIsDeclared(t *testing.T) {
 	}
 	var missing []string
 	for route, file := range routes {
-		if !declared[route] {
-			missing = append(missing, route+" (registered in daemon/"+file+")")
+		if declared[route] {
+			continue
 		}
+		// A trailing-slash subtree route is the asset space of the page
+		// route above it: /v1/dashboard/ serves the files beside the
+		// /v1/dashboard page, exists only when that page is served from
+		// a directory, and is not an operation of its own. The parent
+		// route's declaration covers it.
+		if strings.HasSuffix(route, "/") && declared[strings.TrimSuffix(route, "/")] {
+			continue
+		}
+		missing = append(missing, route+" (registered in daemon/"+file+")")
 	}
 	sort.Strings(missing)
 	if len(missing) > 0 {

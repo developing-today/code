@@ -16,7 +16,7 @@ package events
 
 import (
 	"encoding/json"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +52,16 @@ const (
 
 	ServerLog Kind = "server.log"
 	Progress  Kind = "progress"
+
+	// CatalogChanged is published by the daemon's consumer registry when
+	// the catalogue moves. It had no constant and was published as a bare
+	// string, which kept it out of every enumerated list of kinds.
+	CatalogChanged Kind = "catalog.changed"
+
+	// HookFailed is published by the declared-hook runner when a hook
+	// exits non-zero or is cut by its timeout. It is not itself hookable:
+	// a hook subscribed to it could retrigger itself forever.
+	HookFailed Kind = "hook.failed"
 )
 
 // Event is one thing that happened.
@@ -215,7 +225,13 @@ func (b *Bus) SubscribeFrom(f Filter, since uint64, replay bool) (sub *Subscript
 	var replayEvents []Event
 	if replay {
 		h := b.retained()
-		if since > 0 && len(h) > 0 && h[0].Seq > since+1 {
+		// The formula is uniform, position zero included (#1679):
+		// gating it on since > 0 made an explicit since=0 resume
+		// after a trim replay mid-history with no gap signal, while
+		// since=1 in the same state reported the gap. Untrimmed,
+		// h[0].Seq is 1 and 1 > 0+1 is false, so a from-the-start
+		// replay still reports no gap.
+		if len(h) > 0 && h[0].Seq > since+1 {
 			gap = true
 		}
 		for _, e := range h {

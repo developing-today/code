@@ -17,7 +17,7 @@ Hooks invoked under bun with fake `client`/`ctx` against a scratch daemon; not l
 
 | what | state | evidence | issue |
 | --- | --- | --- | --- |
-| `instructions` option (`experimental.chat.system.transform`) | absent | pushes onto `output.parts` (`mcpx-session.ts:745-746`); v1 type is `output: { system: string[] }` (`@opencode-ai/plugin` `index.d.ts:264-268`). `OPTS='{"instructions":true}'` → `system after: {"system":[]}` | #217 |
+| `instructions` option (`experimental.chat.system.transform`) | works | pushes the guidance text onto `output.system` (#1938 fix in `mcpx-session.ts`); v1 type is `output: { system: string[] }` (`@opencode-ai/plugin` `index.d.ts:264-268`). Regression test `plugin/opencode/mcpx/instructions.test.ts` invokes the hook with v1's `{system: []}` shape and asserts the text lands | #1938 |
 | `remember: "permanent"` (`mcpx_daemon_select`, TUI picker) | absent | `putSetting` sends `persist: true` (`mcpx/daemon.ts:665-667`); daemon field is a string (`internal/daemon/routes_settings.go:191`). Tool → "Writing the setting failed"; curl same body → `cannot unmarshal bool into … .persist of type string` | |
 | `until-gone` remembered scope | absent | `Remembered.scope` written (`daemon.ts:1231`), never read; after `stop --all` the file still has `"scope":"until-gone"` — same as `indefinite` | |
 | `toolTiming` ("one `mcpx stats` covers both") | minimal | record has no duration (`mcpx-session.ts:775-781`); `mcpx log` shows `harness.tool … tool=bash`, `mcpx stats calls` → "No tool calls in the log yet." | |

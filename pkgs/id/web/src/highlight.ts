@@ -8,7 +8,10 @@
  * which inserts widget decorations at the start of each logical line.
  *
  * Language detection: filename extension → Shiki language ID, with manual
- * override support via code_block node's `language` attribute.
+ * override support via code_block node's `language` attribute. In rich /
+ * markdown mode the codec stores a fence's info string in the node's
+ * `params` attribute instead (#1479); the extractor resolves that to a
+ * Shiki language per block, falling back to the filename language.
  */
 
 import { createHighlightPlugin, type Parser, withLineNumbers } from "prosemirror-highlight";
@@ -145,7 +148,10 @@ export function detectLanguage(filename: string): string | undefined {
   // A known extension wins over a special-name stem:
   // "makefile.md" is Markdown documentation, not a Makefile.
   const ext = basename.includes(".") ? basename.split(".").pop()?.toLowerCase() : undefined;
-  if (ext && EXT_TO_LANG[ext]) {
+  // Own-key check (#2787): a plain lookup also matches inherited
+  // Object.prototype members, so "notes.constructor" / "notes.__proto__"
+  // returned the Object constructor / prototype object as a "language".
+  if (ext && Object.hasOwn(EXT_TO_LANG, ext)) {
     return EXT_TO_LANG[ext];
   }
 
@@ -156,11 +162,11 @@ export function detectLanguage(filename: string): string | undefined {
     ? basenameLower.slice(0, basenameLower.lastIndexOf("."))
     : basenameLower;
 
-  if (FILENAME_TO_LANG[nameWithoutExt]) {
+  if (Object.hasOwn(FILENAME_TO_LANG, nameWithoutExt)) {
     return FILENAME_TO_LANG[nameWithoutExt];
   }
   // Full basename (e.g., "Dockerfile" with no ext)
-  if (FILENAME_TO_LANG[basenameLower]) {
+  if (Object.hasOwn(FILENAME_TO_LANG, basenameLower)) {
     return FILENAME_TO_LANG[basenameLower];
   }
 
@@ -255,7 +261,7 @@ const loadedLangs = new Set<string>();
  */
 async function getHighlighter(): Promise<ShikiHighlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = (async () => {
+    const pending = (async () => {
       const { createHighlighterCore } = await import("shiki/core");
       const { createJavaScriptRegexEngine } = await import("shiki/engine/javascript");
 
@@ -265,6 +271,13 @@ async function getHighlighter(): Promise<ShikiHighlighter> {
         engine: createJavaScriptRegexEngine(),
       });
     })();
+    highlighterPromise = pending;
+    // Success-only memoization (#3880, contract in #3879): a rejected
+    // creation (e.g. a transient chunk-load failure) must not latch —
+    // clear the memo so the next call retries; success stays cached.
+    void pending.catch(() => {
+      if (highlighterPromise === pending) highlighterPromise = null;
+    });
   }
   return highlighterPromise;
 }
@@ -277,7 +290,10 @@ async function getHighlighter(): Promise<ShikiHighlighter> {
 async function ensureLanguage(highlighter: ShikiHighlighter, lang: string): Promise<void> {
   if (loadedLangs.has(lang)) return;
 
-  const importFn = LANG_IMPORTS[lang];
+  // Own-key check (#2787): `lang` can be an authored code-block language
+  // attribute; a plain lookup returns Object.prototype members for
+  // "constructor"/"__proto__", which were then called as import functions.
+  const importFn = Object.hasOwn(LANG_IMPORTS, lang) ? LANG_IMPORTS[lang] : undefined;
   if (!importFn) {
     // Language not in our static registry — mark as loaded to avoid retries
     loadedLangs.add(lang);
@@ -293,6 +309,64 @@ async function ensureLanguage(highlighter: ShikiHighlighter, lang: string): Prom
     // Grammar failed to load — mark as loaded to avoid repeated attempts
     loadedLangs.add(lang);
   }
+}
+
+/**
+ * Author-spelling aliases for fenced-code info strings that are neither
+ * Shiki language IDs (LANG_IMPORTS keys) nor file extensions in
+ * EXT_TO_LANG.
+ */
+export const INFO_STRING_ALIASES: Record<string, string> = {
+  "c++": "cpp",
+  "c#": "csharp",
+  shell: "bash",
+};
+
+/**
+ * Resolve a fenced code block's info string to a Shiki language ID.
+ *
+ * The language is the info string's first word — trailing attribute
+ * words ("rust ignore") must not break resolution. Author spellings
+ * resolve through the same knowledge filename detection uses: a word
+ * that is already a Shiki ID wins, then the alias table, then the
+ * extension map (rs → rust, py → python, js → javascript, sh → bash,
+ * yml → yaml).
+ *
+ * @returns Shiki language identifier, or undefined if unknown
+ */
+export function languageFromInfoString(info: string | null | undefined): string | undefined {
+  if (!info) return undefined;
+  const word = info.trim().split(/\s+/)[0]?.toLowerCase();
+  if (!word) return undefined;
+  // Own-key checks (#2787): an authored info string like "constructor"
+  // must not resolve through Object.prototype members.
+  if (Object.hasOwn(LANG_IMPORTS, word)) return word;
+  if (Object.hasOwn(INFO_STRING_ALIASES, word)) return INFO_STRING_ALIASES[word];
+  if (Object.hasOwn(EXT_TO_LANG, word)) return EXT_TO_LANG[word];
+  return undefined;
+}
+
+/**
+ * Determine the highlight language for one code_block node (#1479).
+ *
+ * Priority:
+ * 1. The node's `language` attribute (raw mode / manual override)
+ * 2. The node's `params` attribute — the markdown codec stores the
+ *    fence's info string there in rich/markdown mode. Skipped for
+ *    htmlBlock nodes: their `params` is a provenance value ("html"),
+ *    not an authored language.
+ * 3. The filename-detected language (may be undefined)
+ */
+export function resolveCodeBlockLanguage(
+  attrs: { language?: unknown; params?: unknown; htmlBlock?: unknown },
+  detectedLang: string | undefined,
+): string | undefined {
+  if (typeof attrs.language === "string" && attrs.language) return attrs.language;
+  if (!attrs.htmlBlock && typeof attrs.params === "string") {
+    const fromInfo = languageFromInfoString(attrs.params);
+    if (fromInfo) return fromInfo;
+  }
+  return detectedLang;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +387,8 @@ export interface HighlightPluginOptions {
  * Create a ProseMirror plugin for syntax highlighting and line numbers.
  *
  * The plugin:
- * 1. Detects language from filename or code_block `language` attribute
+ * 1. Detects language per code_block: `language` attr, then the codec's
+ *    `params` info string (rich/markdown mode), then the filename
  * 2. Lazily loads the Shiki grammar for that language
  * 3. Applies inline decorations for syntax tokens
  * 4. Optionally adds widget decorations for line numbers
@@ -372,12 +447,6 @@ export function createSyntaxHighlightPlugin(options: HighlightPluginOptions = {}
   return createHighlightPlugin({
     parser,
     nodeTypes: ["code_block"],
-    languageExtractor: (node) => {
-      // Manual override via node attribute takes priority
-      const nodeLanguage = node.attrs.language as string | undefined;
-      if (nodeLanguage) return nodeLanguage;
-      // Fall back to filename-based detection
-      return detectedLang;
-    },
+    languageExtractor: (node) => resolveCodeBlockLanguage(node.attrs, detectedLang),
   });
 }

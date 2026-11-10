@@ -12,11 +12,13 @@ import { join } from "node:path";
 
 interface HealthBody {
   status: string;
+  version?: string;
   comments?: { pendingMessages: number; pendingGithub: number; total: number };
 }
 
 let proc: Subprocess | undefined;
 let health: HealthBody | undefined;
+let apiBaseUrl = "";
 
 const comment = (over: Record<string, unknown>) => ({
   id: "dc-test-1",
@@ -75,6 +77,7 @@ beforeAll(async () => {
     }),
   );
   const port = 5900 + Math.floor(Math.random() * 800);
+  apiBaseUrl = `http://127.0.0.1:${port}`;
   proc = spawn({
     cmd: ["bun", "run", "src/server.ts"],
     cwd: join(import.meta.dir, ".."),
@@ -82,6 +85,7 @@ beforeAll(async () => {
       ...Bun.env,
       PM_AGG_PORT: String(port),
       PM_AGG_SOURCE: "live",
+      PM_AGG_BUILD_VERSION: "test-build-1150",
       PM_AGG_FEED_FILE: feedFile,
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
       PM_AGG_COMMENTS_FILE: commentsFile,
@@ -100,7 +104,7 @@ beforeAll(async () => {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline && !health) {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const res = await fetch(`${apiBaseUrl}/api/health`);
       if (res.ok) health = (await res.json()) as HealthBody;
     } catch {
       /* not up yet */
@@ -114,9 +118,29 @@ afterAll(() => {
   proc?.kill();
 });
 
+describe("/api/health build version (#1150)", () => {
+  test("the API body carries the deployed build marker from PM_AGG_BUILD_VERSION", () => {
+    expect(health?.version).toBe("test-build-1150");
+  });
+});
+
 describe("/api/health comment counts (#1145)", () => {
   test("the API body carries pending message/github counts from the store", () => {
     expect(health?.status).toBe("ok");
     expect(health?.comments).toEqual({ pendingMessages: 1, pendingGithub: 1, total: 4 });
+  });
+});
+
+describe("JSON request body cap", () => {
+  test("oversized comment POST keeps the existing 400 error response", async () => {
+    const text = `{"body":"${"x".repeat(100_001)}"}`;
+    const res = await fetch(`${apiBaseUrl}/api/comments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: text,
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid comment: body too large" });
   });
 });

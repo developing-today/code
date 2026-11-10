@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 func TestSocketStaysBesideStateWhenShort(t *testing.T) {
@@ -54,7 +54,7 @@ func TestTheFallbackSocketUsesXDGRuntimeDirWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	long := "/tmp/" + strings.Repeat("abcdefghij/", 12) + "state"
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("MCPX_SOCKET", "")
@@ -83,10 +83,25 @@ func TestDistinctStateDirsGetDistinctSockets(t *testing.T) {
 }
 
 func TestExplicitSocketOverrideWins(t *testing.T) {
+	// #1886 step 6: MCPX_SOCKET is read at the connect/bind call sites,
+	// not inside the computed path — so the computed path stays the
+	// computed path (answers about other keys use it), while a client
+	// connecting to its own daemon and a daemon binding both honour
+	// the override.
 	t.Setenv("MCPX_SOCKET", "/tmp/explicit.sock")
 	t.Setenv("MCPX_STATE_DIR", "/tmp/s")
-	if got := daemon.ResolvePaths().Socket; got != "/tmp/explicit.sock" {
-		t.Fatalf("got %q", got)
+	p := daemon.ResolvePaths()
+	if p.Socket == "/tmp/explicit.sock" {
+		t.Fatalf("computed path leaked the override: %q", p.Socket)
+	}
+	if got := p.ClientSocket(); got != "/tmp/explicit.sock" {
+		t.Fatalf("ClientSocket got %q", got)
+	}
+	if got := p.BindSocket(); got != "/tmp/explicit.sock" {
+		t.Fatalf("BindSocket got %q", got)
+	}
+	if got := p.Resolve(); got == "/tmp/explicit.sock" {
+		t.Fatalf("Resolve (other-key answer) leaked the override: %q", got)
 	}
 }
 
@@ -420,4 +435,42 @@ func TestWriteInfoDoesNotMirrorTheEnvDefaultDaemon(t *testing.T) {
 		t.Errorf("custom daemon should still mirror with MCPX_STATE_DIR set, default listing = %+v", got)
 	}
 	cp.RemoveInfo()
+}
+
+// #1866: the info file's two digests have distinct names. The schema-cache
+// digest is "schemaHash"; the daemon key (the /v1/resolve configHash) is
+// "daemonKey". Neither may appear under the old shared "configHash" name.
+func TestInfoFileNamesBothDigests(t *testing.T) {
+	dir := t.TempDir()
+	paths := daemon.Paths{State: dir, Cache: dir, Info: filepath.Join(dir, "daemon-k.json")}
+	want := daemon.Info{
+		PID: 42, Socket: "/tmp/sock", Endpoint: "http://127.0.0.1:1",
+		ConfigPath: "/proj/.mcpx.json",
+		SchemaHash: "schema-digest", DaemonKey: "daemon-key",
+		Version: "test", StartedAt: "2026-10-29T00:00:00Z",
+	}
+	if err := paths.WriteInfo(want); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(paths.Info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["configHash"]; ok {
+		t.Fatalf("info file still carries the ambiguous configHash field: %s", b)
+	}
+	if raw["schemaHash"] != "schema-digest" || raw["daemonKey"] != "daemon-key" {
+		t.Fatalf("info file digests = schemaHash %v, daemonKey %v", raw["schemaHash"], raw["daemonKey"])
+	}
+	got, err := paths.ReadInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SchemaHash != want.SchemaHash || got.DaemonKey != want.DaemonKey {
+		t.Fatalf("round trip = %+v, want schemaHash/daemonKey preserved", got)
+	}
 }

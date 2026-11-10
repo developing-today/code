@@ -1,8 +1,18 @@
 # F11.8 committed benchmark baselines (issue #539, slice 2 / issue #1512)
 # Machine: AMD Ryzen 7 7840U (16 threads), 123 GB RAM, Linux 6.18.55 (NixOS), rustc 1.98.1
 # Taken: 2026-10-28, full-size workloads (not --quick). See BASELINES.md in this directory.
+# guest_replay line re-taken 2026-10-30 on the same machine after the #1403 harness fix:
+# the 2026-10-28 line was restore-only (the guest saw zero events); see the correction
+# note in BASELINES.md. The other three lines remain the 2026-10-28 run.
+# many_worlds measured 2026-11-02 on the same reference machine; p99 misses the 50 ms
+# target. The checkpoint/eviction/reopen integrity assertions passed; see BASELINES.md.
 # Format: the harness's own output lines, one per benchmark; slice 3 diffs medians.
 bench journal_append_fsync unit=us_per_append median=5180.353 min=5128.725 reps=5
 bench checkpoint_compaction unit=us_per_compact median=10971.985 min=10683.191 reps=5
-bench guest_replay unit=us_per_event median=0.146 min=0.142 reps=5
+bench guest_replay unit=us_per_event median=0.170 min=0.145 reps=5
 bench session_fanout unit=us_per_delivery median=1.437 min=1.383 reps=5
+bench many_worlds unit=ms_per_command median=1076.753 min=6.368 reps=1 p50_ms=1076.753 p95_ms=4547.595 p99_ms=5650.792 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=13.132 completed_events_per_second=1523.1 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+# fuel_spin_isolation measured 2026-11-10 on the same reference machine (rustc 1.99.0,
+# Linux 6.18.60); the F12.10 target is NOT met (ratio 2.517 vs target_ratio 1.10) - the
+# recorded gap the #1067 scheduler work must close. See BASELINES.md.
+bench fuel_spin_isolation unit=ms_per_command median=2.084 min=0.428 reps=1 victim_p99_ms_calm=3.159 victim_p99_ms_spinning=7.952 ratio=2.517 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1821 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.116

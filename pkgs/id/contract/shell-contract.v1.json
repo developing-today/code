@@ -1,7 +1,7 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 1,
+  "revision": 5,
   "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. A new frame kind waits for the journal format work (F11.12, #227).",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
@@ -43,7 +43,8 @@
       "opens": "joined",
       "fields": {
         "capability": { "type": "string", "max_bytes": 256 },
-        "after": "u64?"
+        "after": "u64?",
+        "screen_patches": { "type": "bool", "optional": true, "nullable": false }
       }
     },
     "info": {
@@ -80,6 +81,18 @@
       "opens": "query",
       "fields": { "capability": "string", "module_hash": "string" }
     },
+    "download_module_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "module_hash": "string" }
+    },
+    "event_history_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
     "caps": {
       "class": "query",
       "phases": ["opening", "joined"],
@@ -107,6 +120,12 @@
           "enum": ["spectator", "observer", "player", "guest", "delegator", "builder", "moderator"]
         }
       }
+    },
+    "directory": {
+      "class": "query",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {}
     },
     "list_worlds": {
       "class": "admin",
@@ -182,6 +201,24 @@
       "opens": "closed",
       "fields": { "admin_token": "string", "profile": "object" }
     },
+    "set_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string", "at_ms": "u64" }
+    },
+    "cancel_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string" }
+    },
+    "world_state": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string?", "capability": "string?" }
+    },
     "install_begin": {
       "class": "admin",
       "phases": ["opening"],
@@ -190,6 +227,7 @@
         "admin_token": "string",
         "total_bytes": { "type": "u64", "min": 1, "max": 16777216 },
         "module_hash": "string?",
+        "signature": "object?",
         "seed": "u64"
       }
     },
@@ -255,7 +293,14 @@
     },
     "view": {
       "class": "ephemeral",
-      "fields": { "sequence": "u64", "data": "string", "surface": "object?" }
+      "fields": {
+        "sequence": "u64",
+        "data": "string",
+        "surface": "object?",
+        "view_revision": "u64",
+        "base_view_revision": "u64?",
+        "patch": "object?"
+      }
     },
     "program_changed": {
       "class": "reply",
@@ -277,6 +322,20 @@
     "records": {
       "class": "reply",
       "fields": { "sequence": "u64", "records": "object", "next_after": "string?" }
+    },
+    "event_history_begin": {
+      "class": "reply",
+      "fields": {
+        "world_id": "string",
+        "module_hash": "string?",
+        "current_sequence": "u64",
+        "complete": "bool",
+        "event_count": "u64"
+      }
+    },
+    "event_history_event": {
+      "class": "reply",
+      "fields": { "event": "object" }
     },
     "records_ticket": {
       "class": "reply",
@@ -325,6 +384,14 @@
     "execution_profile": {
       "class": "reply",
       "fields": { "update": "object", "message": "string" }
+    },
+    "schedules": {
+      "class": "reply",
+      "fields": { "schedules": "object" }
+    },
+    "world_state": {
+      "class": "reply",
+      "fields": { "seed": "u64?", "schedules": "object" }
     },
     "compiled": {
       "class": "reply",

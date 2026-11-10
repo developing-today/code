@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 )
 
 // Synthesize turns a natural language user prompt into a valid, executable TypeScript script.
@@ -19,7 +19,7 @@ func Synthesize(ctx context.Context, prompt string, cat *diagnose.Catalog, provi
 		toolSlice.WriteString("Available tools in mcpx:\n")
 		for _, t := range cat.Tools {
 			reqStr := strings.Join(t.Shape.Required, ", ")
-			toolSlice.WriteString(fmt.Sprintf("- await tools.%s.%s({ %s })\n", t.Namespace, t.Func, reqStr))
+			fmt.Fprintf(&toolSlice, "- await tools.%s.%s({ %s })\n", t.Namespace, t.Func, reqStr)
 		}
 	}
 

@@ -1,0 +1,532 @@
+#!/usr/bin/env bun
+// produce-charge-candidates (#1057): the Muse-side producer for the
+// usage-hub charges auto-matcher. Writes the period's charge
+// candidates to the state file the daily collector
+// (scripts/collect-fleet-feed.ts) consumes:
+//
+//   charges-candidates.json  { version, generatedAt, period, candidates }
+//
+// Input modes:
+//   - live (default): shells out to the Plaid and Gmail connector CLIs
+//     (PLAID_CLI / GMAIL_CLI) — only possible where those CLIs live
+//     (the Muse sandbox).
+//   - staged (CHARGE_INPUTS_DIR set; the split of #4641): reads the
+//     raw CLI responses a thin sandbox fetcher stages in that
+//     directory — plaid-transactions.json (raw transactions-get
+//     stdout), gmail-triage.json (the two +triage responses, in query
+//     order), gmail-bodies.json (message id -> raw +read stdout) —
+//     with the period taken from charge-inputs-manifest.json. Bodies
+//     the producer needs but staging lacks are requested via
+//     gmail-body-requests.json and land on a later run once the
+//     fetcher stages them. This is how the producer runs on the
+//     laptop, next to the collector, with no sandbox repo copy.
+//
+// Sources:
+//   - Plaid `transactions-get` for the period (all linked
+//     institutions). Purchase-like transactions only: pending rows
+//     and the money-movement categories (Transfer, Payment, Interest,
+//     Bank Fees) are excluded — card payments, balance transfers,
+//     interest and fees are not charges to a merchant. Plaid is the
+//     source of record; the matcher prefers it on a cross-source tie.
+//   - Gmail receipt / card-alert mail for the period, via two
+//     newest-first searches (receipts/invoices, then charged/alert
+//     mail) merged by message id. Amount and merchant are parsed
+//     conservatively from the subject; receipts whose subject
+//     carries no amount get one bounded body read (max 25) before
+//     being skipped. Cancellations/refunds, card-payment
+//     confirmations, promotions, and GitHub notification mail are
+//     excluded by construction. Unparseable mail is counted in the
+//     log line, never guessed at: a card alert that names no
+//     merchant is skipped (the sender is the bank, not the
+//     merchant), because Plaid already covers that charge.
+//
+// Charge evidence only: date, merchant, amount, payment-method
+// label (card brand + mask). No balances, no debt, no account
+// numbers, no account-owner names ever enter the file.
+//
+// Admission (#3161, the charges contract's first rule): a
+// candidate exists only where money demonstrably moved.
+// Declined/failed alerts and amounts merely due are excluded by
+// isNotChargeSubject below, and a candidate's amount is the
+// amount PAID: explicit paid/charged labels outrank a bare total,
+// and a bare total counts only as a standalone label, never as a
+// substring of "Subtotal".
+//
+// Usage: bun run scripts/produce-charge-candidates.ts
+//   [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]
+// Defaults: start = first of the current month, end = today,
+// out = CHARGE_CANDIDATES_PATH or the collector's hidden-files path.
+// In staged mode the period comes from the staged manifest and
+// --start/--end are ignored.
+import { execFile } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { isRealCalendarDate, type ChargeCandidate } from "../src/charges-match.ts";
+
+const run = promisify(execFile);
+const PLAID_CLI = process.env.PLAID_CLI ?? "/opt/hatch/bin/plaid";
+const GMAIL_CLI = process.env.GMAIL_CLI ?? "/opt/hatch/bin/hatch_gws_cli";
+const MAX_GMAIL_BODY_READS = 25;
+const INPUTS_DIR = process.env.CHARGE_INPUTS_DIR;
+
+/** Raw staged CLI response text for one staged inputs file, or
+ * undefined in live mode. Throws in staged mode when the file is
+ * missing — a stale or absent staging must fail visibly, never
+ * silently produce an empty batch. */
+async function stagedText(name: string): Promise<string | undefined> {
+  if (!INPUTS_DIR) return undefined;
+  return readFile(join(INPUTS_DIR, name), "utf8");
+}
+
+/** #4663: the staged manifest period, validated. The manifest period
+ * is a date input like every other in this file, so it is held to the
+ * same isRealCalendarDate standard as the Plaid and Gmail dates, plus
+ * end >= start ordering. Staging that does not describe a real period
+ * is absent staging: throw, so the run fails visibly instead of
+ * writing a period-less candidates file under a success exit. */
+export function stagedManifestPeriod(manifest: { start?: unknown; end?: unknown }): {
+  start: string;
+  end: string;
+} {
+  const { start, end } = manifest;
+  if (
+    typeof start !== "string" ||
+    typeof end !== "string" ||
+    !isRealCalendarDate(start) ||
+    !isRealCalendarDate(end) ||
+    end < start
+  ) {
+    throw new Error(
+      `staged manifest period is not a real calendar window: start=${JSON.stringify(start)} end=${JSON.stringify(end)}`,
+    );
+  }
+  return { start, end };
+}
+
+/** Plaid categories that are money movement, not merchant charges. */
+const EXCLUDED_CATEGORIES = new Set(["Transfer", "Payment", "Interest", "Bank Fees"]);
+
+const USAGE = "usage: bun run scripts/produce-charge-candidates.ts [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]";
+
+// Reject unknown, misspelled, joined, duplicated, or positional
+// arguments BEFORE any connector call, staged-file read, or file
+// write (#7302): argv used to be probed token-by-token only
+// (argValue indexOf, the --skip-gmail includes check in main), so a
+// typo --skip-gmial silently ran the Gmail read the operator meant
+// to skip, and a typo or joined (--start=...) --start silently fell
+// back to the default current-month period. Mirrors rejectUnknownArgs
+// in generate-digest.ts (#7097) / collect-github-billing.ts (#7254).
+// Called at the top of main() rather than at module scope because
+// unit tests import this module pure helpers; main() only runs as
+// the entry point, and its first action is still this check, before
+// any I/O. Value validation itself stays in argValue/main (#3333).
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (token === "--start" || token === "--end" || token === "--out") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      i++; // skip the value; argValue validates it
+      continue;
+    }
+    if (token === "--skip-gmail") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      continue;
+    }
+    console.error("producer: unknown argument " + JSON.stringify(token) + " (" + USAGE + ")");
+    process.exit(2);
+  }
+}
+
+function argValue(flag: string): string | undefined {
+  const i = process.argv.indexOf(flag);
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value.startsWith("--")) {
+    console.error(`producer: ${flag} requires a value${value === undefined ? "" : ` (got ${value})`}`);
+    process.exit(2);
+  }
+  return value;
+}
+
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+interface PlaidAccount {
+  account_id: string;
+  name?: string;
+  mask?: string | null;
+}
+
+interface PlaidTransaction {
+  account_id: string;
+  amount: number;
+  date: string;
+  name?: string;
+  merchant_name?: string | null;
+  pending?: boolean;
+  category?: string[] | null;
+}
+
+/** "Costco Anywhere Visa® Card by Citi" + 9545 -> "Visa •9545". */
+function methodLabel(account: PlaidAccount | undefined): string | undefined {
+  if (!account?.mask) return undefined;
+  const name = account.name ?? "";
+  if (/visa/i.test(name)) return `Visa •${account.mask}`;
+  if (/mastercard/i.test(name)) return `Mastercard •${account.mask}`;
+  if (/amex|american express/i.test(name)) return `Amex •${account.mask}`;
+  if (/discover/i.test(name)) return `Discover •${account.mask}`;
+  return `card •${account.mask}`;
+}
+
+async function plaidCandidates(start: string, end: string): Promise<ChargeCandidate[]> {
+  const stdout =
+    (await stagedText("plaid-transactions.json")) ??
+    (
+      await run(PLAID_CLI, ["transactions-get", "--start-date", start, "--end-date", end], {
+        maxBuffer: 64 * 1024 * 1024,
+      })
+    ).stdout;
+  const wrapper = JSON.parse(stdout) as {
+    ok?: boolean;
+    body?: { accounts?: PlaidAccount[]; transactions?: PlaidTransaction[] };
+  };
+  if (!wrapper.ok || !wrapper.body) throw new Error("plaid transactions-get returned no body");
+  const accounts = new Map((wrapper.body.accounts ?? []).map((a) => [a.account_id, a]));
+  const out: ChargeCandidate[] = [];
+  for (const t of wrapper.body.transactions ?? []) {
+    if (t.pending || !(t.amount > 0)) continue;
+    if (EXCLUDED_CATEGORIES.has(t.category?.[0] ?? "")) continue;
+    const merchant = (t.merchant_name ?? t.name ?? "").trim();
+    if (!merchant || !isRealCalendarDate(t.date)) continue;
+    const method = methodLabel(accounts.get(t.account_id));
+    out.push({ source: "plaid", at: t.date, merchant, amountUsd: t.amount, ...(method ? { method } : {}) });
+  }
+  return out;
+}
+
+interface TriageMessage {
+  id: string;
+  from?: string;
+  subject?: string;
+  message_sent_at?: { user_local?: string };
+  date?: string;
+}
+
+/**
+ * The day a Gmail message counts as a charge on (#2448): the triage
+ * record's local day when present, else the parsed message date.
+ * A missing or garbled date yields "" (the caller's format check then
+ * counts the message as skipped) — never a throw: isoDay on an
+ * invalid Date raises RangeError, and letting that escape here would
+ * discard the whole Gmail candidate batch for one bad message.
+ */
+export function gmailMessageDay(m: Pick<TriageMessage, "message_sent_at" | "date">): string {
+  const local = (m.message_sent_at?.user_local ?? "").slice(0, 10);
+  if (local) return local;
+  const parsed = new Date(m.date ?? "");
+  return Number.isNaN(parsed.getTime()) ? "" : isoDay(parsed);
+}
+
+const AMOUNT_RE = /\$([\d,]+\.\d{2})/;
+
+/** "Oct 25, 2026" / "2026-10-25" as a merchant is a parse failure, not a merchant. */
+function isDateLike(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) || /^[A-Z][a-z]{2,8}\s+\d{1,2},\s*\d{4}$/.test(s);
+}
+
+function cleanMerchant(raw: string | undefined): string | undefined {
+  const m = raw?.trim();
+  return m && !isDateLike(m) ? m : undefined;
+}
+
+function merchantFromSubject(subject: string): string | undefined {
+  // "Your Google Play Order Receipt from Oct 25, 2026": the merchant
+  // leads, the date trails — capture the lead before "receipt from"
+  // can grab the date.
+  return (
+    cleanMerchant(/^your (.+?)(?:\s+order)?\s+(?:receipt|invoice)\b/i.exec(subject)?.[1]) ??
+    cleanMerchant(/(?:receipt|invoice|payment) from ([^#@<>]+?)(?:\s+#|\s*[-–|]\s*|\s*$)/i.exec(subject)?.[1]) ??
+    cleanMerchant(/^your (.+?)(?:\s+api)?\s+(?:receipt|invoice)\b/i.exec(subject)?.[1]) ??
+    cleanMerchant(/(?:payment to|paid to)\s+([^#@<>]+?)\s*$/i.exec(subject)?.[1]) ??
+    cleanMerchant(
+      /\b(?:at|to)\s+([A-Z0-9][A-Za-z0-9 .&'*+-]{1,40}?)(?:\s+on\b|\s+was\b|\s+for\b|\.$|\s*$)/.exec(
+        subject.replace(AMOUNT_RE, " "),
+      )?.[1],
+    )
+  );
+}
+
+/** Subjects that are not charges: money back, money movement, marketing,
+ * failed/declined purchase attempts, and amounts merely due (#3120: a
+ * declined alert parses like a purchase — amount + merchant via the
+ * at/was fallback — and an "amount due" subject is an outstanding
+ * invoice, not money spent). */
+export function isNotChargeSubject(subject: string): boolean {
+  return (
+    /cancellation|refund/i.test(subject) ||
+    /declined|payment failed|purchase failed|transaction failed|unsuccessful|not approved/i.test(subject) ||
+    /last payment|payment received|payment was received|payment has posted|thank you for your payment|thanks for your payment|payment is due|payment reminder|payment coming due|autopay payment|amount due|balance due/i.test(
+      subject,
+    ) ||
+    /% off|coupon|save \d|free .* with .* purchase/i.test(subject)
+  );
+}
+
+/** Body amount for a receipt whose subject carried none. Explicit
+ * paid/charged labels win; a standalone "total" label is next — word-
+ * boundaried, so the "total" inside "Subtotal" can never match it
+ * (#3121: a Subtotal-first body recorded the subtotal as the charge,
+ * and the wrong amount then defeated cross-source dedupe); any $
+ * amount in the body is the last resort. */
+export function amountFromBody(text: string): string | undefined {
+  const explicitPaid = /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(
+    text,
+  )?.[1];
+  if (explicitPaid !== undefined) return explicitPaid;
+
+  // Verb evidence ("You were charged $20.00", "Paid $20.00") is explicit
+  // payment confirmation too — it must win over a trailing due line
+  // (#3120, Codex P2 on PR #3193). Ignore future/negated evidence, but keep
+  // looking: a later, valid charge in the same body still counts.
+  let verbPaid: string | undefined;
+  let rejectedVerbEvidence = false;
+  for (const match of text.matchAll(/\b(?:charged|paid)[:\s]*\$([\d,]+\.\d{2})/gi)) {
+    const verbStart = match.index ?? 0;
+    let clauseStart = -1;
+    for (const boundary of [".", "!", "?", ";", "\n"]) {
+      clauseStart = Math.max(clauseStart, text.lastIndexOf(boundary, verbStart - 1));
+    }
+    const beforeVerb = text.slice(clauseStart + 1, verbStart);
+    const futureOrNegated =
+      /\b(?:will|shall|must|should|would|could|might|may|can)\b(?:[\s,]+(?:not|never|be|been|being|have|has|had|do|does|did|ever|still|also|certainly|probably|possibly|eventually|to)){0,5}\s*$/i.test(
+        beforeVerb,
+      ) ||
+      /\bgoing\s+to(?:\s+be)?\s*$/i.test(beforeVerb) ||
+      /\bto\s+be\s*$/i.test(beforeVerb) ||
+      /\b(?:not|never)\b(?:[\s,]+(?:be|been|being|was|were|is|are|am|has|have|had|do|does|did|get|got|ever|yet|still|actually|really|necessarily|previously|fully|in\s+fact)){0,4}\s*$/i.test(
+        beforeVerb,
+      ) ||
+      /\b[a-z]+n['’]t\b(?:[\s,]+(?:be|been|being|get|got|ever|yet|still|actually|really|possibly|necessarily)){0,3}\s*$/i.test(
+        beforeVerb,
+      );
+    if (futureOrNegated) {
+      rejectedVerbEvidence = true;
+      continue;
+    }
+    verbPaid = match[1];
+    break;
+  }
+
+  const paid = verbPaid ?? /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1];
+  if (paid !== undefined) return paid;
+  // #3120: due language is not payment evidence. An invoice body whose
+  // only amount is an amount/balance DUE (no paid/charged/total label
+  // above) must not fall through to the bare-amount fallback and become
+  // a charge candidate.
+  if (/amount due|balance due|total due|payment due/i.test(text)) return undefined;
+  // Do not let the bare-amount fallback rediscover an amount from a
+  // future/negated verb match that was rejected above.
+  if (rejectedVerbEvidence) return undefined;
+  return AMOUNT_RE.exec(text)?.[1];
+}
+
+async function gmailCandidates(
+  start: string,
+  end: string,
+): Promise<{ candidates: ChargeCandidate[]; skipped: number; bodyRequests: string[] }> {
+  const gmailDate = (d: string) => d.replaceAll("-", "/");
+  const after = gmailDate(start);
+  // before: is exclusive in Gmail search; step one day past the end.
+  const endNext = isoDay(new Date(Date.parse(end) + 86_400_000));
+  // Two searches, merged: receipts/invoices are the SaaS evidence;
+  // charged/alert mail mirrors card charges. "alert" alone is
+  // unusable as a subject term — Google Alert digests match it
+  // dozens of times a day and crowd a newest-first page — and
+  // GitHub notification subjects quote issue titles full of
+  // receipt/invoice words, so both are excluded by construction.
+  const range = `after:${after} before:${gmailDate(endNext)}`;
+  const queries = [
+    `${range} (subject:(receipt OR invoice)) -from:notifications@github.com`,
+    `${range} (subject:("card alert" OR charged OR purchase)) -from:googlealerts-noreply@google.com -from:notifications@github.com`,
+  ];
+  const byId = new Map<string, TriageMessage>();
+  const stagedTriage = await stagedText("gmail-triage.json");
+  const stagedResponses: string[] =
+    stagedTriage === undefined
+      ? []
+      : (JSON.parse(stagedTriage) as unknown[]).map((el) => (typeof el === "string" ? el : JSON.stringify(el)));
+  // Staged mode never falls back to the live CLI (#4660): a staging with
+  // fewer responses than queries is a broken staging, and silently
+  // substituting a live read (or dropping the source) would produce a
+  // partial batch that looks complete. Fail visibly instead.
+  if (INPUTS_DIR && stagedResponses.length !== queries.length) {
+    throw new Error(
+      `staged gmail-triage.json holds ${stagedResponses.length} response(s) for ${queries.length} gmail queries — staging is short; refusing to fall back to the live gmail CLI in staged mode`,
+    );
+  }
+  for (const [i, query] of queries.entries()) {
+    const stdout =
+      stagedResponses[i] ??
+      (
+        await run(GMAIL_CLI, ["gmail", "+triage", "--query", query, "--max", "50", "--format", "json"], {
+          maxBuffer: 16 * 1024 * 1024,
+        })
+      ).stdout;
+    for (const m of (JSON.parse(stdout) as { messages?: TriageMessage[] }).messages ?? []) byId.set(m.id, m);
+  }
+  // Staged gmail bodies (staged mode only): message id -> raw +read
+  // stdout. Bodies the producer still needs are collected in
+  // bodyRequests; the fetcher stages them for a later run.
+  const stagedBodies = new Map<string, string>();
+  if (INPUTS_DIR) {
+    try {
+      const raw = await readFile(join(INPUTS_DIR, "gmail-bodies.json"), "utf8");
+      for (const [id, text] of Object.entries(JSON.parse(raw) as Record<string, string>)) {
+        stagedBodies.set(id, text);
+      }
+    } catch {
+      /* no bodies staged yet */
+    }
+  }
+  const bodyRequests: string[] = [];
+  const candidates: ChargeCandidate[] = [];
+  let skipped = 0;
+  let bodyReads = 0;
+  for (const m of byId.values()) {
+    const subject = m.subject ?? "";
+    if (isNotChargeSubject(subject)) {
+      skipped++;
+      continue;
+    }
+    const at = gmailMessageDay(m);
+    if (!isRealCalendarDate(at)) {
+      skipped++;
+      continue;
+    }
+    let amount = AMOUNT_RE.exec(subject)?.[1];
+    let merchant = merchantFromSubject(subject);
+    if ((!amount || !merchant) && bodyReads < MAX_GMAIL_BODY_READS) {
+      bodyReads++;
+      try {
+        let body: string | undefined;
+        if (INPUTS_DIR) {
+          body = stagedBodies.get(m.id);
+          if (body === undefined) bodyRequests.push(m.id);
+        } else {
+          body = (
+            await run(GMAIL_CLI, ["gmail", "+read", "--id", m.id, "--format", "json"], {
+              maxBuffer: 16 * 1024 * 1024,
+            })
+          ).stdout;
+        }
+        if (body !== undefined) {
+          const text = (JSON.parse(body) as { body_text?: string }).body_text ?? "";
+          amount ??= amountFromBody(text);
+          merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(text)?.[1]);
+        }
+      } catch {
+        /* unreadable body: counted as skipped below */
+      }
+    }
+    if (!amount || !merchant) {
+      skipped++;
+      continue;
+    }
+    candidates.push({ source: "gmail", at, merchant, amountUsd: Number(amount.replaceAll(",", "")) });
+  }
+  return { candidates, skipped, bodyRequests };
+}
+
+async function main(): Promise<void> {
+  rejectUnknownArgs();
+  // Parse values before any connector call or file write. Staged periods
+  // come from their manifest, so --start/--end remain ignored there.
+  const outArg = argValue("--out");
+  const explicitStart = INPUTS_DIR ? undefined : argValue("--start");
+  const explicitEnd = INPUTS_DIR ? undefined : argValue("--end");
+  const now = new Date();
+  let start = explicitStart ?? isoDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+  let end = explicitEnd ?? isoDay(now);
+  if (INPUTS_DIR) {
+    // Staged mode: the fetcher's manifest period governs — the staged
+    // payloads were fetched for exactly that window.
+    const manifest = JSON.parse(await readFile(join(INPUTS_DIR, "charge-inputs-manifest.json"), "utf8")) as {
+      start?: unknown;
+      end?: unknown;
+    };
+    // #4663: validate before any candidate work — a field-less or
+    // otherwise unreal manifest period must fail the run here, not
+    // surface as a written candidates file with period {}.
+    ({ start, end } = stagedManifestPeriod(manifest));
+  } else {
+    if (explicitStart !== undefined && !isRealCalendarDate(explicitStart)) {
+      console.error(`producer: --start value ${JSON.stringify(explicitStart)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (explicitEnd !== undefined && !isRealCalendarDate(explicitEnd)) {
+      console.error(`producer: --end value ${JSON.stringify(explicitEnd)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (end < start) {
+      console.error(`producer: --start ${start} must be on or before --end ${end}`);
+      process.exit(2);
+    }
+  }
+  const outPath =
+    outArg ??
+    process.env.CHARGE_CANDIDATES_PATH ??
+    join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json");
+
+  const plaid = await plaidCandidates(start, end);
+  let gmail: ChargeCandidate[] = [];
+  let gmailSkipped = 0;
+  if (!process.argv.includes("--skip-gmail")) {
+    try {
+      const g = await gmailCandidates(start, end);
+      gmail = g.candidates;
+      gmailSkipped = g.skipped;
+      if (INPUTS_DIR && g.bodyRequests.length > 0) {
+        await writeFile(
+          join(INPUTS_DIR, "gmail-body-requests.json"),
+          JSON.stringify({ ids: g.bodyRequests, at: now.toISOString() }, null, 2),
+        );
+        console.error(
+          `producer: ${g.bodyRequests.length} gmail bodies not yet staged; requested from the fetcher, those candidates land on a later run`,
+        );
+      }
+    } catch (err) {
+      // Staged mode (#4660): any gmail failure means the batch would be
+      // silently partial, so the run fails visibly — non-zero exit, no
+      // candidates file. Live mode keeps the plaid-only fallback.
+      if (INPUTS_DIR) throw err;
+      console.error(
+        `producer: gmail read failed (${err instanceof Error ? err.message : "error"}); plaid candidates only`,
+      );
+    }
+  }
+  const candidates = [...plaid, ...gmail].sort(
+    (a, b) => a.at.localeCompare(b.at) || a.merchant.localeCompare(b.merchant),
+  );
+  await writeFile(
+    outPath,
+    JSON.stringify({ version: 1, generatedAt: now.toISOString(), period: { start, end }, candidates }, null, 2),
+  );
+  console.log(
+    `producer: wrote ${outPath} — ${candidates.length} candidates for ${start}..${end} (plaid ${plaid.length}, gmail ${gmail.length}, gmail skipped ${gmailSkipped})`,
+  );
+}
+
+if (import.meta.main) await main();

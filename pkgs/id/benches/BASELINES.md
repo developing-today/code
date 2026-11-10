@@ -27,7 +27,7 @@ work rather than scheduling.
 ```text
 bench journal_append_fsync unit=us_per_append median=5180.353 min=5128.725 reps=5
 bench checkpoint_compaction unit=us_per_compact median=10971.985 min=10683.191 reps=5
-bench guest_replay unit=us_per_event median=0.146 min=0.142 reps=5
+bench guest_replay unit=us_per_event median=0.170 min=0.145 reps=5
 bench session_fanout unit=us_per_delivery median=1.437 min=1.383 reps=5
 ```
 
@@ -56,7 +56,12 @@ journals; 32 fan-out clients x 100 rounds; 5 reps each) and prints one
 per benchmark. To re-baseline: replace the four `bench` lines in
 `baseline.txt`, update the machine/date header there and the runs
 above, and say why in the commit message (hardware change, deliberate
-performance change, or harness change). `--quick` shrinks every
+performance change, or harness change). A harness change that
+alters a benchmark's `unit=` is a re-baseline event too: until
+`baseline.txt` is updated, `id-bench-compare.sh` reports that
+benchmark as incomparable (unit changed) with no percent and no
+verdict, rather than comparing medians across units (#1619).
+`--quick` shrinks every
 workload to a smoke size — never commit `--quick` numbers as
 baselines.
 
@@ -74,8 +79,8 @@ changed.
 ## CI regression reporting (slice 3, #1513)
 
 The `id bench` workflow (`.github/workflows/id-bench.yml`) runs the
-four benchmarks at full size on PRs touching `pkgs/id/**` and on
-pushes to main, then diffs the medians against `baseline.txt` with
+full-size workloads on pushes to main and on manual dispatch, then diffs
+the medians against `baseline.txt` with
 `.github/scripts/id-bench-compare.sh`. Any benchmark more than 20%
 slower than baseline is named, with its percentage, in the job
 summary and the uploaded `bench-output` artifact.
@@ -88,3 +93,95 @@ step. Remember the caveat above: baselines were taken on the laptop
 above, CI runners are a different machine class — a flag is a prompt
 to investigate (ideally by re-running on the reference machine), not
 proof of a regression.
+
+## Correction — guest_replay baseline (2026-10-30, #1403)
+
+The slice-2 `guest_replay` line above (median=0.146) was measured with a
+harness whose guest saw **zero** events: the journal was built from
+committed _chat_ events, and `WorldCore::restore` applies committed chat
+to core state directly — only committed _input_ (and journal system)
+events are put in `RestoredWorld.replay`. The old number was therefore
+restore-only time divided by N, mislabeled as guest replay.
+
+The harness now builds the journal from committed input events and
+asserts the counting guest saw exactly N events before recording a
+sample; an empty or short replay fails the bench run. The assertion was
+verified against the old workload first: with only the assertion added,
+the chat-based journal fails with `guest replay saw 0 of 200 committed
+events`. `WorldCore::restore` semantics are unchanged — no production
+code was touched.
+
+New line, full-size workload (10,000 events, 5 reps) on the reference
+laptop above, 2026-10-30:
+
+```text
+bench guest_replay unit=us_per_event median=0.170 min=0.145 reps=5
+```
+
+A second full run the same evening agreed on the median exactly
+(median=0.170, min=0.134). The other three baselines are unchanged.
+
+## Many-worlds scale measurement (#557, F11.8 remainder)
+
+The `many_worlds` workload creates 1,000 durable idle worlds plus 100
+simultaneously leased active worlds, then submits 20 accepted counter inputs
+per active world per second for 10 seconds (20,000 commands). It records
+per-command p50/p95/p99 from scheduled submission through acknowledgement. The
+active worlds use the checked-in `roc-counter` guest. After the timed load, one
+extra input per active world triggers its due checkpoint; these trigger inputs
+are excluded from latency percentiles. The benchmark then evicts all 100 active
+worlds, verifies each journal has a recent checkpoint, reopens the worlds
+through `WorldHub`, and asserts the acknowledged sequence and records match.
+`--quick` is a smoke
+configuration only; its output is never a baseline. Per-world event phases are
+staggered within each 50 ms interval to avoid an artificial all-world burst.
+
+Reference measurement (2026-11-02; rustc 1.99.0, cargo 1.99.0; AMD Ryzen 7
+7840U, 16 threads, Linux 6.18.55, NixOS):
+
+```text
+bench many_worlds unit=ms_per_command median=1076.753 min=6.368 reps=1 p50_ms=1076.753 p95_ms=4547.595 p99_ms=5650.792 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=13.132 completed_events_per_second=1523.1 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+The checkpoint/reopen assertions passed for all 100 active worlds: each had a
+checkpoint, was evicted, and reopened with the same sequence and records. The
+latency target did **not** pass: p99 was 5,650.792 ms versus the 50 ms target,
+and end-to-end acknowledgements averaged 1,523.1/s versus the scheduled
+2,000/s. This result is recorded rather than reported as acceptance; #557's
+latency criterion remains open for follow-up. The matching measurement is
+appended to `baseline.txt`; the four existing F11.8 baselines above are
+unchanged.
+
+## Fuel-spin isolation measurement (#1067, F12.10 exit criterion)
+
+The `fuel_spin_isolation` workload measures one victim counter world
+accepting inputs at 100 commands/s in two 3-second phases (300 scheduled
+inputs each): first calm, then while hostile Wasm worlds spin. Each
+hostile world runs a guest whose update loops until its fuel budget
+(20,000,000 per spin) is exhausted and traps; a trapping call poisons
+the instance, so every spin runs in a freshly instantiated world, and
+the harness asserts that every spin ended in fuel exhaustion. Samples
+are deadline-to-acknowledgement latencies, so a late acknowledgement
+stays in the sample. `--quick` is a smoke configuration only (750 ms
+phases, at most 4 spinners); its output is never a baseline - it passed
+on 2026-11-10 with 75/75 samples in both phases and 556 exhausted
+spins.
+
+Reference measurement (2026-11-10; rustc 1.99.0, cargo 1.99.0; AMD
+Ryzen 7 7840U, 16 threads, Linux 6.18.60, NixOS; the laptop was under
+shared fleet load during the run):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=2.084 min=0.428 reps=1 victim_p99_ms_calm=3.159 victim_p99_ms_spinning=7.952 ratio=2.517 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1821 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.116
+```
+
+The F12.10 target did **not** pass: with 15 spinners saturating the
+remaining worker threads, the victim's p99 rose from 3.159 ms calm to
+7.952 ms spinning - a ratio of 2.517 against `target_ratio=1.10`, with
+1,821 fuel-exhausted spins observed during the phase and all 300
+scheduled victim inputs acknowledged in each phase. This records the
+gap the fair-scheduling work in #1067 has to close; the workload
+implements no scheduler, quota, or back-pressure, and this result is
+recorded rather than reported as acceptance. The matching measurement
+is appended to `baseline.txt`; the existing baselines above are
+unchanged.

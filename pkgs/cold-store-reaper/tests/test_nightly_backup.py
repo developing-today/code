@@ -128,6 +128,32 @@ class TestNightlyBackup(unittest.TestCase):
         self.assertNotIn("backup-supabase", self.calls())
         self.assertIn("nightly-backup: all steps ok", result.stdout)
 
+    def test_long_status_output_still_ok_and_truncated(self):
+        # Regression: status printing >20 lines must not trip pipefail/SIGPIPE.
+        # The verdict depends only on cold-store's own exit code; display is
+        # still truncated to ~20 lines.
+        cold = Path(self.env["COLD_STORE_BIN"])
+        cold.write_text(
+            r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STUB_CAPTURE_DIR:?}/cold-store.log"
+case "$1" in
+  status) for i in $(seq 1 300); do echo "stub status line $i"; done ;;
+esac
+if [[ "${STUB_FAIL_STEP:-}" == "$1" ]]; then
+  echo "stub cold-store: forced failure of $1" >&2
+  exit 3
+fi
+exit 0
+"""
+        )
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("step status: ok", result.stdout)
+        self.assertIn("stub status line 1", result.stdout)
+        self.assertIn("stub status line 20", result.stdout)
+        self.assertNotIn("stub status line 21", result.stdout)
+        self.assertNotIn("stub status line 300", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

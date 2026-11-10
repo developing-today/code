@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 // CmdFeedback submits human or automated feedback for an interaction trace.
@@ -74,11 +74,12 @@ func (a *App) CmdFeedback(ctx context.Context, args []string) error {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	c.authorize(httpReq)
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
@@ -138,11 +139,12 @@ func (a *App) CmdInteractions(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		c.authorize(httpReq)
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("interaction not found: %s", string(b))
@@ -202,9 +204,10 @@ func (a *App) CmdInteractions(ctx context.Context, args []string) error {
 	if *target != "" {
 		params.Set("target", *target)
 	}
-	if *hasFeedback == "yes" || *hasFeedback == "true" || *hasFeedback == "1" {
+	switch *hasFeedback {
+	case "yes", "true", "1":
 		params.Set("hasFeedback", "1")
-	} else if *hasFeedback == "no" || *hasFeedback == "false" || *hasFeedback == "0" {
+	case "no", "false", "0":
 		params.Set("hasFeedback", "0")
 	}
 	if *minScore >= 0 {
@@ -229,11 +232,12 @@ func (a *App) CmdInteractions(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	c.authorize(httpReq)
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var list []logstore.InteractionRecord
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {

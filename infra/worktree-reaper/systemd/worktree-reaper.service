@@ -1,0 +1,11 @@
+[Unit]
+Description=worktree-reaper: retire dead fleet worktrees (6-hour quiet rule)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 __WR_DIR__/bin/worktree_reaper.py
+WorkingDirectory=%h
+TimeoutStartSec=6h
+Nice=10

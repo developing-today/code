@@ -25,17 +25,79 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
+import {
+  archiveStoreBytes,
+  quarantineUnreadableStore,
+  quarantineWholeStore,
+  type InvalidStoreRecord,
+  type StoreArchive,
+} from "./store-recovery.ts";
+import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
 
 export interface CommentsFile {
   version: 1;
   comments: DashComment[];
 }
 
-const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
+// Result URLs are rendered as link hrefs on the dashboard (#950):
+// only https://github.com/ result links are storable — a stored
+// javascript:/data: URL would render as a clickable script link.
+const GH_RESULT_URL = /^https:\/\/github\.com\//;
+const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
+
+function commentRecordProblem(value: unknown): string | null {
+  if (!isRecord(value)) return "record must be an object";
+  if (!isNonEmptyString(value.id)) return "id must be a non-empty string";
+  if (!isObjectRef(value.objectRef)) return "objectRef must be a non-empty ref string";
+  if (typeof value.kind !== "string" || !COMMENT_KINDS.has(value.kind as DashCommentKind)) {
+    return "kind must be message, note, or github";
+  }
+  if (parseIsoDate(value.createdAt) === null) return "createdAt must be a valid ISO date/time string";
+  if (!validateAuthor(value.author)) return "author must have a supported kind, id, and label";
+  if (typeof value.body !== "string") return "body must be a string";
+  if (
+    value.kind === "message" &&
+    value.triageState !== undefined &&
+    value.triageState !== "new" &&
+    value.triageState !== "triaged"
+  ) {
+    return "message triageState must be new or triaged";
+  }
+  if (value.kind === "github") {
+    if (value.githubRef !== undefined && !isValidRef(value.githubRef)) {
+      return "githubRef must be owner/repo#N";
+    }
+    if (
+      value.githubState !== undefined &&
+      value.githubState !== "pending" &&
+      value.githubState !== "posted" &&
+      value.githubState !== "failed"
+    ) {
+      return "githubState must be pending, posted, or failed";
+    }
+    if (value.githubState === "pending" && value.githubRef === undefined)
+      return "pending github comments require githubRef";
+  }
+  return null;
+}
 
 export function isObjectRef(s: unknown): s is string {
   return typeof s === "string" && s.length > 0 && s.length <= 300 && !/\s/.test(s);
+}
+
+// Cap the string at max UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7731, mirroring the #7694/#7711 capUnits guard in
+// actions.ts): an astral character straddling the cap is dropped whole.
+// Local copy, like activity.ts (#7725) — actions.ts imports validateAuthor
+// from this module, so importing its capUnits here would create a cycle.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
 }
 
 export function validateAuthor(a: unknown): DashAuthor | null {
@@ -45,9 +107,9 @@ export function validateAuthor(a: unknown): DashAuthor | null {
   if (typeof id !== "string" || id === "" || typeof label !== "string" || label === "") return null;
   return {
     kind,
-    id: id.slice(0, 120),
-    label: label.slice(0, 120),
-    ...(typeof sessionId === "string" && sessionId ? { sessionId: sessionId.slice(0, 120) } : {}),
+    id: capUnits(id, 120),
+    label: capUnits(label, 120),
+    ...(typeof sessionId === "string" && sessionId ? { sessionId: capUnits(sessionId, 120) } : {}),
   };
 }
 
@@ -71,7 +133,7 @@ export function validateNewComment(body: unknown): { ok: true; value: NewComment
   if (!author) return { ok: false, error: "author must be {kind: drew|muse|agent, id, label}" };
   if (typeof b.body !== "string" || b.body.trim() === "") return { ok: false, error: "body must be non-empty text" };
   if (b.kind === "github") {
-    if (typeof b.githubRef !== "string" || !GH_REF.test(b.githubRef)) {
+    if (!isValidRef(b.githubRef)) {
       return { ok: false, error: "kind github requires githubRef as owner/repo#N" };
     }
   }
@@ -81,7 +143,7 @@ export function validateNewComment(body: unknown): { ok: true; value: NewComment
       objectRef: b.objectRef,
       kind: b.kind,
       author,
-      body: b.body.trim().slice(0, 20_000),
+      body: capUnits(b.body.trim(), 20_000),
       ...(b.kind === "github" ? { githubRef: b.githubRef as RefKey } : {}),
     },
   };
@@ -96,11 +158,15 @@ export function newCommentId(now = new Date()): string {
 
 export class CommentsStore {
   private comments: DashComment[] = [];
+  private fileExtras: Record<string, unknown> = {};
   private loadPromise: Promise<void> | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    private readonly archive: StoreArchive = archiveStoreBytes,
+  ) {}
 
   // The load is memoized as a single promise (#1509): the old
   // loaded-flag version let concurrent first callers proceed before
@@ -112,15 +178,87 @@ export class CommentsStore {
   }
 
   private async doLoad(): Promise<void> {
+    // #1452: a missing file is the only silent empty start ("no store
+    // yet"). An unparseable or wrongly-shaped file is NOT an empty
+    // store: it is the append-only audit history, so quarantine the
+    // original bytes to <file>.corrupt-<timestamp>, start empty, and
+    // log loudly — the next persist then writes a fresh valid file and
+    // never touches the quarantined copy.
+    let raw: Buffer;
     try {
-      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
-      if (typeof parsed === "object" && parsed !== null && Array.isArray((parsed as CommentsFile).comments)) {
-        this.comments = (parsed as CommentsFile).comments.filter(
-          (c) => typeof c === "object" && c !== null && typeof (c as DashComment).id === "string",
+      raw = await readFile(this.file);
+    } catch (err) {
+      if ((err as { code?: unknown })?.code === "ENOENT") {
+        this.comments = []; // no store yet — the first write creates it
+        this.fileExtras = {};
+        return;
+      }
+      // #2980: a non-ENOENT read failure (EACCES, a transient I/O error,
+      // a directory in place of the file, ...) is NOT "no store yet":
+      // the on-disk audit history may be intact but unread. Handle it
+      // like the corrupt case below — quarantine the original bytes
+      // before starting empty, and log loudly — so the next persist
+      // cannot silently overwrite history the read never saw.
+      let quarantined: string;
+      try {
+        quarantined = await quarantineUnreadableStore(this.file);
+      } catch (renameErr) {
+        throw new Error(
+          `[comments] refusing to continue because ${this.file} could not be read or quarantined: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`,
+          { cause: err },
         );
       }
-    } catch {
-      this.comments = []; // no store yet — the first write creates it
+      this.comments = [];
+      this.fileExtras = {};
+      console.error(
+        `[comments] WARNING: comments store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+          `quarantined the original to ${quarantined} and started empty. The quarantined item holds the prior audit history — do not delete it.`,
+      );
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw.toString("utf8"));
+    } catch (err) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
+      this.comments = [];
+      this.fileExtras = {};
+      console.error(
+        `[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`,
+      );
+      return;
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.comments)) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
+      this.comments = [];
+      this.fileExtras = {};
+      console.error(
+        `[comments] WARNING: comments store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`,
+      );
+      return;
+    }
+
+    this.fileExtras = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key !== "version" && key !== "comments"),
+    );
+    const valid: DashComment[] = [];
+    const invalid: InvalidStoreRecord[] = [];
+    parsed.comments.forEach((comment, index) => {
+      const reason = commentRecordProblem(comment);
+      if (reason) invalid.push({ index, reason });
+      else valid.push(comment as DashComment);
+    });
+    this.comments = valid;
+    if (invalid.length > 0) {
+      const quarantined = await this.archive(this.file, raw, invalid);
+      console.error(
+        `[comments] WARNING: quarantined ${invalid.length} malformed record(s) from ${this.file}; ` +
+          `original bytes: ${quarantined}; index/reason diagnostics: ${quarantined}.diagnostics.json.`,
+      );
+      // The exact source bytes and diagnostics are durable before this
+      // atomic rewrite removes malformed rows from the active store.
+      await this.persist();
     }
   }
 
@@ -134,7 +272,7 @@ export class CommentsStore {
   // does not poison the chain for later writes.
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
-      const data: CommentsFile = { version: 1, comments: this.comments };
+      const data = { ...this.fileExtras, version: 1 as const, comments: this.comments };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
       await writeFile(tmp, JSON.stringify(data, null, 2));
@@ -185,6 +323,15 @@ export class CommentsStore {
     return comment;
   }
 
+  /** Kind/state-aware counts per object ref, for 💬 badges (#1210):
+   *  badges distinguish notes from actionable comments instead of one
+   *  conflated total. */
+  async countsDetailed(): Promise<Map<string, CommentKindCounts>> {
+    const out = new Map<string, CommentKindCounts>();
+    for (const [ref, list] of await this.byObject()) out.set(ref, commentKindCounts(list));
+    return out;
+  }
+
   /** Pending triage/posting counts (#1145), for the health view. */
   async pendingCounts(): Promise<PendingCommentCounts> {
     return pendingCommentCounts(await this.all());
@@ -208,11 +355,64 @@ export class CommentsStore {
     await this.load();
     const c = this.comments.find((x) => x.id === id);
     if (!c || c.kind !== "github") return null;
+    // A result report carries exactly one outcome (#1686): a url
+    // (posted) or an error (failed). A report with neither — or
+    // both — states no outcome and is refused with the state
+    // unchanged (the endpoint maps the throw to a 400): the old
+    // code mapped any url-less report to failed, so an empty {}
+    // wrote a pending comment off unposted, and flipped a posted
+    // comment back to failed with its githubUrl still set.
+    if (!result.url && !result.error) {
+      throw new Error("github result needs a url or an error");
+    }
+    if (result.url && result.error) {
+      throw new Error("github result cannot carry both a url and an error");
+    }
     if (result.url) {
+      // #950: the stored githubUrl is rendered as a link href, so only
+      // https://github.com/ result URLs are accepted — anything else
+      // (javascript:, data:, http:, other hosts) is refused with the
+      // state unchanged (the endpoint maps the throw to a 400).
+      if (!GH_RESULT_URL.test(result.url)) {
+        throw new Error("github result url must start with https://github.com/");
+      }
+      if (c.githubState === "posted") {
+        // Posted is terminal. A repeat of the same url is an
+        // idempotent no-op; a different url is a conflicting
+        // report — the first posted result stands. The no-op still
+        // persists first: the original report may have flipped the
+        // in-memory state and then failed its write, and
+        // acknowledging success here without flushing would leave
+        // the on-disk comment pending — a restart would post it
+        // again and duplicate the GitHub comment (#1686).
+        if (c.githubUrl === result.url) {
+          await this.persist();
+          return c;
+        }
+        throw new Error("github comment already posted with a different url");
+      }
+      // From pending — or from failed, when a retry actually
+      // landed the comment: failed is not terminal against
+      // success.
       c.githubState = "posted";
       c.githubUrl = result.url;
+      delete c.githubError;
     } else {
+      // An error report never moves a posted comment backwards.
+      if (c.githubState === "posted") {
+        throw new Error("github comment already posted; a later failure cannot un-post it");
+      }
+      if (c.githubState === "failed") {
+        // Repeat failure: idempotent — but persist first, for the
+        // same reason as the posted repeat above (#1686). The stored
+        // last error still refreshes (#1210): "last error" means the
+        // newest report, not the first failure.
+        c.githubError = result.error;
+        await this.persist();
+        return c;
+      }
       c.githubState = "failed";
+      c.githubError = result.error;
     }
     await this.persist();
     return c;
@@ -238,6 +438,68 @@ export function pendingCommentCounts(comments: DashComment[]): PendingCommentCou
     if (c.kind === "github" && c.githubState === "pending") pendingGithub++;
   }
   return { pendingMessages, pendingGithub, total: comments.length };
+}
+
+/** Whether a comment still waits on a loop (#1210): a message
+ *  awaiting triage, or a github comment pending or failed to post.
+ *  Notes and terminal states (triaged / posted) are never queued. */
+export function isQueuedComment(c: DashComment): boolean {
+  if (c.kind === "message") return c.triageState === "new";
+  if (c.kind === "github") return c.githubState === "pending" || c.githubState === "failed";
+  return false;
+}
+
+/** The comments queue (#1210): every queued comment, oldest first. */
+export function queuedComments(comments: DashComment[]): DashComment[] {
+  return comments.filter(isQueuedComment).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** Kind/state-aware counts over a comment list (#1210). */
+export interface CommentKindCounts {
+  total: number;
+  notes: number;
+  messages: number;
+  messagesNew: number;
+  github: number;
+  githubPending: number;
+  githubFailed: number;
+  /** Messages awaiting triage + github comments pending/failed. */
+  actionable: number;
+}
+
+export function commentKindCounts(comments: DashComment[]): CommentKindCounts {
+  const out: CommentKindCounts = {
+    total: 0,
+    notes: 0,
+    messages: 0,
+    messagesNew: 0,
+    github: 0,
+    githubPending: 0,
+    githubFailed: 0,
+    actionable: 0,
+  };
+  for (const c of comments) {
+    out.total++;
+    if (c.kind === "note") {
+      out.notes++;
+    } else if (c.kind === "message") {
+      out.messages++;
+      if (c.triageState === "new") {
+        out.messagesNew++;
+        out.actionable++;
+      }
+    } else if (c.kind === "github") {
+      out.github++;
+      if (c.githubState === "pending") {
+        out.githubPending++;
+        out.actionable++;
+      } else if (c.githubState === "failed") {
+        out.githubFailed++;
+        out.actionable++;
+      }
+    }
+  }
+  return out;
 }
 
 /** The URL a posted GitHub comment lives at, for rendering. */

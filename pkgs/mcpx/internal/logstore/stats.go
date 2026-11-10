@@ -58,7 +58,7 @@ func (s *Store) Calls(q Query) ([]CallStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type key struct{ server, tool string }
 	durations := map[key][]float64{}
@@ -108,7 +108,10 @@ func (s *Store) Calls(q Query) ([]CallStat, error) {
 		if out[i].TotalMs != out[j].TotalMs {
 			return out[i].TotalMs > out[j].TotalMs
 		}
-		return out[i].Server+out[i].Tool < out[j].Server+out[j].Tool
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].Tool < out[j].Tool
 	})
 	return out, nil
 }
@@ -146,7 +149,7 @@ func (s *Store) Servers(q Query) ([]ServerStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	stats := map[string]*ServerStat{}
 	ready := map[string][]float64{}
@@ -239,7 +242,7 @@ func (s *Store) Instances(q Query) ([]InstanceStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	byID := map[string]*InstanceStat{}
 	var order []string
@@ -319,7 +322,7 @@ func (s *Store) Errors(q Query) ([]ErrorStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ErrorStat
 	for rows.Next() {
 		var e ErrorStat
@@ -371,7 +374,7 @@ func (s *Store) Sessions(q Query) ([]SessionStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SessionStat
 	for rows.Next() {
 		var st SessionStat
@@ -423,7 +426,7 @@ func (s *Store) Volume(q Query) ([]VolumeBucket, []FileStat, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var buckets []VolumeBucket
 	index := map[string]int{}
 	for rows.Next() {
@@ -458,7 +461,7 @@ func (s *Store) Volume(q Query) ([]VolumeBucket, []FileStat, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer frows.Close()
+	defer func() { _ = frows.Close() }()
 	var files []FileStat
 	for frows.Next() {
 		var f FileStat
@@ -502,7 +505,7 @@ func (s *Store) Slowest(q Query, n int) ([]SlowCall, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SlowCall
 	for rows.Next() {
 		var c SlowCall
@@ -536,6 +539,9 @@ type ToolCorrelation struct {
 }
 
 // Correlations finds tools that are commonly used together in sessions.
+// Count is the number of distinct sessions in which both tools were
+// called -- not the number of record pairs -- because the dashboard
+// renders it as a session count (#1695).
 func (s *Store) Correlations(q Query, maxRows int) ([]ToolCorrelation, error) {
 	n := maxRows
 	if n <= 0 {
@@ -545,20 +551,29 @@ func (s *Store) Correlations(q Query, maxRows int) ([]ToolCorrelation, error) {
 	if err != nil {
 		return nil, err
 	}
-	whereClause := " WHERE a.event = 'mcp.call' AND b.event = 'mcp.call' AND ifnull(a.session,'') != '' AND ifnull(a.tool,'') != '' AND ifnull(b.tool,'') != '' AND a.tool < b.tool "
+	// The where conditions name unqualified columns, which are ambiguous
+	// between the two sides of a self-join (#1695). Apply them inside a
+	// filtered subquery per side instead: each subquery is single-table,
+	// so the conditions stay valid verbatim, and the bound args repeat in
+	// step (side a first, then side b).
+	side := "SELECT * FROM records WHERE event = 'mcp.call'"
 	if where != "" {
-		whereClause += " AND " + strings.TrimPrefix(where, " WHERE ")
+		side += " AND " + strings.TrimPrefix(where, " WHERE ")
 	}
-	rows, err := s.db.Query(`SELECT a.tool, b.tool, count(*) AS cnt
-		FROM records a
-		JOIN records b ON a.session = b.session
-		`+whereClause+`
+	allArgs := make([]any, 0, 2*len(args)+1)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, n)
+	rows, err := s.db.Query(`SELECT a.tool, b.tool, count(DISTINCT a.session) AS cnt
+		FROM (`+side+`) a
+		JOIN (`+side+`) b ON a.session = b.session
+		WHERE ifnull(a.session,'') != '' AND ifnull(a.tool,'') != '' AND ifnull(b.tool,'') != '' AND a.tool < b.tool
 		GROUP BY a.tool, b.tool
-		ORDER BY cnt DESC LIMIT ?`, append(args, n)...)
+		ORDER BY cnt DESC LIMIT ?`, allArgs...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ToolCorrelation
 	for rows.Next() {
 		var tc ToolCorrelation
@@ -599,7 +614,7 @@ func (s *Store) Timeline(q Query, maxPoints int) ([]ToolTimelinePoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ToolTimelinePoint
 	for rows.Next() {
 		var p ToolTimelinePoint

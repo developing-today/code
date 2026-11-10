@@ -21,7 +21,15 @@ fn pinned_roc() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_owned());
     let path =
         format!("{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc");
-    std::path::Path::new(&path).is_file().then_some(path)
+    std::path::Path::new(&path)
+        .is_file()
+        .then_some(path)
+        .or_else(|| {
+            // Nix CI provides the pinned compiler on PATH rather than at the
+            // developer-local installation path above.
+            let output = Command::new("roc").arg("version").output().ok()?;
+            output.status.success().then(|| "roc".to_owned())
+        })
 }
 
 fn get_binary_path() -> PathBuf {
@@ -41,6 +49,26 @@ fn examples_dir() -> PathBuf {
     std::env::var_os("ID_TEST_EXAMPLES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
+}
+
+fn copy_dir_tree(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_tree(&entry.path(), &target)?;
+        } else if entry.file_type()?.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn apps_dir() -> PathBuf {
+    std::env::var_os("ID_TEST_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps"))
 }
 
 /// How long one CLI invocation may run before its test fails. A client stuck
@@ -353,12 +381,119 @@ mod cli_tests {
     }
 
     #[test]
+    fn key_export_and_import_help_are_available() {
+        let tmp = TempDir::new().unwrap();
+        for args in [["key", "export", "--help"], ["key", "import", "--help"]] {
+            let output = run_cmd(&args, tmp.path());
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("passphrase"));
+        }
+    }
+
+    #[test]
     fn test_version() {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["--version"], tmp.path());
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("id"));
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn match_audit_cli_exports_verifies_and_rejects_tampered_inputs_and_checkpoints() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("reference.malog");
+        let log_path_arg = log_path.to_str().unwrap();
+        let exported = run_cmd(
+            &[
+                "match-audit",
+                "export-tic-tac-toe",
+                "--output",
+                log_path_arg,
+            ],
+            tmp.path(),
+        );
+        assert!(
+            exported.status.success(),
+            "export failed: {}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        let exported_report: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+        assert_eq!(
+            exported_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
+        assert_eq!(exported_report["actual"], "InconclusiveNoObservedMetadata");
+
+        let verified = run_cmd(&["match-audit", "verify", log_path_arg], tmp.path());
+        assert!(
+            verified.status.success(),
+            "verify failed: {}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+        let verified_report: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+        assert!(verified_report.get("technical_verdict").is_some());
+        assert_eq!(
+            verified_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
+
+        let mut tampered_input =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::InputBlock(block) = &mut tampered_input.entries[0].body
+        else {
+            panic!("reference log starts with an input block")
+        };
+        block.records[0].payload[0] ^= 1;
+        let tampered_input_path = tmp.path().join("tampered-input.malog");
+        std::fs::write(&tampered_input_path, tampered_input.encode().unwrap()).unwrap();
+        let tampered_input_arg = tampered_input_path.to_str().unwrap();
+        let rejected_input = run_cmd(&["match-audit", "verify", tampered_input_arg], tmp.path());
+        assert!(!rejected_input.status.success());
+        let rejected_input_report: serde_json::Value =
+            serde_json::from_slice(&rejected_input.stdout).unwrap();
+        assert_eq!(
+            rejected_input_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
+
+        let mut tampered_checkpoint =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::Checkpoint(checkpoint) =
+            &mut tampered_checkpoint.entries[1].body
+        else {
+            panic!("reference log's second entry is its first checkpoint")
+        };
+        checkpoint.state_hash = p2panda_core::Hash::digest(b"tampered checkpoint");
+        let tampered_checkpoint_path = tmp.path().join("tampered-checkpoint.malog");
+        std::fs::write(
+            &tampered_checkpoint_path,
+            tampered_checkpoint.encode().unwrap(),
+        )
+        .unwrap();
+        let tampered_checkpoint_arg = tampered_checkpoint_path.to_str().unwrap();
+        let rejected_checkpoint = run_cmd(
+            &["match-audit", "verify", tampered_checkpoint_arg],
+            tmp.path(),
+        );
+        assert!(!rejected_checkpoint.status.success());
+        let rejected_checkpoint_report: serde_json::Value =
+            serde_json::from_slice(&rejected_checkpoint.stdout).unwrap();
+        assert_eq!(
+            rejected_checkpoint_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
+
+        let oversized_path = tmp.path().join("oversized.malog");
+        std::fs::File::create(&oversized_path)
+            .unwrap()
+            .set_len(128_u64 * 1024 * 1024 + 1)
+            .unwrap();
+        let oversized_arg = oversized_path.to_str().unwrap();
+        let oversized = run_cmd(&["match-audit", "verify", oversized_arg], tmp.path());
+        assert!(!oversized.status.success());
+        assert!(String::from_utf8_lossy(&oversized.stderr).contains("maximum is 134217728"));
     }
 
     #[test]
@@ -407,6 +542,166 @@ mod cli_tests {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("opening phase"), "{stderr}");
+    }
+
+    /// `id world verify` surfaces the fixture-header verdict (#1539): a
+    /// fixture whose two replays agree with each other but mismatch the
+    /// tampered header records must print the header verdict, name the
+    /// agree-but-mismatch case, and exit nonzero. Before the fix it
+    /// printed "records verify" and exited 0.
+    #[test]
+    fn test_world_verify_rejects_agree_but_mismatch_header() {
+        let tmp = TempDir::new().unwrap();
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
+        let module = module.to_str().unwrap();
+        // Embedded at build time: the NixOS VM integration suite runs
+        // the compiled test binary without the source tree, so a
+        // CARGO_MANIFEST_DIR runtime read would panic there (Codex P2
+        // finding on PR #4619).
+        let fixture_text = include_str!("fixtures/tic-tac-toe-determinism.jsonl");
+
+        // The checked-in fixture verifies clean: the header verdict is a
+        // match and the command succeeds.
+        let good = tmp.path().join("good.jsonl");
+        std::fs::write(&good, fixture_text).unwrap();
+        let good = good.to_str().unwrap();
+        let verified = run_cmd_success_stdout(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                good,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(verified.contains("records verify"), "{verified}");
+        assert!(
+            verified.contains("header verdict: records match"),
+            "{verified}"
+        );
+
+        // Tamper only the header records: both replays still agree with
+        // each other, but they now mismatch the fixture header.
+        let tampered = fixture_text.replace(
+            r#""records":{"board":"XXXOO----","plays":5,"winner":"X"}"#,
+            r#""records":{"board":"XXXXXXXXX","plays":9,"winner":"X"}"#,
+        );
+        assert_ne!(tampered, fixture_text);
+        let bad = tmp.path().join("tampered.jsonl");
+        std::fs::write(&bad, &tampered).unwrap();
+        let bad = bad.to_str().unwrap();
+        let output = run_cmd(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                bad,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(!output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("header verdict: records differ"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("agree with each other but mismatch the fixture header"),
+            "{stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("differ from the fixture"), "{stderr}");
+    }
+
+    #[test]
+    fn world_new_scaffold_compiles_with_pinned_roc() {
+        let Some(roc) = pinned_roc() else {
+            eprintln!("skipping: no Roc compiler available");
+            return;
+        };
+        let version = Command::new(&roc)
+            .arg("version")
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            version.status.success(),
+            "roc version failed: {}",
+            String::from_utf8_lossy(&version.stderr)
+        );
+        let actual_version = format!(
+            "{}{}",
+            String::from_utf8_lossy(&version.stdout),
+            String::from_utf8_lossy(&version.stderr)
+        );
+        assert_eq!(
+            actual_version.trim(),
+            format!(
+                "Roc compiler version {}",
+                include_str!("../nix/roc-version").trim()
+            ),
+            "scaffold compilation must use the pinned Roc compiler"
+        );
+
+        let platform = examples_dir().join("roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!("skipping: examples/roc-world has no built wasm host");
+            return;
+        }
+
+        let temp = TempDir::new().unwrap();
+        let app = temp.path().join("scaffold-check");
+        let created = Command::new(get_binary_path())
+            .args([
+                "world",
+                "new",
+                app.to_str().unwrap(),
+                "--name",
+                "scaffold_check",
+            ])
+            .current_dir(temp.path())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "world new failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        assert!(app.join("main.roc").is_file());
+        assert!(app.join("build.sh").is_file());
+
+        // The scaffold resolves ../roc-world relative to its own directory.
+        // Copy the built platform so the generated app compiles without
+        // writing build artifacts into the checked-in examples tree.
+        let platform_copy = temp.path().join("roc-world");
+        copy_dir_tree(&platform, &platform_copy).unwrap();
+        let wasm = app.join("scaffold_check.wasm");
+        let compiled = Command::new(&roc)
+            .current_dir(&app)
+            .args([
+                "build",
+                "main.roc",
+                "--target=wasm32",
+                "--debug",
+                "--wasm-memory=8454144",
+            ])
+            .arg(format!("--output={}", wasm.display()))
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "generated scaffold did not compile:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&compiled.stdout),
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        assert!(wasm.metadata().unwrap().len() > 0, "compiled Wasm is empty");
     }
 }
 
@@ -543,14 +838,67 @@ mod list_tests {
 
         let list_output = run_cmd_success(&["list"], tmp.path());
 
-        // Output should be hash<tab>name format
+        // Output should be hash<tab>name<tab>origin<tab>uploaded_at format
+        // (#4973: listings carry origin node + upload time).
         for line in list_output.lines() {
             if line.contains("test.list-format.txt") {
                 let parts: Vec<&str> = line.split('\t').collect();
-                assert_eq!(parts.len(), 2, "List output should be hash<tab>name");
+                assert_eq!(
+                    parts.len(),
+                    4,
+                    "List output should be hash<tab>name<tab>origin<tab>uploaded_at"
+                );
                 assert_eq!(parts[0].len(), 64, "Hash should be 64 hex chars");
+                // The file was just stored by this node, so origin is this
+                // node's id and uploaded_at is a unix timestamp.
+                assert_eq!(parts[2].len(), 64, "Origin should be a node id");
+                assert!(
+                    parts[3].parse::<u64>().is_ok(),
+                    "uploaded_at should be unix seconds, got {:?}",
+                    parts[3]
+                );
             }
         }
+    }
+
+    #[test]
+    fn test_list_quotes_control_characters_in_names() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.list-control.txt");
+        fs::write(&test_file, b"Control character list test").unwrap();
+
+        let name = "unsafe\nforged\tcolumn";
+        let put_spec = format!("{}:{name}", test_file.display());
+        // A second plain file takes cmd_put past its single-item
+        // stdin auto-detect (a lone `path:name` spec does not exist
+        // as a file, so it would be read as a stdin blob name and
+        // parse_put_spec would never run).
+        run_cmd_success(&["put", &put_spec, test_file.to_str().unwrap()], tmp.path());
+
+        let output = run_cmd_success_stdout(&["list"], tmp.path());
+        let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the stored name must not forge another row: {output:?}"
+        );
+        let mut quoted_names = 0;
+        for row in &rows {
+            let fields: Vec<_> = row.split('\t').collect();
+            assert_eq!(
+                fields.len(),
+                4,
+                "the stored name must not forge a column: {output:?}"
+            );
+            assert_eq!(fields[0].len(), 64);
+            if fields[1] == r#""unsafe\nforged\tcolumn""# {
+                quoted_names += 1;
+            }
+        }
+        assert_eq!(
+            quoted_names, 1,
+            "the unsafe name must appear quoted: {output:?}"
+        );
     }
 }
 
@@ -629,6 +977,43 @@ mod find_search_tests {
         );
         assert!(combined.contains("no matches") || output.status.success());
     }
+
+    #[test]
+    fn test_bulk_download_collision_fails_before_writing_for_find_and_search() {
+        let tmp = TempDir::new().unwrap();
+        let first_file = tmp.path().join("first-source.txt");
+        let second_file = tmp.path().join("second-source.txt");
+        fs::write(&first_file, b"first report").unwrap();
+        fs::write(&second_file, b"second report").unwrap();
+
+        let first_spec = format!("{}:one/report.txt", first_file.display());
+        let second_spec = format!("{}:two/report.txt", second_file.display());
+        run_cmd_success(&["put", &first_spec, &second_spec], tmp.path());
+
+        for (command, output_dir) in [("find", "find-output"), ("search", "search-output")] {
+            let output = run_cmd(
+                &[command, "--all", "--dir", output_dir, "report.txt"],
+                tmp.path(),
+            );
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !output.status.success(),
+                "{command} should reject colliding destinations: {combined}"
+            );
+            assert!(
+                combined.contains("collision"),
+                "{command} should explain the collision: {combined}"
+            );
+            assert!(
+                !tmp.path().join(output_dir).exists(),
+                "{command} must reject the batch before creating or writing its destination"
+            );
+        }
+    }
 }
 
 mod id_tests {
@@ -691,6 +1076,55 @@ mod peers_tests {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["peers", "--rpc"], tmp.path());
         assert!(!output.status.success());
+    }
+
+    #[test]
+    fn test_peers_help_shows_abuse_flag() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--abuse"));
+    }
+
+    #[test]
+    fn test_peers_abuse_no_serve() {
+        // The abuse report comes from the local serve instance only; with
+        // no serve running it must fail with that reason, not print an
+        // empty report (#4918).
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--abuse"], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("no local serve running"),
+            "unexpected stderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_peers_abuse_gossip_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--abuse", "--gossip"], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--abuse cannot be combined with --gossip"),
+            "unexpected stderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_peers_abuse_remote_node_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let node = "a".repeat(64);
+        let output = run_cmd(&["peers", "--abuse", &node], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--abuse cannot be combined with a remote node ID"),
+            "unexpected stderr: {stderr}"
+        );
     }
 }
 
@@ -1616,6 +2050,218 @@ mod serve_tests {
             .to_owned()
     }
 
+    fn world_command(client_dir: &std::path::Path, addr: &str, args: &[&str]) -> StdCommand {
+        let mut command = StdCommand::new(get_binary_path());
+        command
+            .args(["world"])
+            .args(args)
+            .args(["--addr", addr, "--no-relay"])
+            .current_dir(client_dir)
+            .env_remove("ID_WORLD_ADMIN_TOKEN")
+            .env_remove("ID_WORLD_CAPABILITY")
+            .env_remove("ID_WORLD");
+        command
+    }
+
+    struct CliWorld {
+        _server: ServerHandle,
+        _server_dir: TempDir,
+        client_dir: TempDir,
+        node: String,
+        addr: String,
+        capability: String,
+    }
+
+    impl CliWorld {
+        fn new() -> Self {
+            let server_dir = TempDir::new().unwrap();
+            let client_dir = TempDir::new().unwrap();
+            let mut server = ServerHandle::spawn_with_args(
+                server_dir.path(),
+                &["--world", "--world-admin-token", "adm"],
+            );
+            let node = server.wait_ready();
+            let addr = lock_ipv4_addr(&server.lock_file_path());
+            let invited = world_command(
+                client_dir.path(),
+                &addr,
+                &["invite", &node, "--admin-token", "adm", "--name", "guest"],
+            )
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+            assert!(
+                invited.status.success(),
+                "invite failed: {}",
+                String::from_utf8_lossy(&invited.stderr)
+            );
+            let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+            assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
+
+            Self {
+                _server: server,
+                _server_dir: server_dir,
+                client_dir,
+                node,
+                addr,
+                capability,
+            }
+        }
+
+        fn command(&self, args: &[&str]) -> StdCommand {
+            world_command(self.client_dir.path(), &self.addr, args)
+        }
+
+        fn output(&self, args: &[&str]) -> std::process::Output {
+            self.command(args).output_within(PROCESS_TIMEOUT).unwrap()
+        }
+    }
+
+    /// The networking-dependent CLI execution tests below run in the NixOS
+    /// integration leg of `id-e2e-nightly.yml`; PR sandbox shards skip this
+    /// module because they cannot bind/listen.
+    #[test]
+    fn test_world_stats_executes_and_reports_world_state() {
+        let world = CliWorld::new();
+        let output = world.output(&["stats", &world.node, "--capability", &world.capability]);
+        assert!(
+            output.status.success(),
+            "stats failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            report["world_id"].as_str().is_some_and(|id| !id.is_empty()),
+            "{report}"
+        );
+        assert!(report["current_sequence"].is_number(), "{report}");
+        assert!(report["caps"].is_object(), "{report}");
+        assert!(report["profile"].is_object(), "{report}");
+    }
+
+    #[test]
+    fn test_world_caps_ceiling_executes_and_persists() {
+        let world = CliWorld::new();
+        let changed = world.output(&[
+            "caps",
+            &world.node,
+            "--admin-token",
+            "adm",
+            "--ceiling",
+            "time.now",
+        ]);
+        assert!(
+            changed.status.success(),
+            "caps --ceiling failed: {}",
+            String::from_utf8_lossy(&changed.stderr)
+        );
+        let changed_report: serde_json::Value = serde_json::from_slice(&changed.stdout).unwrap();
+        assert_eq!(changed_report["report"]["ceiling"], serde_json::json!(["time.now"]));
+
+        let read = world.output(&["caps", &world.node, "--capability", &world.capability]);
+        assert!(
+            read.status.success(),
+            "caps read failed: {}",
+            String::from_utf8_lossy(&read.stderr)
+        );
+        let read_report: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+        assert_eq!(read_report["ceiling"], serde_json::json!(["time.now"]));
+    }
+
+    #[test]
+    fn test_world_profile_executes_and_persists() {
+        let world = CliWorld::new();
+        let changed = world.output(&[
+            "profile",
+            &world.node,
+            "--admin-token",
+            "adm",
+            "--wasm-fuel",
+            "500000",
+        ]);
+        assert!(
+            changed.status.success(),
+            "profile update failed: {}",
+            String::from_utf8_lossy(&changed.stderr)
+        );
+        let changed_profile: serde_json::Value = serde_json::from_slice(&changed.stdout).unwrap();
+        assert_eq!(changed_profile["update"]["requested"]["wasm_fuel"], 500000);
+
+        let read = world.output(&["profile", &world.node, "--capability", &world.capability]);
+        assert!(
+            read.status.success(),
+            "profile read failed: {}",
+            String::from_utf8_lossy(&read.stderr)
+        );
+        let read_profile: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+        assert_eq!(read_profile["wasm_fuel"], 500000);
+    }
+
+    #[test]
+    fn test_world_logs_executes_and_returns_retained_events() {
+        let world = CliWorld::new();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let module = module.to_str().unwrap();
+        let installed = world.output(&[
+            "install",
+            &world.node,
+            module,
+            "--admin-token",
+            "adm",
+            "--seed",
+            "7",
+        ]);
+        assert!(
+            installed.status.success(),
+            "module install failed: {}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+
+        let mut joined = world
+            .command(&["join", &world.node, "--capability", &world.capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let snapshot = lines.next().expect("snapshot line").unwrap();
+        assert!(snapshot.contains("\"type\":\"snapshot\""), "{snapshot}");
+        let view = lines.next().expect("initial view line").unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let event = lines.next().expect("input event line").unwrap();
+        assert!(event.contains("\"type\":\"event\""), "{event}");
+        let updated_view = lines.next().expect("updated view line").unwrap();
+        assert!(updated_view.contains("count=1"), "{updated_view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        let logs = world.output(&[
+            "logs",
+            &world.node,
+            "--capability",
+            &world.capability,
+            "--seconds",
+            "1",
+        ]);
+        assert!(
+            logs.status.success(),
+            "logs failed: {}",
+            String::from_utf8_lossy(&logs.stderr)
+        );
+        let frames: Vec<serde_json::Value> = String::from_utf8_lossy(&logs.stdout)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            frames.iter().any(|frame| frame["type"] == "event"),
+            "logs did not return the retained input event: {frames:?}"
+        );
+    }
+
     #[test]
     fn test_world_invite_bounds_from_the_cli() {
         let server_dir = TempDir::new().unwrap();
@@ -1690,7 +2336,313 @@ mod serve_tests {
         assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
     }
 
+    /// #5238 (9-8): `id world logs`, `caps --ceiling`, and `profile`
+    /// execute against a live world host — not just parse. (`stats`
+    /// has its own test below.)
+    /// Each verb's output is asserted on the state the host reports,
+    /// and a change made through one verb is read back through the
+    /// same verb's read path, so a verb that silently no-ops cannot
+    /// pass.
     #[test]
+    fn test_world_logs_caps_ceiling_and_profile_execute() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let mut server = ServerHandle::spawn_persistent(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-module",
+                module.to_str().unwrap(),
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |args: &[&str]| -> (bool, String, String) {
+            let output = world(args).output_within(PROCESS_TIMEOUT).unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+
+        let (ok, ann, err) = run(&["invite", &node, "--admin-token", "adm", "--name", "ann"]);
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+        let (ok, tail, err) = run(&["invite", &node, "--admin-token", "adm", "--name", "tail"]);
+        assert!(ok, "{err}");
+        let tail = tail.trim().to_owned();
+
+        // Tail the world's events with `logs` while another guest
+        // commits one: the tailed event frame is the verb's output.
+        let mut logs = world(&["logs", &node, "--capability", &tail, "--seconds", "5"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let logs_stdout = logs.stdout.take().unwrap();
+        let (logs_tx, logs_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in BufReader::new(logs_stdout).lines().map_while(Result::ok) {
+                if logs_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // One committed event for `logs` to tail.
+        let mut joined = world(&["join", &node, "--capability", &ann])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut tailed = String::new();
+        while Instant::now() < deadline && !tailed.contains("\"type\":\"event\"") {
+            match logs_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(line) => {
+                    tailed.push_str(&line);
+                    tailed.push('\n');
+                }
+                Err(_) => {
+                    if logs.try_wait().unwrap().is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            tailed.contains("\"type\":\"event\""),
+            "logs tailed no event frame: {tailed}"
+        );
+
+        // caps --ceiling: set with the admin token, read back in the report.
+        let (ok, out, err) = run(&[
+            "caps",
+            &node,
+            "--admin-token",
+            "adm",
+            "--ceiling",
+            "time.now",
+        ]);
+        assert!(ok, "{err}");
+        let ceiling_reply: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            ceiling_reply["report"]["ceiling"],
+            serde_json::json!(["time.now"]),
+            "{out}"
+        );
+        let (ok, out, err) = run(&["caps", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(report["ceiling"], serde_json::json!(["time.now"]), "{out}");
+
+        // profile: set a bound with the admin token, read it back as a guest.
+        let (ok, out, err) = run(&[
+            "profile",
+            &node,
+            "--admin-token",
+            "adm",
+            "--wasm-fuel",
+            "424242",
+        ]);
+        assert!(ok, "{err}");
+        let set_reply: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            set_reply["update"]["requested"]["wasm_fuel"], 424242,
+            "{out}"
+        );
+        let (ok, out, err) = run(&["profile", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        let profile: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(profile["wasm_fuel"], 424242, "{out}");
+
+        server.stop();
+    }
+
+    /// #5238 (9-8): `id world stats` executes against a live world host.
+    ///
+    /// Was ignored until #6802: stats issues its `info`, `caps`, and
+    /// `profile` queries over one connection, but the host only served
+    /// `caps` / `profile` as first frames — the second query was
+    /// refused with "expected a query frame". #6802 taught the query
+    /// session both read-only frames, so this runs in the suite now.
+    #[test]
+    fn test_world_stats_executes_against_a_live_world() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let mut server = ServerHandle::spawn_persistent(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-module",
+                module.to_str().unwrap(),
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |args: &[&str]| -> (bool, String, String) {
+            let output = world(args).output_within(PROCESS_TIMEOUT).unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+
+        let (ok, ann, err) = run(&["invite", &node, "--admin-token", "adm", "--name", "ann"]);
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+
+        // One committed event, so stats has a non-zero sequence to report.
+        let mut joined = world(&["join", &node, "--capability", &ann])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // stats: one JSON object joining module, caps, and profile state.
+        let (ok, out, err) = run(&["stats", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        let stats: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(stats["world_id"].is_string(), "{out}");
+        let hash = stats["active_module_hash"].as_str().unwrap_or_default();
+        assert_eq!(hash.len(), 64, "{out}");
+        assert!(
+            stats["current_sequence"].as_u64().unwrap_or(0) >= 1,
+            "{out}"
+        );
+        assert!(stats["caps"]["catalog"].is_array(), "{out}");
+        assert!(stats["profile"].is_object(), "{out}");
+
+        server.stop();
+    }
+
+    /// #5238 (9-8): a test that runs in CI compiles the `world new`
+    /// scaffold output. The scaffold's platform path is
+    /// `../roc-world/platform.roc`, so the scaffold is created next to
+    /// a link to the repo's platform checkout and built with the roc
+    /// invocation its own `build.sh` uses.
+    #[cfg(unix)]
+    #[test]
+    fn test_world_new_scaffold_compiles() {
+        let Some(roc) = pinned_roc() else {
+            eprintln!("skipping: no roc binary available");
+            return;
+        };
+        let platform = examples_dir().join("roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: examples/roc-world has no targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
+        let root = TempDir::new().unwrap();
+        let scaffold = root.path().join("scaffold-app");
+        let output = StdCommand::new(get_binary_path())
+            .args([
+                "world",
+                "new",
+                scaffold.to_str().unwrap(),
+                "--name",
+                "scaffold-app",
+            ])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::os::unix::fs::symlink(&platform, root.path().join("roc-world")).unwrap();
+        let wasm = root.path().join("scaffold-app.wasm");
+        let output = StdCommand::new(&roc)
+            .args([
+                "build",
+                scaffold.join("main.roc").to_str().unwrap(),
+                "--target=wasm32",
+                "--debug",
+                "--wasm-memory=8454144",
+                &format!("--output={}", wasm.display()),
+            ])
+            .current_dir(root.path())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "scaffold did not compile: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let bytes = fs::read(&wasm).unwrap();
+        assert!(bytes.starts_with(b"\0asm"), "not a wasm module");
+    }
+
+    /// The world web presentation only exists when the binary is built
+    /// with the `web` feature; without it the server never prints the
+    /// `web:` line this test waits for.
+    #[test]
+    #[cfg(feature = "web")]
     fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
@@ -1916,6 +2868,7 @@ mod serve_tests {
             "--capability",
             &capability,
             "--command-mode",
+            "--json",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1934,6 +2887,18 @@ mod serve_tests {
         assert!(event.contains("\"type\":\"event\""), "{event}");
         let view = lines.next().expect("view line").unwrap();
         assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/not-a-command\n").unwrap();
+        let error = lines.next().expect("local error record").unwrap();
+        let error: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(error["type"], "local");
+        assert_eq!(error["level"], "error");
+        assert_eq!(error["message"], "unknown command; type /help");
+        stdin.write_all(b"/help\n").unwrap();
+        let help = lines.next().expect("local help record").unwrap();
+        let help: serde_json::Value = serde_json::from_str(&help).unwrap();
+        assert_eq!(help["type"], "local");
+        assert_eq!(help["level"], "info");
+        assert!(help["message"].as_str().unwrap().contains("/records"));
         stdin.write_all(b"/stats\n").unwrap();
         let info = lines.next().expect("info line").unwrap();
         assert!(info.contains("\"type\":\"module_info\""), "{info}");
@@ -2074,7 +3039,7 @@ mod serve_tests {
     fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let mut server = ServerHandle::spawn_with_args(
             server_dir.path(),
             &["--world", "--world-admin-token", "adm"],
@@ -2172,7 +3137,7 @@ mod serve_tests {
     fn test_journal_is_trimmed_behind_a_checkpoint_and_a_game_resumes() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let module = module.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -2279,7 +3244,7 @@ mod serve_tests {
         let examples = examples_dir();
         let counter = examples.join("roc-counter/counter.wasm");
         let counter = counter.to_str().unwrap();
-        let tictactoe = examples.join("tic-tac-toe/tic-tac-toe.wasm");
+        let tictactoe = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let tictactoe = tictactoe.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -3557,6 +4522,90 @@ mod serve_tests {
         server.stop();
     }
 
+    /// Repeated `--web-listen` values reach the actual executable and bind
+    /// every requested listener, not just the Clap parser/resolver.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_repeated_listen_flags() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(
+            tmp.path(),
+            &[
+                "--web",
+                "--web-listen",
+                "127.0.0.1:0",
+                "--web-listen",
+                "127.0.0.1:0",
+            ],
+        );
+        server.wait_ready_with_web(true);
+
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+        let bindings = json["web_bindings"]
+            .as_array()
+            .expect("lock should list every web binding");
+        assert_eq!(bindings.len(), 2, "both CLI listeners should be bound");
+        let first: std::net::SocketAddr = bindings[0].as_str().unwrap().parse().unwrap();
+        let second: std::net::SocketAddr = bindings[1].as_str().unwrap().parse().unwrap();
+        assert_ne!(first.port(), 0);
+        assert_ne!(second.port(), 0);
+        assert_ne!(first.port(), second.port());
+        for addr in [first, second] {
+            let mut stream = StdTcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut status_line = Vec::new();
+            reader.read_until(b'\n', &mut status_line).unwrap();
+            assert!(
+                status_line.starts_with(b"HTTP/1.1 200"),
+                "listener {addr} should answer HTTP 200, got {:?}",
+                String::from_utf8_lossy(&status_line)
+            );
+        }
+
+        server.stop();
+    }
+
+    /// Explicit legacy flags conflict with `--web-listen` through the real
+    /// CLI value-source handling in `main`.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_listen_conflicts_with_explicit_legacy_flags() {
+        let tmp = TempDir::new().unwrap();
+        for (legacy_flag, value, expected) in [
+            ("--bind", "127.0.0.1", "--bind"),
+            ("--port", "3000", "--port"),
+        ] {
+            let output = run_cmd(
+                &[
+                    "serve",
+                    "--ephemeral",
+                    "--web",
+                    "--web-listen",
+                    "127.0.0.1:0",
+                    legacy_flag,
+                    value,
+                ],
+                tmp.path(),
+            );
+            assert!(
+                !output.status.success(),
+                "explicit {legacy_flag} should conflict with --web-listen"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(expected),
+                "error should name {expected}: {stderr}"
+            );
+        }
+    }
+
     /// Test that multiple servers can run with web on different random ports.
     #[test]
     #[cfg(feature = "web")]
@@ -3765,6 +4814,69 @@ mod serve_tests {
         );
     }
 
+    /// Test that space-form `--new <subcommand>` does not swallow the
+    /// subcommand as the instance name (#3144): `id --new id` must run the
+    /// `id` subcommand under a randomly-named instance, like `--new= id`.
+    #[test]
+    fn test_new_flag_space_form_subcommand_not_swallowed() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let iroh_dir = tmp.path().join(".iroh");
+        assert!(iroh_dir.exists(), ".iroh/ directory should be created");
+        assert!(
+            !iroh_dir.join("id").exists(),
+            "the subcommand token must not become the instance directory"
+        );
+
+        let entries: Vec<_> = fs::read_dir(&iroh_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Should have exactly one auto-generated subdirectory"
+        );
+        let name = entries[0].file_name().to_string_lossy().to_string();
+        assert_eq!(name.len(), 8, "Auto-generated name should be 8 chars");
+        assert!(
+            name.chars().all(|c| c.is_ascii_hexdigit()),
+            "Auto-generated name should be hex: {name}"
+        );
+        assert!(
+            iroh_dir.join(&name).join(".iroh-key").exists(),
+            "Key file should be created in instance directory"
+        );
+    }
+
+    /// Test that space-form `--new <name> <subcommand>` still creates the
+    /// named instance and runs the subcommand (#3144 preserved form).
+    #[test]
+    fn test_new_flag_space_form_named() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new", "space-dev", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new space-dev id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let instance_dir = tmp.path().join(".iroh").join("space-dev");
+        assert!(instance_dir.exists(), ".iroh/space-dev/ should be created");
+        assert!(
+            instance_dir.join(".iroh-key").exists(),
+            "Key file should be in named instance directory"
+        );
+    }
+
     /// Test that --new=NAME rejects a name that already has an existing directory.
     #[test]
     fn test_new_flag_duplicate_rejects() {
@@ -3889,6 +5001,17 @@ mod serve_tests {
         assert!(
             json["web_port"].is_null(),
             "web_port should be null when --web is not used"
+        );
+
+        // A server without --web must not initialize the web-only identity
+        // database or event directory.
+        assert!(
+            !tmp.path().join(".identity.redb").exists(),
+            "web-disabled serve must not create the web identity database"
+        );
+        assert!(
+            !tmp.path().join("events").exists(),
+            "web-disabled serve must not create the web events directory"
         );
 
         server.stop();
@@ -4308,5 +5431,188 @@ mod tag_tests {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["link", "search", "--help"], tmp.path());
         assert!(output.status.success(), "link search --help should succeed");
+    }
+}
+
+/// Integration tests for the #1791 structured operational logging
+/// configuration (`ID_LOG_*`), exercised through the real binary so
+/// the production environment-reading path and `init_logging` in
+/// `main.rs` are covered — not only the library-level configuration
+/// resolution in `id::structured_logging`.
+mod structured_logging_tests {
+    use super::*;
+    use std::process::Stdio;
+
+    /// Run the fast `id` command with extra environment variables and
+    /// return its output.
+    fn run_id_with_env(work_dir: &std::path::Path, env: &[(&str, &str)]) -> std::process::Output {
+        let mut command = Command::new(get_binary_path());
+        command.args(["id"]).current_dir(work_dir);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command
+            .output_within(PROCESS_TIMEOUT)
+            .expect("Failed to execute command")
+    }
+
+    #[test]
+    fn test_structured_logging_unrecognized_tz_warns_and_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_id_with_env(tmp.path(), &[("ID_LOG_TZ", "Mars/Olympus_Mons")]);
+        assert!(
+            output.status.success(),
+            "id command should succeed despite the bad ID_LOG_TZ: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("ID_LOG_TZ value not recognized"),
+            "startup should warn about the unrecognized timezone: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_unopenable_log_file_warns_and_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        // A path whose parent is a regular file can never be opened,
+        // even after the parent-directory creation attempt.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let log_file = blocker.join("id.log");
+        let output = run_id_with_env(tmp.path(), &[("ID_LOG_FILE", log_file.to_str().unwrap())]);
+        assert!(
+            output.status.success(),
+            "id command should succeed despite the unopenable log file: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("could not open log file"),
+            "startup should warn about the unopenable log file: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_json_file_with_independent_level() {
+        let tmp = TempDir::new().unwrap();
+        let log_file = tmp.path().join("id.log");
+        let console_file = tmp.path().join("console.log");
+        let console = std::fs::File::create(&console_file).unwrap();
+
+        // Console stays at the default level (warn, plus the existing
+        // per-module caps); the file destination independently takes
+        // debug. Both use the JSON format.
+        let child = Command::new(get_binary_path())
+            .args([
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+            ])
+            .current_dir(tmp.path())
+            .env("ID_LOG_FORMAT", "json")
+            .env("ID_LOG_FILE", &log_file)
+            .env("ID_LOG_FILE_LEVEL", "debug")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(console))
+            .spawn()
+            .expect("Failed to spawn server");
+        let _guard = KillOnDrop(child);
+
+        // Wait until the file destination has recorded a DEBUG event;
+        // startup produces plenty (store, rustls, iroh internals).
+        let mut contents = String::new();
+        for _ in 0..120 {
+            contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+            if contents.contains("\"level\":\"DEBUG\"") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert!(
+            contents.contains("\"level\":\"DEBUG\""),
+            "file destination should record DEBUG events: {}",
+            contents.chars().take(2000).collect::<String>()
+        );
+
+        // Every line in the file is a JSON object with the structured
+        // fields, and the timestamp is RFC 3339 with nanoseconds in
+        // some zone (host local by default — the suffix varies).
+        let first_line = contents.lines().next().expect("log file has lines");
+        for line in contents.lines() {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("log file line should be JSON");
+            assert!(value["timestamp"].is_string(), "line: {line}");
+            assert!(value["level"].is_string(), "line: {line}");
+            assert!(value["target"].is_string(), "line: {line}");
+        }
+        let first: serde_json::Value =
+            serde_json::from_str(first_line).expect("first line should be JSON");
+        let timestamp = first["timestamp"].as_str().expect("timestamp field");
+        let fraction: String = timestamp
+            .split('.')
+            .nth(1)
+            .expect("timestamp has fractional seconds")
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        assert_eq!(fraction.len(), 9, "timestamp: {timestamp}");
+
+        // The console destination kept its own (higher) level: it saw
+        // the same run but recorded no DEBUG events.
+        let console_contents = std::fs::read_to_string(&console_file).unwrap_or_default();
+        assert!(
+            !console_contents.contains("\"level\":\"DEBUG\""),
+            "console should not record DEBUG events: {}",
+            console_contents.chars().take(2000).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_text_file_is_plain_text() {
+        let tmp = TempDir::new().unwrap();
+        let log_file = tmp.path().join("id.log");
+        let child = Command::new(get_binary_path())
+            .args([
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+            ])
+            .current_dir(tmp.path())
+            .env("ID_LOG_FILE", &log_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn server");
+        let _guard = KillOnDrop(child);
+
+        let mut contents = String::new();
+        for _ in 0..120 {
+            contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+            if !contents.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert!(
+            !contents.is_empty(),
+            "file destination should record events in text mode too"
+        );
+        assert!(
+            !contents.contains('\u{1b}'),
+            "file output must not contain ANSI escapes: {:?}",
+            contents.chars().take(500).collect::<String>()
+        );
+        assert!(
+            !contents.trim_start().starts_with('{'),
+            "text mode should not emit JSON lines: {}",
+            contents.chars().take(500).collect::<String>()
+        );
     }
 }

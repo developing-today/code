@@ -362,3 +362,8 @@ python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
 
 Requirements: Python 3.12, the `zstd` CLI, and `curl` (runtime only,
 for the S3 download fallback). Everything else is stdlib.
+
+CI runs these suites — plus the worker local proof (`npm test` in
+`worker/`) — on every pull request and push to `main` that touches
+`pkgs/cold-store-reaper/**`, via `.github/workflows/cold-store-reaper.yml`
+(#1427). The command above remains the way to run them locally.

@@ -4,12 +4,23 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   computeBudget,
+  crawlArchiveKey,
   CRAWL_FETCH_TIMEOUT_MS,
   crawlFetcher,
   fetchFollowingValidatedRedirects,
   MAX_CRAWL_BODY_BYTES,
+  parseJsonObjectBody,
+  parseFormDataBody,
+  parseUploadFile,
+  parseCrawlResult,
+  parseAiSummaryResult,
   readResponseTextCapped,
+  uploadKey,
   validateCrawlUrl,
+  isMachineNameConflict,
+  validateMachineBody,
+  validateNoteBody,
+  validateTaskBody,
 } from "../src/lib.ts";
 
 test("validateCrawlUrl accepts public http(s) targets", () => {
@@ -670,6 +681,72 @@ test("fetchFollowingValidatedRedirects bounds the hop count (#460)", async () =>
   await assert.rejects(fetchFollowingValidatedRedirects("https://example.com/loop", fetchFn, 3), /too many redirects/);
 });
 
+test("fetchFollowingValidatedRedirects matches urllib's ten-hop boundary", async () => {
+  const tenHopRoutes: Record<string, { status: number; location?: string }> = {};
+  for (let hop = 0; hop < 10; hop++) {
+    tenHopRoutes[`https://example.com/hop/${hop}`] = {
+      status: 302,
+      location: `/hop/${hop + 1}`,
+    };
+  }
+  tenHopRoutes["https://example.com/hop/10"] = { status: 200 };
+  const tenHop = stubFetcher(tenHopRoutes);
+  assert.equal((await fetchFollowingValidatedRedirects("https://example.com/hop/0", tenHop.fetchFn)).status, 200);
+  assert.equal(tenHop.seen.length, 11);
+
+  const elevenHopRoutes: Record<string, { status: number; location?: string }> = {};
+  for (let hop = 0; hop < 11; hop++) {
+    elevenHopRoutes[`https://example.com/hop/${hop}`] = {
+      status: 302,
+      location: `/hop/${hop + 1}`,
+    };
+  }
+  elevenHopRoutes["https://example.com/hop/11"] = { status: 200 };
+  const elevenHop = stubFetcher(elevenHopRoutes);
+  await assert.rejects(
+    fetchFollowingValidatedRedirects("https://example.com/hop/0", elevenHop.fetchFn),
+    /too many redirects/,
+  );
+  assert.equal(elevenHop.seen.length, 11);
+});
+
+test("fetchFollowingValidatedRedirects follows only urllib redirect statuses", async () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    const { fetchFn } = stubFetcher({
+      "https://example.com/start": { status, location: "/final" },
+      "https://example.com/final": { status: 200 },
+    });
+    assert.equal(
+      (await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn)).status,
+      200,
+      `${status}`,
+    );
+  }
+
+  for (const status of [300, 304]) {
+    const { fetchFn, seen } = stubFetcher({
+      "https://example.com/start": { status, location: "/final" },
+      "https://example.com/final": { status: 200 },
+    });
+    await assert.rejects(
+      fetchFollowingValidatedRedirects("https://example.com/start", fetchFn),
+      /unsupported redirect status/,
+      `${status}`,
+    );
+    assert.deepEqual(seen, ["https://example.com/start"], `${status}`);
+  }
+});
+
+test("fetchFollowingValidatedRedirects enforces urllib's per-URL repeat limit", async () => {
+  const { fetchFn, seen } = stubFetcher({
+    "https://example.com/a": { status: 302, location: "/b" },
+    "https://example.com/b": { status: 302, location: "/a" },
+  });
+  await assert.rejects(fetchFollowingValidatedRedirects("https://example.com/a", fetchFn), /repeated/);
+  // urllib permits four redirects to a URL and refuses the fifth.
+  assert.equal(seen.length, 9);
+});
+
 test("crawlFetcher attaches a fresh AbortSignal, manual redirect and the crawler UA to every hop (#524)", async () => {
   const seen: RequestInit[] = [];
   const fetchFn = crawlFetcher(60_000, async (_u, init) => {
@@ -778,4 +855,357 @@ test("computeBudget counts ledger rows toward D1 writes (#442)", () => {
   assert.equal(b.month_to_date_self_counted.d1_rows_written.used, 60_000_000);
   assert.equal(b.month_to_date_self_counted.d1_rows_written.estimated_overage_usd, 10);
   assert.equal(b.estimated_overage_usd, 10);
+});
+
+// --- JSON POST body validation (#2480) -------------------------------------
+
+const post = (body: string) =>
+  new Request("http://lab-ops-hub.test/api/x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+  });
+
+test("parseJsonObjectBody rejects malformed JSON (all four JSON POST routes share it)", async () => {
+  for (const raw of ["{not json", "", "{", '{"a":}']) {
+    const r = await parseJsonObjectBody(post(raw));
+    assert.equal(r.ok, false, raw);
+    if (!r.ok) assert.equal(r.error, "invalid JSON", raw);
+  }
+});
+
+test("parseJsonObjectBody rejects non-object JSON", async () => {
+  for (const raw of ["[]", "[1,2]", '"hello"', "42", "null", "true"]) {
+    const r = await parseJsonObjectBody(post(raw));
+    assert.equal(r.ok, false, raw);
+    if (!r.ok) assert.equal(r.error, "JSON object required", raw);
+  }
+});
+
+test("parseJsonObjectBody accepts a JSON object and returns it untouched", async () => {
+  const r = await parseJsonObjectBody(post('{"name":"  padded  ","n":1}'));
+  assert.equal(r.ok, true);
+  if (r.ok) assert.deepEqual(r.body, { name: "  padded  ", n: 1 });
+});
+
+test("validateMachineBody requires a nonblank string name", () => {
+  for (const b of [{}, { name: null }, { name: 42 }, { name: "" }, { name: "   " }, { name: ["x"] }]) {
+    const r = validateMachineBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "name required");
+  }
+  const ok = validateMachineBody({ name: "  amd-6  " });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.equal(ok.values.name, "  amd-6  "); // original preserved, not trimmed
+});
+
+test("validateMachineBody validates optional fields and preserves their defaults", () => {
+  for (const optional of [
+    {},
+    { role: null, cpu: null, ram_gb: null, storage: null, gpu: null, status: null, notes: null },
+  ]) {
+    const defaults = validateMachineBody({ name: "Rig", ...optional });
+    assert.equal(defaults.ok, true);
+    if (defaults.ok) {
+      assert.deepEqual(defaults.values, {
+        name: "Rig",
+        role: "compute",
+        cpu: null,
+        ram_gb: null,
+        storage: null,
+        gpu: null,
+        status: "planned",
+        notes: null,
+      });
+    }
+  }
+
+  const valid = validateMachineBody({
+    name: "Rig",
+    role: "custom role",
+    cpu: "  8-core  ",
+    ram_gb: 16,
+    storage: "2 TB",
+    gpu: "  RTX  ",
+    status: "custom status",
+    notes: " note ",
+  });
+  assert.equal(valid.ok, true);
+  if (valid.ok) {
+    assert.deepEqual(valid.values, {
+      name: "Rig",
+      role: "custom role",
+      cpu: "  8-core  ",
+      ram_gb: 16,
+      storage: "2 TB",
+      gpu: "  RTX  ",
+      status: "custom status",
+      notes: " note ",
+    });
+  }
+
+  for (const [field, value, error] of [
+    ["role", 7, "role must be a string"],
+    ["cpu", {}, "cpu must be a string"],
+    ["ram_gb", "16", "ram_gb must be an integer"],
+    ["ram_gb", 16.5, "ram_gb must be an integer"],
+    ["storage", [], "storage must be a string"],
+    ["gpu", false, "gpu must be a string"],
+    ["status", 1, "status must be a string"],
+    ["notes", {}, "notes must be a string"],
+  ] as const) {
+    const result = validateMachineBody({ name: "Rig", [field]: value });
+    assert.equal(result.ok, false, `${field}: ${JSON.stringify(value)}`);
+    if (!result.ok) assert.equal(result.error, error);
+  }
+});
+
+test("validateNoteBody requires title, then body", () => {
+  // Both missing: title is reported first.
+  const both = validateNoteBody({});
+  assert.equal(both.ok, false);
+  if (!both.ok) assert.equal(both.error, "title required");
+  for (const b of [
+    { title: null, body: "x" },
+    { title: " ", body: "x" },
+    { title: 7, body: "x" },
+  ]) {
+    const r = validateNoteBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "title required");
+  }
+  for (const b of [
+    { title: "t" },
+    { title: "t", body: null },
+    { title: "t", body: "" },
+    { title: "t", body: "  " },
+    { title: "t", body: 9 },
+  ]) {
+    const r = validateNoteBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "body required");
+  }
+  const ok = validateNoteBody({ title: " t ", body: " b " });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.deepEqual(ok.values, { title: " t ", text: " b ", tags: "" });
+});
+
+test("validateNoteBody validates optional tags and preserves the default", () => {
+  for (const optional of [{}, { tags: null }]) {
+    const defaults = validateNoteBody({ title: "t", body: "b", ...optional });
+    assert.equal(defaults.ok, true);
+    if (defaults.ok) assert.deepEqual(defaults.values, { title: "t", text: "b", tags: "" });
+  }
+
+  const valid = validateNoteBody({ title: "t", body: "b", tags: "  ops,home  " });
+  assert.equal(valid.ok, true);
+  if (valid.ok) assert.deepEqual(valid.values, { title: "t", text: "b", tags: "  ops,home  " });
+
+  for (const tags of [7, {}, []]) {
+    const result = validateNoteBody({ title: "t", body: "b", tags });
+    assert.equal(result.ok, false, JSON.stringify(tags));
+    if (!result.ok) assert.equal(result.error, "tags must be a string");
+  }
+});
+
+test("validateTaskBody requires a nonblank string title", () => {
+  for (const b of [{}, { title: null }, { title: false }, { title: "" }, { title: "\t\n " }]) {
+    const r = validateTaskBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "title required");
+  }
+  const ok = validateTaskBody({ title: "do it" });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.deepEqual(ok.values, { title: "do it", machine_id: null, due: null });
+});
+
+test("validateTaskBody validates optional machine and due fields and preserves defaults", () => {
+  for (const optional of [{}, { machine_id: null, due: null }]) {
+    const defaults = validateTaskBody({ title: "do it", ...optional });
+    assert.equal(defaults.ok, true);
+    if (defaults.ok) assert.deepEqual(defaults.values, { title: "do it", machine_id: null, due: null });
+  }
+
+  const valid = validateTaskBody({ title: "do it", machine_id: 42, due: "  2026-11-08  " });
+  assert.equal(valid.ok, true);
+  if (valid.ok) assert.deepEqual(valid.values, { title: "do it", machine_id: 42, due: "  2026-11-08  " });
+
+  for (const machine_id of ["42", 3.14, {}, []]) {
+    const result = validateTaskBody({ title: "do it", machine_id });
+    assert.equal(result.ok, false, `machine_id: ${JSON.stringify(machine_id)}`);
+    if (!result.ok) assert.equal(result.error, "machine_id must be an integer");
+  }
+
+  for (const due of [42, {}, []]) {
+    const result = validateTaskBody({ title: "do it", due });
+    assert.equal(result.ok, false, `due: ${JSON.stringify(due)}`);
+    if (!result.ok) assert.equal(result.error, "due must be a string");
+  }
+});
+
+test("uploadKey uniquifies same-millisecond uploads of the same name (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("report.pdf", now, "rand-a");
+  const b = uploadKey("report.pdf", now, "rand-b");
+  assert.notEqual(a, b);
+});
+
+test("uploadKey separates filenames that sanitize to the same string (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("my file.pdf", now, "rand-a");
+  const b = uploadKey("my:file.pdf", now, "rand-b");
+  assert.notEqual(a, b);
+  // The sanitized tails really are identical — only the rand segment differs.
+  assert.ok(a.endsWith("-my_file.pdf"));
+  assert.ok(b.endsWith("-my_file.pdf"));
+});
+
+test("uploadKey is deterministic for identical inputs and keeps the uploads/ shape (#2478)", () => {
+  const now = 1793100000000;
+  assert.equal(uploadKey("report.pdf", now, "rand-a"), uploadKey("report.pdf", now, "rand-a"));
+  assert.equal(uploadKey("report.pdf", now, "rand-a"), "uploads/1793100000000-rand-a-report.pdf");
+  assert.equal(uploadKey("my file.pdf", now, "rand-a"), "uploads/1793100000000-rand-a-my_file.pdf");
+});
+
+test("uploadKey defaults rand to a UUID so bare calls never repeat a key (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("report.pdf", now);
+  const b = uploadKey("report.pdf", now);
+  assert.notEqual(a, b);
+  assert.match(a, /^uploads\/1793100000000-[0-9a-f-]{36}-report\.pdf$/);
+});
+
+test("crawlArchiveKey: same-millisecond derivations with distinct uniques never collide (#2503)", () => {
+  const ms = 1730000000000;
+  const a = crawlArchiveKey(ms, "11111111-1111-4111-8111-111111111111");
+  const b = crawlArchiveKey(ms, "22222222-2222-4222-8222-222222222222");
+  assert.equal(a, "crawls/1730000000000-11111111-1111-4111-8111-111111111111.json");
+  assert.equal(b, "crawls/1730000000000-22222222-2222-4222-8222-222222222222.json");
+  assert.notEqual(a, b);
+  const seen = new Set<string>();
+  for (let i = 0; i < 1000; i++) {
+    const k = crawlArchiveKey(ms, `unique-${i}`);
+    assert.match(k, /^crawls\/1730000000000-.+\.json$/);
+    assert.ok(!seen.has(k), k);
+    seen.add(k);
+  }
+});
+
+test("parseCrawlResult passes a well-formed container result through unchanged (#7018)", () => {
+  const result = { title: "T", excerpt: "E", links: 3, status_code: 200, text: "hello" };
+  const parsed = parseCrawlResult(result);
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.deepEqual(parsed.values, result);
+  // Absent optional fields are fine: the route binds ?? null for them.
+  assert.equal(parseCrawlResult({}).ok, true);
+  assert.equal(parseCrawlResult({ title: "only a title" }).ok, true);
+});
+
+test("parseCrawlResult rejects non-object container bodies (#7018)", () => {
+  // A JSON null used to 500 the route on result.title (after the R2
+  // archive write); a JSON string was archived spread by character index
+  // and stored as an all-null crawls row reported as success.
+  for (const body of [null, "hello", 42, true, [1, 2, 3]]) {
+    const parsed = parseCrawlResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+  }
+});
+
+test("parseCrawlResult rejects wrong-typed container fields (#7018)", () => {
+  // Object values used to throw the raw D1 bind TypeError as a 500;
+  // wrong-typed scalars (numeric title, string links/status_code) bound
+  // as-is into the crawls row.
+  for (const body of [
+    { links: { bad: 1 } },
+    { title: ["T"] },
+    { title: 123 },
+    { excerpt: null },
+    { text: 42 },
+    { links: "3" },
+    { status_code: "200" },
+    { links: Number.NaN },
+  ]) {
+    const parsed = parseCrawlResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+    if (!parsed.ok) assert.match(parsed.error, /crawl result/);
+  }
+});
+
+test("parseAiSummaryResult returns the trimmed summary of a well-formed AI result (#7037)", () => {
+  const parsed = parseAiSummaryResult({ response: "  a tidy summary  " });
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.equal(parsed.values.summary, "a tidy summary");
+});
+
+test("parseAiSummaryResult rejects non-object AI results (#7037)", () => {
+  // A null result used to crash the summarize route with a raw TypeError;
+  // a bare string result was read as a missing response and silently
+  // stored an empty summary reported as success.
+  for (const body of [null, "just a string", 42, true, [1, 2, 3]]) {
+    const parsed = parseAiSummaryResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+  }
+});
+
+test("parseAiSummaryResult rejects a missing, non-string, or empty response (#7037)", () => {
+  // {} used to store summary="" with a 200 ok:true, erasing any previous
+  // summary; a numeric/object/array response crashed on .trim.
+  for (const body of [{}, { response: 123 }, { response: { text: "x" } }, { response: ["x"] }, { response: null }, { response: "" }, { response: "   " }]) {
+    const parsed = parseAiSummaryResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+    if (!parsed.ok) assert.match(parsed.error, /AI summary result/);
+  }
+});
+
+test("isMachineNameConflict recognises only the machines.name UNIQUE violation (#2631)", () => {
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: machines.name")), true);
+  assert.equal(isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")), true);
+  // Other constraints and other failures stay on the 500 path.
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: files.r2_key")), false);
+  assert.equal(isMachineNameConflict(new Error("no such table: machines")), false);
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed")), false);
+  assert.equal(isMachineNameConflict("UNIQUE constraint failed: machines.name"), true);
+  assert.equal(isMachineNameConflict(null), false);
+});
+
+test("parseFormDataBody rejects a non-multipart body (#7087)", async () => {
+  // A JSON, plain-text, or empty body used to make req.formData() throw a
+  // raw TypeError out of POST /api/files, answered 500 with internal text.
+  for (const init of [
+    { body: JSON.stringify({ file: "x" }), headers: { "content-type": "application/json" } },
+    { body: "hello", headers: { "content-type": "text/plain" } },
+    {},
+  ]) {
+    const r = await parseFormDataBody(new Request("https://probe/api/files", { method: "POST", ...init }));
+    assert.equal(r.ok, false, JSON.stringify(init));
+    if (!r.ok) assert.match(r.error, /multipart form body required/);
+  }
+});
+
+test("parseFormDataBody accepts a multipart body (#7087)", async () => {
+  const fd = new FormData();
+  fd.append("file", new File(["hello"], "note.txt", { type: "text/plain" }));
+  const r = await parseFormDataBody(new Request("https://probe/api/files", { method: "POST", body: fd }));
+  assert.equal(r.ok, true);
+});
+
+test("parseUploadFile rejects a missing or non-file 'file' field (#7087)", () => {
+  // A text field named 'file' comes back from FormData.get as a string;
+  // the route's bare cast used to hide that until file.arrayBuffer()
+  // crashed with a raw TypeError (500).
+  for (const value of [null, undefined, "just a string", 42, {}, { name: "x" }, { name: 7, arrayBuffer: async () => new ArrayBuffer(0) }]) {
+    const parsed = parseUploadFile(value);
+    assert.equal(parsed.ok, false, String(value));
+    if (!parsed.ok) assert.match(parsed.error, /multipart field 'file'/);
+  }
+});
+
+test("parseUploadFile passes a real File through with its name and type (#7087)", async () => {
+  const parsed = parseUploadFile(new File(["hello world"], "note.txt", { type: "text/plain" }));
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.values.name, "note.txt");
+    assert.equal(parsed.values.type, "text/plain");
+    assert.equal(new TextDecoder().decode(await parsed.values.arrayBuffer()), "hello world");
+  }
 });

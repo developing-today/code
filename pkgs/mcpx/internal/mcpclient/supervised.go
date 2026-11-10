@@ -20,7 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // Supervised stdio transport — Phase 1 of the mcpx supervisor design
@@ -38,6 +40,80 @@ const SupervisorProtocolVersion = 1
 // DefaultUnattachedBuffer bounds the child output a supervisor retains
 // while no daemon is attached (1 MiB, tail-keep; see tailBuffer).
 const DefaultUnattachedBuffer = 1 << 20
+
+// DefaultAttachedWriteTimeout is the default bound on a single write to
+// the attached daemon (see AttachedWriteTimeout).
+const DefaultAttachedWriteTimeout = 5 * time.Second
+
+// AttachedWriteTimeout bounds every write to the attached daemon's
+// connection. A daemon that stops reading must not wedge the supervisor:
+// once the socket buffer fills, an unbounded write would block the
+// stdout pump forever — the child exit would never surface and detach
+// could never proceed (#2390). On expiry the attach is dropped, the
+// unwritten bytes go to the tail buffer, and the pump keeps draining
+// the child. It is a variable so tests can shorten it.
+var AttachedWriteTimeout = DefaultAttachedWriteTimeout
+
+// connWriter is the per-connection writer for the attached daemon. All
+// writes to the attached connection serialise on its own mutex, never
+// on the supervisor's state mutex s.mu, and every write carries the
+// AttachedWriteTimeout deadline. s.mu only snapshots, publishes, and
+// clears the *connWriter pointer.
+type connWriter struct {
+	mu   sync.Mutex
+	conn net.Conn
+}
+
+// Write writes p under the writer mutex with a fresh write deadline.
+func (w *connWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writeLocked(p)
+}
+
+func (w *connWriter) writeLocked(p []byte) (int, error) {
+	_ = w.conn.SetWriteDeadline(time.Now().Add(AttachedWriteTimeout))
+	return w.conn.Write(p)
+}
+
+// flushLocked writes the handshake reply and then the buffered child
+// output as one serialised unit. The caller (handleAttach) holds w.mu
+// across the publish of w as the attached connection and this flush, so
+// no live pump chunk can overtake the reply or the buffered bytes.
+func (w *connWriter) flushLocked(reply supervisorReply, buffered []byte) error {
+	b, err := json.Marshal(reply)
+	if err != nil {
+		return err
+	}
+	if _, err := w.writeLocked(append(b, '\n')); err != nil {
+		return err
+	}
+	if len(buffered) > 0 {
+		_, err := w.writeLocked(buffered)
+		return err
+	}
+	return nil
+}
+
+// Close closes the underlying connection.
+func (w *connWriter) Close() { _ = w.conn.Close() }
+
+// closeAfterFlush closes the connection only after any in-flight
+// initial flush completes (Codex P2 on PR #2861). handleAttach holds
+// w.mu across the publish of w and the handshake+buffer flush, so
+// acquiring w.mu here is a barrier on that flush: without it,
+// finishWhenDone could observe pumpDone (child exited with no further
+// stdout during the flush), see attachedEver && !reported, and close
+// the connection mid-flush, losing bytes already drained from the
+// tail buffer. The barrier is bounded — every flush write carries
+// AttachedWriteTimeout, and at finishWhenDone's call sites the stdout
+// pump has already exited, so the flush is the only holder it can
+// wait on. No connection write happens under s.mu.
+func (w *connWriter) closeAfterFlush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Close()
+}
 
 type supervisorHandshake struct {
 	Version int `json:"version"`
@@ -79,8 +155,11 @@ func StateDir() string {
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
 		return filepath.Join(v, "mcpx")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "mcpx")
+	// Home-resolution contract (issues #5762 / #5763): reached only
+	// when neither MCPX_STATE_DIR nor XDG_STATE_HOME names a
+	// directory, so a non-empty HOME must - MustHome panics with the
+	// named error rather than returning a CWD-relative substitute.
+	return filepath.Join(homeutil.MustHome(), ".local", "state", "mcpx")
 }
 
 // tailBuffer is the bounded unattached-output buffer: it keeps the tail
@@ -148,7 +227,7 @@ type supervisor struct {
 	ln      net.Listener
 
 	mu           sync.Mutex
-	attached     net.Conn
+	attached     *connWriter
 	attachedEver bool
 	reported     bool
 	buf          *tailBuffer
@@ -187,8 +266,8 @@ func RunSupervisor(opts SupervisorOptions) error {
 	if err != nil {
 		return fmt.Errorf("supervise: listen %s: %w", opts.SocketPath, err)
 	}
-	defer ln.Close()
-	defer os.Remove(opts.SocketPath)
+	defer func() { _ = ln.Close() }()
+	defer func() { _ = os.Remove(opts.SocketPath) }()
 	if err := os.Chmod(opts.SocketPath, os.FileMode(defaults.PrivateMode)); err != nil {
 		return fmt.Errorf("supervise: chmod socket: %w", err)
 	}
@@ -233,7 +312,19 @@ func RunSupervisor(opts SupervisorOptions) error {
 // plain os.Pipes, stderr into a 64 KiB ring.
 func (s *supervisor) spawnChild() error {
 	opts := s.opts
-	cmd := exec.Command(opts.Command, opts.Args...)
+	// A nix: program spec resolves once, here at spawn, exactly as on
+	// the direct stdio path (progspec, #1921): the child is the built
+	// store path, never a nix process and never the literal spec string
+	// handed to exec (which could only fail not-found).
+	command := opts.Command
+	if progspec.IsNix(command) {
+		resolved, err := progspec.ResolvePathInDir(context.Background(), command, opts.Cwd)
+		if err != nil {
+			return fmt.Errorf("supervise: %w", err)
+		}
+		command = resolved
+	}
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Cwd
 	env := []string{}
 	if opts.InheritEnv {
@@ -251,34 +342,34 @@ func (s *supervisor) spawnChild() error {
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return err
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		outR.Close()
-		outW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return err
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, outW, errW
 	startErr := cmd.Start()
-	stdinR.Close()
-	outW.Close()
-	errW.Close()
+	_ = stdinR.Close()
+	_ = outW.Close()
+	_ = errW.Close()
 	if startErr != nil {
-		stdinW.Close()
-		outR.Close()
-		errR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 		return fmt.Errorf("start %s: %w", opts.Command, startErr)
 	}
 	s.child = cmd
 	s.stdin = stdinW
 	go func() {
 		_, _ = io.Copy(s.stderr, errR)
-		errR.Close()
+		_ = errR.Close()
 	}()
 	// The stdout pump reads outR; keep it on the supervisor.
 	s.stdoutR = outR
@@ -286,7 +377,12 @@ func (s *supervisor) spawnChild() error {
 }
 
 // pumpStdout moves child stdout to the attached daemon, or into the
-// bounded tail buffer while nobody is attached.
+// bounded tail buffer while nobody is attached. It never writes while
+// holding s.mu (#2390): s.mu only snapshots the attached writer, the
+// write itself serialises on the writer's own mutex under a bounded
+// deadline, so a stalled daemon can block this pump for at most
+// AttachedWriteTimeout — never the supervisor's state, and never
+// forever.
 func (s *supervisor) pumpStdout() {
 	defer close(s.pumpDone)
 	chunk := make([]byte, 32<<10)
@@ -294,19 +390,71 @@ func (s *supervisor) pumpStdout() {
 		n, err := s.stdoutR.Read(chunk)
 		if n > 0 {
 			data := chunk[:n]
+			// The unattached decision and the tail-buffer append
+			// are atomic under s.mu (Codex P2 on PR #2861): if the
+			// snapshot is nil, the append happens while still
+			// holding s.mu, so a chunk read just before an attach
+			// is either inside the buffer that attach drains or
+			// routed to the published writer — never stranded in
+			// the buffer behind a live stream, which would
+			// withhold it and reverse stream order. buf.Write is
+			// a bounded memory append, not a connection write, so
+			// holding s.mu across it does not restore the #2390
+			// hazard.
 			s.mu.Lock()
-			if s.attached != nil {
-				if _, werr := s.attached.Write(data); werr != nil {
-					// The daemon went away mid-write (e.g. it was
-					// SIGKILLed): keep the bytes it missed.
-					s.buf.Write(data)
-					s.attached.Close()
-					s.attached = nil
-				}
-			} else {
+			w := s.attached
+			if w == nil {
 				s.buf.Write(data)
 			}
 			s.mu.Unlock()
+			if w != nil {
+				if _, werr := w.Write(data); werr != nil {
+					// The daemon went away mid-write (e.g. it was
+					// SIGKILLed) or stopped reading until the
+					// write deadline expired: keep the bytes it
+					// missed, and drop the attach — but only if
+					// it still points at this same writer, so a
+					// newer attach is never cleared by a stale
+					// pump error.
+					//
+					// The recovery is coordinated with attach
+					// drain/publication (Codex P2 on PR #2861):
+					// the current writer is snapshotted under
+					// s.mu, and when there is no replacement the
+					// tail-buffer append also happens under
+					// s.mu — atomic with the next attach's
+					// drain, as in the unattached path above.
+					// When a newer writer has already replaced
+					// w, the chunk belongs to the live stream:
+					// it is routed to that writer (outside
+					// s.mu, serialised on the writer's mutex,
+					// behind its initial flush) instead of
+					// being stranded in the buffer behind the
+					// live chunks that follow.
+					s.mu.Lock()
+					cur := s.attached
+					if cur == w {
+						s.attached = nil
+					}
+					if cur == nil || cur == w {
+						s.buf.Write(data)
+					}
+					s.mu.Unlock()
+					if cur != nil && cur != w {
+						if _, rerr := cur.Write(data); rerr != nil {
+							s.buf.Write(data)
+							s.mu.Lock()
+							if s.attached == cur {
+								s.attached = nil
+							}
+							s.mu.Unlock()
+							cur.Close()
+						}
+					}
+					w.Close()
+					s.signal()
+				}
+			}
 		}
 		if err != nil {
 			return
@@ -323,29 +471,29 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	line, err := r.ReadBytes('\n')
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	var hs supervisorHandshake
 	if err := json.Unmarshal(line, &hs); err != nil {
-		writeReply(conn, supervisorReply{Error: "bad handshake: " + err.Error()})
-		conn.Close()
+		_ = writeReply(conn, supervisorReply{Error: "bad handshake: " + err.Error()})
+		_ = conn.Close()
 		return
 	}
 	if hs.Version != SupervisorProtocolVersion {
-		writeReply(conn, supervisorReply{Error: fmt.Sprintf(
+		_ = writeReply(conn, supervisorReply{Error: fmt.Sprintf(
 			"supervisor protocol version mismatch: daemon sent %d, supervisor speaks %d",
 			hs.Version, SupervisorProtocolVersion)})
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
 	s.mu.Lock()
 	if s.attached != nil {
 		s.mu.Unlock()
-		writeReply(conn, supervisorReply{Error: "already attached"})
-		conn.Close()
+		_ = writeReply(conn, supervisorReply{Error: "already attached"})
+		_ = conn.Close()
 		return
 	}
 	reply := supervisorReply{
@@ -362,20 +510,26 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 		reply.StderrTail = s.stderr.Tail(800)
 	}
 	buffered := s.buf.Drain()
-	s.attached = conn
+	// Publish the writer as the attached connection BEFORE the reply
+	// and buffered flush go out, and hold the writer's mutex across
+	// the publish and the flush (#2390): the pump snapshots the writer
+	// under s.mu but serialises its writes on w.mu, so while the flush
+	// holds w.mu no live chunk can overtake the reply or the buffered
+	// bytes — and s.mu itself is never held across a connection write,
+	// so a stalled daemon blocks only this flush, only until the write
+	// deadline.
+	w := &connWriter{conn: conn}
+	w.mu.Lock()
+	s.attached = w
 	s.attachedEver = true
 	if reply.ChildState == "exited" {
 		s.reported = true
 	}
-	// The reply and the buffered flush go out under the lock so the
-	// stdout pump cannot interleave live bytes ahead of them.
-	werr := writeReply(conn, reply)
-	if werr == nil && len(buffered) > 0 {
-		_, werr = conn.Write(buffered)
-	}
 	s.mu.Unlock()
+	werr := w.flushLocked(reply, buffered)
+	w.mu.Unlock()
 	if werr != nil {
-		s.detach(conn)
+		s.detach(w)
 		return
 	}
 	if reply.ChildState == "exited" {
@@ -384,7 +538,7 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 		// finishWhenDone observes exited && detached and returns.
 		go func() {
 			_, _ = io.Copy(io.Discard, r)
-			s.detach(conn)
+			s.detach(w)
 		}()
 		return
 	}
@@ -393,17 +547,17 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 		// The daemon detached (clean close or death). The child's
 		// stdin stays open: EOF there is a lifecycle signal a
 		// supervised child must not see just because a daemon left.
-		s.detach(conn)
+		s.detach(w)
 	}()
 }
 
-func (s *supervisor) detach(conn net.Conn) {
+func (s *supervisor) detach(w *connWriter) {
 	s.mu.Lock()
-	if s.attached == conn {
+	if s.attached == w {
 		s.attached = nil
 	}
 	s.mu.Unlock()
-	conn.Close()
+	w.Close()
 	s.signal()
 }
 
@@ -452,7 +606,7 @@ func (s *supervisor) finishWhenDone() {
 				case <-grace.C:
 				}
 			}
-			attached.Close()
+			attached.closeAfterFlush()
 			s.mu.Lock()
 			if s.attached == attached {
 				s.attached = nil
@@ -472,10 +626,10 @@ func (s *supervisor) finishWhenDone() {
 			attached := s.attached
 			s.mu.Unlock()
 			if attached != nil {
-				attached.Close()
+				attached.closeAfterFlush()
 			}
 			if s.ln != nil {
-				s.ln.Close()
+				_ = s.ln.Close()
 			}
 			return
 		}
@@ -483,7 +637,7 @@ func (s *supervisor) finishWhenDone() {
 	// Closing the listener wakes Accept in RunSupervisor, which then
 	// returns.
 	if s.ln != nil {
-		s.ln.Close()
+		_ = s.ln.Close()
 	}
 }
 
@@ -510,6 +664,10 @@ type SupervisedOptions struct {
 	BufferSize int
 	// SpawnTimeout bounds waiting for a spawned supervisor's socket.
 	SpawnTimeout time.Duration
+	// Context, when set, bounds the fail-fast nix: program-spec check
+	// before a supervisor is spawned. The supervisor itself resolves the
+	// spec again when it spawns the child. Nil means context.Background.
+	Context context.Context
 }
 
 // SupervisedTransport speaks to a stdio child through its supervisor.
@@ -566,11 +724,40 @@ func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTranspor
 		return nil, err
 	}
 	// Not live: remove a possible stale socket and spawn on demand.
+	spawnOpts := opts
+	if progspec.IsNix(opts.Command) {
+		// Fail fast, in this process, when the spec cannot resolve at
+		// all — and hand the resolved store path to the supervisor
+		// being spawned, in place of the spec. The supervisor runs
+		// with the SERVER's environment (opts.Env rides along), whose
+		// PATH may exclude nix entirely, so a supervisor left to
+		// resolve the spec again at child spawn can fail where this
+		// process succeeded (Codex review, PR #2585). A store path is
+		// immutable and self-contained, so handing it over is safe,
+		// and the supervisor's own restarts of the child stop
+		// depending on nix being findable. The resolution is FRESH
+		// (no memo read): a memoized path names whatever an earlier
+		// context resolved, which another process cannot trust.
+		// This check belongs HERE,
+		// not before the attach attempt above: a live supervisor with
+		// a healthy child needs no build, and a daemon reattaching
+		// after a restart must not be failed by a nix that has since
+		// left PATH or a flake that no longer resolves.
+		ctx := opts.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resolved, err := progspec.ResolvePathFreshInDir(ctx, opts.Command, opts.Cwd)
+		if err != nil {
+			return nil, fmt.Errorf("supervised transport: %w", err)
+		}
+		spawnOpts.Command = resolved
+	}
 	_ = os.Remove(sock)
 	if spawn == nil {
 		spawn = spawnSupervisorProcess
 	}
-	if serr := spawn(sock, opts); serr != nil {
+	if serr := spawn(sock, spawnOpts); serr != nil {
 		return nil, fmt.Errorf("supervised transport for %s: spawn supervisor: %w", opts.Name, serr)
 	}
 	deadline := time.Now().Add(opts.SpawnTimeout)
@@ -594,27 +781,27 @@ func attachSupervisor(sock string, opts SupervisedOptions) (*SupervisedTransport
 	r := bufio.NewReaderSize(conn, 1<<20)
 	hs, _ := json.Marshal(supervisorHandshake{Version: SupervisorProtocolVersion})
 	if _, err := conn.Write(append(hs, '\n')); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	line, err := r.ReadBytes('\n')
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("supervisor handshake: %w", err)
 	}
 	var reply supervisorReply
 	if err := json.Unmarshal(line, &reply); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("supervisor handshake: %w", err)
 	}
 	if reply.Error != "" {
-		conn.Close()
+		_ = conn.Close()
 		return nil, &supervisorRefusal{msg: reply.Error}
 	}
 	if reply.Version != SupervisorProtocolVersion {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("supervisor protocol version mismatch: supervisor sent %d, daemon speaks %d",
 			reply.Version, SupervisorProtocolVersion)
 	}
@@ -663,12 +850,12 @@ func spawnSupervisorProcess(sock string, opts SupervisedOptions) error {
 	if lf, lerr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.FileMode(defaults.PrivateMode)); lerr == nil {
 		cmd.Stdout = lf
 		cmd.Stderr = lf
-		defer lf.Close()
+		defer func() { _ = lf.Close() }()
 	}
 	devnull, derr := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if derr == nil {
 		cmd.Stdin = devnull
-		defer devnull.Close()
+		defer func() { _ = devnull.Close() }()
 	}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -689,9 +876,15 @@ func (t *SupervisedTransport) Send(ctx context.Context, msg []byte) error {
 	if t.exited {
 		return fmt.Errorf("write to %s: child already exited: %s (stderr: %s)", t.label, t.exitErr, t.stderrTail)
 	}
-	if _, err := t.conn.Write(append(msg, '\n')); err != nil {
+	frame := append(msg, '\n')
+	n, err := t.conn.Write(frame)
+	if err != nil {
 		return fmt.Errorf("write to %s: %w", t.label, err)
 	}
+	if n != len(frame) {
+		return fmt.Errorf("write to %s: %w", t.label, io.ErrShortWrite)
+	}
+	markToolCallDispatched(ctx, msg)
 	return nil
 }
 

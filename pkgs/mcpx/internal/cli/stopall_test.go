@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // writeDaemonRecord plants a daemon record for a live process (the test's
@@ -106,7 +106,7 @@ func TestStopAllStopsDaemonFoundInDefaultDir(t *testing.T) {
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	writeDaemonRecord(t, defaultDir, socket, "/cfg/a.json")
 

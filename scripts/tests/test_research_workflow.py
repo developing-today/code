@@ -273,6 +273,80 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.init(outline=outline, ok=False)
         self.assertEqual(self.snapshot(), before)
 
+    def test_outline_top_level_must_be_an_object(self):
+        before = self.snapshot()
+        result = self.init(outline=[], ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("must be a JSON object", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_non_json_names_the_file(self):
+        self.outline_file = self.scratch / "outline.json"
+        self.outline_file.write_text("this is not json", encoding="utf-8")
+        before = self.snapshot()
+        result = self.cli(
+            "init",
+            "--repo-root",
+            self.root,
+            "--input",
+            self.input,
+            "--slug",
+            "assorted-ideas",
+            "--timestamp",
+            TIMESTAMP,
+            "--outline",
+            self.outline_file,
+            ok=False,
+        )
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("is not valid JSON", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_title_must_be_a_string(self):
+        outline = self.outline()
+        outline["title"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'title' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_introduction_must_be_a_string(self):
+        outline = self.outline()
+        outline["introduction"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'introduction' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_entries_must_be_objects(self):
+        outline = self.outline()
+        outline["concepts"][0] = "just-a-string"
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("concept 1 must be a JSON object", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_slug_must_be_a_string(self):
+        outline = self.outline()
+        outline["concepts"][0]["slug"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'slug' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_summary_must_be_a_string(self):
+        outline = self.outline()
+        outline["concepts"][0]["summary"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'summary' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
     def test_existing_package_collision_never_overwrites_completed_intake(self):
         self.init()
         before = self.snapshot()
@@ -461,6 +535,114 @@ class ResearchWorkflowTests(unittest.TestCase):
         )
         self.assertTrue((package / "receipts" / note.name).is_file())
         self.check(package, True, "--require-resolved")
+
+    def add_note(self, package, body_text):
+        content = (
+            self.scratch / f"note-input-{len(body_text)}-{abs(hash(body_text))}.txt"
+        )
+        content.write_text(body_text, encoding="utf-8")
+        before = set(package.rglob("*.md"))
+        self.cli(
+            "note",
+            "--repo-root",
+            self.root,
+            "--package",
+            package,
+            "--from",
+            "C001",
+            "--to",
+            "C002",
+            "--input",
+            content,
+        )
+        created = set(package.rglob("*.md")) - before
+        self.assertEqual(len(created), 1)
+        return created.pop()
+
+    def resolve_note(self, package, note, disposition, reason, ok=True):
+        return self.cli(
+            "resolve-note",
+            "--package",
+            package,
+            "--note",
+            note.relative_to(package),
+            "--disposition",
+            disposition,
+            "--target",
+            self.state(package)["concepts"][1]["path"],
+            "--reason",
+            reason,
+            ok=ok,
+        )
+
+    def test_every_disposition_passes_require_resolved_via_resolve_note(self):
+        # The skill names five dispositions (#492): each one, recorded
+        # through resolve-note, must satisfy check --require-resolved.
+        package = self.init()
+        reasons = {
+            "incorporated": "Brought into the concept text.",
+            "acknowledged": "Recorded as an explicit constraint.",
+            "declined": "Out of scope for this package, with reasons.",
+            "deferred": "Valid but premature. Revisit when: the storage decision lands.",
+            "superseded": "Replaced by the newer note on the same question.",
+        }
+        for disposition, reason in reasons.items():
+            note = self.add_note(package, f"Please consider {disposition}.\n")
+            self.resolve_note(package, note, disposition, reason)
+        self.check(package, True, "--require-resolved")
+
+    def test_deferred_resolve_note_without_trigger_is_refused(self):
+        package = self.init()
+        note = self.add_note(package, "Please hold this for later.\n")
+        self.resolve_note(
+            package,
+            note,
+            "deferred",
+            "Valid, but not for now.",
+            ok=False,
+        )
+        self.assertFalse((package / "receipts" / note.name).is_file())
+        self.check(package, False, "--require-resolved")
+
+    def test_deferred_resolution_block_with_trigger_passes_require_resolved(self):
+        # The concept-file resolution path (check_package) rejected every
+        # deferred entry before #492, whatever its reason said.
+        package = self.init()
+        note = self.add_note(package, "Please account for the ownership constraint.\n")
+        target = self.state(package)["concepts"][1]["path"]
+        entry = {
+            "note": note.relative_to(package).as_posix(),
+            "at": TIMESTAMP,
+            "disposition": "deferred",
+            "target": target,
+            "reason": "Waits on the ownership decision. Revisit when: C001 is confirmed.",
+        }
+        with (package / target).open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n<!-- workflow:resolution -->\n"
+                + json.dumps(entry)
+                + "\n<!-- /workflow:resolution -->\n"
+            )
+        self.check(package, True, "--require-resolved")
+
+    def test_deferred_resolution_block_without_trigger_fails_check(self):
+        package = self.init()
+        note = self.add_note(package, "Please account for the ownership constraint.\n")
+        target = self.state(package)["concepts"][1]["path"]
+        entry = {
+            "note": note.relative_to(package).as_posix(),
+            "at": TIMESTAMP,
+            "disposition": "deferred",
+            "target": target,
+            "reason": "Waits on the ownership decision.",
+        }
+        with (package / target).open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n<!-- workflow:resolution -->\n"
+                + json.dumps(entry)
+                + "\n<!-- /workflow:resolution -->\n"
+            )
+        self.check(package, False, "--require-resolved")
 
     def test_completed_concept_cannot_still_be_an_unfilled_generated_stub(self):
         package = self.init()
@@ -711,6 +893,33 @@ class ResearchWorkflowTests(unittest.TestCase):
             self.cli("status", "--package", package, "--repo-root", self.root).stdout
         )
         self.assertNotIn("C001", output["ready"])
+
+    def test_frontier_treats_merged_concept_as_complete(self):
+        package = self.init()
+        state = self.state(package)
+        # C001 is the prerequisite for C002. Once C001 reaches the
+        # documented merged status it must classify as complete
+        # (#3212): it is not re-reported ready itself, and C002
+        # unblocks instead of staying blocked on a finished prereq.
+        state["concepts"][0]["status"] = "merged"
+        self.write_state(package, state)
+        # A complete concept may not keep scaffold placeholders
+        # (validation rejects them), so fill C001's document the way a
+        # genuinely merged concept's would be.
+        document = package / state["concepts"][0]["path"]
+        document.write_bytes(
+            document.read_bytes()
+            .replace(b"Not yet explored.", b"Explored and merged.")
+            .replace(b"Pending: research", b"Research merged")
+            .replace(b"TODO", b"DONE")
+            .replace(b"TBD", b"DONE")
+        )
+        output = json.loads(
+            self.cli("status", "--package", package, "--repo-root", self.root).stdout
+        )
+        self.assertNotIn("C001", output["ready"])
+        self.assertIn("C002", output["ready"])
+        self.assertNotIn("C002", output["blocked"])
 
     def test_concept_title_rejects_newlines(self):
         outline = {
@@ -1079,6 +1288,60 @@ class ResearchWorkflowTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.check(package, ok=True)
+
+    def test_profile_non_object_fails_with_named_diagnostic(self):
+        self.init()
+        profile_path = self.root / ".agents/research-workflow.json"
+        for bad in ([], "x", 42, None):
+            with self.subTest(bad=bad):
+                profile_path.write_text(json.dumps(bad), encoding="utf-8")
+                result = self.cli("check", "--repo-root", self.root, ok=False)
+                self.assertIn("profile must be a JSON object", result.stderr)
+                self.assertIn("research-workflow.json", result.stderr)
+
+    def test_state_non_object_fails_with_named_diagnostic(self):
+        package = self.init()
+        for bad in ([], "x", 42, None):
+            with self.subTest(bad=bad):
+                self.write_state(package, bad)
+                result = self.check(package, ok=False)
+                self.assertIn("workflow state must be a JSON object", result.stderr)
+
+    def test_check_package_rejects_wrong_shape_fields(self):
+        package = self.init()
+        original = self.state(package)
+        cases = [
+            ("transcript string", lambda s: s.update(transcript="transcript.txt"), "transcript"),
+            ("transcript missing sha256", lambda s: s.update(transcript={"path": "transcript.txt"}), "transcript"),
+            ("transcript missing", lambda s: s.pop("transcript"), "transcript"),
+            ("concepts object", lambda s: s.update(concepts={}), "concepts"),
+            ("concepts string entries", lambda s: s.update(concepts=["x"]), "concepts"),
+            ("concepts missing", lambda s: s.pop("concepts"), "concepts"),
+            ("dependencies missing", lambda s: s.pop("dependencies"), "dependencies"),
+            ("dependencies string", lambda s: s.update(dependencies="x"), "dependencies"),
+            ("dependencies string edge", lambda s: s.update(dependencies=["x"]), "dependencies"),
+        ]
+        for name, mutate, field in cases:
+            with self.subTest(name=name):
+                state = json.loads(json.dumps(original))
+                mutate(state)
+                self.write_state(package, state)
+                result = self.check(package, ok=False)
+                self.assertIn(field, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+        self.write_state(package, original)
+        self.check(package, ok=True)
+
+    def test_trigger_entry_non_object_fails_with_named_diagnostic(self):
+        package = self.init()
+        triggers = self.root / "docs/workflow-triggers.json"
+        self.profile["triggers"] = "docs/workflow-triggers.json"
+        self.write_profile()
+        for bad in (["intake"], [42], [None]):
+            with self.subTest(bad=bad):
+                triggers.write_text(json.dumps(bad), encoding="utf-8")
+                result = self.check(package, ok=False)
+                self.assertIn("Trigger fixture entries must be objects", result.stderr)
 
 
 if __name__ == "__main__":

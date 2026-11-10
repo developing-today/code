@@ -1,13 +1,3 @@
-package searchpath
-
-import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-)
-
 // Package searchpath turns a user's list of candidate locations into the
 // ordered set of places to actually look.
 //
@@ -17,6 +7,15 @@ import (
 // file rather than a directory, and refusing that would be arbitrary. And the
 // result has to be inspectable, because "why is it not finding my script" is
 // answered by showing the list that was actually searched.
+package searchpath
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
 
 // Entry is one resolved location.
 type Entry struct {
@@ -114,9 +113,17 @@ func splice(list []string, marker string, builtin []string) []string {
 	return out
 }
 
+// absolute resolves one search-path entry against the base dir.
+// Only a bare ~ and ~/... name the caller's home. A ~name entry is
+// NOT expanded (#1702): the tilde survives as a literal first
+// segment of an ordinary relative entry, resolved against dir like
+// any other. Resolving ~name under the caller's home silently
+// searched a lookalike directory -- and invented one for users that
+// do not exist -- while a passwd lookup would answer differently
+// for the CLI user and the daemon user, so neither is done.
 func absolute(path, dir string) string {
 	path = strings.TrimSpace(path)
-	if strings.HasPrefix(path, "~") {
+	if path == "~" || strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
 		}
@@ -186,10 +193,12 @@ func (r Resolved) Find(name string, opt FindOptions) (string, *Ambiguity, error)
 	return "", nil, nil
 }
 
-// List returns every name found along the path, nearest first, with the
-// nearer occurrence of a duplicated name winning.
+// List returns every name found along the path, nearest first. The nearest
+// occurrence of a name decides it: a nearer file wins over anything further
+// down, and a near pair of forms is reported as ambiguous rather than being
+// replaced by a farther plain copy.
 func (r Resolved) List(opt FindOptions) ([]string, []Ambiguity) {
-	seen := map[string]string{}
+	seen := map[string]bool{}
 	var order []string
 	var ambiguous []Ambiguity
 
@@ -229,17 +238,16 @@ func (r Resolved) List(opt FindOptions) ([]string, []Ambiguity) {
 		sort.Strings(stems)
 
 		for _, stem := range stems {
+			if seen[stem] {
+				continue // a nearer entry already decided this name
+			}
+			seen[stem] = true
 			hits := byStem[stem]
+			sort.Strings(hits)
 			if len(hits) > 1 && !opt.AllowOverlap {
-				sort.Strings(hits)
 				ambiguous = append(ambiguous, Ambiguity{Name: stem, Paths: hits})
 				continue
 			}
-			if _, dup := seen[stem]; dup {
-				continue // a nearer entry already provided it
-			}
-			sort.Strings(hits)
-			seen[stem] = hits[0]
 			order = append(order, stem)
 		}
 	}

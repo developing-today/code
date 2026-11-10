@@ -11,6 +11,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,7 +54,7 @@ func (c *keepAliveCaller) post(body string) (port string, reused bool, out strin
 	if err != nil {
 		return "", false, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if info.Conn != nil {
 		_, port, _ = net.SplitHostPort(info.Conn.LocalAddr().String())
@@ -96,6 +97,9 @@ func (e *env) tcpEndpoint(t *testing.T) string {
 // where the kernel shows every socket's inode.
 func serverSocketInode(t *testing.T, clientPort string) uint64 {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/net/tcp only exists on linux; this check cannot run here")
+	}
 	for _, name := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
 		b, err := os.ReadFile(name)
 		if err != nil {

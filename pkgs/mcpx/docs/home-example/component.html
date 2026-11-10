@@ -1,0 +1,99 @@
+<!--
+  The home-page example component (#1876, Approach C stages 1-2).
+
+  This is a fragment for the docs site generator (#1874 owns the page,
+  #1941 the site build) to include where the home page's example slot is.
+  It is not a standalone page and builds no parallel site.
+
+  No-JS behaviour: the static, highlighted example below is what a reader
+  gets — the same fallback the issue specifies. With JS, the static block
+  is replaced by an editable textarea, the Run and copy buttons appear,
+  and Run executes the example in the page against the fake daemon,
+  clearly labelled as simulated.
+-->
+<section class="mcpx-home-example" aria-label="Try mcpx in your browser">
+  <p class="mcpx-home-example-label">
+    <strong>Simulated — runs in your browser.</strong>
+    This example calls a mock <code>demo</code> server in this page, through
+    the real generated mcpx client. No daemon, no install, nothing leaves
+    the tab. To run it for real, copy it as a command below.
+  </p>
+
+  <!-- Static fallback: shown as-is when JavaScript is unavailable. -->
+  <pre class="mcpx-home-example-static"><code>const echoed = await tools.demo.echo({ message: "hello from a script" });
+
+console.log("demo.echo:", String(echoed));</code></pre>
+
+  <!-- Editor: hidden until JS enables it. A plain textarea is the v1
+       editor the issue allows; CodeMirror can replace it behind this
+       markup when the site build (#1941) takes a dependency. -->
+  <label class="mcpx-home-example-editor" hidden>
+    <span class="mcpx-home-example-visually-hidden">Editable example</span>
+    <textarea rows="5" spellcheck="false"></textarea>
+  </label>
+
+  <div class="mcpx-home-example-actions" hidden>
+    <button type="button" data-action="run">Run</button>
+    <button type="button" data-action="copy-exec">Copy as mcpx exec</button>
+    <button type="button" data-action="copy-script">Copy as script</button>
+  </div>
+
+  <pre class="mcpx-home-example-output" aria-live="polite" hidden></pre>
+
+  <script type="module">
+    import * as client from "./client.browser.js";
+    import { runExample } from "./run-example.js";
+    import { execCommand, asScript } from "./copy-command.js";
+
+    // document.currentScript is null inside a type="module" script, so
+    // locate the (single, not-yet-initialised) component by selector.
+    const root = document.querySelector(
+      ".mcpx-home-example:not([data-mcpx-ready])",
+    );
+    root.dataset.mcpxReady = "";
+    const source = root.querySelector(".mcpx-home-example-static code").textContent;
+    const editorWrap = root.querySelector(".mcpx-home-example-editor");
+    const textarea = editorWrap.querySelector("textarea");
+    const actions = root.querySelector(".mcpx-home-example-actions");
+    const output = root.querySelector(".mcpx-home-example-output");
+
+    textarea.value = source;
+    editorWrap.hidden = false;
+    actions.hidden = false;
+    root.querySelector(".mcpx-home-example-static").hidden = true;
+
+    const copy = async (text) => {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // Clipboard permission denied: show the text so it can be copied
+        // by hand rather than failing silently.
+        output.hidden = false;
+        output.textContent = text;
+      }
+    };
+
+    const runButton = actions.querySelector('[data-action="run"]');
+    actions.addEventListener("click", async (event) => {
+      const action = event.target?.dataset?.action;
+      if (action === "copy-exec") await copy(execCommand(textarea.value));
+      else if (action === "copy-script") await copy(asScript(textarea.value));
+      else if (action === "run") {
+        // Serialize runs: runExample swaps shared page globals (fetch,
+        // tools, console.log) for the duration, so a second run must not
+        // start until the first has restored them.
+        if (runButton.disabled) return;
+        runButton.disabled = true;
+        try {
+          output.hidden = false;
+          output.textContent = "";
+          await runExample(textarea.value, client, (line) => {
+            output.textContent += line + "\n";
+          });
+        } finally {
+          runButton.disabled = false;
+        }
+      }
+    });
+  </script>
+</section>

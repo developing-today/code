@@ -148,11 +148,17 @@ test.describe("Syntax Highlighting", () => {
     await page.waitForTimeout(2_000);
 
     // .txt files use rich schema (not raw/code_block), so no Shiki spans
-    // Check that no syntax-colored spans exist
+    // Check that no syntax-colored spans exist. Collab-cursor decorations
+    // are not highlighting: the cursor bar segment carries a styled span
+    // (background + text color) inside .collab-cursor, and the probe on
+    // #1229 showed it is the one span this count used to pick up in a
+    // .txt editor. Exclude decoration spans only — a genuine Shiki span
+    // anywhere else in the editor still counts.
     const coloredSpanCount = await editor.evaluate((el) => {
       const spans = el.querySelectorAll("span[style]");
       let count = 0;
       for (const span of spans) {
+        if (span.closest(".collab-cursor, .collab-cursor-bar")) continue;
         if ((span as HTMLElement).style.color) count++;
       }
       return count;
@@ -1137,7 +1143,9 @@ test.describe("Image Upload", () => {
     await waitForEditorReady(page);
 
     // Assert an <img> tag is visible inside the ProseMirror editor with the correct src
-    const img = page.locator("#editor .ProseMirror img");
+    // Scope to img.pm-image: a bare "img" locator also matches ProseMirror's internal
+    // <img class="ProseMirror-separator">, which fails toBeVisible strict mode (#1228)
+    const img = page.locator("#editor .ProseMirror img.pm-image");
     await expect(img).toBeVisible({ timeout: 15_000 });
     const src = await img.getAttribute("src");
     expect(src).toContain(uploadResult.url);
@@ -1607,10 +1615,12 @@ test.describe("Image Alt-Text", () => {
       data: { name: mdName },
     });
     expect(newResp.ok()).toBeTruthy();
+    const { hash } = (await newResp.json()) as { hash: string; name: string };
 
-    // Save with an image node that has alt text
+    // Save with an image node that has alt text (doc_id is required by SaveRequest, #1228)
     const saveResp = await page.request.post(`${baseURL}/api/save`, {
       data: {
+        doc_id: hash,
         name: mdName,
         doc: {
           type: "doc",
@@ -1670,10 +1680,12 @@ test.describe("Image Resize", () => {
       data: { name: mdName },
     });
     expect(newResp.ok()).toBeTruthy();
+    const { hash } = (await newResp.json()) as { hash: string; name: string };
 
-    // Save with an image node that has explicit dimensions
+    // Save with an image node that has explicit dimensions (doc_id is required by SaveRequest, #1228)
     const saveResp = await page.request.post(`${baseURL}/api/save`, {
       data: {
+        doc_id: hash,
         name: mdName,
         doc: {
           type: "doc",

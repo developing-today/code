@@ -55,6 +55,33 @@ function getCodeText(state: EditorState): string {
   return state.doc.firstChild?.textContent ?? "";
 }
 
+/** Build a code_block child node (richSchema) */
+function codeBlock(text: string) {
+  return richSchema.node("code_block", null, text ? [richSchema.text(text)] : []);
+}
+
+/** Build a paragraph child node (richSchema) */
+function paragraph(text: string) {
+  return richSchema.node("paragraph", null, text ? [richSchema.text(text)] : []);
+}
+
+/** Create an EditorState with a mixed doc and a text selection range */
+function createMixedState(children: ReturnType<typeof codeBlock>[], from: number, to: number): EditorState {
+  const doc = richSchema.node("doc", null, children);
+  const state = EditorState.create({ doc, plugins: [createIndentPlugin()] });
+  const tr = state.tr.setSelection(TextSelection.create(state.doc, from, to));
+  return state.apply(tr);
+}
+
+/** Get the text content of every top-level child in the doc */
+function getChildTexts(state: EditorState): string[] {
+  const out: string[] = [];
+  state.doc.forEach((child) => {
+    out.push(child.textContent);
+  });
+  return out;
+}
+
 // ── createIndentPlugin ─────────────────────────────────────────────
 
 describe("createIndentPlugin", () => {
@@ -255,5 +282,108 @@ describe("dedentCommand with selection", () => {
     const newState = runCommand(state, dedentCommand);
     expect(newState).not.toBeNull();
     expect(getCodeText(newState!)).toBe("line1\nline2\nline3");
+  });
+});
+
+// ── multi-block selections (#1399) ──────────────────────────────────
+
+describe("indentCommand with multi-block selection (#1399)", () => {
+  it("indents every overlapped code_block and leaves prose untouched", () => {
+    // doc: code_block("x\ny") + paragraph("mid") + code_block("p\nq")
+    const children = [codeBlock("x\ny"), paragraph("mid"), codeBlock("p\nq")];
+    const doc = richSchema.node("doc", null, children);
+    // Selection starts inside the first code_block, ends at doc end
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, indentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["  x\n  y", "mid", "  p\n  q"]);
+  });
+
+  it("indents the code_block when the selection runs into a paragraph", () => {
+    // doc: code_block("a\nb") + paragraph("mid")
+    const children = [codeBlock("a\nb"), paragraph("mid")];
+    const doc = richSchema.node("doc", null, children);
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, indentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["  a\n  b", "mid"]);
+  });
+
+  it("indents a trailing empty line when the selection continues into the next block", () => {
+    // Regression (Codex, PR #2872): block1 ends in "\n", so its trailing
+    // empty line starts exactly at the clamped block end. The selection
+    // continues into block2, so that line is overlapped and indented.
+    const children = [codeBlock("a\n"), codeBlock("b")];
+    const doc = richSchema.node("doc", null, children);
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, indentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["  a\n  ", "  b"]);
+  });
+
+  it("does not indent a trailing empty line when the selection ends exactly at its line start", () => {
+    // The selection genuinely ends at block1's trailing line start
+    // (content positions 1..3), so the exclusive-boundary rule applies.
+    const children = [codeBlock("a\n"), codeBlock("b")];
+    const state = createMixedState(children, 1, 3);
+    const newState = runCommand(state, indentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["  a\n", "b"]);
+  });
+
+  it("returns false when the selection overlaps no code_block", () => {
+    // Selection entirely inside the paragraph
+    const children = [codeBlock("x\ny"), paragraph("mid"), codeBlock("p\nq")];
+    // paragraph content is "mid" at pos 6-8
+    const state = createMixedState(children, 6, 9);
+    let dispatched = false;
+    const result = indentCommand(state, (_tr) => {
+      dispatched = true;
+    });
+    expect(result).toBe(false);
+    expect(dispatched).toBe(false);
+    expect(getChildTexts(state)).toEqual(["x\ny", "mid", "p\nq"]);
+  });
+});
+
+describe("dedentCommand with multi-block selection (#1399)", () => {
+  it("dedents every overlapped code_block and leaves prose untouched", () => {
+    const children = [codeBlock("  x\n  y"), paragraph("mid"), codeBlock("  p\n  q")];
+    const doc = richSchema.node("doc", null, children);
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, dedentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["x\ny", "mid", "p\nq"]);
+  });
+
+  it("dedents the code_block when the selection runs into a paragraph", () => {
+    const children = [codeBlock("  a\n  b"), paragraph("mid")];
+    const doc = richSchema.node("doc", null, children);
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, dedentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["a\nb", "mid"]);
+  });
+
+  it("dedents a trailing empty line when the selection continues into the next block", () => {
+    // Same clamped-end regression as indent (Codex, PR #2872).
+    const children = [codeBlock("  a\n  "), codeBlock("  b")];
+    const doc = richSchema.node("doc", null, children);
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, dedentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["a\n", "b"]);
+  });
+
+  it("returns false when the selection overlaps no code_block", () => {
+    const children = [codeBlock("  x"), paragraph("mid")];
+    const state = createMixedState(children, 6, 9);
+    let dispatched = false;
+    const result = dedentCommand(state, (_tr) => {
+      dispatched = true;
+    });
+    expect(result).toBe(false);
+    expect(dispatched).toBe(false);
+    expect(getChildTexts(state)).toEqual(["  x", "mid"]);
   });
 });

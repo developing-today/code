@@ -16,14 +16,54 @@ export interface ServerEnv extends Record<string, string | undefined> {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_TOKEN?: string;
+  /** Loopback-only pm-aggregator freshness publisher; absent in isolated tests. */
+  PM_AGG_FRESHNESS_URL?: string;
+}
+
+interface FreshnessNoticeInput {
+  eventId: string;
+  source: "github";
+  scope: string[];
+  occurredAt: string | null;
+  reason: "source-event";
+}
+
+function githubOccurredAt(payload: Record<string, any>): string | null {
+  const candidates = [
+    payload?.issue?.updated_at,
+    payload?.pull_request?.updated_at,
+    payload?.comment?.updated_at,
+    payload?.review?.submitted_at,
+    payload?.created_at,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && Number.isFinite(Date.parse(value))) return new Date(value).toISOString();
+  }
+  return null;
+}
+
+async function publishFreshness(env: ServerEnv, input: FreshnessNoticeInput): Promise<void> {
+  const url = env.PM_AGG_FRESHNESS_URL;
+  // Tests and standalone projector deployments can omit the local sink.
+  // The laptop unit configures it explicitly; no external route is enabled.
+  if (!url) return;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`freshness publisher returned ${response.status}`);
 }
 
 function libsqlStore(db: Client): ProjectorStore {
   return {
     upsertItem: (i) => store.upsertItem(db, i),
     upsertComment: (c) => store.upsertComment(db, c),
-    markCommentDeleted: (id) => store.markCommentDeleted(db, id),
+    markCommentDeleted: (c) => store.markCommentDeleted(db, c),
+    deleteItem: (ref, sourceUpdatedAt) => store.deleteItem(db, ref, sourceUpdatedAt),
+    itemDeletion: (ref) => store.getItemDeletion(db, ref),
     recordPush: (p) => store.recordPush(db, p),
+    appendHotEvents: (events) => store.appendHotEvents(db, events),
   };
 }
 
@@ -32,6 +72,50 @@ function repos(env: ServerEnv): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+export const DEFAULT_ITEMS_LIMIT = 200;
+export const MAX_ITEMS_LIMIT = 1000;
+export const DEFAULT_COMMENTS_LIMIT = 500;
+export const MAX_COMMENTS_LIMIT = 1000;
+
+/**
+ * Parse the `limit` query parameter (#1547). Only a positive integer is
+ * honoured, clamped to the endpoint maximum. An absent, non-numeric,
+ * fractional, zero, or negative value falls back to the endpoint default:
+ * an unvalidated value must never reach the store, where SQLite binds a
+ * negative LIMIT as "no limit" and a fractional one raises an error that
+ * escapes the handler as a 500.
+ */
+export function parseLimit(raw: string | null, defaultLimit: number, maxLimit: number): number {
+  if (raw === null) return defaultLimit;
+  // Only a decimal-digit spelling is honoured (#2971): Number() coercion
+  // re-admits every spelling it accepts ('1e2', '0x10', '5.0', '+5', ' 5'),
+  // which is the #1547 residual this gate exists to close.
+  if (!/^[0-9]+$/.test(raw)) return defaultLimit;
+  const n = Number(raw);
+  if (n < 1) return defaultLimit;
+  return Math.min(n, maxLimit);
+}
+
+/** Parse a hot-list cursor parameter: decimal digits only, else null. */
+export function parseCursor(raw: string | null): number | null {
+  if (raw === null || !/^[0-9]+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/** A link ref is storable only if it is owner/repo#N with a safe-integer
+ *  N - the same rule the aggregator's parseRef enforces (#4952, #6211).
+ *  The shape regex alone admits numbers parseRef (and refUrl) throw on
+ *  (e.g. a 20-digit issue number), and one such stored row 500s the
+ *  aggregator's /search and project pages at render, so the write gate
+ *  checks the number itself, not just the shape. */
+export function isStorableLinkRef(ref: unknown): ref is string {
+  if (typeof ref !== "string") return false;
+  const m = /^[\w.-]+\/[\w.-]+#(\d+)$/.exec(ref);
+  if (!m) return false;
+  return Number.isSafeInteger(Number(m[1]));
 }
 
 function bearerAuthorized(req: Request, env: ServerEnv): boolean {
@@ -64,6 +148,9 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     const signature = req.headers.get("x-hub-signature-256");
     const event = req.headers.get("x-github-event") ?? "unknown";
     const deliveryId = req.headers.get("x-github-delivery") ?? "";
+    if (!deliveryId) {
+      return jsonResponse(400, { error: "missing_delivery_id" });
+    }
     let body: Uint8Array;
     try {
       body = await readBoundedBody(req.body, 10_000_000);
@@ -86,6 +173,19 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     }
     try {
       const result = await applyEvent(libsqlStore(db), event, payload, repos(env), deliveryId);
+      if (result.wrote && result.refs.length > 0) {
+        // Append before recording this delivery as applied. If the
+        // aggregator is unavailable, GitHub's retry re-applies the
+        // projection and retries the same stable delivery id; an
+        // already-applied row must never hide a missing invalidation.
+        await publishFreshness(env, {
+          eventId: `github:${deliveryId}`,
+          source: "github",
+          scope: [...new Set(result.refs)].slice(0, 100),
+          occurredAt: githubOccurredAt(payload),
+          reason: "source-event",
+        });
+      }
       await store.recordDelivery(db, {
         deliveryId,
         event,
@@ -116,7 +216,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
       repo: url.searchParams.get("repo") ?? undefined,
       state: url.searchParams.get("state") ?? undefined,
       kind: url.searchParams.get("kind") ?? undefined,
-      limit: Number(url.searchParams.get("limit") ?? 200),
+      limit: parseLimit(url.searchParams.get("limit"), DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT),
     });
     return jsonResponse(200, { items: rows });
   }
@@ -125,7 +225,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
   if (path === "/comments" && method === "GET") {
     const refsParam = url.searchParams.get("refs");
     const subject = url.searchParams.get("subject");
-    const limit = Number(url.searchParams.get("limit") ?? 500);
+    const limit = parseLimit(url.searchParams.get("limit"), DEFAULT_COMMENTS_LIMIT, MAX_COMMENTS_LIMIT);
     if (subject) {
       const rows = await store.getCommentsForSubject(db, subject, { limit });
       return jsonResponse(200, { comments: rows });
@@ -154,10 +254,32 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
         return jsonResponse(400, { error: "invalid_json" });
       }
       const { subject, ref, relation = "relates", note, createdBy } = body ?? {};
-      if (typeof subject !== "string" || typeof ref !== "string" || !/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)) {
-        return jsonResponse(400, { error: "subject (string) and ref (owner/repo#N) required" });
+      if (
+        typeof subject !== "string" ||
+        subject.length === 0 ||
+        typeof ref !== "string" ||
+        !isStorableLinkRef(ref)
+      ) {
+        return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
       }
-      await store.upsertLink(db, { subject, ref, relation: String(relation), note, createdBy });
+      // Validate the whole body before any store call (#2974): relation is
+      // never String()-coerced (an array stored as 'a,b', an object as
+      // '[object Object]'), and note/createdBy are bound by the store, so a
+      // non-string there threw the SQLite bind error out of the handler.
+      if (typeof relation !== "string") {
+        return jsonResponse(400, { error: "relation (string) required" });
+      }
+      if (note !== undefined && note !== null && typeof note !== "string") {
+        return jsonResponse(400, { error: "note (string or null) required" });
+      }
+      if (createdBy !== undefined && createdBy !== null && typeof createdBy !== "string") {
+        return jsonResponse(400, { error: "createdBy (string or null) required" });
+      }
+      try {
+        await store.upsertLink(db, { subject, ref, relation, note, createdBy });
+      } catch (err) {
+        return jsonResponse(500, { error: `link_store_failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
       return jsonResponse(201, { ok: true, subject, ref, relation });
     }
     if (method === "DELETE" && bearerAuthorized(req, env)) {
@@ -173,10 +295,71 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
 
   // -- read: joined subject ---------------------------------------------------
   if (path.startsWith("/subjects/") && method === "GET") {
-    const subject = decodeURIComponent(path.slice("/subjects/".length));
+    // A malformed percent-encoding is a 400, never a 500: an unguarded
+    // decodeURIComponent throws URIError out of the handler (#2693,
+    // design #2747 Phase 2; same guard as #2720 in cf-container-hello).
+    // Only the decode is guarded \u2014 a well-formed subject still
+    // resolves (or 404s) exactly as before.
+    let subject: string;
+    try {
+      subject = decodeURIComponent(path.slice("/subjects/".length));
+    } catch {
+      return jsonResponse(400, { error: "malformed percent-encoding in subject" });
+    }
     const view = await store.getSubject(db, subject);
     if (!view) return jsonResponse(404, { error: "subject_not_found" });
     return jsonResponse(200, view);
+  }
+
+  // -- hot list (#5204): append-only change ledger + consumer checkpoints --
+  if (path === "/hot" && method === "GET") {
+    const after = parseCursor(url.searchParams.get("after") ?? url.searchParams.get("cursor")) ?? 0;
+    const limit = parseLimit(url.searchParams.get("limit"), DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT);
+    // A sweep pins the high-water the server issues at its start; pages
+    // requested with that high-water never see events past it, so a sweep
+    // is a fixed window and its checkpoint can ack up to it exactly.
+    const pinned = parseCursor(url.searchParams.get("high_water"));
+    // The issued high-water is always server-controlled: a caller-supplied
+    // pin is clamped to the ledger's actual high-water, never echoed past
+    // it, so the value a sweep acks against is one the server truly issued.
+    const serverHighWater = await store.hotHighWater(db);
+    const highWater = pinned === null ? serverHighWater : Math.min(pinned, serverHighWater);
+    const events = await store.listHotEvents(db, { after, limit, highWater });
+    return jsonResponse(200, {
+      events,
+      high_water: highWater,
+      next_cursor: events.length ? events[events.length - 1].seq : after,
+    });
+  }
+
+  if (path === "/hot/checkpoints" && method === "GET") {
+    const consumer = url.searchParams.get("consumer");
+    if (!consumer) return jsonResponse(400, { error: "consumer required" });
+    const cursor = await store.getConsumerCheckpoint(db, consumer);
+    return jsonResponse(200, { consumer, cursor });
+  }
+
+  if (path === "/hot/checkpoints" && method === "POST") {
+    if (!bearerAuthorized(req, env)) return jsonResponse(401, { error: "unauthorized" });
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse(400, { error: "invalid_json" });
+    }
+    const { consumer, cursor, highWater } = body ?? {};
+    if (typeof consumer !== "string" || consumer.length === 0) {
+      return jsonResponse(400, { error: "consumer (non-empty string) required" });
+    }
+    if (!Number.isInteger(cursor) || !Number.isInteger(highWater)) {
+      return jsonResponse(400, { error: "cursor and highWater (integers) required" });
+    }
+    try {
+      const stored = await store.ackConsumerCheckpoint(db, consumer, cursor, highWater);
+      return jsonResponse(200, { consumer, cursor: stored });
+    } catch (e) {
+      return jsonResponse(400, { error: String((e as Error).message) });
+    }
   }
 
   // -- reconcile trigger ------------------------------------------------------
@@ -196,7 +379,14 @@ export function serve(db: Client, env: ServerEnv, port: number): Bun.Server {
     // A reconcile poll runs for minutes; Bun's 10s default idle timeout
     // closed the socket mid-poll and the caller saw an empty reply.
     idleTimeout: 255,
-    async fetch(req) {
+    async fetch(req, server) {
+      // /reconcile is a long poll by design: under GitHub rate
+      // limiting a full pass takes longer than Bun's 255s
+      // idle-timeout ceiling, and the reconcile timer unit's curl
+      // died at the cap with an empty reply (curl 52) even though
+      // the poll itself was healthy (2026-11-01). Exempt just this
+      // route from the idle timeout; every other route keeps 255s.
+      if (new URL(req.url).pathname === "/reconcile") server.timeout(req, 0);
       return handleRequest(req, db, env);
     },
   });

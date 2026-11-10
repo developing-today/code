@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use futures_lite::StreamExt;
 use iroh_blobs::{Hash, api::Store};
 use iroh_docs::{
@@ -36,7 +36,9 @@ use iroh_docs::{
 };
 use tokio::task::JoinHandle;
 
-use crate::world::{Records, WorldHandle};
+use crate::world::{
+    MAX_RECORD_KEY_BYTES, MAX_RECORD_VALUE_BYTES, MAX_RECORDS, Records, WorldHandle,
+};
 
 /// The host side: one world's records document.
 #[derive(Clone, Debug)]
@@ -56,6 +58,20 @@ fn record_key(doc_key: &[u8]) -> Option<&str> {
     std::str::from_utf8(doc_key.strip_suffix(&[0])?).ok()
 }
 
+/// Write `contents` to `path` atomically: a temp file in the same
+/// directory, renamed over the real path, so a crash mid-write cannot
+/// leave a torn file at `path` (the pattern `tags::save_registry` uses).
+async fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    tokio::fs::write(&tmp, contents)
+        .await
+        .with_context(|| format!("write temp file {}", tmp.display()))?;
+    tokio::fs::rename(&tmp, path)
+        .await
+        .with_context(|| format!("rename {} over {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
 impl RecordsStore {
     /// Open the world's records doc, creating it on first use. With
     /// `namespace_file`, the doc's namespace ID is remembered there so the
@@ -63,30 +79,57 @@ impl RecordsStore {
     ///
     /// # Errors
     ///
-    /// Docs failures, or an unreadable namespace file.
+    /// Docs failures. A namespace file that cannot be read is ignored,
+    /// and one that cannot be parsed is recreated with a warning: the
+    /// file only points at a cache (the records are recomputable from
+    /// the journal), so it must never brick the world's startup.
     pub async fn open(docs: &Docs, namespace_file: Option<&Path>) -> Result<Self> {
         let author = docs.author_default().await?;
         if let Some(path) = namespace_file
             && let Ok(text) = tokio::fs::read_to_string(path).await
         {
-            let id: NamespaceId = text
-                .trim()
-                .parse()
-                .with_context(|| format!("parse records namespace in {}", path.display()))?;
-            if let Some(doc) = docs.open(id).await? {
-                return Ok(Self { doc, author });
+            match text.trim().parse::<NamespaceId>() {
+                Ok(id) => match docs.open(id).await {
+                    Ok(Some(doc)) => return Ok(Self { doc, author }),
+                    Ok(None) => {
+                        tracing::warn!(
+                            "records doc {id} from {} is gone; creating a new one",
+                            path.display()
+                        );
+                    }
+                    // iroh-docs 0.101 stringifies its typed
+                    // store::OpenError::NotFound ("Replica not found")
+                    // through the RPC layer, so a gone doc surfaces as
+                    // this error rather than the Ok(None) the Docs::open
+                    // docs promise. It is the same case as Ok(None):
+                    // warn and recreate. Any other error still fails.
+                    Err(error) if error.to_string().contains("Replica not found") => {
+                        tracing::warn!(
+                            "records doc {id} from {} is gone ({error}); creating a new one",
+                            path.display()
+                        );
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("open records doc {id} from {}", path.display())
+                        });
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        "records namespace in {} is unparseable ({error}); \
+                         creating a new records doc and rewriting the namespace file",
+                        path.display()
+                    );
+                }
             }
-            tracing::warn!(
-                "records doc {id} from {} is gone; creating a new one",
-                path.display()
-            );
         }
         let doc = docs.create().await?;
         if let Some(path) = namespace_file {
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            tokio::fs::write(path, doc.id().to_string()).await?;
+            write_atomic(path, doc.id().to_string().as_bytes()).await?;
         }
         Ok(Self { doc, author })
     }
@@ -126,14 +169,29 @@ impl RecordsStore {
                 existing.insert(key.to_owned(), entry.content_hash());
             }
         }
+        // Delete obsolete keys before writing additions (Codex review
+        // on PR #6495): with add-before-delete, replacing one valid
+        // MAX_RECORDS-sized set with a disjoint one transiently put
+        // up to twice the cap of entries in the doc, and a follower
+        // reading that intermediate state was refused by the
+        // receipt-side cap in read_records. Delete-first keeps every
+        // intermediate doc state at or below
+        // max(old set, new set), so a conforming publisher never
+        // produces an over-cap doc.
+        let obsolete: Vec<String> = existing
+            .keys()
+            .filter(|key| !records.contains_key(*key))
+            .cloned()
+            .collect();
+        for key in &obsolete {
+            self.doc.del(self.author, doc_key(key)).await?;
+            existing.remove(key);
+        }
         for (key, value) in records {
             let bytes = serde_json::to_vec(value)?;
             if existing.remove(key) != Some(Hash::new(&bytes)) {
                 self.doc.set_bytes(self.author, doc_key(key), bytes).await?;
             }
-        }
-        for key in existing.keys() {
-            self.doc.del(self.author, doc_key(key)).await?;
         }
         Ok(())
     }
@@ -160,26 +218,67 @@ impl RecordsStore {
 
 /// Read every record from a (local or replicated) records doc.
 ///
+/// Receipt-side cap enforcement (#6483): a replicated doc is not
+/// trusted just because a conforming publisher would have passed
+/// `crate::world::parse_records`. The same `MAX_RECORD*` caps are
+/// re-checked here, matching `parse_records` and
+/// `AdminHistoryBudget::add_record`: at most `MAX_RECORDS` records,
+/// keys non-empty, at most `MAX_RECORD_KEY_BYTES` bytes and free of
+/// control characters, and values at most `MAX_RECORD_VALUE_BYTES`
+/// serialized. Key and count checks run before the entry's blob is
+/// fetched, so an over-cap doc fails early rather than after
+/// materializing every blob; a value's size can only be measured once
+/// that one blob is in hand (the blob store serves whole blobs), and
+/// is checked before any later entry is fetched. Any violation is an
+/// error naming the offending record key. Callers surface it: the
+/// `mirror --follow` loop in `commands::world` propagates it with
+/// `?`, so a refusal ends the follow with an error instead of
+/// silently retry-spinning.
+///
 /// # Errors
 ///
-/// Docs or blob failures, or a value that is not JSON.
+/// Docs or blob failures, a value that is not JSON, or a record that
+/// exceeds one of the `MAX_RECORD*` caps.
 pub async fn read_records(doc: &Doc, blobs: &Store) -> Result<Records> {
     let mut records = Records::new();
+    let mut seen = 0usize;
     let entries = doc.get_many(Query::all().build()).await?;
     tokio::pin!(entries);
     while let Some(entry) = entries.try_next().await? {
         let Some(key) = record_key(entry.key()) else {
             continue;
         };
+        ensure!(
+            !key.is_empty() && key.len() <= MAX_RECORD_KEY_BYTES,
+            "record key {key:?} must be 1..={MAX_RECORD_KEY_BYTES} bytes"
+        );
+        ensure!(
+            !key.chars().any(char::is_control),
+            "record key {key:?} contains a control character"
+        );
+        seen += 1;
+        ensure!(
+            seen <= MAX_RECORDS,
+            "records doc contains more than {MAX_RECORDS} records; the limit is {MAX_RECORDS}"
+        );
         let bytes = blobs
             .blobs()
             .get_bytes(entry.content_hash())
             .await
             .with_context(|| format!("content of record {key:?} is not available yet"))?;
-        records.insert(
-            key.to_owned(),
-            serde_json::from_slice(&bytes).with_context(|| format!("record {key:?}"))?,
+        // A duplicate key is a parse error (#6520, #6634): the cap below
+        // must see the value as written, never a last-wins collapse of it —
+        // a duplicate could hide an over-cap value behind a small second
+        // entry. The publish path (parse_records) refuses the same shape.
+        let text = std::str::from_utf8(&bytes).with_context(|| format!("record {key:?}"))?;
+        let value = id_core::json_unique::parse_json_without_duplicate_keys(text)
+            .with_context(|| format!("record {key:?}"))?;
+        let size = serde_json::to_vec(&value).map_or(usize::MAX, |v| v.len());
+        ensure!(
+            size <= MAX_RECORD_VALUE_BYTES,
+            "record {key:?} is {size} bytes; the limit is {MAX_RECORD_VALUE_BYTES}"
         );
+        records.insert(key.to_owned(), value);
     }
     Ok(records)
 }
@@ -401,6 +500,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_recovers_from_an_empty_namespace_file() {
+        let host = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        std::fs::write(&path, "").unwrap();
+        let store = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        // The torn file was rewritten with the new doc's namespace.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.trim(), store.namespace().to_string());
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_recovers_from_a_garbage_namespace_file() {
+        let host = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        std::fs::write(&path, "abc123partial").unwrap();
+        let store = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.trim(), store.namespace().to_string());
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_reuses_the_doc_a_valid_namespace_names() {
+        let host = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        let first = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        let second = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        assert_eq!(first.namespace(), second.namespace());
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_recreates_when_the_named_doc_is_gone() {
+        // A well-formed namespace for a doc this store does not hold:
+        // warn-and-recreate, and the file ends up naming the new doc.
+        let host = Node::spawn().await;
+        let other = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        let foreign = RecordsStore::open(&other.docs, None).await.unwrap();
+        std::fs::write(&path, foreign.namespace().to_string()).unwrap();
+        let store = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        assert_ne!(store.namespace(), foreign.namespace());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.trim(), store.namespace().to_string());
+        other.shutdown().await;
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn reconcile_writes_deletes_and_leaves_unchanged_records_alone() {
         let host = Node::spawn().await;
         let store = RecordsStore::open(&host.docs, None).await.unwrap();
@@ -440,6 +593,143 @@ mod tests {
         let read = read_records(&store.doc, &host.blobs).await.unwrap();
         assert_eq!(read, records);
 
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reconcile_replacing_a_full_set_stays_readable() {
+        // Regression for the Codex finding on PR #6495: replacing one
+        // MAX_RECORDS-sized set with a disjoint one must end in a doc
+        // that read_records accepts (delete-first ordering keeps every
+        // intermediate state within the cap as well).
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        let mut first = Records::new();
+        for i in 0..MAX_RECORDS {
+            first.insert(format!("a{i}"), 1.into());
+        }
+        store.reconcile(&first).await.unwrap();
+        let mut second = Records::new();
+        for i in 0..MAX_RECORDS {
+            second.insert(format!("b{i}"), 2.into());
+        }
+        store.reconcile(&second).await.unwrap();
+        let read = read_records(&store.doc, &host.blobs).await.unwrap();
+        assert_eq!(read, second);
+        host.shutdown().await;
+    }
+
+    async fn write_raw(store: &RecordsStore, key: &str, bytes: Vec<u8>) {
+        store
+            .doc
+            .set_bytes(store.author, doc_key(key), bytes)
+            .await
+            .unwrap();
+    }
+
+    async fn read_err(store: &RecordsStore, blobs: &Store) -> String {
+        read_records(&store.doc, blobs)
+            .await
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn read_records_accepts_a_conforming_doc() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, "a", b"1".to_vec()).await;
+        write_raw(
+            &store,
+            &"k".repeat(MAX_RECORD_KEY_BYTES),
+            b"\"two\"".to_vec(),
+        )
+        .await;
+        let read = read_records(&store.doc, &host.blobs).await.unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read["a"], 1);
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_an_oversized_value() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        let big = serde_json::Value::String("x".repeat(MAX_RECORD_VALUE_BYTES + 1));
+        write_raw(&store, "big", serde_json::to_vec(&big).unwrap()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("big") && err.contains("8192"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_a_duplicate_key_hiding_an_oversized_value() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        // As written this value is over the cap; collapsed last-wins it is
+        // {"k":"small"} and would pass — the #6634 receipt bypass.
+        let raw = format!(
+            "{{\"k\":\"{}\",\"k\":\"small\"}}",
+            "x".repeat(MAX_RECORD_VALUE_BYTES + 100)
+        );
+        assert!(raw.len() > MAX_RECORD_VALUE_BYTES);
+        write_raw(&store, "dup", raw.into_bytes()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("dup"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_a_small_nested_duplicate_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        // Well under every cap, raw and collapsed: only the duplicate-key
+        // refusal can reject this value.
+        write_raw(&store, "nested", br#"{"a":{"b":1,"b":2}}"#.to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("nested"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_an_over_long_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, &"k".repeat(MAX_RECORD_KEY_BYTES + 1), b"1".to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("256"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_a_control_character_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, "bad\u{1}key", b"1".to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("control character"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_an_empty_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, "", b"1".to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("1..=256"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_too_many_records() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        for i in 0..=MAX_RECORDS {
+            write_raw(&store, &format!("k{i}"), b"1".to_vec()).await;
+        }
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("4096"), "{err}");
         host.shutdown().await;
     }
 }

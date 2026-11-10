@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/mcpspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpspec"
 )
 
 type sweepNotifier struct{}
@@ -112,7 +112,7 @@ func sweepRev(t *testing.T, rev string) []sweepFinding {
 	outR, outW := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { _ = srv.ServeStdio(ctx, inR, outW); outW.Close(); close(done) }()
+	go func() { _ = srv.ServeStdio(ctx, inR, outW); _ = outW.Close(); close(done) }()
 
 	var mu sync.Mutex
 	methodOf := map[string]string{}

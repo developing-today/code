@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GhItem, OrchestrationSection, ProjectPoolItem, Provenance } from "../src/model.ts";
+import type { CoverageSnapshotFile } from "../src/coverage.ts";
 import { PAGES, pageByRoute } from "../src/pages.ts";
 import {
   PROJECT_CONFIGS,
@@ -10,9 +11,10 @@ import {
   unsetPoolCount,
   validateProjectConfigs,
   type ProjectConfig,
+  type ProjectRepoCard,
 } from "../src/project-config.ts";
 import { buildProgramData, buildProgramLive, PROGRAM, programRefs, TRACKED_REFS } from "../src/program.ts";
-import { renderProgram, renderProgramProject } from "../src/render.ts";
+import { projectsBodyHtml, renderProgram, renderProgramProject } from "../src/render.ts";
 import { FIXTURE_ROADMAP, fixtureSource } from "../src/sources/fixtures.ts";
 
 const PROV: Provenance = {
@@ -28,6 +30,61 @@ const PROV: Provenance = {
   registry: "x",
   aa: "x",
 };
+
+describe("stale issue coverage panel", () => {
+  test("shows per-repo count, collection time, and stale/error/unavailable states honestly", () => {
+    const coverage: CoverageSnapshotFile = {
+      baseline: null,
+      current: {
+        generatedAt: "2026-11-01T12:00:00.000Z",
+        repos: [
+          {
+            repo: "org/stale",
+            openIssues: 10,
+            gateNow: 0,
+            gateNext: 0,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: 4,
+            staleIssuesCollectedAt: "2026-10-01T12:00:00.000Z",
+            staleIssuesError: null,
+          },
+          {
+            repo: "org/error",
+            openIssues: null,
+            gateNow: null,
+            gateNext: null,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: null,
+            staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+            staleIssuesError: "search 503 <retry>",
+          },
+          {
+            repo: "org/missing",
+            openIssues: null,
+            gateNow: null,
+            gateNext: null,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: null,
+            staleIssuesCollectedAt: null,
+            staleIssuesError: null,
+          },
+        ],
+      },
+    };
+    const html = projectsBodyHtml([], { coverage });
+    expect(html).toContain("Open issues untouched &gt;90 days");
+    expect(html).toContain(">4</td><td><time datetime=\"2026-10-01T12:00:00.000Z\">2026-10-01T12:00:00.000Z</time></td><td>STALE — collection is over 7 days old</td>");
+    expect(html).toContain("Collection error: search 503 &lt;retry&gt;");
+    expect(html).toContain("Unavailable — collection failed or not collected");
+    expect(html).toContain(">—</td>");
+  });
+});
 
 function poolItem(partial: Partial<ProjectPoolItem>): ProjectPoolItem {
   return {
@@ -195,6 +252,22 @@ describe("project registry", () => {
     expect(labGaps).toContain("2026-10-21");
     expect(lab.editorial?.gaps.some((e) => (e.refs ?? []).includes("developing-today/code#1091"))).toBe(true);
 
+    // #1124 residuals: the pre-seed dezren39/nix#501-#508 predecessor set is
+    // tracked and explained, and the Grist-vs-Project status disagreement
+    // for #1080/#1081 is surfaced as an honest gap naming both readings.
+    for (const n of [501, 502, 503, 504, 505, 506, 507, 508]) {
+      expect(lab.trackedRefs).toContain(`dezren39/darwin-nix#${n}`);
+    }
+    expect(labGaps).toContain("dezren39/nix (#501-#508)");
+    expect(labGaps).toContain("Hardware inventory + firmware/BMC audit");
+    expect(labGaps).toContain("In progress / Q4 2026");
+    expect(labGaps).toContain("Todo / planned");
+    const disagreement = (lab.editorial?.gaps ?? []).find((e) => e.title.includes("Status sources disagree"));
+    expect(disagreement?.refs).toContain("developing-today/code#1080");
+    expect(disagreement?.refs).toContain("developing-today/code#1081");
+    expect(disagreement?.refs).toContain("dezren39/darwin-nix#501");
+    expect(disagreement?.refs).toContain("dezren39/darwin-nix#502");
+
     const id = projectConfigById("id")!;
     for (const n of [1076, 1077, 1078, 1235, 1239, 1240]) {
       expect(id.trackedRefs).toContain(`developing-today/code#${n}`);
@@ -204,6 +277,14 @@ describe("project registry", () => {
       expect(idLinks.some((r) => r.endsWith(`pkgs/id/${doc}`))).toBe(true);
     }
     expect((id.editorial?.done ?? []).map((e) => e.title).join("\n")).toContain("validation in progress");
+    // #1125 coverage-gap disclosure: the id page must state that its pool
+    // (Area=id-train) is a subset of the open app/id issues, with a dated
+    // count — never implying the pool is the whole project.
+    const idGaps = (id.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(idGaps).toContain("id-train");
+    expect(idGaps).toContain("app/id");
+    expect(idGaps).toMatch(/\d+ open app\/id issues on \d{4}-\d{2}-\d{2}/);
+    expect(id.editorial?.gaps.some((e) => (e.refs ?? []).includes("developing-today/code#1125"))).toBe(true);
     expect((id.editorial?.done ?? []).map((e) => e.title)).not.toContain("Phases 9–11 delivered");
 
     const fleet = projectConfigById("repo-fleet")!;
@@ -221,14 +302,80 @@ describe("project registry", () => {
     const fleetDone = (fleet.editorial?.done ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
     expect(fleetDone).toContain("closed in GitHub");
     const fleetGaps = (fleet.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
-    expect(fleetGaps).toContain("2026-10-27");
-    expect(fleetGaps).toContain("665 open issues");
+    expect(fleetGaps).toContain("2026-10-29");
+    expect(fleetGaps).toContain("1,119 open issues");
 
     const cloud = projectConfigById("cloud-program")!;
     expect(cloud.roadmapArea).toBe("Cloud program");
+    // #1128 area decision: links+refs for the pool, Grist area kept.
+    expect(cloud.poolArea).toBeNull();
+    const cloudNext = (cloud.editorial?.next ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(cloudNext).toContain("OCI signup resolution");
+    expect(cloudNext).toContain("CPCOE-29381");
+    // #1059: the free-services adoption record was published 2026-11-03, so the
+    // entry now lives in done (doc/2026-11-03T18-30-00Z_record_free_services_adoption.md).
+    const cloudDone = (cloud.editorial?.done ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(cloudDone).toContain("Free-services pass — adoption decisions recorded");
+    // The 2026-10-26 SaaS review list must stay named in the entry.
+    for (const svc of [
+      "boats.cloud",
+      "quic.cloud",
+      "Backblaze B2",
+      "OVHcloud",
+      "Railway",
+      "Render",
+      "DigitalOcean",
+      "Hetzner",
+      "Heroku",
+      "GCP",
+      "AWS",
+    ]) {
+      expect(cloudDone).toContain(svc);
+    }
+    // boats.cloud is recorded unverifiable (not left open), and nothing is adopted yet.
+    expect(cloudDone).toContain("unverifiable");
+    expect(cloudDone).toContain("nothing is adopted yet");
+    expect(cloudDone).toContain("pending Drew");
+    const cloudLongTerm = (cloud.editorial?.longTerm ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(cloudLongTerm).toContain("Egress offload");
+    expect(cloudLongTerm).toContain("zero-egress");
+    expect(cloudLongTerm).toContain("Always-free maximization");
   });
 
-  test("validation catches duplicates and malformed entries", () => {
+  test("repo-fleet carries four per-repo cards and a sweep-health section (#1126)", () => {
+    const fleet = projectConfigById("repo-fleet")!;
+    const cards = fleet.repoCards ?? [];
+    expect(cards.map((c) => c.repo)).toEqual([
+      "developing-today/code",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
+    ]);
+    for (const card of cards) {
+      expect(card.role.length).toBeGreaterThan(0);
+      // Dated snapshot counts, taken 2026-10-29 — never live claims.
+      expect(card.openIssuesAsOf).toBe("2026-10-29");
+      expect(card.openIssues).toBeGreaterThan(0);
+      expect(card.trackedRefs.length).toBeGreaterThan(0);
+    }
+    expect(cards.reduce((n, c) => n + c.openIssues, 0)).toBe(1119);
+    // Sweep health rests on published fleet data only (orchestration
+    // section + tracked issues), and says so.
+    expect((fleet.sweepHealth ?? []).length).toBeGreaterThan(0);
+    const sweepText = (fleet.sweepHealth ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(sweepText).toContain("orchestration");
+    // The scope note is refreshed, dated, and claims no completeness.
+    const gaps = (fleet.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(gaps).toContain("2026-10-29");
+    expect(gaps).toContain("does not claim pool completeness");
+    // Card + sweep-health refs resolve through the shared ref set.
+    const refs = allProjectRefs();
+    expect(refs).toContain("developing-today-forks/opencode#365");
+    expect(refs).toContain("developing-today-forks/openchamber#214");
+    expect(refs).toContain("dezren39/darwin-nix#512");
+  });
+
+  test("validation catches duplicates, malformed refs, and impossible dates", () => {
     const base: ProjectConfig = {
       id: "x-proj",
       title: "X",
@@ -247,6 +394,24 @@ describe("project registry", () => {
     ]);
     expect(bad.some((e) => e.includes("not a slug"))).toBe(true);
     expect(bad.some((e) => e.includes("malformed ref"))).toBe(true);
+    for (const ref of ["a/b/c#12", "a$/b#12", "a+b/c#3"]) {
+      const errors = validateProjectConfigs([{ ...base, trackedRefs: [ref] }]);
+      expect(errors.some((e) => e.includes("malformed ref"))).toBe(true);
+    }
+    expect(validateProjectConfigs([{ ...base, trackedRefs: ["developing-today/code#1"] }])).toEqual([]);
+
+    const repoCard: ProjectRepoCard = {
+      repo: "owner/repo",
+      role: "project",
+      openIssues: 1,
+      openIssuesAsOf: "2024-02-29",
+      trackedRefs: [],
+    };
+    expect(validateProjectConfigs([{ ...base, repoCards: [repoCard] }])).toEqual([]);
+    for (const date of ["2026-02-30", "2026-13-01", "2026-00-00", "2026-04-31", "2026-02-29"]) {
+      const errors = validateProjectConfigs([{ ...base, repoCards: [{ ...repoCard, openIssuesAsOf: date }] }]);
+      expect(errors.some((e) => e.includes("openIssuesAsOf"))).toBe(true);
+    }
     const badLinks = validateProjectConfigs([
       {
         ...base,
@@ -265,9 +430,38 @@ describe("project registry", () => {
       poolItem({ status: "Done", area: "pm-dashboard" }),
       poolItem({ status: "Todo", area: "pm-dashboard" }),
       poolItem({ status: "Todo", area: "id-train" }),
+      poolItem({ status: "Todo", area: "mcpx" }),
+      poolItem({ status: "Todo", area: "mcpx" }),
       poolItem({ status: null, area: null }),
     ];
-    const summaries = buildProjectSummaries(PROJECT_CONFIGS, pool, FIXTURE_ROADMAP);
+    // The live Grist table gained mcpx rows 24-27 in the #1127 taxonomy pass;
+    // the in-repo seed predates them, so the wired-area rows are added here.
+    const roadmap = [
+      ...FIXTURE_ROADMAP,
+      {
+        id: 24,
+        subject: "grist:fixture/Roadmap/24",
+        title: "mcpx — single source: consumption decision + backlog re-home",
+        area: "mcpx",
+        status: "In progress",
+        horizon: "Now",
+        source: "https://github.com/developing-today/code/issues/308",
+        notes: "",
+        links: [],
+      },
+      {
+        id: 25,
+        subject: "grist:fixture/Roadmap/25",
+        title: "mcpx — supervisor, session resume, ExecIdentity",
+        area: "mcpx",
+        status: "Planned",
+        horizon: "Next",
+        source: "",
+        notes: "",
+        links: [],
+      },
+    ];
+    const summaries = buildProjectSummaries(PROJECT_CONFIGS, pool, roadmap);
     const byId = new Map(summaries.map((s) => [s.id, s]));
     expect(byId.get("pm-dashboard")?.poolTotal).toBe(2);
     expect(byId.get("pm-dashboard")?.poolByStatus).toContainEqual({ name: "Done", count: 1 });
@@ -276,9 +470,10 @@ describe("project registry", () => {
     expect(byId.get("id")?.roadmapRows).toBe(7); // fixture seed area "id"
     expect(byId.get("repo-fleet")?.roadmapRows).toBe(4);
     expect(byId.get("lab-cluster")?.roadmapRows).toBe(6);
-    // A null pool Area claims no pool items, however much pool exists.
-    expect(byId.get("mcpx")?.poolTotal).toBe(0);
-    expect(byId.get("mcpx")?.roadmapRows).toBe(0);
+    // mcpx is wired to its own Area (#1127): its fixture pool items and
+    // roadmap rows count, where a null Area would claim none.
+    expect(byId.get("mcpx")?.poolTotal).toBe(2);
+    expect(byId.get("mcpx")?.roadmapRows).toBe(2);
     // cloud-program has no pool Area, but its Grist area exists (#1128):
     // the fixture seed's one "Cloud program" row counts.
     expect(byId.get("cloud-program")?.poolTotal).toBe(0);
@@ -291,7 +486,7 @@ describe("project registry", () => {
     for (const r of TRACKED_REFS) expect(refs).toContain(r);
     expect(refs).toContain("developing-today/code#1080"); // lab-cluster epic
     expect(refs).toContain("developing-today/code#911"); // repo-fleet + pm next
-    expect(refs).toContain("dezren39/nix#254"); // mcpx editorial
+    expect(refs).toContain("dezren39/darwin-nix#254"); // mcpx editorial
     expect(new Set(refs).size).toBe(refs.length);
   });
 });
@@ -311,12 +506,17 @@ describe("renderProgramProject", () => {
       expect(html).toContain("Project pool — live");
       expect(html).toContain("Roadmap — live");
     }
-    // Null-area projects say so, with the gap, instead of empty sections.
+    // mcpx is wired to its own Area (#1127): with no mcpx pool items or
+    // roadmap rows in the fixture feed it states the empty feed honestly,
+    // not the old null-area gap.
     const mcpx = projectConfigById("mcpx")!;
     const mcpxHtml = renderProgramProject(buildProjectDetail(mcpx, items, pool, rows), items, PROV);
-    expect(mcpxHtml).toContain("No dedicated Project Area yet");
-    expect(mcpxHtml).toContain("No Grist roadmap area yet");
+    expect(mcpxHtml).not.toContain("No dedicated Project Area yet");
+    expect(mcpxHtml).not.toContain("No Grist roadmap area yet");
+    expect(mcpxHtml).toContain("No pool items with Area");
+    expect(mcpxHtml).toContain("No roadmap rows with area");
     expect(mcpxHtml).toContain("planning/roadmaps/mcpx.md");
+    expect(mcpxHtml).toContain("pkgs/mcpx/TODO.md");
     const cloud = projectConfigById("cloud-program")!;
     const cloudHtml = renderProgramProject(buildProjectDetail(cloud, items, pool, rows), items, PROV);
     expect(cloudHtml).toContain("No home doc configured");
@@ -329,6 +529,12 @@ describe("renderProgramProject", () => {
     const labHtml = renderProgramProject(buildProjectDetail(lab, items, pool, rows), items, PROV);
     expect(labHtml).toContain("Status report:");
     expect(labHtml).toContain("doc/2026-10-27T03-14-08Z_status_basement-cluster");
+    // #1123: projects without a statusReport say so explicitly instead of
+    // silently omitting the layer; lab-cluster (the one project with a
+    // report) must not carry the note.
+    expect(labHtml).not.toContain("No status report yet");
+    expect(mcpxHtml).toContain("No status report yet for this project.");
+    expect(cloudHtml).toContain("No status report yet for this project.");
     expect(labHtml).toContain("CPCOE-29381");
 
     const id = projectConfigById("id")!;
@@ -341,7 +547,54 @@ describe("renderProgramProject", () => {
     const fleet = projectConfigById("repo-fleet")!;
     const fleetHtml = renderProgramProject(buildProjectDetail(fleet, items, pool, rows), items, PROV);
     expect(fleetHtml).toContain("Queue fleet reliability");
-    expect(fleetHtml).toContain("665 open issues");
+    expect(fleetHtml).toContain("1,119 open issues");
+    // Per-repo cards + sweep health render (#1126).
+    expect(fleetHtml).toContain("Per-repo cards");
+    for (const repo of [
+      "developing-today/code",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
+    ]) {
+      expect(fleetHtml).toContain(repo);
+    }
+    expect(fleetHtml).toContain("Open issues (GitHub search, 2026-10-29)");
+    expect(fleetHtml).toContain("Sweep health — published fleet state");
+    expect(fleetHtml).toContain("No new data pipeline feeds this section");
+  });
+
+  test("detail builder splits pool and roadmap by repo for the fleet cards (#1126)", () => {
+    const pool = [
+      poolItem({
+        area: "fleet-ops",
+        repo: "developing-today/code",
+        ref: "developing-today/code#1",
+        title: "code item",
+      }),
+      poolItem({ area: "fleet-ops", repo: "dezren39/nix", ref: "dezren39/nix#2", number: 2, title: "nix item" }),
+      poolItem({
+        area: "pm-dashboard",
+        repo: "developing-today/code",
+        ref: "developing-today/code#3",
+        number: 3,
+        title: "other area",
+      }),
+    ];
+    const fleet = projectConfigById("repo-fleet")!;
+    const detail = buildProjectDetail(fleet, new Map(), pool, FIXTURE_ROADMAP);
+    expect(detail.repoCards.map((c) => c.card.repo)).toEqual([
+      "developing-today/code",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
+    ]);
+    const byRepo = new Map(detail.repoCards.map((c) => [c.card.repo, c]));
+    expect(byRepo.get("developing-today/code")?.poolItems.map((p) => p.title)).toEqual(["code item"]);
+    expect(byRepo.get("dezren39/nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
+    expect(byRepo.get("developing-today-forks/opencode")?.poolItems).toEqual([]);
+    // Fixture roadmap rows name their repo in the title / links.
+    expect(byRepo.get("developing-today-forks/opencode")?.roadmapRows.length).toBeGreaterThan(0);
+    expect(byRepo.get("developing-today-forks/openchamber")?.roadmapRows.length).toBeGreaterThan(0);
   });
 
   test("pm-dashboard page retains the full #1046 document", async () => {

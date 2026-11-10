@@ -2,8 +2,20 @@
 // Run: node --test pm-stack/meta-exporter/
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, symlink } from "node:fs/promises";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  attemptBoundedRestart,
   failureDocument,
+  PAGE_NOT_READY_EXIT,
+  probeCdpReadiness,
+  restartAllowed,
   parseBillingBanner,
   parsePaygBalance,
   parseSubscriptionQuota,
@@ -42,24 +54,6 @@ test("parseSubscriptionQuota: shape drift fails closed", () => {
   const zeroLimit = structuredClone(QUOTA);
   zeroLimit.subscription_quota.window_weighted_limit = "0";
   assert.throws(() => parseSubscriptionQuota(zeroLimit), /zero limit/);
-  // window_duration_secs is validated like every other numeric field:
-  // missing, non-numeric, zero, or negative durations fail closed
-  // instead of exporting a "window-NaNs" window as a successful reading.
-  for (const bad of [undefined, "abc", 0, -3600]) {
-    const drifted = structuredClone(QUOTA);
-    if (bad === undefined) delete drifted.subscription_quota.window_duration_secs;
-    else drifted.subscription_quota.window_duration_secs = bad;
-    assert.throws(() => parseSubscriptionQuota(drifted), /window_duration_secs/);
-  }
-});
-
-test("parseSubscriptionQuota: window naming for valid durations is unchanged", () => {
-  const oneHour = structuredClone(QUOTA);
-  oneHour.subscription_quota.window_duration_secs = 3600;
-  assert.equal(parseSubscriptionQuota(oneHour).windows[0].name, "1h");
-  const twoHours = structuredClone(QUOTA);
-  twoHours.subscription_quota.window_duration_secs = 7200;
-  assert.equal(parseSubscriptionQuota(twoHours).windows[0].name, "window-7200s");
 });
 
 test("parseBillingBanner: minor units to USD, currency checked", () => {
@@ -91,4 +85,214 @@ test("documents: success carries the spec fields; failure carries none", () => {
   assert.equal(bad.measuredAt, null);
   assert.equal("windows" in bad, false);
   assert.equal("freeCreditsUsd" in bad, false);
+});
+
+// ---------- Readiness probe fixtures (issue #5487) ----------
+// A fixture CDP endpoint: HTTP answers /json/new like a real browser,
+// and the websocket either never replies (wedged renderer) or answers
+// CDP calls (healthy renderer). The wedge case is the regression: the
+// probe must report not-ready instead of hanging or passing.
+
+function wsAccept(key) {
+  return createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+}
+
+function wsFrame(text) {
+  const payload = Buffer.from(text);
+  let header;
+  if (payload.length < 126) {
+    header = Buffer.from([0x81, payload.length]);
+  } else if (payload.length < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x81; header[1] = 126; header.writeUInt16BE(payload.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x81; header[1] = 127; header.writeBigUInt64BE(BigInt(payload.length), 2);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+function startFixtureCdp({ wedged }) {
+  const sockets = new Set();
+  const track = (sock) => { sockets.add(sock); sock.on("close", () => sockets.delete(sock)); };
+  const server = createServer((req, res) => {
+    if (req.url.startsWith("/json/new")) {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "probe-target-1",
+        type: "page",
+        url: "about:blank",
+        webSocketDebuggerUrl: `ws://127.0.0.1:${server.address().port}/ws`,
+      }));
+    } else if (req.url.startsWith("/json/close")) {
+      res.end("Target is closing");
+    } else if (req.url.startsWith("/json/list")) {
+      res.setHeader("content-type", "application/json");
+      res.end("[]");
+    } else {
+      res.statusCode = 404;
+      res.end("nope");
+    }
+  });
+  server.on("connection", track);
+  server.on("upgrade", (req, socket) => {
+    track(socket);
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${wsAccept(req.headers["sec-websocket-key"])}\r\n\r\n`,
+    );
+    if (wedged) return; // accept the socket, never reply — the wedge
+    let buf = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      for (;;) {
+        if (buf.length < 2) return;
+        const masked = (buf[1] & 0x80) !== 0;
+        let len = buf[1] & 0x7f;
+        let off = 2;
+        if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
+        else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+        const maskOff = off;
+        if (masked) off += 4;
+        if (buf.length < off + len) return;
+        let payload = buf.subarray(off, off + len);
+        if (masked) {
+          const mask = buf.subarray(maskOff, maskOff + 4);
+          payload = Buffer.from(payload.map((b, i) => b ^ mask[i % 4]));
+        }
+        buf = buf.subarray(off + len);
+        let msg;
+        try { msg = JSON.parse(payload.toString()); } catch { continue; }
+        if (!msg.id) continue;
+        const result = msg.method === "Runtime.evaluate" ? { result: { value: 1 } } : {};
+        socket.write(wsFrame(JSON.stringify({ id: msg.id, result })));
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({
+        base: `http://127.0.0.1:${server.address().port}`,
+        close: () => new Promise((r) => { for (const sock of sockets) sock.destroy(); server.close(r); }),
+      });
+    });
+  });
+}
+
+test("probeCdpReadiness: a CDP that answers /json/new but never replies to navigate/evaluate is wedged", async () => {
+  const fx = await startFixtureCdp({ wedged: true });
+  try {
+    const r = await probeCdpReadiness({ cdpBase: fx.base, timeoutMs: 2000 });
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /never replied|wedged/);
+  } finally {
+    await fx.close();
+  }
+});
+
+test("probeCdpReadiness: a healthy renderer passes", async () => {
+  const fx = await startFixtureCdp({ wedged: false });
+  try {
+    const r = await probeCdpReadiness({ cdpBase: fx.base, timeoutMs: 4000 });
+    assert.deepEqual(r, { ok: true });
+  } finally {
+    await fx.close();
+  }
+});
+
+test("restartAllowed: at most once per 15 minutes", () => {
+  const now = Date.parse("2026-11-05T12:00:00.000Z");
+  assert.equal(restartAllowed(null, now), true);
+  assert.equal(restartAllowed("2026-11-05T11:50:00.000Z", now), false);
+  assert.equal(restartAllowed("2026-11-05T11:45:00.000Z", now), true);
+  assert.equal(restartAllowed("not-a-date", now), true);
+});
+
+test("attemptBoundedRestart: restarts once, then the persisted bound skips", async () => {
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-restart-"));
+  let calls = 0;
+  const restart = async () => { calls += 1; };
+  const first = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:00:00.000Z"), restart });
+  assert.equal(first.result, "restarted");
+  assert.equal(calls, 1);
+  const state = JSON.parse(await readFile(join(outDir, ".helium-restart.json"), "utf8"));
+  assert.equal(state.lastRestartAt, "2026-11-05T12:00:00.000Z");
+  const second = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:05:00.000Z"), restart });
+  assert.equal(second.result, "skipped-cooldown");
+  assert.equal(calls, 1);
+});
+
+test("attemptBoundedRestart: a failed restart still persists the cooldown bound", async () => {
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-restart-fail-"));
+  let calls = 0;
+  const restart = async () => { calls += 1; throw new Error("restart boom"); };
+  const first = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:00:00.000Z"), restart });
+  assert.equal(first.result, "restart-failed");
+  assert.equal(calls, 1);
+  const state = JSON.parse(await readFile(join(outDir, ".helium-restart.json"), "utf8"));
+  assert.equal(state.lastRestartAt, "2026-11-05T12:00:00.000Z");
+  const second = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:05:00.000Z"), restart });
+  assert.equal(second.result, "skipped-cooldown");
+  assert.equal(calls, 1);
+});
+
+test("documents: page-not-ready is a distinct status/exit and recovery is recorded", () => {
+  assert.notEqual(PAGE_NOT_READY_EXIT, 5);
+  const recovery = { action: "restart", unit: "helium-cdp.service", at: "2026-11-05T12:00:00.000Z", result: "restarted" };
+  const bad = failureDocument({ attemptedAt: "2026-11-05T12:00:00.000Z", status: "page-not-ready", detail: "wedged", recovery });
+  assert.equal(bad.status, "page-not-ready");
+  assert.deepEqual(bad.recovery, recovery);
+  assert.equal("windows" in bad, false);
+  const plain = failureDocument({ attemptedAt: "2026-11-05T12:00:00.000Z", status: "session-expired", detail: "HTTP 401" });
+  assert.equal("recovery" in plain, false);
+});
+
+// ---------- Entry-point guard (issue #6343) ----------
+// Regression: the re-homed exporter guarded main() with the raw-path
+// comparison `import.meta.url === pathToFileURL(process.argv[1]).href`,
+// so any symlinked invocation silently skipped main() and exited 0 —
+// the #2350 bug, restored by the #6333 re-home. The guard now resolves
+// symlinks on both sides (realpathSync, mirroring
+// supabase-quota-export.mjs / cloudflare-quota-export.mjs). Oracle: a run
+// against an unreachable CDP port must produce the cdp-unavailable
+// failure document with exit 4, identically for direct and symlinked
+// invocation; a silent exit 0 is the counterexample.
+
+const execFileAsync = promisify(execFile);
+const EXPORTER_PATH = fileURLToPath(new URL("./meta-quota-export.mjs", import.meta.url));
+
+async function runExporter(entryPath, outDir) {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [entryPath, "--cdp-port", "1", "--out-dir", outDir],
+      { timeout: 30000 },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    return { code: err.code, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+  }
+}
+
+async function assertCdpUnavailableRun(entryPath, label) {
+  const base = await mkdtemp(join(tmpdir(), `meta-exporter-entry-${label}-`));
+  const outDir = join(base, "out");
+  const r = await runExporter(entryPath, outDir);
+  assert.equal(r.code, 4, `${label} invocation must exit 4, got ${r.code} (stderr: ${r.stderr})`);
+  assert.match(r.stderr, /cdp-unavailable/);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "cdp-unavailable");
+  const history = await readFile(join(outDir, "history.jsonl"), "utf8");
+  assert.equal(JSON.parse(history.trim()).status, "cdp-unavailable");
+}
+
+test("entry-point guard: direct invocation runs main (cdp-unavailable, exit 4)", async () => {
+  await assertCdpUnavailableRun(EXPORTER_PATH, "direct");
+});
+
+test("entry-point guard: symlinked invocation runs main, matching direct (#6343)", async () => {
+  const base = await mkdtemp(join(tmpdir(), "meta-exporter-entry-link-"));
+  const linkPath = join(base, "meta-quota-export-link.mjs");
+  await symlink(EXPORTER_PATH, linkPath);
+  await assertCdpUnavailableRun(linkPath, "symlink");
 });

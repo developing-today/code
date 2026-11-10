@@ -2,7 +2,13 @@
 //!
 //! A session is one stream pair on [`SYNC_ALPN`]. The initiator sends a [`Request`] with the topic
 //! and the method it chose ([`choose`]), and the responder answers with an [`Answer`]. If both agree
-//! on `LogSync`, each side runs `p2panda-sync`'s `LogSync` on its [`SharedEventStore`] over the stream.
+//! on `LogSync`, each side runs `p2panda-sync`'s `LogSync` on its [`SharedEventStore`] over the stream;
+//! if both agree on range sync, each side runs a range session (`event_store::sync`) on the same
+//! stream pair, over the same store (#179).
+//!
+//! A group-sync initiator is not built yet. When one calls `sync_with`, it must persist successful
+//! completion after that call returns successfully, keyed by topic and peer, for later selection.
+//! Completion recording is deferred until that initiator exists.
 //!
 //! Three decisions shape the session:
 //!
@@ -51,8 +57,11 @@ use crate::store_traits::{ChainLog, SharedEventStore};
 use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
 use crate::time::unix_ms;
 
-/// The ALPN for sync sessions. This is P3.1's ID, so range sync joins as a method of the same
-/// session, and the first frame of every session is the [`Request`].
+/// The ALPN for sync sessions. Range sync joins as a method of the same session, and the
+/// first frame of every session is the [`Request`]: one session shape on this ALPN.
+/// `serve`'s own range sessions (P3.1) run on their own ALPN, `/id-range-sync/1`
+/// ([`crate::event_store::sync::ALPN`]) — a deliberate, documented split (#179), so no
+/// second, unlabelled session shape shares this one either.
 pub const SYNC_ALPN: &[u8] = b"/id-sync/1";
 
 /// How long one side may spend on a session. A peer that stops answering ends it at this deadline.
@@ -116,9 +125,9 @@ pub enum SyncError {
         /// The method the responder answered.
         answered: SyncMethod,
     },
-    /// Both sides agreed on a method that this build does not run.
-    #[error("{0:?} is agreed, but this build does not run it")]
-    NotWired(SyncMethod),
+    /// Range sync, the agreed [`SyncMethod::Range`], failed.
+    #[error("range sync: {0}")]
+    Range(String),
     /// The event store failed.
     #[error("the event store: {0}")]
     Store(String),
@@ -244,13 +253,12 @@ pub async fn sync_with(
         let conn = connect(endpoint, peer, SYNC_ALPN)
             .await
             .map_err(|error| SyncError::Connect(format!("{error:#}")))?;
-        let (send, recv) = conn
+        let (mut send, mut recv) = conn
             .open_bi()
             .await
             .map_err(|error| SyncError::Stream(error.to_string()))?;
-        let mut frames = Frames::new(send, recv);
-        frames.send_message(&Request { topic, method }).await?;
-        match frames.next_message::<Answer>().await? {
+        send_message(&mut send, &Request { topic, method }).await?;
+        match next_message::<Answer>(&mut recv).await? {
             Answer::Agree(answered) if answered == method => {}
             Answer::Agree(answered) => {
                 return Err(SyncError::Mismatch {
@@ -260,8 +268,7 @@ pub async fn sync_with(
             }
             Answer::Refuse => return Err(SyncError::Refused(method)),
         }
-        let outcome = run_agreed(store, topic, method, &mut frames).await?;
-        frames.finish().await;
+        let outcome = run_agreed(store, topic, method, send, recv, true).await?;
         conn.close(0_u32.into(), b"done");
         Ok(outcome)
     };
@@ -287,28 +294,34 @@ pub async fn answer(
     support: &dyn SyncSupport,
     gate: &PullGate,
     peer: EndpointId,
-    send: SendStream,
-    recv: RecvStream,
+    mut send: SendStream,
+    mut recv: RecvStream,
     deadline: Duration,
 ) -> Result<Outcome, SyncError> {
-    let mut frames = Frames::new(send, recv);
     let session = async {
-        let request: Request = frames.next_message().await?;
+        let request: Request = next_message(&mut recv).await?;
         // The pull policy decides before the method is agreed, so a refused peer gets no event.
         if !gate.admits(&peer) {
-            frames.send_message(&Answer::Refuse).await?;
-            frames.finish().await;
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
+            return Err(SyncError::PullRefused);
+        }
+        // A blocked topic tag is not pulled (#2245): the gate's block list
+        // is also checked against the requested topic's hash bytes, the
+        // form this seam names a topic in. Refused exactly as a pull
+        // refusal, before the method is agreed.
+        if gate.topic_tag_blocked(request.topic.as_bytes()) {
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::PullRefused);
         }
         if !support.supports(request.method) {
-            frames.send_message(&Answer::Refuse).await?;
-            frames.finish().await;
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::Refused(request.method));
         }
-        frames.send_message(&Answer::Agree(request.method)).await?;
-        let outcome = run_agreed(store, request.topic, request.method, &mut frames).await?;
-        frames.finish().await;
-        Ok(outcome)
+        send_message(&mut send, &Answer::Agree(request.method)).await?;
+        run_agreed(store, request.topic, request.method, send, recv, false).await
     };
     match timeout(deadline, session).await {
         Ok(result) => result,
@@ -316,17 +329,120 @@ pub async fn answer(
     }
 }
 
-/// Runs the method both sides agreed to.
+/// Runs the method both sides agreed to, on the stream pair the handshake just used.
+///
+/// The handshake runs on the raw streams, before any `Frames` reader task exists: it is
+/// one frame each way, strictly in turn, so no read is ever selected against a write and
+/// a cancelled read cannot lose a frame's bytes. `LogSync` does select between reading
+/// and writing, so the `Log` arm hands the streams to [`Frames`] (whose own task reads),
+/// while the `Range` arm keeps the raw streams: a range session sends and receives at
+/// once through its own halves, and reads each frame to its end before answering it.
 async fn run_agreed(
     store: &SharedEventStore,
     topic: Hash,
     method: SyncMethod,
-    frames: &mut Frames,
+    send: SendStream,
+    recv: RecvStream,
+    initiator: bool,
 ) -> Result<Outcome, SyncError> {
     match method {
-        SyncMethod::Log => run_log_sync(store, topic, frames).await,
-        SyncMethod::Range => Err(SyncError::NotWired(method)),
+        SyncMethod::Log => {
+            let mut frames = Frames::new(send, recv);
+            let outcome = run_log_sync(store, topic, &mut frames).await?;
+            frames.finish().await;
+            Ok(outcome)
+        }
+        SyncMethod::Range => {
+            let (mut send, mut recv) = (send, recv);
+            let ranged = run_range_sync(store, &mut send, &mut recv, initiator).await;
+            finish_stream(&mut send, &mut recv).await;
+            ranged
+        }
     }
+}
+
+/// Runs one range session under the handshake, on the stream pair the handshake used.
+///
+/// The store seam is the session's only design choice (#179): the range session takes
+/// the store one step at a time through `event_store::sync::RangeStore`, whose
+/// [`SharedEventStore`] implementation locks per step and never across an await, so a
+/// session never blocks the store's other users behind a network wait. The range sync
+/// set is the store's whole set: range sync has no topic subset, so `topic` names the
+/// session for the `Log` arm only. The deadline is the caller's, as for `Log`.
+async fn run_range_sync(
+    store: &SharedEventStore,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    initiator: bool,
+) -> Result<Outcome, SyncError> {
+    let mut store = store.clone();
+    let ranged = crate::event_store::sync::sync_on_streams(
+        &mut store,
+        send,
+        recv,
+        initiator,
+        crate::event_store::range::Params::default(),
+        unix_ms(),
+    )
+    .await
+    .map_err(|error| SyncError::Range(format!("{error:#}")))?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(Outcome {
+        method: SyncMethod::Range,
+        received: Tally {
+            accepted: count(ranged.accepted),
+            duplicates: count(ranged.duplicates),
+            held: count(ranged.waiting),
+            refused: count(ranged.refused),
+            forks: count(ranged.forks),
+            voided: count(ranged.voided),
+        },
+        metrics: LogSyncMetrics {
+            sent_operations: count(ranged.sent),
+            received_operations: count(ranged.received),
+            ..LogSyncMetrics::default()
+        },
+    })
+}
+
+/// Writes one handshake message as a frame on the raw stream.
+async fn send_message<T: Serialize>(send: &mut SendStream, message: &T) -> Result<(), SyncError> {
+    let bytes =
+        postcard::to_allocvec(message).map_err(|error| SyncError::Frame(error.to_string()))?;
+    write_frame(send, &bytes)
+        .await
+        .map_err(|error| SyncError::Stream(format!("{error:#}")))
+}
+
+/// Decodes one postcard message and refuses bytes after its encoding.
+fn decode_full_message<T: DeserializeOwned>(frame: &[u8]) -> Result<T, SyncError> {
+    let (message, remainder) =
+        postcard::take_from_bytes(frame).map_err(|error| SyncError::Frame(error.to_string()))?;
+    if !remainder.is_empty() {
+        return Err(SyncError::Frame(format!(
+            "the postcard payload left {} trailing bytes",
+            remainder.len()
+        )));
+    }
+    Ok(message)
+}
+
+/// Reads one handshake message from the raw stream. A first frame that does not decode
+/// as the expected message is a [`SyncError::Frame`]: the session is refused, never
+/// reinterpreted as another protocol.
+async fn next_message<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T, SyncError> {
+    let frame = read_frame(recv)
+        .await
+        .map_err(|error| SyncError::Stream(format!("{error:#}")))?
+        .ok_or_else(|| SyncError::Stream("the stream ended during the handshake".to_owned()))?;
+    decode_full_message(&frame)
+}
+
+/// Ends our side of a raw stream pair, then reads to the peer's end, so nothing sent is
+/// cut off by closing the connection. The raw-stream counterpart of [`Frames::finish`].
+async fn finish_stream(send: &mut SendStream, recv: &mut RecvStream) {
+    let _ = send.finish();
+    while let Ok(Some(_frame)) = read_frame(recv).await {}
 }
 
 /// Runs `p2panda-sync`'s `LogSync` for the logs of `topic`, on `frames`.
@@ -364,8 +480,7 @@ async fn run_log_sync(
         let arrivals = &arrivals_tx;
         async move {
             let frame = frame.map_err(SyncError::Stream)?;
-            let message: LogSyncMessage<ChainLog> = postcard::from_bytes(&frame)
-                .map_err(|error| SyncError::Frame(error.to_string()))?;
+            let message: LogSyncMessage<ChainLog> = decode_full_message(&frame)?;
             if let LogSyncMessage::Operation((header, body)) = &message {
                 // Events carry no body here, and a body is not stored, so a body is refused.
                 let arrival = if body.is_some() {
@@ -434,7 +549,7 @@ fn ingest_arrivals(
     let mut tally = Tally::default();
     while let Some(first) = arrivals.blocking_recv() {
         let mut batch: Vec<Vec<u8>> = Vec::new();
-        for arrival in collect_batch(first, &mut arrivals) {
+        for arrival in collect_batch(first, &mut arrivals, BATCH_GRACE) {
             match arrival {
                 Arrival::Header(bytes) => batch.push(bytes),
                 Arrival::Refused => tally.refused += 1,
@@ -457,11 +572,20 @@ fn ingest_arrivals(
 /// [`INGEST_BATCH`] headers and at most [`BATCH_MAX_ARRIVALS`] arrivals in total, refusals
 /// included, so a refused stream cannot hold the batch open (see [`BATCH_MAX_ARRIVALS`]).
 /// Everything already queued is taken at once; then, while the batch is not full, the worker
-/// waits out an idle [`BATCH_GRACE`] for more arrivals before giving up on the batch — each
+/// waits out an idle `grace` for more arrivals before giving up on the batch — each
 /// arrival restarts the wait — so arrivals paced by the stream still land in the same write
 /// transaction, however long their run spans. The wait ends early when the stream
 /// closes (every sender dropped), so a session's last, partial batch is not held back.
-fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<Arrival> {
+///
+/// The production caller passes [`BATCH_GRACE`]. The grace is a parameter so the tests can
+/// inject one their pacing cannot race: 5 ms against arrivals paced every 2 ms is a margin
+/// a loaded scheduler breaks, which made these tests a coin flip on the build machine
+/// (#3199). The production tuning is unchanged.
+fn collect_batch(
+    first: Arrival,
+    arrivals: &mut mpsc::Receiver<Arrival>,
+    grace: Duration,
+) -> Vec<Arrival> {
     use tokio::sync::mpsc::error::TryRecvError;
 
     let mut batch = Vec::new();
@@ -487,8 +611,7 @@ fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<
                 }
                 Err(TryRecvError::Disconnected) => break None,
                 Err(TryRecvError::Empty) => {
-                    let end =
-                        *grace_end.get_or_insert_with(|| std::time::Instant::now() + BATCH_GRACE);
+                    let end = *grace_end.get_or_insert_with(|| std::time::Instant::now() + grace);
                     if std::time::Instant::now() >= end {
                         break None;
                     }
@@ -532,26 +655,6 @@ impl Frames {
         }
     }
 
-    /// Writes one handshake message as a frame.
-    async fn send_message<T: Serialize>(&mut self, message: &T) -> Result<(), SyncError> {
-        let bytes =
-            postcard::to_allocvec(message).map_err(|error| SyncError::Frame(error.to_string()))?;
-        write_frame(&mut self.send, &bytes)
-            .await
-            .map_err(|error| SyncError::Stream(format!("{error:#}")))
-    }
-
-    /// Reads one handshake message.
-    async fn next_message<T: DeserializeOwned>(&mut self) -> Result<T, SyncError> {
-        let frame = self
-            .inbound
-            .recv()
-            .await
-            .ok_or_else(|| SyncError::Stream("the stream ended during the handshake".to_owned()))?
-            .map_err(SyncError::Stream)?;
-        postcard::from_bytes(&frame).map_err(|error| SyncError::Frame(error.to_string()))
-    }
-
     /// Ends our side, then waits for the peer's end, so that nothing sent is cut off by closing the
     /// connection. This runs after `LogSync` has finished on both sides, so everything each side needs
     /// has already arrived. A read error here is the peer closing the connection, which is not a
@@ -580,18 +683,28 @@ mod tests {
     use iroh::endpoint::{Connection, RelayMode, presets};
     use iroh::protocol::Router;
     use p2panda_core::{SeqNum, SigningKey};
+    use proptest::prelude::*;
 
     use super::*;
     use crate::chain::{Event, sign};
     use crate::event_store::EventStore;
     use crate::pull_policy::{PullGate, PullPolicy, testing};
-    use crate::sync_method::{Estimate, LogSyncOnly};
+    use crate::sync_method::{Estimate, LogAndRange, LogSyncOnly};
     use crate::waiting::WaitingLimits;
     use iroh_base::SecretKey;
 
     // Keep test sessions aligned with production; CI can run the bulk page-transfer test under
     // substantially more contention than a focused local invocation.
     const DEADLINE: Duration = SESSION_DEADLINE;
+
+    /// The bulk page-transfer test moves 210 events (three chains of 70) across four 64-event
+    /// pages, so its session does several times the work the production deadline is sized for.
+    /// Unloaded it takes ~39 s against `SESSION_DEADLINE` — 1.5x headroom — and under heavy
+    /// parallel load (load average ~30-43) the session once got no scheduler time at all before
+    /// the deadline expired, failing the test with zero events accepted (#4057). Scale the
+    /// deadline to this test's work instead of the machine's mood: 3x production leaves ~4.6x
+    /// headroom over the unloaded runtime, and a genuine hang still fails the test in minutes.
+    const BULK_DEADLINE: Duration = Duration::from_secs(SESSION_DEADLINE.as_secs() * 3);
 
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
@@ -622,6 +735,11 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -701,8 +819,10 @@ mod tests {
     #[derive(Debug)]
     struct Capture {
         store: SharedEventStore,
+        support: Arc<dyn SyncSupport>,
         gate: PullGate,
         results: mpsc::UnboundedSender<Result<Outcome, SyncError>>,
+        deadline: Duration,
     }
 
     impl ProtocolHandler for Capture {
@@ -710,12 +830,12 @@ mod tests {
             while let Ok((send, recv)) = conn.accept_bi().await {
                 let result = answer(
                     &self.store,
-                    &LogSyncOnly,
+                    self.support.as_ref(),
                     &self.gate,
                     conn.remote_id(),
                     send,
                     recv,
-                    DEADLINE,
+                    self.deadline,
                 )
                 .await;
                 let _ = self.results.send(result);
@@ -736,6 +856,32 @@ mod tests {
         responder_gated(store, testing::open_gate()).await
     }
 
+    /// Serves `store` on loopback with both sides of each session bounded by `deadline`. Only the
+    /// bulk page-transfer test needs this: it outruns [`DEADLINE`] under suite-wide contention
+    /// (#4057), so it scales the deadline to its own work size.
+    async fn responder_with_deadline(
+        store: &SharedEventStore,
+        deadline: Duration,
+    ) -> (
+        Endpoint,
+        Router,
+        mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) {
+        let ep = endpoint().await;
+        let (results, rx) = mpsc::unbounded_channel();
+        let handler = Capture {
+            store: store.clone(),
+            support: Arc::new(LogSyncOnly),
+            gate: testing::open_gate(),
+            results,
+            deadline,
+        };
+        let router = Router::builder(ep.clone())
+            .accept(SYNC_ALPN, handler)
+            .spawn();
+        (ep, router, rx)
+    }
+
     /// Serves `store` on loopback under `gate`.
     async fn responder_gated(
         store: &SharedEventStore,
@@ -749,8 +895,34 @@ mod tests {
         let (results, rx) = mpsc::unbounded_channel();
         let handler = Capture {
             store: store.clone(),
+            support: Arc::new(LogSyncOnly),
             gate,
             results,
+            deadline: DEADLINE,
+        };
+        let router = Router::builder(ep.clone())
+            .accept(SYNC_ALPN, handler)
+            .spawn();
+        (ep, router, rx)
+    }
+
+    /// Serves `store` on loopback, running the methods `support` allows, to every peer.
+    async fn responder_support(
+        store: &SharedEventStore,
+        support: Arc<dyn SyncSupport>,
+    ) -> (
+        Endpoint,
+        Router,
+        mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) {
+        let ep = endpoint().await;
+        let (results, rx) = mpsc::unbounded_channel();
+        let handler = Capture {
+            store: store.clone(),
+            support,
+            gate: testing::open_gate(),
+            results,
+            deadline: DEADLINE,
         };
         let router = Router::builder(ep.clone())
             .accept(SYNC_ALPN, handler)
@@ -829,6 +1001,119 @@ mod tests {
         assert_eq!(again.metrics.sent_operations, 0);
     }
 
+    /// #2414, mirrored for the log sync tally: a range session under the
+    /// LogSync protocol counts an arrival it stores but does not apply as
+    /// voided. The shape matches the event store range test: a content event
+    /// naming a voided group operation, by an author who is not a member of
+    /// the group at that position, is kept without applying.
+    #[tokio::test]
+    async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
+        use crate::membership::AuthId;
+        use crate::membership::body::encode_body;
+        use p2panda_auth::Access;
+        use p2panda_auth::group::{GroupAction, GroupMember};
+
+        fn gauth(who: u8) -> AuthId {
+            AuthId::Key(*key(who).verifying_key().as_bytes())
+        }
+        fn ext(group: Option<Hash>, after: Vec<Hash>, kind: &str) -> ChainExt {
+            ChainExt {
+                kind: kind.to_owned(),
+                group,
+                after,
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+            }
+        }
+        let create_body = encode_body(&GroupAction::Create {
+            initial_members: [b'A', b'B', b'C']
+                .iter()
+                .map(|who| (GroupMember::Individual(gauth(*who)), Access::manage()))
+                .collect(),
+        })
+        .unwrap();
+        let create = sign(
+            &key(b'A'),
+            0,
+            None,
+            Some(&create_body),
+            ext(None, Vec::new(), "group.op"),
+        )
+        .unwrap();
+        let grp = create.id;
+        let op_body = encode_body(&GroupAction::Add {
+            member: GroupMember::Individual(gauth(b'E')),
+            access: Access::manage(),
+        })
+        .unwrap();
+        let op = sign(
+            &key(b'D'),
+            0,
+            None,
+            Some(&op_body),
+            ext(Some(grp), vec![grp], "group.op"),
+        )
+        .unwrap();
+        let target = sign(
+            &key(b'D'),
+            1,
+            Some(op.id),
+            None,
+            ext(Some(grp), vec![op.id], "message"),
+        )
+        .unwrap();
+
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        for store in [&store_a, &store_b] {
+            let created = store.ingest(&create.bytes, Some(&create_body), 0).unwrap();
+            assert!(matches!(created, Ingest::Accepted { .. }), "{created:?}");
+            let voided = store.ingest(&op.bytes, Some(&op_body), 0).unwrap();
+            assert!(matches!(voided, Ingest::Voided { .. }), "{voided:?}");
+        }
+        let held = store_a.ingest(&target.bytes, None, 0).unwrap();
+        assert!(matches!(held, Ingest::Voided { .. }), "{held:?}");
+
+        let (server, _router, mut results) =
+            responder_support(&store_a, Arc::new(LogAndRange)).await;
+        let client = endpoint().await;
+        // Synced before, with no difference: the rule picks range.
+        let synced = Estimate {
+            chains: 1,
+            difference: 0,
+            last_completed_sync_ms: Some(1),
+        };
+        assert_eq!(choose(&synced), SyncMethod::Range);
+        let outcome = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            group(9),
+            &synced,
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let answered = results.recv().await.unwrap().unwrap();
+
+        assert_eq!(outcome.method, SyncMethod::Range);
+        assert_eq!(answered.method, SyncMethod::Range);
+        assert_eq!(
+            outcome.received.voided, 1,
+            "B stores the target without applying it: {:?}",
+            outcome.received
+        );
+        assert_eq!(outcome.received.accepted, 0, "{:?}", outcome.received);
+        assert_eq!(outcome.received.refused, 0, "{:?}", outcome.received);
+        assert_eq!(answered.received.voided, 0, "{:?}", answered.received);
+    }
+
     /// Issue #1302: on a failed bulk session, read the responder's own
     /// session result (bounded, so a still-running responder cannot hang
     /// the test) and render it next to the client's error. `SyncError`
@@ -864,7 +1149,8 @@ mod tests {
         let mut attempt = 0;
         let (outcome, answered) = loop {
             attempt += 1;
-            let (server, router, mut results) = responder(&store_a).await;
+            let (server, router, mut results) =
+                responder_with_deadline(&store_a, BULK_DEADLINE).await;
             let client = endpoint().await;
             match sync_with(
                 &client,
@@ -872,7 +1158,7 @@ mod tests {
                 &store_b,
                 topic,
                 &bootstrap(),
-                DEADLINE,
+                BULK_DEADLINE,
             )
             .await
             {
@@ -916,6 +1202,13 @@ mod tests {
         store_b.check_invariants().unwrap();
     }
 
+    /// The grace the batch-collection tests inject into [`collect_batch`]: fifty times the
+    /// production [`BATCH_GRACE`], so no plausible scheduler hiccup on a loaded build
+    /// machine can split a batch the pacing means to keep whole (#3199). The pacing itself
+    /// stays at the production-like 2 ms, and the grace-restart test below runs long enough
+    /// that the whole run still spans far longer than this grace.
+    const TEST_GRACE: Duration = Duration::from_millis(250);
+
     /// Arrivals paced a few milliseconds apart — as a bulk stream paces them — still land in
     /// one batch, so the session pays one write transaction for them, not one per operation.
     #[test]
@@ -928,16 +1221,8 @@ mod tests {
             }
         });
         // The first arrival, however it gets here, starts the batch.
-        let first = loop {
-            match rx.try_recv() {
-                Ok(arrival) => break arrival,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("the pacer went away: {error}"),
-            }
-        };
-        let batch = collect_batch(first, &mut rx);
+        let first = rx.blocking_recv().expect("the pacer went away");
+        let batch = collect_batch(first, &mut rx, TEST_GRACE);
         pacer.join().unwrap();
 
         assert_eq!(batch.len(), 3, "paced arrivals share one batch");
@@ -954,24 +1239,19 @@ mod tests {
     /// operation just because its stream outlasts the first grace window.
     #[test]
     fn test_batch_collection_grace_restarts_on_each_arrival() {
-        const PACED: usize = 8;
-        let (tx, mut rx) = mpsc::channel::<Arrival>(16);
+        // Paced every 2 ms, the run spans ~400 ms — far longer than the injected grace —
+        // so it still proves the grace is an idle wait that each arrival restarts, not a
+        // total window that would cut the run at the first grace expiry.
+        const PACED: usize = 200;
+        let (tx, mut rx) = mpsc::channel::<Arrival>(PACED + 16);
         let pacer = std::thread::spawn(move || {
             for n in 0..PACED {
                 tx.try_send(Arrival::Header(vec![n as u8])).unwrap();
                 std::thread::sleep(Duration::from_millis(2));
             }
         });
-        let first = loop {
-            match rx.try_recv() {
-                Ok(arrival) => break arrival,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("the pacer went away: {error}"),
-            }
-        };
-        let batch = collect_batch(first, &mut rx);
+        let first = rx.blocking_recv().expect("the pacer went away");
+        let batch = collect_batch(first, &mut rx, TEST_GRACE);
         pacer.join().unwrap();
 
         assert_eq!(
@@ -989,7 +1269,7 @@ mod tests {
         tx.try_send(Arrival::Header(vec![7])).unwrap();
         let first = rx.try_recv().unwrap();
         let started = std::time::Instant::now();
-        let batch = collect_batch(first, &mut rx);
+        let batch = collect_batch(first, &mut rx, BATCH_GRACE);
 
         assert_eq!(batch.len(), 1);
         assert!(
@@ -1007,7 +1287,7 @@ mod tests {
             tx.try_send(Arrival::Header(vec![(n % 251) as u8])).unwrap();
         }
         let first = rx.try_recv().unwrap();
-        let batch = collect_batch(first, &mut rx);
+        let batch = collect_batch(first, &mut rx, BATCH_GRACE);
 
         assert_eq!(batch.len(), INGEST_BATCH, "the batch is capped");
         let mut left = 0;
@@ -1031,18 +1311,16 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(2));
             }
         });
-        let first = loop {
-            match rx.try_recv() {
-                Ok(arrival) => break arrival,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("the pacer went away: {error}"),
-            }
-        };
-        let started = std::time::Instant::now();
-        let batch = collect_batch(first, &mut rx);
-        let elapsed = started.elapsed();
+        let first = rx.blocking_recv().expect("the pacer went away");
+        let batch = collect_batch(first, &mut rx, TEST_GRACE);
+        // The batch must end at the cap while the stream is still flowing: when it
+        // returns, the pacer still has most of its sends (and their 2 ms sleeps) ahead of
+        // it, so it cannot have finished. Checking the pacer states the property directly;
+        // the wall-clock version raced the pacer's own scheduling under load (#3199).
+        assert!(
+            !pacer.is_finished(),
+            "the batch ended while the stream was still flowing"
+        );
         pacer.join().unwrap();
 
         assert_eq!(
@@ -1055,10 +1333,6 @@ mod tests {
                 .iter()
                 .all(|arrival| matches!(arrival, Arrival::Refused)),
             "the capped batch holds the refusals it collected"
-        );
-        assert!(
-            elapsed < Duration::from_millis((SENT * 2) as u64),
-            "the batch ended while the stream was still flowing, took {elapsed:?}"
         );
     }
 
@@ -1112,6 +1386,11 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1330,7 +1609,7 @@ mod tests {
 
         let (server, _router, mut results) = responder(&store_a).await;
         let client = endpoint().await;
-        // Synced before, with no difference: the rule picks range, which this build does not run.
+        // Synced before, with no difference: the rule picks range, which a LogSyncOnly responder does not run.
         let synced = Estimate {
             chains: 1,
             difference: 0,
@@ -1358,6 +1637,230 @@ mod tests {
             "the responder refused the same method, got {answered:?}"
         );
         assert_eq!(applied(&store_b, &[&alice], 2), before, "nothing moved");
+    }
+
+    /// #179: one peer/store pair syncs under the one handshake by Log first and by
+    /// Range second, and the two stores end equal after each.
+    #[tokio::test]
+    async fn test_one_pair_syncs_by_log_then_by_range_under_one_handshake() {
+        let topic = group(8);
+        let (alice, bob) = (key(11), key(12));
+        let alice_events = chain_of(&alice, 6, topic);
+        let bob_events = chain_of(&bob, 4, topic);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        // A has alice 0 to 4. B has alice 0 to 2.
+        ingest_all(&store_a, &alice_events[..5]);
+        ingest_all(&store_b, &alice_events[..3]);
+
+        let (server, _router, mut results) =
+            responder_support(&store_a, Arc::new(LogAndRange)).await;
+        let client = endpoint().await;
+
+        // First sync: unbootstrapped, so the rule picks Log.
+        let logged = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let logged_answered = results.recv().await.unwrap().unwrap();
+        assert_eq!(logged.method, SyncMethod::Log);
+        assert_eq!(logged_answered.method, SyncMethod::Log);
+        assert_eq!(logged.received.accepted, 2, "B lacked alice 3 and 4");
+        assert_eq!(
+            applied(&store_a, &[&alice], 5),
+            applied(&store_b, &[&alice], 5),
+            "the Log session converged the pair"
+        );
+
+        // A gains bob's chain and alice's next event. Second sync: bootstrapped with
+        // a small difference, so the rule picks Range — over the same handshake.
+        ingest_all(&store_a, &bob_events);
+        ingest_all(&store_a, &alice_events[5..]);
+        let synced = Estimate {
+            chains: 2,
+            difference: 0,
+            last_completed_sync_ms: Some(1),
+        };
+        assert_eq!(choose(&synced), SyncMethod::Range);
+        let ranged = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &synced,
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let ranged_answered = results.recv().await.unwrap().unwrap();
+        assert_eq!(ranged.method, SyncMethod::Range);
+        assert_eq!(
+            ranged_answered.method,
+            SyncMethod::Range,
+            "both sides ran Range"
+        );
+        assert_eq!(
+            ranged.received.accepted, 5,
+            "B lacked bob 0 to 3 and alice 5"
+        );
+        assert_eq!(ranged_answered.received.accepted, 0, "A lacked nothing");
+        let all = [&alice, &bob];
+        assert_eq!(
+            applied(&store_a, &all, 5),
+            applied(&store_b, &all, 5),
+            "the Range session converged the pair"
+        );
+        store_a.check_invariants().unwrap();
+        store_b.check_invariants().unwrap();
+    }
+
+    /// #179: a first frame that is not a `Request` is refused as a frame error, never
+    /// reinterpreted as another session shape.
+    #[tokio::test]
+    async fn test_a_first_frame_that_is_not_a_request_is_refused() {
+        let (_d, store) = open();
+        let (server, _router, mut results) = responder(&store).await;
+        let client = endpoint().await;
+        let conn = connect(&client, loopback(&server), SYNC_ALPN)
+            .await
+            .unwrap();
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        write_frame(&mut send, &[0xff, 0xfe, 0xfd]).await.unwrap();
+        send.finish().unwrap();
+        let answered = results.recv().await.unwrap();
+        assert!(
+            matches!(answered, Err(SyncError::Frame(_))),
+            "a foreign first frame is a frame error, got {answered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_first_request_with_trailing_bytes_is_refused() {
+        let (_d, store) = open();
+        let (server, _router, mut results) = responder(&store).await;
+        let client = endpoint().await;
+        let conn = connect(&client, loopback(&server), SYNC_ALPN)
+            .await
+            .unwrap();
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        let request = Request {
+            topic: group(16),
+            method: SyncMethod::Log,
+        };
+        let mut frame = postcard::to_allocvec(&request).unwrap();
+        frame.push(0x00);
+        write_frame(&mut send, &frame).await.unwrap();
+        send.finish().unwrap();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(answered, Err(SyncError::Frame(_))),
+            "a padded Request is a frame error, got {answered:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct PaddedLogSyncPeer {
+        inbound_frames: Vec<Vec<u8>>,
+    }
+
+    impl ProtocolHandler for PaddedLogSyncPeer {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                return Ok(());
+            };
+            if !matches!(read_frame(&mut recv).await, Ok(Some(_))) {
+                return Ok(());
+            }
+            let answer = postcard::to_allocvec(&Answer::Agree(SyncMethod::Log)).unwrap();
+            write_frame(&mut send, &answer).await.unwrap();
+            for frame in &self.inbound_frames {
+                write_frame(&mut send, frame).await.unwrap();
+            }
+            conn.closed().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_padded_log_sync_operation_errors_before_ingest() {
+        let topic = group(17);
+        let signer = key(17);
+        let operation = chain_of(&signer, 1, topic).remove(0);
+        let header = operation.bytes;
+
+        let mut have = p2panda_core::logs::LogHeights::new();
+        have.entry(signer.verifying_key())
+            .or_default()
+            .insert(ChainLog, 1);
+        let have = postcard::to_allocvec(&LogSyncMessage::<ChainLog>::Have(have)).unwrap();
+        let presync = postcard::to_allocvec(&LogSyncMessage::<ChainLog>::PreSync {
+            total_operations: 1,
+            total_bytes: u32::try_from(header.len()).unwrap(),
+        })
+        .unwrap();
+        let mut padded_operation =
+            postcard::to_allocvec(&LogSyncMessage::<ChainLog>::Operation((header, None))).unwrap();
+        padded_operation.push(0xde);
+
+        let server = endpoint().await;
+        let peer = PaddedLogSyncPeer {
+            inbound_frames: vec![have, presync, padded_operation],
+        };
+        let _router = Router::builder(server.clone())
+            .accept(SYNC_ALPN, peer)
+            .spawn();
+        let (_d, store) = open();
+        let before = applied(&store, &[&signer], 0);
+        let client = endpoint().await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&error, SyncError::LogSync(message) if message.contains("Frame")),
+            "the session reports its malformed message-stream error, got {error:#}"
+        );
+        assert_eq!(
+            applied(&store, &[&signer], 0),
+            before,
+            "the padded operation never reaches the ingest worker"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn test_full_postcard_messages_reject_any_nonempty_suffix(
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            // Oracle: a clean postcard encoding round-trips; any generated nonempty suffix
+            // violates full frame consumption and must be refused.
+            let request = Request { topic: group(18), method: SyncMethod::Log };
+            let frame = postcard::to_allocvec(&request).unwrap();
+            prop_assert_eq!(decode_full_message::<Request>(&frame).unwrap(), request);
+
+            let mut padded = frame;
+            padded.extend_from_slice(&suffix);
+            prop_assert!(matches!(
+                decode_full_message::<Request>(&padded),
+                Err(SyncError::Frame(_))
+            ));
+        }
     }
 
     /// P6.5: open pull is today's behaviour. A stranger pulls every event of the topic.
@@ -1473,6 +1976,97 @@ mod tests {
         assert_eq!(
             applied(&store_a, &[&alice], 3),
             applied(&store_b, &[&alice], 3)
+        );
+    }
+
+    /// #2245: a peer blocked by key is refused by the responder's gate
+    /// before any event is sent, under the open policy included. The
+    /// dialer gets `Refuse`, the responder reports the refusal, and the
+    /// blocked peer's store does not change.
+    #[tokio::test]
+    async fn test_blocked_peer_log_session_is_refused_and_sends_no_event() {
+        let topic = group(14);
+        let alice = key(26);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let gate = testing::open_gate().with_blocks(testing::stub_blocks(
+            &[*testing::key(0xd5).public().as_bytes()],
+            &[],
+        ));
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed to the blocked peer"
+        );
+    }
+
+    /// #2245: a blocked topic tag is not pulled. The peer is not blocked
+    /// and the gate is open, but the requested topic's hash bytes are a
+    /// blocked tag, so the session is refused before the method is agreed.
+    #[tokio::test]
+    async fn test_blocked_topic_tag_log_session_is_refused_and_sends_no_event() {
+        let topic = group(15);
+        let alice = key(27);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let blocks = std::sync::Arc::new(testing::StubBlocks {
+            peers: Default::default(),
+            topics: [topic.as_bytes().to_vec()].into_iter().collect(),
+            ips: Default::default(),
+        });
+        let gate = testing::open_gate().with_blocks(blocks);
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed for the blocked topic"
         );
     }
 

@@ -62,7 +62,7 @@ proptest: If this test was run on a CI system, you may wish to add the following
 cc 0eb13182ca856b0d97cf8af8d84ae1711b8a6fecd4bf0e35c66d06b179f23881
 
 thread 'clear_naming_unseen_dots_does_not_remove_them' (3406427) panicked at tests/props.rs:185:1:
-Test failed: assertion failed: `(left == right)` 
+Test failed: assertion failed: `(left == right)`
   left: `{}`,
  right: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }}` at tests/props.rs:264.
 minimal failing input: seen = 0, unseen = 1, seed = 0

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 func writeExec(t *testing.T, path, body string) {
@@ -63,6 +63,24 @@ func TestExecIdentityResolvesAgainstTheServersOwnPath(t *testing.T) {
 	r := &Resolved{Server: &Server{Command: "tool", Env: map[string]string{"PATH": filepath.Join(dir, "elsewhere")}}}
 	if st, ok := r.ExecStamp(); !ok || st.Path != filepath.Join(dir, "elsewhere", "tool") {
 		t.Fatalf("stamp %+v ignores the PATH the server is given", st)
+	}
+}
+
+func TestExecStampAtResolvesRelativeCommandFromEffectiveSpawnCwd(t *testing.T) {
+	root := testsupport.TempDir(t)
+	bin := filepath.Join(root, "server")
+	writeExec(t, bin, "#!/bin/sh\n")
+	r := &Resolved{Server: &Server{Command: "./server"}}
+	st, ok := r.ExecStampAt(root)
+	if !ok || st.Path != bin {
+		t.Fatalf("stamp at scope root = %+v, %v; want %s", st, ok, bin)
+	}
+	if !r.ExecUsesScopeRoot() {
+		t.Fatal("relative command without config cwd was not marked scope-root-dependent")
+	}
+	r.Cwd = root
+	if r.ExecUsesScopeRoot() {
+		t.Fatal("explicit config cwd should keep executable resolution pool-wide")
 	}
 }
 

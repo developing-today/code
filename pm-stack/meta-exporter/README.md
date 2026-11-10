@@ -17,7 +17,6 @@ the session cookie and leave from the laptop's egress/device. The
 cookie value never enters the exporter process, a file, or a log.
 
 Endpoints read per tick (both cookie-auth GETs, JSON):
-
 - `/api/portal/teams/{team_id}/subscription-quota` — both windows
   (weighted used/limit + reset epochs; % = used/limit).
 - `/api/portal/teams/{team_id}/billing-banner` — remaining free
@@ -40,20 +39,13 @@ this exporter defines it; #1151 should adopt it as-is:
 - Success document:
 
 ```json
-{
-  "service": "meta",
-  "source": "file-export/meta-laptop",
-  "status": "ok",
-  "measuredAt": "<ISO run time>",
+{ "service": "meta", "source": "file-export/meta-laptop",
+  "status": "ok", "measuredAt": "<ISO run time>",
   "consoleAsOf": "<ISO from payload as_of>",
   "tier": "Muse Code High Usage",
-  "windows": [
-    { "name": "5h", "usedPct": 1.02, "resetAt": "<ISO>" },
-    { "name": "weekly", "usedPct": 8.83, "resetAt": "<ISO>" }
-  ],
-  "freeCreditsUsd": 148.57,
-  "paygBalanceUsd": 0
-}
+  "windows": [ { "name": "5h", "usedPct": 1.02, "resetAt": "<ISO>" },
+               { "name": "weekly", "usedPct": 8.83, "resetAt": "<ISO>" } ],
+  "freeCreditsUsd": 148.57, "paygBalanceUsd": 0 }
 ```
 
 ## Failure states (fail-closed)
@@ -63,13 +55,30 @@ A failed tick writes a failure document to `latest.json` (and
 `measuredAt: null` — and **no** windows or values, so nothing stale
 can render as a current reading:
 
-| status            | meaning                                                                         | exit |
-| ----------------- | ------------------------------------------------------------------------------- | ---- |
-| `session-expired` | API answered 401/403 or bounced to auth — laptop session needs a human re-login | 3    |
-| `cdp-unavailable` | browser debug port did not answer                                               | 4    |
-| `no-console-page` | browser up, no dev.meta.ai tab open                                             | 5    |
-| `unparseable`     | endpoint answered an unrecognised shape                                         | 6    |
-| `fetch-failed`    | network/other error inside the page                                             | 7    |
+| status | meaning | exit |
+|---|---|---|
+| `session-expired` | API answered 401/403 or bounced to auth — laptop session needs a human re-login | 3 |
+| `page-not-ready` | helium-cdp answers CDP but its renderer is wedged (readiness probe: target never navigates/evaluates, or a created tab never finishes loading) — names the browser, not the tab | 8 |
+| `cdp-unavailable` | browser debug port did not answer | 4 |
+| `no-console-page` | browser up, no dev.meta.ai tab open | 5 |
+| `unparseable` | endpoint answered an unrecognised shape | 6 |
+| `fetch-failed` | network/other error inside the page | 7 |
+
+## Readiness probe + bounded recovery (issue #5487)
+
+Before exporting, the exporter probes the browser: it creates a
+throwaway target, navigates it to a `data:` URL, and evaluates `1`,
+each step timeout-raced. CDP answering `/json/list` is not proof a
+page can load — a wedged renderer passes every cheap health signal
+while `Page.navigate` hangs forever (2026-11-04: ~30 h of lost Meta
+quota measurement). On a wedge the exporter attempts ONE
+`systemctl --user restart helium-cdp.service` — at most once per
+15 minutes, with the attempt persisted in
+`<out-dir>/.helium-restart.json` and recorded as `recovery` in the
+export document — then re-probes. Still wedged (or restart on
+cooldown) → the tick fails as `page-not-ready` (exit 8).
+`session-expired` stays a separate state: a restart never fixes a
+session that needs a human re-login.
 
 `laptop-unreachable` is a consumer-side derivation, by design: if the
 laptop is down nothing runs, so the gatherer/hub treats a

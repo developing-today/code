@@ -20,6 +20,13 @@ import (
 //  2. pool.callTimeout: the budget for the upstream *working*. It counts only
 //     while no question is pending on the instance serving the call, which is
 //     what stops a runaway tool without also stopping a person who is typing.
+//     A caller may request a shorter value for one call (--pool-call-timeout,
+//     #1864 item 4): the configured value is the ceiling, so the effective
+//     budget is the smaller of the two -- a call may lower its bound, never
+//     raise it. exec.timeout is not in this list: it bounds a whole script
+//     run, not one upstream call. The run's total work is capped by
+//     exec.timeout and each call inside it by this budget, so for any one
+//     call whichever bound is tighter is the one that fires.
 //  3. elicit.ttl: how long one broker question lives. It bounds each pause
 //     in (2), so a call can never be held open forever by an unanswered
 //     question: the question expires, the server gets "cancel", and the
@@ -37,6 +44,46 @@ import (
 
 // errCallTimeout is the cause recorded when pool.callTimeout runs out.
 var errCallTimeout = errors.New("pool.callTimeout exceeded")
+
+type callTimeoutKey struct{}
+
+// WithCallTimeout carries a caller's requested per-call pool.callTimeout
+// (#1864 item 4) to upstream. The value is a request, not an order:
+// upstream clamps it to the pool's configured CallTimeout (the ceiling
+// rule #1864 adopts -- a caller may lower the bound for one call, never
+// raise it above what the daemon's operator configured). It rides the
+// context, so it scopes to exactly one call and cannot leak into the
+// next call served by the same pooled instance.
+func WithCallTimeout(ctx context.Context, d time.Duration) context.Context {
+	if d <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, callTimeoutKey{}, d)
+}
+
+// RequestedCallTimeout returns the per-call value WithCallTimeout put on
+// ctx, when one is there.
+func RequestedCallTimeout(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(callTimeoutKey{}).(time.Duration)
+	return d, ok && d > 0
+}
+
+// callTimeout is the effective budget for one upstream request: the
+// pool's configured CallTimeout, lowered by a caller's per-call request
+// when one is present and smaller. A configured value of zero or less
+// means the operator set no bound, so a per-call request then applies
+// exactly as asked.
+func (p *Pool) callTimeout(ctx context.Context) time.Duration {
+	cfg := p.cfg.CallTimeout
+	req, ok := RequestedCallTimeout(ctx)
+	if !ok {
+		return cfg
+	}
+	if cfg <= 0 || req < cfg {
+		return req
+	}
+	return cfg
+}
 
 // questions tracks the server-initiated requests pending on an instance.
 type questions struct {
@@ -117,13 +164,14 @@ func budget(ctx context.Context, d time.Duration, q *questions) (context.Context
 // what callers of the old WithTimeout matched on.
 func (p *Pool) upstream(ctx context.Context, key string, lease *Lease) (context.Context, func(error) error) {
 	p.track(key, 1)
-	cctx, cancel := budget(ctx, p.cfg.CallTimeout, &lease.inst.questions)
+	eff := p.callTimeout(ctx)
+	cctx, cancel := budget(ctx, eff, &lease.inst.questions)
 	return cctx, func(err error) error {
 		timedOut := context.Cause(cctx) == errCallTimeout
 		cancel()
 		p.track(key, -1)
 		if err != nil && timedOut {
-			return fmt.Errorf("%w: %v (%s)", context.DeadlineExceeded, errCallTimeout, p.cfg.CallTimeout)
+			return fmt.Errorf("%w: %v (%s)", context.DeadlineExceeded, errCallTimeout, eff)
 		}
 		return err
 	}

@@ -14,13 +14,13 @@ package elicit
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 
 	_ "modernc.org/sqlite"
 	"os"
@@ -104,8 +104,19 @@ type Request struct {
 	Audience  Audience        `json:"audience"`
 	Created   time.Time       `json:"created"`
 	ExpiresAt time.Time       `json:"expiresAt"`
-	State     State           `json:"state"`
-	PID       int             `json:"pid,omitempty"`
+	// LastTouched is when a pending question was last looked at: its
+	// creation, or the latest item read that renewed it. It is the
+	// anchor of the idle deadline under the touch-on-read convention
+	// (docs/decisions/0006-ttl-touch-on-read.md).
+	LastTouched time.Time `json:"lastTouched"`
+	// TTLRemainingMs is ExpiresAt minus the moment this representation
+	// was produced, in milliseconds, never negative. It is the shared
+	// vocabulary every expiring mcpx representation carries beside its
+	// RFC 3339 expiresAt, so a reader never has to do clock arithmetic
+	// -- or guess which of two clocks -- to know how long is left.
+	TTLRemainingMs int64 `json:"ttlRemainingMs"`
+	State          State `json:"state"`
+	PID            int   `json:"pid,omitempty"`
 	// Reason records why the audience was chosen, because a routing
 	// decision nobody can inspect is one nobody can correct.
 	Reason string `json:"reason,omitempty"`
@@ -118,6 +129,28 @@ func (r Request) TTLRemaining() time.Duration {
 		return 0
 	}
 	return d
+}
+
+// deadline is the effective expiry of a question under the
+// touch-on-read convention: the earlier of the idle deadline
+// (lastTouched + ttl) and the absolute ceiling (created + maxAge).
+// Renewal by use is the default; the ceiling is what an abandoned --
+// or merely much-glimpsed -- question still dies by.
+func deadline(created, lastTouched time.Time, ttl, maxAge time.Duration) time.Time {
+	d := lastTouched.Add(ttl)
+	if ceiling := created.Add(maxAge); ceiling.Before(d) {
+		d = ceiling
+	}
+	return d
+}
+
+// refreshTTLRemaining restamps TTLRemainingMs against now.
+func (r *Request) refreshTTLRemaining(now time.Time) {
+	ms := r.ExpiresAt.Sub(now).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	r.TTLRemainingMs = ms
 }
 
 // Answer is what came back.
@@ -134,6 +167,12 @@ type Answer struct {
 type Broker struct {
 	db *sql.DB
 
+	// ttl and maxAge are the touch-on-read convention's two durations
+	// (elicit.ttl / elicit.maxAge). They start at the built-in defaults
+	// and are replaced by Configure when a settings set is resolved.
+	ttl    time.Duration
+	maxAge time.Duration
+
 	mu      sync.Mutex
 	waiters map[string][]chan Answer
 	// poll is how often a waiter checks the table when the answer is coming
@@ -148,14 +187,140 @@ func Open(path string) (*Broker, error) {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("creating elicitation tables: %w", err)
 	}
-	return &Broker{db: db, waiters: map[string][]chan Answer{}, poll: defaults.ElicitPollInterval}, nil
+	if err := ensureLastTouched(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrating elicitation tables: %w", err)
+	}
+	b := &Broker{db: db, waiters: map[string][]chan Answer{},
+		poll: defaults.ElicitPollInterval,
+		ttl:  defaults.ElicitTTL, maxAge: defaults.ElicitMaxAge}
+	// Retention is enforced here, on open, in this package's
+	// expire-on-read spirit: there is no timer and no sweeper goroutine
+	// to go wrong, and every opener -- daemon and CLI alike -- funnels
+	// through Open or OpenAt (which calls Open). First settle overdue
+	// pending questions into their terminal state, then prune terminal
+	// rows past the retention bounds (#1677).
+	if err := b.expireOverdue(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := b.pruneTerminal(time.Now()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return b, nil
+}
+
+// pruneTerminal deletes terminal rows -- answered or expired, in both
+// elicitations and elicitation_answers -- that exceed the retention
+// bounds in defaults: older than defaults.ElicitRetentionMaxAge, or
+// beyond the newest defaults.ElicitRetentionMaxTerminalRows terminal
+// rows. Whichever bound hits first wins. Pending rows are never
+// deleted: a pending question is live state with its own deadline,
+// settled by expireOverdue, not by retention.
+//
+// A row's terminal moment is its answer's answered_ms; a terminal row
+// with no answer row (written by something else holding the same file)
+// falls back to its expires_ms, the moment it stopped being pending.
+// Sampling rows live in the same tables and obey the same bound.
+func (b *Broker) pruneTerminal(now time.Time) error {
+	terminalAt := `COALESCE((SELECT a.answered_ms FROM elicitation_answers a WHERE a.id = e.id), e.expires_ms)`
+	ids := func(query string, args ...any) ([]string, error) {
+		rows, err := b.db.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		var out []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			out = append(out, id)
+		}
+		return out, rows.Err()
+	}
+	var doomed []string
+	if maxAge := defaults.ElicitRetentionMaxAge; maxAge > 0 {
+		old, err := ids(`SELECT e.id FROM elicitations e WHERE e.state != 'pending' AND `+
+			terminalAt+` < ?`, now.Add(-maxAge).UnixMilli())
+		if err != nil {
+			return fmt.Errorf("pruning elicitations by age: %w", err)
+		}
+		doomed = append(doomed, old...)
+	}
+	if keep := defaults.ElicitRetentionMaxTerminalRows; keep >= 0 {
+		beyond, err := ids(`SELECT e.id FROM elicitations e WHERE e.state != 'pending' ORDER BY `+
+			terminalAt+` DESC, e.id DESC LIMIT -1 OFFSET ?`, keep)
+		if err != nil {
+			return fmt.Errorf("pruning elicitations by count: %w", err)
+		}
+		doomed = append(doomed, beyond...)
+	}
+	seen := map[string]bool{}
+	for _, id := range doomed {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, err := b.db.Exec(`DELETE FROM elicitation_answers WHERE id=?`, id); err != nil {
+			return fmt.Errorf("pruning elicitation answers: %w", err)
+		}
+		if _, err := b.db.Exec(`DELETE FROM elicitations WHERE id=? AND state != 'pending'`, id); err != nil {
+			return fmt.Errorf("pruning elicitations: %w", err)
+		}
+	}
+	return nil
+}
+
+// Configure sets the TTL convention's two durations, from the settings
+// registry (elicit.ttl / elicit.maxAge). A non-positive value is
+// ignored: a broker nobody configured keeps the built-in defaults, and
+// a resolved set that somehow produced zero must not make questions
+// immortal or instantly dead.
+func (b *Broker) Configure(ttl, maxAge time.Duration) {
+	if ttl > 0 {
+		b.ttl = ttl
+	}
+	if maxAge > 0 {
+		b.maxAge = maxAge
+	}
+}
+
+// ensureLastTouched adds the last_touched_ms column to a store written
+// before the touch-on-read convention. Rows that predate it read back
+// with a zero stamp, which scanRequests renders as their creation time
+// -- the correct anchor, since creation is the one touch they have had.
+func ensureLastTouched(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(elicitations)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "last_touched_ms" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE elicitations ADD COLUMN last_touched_ms INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (b *Broker) Close() error { return b.db.Close() }
@@ -173,6 +338,7 @@ CREATE TABLE IF NOT EXISTS elicitations (
   reason     TEXT,
   created_ms INTEGER NOT NULL,
   expires_ms INTEGER NOT NULL,
+  last_touched_ms INTEGER NOT NULL DEFAULT 0,
   state      TEXT NOT NULL,
   pid        INTEGER
 );
@@ -193,11 +359,11 @@ CREATE TABLE IF NOT EXISTS elicitation_answers (
 // NewID mints an identifier.
 func NewID() string {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
+	_, _ = RandSource.Read(b[:])
 	return "elc-" + hex.EncodeToString(b[:])
 }
 
-// Open registers a question and returns its identifier.
+// OpenRequest registers a question and returns its identifier.
 func (b *Broker) OpenRequest(r Request) (Request, error) {
 	if r.ID == "" {
 		r.ID = NewID()
@@ -208,9 +374,13 @@ func (b *Broker) OpenRequest(r Request) (Request, error) {
 	if r.Created.IsZero() {
 		r.Created = time.Now()
 	}
-	if r.ExpiresAt.IsZero() {
-		r.ExpiresAt = r.Created.Add(defaults.ElicitTTL)
+	if r.LastTouched.IsZero() {
+		r.LastTouched = r.Created
 	}
+	if r.ExpiresAt.IsZero() {
+		r.ExpiresAt = deadline(r.Created, r.LastTouched, b.ttl, b.maxAge)
+	}
+	r.refreshTTLRemaining(time.Now())
 	if r.Audience == "" {
 		r.Audience, r.Reason = Route(r)
 	}
@@ -221,11 +391,12 @@ func (b *Broker) OpenRequest(r Request) (Request, error) {
 
 	_, err := b.db.Exec(`INSERT INTO elicitations
 		(id,trace,parent,session,server,tool,mode,message,schema_json,url,
-		 audience,reason,created_ms,expires_ms,state,pid)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 audience,reason,created_ms,expires_ms,last_touched_ms,state,pid)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.Trace, r.Parent, r.Session, r.Server, r.Tool, string(r.Mode),
 		r.Message, string(r.Schema), r.URL, string(r.Audience), r.Reason,
-		r.Created.UnixMilli(), r.ExpiresAt.UnixMilli(), string(r.State), r.PID)
+		r.Created.UnixMilli(), r.ExpiresAt.UnixMilli(), r.LastTouched.UnixMilli(),
+		string(r.State), r.PID)
 	return r, err
 }
 
@@ -276,7 +447,7 @@ func (b *Broker) Await(ctx context.Context, id string) (Answer, error) {
 			} else if ok {
 				return a, nil
 			}
-			r, ok, err := b.Get(id)
+			r, ok, err := b.get(id)
 			if err != nil {
 				return Answer{}, err
 			}
@@ -284,17 +455,54 @@ func (b *Broker) Await(ctx context.Context, id string) (Answer, error) {
 				return Answer{}, fmt.Errorf("no elicitation %s", id)
 			}
 			if time.Now().After(r.ExpiresAt) {
-				a := Answer{ID: id, Action: Cancel, By: "expiry", At: time.Now()}
-				if err := b.Respond(a); err != nil {
-					return Answer{}, err
-				}
-				return a, nil
+				return b.expire(id)
 			}
 		}
 	}
 }
 
 // Respond records an answer and wakes anything waiting.
+
+// withSchemaDefaults returns the content with any missing top-level
+// fields filled from the requested schema's defaults, for validation
+// only; the recorded answer is the one the answerer actually gave.
+// This mirrors the mcpclient path (applyDefaults in modern.go, whose
+// checkElicitationAnswer validates after defaults are in): a required
+// field the schema itself defaults is not missing in any meaningful
+// sense, and the daemon path applies those defaults when the answer
+// is relayed. Content that is not a JSON object, and a schema with no
+// usable defaults, pass through unchanged.
+func withSchemaDefaults(schemaRaw, content []byte) []byte {
+	var schema struct {
+		Properties map[string]struct {
+			Default json.RawMessage `json:"default"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(schemaRaw, &schema) != nil || len(schema.Properties) == 0 {
+		return content
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(content, &obj) != nil || obj == nil {
+		return content
+	}
+	changed := false
+	for name, prop := range schema.Properties {
+		if _, set := obj[name]; set || len(prop.Default) == 0 {
+			continue
+		}
+		obj[name] = prop.Default
+		changed = true
+	}
+	if !changed {
+		return content
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return content
+	}
+	return out
+}
+
 func (b *Broker) Respond(a Answer) error {
 	if a.At.IsZero() {
 		a.At = time.Now()
@@ -302,7 +510,7 @@ func (b *Broker) Respond(a Answer) error {
 	if a.PID == 0 {
 		a.PID = os.Getpid()
 	}
-	r, ok, err := b.Get(a.ID)
+	r, ok, err := b.get(a.ID)
 	if err != nil {
 		return err
 	}
@@ -312,7 +520,17 @@ func (b *Broker) Respond(a Answer) error {
 	if r.State != Pending {
 		// Answering twice is not an error worth failing a command over; the
 		// first answer stands and the caller is told so.
-		return fmt.Errorf("%s was already %s", a.ID, r.State)
+		return b.alreadyAnswered(a.ID)
+	}
+	if a.By != "expiry" && a.At.After(r.ExpiresAt) {
+		// The deadline is enforced on the answer path too, not only on
+		// the wait/list paths: a question whose deadline has passed is
+		// settled as expired (expiry-as-cancel) and the late answer is
+		// refused, instead of being recorded as if the question were
+		// still live (#3129). The answer's own timestamp (defaulted to
+		// now above) is the instant judged: an answer given inside the
+		// lifetime is timely even if it is recorded later.
+		return b.refuseOverdue(a.ID)
 	}
 	// JSON null is content by length and nothing by meaning: it unmarshals
 	// into a nil map, and a null sampling answer crashed the daemon on its
@@ -321,23 +539,83 @@ func (b *Broker) Respond(a Answer) error {
 		(len(a.Content) == 0 || string(bytes.TrimSpace(a.Content)) == "null") {
 		return errors.New("an accepted form elicitation needs content")
 	}
+	// A sampling answer that is not a CreateMessageResult is refused here for
+	// the same reason: the question stays open for a real one instead of the
+	// upstream hearing -32602 for an answer nobody would have given. The
+	// era's content rule is not known at this point, so the permissive union
+	// is used; sampleViaBroker re-checks against the negotiated era once the
+	// answer is taken, and refuses upstream then.
+	if a.Action == Accept && r.Mode == Sample {
+		if err := ValidateSampleResult(a.Content, true, true); err != nil {
+			return err
+		}
+	}
+
+	// An accepted form answer is validated against the question's own
+	// requestedSchema before it is recorded -- and therefore before the
+	// waiter relays it upstream (#1954). The mcpclient path validates
+	// answers mcpx relays as a client; answers entered here (CLI,
+	// dashboard, daemon routes) reached the asker unchecked, so a wrong
+	// type or a missing required field surfaced as an upstream error
+	// against an answer the user had already given. A mismatch refuses
+	// the answer with the failing paths and the question stays pending
+	// for a corrected one, like the refusals above. A requestedSchema
+	// that does not compile is the asker's defect, not the answerer's:
+	// the answer is recorded unvalidated rather than wedging on a
+	// schema the answerer never wrote (the mcpclient rule).
+	if a.Action == Accept && r.Mode == Form && len(r.Schema) > 0 {
+		if schema, err := schemaval.Compile(r.Schema); err == nil {
+			if err := schema.ValidateJSON(withSchemaDefaults(r.Schema, a.Content)); err != nil {
+				return fmt.Errorf("accepted content does not match the requested schema: %w", err)
+			}
+		}
+	}
 
 	tx, err := b.db.Begin()
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	state := Answered
 	if a.By == "expiry" {
 		state = Expired
 	}
+	// The claim is the update, not the read above: two processes can both
+	// have seen pending, and only the first writer must win. A loser finds
+	// zero rows and is told the documented already-answered outcome instead
+	// of tripping the answer table's primary key (#1691). Writers queue on
+	// the write lock (busy_timeout), so the loser reads the winner's state.
+	claim := `UPDATE elicitations SET state=? WHERE id=? AND state='pending'`
+	claimArgs := []any{string(state), a.ID}
+	if a.By != "expiry" {
+		// The claim itself enforces the deadline, so an answer whose
+		// first read raced the deadline across processes cannot land
+		// after it: the row must still be inside its lifetime at claim
+		// time (#3129). Expiry's own claim is exempt -- settling an
+		// overdue question is its job.
+		claim += ` AND expires_ms > ?`
+		claimArgs = append(claimArgs, a.At.UnixMilli())
+	}
+	claimed, err := tx.Exec(claim, claimArgs...)
+	if err != nil {
+		return err
+	}
+	if n, err := claimed.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		if a.By != "expiry" {
+			// Zero rows with the row still pending means the deadline
+			// condition refused the claim: settle it as expired.
+			_ = tx.Rollback()
+			if cur, ok, gerr := b.get(a.ID); gerr == nil && ok && cur.State == Pending && a.At.After(cur.ExpiresAt) {
+				return b.refuseOverdue(a.ID)
+			}
+		}
+		return b.alreadyAnswered(a.ID)
+	}
 	if _, err := tx.Exec(`INSERT INTO elicitation_answers
 		(id,action,content,answered_by,answered_ms,pid) VALUES (?,?,?,?,?,?)`,
 		a.ID, string(a.Action), string(a.Content), a.By, a.At.UnixMilli(), a.PID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE elicitations SET state=? WHERE id=?`,
-		string(state), a.ID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -355,18 +633,122 @@ func (b *Broker) Respond(a Answer) error {
 	return nil
 }
 
-// Get returns one question.
+// alreadyAnswered reports the documented loss for a question that stopped
+// being pending between Respond's first read and its claim: the winner's
+// state, never the store's complaint about it (#1691).
+func (b *Broker) alreadyAnswered(id string) error {
+	r, ok, err := b.get(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no elicitation %s", id)
+	}
+	return fmt.Errorf("%s was already %s", id, r.State)
+}
+
+// refuseOverdue settles an overdue pending question as expired
+// (expiry-as-cancel) and returns the error a late answerer is told.
+// A real answer that claimed the question first keeps #1691's outcome:
+// the winner stands and this caller hears it was already answered.
+func (b *Broker) refuseOverdue(id string) error {
+	landed, err := b.expire(id)
+	if err != nil {
+		return err
+	}
+	if landed.By != "expiry" {
+		return b.alreadyAnswered(id)
+	}
+	return fmt.Errorf("%s expired before it could be answered", id)
+}
+
+// expire answers cancel on the asker's behalf and tolerates losing the
+// race to do it: a real answer (or another expiry) that claimed the
+// question after Await's last Lookup is what the asker was waiting for,
+// so it is handed over instead of the loss (#1691).
+func (b *Broker) expire(id string) (Answer, error) {
+	a := Answer{ID: id, Action: Cancel, By: "expiry", At: time.Now()}
+	if err := b.Respond(a); err != nil {
+		if landed, ok, lerr := b.Lookup(id); lerr == nil && ok {
+			return landed, nil
+		}
+		return Answer{}, err
+	}
+	return a, nil
+}
+
+// Get returns one question. An item read is use, so a pending
+// question is touched: its lastTouched becomes now and its deadline
+// renews under the convention (see touch). Collection reads (Pending)
+// do not touch -- listing what is waiting must not keep it alive.
 func (b *Broker) Get(id string) (Request, bool, error) {
+	r, ok, err := b.get(id)
+	if err != nil || !ok {
+		return r, ok, err
+	}
+	if r.State == Pending {
+		if time.Now().After(r.ExpiresAt) {
+			// An item read enforces the deadline too: an overdue
+			// question is settled as expired (expiry-as-cancel)
+			// rather than presented as live pending with no time
+			// left, which invited answers Respond then had to
+			// refuse (#3129). Touch already refuses to revive it;
+			// expiring here makes the state the answerer sees true.
+			if _, err := b.expire(id); err != nil {
+				return r, true, err
+			}
+			r, ok, err = b.get(id)
+			if err != nil || !ok {
+				return r, ok, err
+			}
+		} else if terr := b.touch(&r, time.Now()); terr != nil {
+			return r, true, terr
+		}
+	}
+	r.refreshTTLRemaining(time.Now())
+	return r, true, nil
+}
+
+// get returns one question without touching it. The broker's own
+// machinery (Await's poll, Respond's validation) reads through here:
+// waiting for an answer is not the answerer looking at the question,
+// and a read that renewed the deadline it is enforcing would never
+// let it fall.
+func (b *Broker) get(id string) (Request, bool, error) {
 	rows, err := b.db.Query(selectRequests+` WHERE id=?`, id)
 	if err != nil {
 		return Request{}, false, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out, err := scanRequests(rows)
 	if err != nil || len(out) == 0 {
 		return Request{}, false, err
 	}
 	return out[0], true, nil
+}
+
+// touch renews a pending question after an item read: lastTouched
+// becomes now and the deadline becomes min(created+maxAge,
+// lastTouched+ttl). Touch never shortens a deadline -- a question
+// opened with an explicit expiry keeps it, create being the one place
+// an explicit lifetime is honoured -- and never revives one whose
+// deadline has already passed.
+func (b *Broker) touch(r *Request, now time.Time) error {
+	if now.After(r.ExpiresAt) {
+		return nil
+	}
+	expires := deadline(r.Created, now, b.ttl, b.maxAge)
+	if expires.Before(r.ExpiresAt) {
+		expires = r.ExpiresAt
+	}
+	if _, err := b.db.Exec(`UPDATE elicitations
+		SET last_touched_ms=?, expires_ms=? WHERE id=? AND state='pending'`,
+		now.UnixMilli(), expires.UnixMilli(), r.ID); err != nil {
+		return err
+	}
+	r.LastTouched = now
+	r.ExpiresAt = expires
+	return nil
 }
 
 // Lookup returns an answer if one exists.
@@ -430,7 +812,7 @@ func (b *Broker) Pending(f Filter) ([]Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanRequests(rows)
 }
 
@@ -449,7 +831,7 @@ func (b *Broker) expireOverdue() error {
 			ids = append(ids, id)
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, id := range ids {
 		_ = b.Respond(Answer{ID: id, Action: Cancel, By: "expiry", At: now})
 	}
@@ -457,18 +839,18 @@ func (b *Broker) expireOverdue() error {
 }
 
 const selectRequests = `SELECT id,trace,parent,session,server,tool,mode,message,
-	schema_json,url,audience,reason,created_ms,expires_ms,state,pid FROM elicitations`
+	schema_json,url,audience,reason,created_ms,expires_ms,last_touched_ms,state,pid FROM elicitations`
 
 func scanRequests(rows *sql.Rows) ([]Request, error) {
 	var out []Request
 	for rows.Next() {
 		var r Request
 		var trace, parent, session, server, tool, schemaJSON, url, reason sql.NullString
-		var created, expires int64
+		var created, expires, lastTouched int64
 		var pid sql.NullInt64
 		if err := rows.Scan(&r.ID, &trace, &parent, &session, &server, &tool,
 			&r.Mode, &r.Message, &schemaJSON, &url, &r.Audience, &reason,
-			&created, &expires, &r.State, &pid); err != nil {
+			&created, &expires, &lastTouched, &r.State, &pid); err != nil {
 			return nil, err
 		}
 		r.Trace, r.Parent, r.Session = trace.String, parent.String, session.String
@@ -479,6 +861,13 @@ func scanRequests(rows *sql.Rows) ([]Request, error) {
 		}
 		r.Created = time.UnixMilli(created)
 		r.ExpiresAt = time.UnixMilli(expires)
+		r.LastTouched = time.UnixMilli(lastTouched)
+		if r.LastTouched.IsZero() {
+			// A row written before the convention: creation is the
+			// one touch it has had.
+			r.LastTouched = r.Created
+		}
+		r.refreshTTLRemaining(time.Now())
 		r.PID = int(pid.Int64)
 		// Route on read when the stored row has no audience. A question
 		// written by an older version, or by something else holding the same
@@ -507,11 +896,10 @@ func Route(r Request) (Audience, string) {
 	}
 	fields := schemaFields(r.Schema)
 	for _, f := range fields {
-		lower := strings.ToLower(f.name)
-		switch {
-		case f.format == "password":
-			return ToHuman, "a password field cannot be answered by a model"
-		case containsAny(lower, "password", "secret", "token", "apikey", "api_key", "credential"):
+		if IsSensitiveField(f.name, f.format) {
+			if f.format == "password" {
+				return ToHuman, "a password field cannot be answered by a model"
+			}
 			return ToHuman, "the field " + f.name + " looks like a credential"
 		}
 	}
@@ -522,6 +910,19 @@ func Route(r Request) (Audience, string) {
 		return ToHuman, "a confirmation is consent, which is not the agent's to give"
 	}
 	return ToAgent, "the agent has the context that raised this"
+}
+
+// IsSensitiveField reports whether a form field looks like a credential:
+// declared format "password", or a name carrying a credential-shaped
+// substring. It is the one copy of the heuristics Route routes on, exported
+// so the CLI can mask the same fields in its answer review (#1678) instead
+// of growing a second, drifting copy.
+func IsSensitiveField(name, format string) bool {
+	if format == "password" {
+		return true
+	}
+	return containsAny(strings.ToLower(name),
+		"password", "secret", "token", "apikey", "api_key", "credential")
 }
 
 type field struct{ name, typ, format string }

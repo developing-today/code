@@ -199,7 +199,7 @@ pub fn check_toolchain(inputs: &DoctorInputs) -> Finding {
     };
     // A configured binary must exist. A bare name resolves through PATH.
     let exists = if roc_bin.contains('/') {
-        std::path::Path::new(roc_bin).is_file()
+        Path::new(roc_bin).is_file()
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .map(|dir| dir.join(roc_bin))
@@ -320,6 +320,14 @@ pub fn check_profile(inputs: &DoctorInputs) -> Finding {
     if profile.native_call_deadline_ms == Some(0) {
         problems.push("native_call_deadline_ms is zero");
     }
+    // This list mirrors WorldExecutionProfile::validate (the single
+    // source of truth for the bound checks, world_limits.rs) bound for
+    // bound — keep it in sync when a bound is added there (#4785: the
+    // doctor missed total_memory_bytes, added by #557 Phase 1, and
+    // reported a profile validate() refuses as valid).
+    if profile.total_memory_bytes == Some(0) {
+        problems.push("total_memory_bytes is zero");
+    }
     if problems.is_empty() {
         return ok("profile", "execution profile bounds are valid");
     }
@@ -337,10 +345,44 @@ pub fn check_journal(inputs: &DoctorInputs) -> Finding {
     let Some(journal) = inputs.journal.as_deref() else {
         return ok("journal", "no journal to check");
     };
-    match validate_journal_file(journal) {
-        Ok((entries, version)) => ok(
+    match inspect_journal_file(journal) {
+        Ok(summary) if summary.version > MAX_JOURNAL_VERSION => fail(
             "journal",
-            format!("{entries} entries, format version {version}"),
+            format!(
+                "{}: journal format version {} is newer than this binary supports",
+                journal.display(),
+                summary.version
+            ),
+            format!(
+                "use an id binary that supports journal format version {} before opening this world",
+                summary.version
+            ),
+        ),
+        Ok(summary) if summary.version < JOURNAL_VERSION => fail(
+            "journal",
+            format!(
+                "{}: journal format version {} is older than this binary supports",
+                journal.display(),
+                summary.version
+            ),
+            "restore the journal from a backup, or recreate the world",
+        ),
+        Ok(summary) if summary.torn_tail => warn(
+            "journal",
+            format!(
+                "{}: {} entries, format version {}; an unterminated final entry will be dropped on open",
+                journal.display(),
+                summary.entries,
+                summary.version
+            ),
+            "opening the world will drop the incomplete final entry and continue",
+        ),
+        Ok(summary) => ok(
+            "journal",
+            format!(
+                "{} entries, format version {}",
+                summary.entries, summary.version
+            ),
         ),
         Err(error) => fail(
             "journal",
@@ -350,20 +392,27 @@ pub fn check_journal(inputs: &DoctorInputs) -> Finding {
     }
 }
 
-/// Parse a journal file and check its format, without opening it for append.
-///
-/// Returns the entry count and the `Created` version.
-///
-/// # Errors
-///
-/// A missing file, a first entry that is not `Created`, a version this binary
-/// does not know, or any malformed entry.
-pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
+struct JournalSummary {
+    entries: usize,
+    version: u32,
+    torn_tail: bool,
+}
+
+/// Parse a journal and record an incomplete final append without treating it
+/// as corruption. The opener drops that tail before appending again.
+fn inspect_journal_file(path: &Path) -> Result<JournalSummary> {
     let bytes =
         std::fs::read(path).map_err(|error| anyhow::anyhow!("cannot read journal: {error}"))?;
+    let has_unterminated_tail = !bytes.is_empty() && !bytes.ends_with(b"\n");
+    let last_line_index = bytes.iter().filter(|byte| **byte == b'\n').count();
     let mut entries = 0usize;
     let mut version = None;
+    let mut torn_tail = false;
     for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        if index == last_line_index && has_unterminated_tail && !line.is_empty() {
+            torn_tail = true;
+            break;
+        }
         if line.is_empty() {
             continue;
         }
@@ -379,10 +428,6 @@ pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
                     "entry {} is `Created`, but it is not the first entry",
                     index + 1
                 );
-                anyhow::ensure!(
-                    (JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(created_version),
-                    "journal format version {created_version} is not one this binary supports ({JOURNAL_VERSION}..={MAX_JOURNAL_VERSION})"
-                );
                 version = Some(*created_version);
             }
             _ if entries == 0 => {
@@ -393,14 +438,50 @@ pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
         entries += 1;
     }
     anyhow::ensure!(entries > 0, "journal is empty");
-    Ok((entries, version.unwrap_or(JOURNAL_VERSION)))
+    Ok(JournalSummary {
+        entries,
+        version: version.unwrap_or(JOURNAL_VERSION),
+        torn_tail,
+    })
 }
+
+/// Parse a journal file and check its format, without opening it for append.
+///
+/// Returns the entry count and the `Created` version.
+///
+/// # Errors
+///
+/// A missing file, a first entry that is not `Created`, a version this binary
+/// does not know, or any malformed complete entry. An unterminated final
+/// append is ignored, matching `FileJournal::open`.
+pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
+    let summary = inspect_journal_file(path)?;
+    anyhow::ensure!(
+        (JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(&summary.version),
+        "journal format version {} is not one this binary supports ({JOURNAL_VERSION}..={MAX_JOURNAL_VERSION})",
+        summary.version
+    );
+    Ok((summary.entries, summary.version))
+}
+
+/// Milliseconds since the unix epoch at 2100-01-01T00:00:00Z. A clock
+/// reading at or after this bound is absurd: no schedule or expiry this
+/// doctor guards looks anywhere near that far ahead, so the reading can
+/// only mean the system clock is wrong.
+pub const ABSURD_FUTURE_NOW_MS: u64 = 4_102_444_800_000;
 
 /// The clock reads a positive unix time. A zero (or absurd) reading means the
 /// system clock is before the epoch, which breaks every schedule and expiry.
 #[must_use]
 pub fn check_clock(inputs: &DoctorInputs) -> Finding {
     match inputs.now_ms {
+        Some(now) if now >= ABSURD_FUTURE_NOW_MS => fail(
+            "clock",
+            format!(
+                "the system clock reads {now} ms since the epoch, at or after                  the absurd-future bound of {ABSURD_FUTURE_NOW_MS} ms                  (2100-01-01T00:00:00Z)"
+            ),
+            "set the system clock (schedules and expiries depend on it)",
+        ),
         Some(now) if now > 0 => ok("clock", format!("{now} ms since the epoch")),
         _ => fail(
             "clock",
@@ -435,7 +516,14 @@ mod tests {
         let _ = std::fs::create_dir_all(dir.join("targets/wasm32"));
         let _ = std::fs::write(dir.join("platform.roc"), "platform");
         let _ = std::fs::write(dir.join("targets/wasm32/host.wasm"), "wasm");
-        let roc = crate::world_compile::locate_roc().ok();
+        let roc_path = dir.join("roc");
+        let _ = std::fs::write(&roc_path, "roc binary");
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(
+            &roc_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        );
+        let roc = Some(roc_path.to_string_lossy().into_owned());
         let roc_resolved = roc
             .clone()
             .map(Ok)
@@ -513,6 +601,27 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_total_memory_bound_fails() {
+        // #4785: total_memory_bytes is a bound validate() refuses at zero;
+        // the doctor must refuse the same profile, not certify it valid.
+        let profile = WorldExecutionProfile {
+            total_memory_bytes: Some(0),
+            ..WorldExecutionProfile::default()
+        };
+        assert!(profile.validate().is_err());
+        let finding = check_profile(&DoctorInputs {
+            profile: Some(profile),
+            ..inputs()
+        });
+        assert_eq!(finding.severity, Severity::Fail);
+        assert!(
+            finding.detail.contains("total_memory_bytes"),
+            "{}",
+            finding.detail
+        );
+    }
+
+    #[test]
     fn a_journal_must_start_with_created_and_parse() {
         let dir = std::env::temp_dir().join(format!("id-doctor-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -546,10 +655,9 @@ mod tests {
     }
 
     #[test]
-    fn a_journal_version_zero_and_blank_lines_match_restore() {
-        // #1598: restore (world/core.rs) requires version 1..=MAX and reads
-        // the first *parsed* entry (world_store skips blank lines); doctor
-        // must agree on both.
+    fn a_journal_version_and_blank_lines_follow_open_rules() {
+        // #1598 originally pinned doctor to the restore reader. Triage #2999
+        // supersedes that for blank lines: all journal readers skip them.
         let dir = std::env::temp_dir().join(format!("id-doctor-1598-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("journal.jsonl");
@@ -565,8 +673,27 @@ mod tests {
         std::fs::write(&path, format!("{}\n", created(0))).unwrap();
         assert!(validate_journal_file(&path).is_err());
 
-        // A leading blank line does not move the header: still valid.
+        // Leading blank line.
         std::fs::write(&path, format!("\n{}\n", created(JOURNAL_VERSION))).unwrap();
+        let (entries, version) = validate_journal_file(&path).unwrap();
+        assert_eq!((entries, version), (1, JOURNAL_VERSION));
+
+        // A blank line between valid records is ignored.
+        let revoked = serde_json::json!({
+            "entry": "revoked",
+            "participant_id": 1,
+            "by": null,
+        });
+        std::fs::write(
+            &path,
+            format!("{}\n\n{}\n", created(JOURNAL_VERSION), revoked),
+        )
+        .unwrap();
+        let (entries, version) = validate_journal_file(&path).unwrap();
+        assert_eq!((entries, version), (2, JOURNAL_VERSION));
+
+        // Trailing blank lines are ignored too.
+        std::fs::write(&path, format!("{}\n\n", created(JOURNAL_VERSION))).unwrap();
         let (entries, version) = validate_journal_file(&path).unwrap();
         assert_eq!((entries, version), (1, JOURNAL_VERSION));
 
@@ -574,6 +701,89 @@ mod tests {
         let bad = serde_json::json!({"entry": "caps_granted", "granted": []});
         std::fs::write(&path, format!("\n{bad}\n")).unwrap();
         assert!(validate_journal_file(&path).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_torn_final_entry_is_a_recoverable_warning_and_not_rewritten() {
+        let dir = std::env::temp_dir().join(format!("id-doctor-torn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal.jsonl");
+        let created = serde_json::json!({
+            "entry": "created",
+            "world_id": "w",
+            "version": JOURNAL_VERSION,
+        });
+        let mut bytes = format!("{created}\n").into_bytes();
+        bytes.extend_from_slice(b"{\"entry\":\"revoked\",\"participant");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let finding = check_journal(&DoctorInputs {
+            journal: Some(path.clone()),
+            ..inputs()
+        });
+        assert_eq!(finding.severity, Severity::Warn, "{finding:#?}");
+        assert!(
+            finding.detail.contains("unterminated final entry"),
+            "{finding:#?}"
+        );
+        assert!(finding.fix.contains("drop"), "{finding:#?}");
+        assert!(!finding.fix.contains("restore"), "{finding:#?}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "doctor is read-only");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_future_journal_version_gets_unsupported_binary_advice() {
+        let dir = std::env::temp_dir().join(format!("id-doctor-future-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal.jsonl");
+        let future = serde_json::json!({
+            "entry": "created",
+            "world_id": "w",
+            "version": MAX_JOURNAL_VERSION + 1,
+        });
+        std::fs::write(&path, format!("{future}\n")).unwrap();
+
+        let finding = check_journal(&DoctorInputs {
+            journal: Some(path),
+            ..inputs()
+        });
+        assert_eq!(finding.severity, Severity::Fail, "{finding:#?}");
+        assert!(
+            finding.fix.contains("supports journal format"),
+            "{finding:#?}"
+        );
+        assert!(!finding.fix.contains("restore"), "{finding:#?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn mid_file_journal_corruption_remains_a_failure() {
+        let dir = std::env::temp_dir().join(format!("id-doctor-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal.jsonl");
+        let created = serde_json::json!({
+            "entry": "created",
+            "world_id": "w",
+            "version": JOURNAL_VERSION,
+        });
+        let revoked = serde_json::json!({
+            "entry": "revoked",
+            "participant_id": 1,
+            "by": null,
+        });
+        std::fs::write(&path, format!("{created}\nnot-json\n{revoked}\n")).unwrap();
+
+        let finding = check_journal(&DoctorInputs {
+            journal: Some(path),
+            ..inputs()
+        });
+        assert_eq!(finding.severity, Severity::Fail, "{finding:#?}");
+        assert!(finding.fix.contains("restore"), "{finding:#?}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -649,5 +859,36 @@ mod tests {
         assert_eq!(finding.severity, Severity::Fail);
 
         assert_eq!(check_clock(&inputs()).severity, Severity::Ok);
+    }
+
+    #[test]
+    fn a_clock_at_or_after_2100_fails() {
+        // One millisecond before the bound is still a plausible reading.
+        let just_before = check_clock(&DoctorInputs {
+            now_ms: Some(ABSURD_FUTURE_NOW_MS - 1),
+            ..inputs()
+        });
+        assert_eq!(just_before.severity, Severity::Ok);
+
+        // At the bound the reading is absurd and fails, naming both the
+        // reading and the bound, with the zero case's fix text.
+        let at_bound = check_clock(&DoctorInputs {
+            now_ms: Some(ABSURD_FUTURE_NOW_MS),
+            ..inputs()
+        });
+        assert_eq!(at_bound.severity, Severity::Fail);
+        assert!(at_bound.detail.contains("4102444800000"), "{at_bound:#?}");
+        assert!(at_bound.detail.contains("2100-01-01"), "{at_bound:#?}");
+        assert_eq!(
+            at_bound.fix,
+            "set the system clock (schedules and expiries depend on it)"
+        );
+
+        // The largest possible reading fails too.
+        let max = check_clock(&DoctorInputs {
+            now_ms: Some(u64::MAX),
+            ..inputs()
+        });
+        assert_eq!(max.severity, Severity::Fail);
     }
 }

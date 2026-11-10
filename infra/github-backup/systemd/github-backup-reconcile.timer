@@ -1,0 +1,10 @@
+[Unit]
+Description=github-backup reconcile (weekly)
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target

@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use iroh_blobs::api::{Store, TempTag};
@@ -7,14 +9,17 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, WorldEvent, WorldHandle, WorldMetrics,
-    WorldPolicy, WorldSnapshot,
+    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, SessionId, WorldEvent, WorldHandle,
+    WorldMetrics, WorldPolicy, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
 
 /// Largest Wasm world module that may be installed (16 MiB).
-pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
+///
+/// The definition lives in `id-core`'s `world_limits` since the Phase 1
+/// crate split (#3447); re-exported here at its historical path.
+pub use crate::world_limits::MAX_WORLD_MODULE_BYTES;
 
 /// Largest raw upload chunk; hex + JSON framing remains below [`MAX_FRAME_BYTES`].
 pub const MAX_WORLD_MODULE_CHUNK_BYTES: usize = 6 * 1024;
@@ -53,6 +58,9 @@ pub trait SessionIo: Send {
     fn recv(&mut self) -> impl Future<Output = Inbound> + Send;
     /// Send one frame. Returns `false` when the peer is gone.
     fn send(&mut self, frame: String) -> impl Future<Output = bool> + Send;
+    /// Mark this session authorized after its application-level
+    /// capability or admin credential has been validated.
+    fn mark_authorized(&mut self) {}
 }
 
 /// Tunables for [`run_session_with`].
@@ -78,6 +86,9 @@ pub(crate) enum ClientFrame {
     Join {
         capability: String,
         after: Option<u64>,
+        /// Opt in to revisioned JSON screen patches. Omitted by v1 clients.
+        #[serde(default)]
+        screen_patches: bool,
     },
     Info {
         capability: String,
@@ -103,6 +114,19 @@ pub(crate) enum ClientFrame {
         capability: String,
         module_hash: String,
     },
+    /// Admin: download a stored module by hash, whether or not it is the
+    /// active module. The participant download above serves only the active
+    /// module; an admin reconciling a world to a manifest (#807) needs a
+    /// module the host already holds - installed earlier and still in its
+    /// blob store - by its hash, to install it under the manifest's seed.
+    DownloadModuleAdmin {
+        admin_token: String,
+        module_hash: String,
+    },
+    /// Admin: export the bounded ordered history, including host events.
+    EventHistoryAdmin {
+        admin_token: String,
+    },
     Invite {
         admin_token: String,
         display_name: String,
@@ -115,6 +139,14 @@ pub(crate) enum ClientFrame {
         #[serde(default)]
         role: Option<String>,
     },
+    /// Public: list the worlds this server hosts, as the browsable
+    /// directory (#812). No admin token: the reply carries directory
+    /// metadata only — world names, loaded state, the default, and a
+    /// per-world presence *count*. It never names who is present, and
+    /// it neither creates nor opens any world. The admin `ListWorlds`
+    /// frame remains for operators; this is the deliberate public
+    /// boundary for the directory feed.
+    Directory {},
     /// Admin: list the worlds this server hosts.
     ListWorlds {
         admin_token: String,
@@ -172,6 +204,29 @@ pub(crate) enum ClientFrame {
         admin_token: String,
         ceiling: Vec<String>,
     },
+    /// Admin: pend one schedule (replacing any pending schedule with the
+    /// same id), journaled before the reply. The manifest apply path's
+    /// `ScheduleAt` step (#807).
+    SetSchedule {
+        admin_token: String,
+        id: String,
+        at_ms: u64,
+    },
+    /// Admin: cancel a pending schedule by id (a no-op when absent),
+    /// journaled before the reply. The manifest apply path's
+    /// `CancelSchedule` step (#807).
+    CancelSchedule {
+        admin_token: String,
+        id: String,
+    },
+    /// Read the manifest-reconciliation state: the pending schedules, and
+    /// the active install seed when the admin token is valid. A guest
+    /// capability alone reads the schedules only — the seed never leaves
+    /// the admin layer (#240).
+    WorldState {
+        admin_token: Option<String>,
+        capability: Option<String>,
+    },
     /// Admin: persist requested per-world runtime bounds. They do not change
     /// a running guest; they apply on its next install or process restart.
     SetExecutionProfile {
@@ -223,6 +278,9 @@ pub(crate) enum ClientFrame {
         /// Expected BLAKE3 hash. Optional for browser uploads, whose `WebCrypto`
         /// API does not provide BLAKE3; the host still computes and returns it.
         module_hash: Option<String>,
+        /// Optional Ed25519 signature over the domain-separated module digest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<ModuleSignature>,
         seed: u64,
     },
     InstallChunk {
@@ -230,6 +288,16 @@ pub(crate) enum ClientFrame {
         data_hex: String,
     },
     InstallEnd,
+}
+
+/// Signer metadata supplied with an uploaded module. Public keys and
+/// signatures are lower- or upper-case hexadecimal Ed25519 encodings. The
+/// signed message is `b"developing-today/id-world-module/v1\\0"` followed by
+/// the 32-byte BLAKE3 digest of the exact uploaded module bytes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ModuleSignature {
+    pub public_key: String,
+    pub signature: String,
 }
 
 // Install frames are only produced/consumed with the `sandbox` feature.
@@ -250,6 +318,14 @@ pub(crate) enum ServerFrame<'a> {
         /// Optional typed screen surface. Older clients can continue using `data`.
         #[serde(skip_serializing_if = "Option::is_none")]
         surface: Option<&'a crate::world_presentation::WorldSurface>,
+        /// Monotonic within this session; independent of the world event cursor.
+        view_revision: u64,
+        /// Present only when `patch` applies to this exact prior view revision.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_view_revision: Option<u64>,
+        /// A negotiated screen delta. `data` is empty and `surface` omitted.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        patch: Option<&'a crate::world_presentation::ScreenPatch>,
     },
     ModuleInfo {
         world_id: String,
@@ -284,6 +360,18 @@ pub(crate) enum ServerFrame<'a> {
     ModuleEnd {
         module_hash: String,
     },
+    /// Starts an admin-only ordered event-history transfer.
+    EventHistoryBegin {
+        world_id: String,
+        module_hash: Option<String>,
+        current_sequence: u64,
+        complete: bool,
+        event_count: usize,
+    },
+    /// One sequenced or host-originated event in journal order.
+    EventHistoryEvent {
+        event: &'a WorldEvent,
+    },
     Invite(&'a InviteResponse),
     /// The worlds this server hosts.
     Worlds {
@@ -317,6 +405,18 @@ pub(crate) enum ServerFrame<'a> {
     CapsCeiling {
         report: crate::world_caps::CapsReport,
         message: &'static str,
+    },
+    /// The pending schedules after a schedule change (id to fire time in
+    /// unix milliseconds, as a JSON object).
+    Schedules {
+        schedules: BTreeMap<String, u64>,
+    },
+    /// The manifest-reconciliation state: pending schedules, plus the
+    /// active install seed for admin readers only (`None` for capability
+    /// readers, #240).
+    WorldState {
+        seed: Option<u64>,
+        schedules: BTreeMap<String, u64>,
     },
     /// A compiled module was installed.
     Compiled {
@@ -415,6 +515,9 @@ pub enum InstallError {
     RawModuleDisabled,
     /// Wasmtime rejected or could not instantiate the module.
     InvalidModule,
+    /// The server has a module trust list and the artifact is unsigned,
+    /// signed by an untrusted key, or has an invalid signature.
+    UntrustedModule,
     /// The blob could not be pinned or the world actor refused activation.
     Unavailable,
 }
@@ -442,6 +545,9 @@ pub struct WorldService {
     pub(crate) native: bool,
     /// Raw artifact installs are refused; compiled source remains permitted.
     pub(crate) source_only: bool,
+    /// Ed25519 public keys authorized to sign module artifacts. Empty keeps
+    /// legacy behavior and accepts unsigned modules.
+    pub(crate) trusted_module_keys: Vec<[u8; 32]>,
     pub(crate) runtime: crate::world_limits::RuntimeLimits,
     pub(crate) mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     pub(crate) outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
@@ -449,6 +555,8 @@ pub struct WorldService {
     /// The world's host metrics registry (F11.7), shared with the actor:
     /// the session layer records the frame bytes it sends into it.
     pub(crate) metrics: WorldMetrics,
+    /// Monotonic, process-local IDs for live connections to this service.
+    pub(crate) next_session_id: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for WorldService {

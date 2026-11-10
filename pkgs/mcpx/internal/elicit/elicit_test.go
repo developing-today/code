@@ -6,9 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 func open(t *testing.T) *elicit.Broker {
@@ -17,7 +18,7 @@ func open(t *testing.T) *elicit.Broker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.Close() })
+	t.Cleanup(func() { _ = b.Close() })
 	return b
 }
 
@@ -36,36 +37,45 @@ func ask(t *testing.T, b *elicit.Broker, r elicit.Request) elicit.Request {
 func TestAnAnswerCanComeFromAnotherProcess(t *testing.T) {
 	// The whole point: the asker and the answerer need not be the same
 	// process, so CI can raise a question a person answers later.
-	b := open(t)
-	r := ask(t, b, elicit.Request{Session: "s1"})
+	//
+	// testing/synctest pilot (#2639): the waiter's Await deadline and the
+	// fallback timer are virtual time, so a waiter that is never woken
+	// fails in microseconds rather than after ten wall-clock seconds, and
+	// synctest.Wait replaces the old sleep-as-scheduler-hint: it returns
+	// exactly when the waiter goroutine is blocked in Await, whatever the
+	// machine's speed.
+	synctest.Test(t, func(t *testing.T) {
+		b := open(t)
+		r := ask(t, b, elicit.Request{Session: "s1"})
 
-	done := make(chan elicit.Answer, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		a, err := b.Await(ctx, r.ID)
-		if err != nil {
-			t.Error(err)
+		done := make(chan elicit.Answer, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			a, err := b.Await(ctx, r.ID)
+			if err != nil {
+				t.Error(err)
+			}
+			done <- a
+		}()
+
+		synctest.Wait()
+		if err := b.Respond(elicit.Answer{
+			ID: r.ID, Action: elicit.Accept,
+			Content: json.RawMessage(`{"repo":"me/thing"}`), By: "cli",
+		}); err != nil {
+			t.Fatal(err)
 		}
-		done <- a
-	}()
 
-	time.Sleep(50 * time.Millisecond)
-	if err := b.Respond(elicit.Answer{
-		ID: r.ID, Action: elicit.Accept,
-		Content: json.RawMessage(`{"repo":"me/thing"}`), By: "cli",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case a := <-done:
-		if a.Action != elicit.Accept || !strings.Contains(string(a.Content), "me/thing") {
-			t.Errorf("got %+v", a)
+		select {
+		case a := <-done:
+			if a.Action != elicit.Accept || !strings.Contains(string(a.Content), "me/thing") {
+				t.Errorf("got %+v", a)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the waiter was never woken")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the waiter was never woken")
-	}
+	})
 }
 
 func TestAnExpiredQuestionBecomesCancelNotDecline(t *testing.T) {
@@ -99,13 +109,13 @@ func TestAnsweringAfterTheProcessDiedStillWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := ask(t, first, elicit.Request{Session: "s1"})
-	first.Close() // the asking process goes away
+	_ = first.Close() // the asking process goes away
 
 	second, err := elicit.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 
 	pending, err := second.Pending(elicit.Filter{Session: "s1"})
 	if err != nil {
@@ -205,4 +215,113 @@ func TestTTLRemainingNeverGoesNegative(t *testing.T) {
 	if r.TTLRemaining() != 0 {
 		t.Errorf("got %v", r.TTLRemaining())
 	}
+}
+
+func TestItemReadRenewsButCollectionReadDoesNot(t *testing.T) {
+	// The convention (docs/decisions/0006-ttl-touch-on-read.md): an item
+	// read is use and renews; a collection read is a listing and does not.
+	b := open(t)
+	b.Configure(2*time.Second, time.Hour)
+	created := time.Now().Add(-1500 * time.Millisecond)
+	r := ask(t, b, elicit.Request{Created: created})
+	// Deadline at creation: created + ttl.
+	if want := created.Add(2 * time.Second); !r.ExpiresAt.Truncate(time.Millisecond).Equal(want.Truncate(time.Millisecond)) {
+		t.Fatalf("initial deadline = %v, want %v", r.ExpiresAt, want)
+	}
+
+	pending, err := b.Pending(elicit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+	if !pending[0].ExpiresAt.Equal(r.ExpiresAt.Truncate(time.Millisecond)) {
+		t.Errorf("collection read renewed the deadline: %v -> %v",
+			r.ExpiresAt, pending[0].ExpiresAt)
+	}
+	if !pending[0].LastTouched.Equal(created.Truncate(time.Millisecond)) {
+		t.Errorf("collection read touched: lastTouched = %v, want %v",
+			pending[0].LastTouched, created)
+	}
+
+	got, ok, err := b.Get(r.ID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if !got.ExpiresAt.After(r.ExpiresAt) {
+		t.Errorf("item read did not renew: deadline still %v", got.ExpiresAt)
+	}
+	if got.LastTouched.Before(created) || time.Since(got.LastTouched) > time.Minute {
+		t.Errorf("lastTouched = %v, want ~now", got.LastTouched)
+	}
+	if got.TTLRemainingMs <= 0 || got.TTLRemainingMs > 2000 {
+		t.Errorf("ttlRemainingMs = %d, want in (0, 2000]", got.TTLRemainingMs)
+	}
+}
+
+func TestTouchNeverPassesTheMaxAgeCeiling(t *testing.T) {
+	// Renewal is bounded: however often a question is read, it dies at
+	// created + maxAge.
+	// synctest pilot (#2639): the 600ms below is virtual time — it moves
+	// the fake clock, which is the subject of the assertion (a read 600ms
+	// after creation must clamp at the ceiling), and costs no wall time.
+	synctest.Test(t, func(t *testing.T) {
+		b := open(t)
+		b.Configure(2*time.Second, 2500*time.Millisecond)
+		created := time.Now().Add(-time.Second)
+		r := ask(t, b, elicit.Request{Created: created})
+		ceiling := created.Add(2500 * time.Millisecond)
+		if !r.ExpiresAt.Truncate(time.Millisecond).Equal(created.Add(2 * time.Second).Truncate(time.Millisecond)) {
+			t.Fatalf("initial deadline = %v, want created+ttl (below ceiling)", r.ExpiresAt)
+		}
+		time.Sleep(600 * time.Millisecond)
+		got, ok, err := b.Get(r.ID)
+		if err != nil || !ok {
+			t.Fatalf("get: ok=%v err=%v", ok, err)
+		}
+		if got.ExpiresAt.After(ceiling) {
+			t.Errorf("touch pushed the deadline past the ceiling: %v > %v", got.ExpiresAt, ceiling)
+		}
+		if got.ExpiresAt.Before(ceiling.Add(-100 * time.Millisecond)) {
+			t.Errorf("deadline = %v, want ~ceiling %v", got.ExpiresAt, ceiling)
+		}
+	})
+}
+
+func TestTouchNeverShortensAnExplicitExpiry(t *testing.T) {
+	// An explicit lifetime at creation is the exception the convention
+	// honours: a read renews the default family, it does not cut down a
+	// deadline the creator chose.
+	b := open(t)
+	b.Configure(2*time.Second, time.Hour)
+	explicit := time.Now().Add(time.Hour)
+	r := ask(t, b, elicit.Request{ExpiresAt: explicit})
+	got, ok, err := b.Get(r.ID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if !got.ExpiresAt.Equal(r.ExpiresAt.Truncate(time.Millisecond)) {
+		t.Errorf("touch shortened an explicit expiry: %v -> %v", r.ExpiresAt, got.ExpiresAt)
+	}
+}
+
+func TestAnAbandonedQuestionStillExpires(t *testing.T) {
+	// Touch-on-read changes nothing for a question nobody reads: it
+	// expires on the idle schedule, exactly as before.
+	// synctest pilot (#2639): the 450ms below is virtual time, deliberately
+	// moving the fake clock past the 300ms ttl; the test costs no wall time.
+	synctest.Test(t, func(t *testing.T) {
+		b := open(t)
+		b.Configure(300*time.Millisecond, time.Hour)
+		r := ask(t, b, elicit.Request{})
+		time.Sleep(450 * time.Millisecond)
+		pending, err := b.Pending(elicit.Filter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) != 0 {
+			t.Errorf("abandoned question %s still pending after its ttl", r.ID)
+		}
+	})
 }

@@ -13,9 +13,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/recipes"
-	"github.com/dezren39/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
 )
 
 // ---- client methods ----
@@ -290,9 +290,9 @@ func (a *App) CmdRecipes(ctx context.Context, args []string) error {
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tTAKES\tCALLS\tSUMMARY")
+		_, _ = fmt.Fprintln(w, "NAME\tTAKES\tCALLS\tSUMMARY")
 		for _, r := range list.Recipes {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name,
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name,
 				orDash(placeholderNames(r)), orDash(strings.Join(r.Tools, " ")),
 				trunc(r.Summary, 44))
 		}

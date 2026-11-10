@@ -37,6 +37,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::cli::TagCommand;
+use crate::commands::text::plain_field;
 use crate::meta_client::{MetaClient, MetaRequester, expect_ok};
 use crate::protocol::{MetaRequest, MetaResponse, WireTag};
 use crate::tags::TAG_DISPLAY_MAX_BYTES;
@@ -62,14 +63,20 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     s
 }
 
-/// Decode a hex string (case-insensitive, optional `0x` prefix, whitespace ignored).
+/// Decode a hex string (case-insensitive, optional single `0x`/`0X`
+/// prefix, whitespace ignored).
 pub fn hex_decode(input: &str) -> Result<Vec<u8>> {
-    let cleaned: String = input
-        .trim()
-        .trim_start_matches("0x")
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let trimmed = input.trim();
+    // Strip at most one prefix, in either spelling (#1804):
+    // `trim_start_matches("0x")` stripped repeatedly — silently
+    // accepting `0x0xAB` — and knew only the lowercase spelling, so
+    // `0XAB` was refused as an "invalid hex digit". A second prefix
+    // left in place fails digit parsing below, as it should.
+    let stripped = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let cleaned: String = stripped.chars().filter(|c| !c.is_whitespace()).collect();
     if !cleaned.len().is_multiple_of(2) {
         bail!("hex value must have an even number of digits");
     }
@@ -103,7 +110,7 @@ impl TagDisplayOptions {
     /// Format a tag value for display according to these options.
     pub fn format_value(&self, value: &[u8]) -> String {
         let max = TAG_DISPLAY_MAX_BYTES;
-        match std::str::from_utf8(value) {
+        let formatted = match std::str::from_utf8(value) {
             Ok(text) => {
                 if self.no_truncate {
                     text.to_owned()
@@ -127,7 +134,8 @@ impl TagDisplayOptions {
                 }
             }
             Err(_) => format!("<binary {} bytes>", value.len()),
-        }
+        };
+        plain_field(&formatted)
     }
 }
 
@@ -246,8 +254,13 @@ pub async fn run_set(
     match resp {
         MetaResponse::SetTag { success: true } => {
             match value {
-                Some(v) => println!("tag set: {subject} [{key}={}]", opts.format_value(v)),
-                None => println!("tag set: {subject} [{key}]"),
+                Some(v) => println!(
+                    "tag set: {} [{}={}]",
+                    plain_field(subject),
+                    plain_field(key),
+                    opts.format_value(v)
+                ),
+                None => println!("tag set: {} [{}]", plain_field(subject), plain_field(key)),
             }
             Ok(())
         }
@@ -370,13 +383,22 @@ fn print_tags(tags: &[WireTag], opts: &TagDisplayOptions) {
 }
 
 /// Print a single tag line with display options applied.
-fn print_tag_line(subject: &[u8], key: &[u8], value: Option<&[u8]>, opts: &TagDisplayOptions) {
-    let subject = String::from_utf8_lossy(subject);
-    let key = String::from_utf8_lossy(key);
+fn format_tag_line(
+    subject: &[u8],
+    key: &[u8],
+    value: Option<&[u8]>,
+    opts: &TagDisplayOptions,
+) -> String {
+    let subject = plain_field(&String::from_utf8_lossy(subject));
+    let key = plain_field(&String::from_utf8_lossy(key));
     match value {
-        Some(v) => println!("{subject}\t{key}={}", opts.format_value(v)),
-        None => println!("{subject}\t{key}"),
+        Some(v) => format!("{subject}\t{key}={}", opts.format_value(v)),
+        None => format!("{subject}\t{key}"),
     }
+}
+
+fn print_tag_line(subject: &[u8], key: &[u8], value: Option<&[u8]>, opts: &TagDisplayOptions) {
+    println!("{}", format_tag_line(subject, key, value, opts));
 }
 
 #[cfg(test)]
@@ -388,6 +410,27 @@ mod tests {
     fn format_value_short_text_unchanged() {
         let opts = TagDisplayOptions::default();
         assert_eq!(opts.format_value(b"hello"), "hello");
+    }
+
+    #[test]
+    fn tag_line_escapes_whitespace_controls_in_each_stored_field() {
+        let opts = TagDisplayOptions::default();
+        for control in ['\n', '\t', '\r'] {
+            let dirty = format!("before{control}after");
+            let cases: [(&[u8], &[u8], Option<&[u8]>); 3] = [
+                (dirty.as_bytes(), b"key", Some(b"value")),
+                (b"subject", dirty.as_bytes(), Some(b"value")),
+                (b"subject", b"key", Some(dirty.as_bytes())),
+            ];
+            for (subject, key, value) in cases {
+                let line = format_tag_line(subject, key, value, &opts);
+                assert_eq!(line.matches('\t').count(), 1, "{line:?}");
+                assert!(!line.contains('\n'), "{line:?}");
+                assert!(!line.contains('\r'), "{line:?}");
+                assert_eq!(line.lines().count(), 1, "{line:?}");
+                assert!(line.contains(&format!("{dirty:?}")), "{line:?}");
+            }
+        }
     }
 
     #[test]
@@ -464,6 +507,15 @@ mod tests {
     }
 
     #[test]
+    fn binary_flag_escapes_controls_without_changing_lossy_bytes() {
+        let opts = TagDisplayOptions {
+            binary: true,
+            ..Default::default()
+        };
+        assert_eq!(opts.format_value(b"a\nb\xff"), "\"a\\nb\u{fffd}\"");
+    }
+
+    #[test]
     fn hex_roundtrip() {
         let data = [0u8, 1, 0xab, 0xff];
         assert_eq!(hex_decode(&hex_encode(&data)).unwrap(), data);
@@ -474,6 +526,21 @@ mod tests {
     fn hex_decode_rejects_bad_input() {
         assert!(hex_decode("abc").is_err(), "odd length");
         assert!(hex_decode("zz").is_err(), "not hex");
+    }
+
+    #[test]
+    fn hex_decode_prefix_spellings() {
+        // The documented case-insensitivity covers the prefix too
+        // (#1804): every single-prefix spelling decodes the same bytes.
+        let expected = vec![0xab, 0xcd];
+        assert_eq!(hex_decode("0xAB cd").unwrap(), expected);
+        assert_eq!(hex_decode("0XAB").unwrap(), vec![0xab]);
+        assert_eq!(hex_decode("0Xab cd").unwrap(), expected);
+        // At most one prefix is stripped: a doubled prefix is refused,
+        // never silently accepted as the bare bytes.
+        assert!(hex_decode("0x0xAB").is_err(), "doubled lowercase prefix");
+        assert!(hex_decode("0X0XAB").is_err(), "doubled uppercase prefix");
+        assert!(hex_decode("0x0XAB").is_err(), "doubled mixed prefix");
     }
 
     #[test]

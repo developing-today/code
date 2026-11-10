@@ -16,7 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // StdioTransport runs an MCP server as a child process and speaks
@@ -42,9 +43,10 @@ type StdioTransport struct {
 	// write.
 	writeMu sync.Mutex
 	closed  atomic.Bool
-	// detached is set while another process owns the child's pipes; see Detach.
-	// Guarded by writeMu.
-	detached bool
+	// detached is set while another process owns the child's pipes; see
+	// Detach. An atomic, like closed: Recv reads it under readMu while
+	// Detach sets it without holding readMu.
+	detached atomic.Bool
 	// readMu is held by Recv, so Detach can wait out a read in progress.
 	readMu sync.Mutex
 	// pending is the start of a frame whose end had not arrived when a read
@@ -72,6 +74,11 @@ type StdioOptions struct {
 	// StdinGrace and TermGrace are Close's waits after closing stdin and
 	// after SIGTERM. Zero means defaults.StdioStdinGrace / StdioTermGrace.
 	StdinGrace, TermGrace time.Duration
+	// Context, when set, bounds a nix: program-spec resolution at spawn:
+	// the caller's startup budget cancels the build instead of the build
+	// outliving the budget on its own timeout and launching a child whose
+	// handshake context has already expired. Nil means context.Background.
+	Context context.Context
 }
 
 // maxLine bounds a single JSON-RPC frame. MCP servers such as
@@ -83,7 +90,24 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	if opts.Command == "" {
 		return nil, errors.New("stdio transport: empty command")
 	}
-	cmd := exec.Command(opts.Command, opts.Args...)
+	// A nix: program spec resolves once, here at spawn, to the store
+	// path that actually runs (progspec, #1921): the child is the built
+	// program, never a nix process. A plain command passes through
+	// untouched, exactly as before. A resolution failure names the spec
+	// and refuses the launch rather than falling back to PATH.
+	command := opts.Command
+	if progspec.IsNix(command) {
+		ctx := opts.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resolved, err := progspec.ResolvePathInDir(ctx, command, opts.Cwd)
+		if err != nil {
+			return nil, fmt.Errorf("stdio transport: %w", err)
+		}
+		command = resolved
+	}
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Cwd
 
 	env := []string{}
@@ -110,28 +134,28 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return nil, err
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		outR.Close()
-		outW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return nil, err
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, outW, errW
 	startErr := cmd.Start()
 	// The child holds its own copies; ours must go, or EOF never arrives.
-	stdinR.Close()
-	outW.Close()
-	errW.Close()
+	_ = stdinR.Close()
+	_ = outW.Close()
+	_ = errW.Close()
 	if startErr != nil {
-		stdinW.Close()
-		outR.Close()
-		errR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 		return nil, fmt.Errorf("start %s: %w", opts.Command, startErr)
 	}
 
@@ -177,12 +201,18 @@ func (t *StdioTransport) startStderr() {
 func (t *StdioTransport) Send(ctx context.Context, msg []byte) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	if t.closed.Load() || t.detached {
+	if t.closed.Load() || t.detached.Load() {
 		return errors.New("stdio transport closed")
 	}
-	if _, err := t.stdin.Write(append(msg, '\n')); err != nil {
+	frame := append(msg, '\n')
+	n, err := t.stdin.Write(frame)
+	if err != nil {
 		return fmt.Errorf("write to %s: %w (stderr: %s)", t.label, err, t.lastWords(400))
 	}
+	if n != len(frame) {
+		return fmt.Errorf("write to %s: %w", t.label, io.ErrShortWrite)
+	}
+	markToolCallDispatched(ctx, msg)
 	return nil
 }
 
@@ -212,6 +242,11 @@ func (t *StdioTransport) lastWords(n int) string {
 func (t *StdioTransport) Recv() ([]byte, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
+	if t.detached.Load() {
+		// A read loop that was waiting on readMu while Detach took the
+		// pipes must not consume frames the successor owns (#2842).
+		return nil, errors.New("stdio transport is detached")
+	}
 	for {
 		line, err := t.readLine()
 		if err != nil {
@@ -311,8 +346,8 @@ func (t *StdioTransport) Close() error {
 			<-waitOrTimeout(t.exited, defaults.StdioKillWait)
 		}
 	}
-	t.outR.Close()
-	t.errR.Close()
+	_ = t.outR.Close()
+	_ = t.errR.Close()
 	return nil
 }
 

@@ -7,7 +7,9 @@
 // If parseJsonc's declaration shape changes, this extraction fails loudly
 // rather than silently testing nothing.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -15,12 +17,44 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(binDir, 'sync-models.mjs'), 'utf-8');
 
-const start = source.indexOf('function parseJsonc(text) {');
-assert.notEqual(start, -1, 'parseJsonc not found in sync-models.mjs');
-const end = source.indexOf('\n}\n', start);
-assert.notEqual(end, -1, 'parseJsonc body not terminated as expected');
-const parseJsonc = new Function(
-  `${source.slice(start, end + 3)}\nreturn parseJsonc;`,
+function extractFunction(name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} not found in sync-models.mjs`);
+  const end = source.indexOf('\n}\n', start);
+  assert.notEqual(end, -1, `${name} body not terminated as expected`);
+  return source.slice(start, end + 3);
+}
+
+const { parseJsonc, parseJsoncTree, removeJsoncPath } = new Function(
+  `${extractFunction('parseJsonc')}\n` +
+  `${extractFunction('parseJsoncTree')}\n` +
+  `${extractFunction('removeJsoncPath')}\n` +
+  'return { parseJsonc, parseJsoncTree, removeJsoncPath };',
+)();
+
+const loadPolicyStart = source.indexOf('function loadPolicy() {');
+assert.notEqual(loadPolicyStart, -1, 'loadPolicy not found in sync-models.mjs');
+const loadPolicyEnd = source.indexOf('\n}\n', loadPolicyStart);
+assert.notEqual(loadPolicyEnd, -1, 'loadPolicy body not terminated as expected');
+const loadPolicyFactory = new Function(
+  'fs',
+  'POLICY_PATH',
+  `${source.slice(loadPolicyStart, loadPolicyEnd + 3)}\nreturn loadPolicy;`,
+);
+
+const compareVersionsStart = source.indexOf('const compareVersions = (a, b) => {');
+assert.notEqual(compareVersionsStart, -1, 'compareVersions not found in sync-models.mjs');
+const allowedModelIdsStart = source.indexOf('function allowedModelIds(');
+assert.notEqual(allowedModelIdsStart, -1, 'allowedModelIds not found in sync-models.mjs');
+const allowedModelIdsEnd = source.indexOf('\n}\n', allowedModelIdsStart);
+assert.notEqual(allowedModelIdsEnd, -1, 'allowedModelIds body not terminated as expected');
+const allowedModelIds = new Function(
+  `${source.slice(compareVersionsStart, allowedModelIdsEnd + 3)}\nreturn allowedModelIds;`,
+)();
+
+const loadPolicyFrom = policy => loadPolicyFactory(
+  { existsSync: () => true, readFileSync: () => JSON.stringify(policy) },
+  'test-policy.json',
 )();
 
 test('parses a config with a multi-line block comment', () => {
@@ -67,4 +101,332 @@ test('still tolerates trailing commas and // line comments', () => {
 test('still throws on a genuinely malformed config', () => {
   assert.throws(() => parseJsonc('{ "a": }'));
   assert.throws(() => parseJsonc('{ "a": 1'));
+});
+
+for (const family of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+  test(`rejects inherited family name ${JSON.stringify(family)} in provider keep list`, () => {
+    const policy = {
+      families: { known: '^model-(\\d+)$' },
+      providers: { example: { keep: [family] } },
+    };
+    assert.throws(
+      () => loadPolicyFrom(policy),
+      error => error.message === `sync-models.policy.json: example keeps unknown family "${family}"`,
+    );
+  });
+}
+
+const inlineCommentCases = [
+  ['after the comma', `{
+  "remove": true, // keep this comment
+  "keep": true
+}`],
+  ['after a last-member value', `{
+  "remove": true // keep this comment
+}`],
+  ['between the value and comma', `{
+  "remove": true /* keep this comment */,
+  "keep": true
+}`],
+  ['before a comma on the next line', `{
+  "remove": true // keep this comment
+  ,
+  "keep": true
+}`],
+];
+
+for (const [placement, text] of inlineCommentCases) {
+  test(`refuses to remove a member with an inline comment ${placement}`, () => {
+    assert.throws(
+      () => removeJsoncPath(text, ['remove']),
+      error => error.name === 'JsoncCommentRemovalError' &&
+        /remove.*inline comment/i.test(error.message),
+    );
+  });
+}
+
+
+test('a family pattern without capture group 1 does not select an id or throw', () => {
+  const policy = { families: { plain: '^plain-model$' } };
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['plain'] }, ['plain-model']),
+    new Set(),
+  );
+});
+
+test('a non-participating optional capture does not prevent participating ids from selection', () => {
+  const policy = { families: { versioned: '^(?:model-(\\d+)|stable)$' } };
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['versioned'] }, ['stable', 'model-2']),
+    new Set(['model-2']),
+  );
+});
+
+test('a non-numeric version capture is excluded deterministically in both input orders (#6893)', () => {
+  // Oracle: permutation invariance — the returned set must not depend
+  // on enumeration order, and a NaN-component capture never wins.
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  const forward = allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-1', 'model-2-beta']);
+  const reversed = allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-beta', 'model-2-1']);
+  assert.deepEqual(forward, new Set(['model-2-1']));
+  assert.deepEqual(reversed, forward);
+});
+
+test('a family whose only candidates have non-numeric captures selects nothing (#6893)', () => {
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-beta', 'model-2-alpha']),
+    new Set(),
+  );
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-alpha', 'model-2-beta']),
+    new Set(),
+  );
+});
+
+test('allowedModelIds returns the same set for every permutation of the same ids (#6893)', () => {
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  const ids = ['model-2-1', 'model-2-beta', 'model-3-0'];
+  const permutations = [
+    ids,
+    [ids[0], ids[2], ids[1]],
+    [ids[1], ids[0], ids[2]],
+    [ids[1], ids[2], ids[0]],
+    [ids[2], ids[0], ids[1]],
+    [ids[2], ids[1], ids[0]],
+  ];
+  for (const permutation of permutations) {
+    assert.deepEqual(
+      allowedModelIds(policy, { keep: ['suffixed'] }, permutation),
+      new Set(['model-3-0']),
+    );
+  }
+});
+
+test('shipped-policy control: families select the same newest model in both input orders (#6893)', () => {
+  const policyPath = path.join(binDir, 'sync-models.policy.json');
+  const shippedPolicy = JSON.parse(fs.readFileSync(policyPath, 'utf-8'));
+  const ids = ['gemini-1-flash', 'gemini-2-flash', 'gemini-1.5-flash'];
+  const forward = allowedModelIds(shippedPolicy, { keep: ['gemini-flash'] }, ids);
+  const reversed = allowedModelIds(shippedPolicy, { keep: ['gemini-flash'] }, [...ids].reverse());
+  assert.deepEqual(forward, new Set(['gemini-2-flash']));
+  assert.deepEqual(reversed, forward);
+});
+
+test('shipped policy still loads unchanged and known families select the newest model', () => {
+  const policyPath = path.join(binDir, 'sync-models.policy.json');
+  const shippedPolicy = JSON.parse(fs.readFileSync(policyPath, 'utf-8'));
+  const loadShippedPolicy = loadPolicyFactory(fs, policyPath);
+  const loadedPolicy = loadShippedPolicy();
+
+  assert.deepEqual(loadedPolicy, shippedPolicy);
+  assert.deepEqual(
+    allowedModelIds(
+      loadedPolicy,
+      { keep: ['gemini-flash'] },
+      ['gemini-1-flash', 'gemini-2-flash'],
+    ),
+    new Set(['gemini-2-flash']),
+  );
+});
+
+test('removes a comment-free member and leaves parseable JSONC', () => {
+  const output = removeJsoncPath(`{
+  "remove": true,
+  "keep": true
+}`, ['remove']);
+  assert.deepEqual(parseJsonc(output), { keep: true });
+  assert.equal(parseJsoncTree(output).members.length, 1);
+});
+
+test('keeps a standalone comment when removing the following member', () => {
+  const output = removeJsoncPath(`{
+  // standalone note
+  "remove": true,
+  "keep": true
+}`, ['remove']);
+  assert.match(output, /\/\/ standalone note/);
+  assert.deepEqual(parseJsonc(output), { keep: true });
+});
+
+// Strict argv validation (#3297): unknown arguments are a usage error,
+// reported before any fetch/discovery/write. These probes run the real
+// script with an isolated HOME and an explicit OPENCODE_CONFIG_PATH so the
+// temp target config — never the live config — is the only write candidate.
+const scriptPath = path.join(binDir, 'sync-models.mjs');
+
+function runWithTempConfig(args) {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-models-test-home-'));
+  const configPath = path.join(tmpHome, 'opencode.jsonc');
+  const before = '{\n  // temp probe config\n  "provider": {}\n}\n';
+  fs.writeFileSync(configPath, before);
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+    encoding: 'utf-8',
+    timeout: 60000,
+    env: {
+      ...process.env,
+      HOME: tmpHome,
+      OPENCODE_CONFIG_PATH: configPath,
+    },
+  });
+  const after = fs.readFileSync(configPath, 'utf-8');
+  const backupExists = fs.existsSync(`${configPath}.backup`);
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  return { result, before, after, backupExists };
+}
+
+test('rejects --bogus-flag non-zero and leaves the target config byte-identical', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['--bogus-flag']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /--bogus-flag/);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
+});
+
+test('rejects typo --dry-rnu non-zero, names it, and leaves the target config byte-identical', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['--dry-rnu']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /--dry-rnu/);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
+});
+
+test('rejects a positional argument non-zero and leaves the target config byte-identical', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['some-positional']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /some-positional/);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
+});
+
+test('--dry-run still exits 0 writing nothing', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['--dry-run']);
+  assert.equal(result.status, 0);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
+});
+// --- #2832: shape validation at the parse boundary (design #3068 Phase 2) ---
+
+const { validateConfigShape } = new Function(
+  `${extractFunction('validateConfigShape')}\nreturn { validateConfigShape };`,
+)();
+
+const editorStart = source.indexOf('const lineIndent');
+assert.notEqual(editorStart, -1, 'JSONC tree editor block not found');
+const editorEnd = source.indexOf('// Removes the member at', editorStart);
+assert.notEqual(editorEnd, -1, 'JSONC tree editor block end not found');
+const { setJsoncPath } = new Function(
+  `${extractFunction('parseJsoncTree')}\n${source.slice(editorStart, editorEnd)}\nreturn { setJsoncPath };`,
+)();
+
+test('validateConfigShape names a scalar provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: 'oops' } }, 'cfg.jsonc'),
+    /invalid config shape in cfg\.jsonc: provider\.google: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names an array provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: [1, 2] } }, 'cfg.jsonc'),
+    /provider\.google: expected object, got array/,
+  );
+});
+
+test('validateConfigShape names a scalar models container (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: { models: 'oops' } } }, 'cfg.jsonc'),
+    /provider\.google\.models: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names a wrong-shaped provider container and root (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: 'oops' }, 'cfg.jsonc'),
+    /provider: expected object, got string/,
+  );
+  assert.throws(
+    () => validateConfigShape(['oops'], 'cfg.jsonc'),
+    /\(root\): expected object, got array/,
+  );
+});
+
+test('validateConfigShape treats a missing provider key as nothing to sync (#2832)', () => {
+  assert.doesNotThrow(() => validateConfigShape({}, 'cfg.jsonc'));
+  assert.doesNotThrow(() =>
+    validateConfigShape({ provider: { google: { models: { m1: {} } } } }, 'cfg.jsonc'));
+});
+
+test('setJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => setJsoncPath(text, ['provider', 'google', 'models', 'm1'], {}),
+    /cannot set provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
+  const arrayText = '{\n  "provider": { "google": [1, 2] }\n}';
+  assert.throws(
+    () => setJsoncPath(arrayText, ['provider', 'google', 'models', 'm1'], {}),
+    /provider\/google is a array, expected object|provider\/google is an array, expected object/,
+  );
+});
+
+test('setJsoncPath well-formed control still inserts the key (#2832)', () => {
+  const text = '{\n  "provider": { "google": { "models": {} } }\n}';
+  const out = setJsoncPath(text, ['provider', 'google', 'models', 'm1'], { name: 'M1' });
+  assert.deepEqual(parseJsonc(out).provider.google.models.m1, { name: 'M1' });
+});
+
+test('removeJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => removeJsoncPath(text, ['provider', 'google', 'models', 'm1']),
+    /cannot remove provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
+});
+
+// --- #7333: an absent target section is migrated from a legacy id or named
+// as skipped - never silently passed over while the run reports in-sync ---
+
+const legacyIdsStart = source.indexOf('const LEGACY_PROVIDER_IDS = {');
+assert.notEqual(legacyIdsStart, -1, 'LEGACY_PROVIDER_IDS not found in sync-models.mjs');
+const legacyIdsEnd = source.indexOf('};', legacyIdsStart);
+assert.notEqual(legacyIdsEnd, -1, 'LEGACY_PROVIDER_IDS not terminated as expected');
+const defineValueStart = source.indexOf('const defineValue = ');
+assert.notEqual(defineValueStart, -1, 'defineValue not found in sync-models.mjs');
+const defineValueEnd = source.indexOf('};', defineValueStart);
+assert.notEqual(defineValueEnd, -1, 'defineValue not terminated as expected');
+const { resolveTargetProvider } = new Function(
+  `${source.slice(defineValueStart, defineValueEnd + 2)}\n` +
+  `${source.slice(legacyIdsStart, legacyIdsEnd + 2)}\n` +
+  `${extractFunction('resolveTargetProvider')}\n` +
+  'return { resolveTargetProvider };',
+)();
+
+test('resolveTargetProvider: present target is left untouched (#7333)', () => {
+  const config = { provider: { _antigravity: { models: { m1: {} } } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'present' });
+  assert.deepEqual(Object.keys(config.provider), ['_antigravity']);
+});
+
+test('resolveTargetProvider: legacy section migrates onto the renamed target (#7333)', () => {
+  const legacy = { models: { 'gemini-x': { name: 'Gemini X' } } };
+  const config = { provider: { 'antigravity-direct': legacy } };
+  const resolution = resolveTargetProvider(config, '_antigravity');
+  assert.equal(resolution.outcome, 'migrated');
+  assert.equal(resolution.from, 'antigravity-direct');
+  assert.equal(config.provider._antigravity, legacy);
+  assert.equal('antigravity-direct' in config.provider, false);
+});
+
+test('resolveTargetProvider: target present wins over a legacy section (#7333)', () => {
+  const config = { provider: { _antigravity: { models: {} }, 'antigravity-direct': { models: { old: {} } } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'present' });
+  assert.deepEqual(config.provider['antigravity-direct'], { models: { old: {} } });
+});
+
+test('resolveTargetProvider: no target and no legacy is absent, never in sync (#7333)', () => {
+  const config = { provider: { openai: { models: {} } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'absent' });
+  assert.deepEqual(Object.keys(config.provider), ['openai']);
+  assert.deepEqual(resolveTargetProvider({}, '_antigravity'), { outcome: 'absent' });
 });

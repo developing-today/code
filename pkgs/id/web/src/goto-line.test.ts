@@ -27,7 +27,10 @@ function createStateWithGotoLine(docContent?: string): EditorState {
 }
 
 /** Create an EditorView in a container div with the goto-line plugin. */
-function createViewWithGotoLine(docContent?: string): { view: EditorView; container: HTMLElement } {
+function createViewWithGotoLine(docContent?: string): {
+  view: EditorView;
+  container: HTMLElement;
+} {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const state = createStateWithGotoLine(docContent);
@@ -148,7 +151,7 @@ describe("go-to-line command", () => {
     expect(input?.labels?.[0]).toBe(label);
   });
 
-  it("creates a .goto-line-dialog element in the container", () => {
+  it("creates a .goto-line-dialog element in the container with dialog accessibility attributes", () => {
     const { view, container } = createViewWithGotoLine("line1\nline2\nline3");
     views.push(view);
     containers.push(container);
@@ -158,6 +161,8 @@ describe("go-to-line command", () => {
 
     const dialog = container.querySelector(".goto-line-dialog");
     expect(dialog).not.toBeNull();
+    expect(dialog?.getAttribute("role")).toBe("dialog");
+    expect(dialog?.getAttribute("aria-label")).toBe("Go to line");
   });
 
   it("dialog contains an input element", () => {
@@ -275,6 +280,13 @@ describe("dialog input interaction", () => {
     ["0", "zero"],
     ["-3", "negative"],
     ["2.9", "fractional"],
+    // #2776: non-decimal spellings that Number() reinterprets as the
+    // in-range line 2 — out-of-range spellings could not distinguish
+    // acceptance from rejection on this 3-line fixture.
+    ["0x2", "hex for line 2"],
+    ["0b10", "binary for line 2"],
+    ["2.0", "decimal point for line 2"],
+    ["+2", "signed line 2"],
     ["999", "out of range"],
     ["", "empty"],
   ])("Enter with %s (%s) does not move the cursor and keeps the dialog open", (value) => {
@@ -295,6 +307,32 @@ describe("dialog input interaction", () => {
     // 2.9 -> line 2) or swallowed (999) — no move, dialog stays open.
     expect(view.state.selection.from).toBe(posBefore);
     expect(dialog.style.display).not.toBe("none");
+  });
+
+  it.each([
+    ["", "Enter a line number."],
+    ["2.0", "Enter a whole number."],
+    ["999", "Enter a line between 1 and 3."],
+  ])("explains invalid input %j and clears the error when corrected", (value, message) => {
+    const { view, container } = createViewWithGotoLine("first\nsecond\nthird");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+    const input = container.querySelector<HTMLInputElement>(".goto-line-input")!;
+    const error = container.querySelector<HTMLElement>("#goto-line-error")!;
+    expect(input.getAttribute("aria-describedby")).toBe("goto-line-error");
+
+    input.value = value;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(error.textContent).toBe(message);
+    expect(error.getAttribute("role")).toBe("alert");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+
+    input.value = "2";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(error.textContent).toBe("");
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
   });
 
   it("Enter with line 1 moves cursor to the first line start", () => {
@@ -406,6 +444,35 @@ describe("go-to-line across textblocks (#745)", () => {
     gotoLine(container, "4");
     // Trailing paragraph sits at pos 12; its text starts at pos 13.
     expect(view.state.selection.from).toBe(13);
+  });
+
+  it("rich doc with hard_break counts as multiple lines and jumps correctly", () => {
+    const doc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [
+        richSchema.text("foo"),
+        richSchema.node("hard_break"),
+        richSchema.text("bar"),
+      ]),
+      richSchema.node("paragraph", null, [richSchema.text("baz")]),
+    ]);
+    const { view, container } = createViewFromDoc(richSchema, doc);
+
+    triggerGotoLine(view);
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    // 3 lines total: "foo", "bar", "baz"
+    expect(input.placeholder).toContain("3");
+    expect(input.max).toBe("3");
+
+    gotoLine(container, "2");
+    // First paragraph starts at pos 0, content at pos 1
+    // "foo" text size = 3, so hard_break starts at pos 4
+    // hard_break size = 1, so "bar" starts at pos 5
+    expect(view.state.selection.from).toBe(5);
+
+    triggerGotoLine(view);
+    gotoLine(container, "3");
+    // Second paragraph starts at pos 9, text "baz" at pos 10
+    expect(view.state.selection.from).toBe(10);
   });
 });
 

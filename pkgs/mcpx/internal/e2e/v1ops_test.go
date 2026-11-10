@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // getJSON reads one /v1 route over the daemon's socket.
@@ -19,7 +19,7 @@ func getJSON(t *testing.T, c *http.Client, path string) map[string]any {
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s: status %d: %s", path, resp.StatusCode, b)
@@ -37,7 +37,7 @@ func postJSON(t *testing.T, c *http.Client, path, body string) (int, map[string]
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	var doc map[string]any
 	_ = json.Unmarshal(b, &doc)
@@ -78,7 +78,7 @@ func TestTheLogIsQueryableOverTheAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status %d", resp.StatusCode)
 	}
@@ -135,7 +135,7 @@ func TestStatsOverTheAPIMirrorTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("an unknown dimension should be refused: %d", resp.StatusCode)
 	}
@@ -152,7 +152,7 @@ func TestRegistrySearchOverTheAPIFailsWithoutANetworkRatherThanHanging(t *testin
 	if err != nil {
 		t.Fatalf("the route should answer: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status %d", resp.StatusCode)
 	}
@@ -229,7 +229,7 @@ func TestALongCallCanBeRunAsATask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status %d", resp.StatusCode)
 	}
@@ -262,6 +262,123 @@ func TestATaskCanBeCancelled(t *testing.T) {
 	// A cancellation stands even if the work finished in the meantime.
 	if got := getJSON(t, c, "/v1/tasks/"+id); got["status"] != "cancelled" {
 		t.Errorf("status = %v", got["status"])
+	}
+}
+
+func TestTasksMaxAgeIsReachableFromEnvironment(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.envVars = append(e.envVars, "MCPX_TASKS_MAX_AGE=5s")
+	e.envVars = append(e.envVars, "MCPX_PROTO_TASKS_CANCEL_GRACE=20ms")
+	e.run("ls") // start the daemon after setting the environment value
+	c := e.socketClient(t)
+
+	code, created := postJSON(t, c, "/v1/call",
+		`{"server":"demo","tool":"slow","args":{"ms":5000},"task":{}}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("a task request is accepted, not answered: %d %v", code, created)
+	}
+	task, _ := created["task"].(map[string]any)
+	id, _ := task["taskId"].(string)
+	if id == "" {
+		t.Fatalf("no handle came back: %v", created)
+	}
+	if expiry, ok := task["expiresAt"]; !ok || expiry != nil {
+		t.Fatalf("a nonterminal task has no result expiry, got %v", task)
+	}
+	if touched, ok := task["lastTouched"].(string); !ok || touched == "" {
+		t.Fatalf("a nonterminal task should report lastTouched: %v", task)
+	}
+	if remaining, ok := task["ttlRemainingMs"].(float64); !ok || remaining != 0 {
+		t.Fatalf("a nonterminal task has no result-retention countdown, got %v", task)
+	}
+
+	code, cancelResponse := postJSON(t, c, "/v1/tasks/"+id+"/cancel", `{}`)
+	if code != http.StatusOK {
+		t.Fatalf("cancel request failed: %d %v", code, cancelResponse)
+	}
+	var terminal map[string]any
+	terminalBy := time.Now().Add(2 * time.Second)
+	for time.Now().Before(terminalBy) {
+		list := getJSON(t, c, "/v1/tasks")
+		rows, _ := list["tasks"].([]any)
+		for _, row := range rows {
+			item, _ := row.(map[string]any)
+			if item["taskId"] == id && item["status"] != "working" && item["status"] != "input_required" {
+				terminal = item
+				break
+			}
+		}
+		if terminal != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if terminal == nil {
+		t.Fatalf("cancel did not reach a terminal state: %v", cancelResponse)
+	}
+	parse := func(field string, doc map[string]any) time.Time {
+		t.Helper()
+		value, ok := doc[field].(string)
+		if !ok {
+			t.Fatalf("%s should be an RFC 3339 timestamp in %v", field, doc)
+		}
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			t.Fatalf("parse %s %q: %v", field, value, err)
+		}
+		return parsed
+	}
+	terminalAt := parse("lastUpdatedAt", terminal)
+	expiresAt := parse("expiresAt", terminal)
+	if !expiresAt.After(terminalAt) || expiresAt.After(terminalAt.Add(5*time.Second)) {
+		t.Fatalf("tasks.maxAge=5s should cap terminal retention from the transition: terminal=%v expiry=%v", terminalAt, expiresAt)
+	}
+	if _, ok := terminal["ttlRemainingMs"].(float64); !ok {
+		t.Fatalf("terminal task should report ttlRemainingMs: %v", terminal)
+	}
+
+	// Collection reads carry the metadata but do not renew it.
+	list := getJSON(t, c, "/v1/tasks")
+	rows, _ := list["tasks"].([]any)
+	var listed map[string]any
+	for _, row := range rows {
+		item, _ := row.(map[string]any)
+		if item["taskId"] == id {
+			listed = item
+			break
+		}
+	}
+	if listed == nil || listed["lastTouched"] != terminal["lastTouched"] {
+		t.Fatalf("collection read touched or omitted the task: terminal=%v list=%v", terminal, listed)
+	}
+
+	// The public result route renews; a following collection read observes
+	// that renewal without itself changing the touch time.
+	time.Sleep(20 * time.Millisecond)
+	resp, err := c.Get("http://mcpx/v1/tasks/" + id + "/result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("cancelled result should be reported as a task fault, got %d", resp.StatusCode)
+	}
+	afterResult := getJSON(t, c, "/v1/tasks")
+	rows, _ = afterResult["tasks"].([]any)
+	var resultRead map[string]any
+	for _, row := range rows {
+		item, _ := row.(map[string]any)
+		if item["taskId"] == id {
+			resultRead = item
+			break
+		}
+	}
+	if resultRead == nil || !parse("lastTouched", resultRead).After(parse("lastTouched", terminal)) {
+		t.Fatalf("public result read did not renew terminal retention: terminal=%v after=%v", terminal, resultRead)
+	}
+	if got := parse("expiresAt", resultRead); got.After(expiresAt) || !got.Equal(expiresAt) {
+		t.Fatalf("touch must not exceed or shorten the promised maxAge expiry: before=%v after=%v", expiresAt, got)
 	}
 }
 
@@ -349,7 +466,7 @@ func TestEveryDeclaredRouteAnswersOverTheSocket(t *testing.T) {
 			continue
 		}
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound && strings.Contains(string(b), "404 page not found") {
 			t.Errorf("%s: %s %s is declared but not routed", op.Name, op.Method, path)
 		}

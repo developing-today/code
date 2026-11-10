@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Parity: every layout native discovery claims to read is built here with the
@@ -69,7 +69,7 @@ func newGitFix(t *testing.T) *gitFix {
 	for _, k := range append(append([]string{}, gitLocalEnv...),
 		"GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_TEST_ASSUME_DIFFERENT_OWNER") {
 		t.Setenv(k, "")
-		os.Unsetenv(k)
+		_ = os.Unsetenv(k)
 	}
 	return f
 }
@@ -443,7 +443,7 @@ func TestGitParityGitDirectories(t *testing.T) {
 		f.t = t
 		r := f.repo("headlink")
 		head := filepath.Join(r, ".git", "HEAD")
-		os.Remove(head)
+		_ = os.Remove(head)
 		if err := os.Symlink("refs/heads/main", head); err != nil {
 			t.Fatal(err)
 		}
@@ -502,7 +502,7 @@ func TestGitParityStrayAndBrokenDotGit(t *testing.T) {
 			// Forty characters, not forty hex digits.
 			func(head string) { writeFile(t, head, strings.Repeat("z", 40)+"\n") },
 			// A symlink, but not into refs/.
-			func(head string) { os.Remove(head); os.Symlink("../elsewhere", head) },
+			func(head string) { _ = os.Remove(head); _ = os.Symlink("../elsewhere", head) },
 			// A symbolic ref outside refs/.
 			func(head string) { writeFile(t, head, "ref: heads/main\n") },
 		} {
@@ -595,7 +595,7 @@ func TestGitParityStrayAndBrokenDotGit(t *testing.T) {
 		if err := os.Chmod(sub, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { os.Chmod(sub, 0o755) })
+		t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
 		// git cannot even chdir there; skipping the unreadable .git would
 		// instead find the repository above it.
 		if w, err := discoverGit(sub); err == nil {
@@ -714,7 +714,7 @@ func TestGitParityConfig(t *testing.T) {
 	t.Run("no config file at all", func(t *testing.T) {
 		f.t = t
 		r := f.repo("nocfg")
-		os.Remove(filepath.Join(r, ".git", "config"))
+		_ = os.Remove(filepath.Join(r, ".git", "config"))
 		f.same(r, certain)
 	})
 
@@ -1110,7 +1110,7 @@ func TestDiscoveryStopsAtAFilesystemBoundary(t *testing.T) {
 	root := mustReal(t, t.TempDir())
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
 	t.Setenv("GIT_DISCOVERY_ACROSS_FILESYSTEM", "")
-	os.Unsetenv("GIT_DISCOVERY_ACROSS_FILESYSTEM")
+	_ = os.Unsetenv("GIT_DISCOVERY_ACROSS_FILESYSTEM")
 	repo := handRepo(t, filepath.Join(root, "r"))
 	mnt := filepath.Join(repo, "mnt")
 	cwd := filepath.Join(mnt, "sub")
@@ -1206,12 +1206,12 @@ func BenchmarkDiscoverGit(b *testing.B) {
 	root, _ := filepath.EvalSymlinks(b.TempDir())
 	repo := filepath.Join(root, "r")
 	for _, d := range []string{"objects", "refs"} {
-		os.MkdirAll(filepath.Join(repo, ".git", d), 0o755)
+		_ = os.MkdirAll(filepath.Join(repo, ".git", d), 0o755)
 	}
-	os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
-	os.WriteFile(filepath.Join(repo, ".git", "config"), []byte("[core]\n\trepositoryformatversion = 0\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(repo, ".git", "config"), []byte("[core]\n\trepositoryformatversion = 0\n"), 0o644)
 	deep := filepath.Join(repo, "a", "b", "c", "d", "e")
-	os.MkdirAll(deep, 0o755)
+	_ = os.MkdirAll(deep, 0o755)
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := discoverGit(deep); err != nil {

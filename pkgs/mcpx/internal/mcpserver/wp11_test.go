@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // Tests for the WP11 conflicts. Each case is named for the requirement it
@@ -123,6 +123,47 @@ func TestEachConnectionHasItsOwnIdentity(t *testing.T) {
 		postMCP(t, s, "", mcpserver.Request(4, "tools/call", echoCallParams(meta)))
 		if id := b.last(t); id.Source != mcpserver.IdentityClient || id.Key != "agent-7" {
 			t.Fatalf("got %+v", id)
+		}
+	})
+
+	t.Run("2026-07-28/transport/opencode-session-id-names-the-client", func(t *testing.T) {
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSessionOpenCode] = "ses_opencode_1"
+		postMCP(t, s, "", mcpserver.Request(6, "tools/call", echoCallParams(meta)))
+		if id := b.last(t); id.Source != mcpserver.IdentityClient || id.Key != "ses_opencode_1" {
+			t.Fatalf("an opencode session id should name the client, got %+v", id)
+		}
+	})
+
+	t.Run("2026-07-28/transport/mcpx-name-wins-over-the-host-key", func(t *testing.T) {
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSession] = "agent-7"
+		meta[mcpserver.MetaSessionOpenCode] = "ses_opencode_1"
+		postMCP(t, s, "", mcpserver.Request(7, "tools/call", echoCallParams(meta)))
+		if id := b.last(t); id.Source != mcpserver.IdentityClient || id.Key != "agent-7" {
+			t.Fatalf("the first configured key should win, got %+v", id)
+		}
+	})
+
+	t.Run("2026-07-28/transport/empty-session-name-is-not-an-identity", func(t *testing.T) {
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSession] = ""
+		postMCP(t, s, "", mcpserver.Request(8, "tools/call", echoCallParams(meta)))
+		if id := b.last(t); id.Source != mcpserver.IdentityNone || id.Key != "" {
+			t.Fatalf("an empty name should fall through, got %+v", id)
+		}
+	})
+
+	t.Run("2026-07-28/transport/configured-keys-replace-the-default-list", func(t *testing.T) {
+		b2 := &identityBackend{fakeBackend: newBackend()}
+		s2 := mcpserver.New(b2, "mcpx", "test")
+		s2.SessionMetaKeys = func() []string { return []string{mcpserver.MetaSessionOpenCode} }
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSession] = "ignored"
+		meta[mcpserver.MetaSessionOpenCode] = "ses_only"
+		postMCP(t, s2, "", mcpserver.Request(9, "tools/call", echoCallParams(meta)))
+		if id := b2.last(t); id.Source != mcpserver.IdentityClient || id.Key != "ses_only" {
+			t.Fatalf("the configured list should decide, got %+v", id)
 		}
 	})
 
@@ -238,6 +279,34 @@ func TestCompletionIsForwardedToTheOwningServer(t *testing.T) {
 			t.Fatalf("the new cap was not applied: %s", b)
 		}
 	})
+}
+
+// #2878: when the backend's answer was already capped by the daemon,
+// the full match count it reported must survive to the client —
+// recomputing total from the capped values would claim total=50,
+// hasMore=false for a set of 150.
+func TestCompletionPreservesTheBackendsTotal(t *testing.T) {
+	complete := func(s *mcpserver.Server) string {
+		b, _ := json.Marshal(s.Handle(context.Background(), mcpserver.Request(1, "completion/complete",
+			map[string]any{"ref": map[string]any{"type": "ref/prompt", "name": "capped"},
+				"argument": map[string]any{"name": "text", "value": ""}})))
+		return string(b)
+	}
+	b := complete(mcpserver.New(newBackend(), "mcpx", "test"))
+	if !strings.Contains(b, `"total":150`) || !strings.Contains(b, `"hasMore":true`) {
+		t.Fatalf("backend total not preserved: %s", b)
+	}
+	if !strings.Contains(b, `"capped-49"`) || strings.Contains(b, `"capped-50"`) {
+		t.Fatalf("values are not the backend's capped page: %s", b)
+	}
+	// A lower MCP-side cap truncates the page further but never the total.
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.MaxCompletions = func() int { return 10 }
+	b = complete(s)
+	if !strings.Contains(b, `"total":150`) || !strings.Contains(b, `"hasMore":true`) ||
+		!strings.Contains(b, `"capped-09"`) || strings.Contains(b, `"capped-10"`) {
+		t.Fatalf("lower cap lost the total: %s", b)
+	}
 }
 
 // Conflict #12: prompts/get answered every failure with -32602.

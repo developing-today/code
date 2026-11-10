@@ -64,10 +64,11 @@ use std::{
 use tokio::sync::{RwLock, broadcast};
 
 use super::content_mode::{ContentMode, detect_mode_with_content};
-use super::identity::short_id;
+use super::identity::{sanitize_name, short_id};
 use super::markdown::{
     markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
 };
+use crate::frames::MAX_FRAME_BYTES;
 
 /// Message type tags for the wire protocol.
 mod msg {
@@ -82,6 +83,9 @@ mod msg {
     pub const AUTH: u8 = 8;
     pub const AUTH_OK: u8 = 9;
 }
+
+/// Maximum number of steps accepted in one client message.
+const MAX_STEPS_PER_MESSAGE: usize = 1_000;
 
 /// Query parameters for WebSocket connection.
 #[derive(Debug, Deserialize)]
@@ -269,6 +273,40 @@ impl Document {
         self.version.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Atomically accept a batch of steps submitted at `base_version`
+    /// (#2968).
+    ///
+    /// Holds the steps write lock across the version check, the append,
+    /// and the version bump, so two sockets submitting at the same base
+    /// version cannot both pass the check: exactly one is accepted and
+    /// the other observes the winner's bumped version. Returns the new
+    /// version on success, or the current version on mismatch. Broadcast
+    /// and Ack stay with the caller, after this lock has been released.
+    pub async fn try_apply_steps(
+        &self,
+        base_version: u64,
+        steps: &[serde_json::Value],
+        client_id: u64,
+    ) -> Result<u64, u64> {
+        let mut doc_steps = self.steps.write().await;
+        let current_version = self.version();
+        if base_version != current_version {
+            return Err(current_version);
+        }
+        for step in steps {
+            doc_steps.push((
+                Step { data: step.clone() },
+                serde_json::Value::Number(client_id.into()),
+            ));
+        }
+        let new_version = self
+            .version
+            .fetch_add(steps.len() as u64, std::sync::atomic::Ordering::SeqCst)
+            + steps.len() as u64;
+        drop(doc_steps);
+        Ok(new_version)
+    }
+
     /// Increment client count when a client connects.
     /// Returns the new count.
     pub fn client_connected(&self) -> usize {
@@ -376,6 +414,9 @@ impl CollabState {
     /// Finds all cursors with the matching `identity_client_id`, updates the
     /// stored name, and broadcasts the updated cursor to all connected clients.
     pub async fn update_client_name(&self, identity_client_id: &str, new_name: &str) {
+        let Some(new_name) = sanitize_name(Some(new_name.to_owned())) else {
+            return;
+        };
         let docs = self.documents.read().await;
         for (doc_id, doc) in docs.iter() {
             let mut cursors = doc.cursors.write().await;
@@ -466,6 +507,16 @@ pub enum CollabMessage {
     },
 }
 
+/// True when `data` is exactly one complete `MessagePack` value with no bytes after it.
+fn is_single_msgpack_value(data: &[u8]) -> bool {
+    let mut cursor = std::io::Cursor::new(data);
+    let mut de = rmp_serde::Deserializer::new(&mut cursor);
+    if serde::de::IgnoredAny::deserialize(&mut de).is_err() {
+        return false;
+    }
+    usize::try_from(cursor.position()).is_ok_and(|consumed| consumed == data.len())
+}
+
 impl CollabMessage {
     /// Encode message to `MessagePack` bytes.
     pub fn encode(&self) -> Vec<u8> {
@@ -512,6 +563,13 @@ impl CollabMessage {
     /// Decode message from `MessagePack` bytes.
     pub fn decode(data: &[u8]) -> Option<Self> {
         use rmp_serde::decode::from_slice;
+
+        // A frame is exactly one MessagePack value: refuse trailing bytes so a
+        // message has one byte spelling and a concatenated second message is
+        // never silently dropped (#6349).
+        if !is_single_msgpack_value(data) {
+            return None;
+        }
 
         // MessagePack tuples are encoded as arrays. The first element is the message type.
         // We decode the whole thing for each message type. This is slightly inefficient
@@ -581,6 +639,10 @@ impl CollabMessage {
             return Some(Self::Error { error });
         }
 
+        if let Ok((msg::CURSOR_REMOVE, client_id)) = from_slice::<(u8, u64)>(data) {
+            return Some(Self::CursorRemove { client_id });
+        }
+
         if let Ok((msg::NEW_VERSION, hash, name)) = from_slice::<(u8, String, String)>(data) {
             return Some(Self::NewVersion { hash, name });
         }
@@ -622,6 +684,46 @@ fn extract_binary(msg: &Message) -> Option<Vec<u8>> {
     }
 }
 
+/// Apply one versioned client step batch, rejecting oversized batches before
+/// changing document history, version, or broadcasting an update.
+///
+/// The version check, the append, and the version bump happen atomically
+/// under the document steps lock (#2968), so two sockets submitting at the
+/// same base version cannot both be accepted. The broadcast and log happen
+/// after that lock has been released.
+async fn apply_steps(
+    doc: &Document,
+    version: u64,
+    steps: &[serde_json::Value],
+    client_id: u64,
+) -> Result<u64, String> {
+    if steps.len() > MAX_STEPS_PER_MESSAGE {
+        return Err(format!(
+            "Step batch exceeds maximum of {MAX_STEPS_PER_MESSAGE} steps"
+        ));
+    }
+
+    let new_version = doc
+        .try_apply_steps(version, steps, client_id)
+        .await
+        .map_err(|current_version| {
+            format!("Version mismatch: expected {current_version}, got {version}")
+        })?;
+
+    let update = CollabMessage::Update {
+        steps: steps.to_vec(),
+        client_ids: vec![client_id; steps.len()],
+    };
+    let broadcast_count = doc.broadcast.send(update).unwrap_or(0);
+    tracing::info!(
+        "[collab] Broadcast to {} receivers, new version={}",
+        broadcast_count,
+        new_version
+    );
+
+    Ok(new_version)
+}
+
 /// WebSocket upgrade handler for collaborative editing.
 pub async fn ws_collab_handler(
     ws: WebSocketUpgrade,
@@ -629,16 +731,65 @@ pub async fn ws_collab_handler(
     Query(params): Query<WsParams>,
     State(state): State<super::AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        handle_collab_socket(
-            socket,
-            doc_id,
-            params.filename,
-            state.collab,
-            state.store,
-            state.identity,
-        )
-    })
+    ws.max_message_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| {
+            handle_collab_socket(
+                socket,
+                doc_id,
+                params.filename,
+                state.collab,
+                state.store,
+                state.identity,
+            )
+        })
+}
+
+async fn store_and_broadcast_cursor(
+    doc: &Document,
+    client_id: u64,
+    head: u32,
+    anchor: u32,
+    cached_display_name: Option<String>,
+    incoming_name: Option<String>,
+    identity_client_id: Option<String>,
+) -> Option<String> {
+    let effective_name = sanitize_name(cached_display_name.or(incoming_name));
+    let client_id_str = client_id.to_string();
+
+    {
+        let mut cursors = doc.cursors.write().await;
+        // #1790: server-side cursor lifecycle logging — a cursor is
+        // first seen when its client_id enters the map.
+        let first_seen = !cursors.contains_key(&client_id_str);
+        cursors.insert(
+            client_id_str,
+            CursorPosition {
+                head,
+                anchor,
+                name: effective_name.clone(),
+                identity_client_id,
+                last_update: Instant::now(),
+                disconnected_at: None,
+            },
+        );
+        if first_seen {
+            tracing::info!(
+                "[cursor-lifecycle] first-seen client={} name={:?}",
+                client_id,
+                effective_name
+            );
+        }
+    }
+
+    let cursor_msg = CollabMessage::Cursor {
+        client_id,
+        head,
+        anchor,
+        name: effective_name.clone(),
+        idle_secs: None,
+    };
+    let _ = doc.broadcast.send(cursor_msg);
+    effective_name
 }
 
 /// Handle a WebSocket connection for collaborative editing.
@@ -995,50 +1146,18 @@ async fn handle_collab_socket(
                             steps.len()
                         );
 
-                        // Verify version matches
-                        let current_version = doc.version();
-                        if version != current_version {
-                            let error_msg = CollabMessage::Error {
-                                error: format!(
-                                    "Version mismatch: expected {current_version}, got {version}"
-                                ),
-                            };
-                            tracing::warn!(
-                                "[collab] Version mismatch: expected {}, got {}",
-                                current_version,
-                                version
-                            );
-                            let mut sender = sender.lock().await;
-                            let _ = sender.send(Message::Binary(error_msg.encode().into())).await;
-                            continue;
-                        }
-
-                        // Apply steps
-                        let mut doc_steps = doc.steps.write().await;
-                        for step in &steps {
-                            doc_steps.push((
-                                Step { data: step.clone() },
-                                serde_json::Value::Number(client_id.into()),
-                            ));
-                        }
-                        drop(doc_steps);
-
-                        // Increment version
-                        let new_version =
-                            doc.version.fetch_add(steps.len() as u64, Ordering::SeqCst)
-                                + steps.len() as u64;
-
-                        // Broadcast to other clients
-                        let update = CollabMessage::Update {
-                            steps: steps.clone(),
-                            client_ids: vec![client_id; steps.len()],
+                        let new_version = match apply_steps(&doc, version, &steps, client_id).await {
+                            Ok(version) => version,
+                            Err(error) => {
+                                tracing::warn!("[collab] Rejected Steps: {}", error);
+                                let error_msg = CollabMessage::Error { error };
+                                let mut sender = sender.lock().await;
+                                let _ = sender
+                                    .send(Message::Binary(error_msg.encode().into()))
+                                    .await;
+                                continue;
+                            }
                         };
-                        let broadcast_count = doc.broadcast.send(update).unwrap_or(0);
-                        tracing::info!(
-                            "[collab] Broadcast to {} receivers, new version={}",
-                            broadcast_count,
-                            new_version
-                        );
 
                         // Send ack to sender
                         let ack = CollabMessage::Ack {
@@ -1072,7 +1191,20 @@ async fn handle_collab_socket(
                                     })
                                 );
                             }
-                        let effective_name = cached_display_name.clone().or(name);
+                        // Remember this client's ID for disconnect cleanup before
+                        // storing and broadcasting its cursor.
+                        *client_id_for_cleanup.write().await = Some(client_id_str);
+
+                        let effective_name = store_and_broadcast_cursor(
+                            &doc,
+                            client_id,
+                            head,
+                            anchor,
+                            cached_display_name.clone(),
+                            name,
+                            identity_client_id.clone(),
+                        )
+                        .await;
 
                         tracing::debug!(
                             "[collab] Received Cursor: client={}, head={}, anchor={}, name={:?}",
@@ -1082,33 +1214,6 @@ async fn handle_collab_socket(
                             effective_name
                         );
 
-                        // Remember this client's ID for disconnect cleanup
-                        *client_id_for_cleanup.write().await = Some(client_id_str.clone());
-
-                        {
-                            let mut cursors = doc.cursors.write().await;
-                            cursors.insert(
-                                client_id_str,
-                                CursorPosition {
-                                    head,
-                                    anchor,
-                                    name: effective_name.clone(),
-                                    identity_client_id: identity_client_id.clone(),
-                                    last_update: Instant::now(),
-                                    disconnected_at: None,
-                                },
-                            );
-                        }
-
-                        // Broadcast cursor position to all clients (no idle_secs for live updates)
-                        let cursor_msg = CollabMessage::Cursor {
-                            client_id,
-                            head,
-                            anchor,
-                            name: effective_name,
-                            idle_secs: None,
-                        };
-                        let _ = doc.broadcast.send(cursor_msg);
                     }
                     _ => {
                         tracing::debug!("[collab] Received unexpected message type, ignoring");
@@ -1193,7 +1298,7 @@ async fn handle_collab_socket(
                 if cursor.disconnected_at.is_some() {
                     cursors.remove(&client_id_for_task);
                     tracing::info!(
-                        "[collab] Removed cursor {} after 5m disconnect timeout",
+                        "[cursor-lifecycle] removed client={} after 5m disconnect timeout",
                         client_id_for_task
                     );
                 } else {
@@ -1234,6 +1339,72 @@ async fn handle_collab_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_try_apply_steps_concurrent_same_base_version() {
+        // #2968: sockets submitting Steps at the same base version must
+        // not diverge. Exactly one is accepted; every other observes the
+        // winner's bumped version and is rejected; the stored steps and
+        // version reflect only the winner.
+        //
+        // The test holds the steps write lock while the submitters
+        // arrive, modelling the production window: steps-lock contention
+        // (e.g. a join catch-up read) parks a socket between its version
+        // check and its append, so a check done before acquiring the
+        // lock is stale for every parked submitter at once. Under the
+        // pre-fix ordering several submitters pass the stale check and
+        // are all accepted (Ok(1), Ok(2), ...); with the check inside
+        // the lock exactly one wins, deterministically.
+        use std::sync::Arc;
+        let doc = Arc::new(Document::new());
+        let gate = doc.steps.write().await;
+        let mut handles = Vec::new();
+        for client_id in 1..=4u64 {
+            let doc = Arc::clone(&doc);
+            handles.push(tokio::spawn(async move {
+                let steps = vec![serde_json::json!({
+                    "stepType": "replace",
+                    "marker": client_id,
+                })];
+                (client_id, doc.try_apply_steps(0, &steps, client_id).await)
+            }));
+        }
+        // Let every submitter arrive at the steps lock.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        drop(gate);
+        let mut winners: Vec<u64> = Vec::new();
+        for handle in handles {
+            let (client_id, result) = handle.await.unwrap();
+            match result {
+                Ok(1) => winners.push(client_id),
+                Err(1) => {}
+                other => panic!(
+                    "submitter {client_id} got {other:?}: only Ok(1) for the single winner and Err(1) for every loser are possible"
+                ),
+            }
+        }
+        assert_eq!(winners.len(), 1, "exactly one submission must be accepted");
+        assert_eq!(doc.version(), 1, "version reflects only the winner's step");
+        let stored = doc.steps.read().await;
+        assert_eq!(stored.len(), 1, "only the winner's step is stored");
+        assert_eq!(stored[0].0.data["marker"], winners[0]);
+        assert_eq!(stored[0].1, serde_json::json!(winners[0]));
+    }
+
+    #[tokio::test]
+    async fn test_try_apply_steps_sequential_versions() {
+        // Single-client sequential flow: a submission at the current
+        // version is accepted and bumps it; a replay at the stale base
+        // version is rejected; the next submission at the new version
+        // succeeds.
+        let doc = Document::new();
+        let step = vec![serde_json::json!({ "stepType": "replace" })];
+        assert_eq!(doc.try_apply_steps(0, &step, 7).await, Ok(1));
+        assert_eq!(doc.try_apply_steps(0, &step, 7).await, Err(1));
+        assert_eq!(doc.try_apply_steps(1, &step, 7).await, Ok(2));
+        assert_eq!(doc.version(), 2);
+        assert_eq!(doc.steps.read().await.len(), 2);
+    }
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[test]
@@ -1278,6 +1449,45 @@ mod tests {
                 assert_eq!(client_id, 12345);
             }
             _ => panic!("Expected Steps message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_oversized_batch_without_mutation() {
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+        let steps = vec![serde_json::json!({"stepType": "replace"}); MAX_STEPS_PER_MESSAGE + 1];
+
+        let error = apply_steps(&doc, 0, &steps, 123).await.unwrap_err();
+
+        assert!(error.contains("1000"));
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert!(updates.try_recv().is_err());
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+        let steps = vec![serde_json::json!({"stepType": "replace", "from": 0})];
+
+        let ack_version = apply_steps(&doc, 0, &steps, 123).await.unwrap();
+
+        assert_eq!(ack_version, 1);
+        assert_eq!(doc.version(), 1);
+        assert_eq!(doc.steps.read().await.len(), 1);
+        match updates.recv().await.unwrap() {
+            CollabMessage::Update {
+                steps: broadcast_steps,
+                client_ids,
+            } => {
+                assert_eq!(broadcast_steps, steps);
+                assert_eq!(client_ids, vec![123]);
+            }
+            other => panic!("Expected Update, got {other:?}"),
         }
     }
 
@@ -1346,6 +1556,33 @@ mod tests {
                 assert!(idle_secs.is_none());
             }
             _ => panic!("Expected Cursor message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_cursor_ingest_sanitizes_before_storage_and_broadcast() {
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+
+        let name = store_and_broadcast_cursor(
+            &doc,
+            54321,
+            100,
+            50,
+            None,
+            Some("A\n\u{202e}lice".to_owned()),
+            None,
+        )
+        .await;
+        assert_eq!(name.as_deref(), Some("Alice"));
+
+        let stored = doc.cursors.read().await.get("54321").unwrap().name.clone();
+        assert_eq!(stored.as_deref(), Some("Alice"));
+
+        match updates.recv().await.unwrap() {
+            CollabMessage::Cursor { name, .. } => assert_eq!(name.as_deref(), Some("Alice")),
+            _ => panic!("Expected sanitized cursor broadcast"),
         }
     }
 
@@ -1461,6 +1698,174 @@ mod tests {
     }
 
     #[test]
+    fn test_collab_message_decode_refuses_trailing_bytes() {
+        let msgs = [
+            CollabMessage::Auth {
+                token: "secret-token".to_owned(),
+            },
+            CollabMessage::Steps {
+                version: 3,
+                steps: vec![serde_json::json!({"a": 1})],
+                client_id: 7,
+            },
+            CollabMessage::Ack { version: 42 },
+        ];
+        for m in msgs {
+            let bytes = m.encode();
+            assert_eq!(
+                CollabMessage::decode(&bytes).map(|d| d.encode()),
+                Some(bytes.clone())
+            );
+            let mut with_byte = bytes.clone();
+            with_byte.push(0xff);
+            assert!(CollabMessage::decode(&with_byte).is_none());
+            let mut with_garbage = bytes.clone();
+            with_garbage.extend_from_slice(b"garbage!!");
+            assert!(CollabMessage::decode(&with_garbage).is_none());
+            let mut with_second = bytes.clone();
+            with_second.extend_from_slice(&bytes);
+            assert!(CollabMessage::decode(&with_second).is_none());
+        }
+    }
+
+    #[test]
+    fn test_collab_message_decode_refuses_every_variant_with_suffix() {
+        let msgs = [
+            CollabMessage::Init {
+                version: 1,
+                doc: serde_json::json!({"t": "doc"}),
+                mode: "raw".to_owned(),
+            },
+            CollabMessage::Update {
+                steps: vec![serde_json::json!(1)],
+                client_ids: vec![2],
+            },
+            CollabMessage::Cursor {
+                client_id: 1,
+                head: 2,
+                anchor: 3,
+                name: Some("n".to_owned()),
+                idle_secs: Some(4),
+            },
+            CollabMessage::Error {
+                error: "e".to_owned(),
+            },
+            CollabMessage::CursorRemove { client_id: 9 },
+            CollabMessage::NewVersion {
+                hash: "h".to_owned(),
+                name: "n".to_owned(),
+            },
+            CollabMessage::AuthOk {
+                client_id: "client-1".to_owned(),
+                name: Some("n".to_owned()),
+                token: Some("t".to_owned()),
+            },
+        ];
+        for m in msgs {
+            let bytes = m.encode();
+            assert!(CollabMessage::decode(&bytes).is_some(), "{m:?} round-trips");
+            let mut suffixed = bytes;
+            suffixed.push(0x00);
+            assert!(CollabMessage::decode(&suffixed).is_none(), "{m:?} + suffix");
+        }
+    }
+
+    // Property coverage for the #6349 framing invariant (Codex P1 on PR
+    // #6553): for every generated valid message and every nonempty suffix,
+    // the message round-trips and the suffixed frame is rejected.
+    use proptest::prelude::*;
+
+    fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
+        let leaf = prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::Bool),
+            any::<i64>().prop_map(|n| serde_json::json!(n)),
+            any::<String>().prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(3, 16, 4, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(serde_json::Value::Array),
+                proptest::collection::vec((any::<String>(), inner), 0..4)
+                    .prop_map(|pairs| { serde_json::Value::Object(pairs.into_iter().collect()) }),
+            ]
+        })
+    }
+
+    fn arb_collab_message() -> impl Strategy<Value = CollabMessage> {
+        prop_oneof![
+            (any::<u64>(), arb_json_value(), any::<String>())
+                .prop_map(|(version, doc, mode)| CollabMessage::Init { version, doc, mode },),
+            (
+                any::<u64>(),
+                proptest::collection::vec(arb_json_value(), 0..4),
+                any::<u64>(),
+            )
+                .prop_map(|(version, steps, client_id)| CollabMessage::Steps {
+                    version,
+                    steps,
+                    client_id,
+                }),
+            (
+                proptest::collection::vec(arb_json_value(), 0..4),
+                proptest::collection::vec(any::<u64>(), 0..4),
+            )
+                .prop_map(|(steps, client_ids)| CollabMessage::Update { steps, client_ids }),
+            any::<u64>().prop_map(|version| CollabMessage::Ack { version }),
+            (
+                any::<u64>(),
+                any::<u32>(),
+                any::<u32>(),
+                proptest::option::of(any::<String>()),
+                proptest::option::of(any::<u64>()),
+            )
+                .prop_map(|(client_id, head, anchor, name, idle_secs)| {
+                    CollabMessage::Cursor {
+                        client_id,
+                        head,
+                        anchor,
+                        name,
+                        idle_secs,
+                    }
+                }),
+            any::<String>().prop_map(|error| CollabMessage::Error { error }),
+            any::<u64>().prop_map(|client_id| CollabMessage::CursorRemove { client_id }),
+            (any::<String>(), any::<String>())
+                .prop_map(|(hash, name)| CollabMessage::NewVersion { hash, name }),
+            any::<String>().prop_map(|token| CollabMessage::Auth { token }),
+            (
+                any::<String>(),
+                proptest::option::of(any::<String>()),
+                proptest::option::of(any::<String>()),
+            )
+                .prop_map(|(client_id, name, token)| CollabMessage::AuthOk {
+                    client_id,
+                    name,
+                    token,
+                }),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn test_collab_message_decode_refuses_arbitrary_suffixes(
+            msg in arb_collab_message(),
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            let bytes = msg.encode();
+            // The valid message round-trips byte-for-byte.
+            prop_assert_eq!(
+                CollabMessage::decode(&bytes).map(|d| d.encode()),
+                Some(bytes.clone())
+            );
+            // Any nonempty suffix makes the frame undecodable: the frame is
+            // exactly one MessagePack value (#6349).
+            let mut suffixed = bytes;
+            suffixed.extend_from_slice(&suffix);
+            prop_assert!(CollabMessage::decode(&suffixed).is_none());
+        }
+    }
+
+    #[test]
     fn test_collab_message_type_tags() {
         // Verify the first byte is the correct type tag
         let init = CollabMessage::Init {
@@ -1487,6 +1892,71 @@ mod tests {
         assert_eq!(msg::ACK, 3);
         assert_eq!(msg::CURSOR, 4);
         assert_eq!(msg::ERROR, 5);
+        assert_eq!(msg::CURSOR_REMOVE, 6);
+        assert_eq!(msg::NEW_VERSION, 7);
+        assert_eq!(msg::AUTH, 8);
+        assert_eq!(msg::AUTH_OK, 9);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_cursor_remove_roundtrip() {
+        // Regression (#1783): decode had no tag-6 branch, so a CursorRemove
+        // frame came back as None — indistinguishable from corrupt input.
+        let msg = CollabMessage::CursorRemove { client_id: 54321 };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::CursorRemove { client_id } => {
+                assert_eq!(client_id, 54321);
+            }
+            _ => panic!("Expected CursorRemove message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_auth_roundtrip() {
+        let msg = CollabMessage::Auth {
+            token: "secret-token".to_owned(),
+        };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::Auth { token } => {
+                assert_eq!(token, "secret-token");
+            }
+            _ => panic!("Expected Auth message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_auth_ok_roundtrip() {
+        for token in [Some("fresh-token".to_owned()), None] {
+            let msg = CollabMessage::AuthOk {
+                client_id: "client-1".to_owned(),
+                name: Some("Alice".to_owned()),
+                token: token.clone(),
+            };
+            let encoded = msg.encode();
+            let decoded = CollabMessage::decode(&encoded).unwrap();
+
+            match decoded {
+                CollabMessage::AuthOk {
+                    client_id,
+                    name,
+                    token: decoded_token,
+                } => {
+                    assert_eq!(client_id, "client-1");
+                    assert_eq!(name, Some("Alice".to_owned()));
+                    assert_eq!(decoded_token, token);
+                }
+                _ => panic!("Expected AuthOk message"),
+            }
+        }
     }
 
     #[test]

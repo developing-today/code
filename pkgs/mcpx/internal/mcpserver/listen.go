@@ -174,8 +174,10 @@ func (s *Server) listen(ctx context.Context, c *Conn, req request, peer Peer) *r
 		agreed = ListenFilter{}
 	}
 	// Agreed only where capabilities() declares it: in pass-through mode,
-	// where the list is the upstreams' and changes with theirs.
-	if !s.toolsVary() {
+	// where the list is the upstreams' and changes with theirs -- and on a
+	// raw-surface request (codemode=false), whose list is every upstream's
+	// for the same reason.
+	if !s.toolsListChangedFor(ctx) {
 		agreed.ToolsListChanged = false
 	}
 
@@ -371,7 +373,7 @@ func (c *Conn) announceEnd(l *listenStream) {
 			"resultType": "complete",
 			"_meta": map[string]any{
 				MetaSubscriptionID: l.id,
-				MetaServerInfo:     map[string]any{"name": c.s.name, "version": c.s.version},
+				MetaServerInfo:     c.s.serverInfo(),
 			},
 		}})
 	}

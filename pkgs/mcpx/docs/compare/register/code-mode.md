@@ -21,62 +21,62 @@ the opencode plugin's `mcpx_exec`, pools, credentials) are referred to by that r
 
 Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| CODE-01 | Deployed lootbox is upstream `587a5a1` plus four patches, not the fork | `lootbox has` | deployed: upstream + 4 patches · `.lootbox/`: fork `887db38` | n/a — decides which lootbox the other rows describe | + low | S | low |
-| CODE-02 | Real runtime chosen per run: deno, then bun, then node | `mcpx has, others don't` | mcpx 3 runtimes · lootbox deno only · v1/v2 interpreter · CF isolate | ✓ — `script.runtime` auto, deno, bun or node | + med | S | low |
-| CODE-03 | opencode runs a confined interpreter with no ambient APIs | `opencode v1 has` `opencode v2 has` `does not match mcpx's goal` | v1 ✓ · v2 ✓ · lootbox, mcpx, CF run real engines | n/a — real runtime with full authority, by choice | − authority | XL | low |
-| CODE-04 | Cloudflare runs each execution pass in a fresh V8 isolate | `does not match mcpx's goal` | CF ✓ · others ✗ | n/a — one OS process group per run | − workerd | XL | low |
-| CODE-05 | opencode supports only a subset of JavaScript | `opencode v1 has` `opencode v2 has` | v1 no classes or generators · v2 no classes · others full | ✓ — full TypeScript on a real runtime | + low | S | low |
-| CODE-06 | Script type-checked against generated types before it runs | `lootbox has` | lootbox on by default · mcpx opt-in · v1, v2, CF never | partial — `script.typecheck` exists, defaults to `off` | + med | S | med |
-| CODE-07 | TypeScript stripped without checking; v2 workerd build skips transpile | `opencode v1 has` `opencode v2 has` | v1 ✓ · v2 ✓ (workerd: JS only) · CF JS only | n/a — the real runtime parses TypeScript | + low | S | low |
-| CODE-08 | Default script permissions: `--allow-net` versus `--allow-all` | `lootbox has` | lootbox net only · mcpx all · v1/v2, CF no ambient access | ✓ — `--allow-all` by design; `net`, `strict` profiles exist | − policy | S | med |
-| CODE-09 | Cloudflare blocks or proxies all outbound network | `does not match mcpx's goal` | CF ✓ · v1/v2 no network API · lootbox, mcpx open | n/a — no egress control beyond Deno `strict` | − authority | L | low |
-| CODE-10 | MCP client guide: programmatic tool calling requires a sandbox | `does not match mcpx's goal` | guide (every docs version) · lootbox, v1, v2, CF sandbox · mcpx none | n/a — no sandbox, deliberately | − goal | L | med |
-| CODE-11 | Default whole-script wall-clock timeout | `lootbox has` `opencode v1 has` `opencode v2 has` | lootbox 10 s · mcpx 120 s · v1/v2 none · CF 60 s or 30 s | ✓ — `exec.timeout` 120 s, then process-group kill | + low | S | low |
-| CODE-12 | Per-tool-call timeout inside a script | `lootbox has` `opencode v1 has` `opencode v2 has` | lootbox 30 s · mcpx 120 s · v1 SDK 60 s · v2 12 h | ✓ — `pool.callTimeout` 120 s | + low | S | med |
-| CODE-13 | Progress token requested so long calls outlive the timeout | `opencode v1 has` `opencode v2 has` `mcpx missing` | v1 token and reset · v2 token, no reset · lootbox, mcpx none | partial — sends a token when the host did and relays progress (#212); the daemon's own timeout does not reset on it | + med | S | med |
-| CODE-14 | CPU-time and subrequest caps per invocation | `does not match mcpx's goal` | CF `cpuMs`, `subRequests` · others wall clock only | n/a — wall clock only | − marginal | M | low |
-| CODE-15 | Tool-call budget per execution | `opencode v1 has` `opencode v2 has` | v1/v2 knob, unset by host · lootbox, mcpx, CF none | ✗ — only the timeout bounds a looping script | + low | S | low |
-| CODE-16 | Cap on the size of returned output | `opencode v1 has` `opencode v2 has` `mcpx missing` | v1/v2 knob · CF 6,000 tokens · lootbox, mcpx whole stdout | ✗ — stdout returned whole; only stderr is bounded (#216) | + high | S | med |
-| CODE-17 | Concurrent tool calls within one program | `opencode v1 has` | v1 8 · v2 unrestricted · lootbox, mcpx, CF no cap | n/a — per-server pool max 4, no per-run cap | + low | S | low |
-| CODE-18 | Upstream call cancelled when the script times out or dies | `has better replacement` | mcpx ✓ · v1/v2 ✓ · lootbox ✗ · CF unverified | ✓ — context cancel sends `notifications/cancelled` | + low | S | low |
-| CODE-19 | Final top-level expression becomes the result | `opencode v2 has` `mcpx missing` | v2 ✓ · CF ✓ · v1 `null` · lootbox none · mcpx stdout | ✗ — result is stdout, `emit()` or a default export (#216) | + med | M | low |
-| CODE-20 | What happens to un-awaited calls when the program ends | `opencode v1 has` `opencode v2 has` | v1 awaited · v2 interrupted · lootbox, mcpx run on | n/a — the runtime's event loop finishes them | + low | S | low |
-| CODE-21 | Working directory the script runs in | `lootbox has` `has better replacement` | lootbox daemon's cwd · mcpx caller's cwd · v1, v2, CF none | ✓ — caller's cwd; `/v1/exec` takes `cwd` | + low | S | low |
-| CODE-22 | Caller chooses local or remote execution | `mcpx has, others don't` | mcpx ✓ · lootbox always daemon · v1/v2 in-process · CF platform | ✓ — `exec.where` auto, local or remote | + med | S | low |
-| CODE-23 | How arguments reach a script | `lootbox has` `has better replacement` | lootbox stdin only · mcpx argv, exports, `@param` · CF one input | ✓ — argv, default export, `--export`, placeholders | + low | S | low |
-| CODE-24 | Where named scripts are looked up | `lootbox has` `has better replacement` | lootbox one dir · mcpx upward search · CF snippets · v1/v2 none | ✓ — `.mcpx/scripts` upward, then user dir | + low | S | low |
-| CODE-25 | Named injection points in the script launcher | `mcpx has, others don't` | mcpx ✓ · others wrap code, no hooks | ✓ — before, prefix, onSuccess, onError, suffix | + low | S | low |
-| CODE-26 | `emit()` streams values out while the script runs | `mcpx has, others don't` | mcpx ✓ · others return at the end | ✓ — SSE or NDJSON frames from `/v1/exec` | + med | S | low |
-| CODE-27 | Structured log records on a side channel | `mcpx has, others don't` | mcpx records · v1/v2, CF `logs: string[]` · lootbox raw stderr | ✓ — `log.*` behind a sentinel, parsed into `logs[]` | + low | S | low |
-| CODE-28 | lootbox drops stderr on success and stdout on failure | `has better replacement` | lootbox ✗ · mcpx, v1/v2, CF keep both | ✓ — keeps both; stderr tail-bounded | + low | S | low |
-| CODE-29 | One JSON document per run | `has better replacement` | mcpx ✓ · v1/v2 internal · CF three variants · lootbox text | ✓ — `--json run`, `/v1/exec`, `mcpx_exec` | + low | S | low |
-| CODE-30 | Failures reported as typed kinds | `opencode v1 has` `opencode v2 has` `mcpx missing` | v1/v2 `kind` · CF `status: "error"` · mcpx, lootbox strings | ✗ — `error` string, `exitCode`, `timedOut` only (#216) | + med | M | low |
-| CODE-31 | Budgeted catalogue: every namespace, signatures to about 2,000 tokens | `opencode v1 has` `opencode v2 has` | mcpx ✓ · v1 ✓ · v2 ✓ · lootbox counts only · CF all or none | ✓ — `mcpx catalog`, `mcpx_catalog`, 2,000-token default | + low | S | low |
-| CODE-32 | Catalogue changes sent as a delta when shorter | `opencode v2 has` | v2 ✓ · mcpx machinery ✓ · v1 full re-render | ✓ — `Fingerprint`, `Diff`, `ShorterOf` exist | + low | S | low |
-| CODE-33 | Pinned tools always shown in the catalogue | `opencode v2 has` | v2 ✓ · mcpx `--bias` only · others ✗ | ✗ — bias scoring favours terms; nothing is pinned | + low | S | low |
-| CODE-34 | Tool search callable from inside the program | `opencode v1 has` `opencode v2 has` | mcpx sync · v1 async · v2 sync · CF async · lootbox ✗ | ✓ — synchronous `search()` and `describe()` | + low | S | low |
-| CODE-35 | In-program search pages its results | `opencode v1 has` `opencode v2 has` `mcpx missing` | v1/v2 `offset`, `next` · CF `truncated` · mcpx `limit` only | ✗ — `search(query, limit = 20)`, no offset (#216) | + low | S | low |
-| CODE-36 | In-program search also finds saved snippets | `mcpx missing` | CF ✓ · mcpx recipes outside scripts · others ✗ | ✗ — in-script `search()` covers tools only (#216) | + low | M | low |
-| CODE-37 | Approval pauses a run by aborting it and replaying it | `does not match mcpx's goal` | CF ✓ · v1/v2 ask per call · mcpx elicitation · lootbox ✗ | n/a — elicitation blocks in-process; no replay | − determinism | XL | low |
-| CODE-38 | Rollback through a per-tool `revert` | `does not match mcpx's goal` | CF ✓ · others ✗ | n/a — MCP tools have no `revert` | − no-revert | XL | low |
-| CODE-39 | Only the host may promote a run to a saved snippet | `does not match mcpx's goal` | CF host only · lootbox, mcpx agent writes files · v1/v2 none | n/a — agents write `.mcpx/scripts/` directly | − workflow | M | med |
-| CODE-40 | Tool names that are JavaScript reserved words get a suffix | `mcpx missing` | CF ✓ · mcpx, lootbox ✗ · v1/v2 bracket notation | ✗ — `mcpx types` prints `function delete(…)` (#215) | + low | S | low |
-| CODE-41 | Namespace names checked against reserved words and prelude names | `mcpx missing` | CF ✓ · lootbox `mcp_` prefix · v1/v2 brackets · mcpx ✗ | ✗ — a server named `log` may break every script (#215) | + med | S | high |
-| CODE-42 | Two tool names that sanitise to the same identifier | `mcpx missing` | CF throws · mcpx last wins · lootbox first wins | ✗ — duplicate keys; wrong tool called silently (#215) | + med | S | med |
-| CODE-43 | opencode keeps real tool names and uses bracket notation | `opencode v1 has` `opencode v2 has` | v1/v2 ✓ · mcpx, lootbox, CF rename | n/a — renames `fancy-name` to `fancy_name` | + low | M | low |
-| CODE-44 | Return types generated from a tool's `outputSchema` | `opencode v1 has` `opencode v2 has` `2025-06-18 has` `mcpx missing` | v1/v2 ✓ · CF field · mcpx `any` · lootbox envelope | ✗ — parses `outputSchema`; every result typed `any` (#216) | + med | S | low |
-| CODE-45 | lootbox's generated types carry no descriptions | `has better replacement` | lootbox ✗ · mcpx, v1/v2, CF ✓ | ✓ — JSDoc for tools and properties | + low | S | low |
-| CODE-46 | lootbox generates one function per MCP resource | `lootbox has` | lootbox ✓ · mcpx generic reader · v1/v2 none · CF undocumented | n/a — one `readResource(uri)` | − bloat | S | low |
-| CODE-47 | lootbox exposes local TypeScript files as namespaces | `lootbox has` `has better replacement` | lootbox ✓ · mcpx adapters and imports | n/a — a plain module import instead, by choice | − cost | M | low |
-| CODE-48 | lootbox YAML prompt workflows | `lootbox has` `does not match mcpx's goal` | lootbox ✓ · others ✗ | n/a — left out on purpose | − scope | M | low |
-| CODE-49 | lootbox's script-to-gateway protocol is its own WebSocket JSON | `lootbox has` `has better replacement` | lootbox ✓ · mcpx REST and MCP · v1/v2 in-process · CF RPC | ✓ — documented REST `/v1/call`, `/v1/exec` | + low | S | low |
-| CODE-50 | Script client reaches the daemon over a unix socket | `mcpx has, others don't` | mcpx deno/bun socket, node TCP · others ✗ | ✓ — socket mode is the access control | + med | S | low |
-| CODE-51 | Cloudflare connects script and host through Workers RPC | `does not match mcpx's goal` | CF ✓ · others ✗ | n/a — HTTP to the daemon | − Workers-only | XL | low |
-| CODE-52 | Every run recorded with its script text and output | `lootbox has` | lootbox SQLite · mcpx log without source · CF last 50 · v1/v2 transcript | partial — run ids and log records; no script source | + low | M | med |
-| CODE-53 | opencode wraps MCP servers in code mode by default | `opencode v1 has` `opencode v2 has` `mcpx missing` | v2 default, per server · v1 behind a flag this build sets · opt-out only for `executor` | ✗ — docs never tell users to opt out (#218) | + high | S | med |
-| CODE-54 | Code execution reachable from a shell, HTTP or CI | `lootbox has` | mcpx ✓ · lootbox CLI and WS · CF Worker · v1/v2 model turn only | ✓ — `mcpx exec`, `/v1/exec`, `mcpx_exec` | + high | S | low |
+| ID      | Difference                                                             | Labels                                                              | Where it exists                                                                           | mcpx @ 05c78b2                                                                                                                                                                 | Value          | Effort | Risk |
+| ------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- | ------ | ---- |
+| CODE-01 | Deployed lootbox is upstream `587a5a1` plus four patches, not the fork | `lootbox has`                                                       | deployed: upstream + 4 patches · `.lootbox/`: fork `887db38`                              | n/a — decides which lootbox the other rows describe                                                                                                                            | + low          | S      | low  |
+| CODE-02 | Real runtime chosen per run: deno, then bun, then node                 | `mcpx has, others don't`                                            | mcpx 3 runtimes · lootbox deno only · v1/v2 interpreter · CF isolate                      | ✓ — `script.runtime` auto, deno, bun or node                                                                                                                                   | + med          | S      | low  |
+| CODE-03 | opencode runs a confined interpreter with no ambient APIs              | `opencode v1 has` `opencode v2 has` `does not match mcpx's goal`    | v1 ✓ · v2 ✓ · lootbox, mcpx, CF run real engines                                          | n/a — real runtime with full authority, by choice                                                                                                                              | − authority    | XL     | low  |
+| CODE-04 | Cloudflare runs each execution pass in a fresh V8 isolate              | `does not match mcpx's goal`                                        | CF ✓ · others ✗                                                                           | n/a — one OS process group per run                                                                                                                                             | − workerd      | XL     | low  |
+| CODE-05 | opencode supports only a subset of JavaScript                          | `opencode v1 has` `opencode v2 has`                                 | v1 no classes or generators · v2 no classes · others full                                 | ✓ — full TypeScript on a real runtime                                                                                                                                          | + low          | S      | low  |
+| CODE-06 | Script type-checked against generated types before it runs             | `lootbox has`                                                       | lootbox on by default · mcpx opt-in · v1, v2, CF never                                    | partial — `script.typecheck` exists, defaults to `off`                                                                                                                         | + med          | S      | med  |
+| CODE-07 | TypeScript stripped without checking; v2 workerd build skips transpile | `opencode v1 has` `opencode v2 has`                                 | v1 ✓ · v2 ✓ (workerd: JS only) · CF JS only                                               | n/a — the real runtime parses TypeScript                                                                                                                                       | + low          | S      | low  |
+| CODE-08 | Default script permissions: `--allow-net` versus `--allow-all`         | `lootbox has`                                                       | lootbox net only · mcpx all · v1/v2, CF no ambient access                                 | ✓ — `--allow-all` by design; `net`, `strict` profiles exist                                                                                                                    | − policy       | S      | med  |
+| CODE-09 | Cloudflare blocks or proxies all outbound network                      | `does not match mcpx's goal`                                        | CF ✓ · v1/v2 no network API · lootbox, mcpx open                                          | n/a — no egress control beyond Deno `strict`                                                                                                                                   | − authority    | L      | low  |
+| CODE-10 | MCP client guide: programmatic tool calling requires a sandbox         | `does not match mcpx's goal`                                        | guide (every docs version) · lootbox, v1, v2, CF sandbox · mcpx none                      | n/a — no sandbox, deliberately                                                                                                                                                 | − goal         | L      | med  |
+| CODE-11 | Default whole-script wall-clock timeout                                | `lootbox has` `opencode v1 has` `opencode v2 has`                   | lootbox 10 s · mcpx 120 s · v1/v2 none · CF 60 s or 30 s                                  | ✓ — `exec.timeout` 120 s, then process-group kill                                                                                                                              | + low          | S      | low  |
+| CODE-12 | Per-tool-call timeout inside a script                                  | `lootbox has` `opencode v1 has` `opencode v2 has`                   | lootbox 30 s · mcpx 120 s · v1 SDK 60 s · v2 12 h                                         | ✓ — `pool.callTimeout` 120 s                                                                                                                                                   | + low          | S      | med  |
+| CODE-13 | Progress token requested so long calls outlive the timeout             | `opencode v1 has` `opencode v2 has` `mcpx missing`                  | v1 token and reset · v2 token, no reset · lootbox, mcpx none                              | partial — sends a token when the host did and relays progress (#212); the daemon's own timeout does not reset on it                                                            | + med          | S      | med  |
+| CODE-14 | CPU-time and subrequest caps per invocation                            | `does not match mcpx's goal`                                        | CF `cpuMs`, `subRequests` · others wall clock only                                        | n/a — wall clock only                                                                                                                                                          | − marginal     | M      | low  |
+| CODE-15 | Tool-call budget per execution                                         | `opencode v1 has` `opencode v2 has`                                 | v1/v2 knob, unset by host · lootbox, mcpx, CF none                                        | ✗ — only the timeout bounds a looping script                                                                                                                                   | + low          | S      | low  |
+| CODE-16 | Cap on the size of returned output                                     | `opencode v1 has` `opencode v2 has` `mcpx has`                      | v1/v2 knob · CF 6,000 tokens · lootbox whole stdout, mcpx capped at `exec.maxOutputBytes` | ✓ — returned stdout capped at the execsvc Result boundary (default 64KiB): head kept, in-band marker names dropped bytes, `stdoutTruncated` set; full record unchanged (#1937) | + high         | S      | med  |
+| CODE-17 | Concurrent tool calls within one program                               | `opencode v1 has`                                                   | v1 8 · v2 unrestricted · lootbox, mcpx, CF no cap                                         | n/a — per-server pool max 4, no per-run cap                                                                                                                                    | + low          | S      | low  |
+| CODE-18 | Upstream call cancelled when the script times out or dies              | `has better replacement`                                            | mcpx ✓ · v1/v2 ✓ · lootbox ✗ · CF unverified                                              | ✓ — context cancel sends `notifications/cancelled`                                                                                                                             | + low          | S      | low  |
+| CODE-19 | Final top-level expression becomes the result                          | `opencode v2 has` `mcpx missing`                                    | v2 ✓ · CF ✓ · v1 `null` · lootbox none · mcpx stdout                                      | ✗ — result is stdout, `emit()` or a default export (#216)                                                                                                                      | + med          | M      | low  |
+| CODE-20 | What happens to un-awaited calls when the program ends                 | `opencode v1 has` `opencode v2 has`                                 | v1 awaited · v2 interrupted · lootbox, mcpx run on                                        | n/a — the runtime's event loop finishes them                                                                                                                                   | + low          | S      | low  |
+| CODE-21 | Working directory the script runs in                                   | `lootbox has` `has better replacement`                              | lootbox daemon's cwd · mcpx caller's cwd · v1, v2, CF none                                | ✓ — caller's cwd; `/v1/exec` takes `cwd`                                                                                                                                       | + low          | S      | low  |
+| CODE-22 | Caller chooses local or remote execution                               | `mcpx has, others don't`                                            | mcpx ✓ · lootbox always daemon · v1/v2 in-process · CF platform                           | ✓ — `exec.where` auto, local or remote                                                                                                                                         | + med          | S      | low  |
+| CODE-23 | How arguments reach a script                                           | `lootbox has` `has better replacement`                              | lootbox stdin only · mcpx argv, exports, `@param` · CF one input                          | ✓ — argv, default export, `--export`, placeholders                                                                                                                             | + low          | S      | low  |
+| CODE-24 | Where named scripts are looked up                                      | `lootbox has` `has better replacement`                              | lootbox one dir · mcpx upward search · CF snippets · v1/v2 none                           | ✓ — `.mcpx/scripts` upward, then user dir                                                                                                                                      | + low          | S      | low  |
+| CODE-25 | Named injection points in the script launcher                          | `mcpx has, others don't`                                            | mcpx ✓ · others wrap code, no hooks                                                       | ✓ — before, prefix, onSuccess, onError, suffix                                                                                                                                 | + low          | S      | low  |
+| CODE-26 | `emit()` streams values out while the script runs                      | `mcpx has, others don't`                                            | mcpx ✓ · others return at the end                                                         | ✓ — SSE or NDJSON frames from `/v1/exec`                                                                                                                                       | + med          | S      | low  |
+| CODE-27 | Structured log records on a side channel                               | `mcpx has, others don't`                                            | mcpx records · v1/v2, CF `logs: string[]` · lootbox raw stderr                            | ✓ — `log.*` behind a sentinel, parsed into `logs[]`                                                                                                                            | + low          | S      | low  |
+| CODE-28 | lootbox drops stderr on success and stdout on failure                  | `has better replacement`                                            | lootbox ✗ · mcpx, v1/v2, CF keep both                                                     | ✓ — keeps both; stderr tail-bounded                                                                                                                                            | + low          | S      | low  |
+| CODE-29 | One JSON document per run                                              | `has better replacement`                                            | mcpx ✓ · v1/v2 internal · CF three variants · lootbox text                                | ✓ — `--json run`, `/v1/exec`, `mcpx_exec`                                                                                                                                      | + low          | S      | low  |
+| CODE-30 | Failures reported as typed kinds                                       | `opencode v1 has` `opencode v2 has` `mcpx missing`                  | v1/v2 `kind` · CF `status: "error"` · mcpx, lootbox strings                               | ✗ — `error` string, `exitCode`, `timedOut` only (#216)                                                                                                                         | + med          | M      | low  |
+| CODE-31 | Budgeted catalogue: every namespace, signatures to about 2,000 tokens  | `opencode v1 has` `opencode v2 has`                                 | mcpx ✓ · v1 ✓ · v2 ✓ · lootbox counts only · CF all or none                               | ✓ — `mcpx catalog`, `mcpx_catalog`, 2,000-token default                                                                                                                        | + low          | S      | low  |
+| CODE-32 | Catalogue changes sent as a delta when shorter                         | `opencode v2 has`                                                   | v2 ✓ · mcpx machinery ✓ · v1 full re-render                                               | ✓ — `Fingerprint`, `Diff`, `ShorterOf` exist                                                                                                                                   | + low          | S      | low  |
+| CODE-33 | Pinned tools always shown in the catalogue                             | `opencode v2 has`                                                   | v2 ✓ · mcpx `--bias` only · others ✗                                                      | ✗ — bias scoring favours terms; nothing is pinned                                                                                                                              | + low          | S      | low  |
+| CODE-34 | Tool search callable from inside the program                           | `opencode v1 has` `opencode v2 has`                                 | mcpx sync · v1 async · v2 sync · CF async · lootbox ✗                                     | ✓ — synchronous `search()` and `describe()`                                                                                                                                    | + low          | S      | low  |
+| CODE-35 | In-program search pages its results                                    | `opencode v1 has` `opencode v2 has` `mcpx missing`                  | v1/v2 `offset`, `next` · CF `truncated` · mcpx `limit` only                               | ✗ — `search(query, limit = 20)`, no offset (#216)                                                                                                                              | + low          | S      | low  |
+| CODE-36 | In-program search also finds saved snippets                            | `mcpx missing`                                                      | CF ✓ · mcpx recipes outside scripts · others ✗                                            | ✗ — in-script `search()` covers tools only (#216)                                                                                                                              | + low          | M      | low  |
+| CODE-37 | Approval pauses a run by aborting it and replaying it                  | `does not match mcpx's goal`                                        | CF ✓ · v1/v2 ask per call · mcpx elicitation · lootbox ✗                                  | n/a — elicitation blocks in-process; no replay                                                                                                                                 | − determinism  | XL     | low  |
+| CODE-38 | Rollback through a per-tool `revert`                                   | `does not match mcpx's goal`                                        | CF ✓ · others ✗                                                                           | n/a — MCP tools have no `revert`                                                                                                                                               | − no-revert    | XL     | low  |
+| CODE-39 | Only the host may promote a run to a saved snippet                     | `does not match mcpx's goal`                                        | CF host only · lootbox, mcpx agent writes files · v1/v2 none                              | n/a — agents write `.mcpx/scripts/` directly                                                                                                                                   | − workflow     | M      | med  |
+| CODE-40 | Tool names that are JavaScript reserved words get a suffix             | `mcpx missing`                                                      | CF ✓ · mcpx, lootbox ✗ · v1/v2 bracket notation                                           | ✗ — `mcpx types` prints `function delete(…)` (#215)                                                                                                                            | + low          | S      | low  |
+| CODE-41 | Namespace names checked against reserved words and prelude names       | `mcpx missing`                                                      | CF ✓ · lootbox `mcp_` prefix · v1/v2 brackets · mcpx ✗                                    | ✗ — a server named `log` may break every script (#215)                                                                                                                         | + med          | S      | high |
+| CODE-42 | Two tool names that sanitise to the same identifier                    | `mcpx missing`                                                      | CF throws · mcpx last wins · lootbox first wins                                           | ✗ — duplicate keys; wrong tool called silently (#215)                                                                                                                          | + med          | S      | med  |
+| CODE-43 | opencode keeps real tool names and uses bracket notation               | `opencode v1 has` `opencode v2 has`                                 | v1/v2 ✓ · mcpx, lootbox, CF rename                                                        | n/a — renames `fancy-name` to `fancy_name`                                                                                                                                     | + low          | M      | low  |
+| CODE-44 | Return types generated from a tool's `outputSchema`                    | `opencode v1 has` `opencode v2 has` `2025-06-18 has` `mcpx missing` | v1/v2 ✓ · CF field · mcpx `any` · lootbox envelope                                        | ✗ — parses `outputSchema`; every result typed `any` (#216)                                                                                                                     | + med          | S      | low  |
+| CODE-45 | lootbox's generated types carry no descriptions                        | `has better replacement`                                            | lootbox ✗ · mcpx, v1/v2, CF ✓                                                             | ✓ — JSDoc for tools and properties                                                                                                                                             | + low          | S      | low  |
+| CODE-46 | lootbox generates one function per MCP resource                        | `lootbox has`                                                       | lootbox ✓ · mcpx generic reader · v1/v2 none · CF undocumented                            | n/a — one `readResource(uri)`                                                                                                                                                  | − bloat        | S      | low  |
+| CODE-47 | lootbox exposes local TypeScript files as namespaces                   | `lootbox has` `has better replacement`                              | lootbox ✓ · mcpx adapters and imports                                                     | n/a — a plain module import instead, by choice                                                                                                                                 | − cost         | M      | low  |
+| CODE-48 | lootbox YAML prompt workflows                                          | `lootbox has` `does not match mcpx's goal`                          | lootbox ✓ · others ✗                                                                      | n/a — left out on purpose                                                                                                                                                      | − scope        | M      | low  |
+| CODE-49 | lootbox's script-to-gateway protocol is its own WebSocket JSON         | `lootbox has` `has better replacement`                              | lootbox ✓ · mcpx REST and MCP · v1/v2 in-process · CF RPC                                 | ✓ — documented REST `/v1/call`, `/v1/exec`                                                                                                                                     | + low          | S      | low  |
+| CODE-50 | Script client reaches the daemon over a unix socket                    | `mcpx has, others don't`                                            | mcpx deno/bun socket, node TCP · others ✗                                                 | ✓ — socket mode is the access control                                                                                                                                          | + med          | S      | low  |
+| CODE-51 | Cloudflare connects script and host through Workers RPC                | `does not match mcpx's goal`                                        | CF ✓ · others ✗                                                                           | n/a — HTTP to the daemon                                                                                                                                                       | − Workers-only | XL     | low  |
+| CODE-52 | Every run recorded with its script text and output                     | `lootbox has`                                                       | lootbox SQLite · mcpx log without source · CF last 50 · v1/v2 transcript                  | partial — run ids and log records; no script source                                                                                                                            | + low          | M      | med  |
+| CODE-53 | opencode wraps MCP servers in code mode by default                     | `opencode v1 has` `opencode v2 has` `mcpx missing`                  | v2 default, per server · v1 behind a flag this build sets · opt-out only for `executor`   | ✗ — docs never tell users to opt out (#218)                                                                                                                                    | + high         | S      | med  |
+| CODE-54 | Code execution reachable from a shell, HTTP or CI                      | `lootbox has`                                                       | mcpx ✓ · lootbox CLI and WS · CF Worker · v1/v2 model turn only                           | ✓ — `mcpx exec`, `/v1/exec`, `mcpx_exec`                                                                                                                                       | + high         | S      | low  |
 
 ## CODE-01 The deployed lootbox is upstream `587a5a1` plus four patches, not the fork
 
@@ -95,7 +95,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `{"status":"ok"}`, not the fork's subsystem report, which confirms the upstream build is what runs. The core code-mode
   path (`parse_mcp_schemas.ts`, `mcp_schema_fetcher.ts`) is the same in both; `git diff --stat 587a5a1 HEAD` does not
   list those files. Upstream hard-codes what the fork makes configurable: `git show
-  587a5a1:src/lib/execute_llm_script.ts` has a 10-second script timeout (line 26) and `--allow-net`,
+587a5a1:src/lib/execute_llm_script.ts` has a 10-second script timeout (line 26) and `--allow-net`,
   `--allow-import=localhost:<port>`, `--reload=…/client.ts`, `--no-check=remote` (lines 31-34), and its
   `src/lib/rpc/execute_mcp.ts` hard-codes a 30-second per-call timeout (line 60), so CODE-06, CODE-08, CODE-11 and
   CODE-12 hold for both. Rows about fork-only process behaviour (startup pings, multi-instance strategies) are in the
@@ -119,7 +119,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   and parameter properties. A cross-runtime test already caught the generated client failing on node for exactly that
   reason (`ASSESSMENT.md:260-261`).
 - **Detail.** Deno runs `run --quiet --no-check <perms> <file>`; bun runs `bun run <file>`; node runs `--no-warnings
-  --experimental-strip-types <file>` (`internal/runner/runner.go:84-101`). On bun and node a shim fills in `Deno.args`,
+--experimental-strip-types <file>` (`internal/runner/runner.go:84-101`). On bun and node a shim fills in `Deno.args`,
   `Deno.env` and `Deno.readTextFile`, and `readTextFile` refuses unless `MCPX_ALLOW_READ=1`
   (`internal/codegen/emit.go:348-387`, guard at `:373`). ASSESSMENT measured a trivial script against a local client
   file at 30–60 ms on any of the three (`ASSESSMENT.md:79-80`).
@@ -153,7 +153,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   18,056 lines.
 - **Sources.** `v2:packages/codemode/README.md:7` "Rather than trying to sandbox arbitrary JavaScript, CodeMode only
   runs the language features we implement."; `v1:packages/codemode/src/interpreter/runtime.ts:1` `import { parse } from
-  "acorn"`; `v1:packages/codemode/README.md:5`; `v2:packages/core/src/codemode/tool.ts:63`; `OPENCODE-V2.md:51` "is
+"acorn"`; `v1:packages/codemode/README.md:5`; `v2:packages/core/src/codemode/tool.ts:63`; `OPENCODE-V2.md:51` "is
   provided as an extension. Timers, imports, filesystem and process"
 
 ## CODE-04 Cloudflare runs each execution pass in a fresh V8 isolate
@@ -261,11 +261,11 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   (`.lootbox/src/lib/rpc/worker_manager.ts:298-301`), and `--no-sandbox` switches scripts to `--allow-all`
   (`.lootbox/src/lib/get_config.ts:250-251`); the launchd arguments pass no `--no-sandbox`
   (`nix:configuration.nix:743-749`). `ASSESSMENT.md:73` quotes lootbox's command as `deno run --allow-all --reload=…
-  --no-check=remote`; the source says `--allow-net` in both the fork and upstream, so that line is wrong. What a script
+--no-check=remote`; the source says `--allow-net` in both the fork and upstream, so that line is wrong. What a script
   can read of the daemon's environment, and the missing `Origin` check on the endpoints that run scripts, are the auth
   register's AUTH-25 and AUTH-24.
 - **Sources.** `.lootbox/src/lib/constants.ts:78` `export const DEFAULT_PERMISSION_FLAGS: readonly string[] =
-  ["--allow-net"];`; `.lootbox/src/lib/get_config.ts:485`; `internal/runner/runner.go:47` "The default is wide open.";
+["--allow-net"];`; `.lootbox/src/lib/get_config.ts:485`; `internal/runner/runner.go:47` "The default is wide open.";
   `ASSESSMENT.md:73` "deno run --allow-all --reload=http://localhost:PORT/client.ts --no-check=remote <tmpfile>"
 
 ## CODE-09 Cloudflare blocks or proxies all outbound network
@@ -361,7 +361,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   (`.lootbox/src/lib/rpc/websocket_server.ts:91` versus `:151`). opencode v1 passes the per-server `timeout` or
   `experimental.mcp_timeout`, else nothing, leaving the SDK's 60,000 ms, with `resetTimeoutOnProgress: true` and no
   `maxTotalTimeout` (`v1:packages/opencode/src/mcp/index.ts:672`); code-mode child calls pass `timeout:
-  input.entry.tool.timeout` (`v1:packages/opencode/src/tool/code-mode.ts:154-158`). v1's config text says "Defaults to
+input.entry.tool.timeout` (`v1:packages/opencode/src/tool/code-mode.ts:154-158`). v1's config text says "Defaults to
   5000" while the code uses 30,000 for connect and list (`v1:packages/core/src/v1/config/mcp.ts:21`,
   `v1:packages/opencode/src/mcp/index.ts:38`). opencode v2 splits `timeout.startup`/`catalog`/`execution`, defaulting to
   30 s, 30 s and 12 h (`v2:packages/core/src/mcp/client.ts:34`, `:241`).
@@ -409,7 +409,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   timeouts (`docs/docs/2026-07-28/develop/clients/client-best-practices.mdx:294`); no local product sets one.
 - **Sources.** `v1:packages/codemode/README.md:286`;
   https://developers.cloudflare.com/dynamic-workers/usage/limits/#set-custom-limits (`limits: { cpuMs: 10, subRequests:
-  5 }`)
+5 }`)
 
 ## CODE-15 Tool-call budget per execution
 
@@ -441,6 +441,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   the whole envelope; plugin-API register, PLG-40), floods the caller's context, which is exactly what code mode exists
   to prevent.
 - **Effort.** S — an `exec.maxOutputBytes` setting that truncates with a marker and sets `truncated`.
+- **As built (#1937, 2026-10-31).** Landed as specified: setting `exec.maxOutputBytes` (KindBytes, default `64KiB`, defaults.json `exec.stdoutLimit` following the `stderrLimit` pattern), wired into `execsvc.Limits.StdoutLimit` by both the daemon (`/v1/exec`) and the CLI local path. The cap is applied once, at the end of `execsvc.Service.Run` where the `Result` is handed back, so every returning surface sees the same capped `Stdout`: the head is kept (UTF-8-boundary safe), the returned string never exceeds the cap, it ends with a marker naming kept/total/dropped bytes, and `Result.StdoutTruncated` (`stdoutTruncated`) is set. Internal consumers (the JSON answer parse, hooks) still see the full text, and the full output is unchanged wherever a full record already exists. 0 disables the cap. Tests: `internal/execsvc/stdout_limit_test.go` (over-cap capped+marker, under-cap and exact-cap byte-identical, 0 disables, UTF-8 boundary).
 - **Risk.** Without it, one chatty script can cost more tokens than the direct call it replaced.
 - **Detail.** v1's README tells hosts without their own truncation to set it, "or oversized results silently flood model
   context" (`v1:packages/codemode/README.md:268`). v2 gives warnings a separate budget equal to `maxOutputBytes`
@@ -548,7 +549,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   for writes, which also need a permission.
 - **Sources.** `.lootbox/src/lib/lootbox-cli/exec.ts:40` `ws.send(JSON.stringify({ script, id }));`;
   `.lootbox/src/lib/execute_llm_script.ts:20`; `nix:configuration.nix:742` `WorkingDirectory =
-  "/Users/drewry.pope/.config/nix";`
+"/Users/drewry.pope/.config/nix";`
 
 ## CODE-22 Caller chooses local or remote execution
 
@@ -632,7 +633,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   separates records from plain stderr and collects them into `logs[]` with level and attributes; call sites are captured
   for warn and above.
 - **Where.** mcpx only. lootbox gives raw stderr (and drops it on success, CODE-28). opencode and Cloudflare give `logs:
-  string[]` of console output.
+string[]` of console output.
 - **mcpx @ 05c78b2.** Sentinel at `internal/codegen/emit.go:556`; parsing at `internal/runner/runner.go:374-398`.
 - **Value to mcpx.** + low: a machine-readable account of why a script failed, queryable later through `mcpx_log`.
 - **Effort.** S — done.
@@ -672,7 +673,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `truncated` and `toolCalls` (`v1:packages/codemode/README.md:128-135`).
 - **Sources.** `internal/execsvc/execsvc.go:201-213`; `.lootbox/src/lib/lootbox-cli/exec.ts:82-93`;
   https://developers.cloudflare.com/agents/tools/codemode/api-reference/#runtime-tool-input-and-output (`| { status:
-  "paused"; executionId: string; pending: PendingAction[]; }`)
+"paused"; executionId: string; pending: PendingAction[]; }`)
 
 ## CODE-30 Failures reported as typed kinds
 
@@ -834,7 +835,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 ## CODE-38 Rollback through a per-tool `revert`
 
 - **What.** `runtime.rollback()` walks the applied connector calls in reverse and calls each tool's `revert(args,
-  result)` where one is defined.
+result)` where one is defined.
 - **Where.** Cloudflare only.
 - **mcpx @ 05c78b2.** None.
 - **Value to mcpx.** − MCP tools have no `revert`; mcpx would have to invent one per server.
@@ -843,7 +844,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Detail.** "Rollback is compensation, not database transaction isolation." (how-it-works, "Rollback").
 - **Sources.** `internal/settings/consumer.go:47` (mcpx's only confirmation mechanism);
   https://developers.cloudflare.com/agents/tools/codemode/api-reference/#connector-tool-types (`revert?: (args: unknown,
-  result: unknown, ctx?: ToolExecuteContext) => Promise<void> | void;`)
+result: unknown, ctx?: ToolExecuteContext) => Promise<void> | void;`)
 
 ## CODE-39 Only the host may promote a run to a saved snippet
 
@@ -872,7 +873,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   valid TypeScript; `toolImpl` emits method shorthand (`internal/codegen/emit.go:217`), which is.
 - **Value to mcpx.** + low: `mcpx types` prints invalid TypeScript for a tool named `delete` or `import`, and
   `AGENTS.md:99-100` calls that output authoritative. The runtime client and `--typecheck` (which checks against `typeof
-  __mcpx.<ns>`, `internal/codegen/emit.go:1432`) are unaffected.
+__mcpx.<ns>`, `internal/codegen/emit.go:1432`) are unaffected.
 - **Effort.** S — a reserved-word table in `ToolFuncName`.
 - **Risk.** An agent that pastes `mcpx types` output into a `.d.ts` gets a parse error. Low.
 - **Detail.** `AGENTS.md:108-109` documents `fancy-name` becoming `fancy_name` and says nothing about reserved words.
@@ -891,8 +892,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Where.** Cloudflare validates. mcpx does not. lootbox is safe because MCP namespaces always carry an `mcp_` prefix.
   opencode uses bracket notation.
 - **mcpx @ 05c78b2.** `SanitizeNamespace` (`internal/config/config.go:407-416`). The client emits `export const <ns> =
-  {` per namespace (`internal/codegen/emit.go:122`); the `exec` prelude imports `tools, { call, readResource, artifact,
-  log, emit, ToolError, installGlobals, captureConsole }` and then `const { <every ns> } = tools;`
+{` per namespace (`internal/codegen/emit.go:122`); the `exec` prelude imports `tools, { call, readResource, artifact,
+log, emit, ToolError, installGlobals, captureConsole }` and then `const { <every ns> } = tools;`
   (`internal/execsvc/execsvc.go:610-617`).
 - **Value to mcpx.** + med: a server configured as `log` or `default` would, going by the code, make the client or the
   prelude fail to parse, breaking **every** `mcpx exec` and script, not just calls to that server. Not run.
@@ -949,7 +950,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   first appears in 2025-06-18.
 - **mcpx @ 05c78b2.** `mcpclient.Tool` parses `OutputSchema` (`internal/mcpclient/client.go:122`), but `codegen.Tool`
   has no such field (`internal/codegen/ts.go:19-23`) and every function returns `Promise<ToolResult>` with `export type
-  ToolResult = any;` (`internal/codegen/emit.go:458`).
+ToolResult = any;` (`internal/codegen/emit.go:458`).
 - **Value to mcpx.** + med: mcpx already unwraps `structuredContent` (content-types register, CT-15), so typing it is
   nearly free and makes `--typecheck` meaningful for results as well as arguments. The guide's step 1 is exactly this
   (`docs/docs/2026-07-28/develop/clients/client-best-practices.mdx:181`).
@@ -961,7 +962,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   guide's advice when no schema exists: "Use a generic type and move on" (`:212`), which is what mcpx does today for
   every tool. The `outputSchema` field itself, across revisions, is the tools register's TOOL-13.
 - **Sources.** `v1:packages/opencode/src/tool/code-mode.ts:127` `output: entry.tool.def.outputSchema as
-  SandboxTool.JsonSchema | undefined,`; `v2:packages/core/src/tool/mcp.ts:48`; `schema/2025-06-18/schema.ts:951`
+SandboxTool.JsonSchema | undefined,`; `v2:packages/core/src/tool/mcp.ts:48`; `schema/2025-06-18/schema.ts:951`
   `outputSchema?: {`; `2025-06-18/server/tools.mdx:315` "Clients **SHOULD** validate structured results against this
   schema."; `internal/codegen/emit.go:458`
 
@@ -1048,7 +1049,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Where.** lootbox. mcpx serves REST (`/v1/call`, `/v1/exec`) over a unix socket or loopback TCP, and MCP at `/mcp`.
   opencode is in-process. Cloudflare uses Workers RPC (CODE-51).
 - **mcpx @ 05c78b2.** `POST /v1/call` (`internal/daemon/server.go:468`); the generated client posts `{server, tool,
-  args}` (`internal/codegen/emit.go:524-535`).
+args}` (`internal/codegen/emit.go:524-535`).
 - **Value to mcpx.** + low: mcpx already has a documented REST surface with an OpenAPI description.
 - **Effort.** S.
 - **Risk.** n/a.
@@ -1087,7 +1088,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   https://developers.cloudflare.com/agents/tools/codemode/how-it-works/#connectors ("Connector calls cross the sandbox
   boundary through Workers remote procedure calls (RPC).");
   https://developers.cloudflare.com/agents/tools/codemode/api-reference/#executor (`binding: { callTool(method: string,
-  args: unknown): Promise<unknown>; };`)
+args: unknown): Promise<unknown>; };`)
 
 ## CODE-52 Every run recorded with its script text and output
 
@@ -1127,7 +1128,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `experimentalCodeMode` is `enabledByExperimental("OPENCODE_EXPERIMENTAL_CODE_MODE")`, the specific flag when set, else
   `OPENCODE_EXPERIMENTAL`; the nix wrapper and home profile set `OPENCODE_EXPERIMENTAL=1`.
 - **mcpx @ 05c78b2.** Not listed by the exclusion plugin; nothing in mcpx's docs tells users to opt out (`codemode:
-  false` in v2, `OPENCODE_EXPERIMENTAL_CODE_MODE=0` in v1). The model would write opencode JS that calls
+false` in v2, `OPENCODE_EXPERIMENTAL_CODE_MODE=0` in v1). The model would write opencode JS that calls
   `tools.mcpx.mcpx_exec({source: "<TS>"})`: code nested in code.
 - **Value to mcpx.** + high: one docs sentence (or a v2 plugin that sets it through `mcp.transform`) removes two
   catalogues, two error surfaces and double cost per call.
@@ -1174,9 +1175,9 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Effort.** S — done.
 - **Risk.** None.
 - **Detail.** The only mention of code-mode execution in v2's protocol code is a simulation schema, and `POST
-  /api/generate` is text generation (`v2:packages/protocol/src/groups/generate.ts:8`); rg over `v2:packages/server/src`
+/api/generate` is text generation (`v2:packages/protocol/src/groups/generate.ts:8`); rg over `v2:packages/server/src`
   and `v2:packages/cli/src` finds only an ACP tool-kind mapping (`v2:packages/cli/src/acp/tool.ts:15`). The doc's claim
-  that nothing outside a model turn can invoke it (`OPENCODE-V2.md:62-67`) holds at the pin. Serving code execution *as*
+  that nothing outside a model turn can invoke it (`OPENCODE-V2.md:62-67`) holds at the pin. Serving code execution _as_
   an MCP server (mcpx `/mcp`, Cloudflare `codeMcpServer` and `openApiMcpServer`; lootbox never) is the plugin-API
   register's PLG-41.
 - **Sources.** `v2:packages/protocol/src/simulation.ts:500`; `v2:packages/protocol/src/groups/generate.ts:8`;

@@ -88,6 +88,11 @@ impl Writer {
             tag: None,
             document: Some(document),
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
         })
     }
 }
@@ -100,6 +105,11 @@ fn tag_ext(kind: &str, op: TagOp, after: Vec<Hash>) -> ChainExt {
         tag: Some(op),
         document: None,
         removes: None,
+        note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
     }
 }
 
@@ -232,8 +242,7 @@ fn test_a_cleared_claim_is_not_returned() {
     let mut a = Writer::new(1);
     let seen = a.set(subject, "city", Some("Seattle"), vec![]);
     let kept = a.set(subject, "name", None, vec![seen.id]);
-    let mut b = Writer::new(2);
-    let cleared = b.clear(&[seen.id], vec![kept.id]);
+    let cleared = a.clear(&[seen.id], vec![kept.id]);
 
     let (_dir, mut store) = open();
     for event in [&seen, &kept, &cleared] {
@@ -591,5 +600,107 @@ fn test_search_by_subject_kind_matches_only_events_of_that_kind() {
         ],
     )
     .unwrap();
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn test_search_terms_resolves_subject_kind_at_most_once_per_subject() {
+    use std::cell::Cell;
+    use std::collections::HashMap as Map;
+
+    // Three subjects, each with one live claim.
+    let mut author = Writer::new(1);
+    let one = Hash::digest(b"counting-one");
+    let two = Hash::digest(b"counting-two");
+    let three = Hash::digest(b"counting-three");
+    let on_one = author.set(one, "city", Some("Seattle"), vec![]);
+    let on_two = author.set(two, "city", Some("Seattle"), vec![on_one.id]);
+    let on_three = author.set(three, "city", Some("Seattle"), vec![on_two.id]);
+
+    let (_dir, mut store) = open();
+    for event in [&on_one, &on_two, &on_three] {
+        deliver(&mut store, event);
+    }
+    let live = store.tag_claims().unwrap();
+
+    // Subjects one and two resolve to a kind; three resolves to none.
+    let kinds: Map<Hash, Option<String>> = [
+        (one, Some("kind-a".to_string())),
+        (two, Some("kind-a".to_string())),
+        (three, None),
+    ]
+    .into_iter()
+    .collect();
+    let calls = Cell::new(0usize);
+    let lookup = |subject: &Hash| {
+        calls.set(calls.get() + 1);
+        kinds.get(subject).cloned().unwrap_or(None)
+    };
+
+    // Three kind terms (one duplicated) over three subjects: without the memo
+    // that is nine lookups; the documented contract is at most one per subject.
+    let hits = search_terms(
+        &live,
+        &[
+            Term::SubjectKind("kind-a"),
+            Term::SubjectKind("kind-a"),
+            Term::SubjectKind("kind-b"),
+        ],
+        &lookup,
+    );
+    assert_eq!(calls.get(), 3);
+    // AND semantics are unchanged: no subject is both kind-a and kind-b.
+    assert!(hits.is_empty());
+
+    // A single kind term gives the same subjects as before, still one call each.
+    calls.set(0);
+    let hits = search_terms(&live, &[Term::SubjectKind("kind-a")], &lookup);
+    assert_eq!(calls.get(), 3);
+    assert_eq!(
+        shape(&hits),
+        vec![(one, vec![on_one.id]), (two, vec![on_two.id])]
+    );
+}
+
+#[test]
+fn test_search_terms_without_kind_succeeds_even_when_subject_event_is_missing() {
+    let mut author = Writer::new(1);
+    // Subject is a raw hash whose event was never delivered to the store.
+    let uningested_subject = Hash::digest(b"nonexistent-event-subject");
+    let on_nonexistent = author.set(uningested_subject, "city", Some("Seattle"), vec![]);
+
+    let (_dir, mut store) = open();
+    deliver(&mut store, &on_nonexistent);
+
+    // Verify the subject's event is indeed missing in the store.
+    assert!(store.event_by_id(&uningested_subject).unwrap().is_none());
+
+    // Searching by name/value or author must succeed without kind terms.
+    let a_key = *author.key.verifying_key().as_bytes();
+    let hits = search_store_terms(
+        &store,
+        &[
+            Term::Name {
+                name: "city",
+                value: ValueMatch::Exact("Seattle"),
+            },
+            Term::Author(a_key),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        shape(&hits),
+        vec![(uningested_subject, vec![on_nonexistent.id])]
+    );
+
+    // Empty term set must also succeed without querying subject kinds.
+    let hits = search_store_terms(&store, &[]).unwrap();
+    assert_eq!(
+        shape(&hits),
+        vec![(uningested_subject, vec![on_nonexistent.id])]
+    );
+
+    // Adding a kind term requires resolving the kind, so the uningested subject won't match.
+    let hits = search_store_terms(&store, &[Term::SubjectKind(DOCUMENT_KIND)]).unwrap();
     assert!(hits.is_empty());
 }

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The daemon's /mcp fronting two upstreams in pass-through mode -- fakemcp
@@ -41,7 +41,7 @@ func TestTasksExtensionThroughAPassThroughDaemon(t *testing.T) {
 			"io.modelcontextprotocol/clientInfo":         map[string]any{"name": "t", "version": "1"},
 		}
 		resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		return decodeJSON(t, resp.Body)
 	}
 	result := func(m map[string]any) map[string]any {

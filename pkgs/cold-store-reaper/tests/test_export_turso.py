@@ -162,6 +162,29 @@ class TestExportTursoArgv(unittest.TestCase):
         lines = self.dump_argv_lines()
         self.assertEqual(lines[lines.index("--max-time") + 1], "42")
 
+    def test_dump_max_time_zero_is_rejected(self):
+        # 0 is all digits but not positive: curl --max-time 0 disables
+        # the timeout, so the dump could hang forever (#1428).
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "0"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a positive integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_dump_max_time_all_zeros_is_rejected(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "00"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a positive integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_dump_max_time_leading_zero_positive_is_honored(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "0300"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "0300")
+
     def test_skip_when_token_unset(self):
         env = {k: v for k, v in self.env.items() if k != "TURSO_PLATFORM_API_TOKEN"}
         result = self.run_script(env=env)
@@ -239,6 +262,55 @@ class TestDumpRepairFilter(unittest.TestCase):
         # A truncated dump must not be mangled on its way to the
         # caller's COMMIT; guard — it passes through exactly as cut.
         data = b"BEGIN TRANSACTION;\n" + BROKEN_SCHEMA_INSERT[:-20]
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_interior_line_ending_in_quote_paren_semicolon_is_not_a_boundary(self):
+        # #6531: a multi-line schema statement whose embedded SQL has an
+        # interior line ending in "');" (a trigger body's RAISE) is one
+        # statement, not a repaired fragment plus a raw tail. Oracle:
+        # the filtered stream loads in stock sqlite3 with the full SQL.
+        import sqlite3
+
+        sql = (
+            "CREATE TRIGGER tr AFTER INSERT ON ft BEGIN SELECT RAISE(ABORT, 'bad');\n"
+            " INSERT INTO log VALUES('x'); END"
+        )
+        raw = (
+            "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql) "
+            "VALUES('trigger','tr','ft',0,'" + sql + "');\n"
+        ).encode()
+        escaped = raw.replace(b"'bad'", b"''bad''").replace(b"VALUES('x')", b"VALUES(''x'')")
+        for variant in (raw, escaped):
+            data = (
+                b"PRAGMA writable_schema=ON;\n"
+                + variant
+                + b"PRAGMA writable_schema=OFF;\n"
+            )
+            out = self.run_filter(data)
+            # Mis-escaped input is repaired (quotes doubled); escaped
+            # input passes through byte-identical.
+            self.assertEqual(out, data.replace(raw, escaped) if variant is raw else data)
+            db = sqlite3.connect(":memory:")
+            db.executescript(
+                "CREATE TABLE ft(x); CREATE TABLE log(v);"
+                "PRAGMA writable_schema=ON;"
+                "DELETE FROM sqlite_schema WHERE name='tr';"
+            )
+            db.executescript(out.decode())
+            self.assertEqual(
+                db.execute("SELECT sql FROM sqlite_schema WHERE name='tr'").fetchone()[0],
+                sql,
+            )
+            db.close()
+
+    def test_multiline_statement_followed_by_more_statements(self):
+        data = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','a','a',0,'CREATE TABLE a (x); -- ''c'');\n"
+            b"');\n"
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','t','t',0,'CREATE TABLE t (x INTEGER)');\n"
+        )
         self.assertEqual(self.run_filter(data), data)
 
 

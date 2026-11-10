@@ -5,12 +5,12 @@ import (
 	"os"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 var update = flag.Bool("update", false, "rewrite generated files instead of comparing them")
 
-const pluginOpsPath = "../../plugin/opencode/mcpx/ops.gen.ts"
+const pluginOpsPath = "../../plugin/core/ops.gen.ts"
 
 // TestPluginOpsAreGenerated fails when the plugin's operation methods no
 // longer match the table -- an operation added, a parameter renamed -- so

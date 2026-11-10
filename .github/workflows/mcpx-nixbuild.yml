@@ -18,19 +18,7 @@ name: mcpx nix build
 # changes to this workflow are exercised by it, like mcpx.yml does.
 
 on:
-  pull_request:
-    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
-    # changes (lockfiles, module roots, flake files, build definitions,
-    # workflow files, shared libs); on push to main they always run.
-    paths:
-      - "pkgs/mcpx/go.mod"
-      - "pkgs/mcpx/go.sum"
-      - "pkgs/mcpx/package.nix"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/**"
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -49,7 +37,7 @@ concurrency:
 
 jobs:
   nix-build:
-    name: nix build
+    name: "basic: nix build"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -60,6 +48,19 @@ jobs:
       # Warm store: dependency-bump PRs are rare, but when they come the
       # build should not start from cold (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
 
       - name: Nix build
         run: nix build .#packages.x86_64-linux.mcpx --print-build-logs
+
+      # Packaging test (#1981): building the package proves it
+      # compiles; this runs the built artifact the way a user does.
+      - name: Packaging test
+        run: nix build .#checks.x86_64-linux.mcpx-packaging --print-build-logs

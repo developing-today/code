@@ -1,7 +1,7 @@
 // The AA cost explorer as data. The source of record is the Supabase
-// `ainventory` schema (the AA workbook import: v_rankings,
-// v_threshold_metrics, benchmark_results, and the Test_Runs sheet in
-// sheet_rows, all read through v_latest_workbook_batch). The collector
+// `ainventory` schema (the AA import: v_rankings,
+// v_threshold_metrics, benchmark_results, and the Test_Runs data in
+// sheet_rows, all read through v_latest_import_batch). The collector
 // queries it, assembles the section with the helpers here, and embeds
 // it in the fleet feed; the aggregator renders the section as-is.
 // Everything in this module is pure and unit-tested (test/aa.test.ts),
@@ -21,15 +21,32 @@ import type {
   AaTestRun,
   AaThreshold,
 } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 // --- scalar coercion ---------------------------------------------------------
 // The Supabase Management API serializes numeric columns as JSON
 // strings, so every number crosses a coercion gate here; anything
 // unparseable becomes null ("not measured"), never 0.
+//
+// Strict decimal contract (#2985; pins from triage task 4291, design
+// #3005 Phase 1 "a measurement is a plain decimal"): a string counts
+// as a measurement ONLY if it is a plain decimal spelling — optional
+// sign, digits with optional fraction, or `.digits` — with no trim,
+// no `0x`/`0b`/`0o` prefix (any case), and no exponent. Radix,
+// scientific, and whitespace-padded spellings all return null.
+// PIN 1 (scientific REJECTED): no AA source serializes a measurement
+// in e-notation — Postgres `numeric` → jsonb spelling is always plain
+// decimal, and Test_Runs cells are human-entered decimals where
+// e-notation is formatting drift, not a serialization.
+// PIN 2 (padded REJECTED): the legitimate string producers (Postgres
+// jsonb numerics, JSON config limits) never emit padding; padding is
+// import drift, covered by the same no-trim rule.
+
+const PLAIN_DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 export function num(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string" && v.trim() !== "") {
+  if (typeof v === "string" && PLAIN_DECIMAL.test(v)) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }
@@ -44,9 +61,9 @@ function boolish(v: unknown): boolean {
   return v === true || v === 1 || v === "1" || v === "true";
 }
 
-// --- Test_Runs sheet mapping -------------------------------------------------
+// --- Test_Runs data mapping -------------------------------------------------
 
-/** One raw sheet_rows row for the Test_Runs sheet: cells as stored. */
+/** One raw sheet_rows row for the Test_Runs data: cells as stored. */
 export interface SheetRow {
   rowIndex: number;
   cells: unknown[];
@@ -68,7 +85,7 @@ const TEST_RUN_FIELDS: Record<string, keyof AaTestRun> = {
 /**
  * Map raw Test_Runs rows to timing records, keyed off the sheet's own
  * header row (the row carrying "test_run_key" among its cells) — a
- * workbook column reorder changes nothing here. Rows without a key
+ * import column reorder changes nothing here. Rows without a key
  * are dropped; empty cells become nulls.
  */
 export function testRunsFromSheetRows(rows: SheetRow[]): AaTestRun[] {
@@ -190,6 +207,33 @@ export interface OpencodeCoverageInputs {
 }
 
 /**
+ * Merge the runtime overlay (#4544: the sync-models-owned provider catalogs
+ * that live outside the tracked configured default and are layered over it
+ * via OPENCODE_CONFIG) into the base config text, returning the effective
+ * config as JSON text. Returns null when either side does not parse —
+ * callers fall back to the base text alone.
+ */
+export function mergeOpencodeConfigTexts(baseText: string, overlayText: string): string | null {
+  let base: unknown;
+  let overlay: unknown;
+  try {
+    base = JSON.parse(stripJsonComments(baseText));
+    overlay = JSON.parse(stripJsonComments(overlayText));
+  } catch {
+    return null;
+  }
+  if (typeof base !== "object" || base === null || typeof overlay !== "object" || overlay === null) return null;
+  const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const merge = (b: unknown, o: unknown): unknown => {
+    if (!isObj(b) || !isObj(o)) return o;
+    const out: Record<string, unknown> = { ...b };
+    for (const k of Object.keys(o)) out[k] = merge(b[k], o[k]);
+    return out;
+  };
+  return JSON.stringify(merge(base, overlay));
+}
+
+/**
  * Extract the provider catalog and the pooled leaf set from the repo's
  * .opencode/opencode.jsonc. Returns null when the file does not parse —
  * coverage is best-effort and its absence is stated, never guessed.
@@ -262,7 +306,7 @@ const MODEL_ALIASES = new Map<string, string>([
   ["deepseek v4 flash", "deepseek v4 1 flash"],
   // Meta's config ids carry the 1.0 version the AA family name drops.
   ["muse wonder 1 0", "muse wonder"],
-  // AA's workbook family for Qwen's max checkpoint carries its date.
+  // AA's import family for Qwen's max checkpoint carries its date.
   ["qwen3 8 max 0902", "qwen3 8 max"],
   // Word order differs between the AA family and the config ids.
   ["claude haiku 4 5", "claude 4 5 haiku"],
@@ -293,7 +337,7 @@ const byAlpha = (a: string, b: string): number => a.toLowerCase().localeCompare(
 
 /**
  * Compare the AA-measured model names against the catalog + pooled
- * sets. Display names in the first three lists are the AA/workbook
+ * sets. Display names in the first three lists are the AA/import
  * names; the fourth lists catalog ids verbatim (that is where a human
  * goes looking for them in the config).
  */
@@ -347,7 +391,11 @@ export const AA_EFFORT_ORDER: Record<string, number> = {
 /** Sort effort labels along the ladder (unknown labels last, alpha). */
 export function effortRank(effort: string | null): number {
   if (effort == null) return 99;
-  return AA_EFFORT_ORDER[effort.toLowerCase()] ?? 50;
+  // #3056 (rule in #2792): the key is data-controlled — own-key guard so
+  // prototype names ("constructor", "__proto__") take the unknown
+  // fallback instead of resolving inherited Object members.
+  const key = effort.toLowerCase();
+  return Object.hasOwn(AA_EFFORT_ORDER, key) ? AA_EFFORT_ORDER[key] : 50;
 }
 
 interface MetricRow {
@@ -526,7 +574,7 @@ export function aaCaiPoints(rows: AaCaiRow[]): AaPoint[] {
       pointsPerSecond: null,
       scorePerDollar: b.score !== null && b.cost !== null && b.cost > 0 ? b.score / b.cost : null,
       scorePerSecond: b.score !== null && b.time !== null && b.time > 0 ? b.score / b.time : null,
-      // CAI rows are published results; the workbook's "eligible" flag
+      // CAI rows are published results; the import's "eligible" flag
       // is a rankings-view concept and does not exist for them.
       eligible: true,
       qualStatus: null,
@@ -561,20 +609,25 @@ export interface AaPlanFact {
 }
 
 export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
-  "opencode-go.personal": {
-    plan: "OpenCode Go — Personal",
+  "opencode-go.drewrypope": {
+    plan: "OpenCode Go — drewrypope",
     multiplier: 6,
-    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-02.",
+    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Renamed from Personal 2026-11-03.",
   },
-  "opencode-go.lab": {
-    plan: "OpenCode Go — Lab",
+  "opencode-go.popesdrew": {
+    plan: "OpenCode Go — popesdrew",
     multiplier: 6,
-    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-06.",
+    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). New account registered 2026-11-03, replacing Lab.",
   },
   "opencode-go": {
     plan: "OpenCode Go",
     multiplier: 6,
     note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×).",
+  },
+  "_commandcode": {
+    plan: "Command Code GOAT",
+    multiplier: 7,
+    note: "0/mo → 0 credits (7×); the entry Go tier is  → 0 credits (10×). Tier on the account is unconfirmed.",
   },
   commandcode: {
     plan: "Command Code GOAT",
@@ -595,6 +648,11 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     plan: "ChatGPT plan (student)",
     multiplier: null,
     note: "Second ChatGPT account door; resolves through the fork's built-in catalog.",
+  },
+  "_claude": {
+    plan: "Claude plan",
+    multiplier: null,
+    note: "Claude Code door — the fork's fleet-built _claude provider (renamed from claude-code 2026-11-07, #1823).",
   },
   "claude-code": {
     plan: "Claude plan",
@@ -675,8 +733,8 @@ export const AA_GO_CAPS: Record<string, number> = {
   "kimi k3": 15,
   "grok 4 7": 15,
   "claude haiku 5 5": 15,
-  "muse spark 1 3 contributor": 12,
-  "gemini 4 argon contributor": 12,
+  "muse spark 1 3": 12,
+  "gemini 4 argon": 12,
 };
 
 interface RawModelEntry {
@@ -736,7 +794,7 @@ interface CatalogRate {
 /**
  * Group current prices by model: bands sorted by context floor, and a
  * lookup by full id plus one by bare model part (models.dev provider
- * slugs differ from fleet provider ids — "opencode-go.personal" vs
+ * slugs differ from fleet provider ids — "opencode-go.drewrypope" vs
  * "opencode-go" — so the model part is the reliable join key; the
  * coverage normalizer arbitrates collisions by keeping the first).
  */
@@ -772,6 +830,32 @@ function catalogRates(prices: AaPrice[]): Map<string, CatalogRate> {
   return out;
 }
 
+/** The disabled_providers set of a parsed opencode config root. */
+function disabledProvidersFromRoot(root: { disabled_providers?: unknown }): Set<string> {
+  return new Set(
+    Array.isArray(root.disabled_providers)
+      ? root.disabled_providers.filter((d): d is string => typeof d === "string")
+      : [],
+  );
+}
+
+/**
+ * The deployed opencode config's disabled_providers set, parsed with the
+ * same JSONC handling as the AA catalog (#1114). An unparseable config
+ * yields an empty set — callers fail soft and keep every pool, exactly as
+ * the catalog does when the config cannot be read.
+ */
+export function disabledProvidersFromConfig(text: string): Set<string> {
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(stripJsonComments(text));
+  } catch {
+    return new Set();
+  }
+  if (typeof cfg !== "object" || cfg === null) return new Set();
+  return disabledProvidersFromRoot(cfg as { disabled_providers?: unknown });
+}
+
 export function aaCatalogFromConfig(
   text: string,
   measured: { configs: AaConfig[]; rankings: AaRanking[] },
@@ -790,11 +874,7 @@ export function aaCatalogFromConfig(
     experimental?: { model_routes?: unknown };
   };
   if (typeof root.provider !== "object" || root.provider === null) return null;
-  const disabled = new Set(
-    Array.isArray(root.disabled_providers)
-      ? root.disabled_providers.filter((d): d is string => typeof d === "string")
-      : [],
-  );
+  const disabled = disabledProvidersFromRoot(root);
   const leafSets = routeLeafSets(root);
   const rates = prices ? catalogRates(prices) : null;
   const routesByLeaf = new Map<string, string[]>();
@@ -834,7 +914,7 @@ export function aaCatalogFromConfig(
       typeof (providerCfg as { name?: unknown }).name === "string"
         ? ((providerCfg as { name: string }).name as string)
         : providerId;
-    const fact = AA_PLAN_FACTS[providerId];
+    const fact = Object.hasOwn(AA_PLAN_FACTS, providerId) ? AA_PLAN_FACTS[providerId] : undefined; // #3056 own-key guard
     for (const [modelId, rawEntry] of Object.entries(models as Record<string, unknown>)) {
       const entry = (typeof rawEntry === "object" && rawEntry !== null ? rawEntry : {}) as RawModelEntry;
       const id = `${providerId}/${modelId}`;
@@ -861,7 +941,11 @@ export function aaCatalogFromConfig(
         plan: fact?.plan ?? null,
         multiplier: fact?.multiplier ?? null,
         planNote: fact?.note ?? null,
-        goCapUsd: providerId.startsWith("opencode-go") ? (AA_GO_CAPS[norm] ?? null) : null,
+        goCapUsd: providerId.startsWith("opencode-go")
+          ? Object.hasOwn(AA_GO_CAPS, norm)
+            ? AA_GO_CAPS[norm]
+            : null
+          : null, // #3056 own-key guard
         aaScore: conf?.intelligence ?? rank?.adjustedScore ?? rank?.rawScore ?? null,
         aaCostPerTask: conf?.costPerTaskUsd ?? rank?.costTask ?? null,
         aaTimePerTask: fastestRanking.get(norm)?.timeTaskSec ?? null,
@@ -973,7 +1057,7 @@ function caiFromRaw(v: unknown): AaCaiRow | null {
   return {
     modelName: r.modelName,
     family: caiFamily(r.modelName, effort),
-    creator: slug ? (CAI_CREATORS[slug.toLowerCase()] ?? slug) : "",
+    creator: slug ? (Object.hasOwn(CAI_CREATORS, slug.toLowerCase()) ? CAI_CREATORS[slug.toLowerCase()] : slug) : "", // #3056 own-key guard
     effort,
     version: str(r.version),
     score: num(r.score),
@@ -1026,6 +1110,7 @@ export function aaSectionFromSupabase(
   raw: AaRawPayload,
   opencodeConfigText: string | null,
   generatedAt: string,
+  opencodeRuntimeText: string | null = null,
 ): AaSection | null {
   if (typeof raw.batch !== "string" || !Array.isArray(raw.rankings) || !Array.isArray(raw.configs)) return null;
   const rankings = raw.rankings.map(rankingFromRaw).filter((r): r is AaRanking => r !== null);
@@ -1046,9 +1131,15 @@ export function aaSectionFromSupabase(
   let coverage: AaCoverage | undefined;
   let catalog: AaCatalogEntry[] | undefined;
   if (opencodeConfigText) {
-    const inputs = parseOpencodeCoverageInputs(opencodeConfigText);
+    // #4544: coverage and the catalog are computed from the effective config
+    // (tracked default + runtime overlay) so the sync-owned providers'
+    // models stay visible after the split.
+    const effectiveText =
+      (opencodeRuntimeText ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText) : null) ??
+      opencodeConfigText;
+    const inputs = parseOpencodeCoverageInputs(effectiveText);
     if (inputs) coverage = computeAaCoverage(measuredNames, inputs);
-    catalog = aaCatalogFromConfig(opencodeConfigText, { configs, rankings }, prices) ?? undefined;
+    catalog = aaCatalogFromConfig(effectiveText, { configs, rankings }, prices) ?? undefined;
   }
   return {
     status: "ok",
@@ -1066,14 +1157,45 @@ export function aaSectionFromSupabase(
   };
 }
 
+/**
+ * Re-derive a section's current-price overlay from `prices` (#8211).
+ *
+ * The batch-bound payload (rankings, configs, thresholds, test runs,
+ * sources, cai, coverage, catalog membership) is untouched; only the
+ * two price-derived facets move: the section's `prices` list and each
+ * catalog entry's `rate`, recomputed through the same lookup
+ * `aaCatalogFromConfig` uses (full id, then bare model part). This is
+ * what lets a cached historical batch report current rates at serve
+ * time without refetching any of its batch-bound measurements: the
+ * overlay is batch-independent by definition (`v_current_prices`), so
+ * freezing it into the per-batch cache was the defect. The input
+ * section is not mutated.
+ */
+export function aaApplyPriceOverlay(section: AaSection, prices: AaPrice[]): AaSection {
+  const rates = catalogRates(prices);
+  const out: AaSection = { ...section };
+  if (section.catalog) {
+    out.catalog = section.catalog.map((entry) => ({
+      ...entry,
+      rate: rates.get(entry.id) ?? rates.get(`part:${normalizeModelName(modelPart(entry.id))}`) ?? null,
+    }));
+  }
+  if (prices.length) {
+    out.prices = [...prices];
+  } else {
+    delete out.prices;
+  }
+  return out;
+}
+
 /** Structural check shared by the collector and the live source. */
 export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<AaSection> & Partial<AaAbsentSection>;
-  if (s.status === "absent") return typeof s.reason === "string" && typeof s.generatedAt === "string";
+  if (s.status === "absent") return typeof s.reason === "string" && isIsoDate(s.generatedAt);
   if (s.status !== "ok") return false;
   return (
-    typeof s.generatedAt === "string" &&
+    isIsoDate(s.generatedAt) &&
     typeof s.batch === "string" &&
     Array.isArray(s.rankings) &&
     s.rankings.length > 0 &&
@@ -1081,7 +1203,41 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) => typeof r === "object" && r !== null && typeof r.testRunKey === "string" && typeof r.family === "string",
     ) &&
     Array.isArray(s.configs) &&
-    Array.isArray(s.testRuns)
+    Array.isArray(s.testRuns) &&
+    s.testRuns.every(
+      (r) =>
+        typeof r === "object" &&
+        r !== null &&
+        // #5289: snapshotDate is a date, not just a string — summarizeAa
+        // publishes these values verbatim as the batch's snapshot vintage,
+        // so gate them with isIsoDate like generatedAt above (date-only
+        // forms pass; impossible/non-ISO strings degrade the section).
+        (isIsoDate((r as { snapshotDate?: unknown }).snapshotDate) ||
+          (r as { snapshotDate?: unknown }).snapshotDate === null),
+    ) &&
+    // #2415: summarizeAa iterates thresholds and the /aa renderer maps
+    // sources — a section missing either array (or carrying entries the
+    // consumers cannot dereference) passed this gate and threw in the
+    // render instead of degrading to the not-collected banner. Gate each
+    // field at the depth its consumer dereferences it; empty arrays stay
+    // valid (a batch can legitimately carry none).
+    Array.isArray(s.thresholds) &&
+    s.thresholds.every(
+      (t) =>
+        typeof t === "object" &&
+        t !== null &&
+        typeof (t as { testRunKey?: unknown }).testRunKey === "string" &&
+        Number.isFinite((t as { target?: unknown }).target) &&
+        typeof (t as { usable?: unknown }).usable === "boolean",
+    ) &&
+    Array.isArray(s.sources) &&
+    s.sources.every(
+      (src) =>
+        typeof src === "object" &&
+        src !== null &&
+        typeof (src as { name?: unknown }).name === "string" &&
+        typeof (src as { kind?: unknown }).kind === "string",
+    )
   );
 }
 

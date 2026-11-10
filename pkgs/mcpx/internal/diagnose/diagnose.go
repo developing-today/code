@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/nearmiss"
 )
 
 // Kind classifies a diagnostic, so a caller can act on one without reading
@@ -415,44 +417,20 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // nearest is the closest tool name in the namespace, when one is close
-// enough to be worth suggesting.
+// enough to be worth suggesting. The definition of close — normalisation,
+// Damerau-Levenshtein, the length-relative threshold, tie-breaking — is
+// the shared one in internal/nearmiss (#1904); diagnostics used to keep a
+// plainer Levenshtein here that scored a transposition as two edits and
+// so disagreed with the launcher about the same typo.
 func nearest(name string, cat Catalog, ns string) string {
-	best, bestD := "", 1<<30
+	var funcs []string
 	for _, t := range cat.Tools {
-		if t.Namespace != ns {
-			continue
-		}
-		d := editDistance(strings.ToLower(name), strings.ToLower(t.Func))
-		if d < bestD {
-			best, bestD = t.Func, d
+		if t.Namespace == ns {
+			funcs = append(funcs, t.Func)
 		}
 	}
-	// A third of the name may differ. Beyond that the suggestion is noise
-	// and reads as the tool having guessed.
-	if bestD > 1+len(name)/3 {
-		return ""
-	}
+	best, _ := nearmiss.Nearest(name, funcs)
 	return best
-}
-
-func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	cur := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		cur[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			cur[j] = min(min(cur[j-1]+1, prev[j]+1), prev[j-1]+cost)
-		}
-		prev, cur = cur, prev
-	}
-	return prev[len(b)]
 }
 
 // CallErrorInput is everything known about a call that failed upstream.
@@ -524,6 +502,14 @@ func CallError(in CallErrorInput, cat Catalog) []Diagnostic {
 			}
 		}
 	}
+	// Rung 1's second half (#1927): when a supplied name does not fit
+	// the called tool at all, a unique argument-shape fit -- another
+	// tool whose schema the names satisfy, or one declared parameter
+	// the name prefixes -- explains the rejection better than the
+	// missing-argument list does, so it is answered first.
+	if d, ok := shapeFit(in, tool, sent, cat); ok {
+		return []Diagnostic{d}
+	}
 	var out []Diagnostic
 	for _, req := range tool.Shape.Required {
 		if sent[req] {
@@ -591,12 +577,91 @@ func looksLikeSchemaError(msg string) bool {
 }
 
 // fieldInMessage finds a declared argument named in the server's message.
+//
+// A name counts only where it occurs as a standalone token: the
+// characters either side are not ASCII letters, digits or "_" (the
+// ends of the message count as boundaries). A bare substring inside a
+// larger word never names a field — "id" inside "invalid" blamed the
+// wrong argument (#1646). An occurrence wrapped in matching quotes or
+// backticks outranks a bare-token occurrence — servers quote the field
+// they mean — and within a class the longest name wins; equal-length
+// matches use the lexicographically smallest name for a deterministic
+// result.
+// Matching stays case-sensitive, and separator variants are not
+// folded: "user-id" does not name "user_id".
 func fieldInMessage(msg string, shape Shape) string {
 	best := ""
+	bestQuoted := false
 	for name := range shape.Props {
-		if strings.Contains(msg, name) && len(name) > len(best) {
-			best = name
+		if name == "" {
+			// An empty property name names nothing, and scanning for
+			// it never terminates on token boundaries: strings.Index
+			// matches it at every offset. Skip it (Codex P2 on #3041).
+			continue
 		}
+		quoted := fieldNamedQuoted(msg, name)
+		if !quoted && !fieldNamed(msg, name) {
+			continue
+		}
+		if quoted != bestQuoted {
+			if !quoted {
+				continue
+			}
+		} else if len(name) < len(best) || (len(name) == len(best) && name >= best) {
+			continue
+		}
+		best, bestQuoted = name, quoted
 	}
 	return best
+}
+
+// fieldNamed reports whether name occurs in msg as a standalone token.
+func fieldNamed(msg, name string) bool {
+	if name == "" {
+		return false
+	}
+	for at := 0; ; {
+		i := strings.Index(msg[at:], name)
+		if i < 0 {
+			return false
+		}
+		i += at
+		if tokenAt(msg, i, len(name)) {
+			return true
+		}
+		at = i + 1
+	}
+}
+
+// fieldNamedQuoted reports whether name occurs in msg wrapped in a
+// matching pair of quotes or backticks: "name", 'name', `name`. The
+// wrapping characters are not name characters, so a quoted occurrence
+// is always a standalone token too.
+func fieldNamedQuoted(msg, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, q := range []string{"\"", "'", "`"} {
+		if strings.Contains(msg, q+name+q) {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenAt reports whether the span msg[at:at+length] stands alone:
+// neither neighbour is an ASCII letter, digit or "_".
+func tokenAt(msg string, at, length int) bool {
+	if at > 0 && isNameChar(msg[at-1]) {
+		return false
+	}
+	if end := at + length; end < len(msg) && isNameChar(msg[end]) {
+		return false
+	}
+	return true
+}
+
+func isNameChar(c byte) bool {
+	return c == '_' ||
+		('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // schemaServer serves one tools/list page carrying the given tools and
@@ -215,7 +215,7 @@ func BenchmarkCallToolValidateArgs(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if _, err := c.ListTools(ctx); err != nil {
 		b.Fatal(err)
 	}

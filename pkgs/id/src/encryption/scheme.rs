@@ -58,6 +58,19 @@ pub const DATASCHEME: &str = "datascheme";
 /// crate (P4.4). Its welcome costs 40 bytes per epoch, where the stock layout costs 146.5.
 pub const SCHEME_V1: u32 = 1;
 
+/// The most application messages a session holds unread (#186). A removed or stalled peer
+/// can keep sending messages this device cannot read, and each one is held until its group
+/// secret arrives, so the held set needs a bound of its own: past it, a new arrival is
+/// refused with [`SchemeError::HeldFull`]. Already-held messages are never evicted or
+/// expired in-session - they leave only when their secret arrives and they are read.
+pub const MAX_HELD_MESSAGES: usize = 1024;
+
+/// The most CBOR-encoded bytes the held messages may total (#186): the sum of each held
+/// envelope's encoded length, encoded with `encode_cbor` as `Envelope::new` encodes in
+/// [`super::ordering`]. Tracked on the session as messages are held and released, so the
+/// check never re-encodes the set.
+pub const MAX_HELD_BYTES: usize = 16 * 1024 * 1024;
+
 /// The scheme version a group's signed policy names, if this build speaks it.
 pub fn negotiate(policy: &Policy) -> Result<u32, SchemeError> {
     match &policy.scheme {
@@ -88,11 +101,23 @@ pub enum Received {
     Withheld(Hash),
 }
 
+/// A message that cannot be delivered yet because a message it names has not been delivered
+/// (#187): the waiting message, and the named messages it still lacks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StalledDelivery {
+    /// The message that waits in the orderer.
+    pub message: Hash,
+    /// The messages `message` names that are not delivered yet, in the order the orderer
+    /// recorded them.
+    pub missing: Vec<Hash>,
+}
+
 /// What the recovery procedure (N8) did. The CLI prints [`RECOVERY_STEPS`] next to it.
 #[derive(Clone, Debug)]
 pub struct Recovery {
-    /// The removal. It rotates the epoch, so the device no longer holds the new secrets.
-    pub removal: Envelope,
+    /// The removal, after any merge updates the heads needed first. It rotates the epoch, so the
+    /// device no longer holds the new secrets.
+    pub removal: Vec<Envelope>,
     /// The re-add: the welcome and the immediate update, in delivery order (P4.3).
     pub readd: Vec<Envelope>,
     /// The epoch before the procedure.
@@ -158,6 +183,22 @@ pub enum SchemeError {
         /// The most parents a message may name.
         cap: usize,
     },
+    /// The held set is at a cap, so a message this device cannot read yet is refused instead
+    /// of held (#186). The check runs before any crate call, so the session is not poisoned,
+    /// and no held message is dropped to make room: the refusal is of the new arrival only.
+    #[error(
+        "the session already holds {count} unreadable messages ({bytes} encoded bytes), and one more would pass the cap of {cap_count} messages or {cap_bytes} bytes, so it is refused"
+    )]
+    HeldFull {
+        /// The messages the session already holds.
+        count: usize,
+        /// Their total CBOR-encoded length.
+        bytes: usize,
+        /// The most messages a session holds.
+        cap_count: usize,
+        /// The most encoded bytes the held messages may total.
+        cap_bytes: usize,
+    },
     /// A message's header or direct copy names a version other than the group's signed policy.
     #[error("the message names scheme v{found}, but the group's signed policy names v{expected}")]
     SchemeMismatch {
@@ -184,7 +225,8 @@ impl SchemeError {
             | Self::UnsupportedScheme { .. }
             | Self::Crate(_)
             | Self::InvalidKey(_)
-            | Self::TooManyParents { .. } => None,
+            | Self::TooManyParents { .. }
+            | Self::HeldFull { .. } => None,
         }
     }
 }
@@ -197,8 +239,16 @@ pub struct Session {
     scheme: u32,
     state: Option<Group>,
     /// Application messages this device cannot read yet, in arrival order. They stay out of the
-    /// crate until their group secret arrives (P4.5).
-    held: Vec<Envelope>,
+    /// crate until their group secret arrives (P4.5). The set is bounded by
+    /// [`MAX_HELD_MESSAGES`] and [`MAX_HELD_BYTES`] (#186), enforced by refusing NEW arrivals
+    /// at the cap - a held message is never evicted or expired in-session, and leaves only
+    /// through `release`, when its secret arrives. Each entry carries the message's
+    /// CBOR-encoded length, recorded when it was held, so the byte total below is kept
+    /// without ever re-encoding the set.
+    held: Vec<(Envelope, usize)>,
+    /// The held messages' total CBOR-encoded length, kept as they are held and released so
+    /// the byte cap is checked without re-encoding the set per arrival.
+    held_bytes: usize,
 }
 
 impl Session {
@@ -224,6 +274,7 @@ impl Session {
             scheme,
             state: Some(state),
             held: Vec::new(),
+            held_bytes: 0,
         })
     }
 
@@ -256,6 +307,27 @@ impl Session {
         roster_of(y)
     }
 
+    /// The messages stalled in delivery: each message the orderer holds because a message it
+    /// names has not been delivered, with the names it still lacks (#187). Entries are sorted
+    /// by message ID; the result is empty when nothing waits, and empty before the group is
+    /// created or joined on this device.
+    ///
+    /// This is the pre-join stall [`Session::request_history`] cannot see: a joiner missing
+    /// control messages from before its join waits here, not in the secret-held set. The
+    /// session carries no timer and drops nothing that waits, so the caller polls this surface
+    /// and drives the existing answer paths — a welcome, a history request, a re-sync — until
+    /// the missing messages arrive; the stall then drains on its own and this returns empty
+    /// again.
+    pub fn stalled_delivery(&self) -> Vec<StalledDelivery> {
+        self.state.as_ref().map_or_else(Vec::new, |y| {
+            y.orderer
+                .waiting()
+                .into_iter()
+                .map(|(message, missing)| StalledDelivery { message, missing })
+                .collect()
+        })
+    }
+
     /// Creates the group with the members `view` lists, as the group fold gives them. This device
     /// must be one of them.
     pub fn create(&mut self, view: &GroupView, rng: &Rng) -> Result<Envelope, SchemeError> {
@@ -272,7 +344,7 @@ impl Session {
         view: &GroupView,
         added: Key,
         rng: &Rng,
-    ) -> Result<Envelope, SchemeError> {
+    ) -> Result<Vec<Envelope>, SchemeError> {
         self.add_with_history(view, added, HistoryMode::Full, rng)
     }
 
@@ -281,36 +353,45 @@ impl Session {
     ///
     /// The bundle is cut here, before `Dcgka::add`, so the crate never sees a secret outside the
     /// window. The joiner then holds exactly the window and refuses older messages.
+    ///
+    /// Returns every message to broadcast: any merge updates first, then the add (P4.7).
     pub fn add_with_history(
         &mut self,
         view: &GroupView,
         added: Key,
         mode: HistoryMode,
         rng: &Rng,
-    ) -> Result<Envelope, SchemeError> {
+    ) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
         if !view.members.contains_key(&added) {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
+        // The policy is checked before the merge, not only inside the change step: a refusal after
+        // the merge would drop merge envelopes the session has already absorbed, and a later
+        // publish would name a merge nobody received (P4.7).
+        self.check_policy(view)?;
+        let mut messages = self.merge_heads(rng)?;
         // The bundle is cut from the state before the change takes it, so the welcome carries the
         // window the mode allows and the roster check still runs on the fold's view.
         let bundle = {
             let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
             mode.welcome_bundle(&y.secrets)
         };
-        self.change(view, |mut y| {
+        messages.push(self.change(view, |mut y| {
             let (dcgka, output) = Dcgka::add(y.dcgka, added_key, &bundle, rng)?;
             y.dcgka = dcgka;
             publish(y, output)
-        })
+        })?);
+        Ok(messages)
     }
 
     /// Adds `added` by a join: a welcome that carries no earlier secret, then an immediate update.
     ///
     /// The joiner learns nothing the group had before the add, so it cannot read messages sent
     /// before its join. The update gives the group a secret the joiner does learn, and it must be
-    /// delivered too. Returns the add and the update, in the order they are delivered.
+    /// delivered too. Returns the add and the update, in the order they are delivered, after any
+    /// merge updates the heads needed first (P4.7).
     pub fn add_from_join(
         &mut self,
         view: &GroupView,
@@ -322,31 +403,46 @@ impl Session {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
-        let add = self.change(view, |y| EncryptionGroup::add_from_join(y, added_key, rng))?;
-        let update = self.change(view, |y| EncryptionGroup::update(y, rng))?;
-        Ok(vec![add, update])
+        // The policy is checked before the merge, not only inside the change step: a refusal after
+        // the merge would drop merge envelopes the session has already absorbed, and a later
+        // publish would name a merge nobody received (P4.7).
+        self.check_policy(view)?;
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.change(view, |y| EncryptionGroup::add_from_join(y, added_key, rng))?);
+        messages.push(self.change(view, |y| EncryptionGroup::update(y, rng))?);
+        Ok(messages)
     }
 
     /// Removes `removed`, which `view` must no longer list. The removal rotates the epoch.
+    ///
+    /// Returns every message to broadcast: any merge updates first, then the removal (P4.7).
     pub fn remove(
         &mut self,
         view: &GroupView,
         removed: Key,
         rng: &Rng,
-    ) -> Result<Envelope, SchemeError> {
+    ) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
         if view.members.contains_key(&removed) {
             return Err(SchemeError::StillInModel(short(removed)));
         }
         let removed_key = member_of(removed)?;
-        self.change(view, |y| EncryptionGroup::remove(y, removed_key, rng))
+        // The policy is checked before the merge, for the reason the add paths give (P4.7).
+        self.check_policy(view)?;
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.change(view, |y| EncryptionGroup::remove(y, removed_key, rng))?);
+        Ok(messages)
     }
 
     /// Rotates the epoch by giving every current member a new secret.
-    pub fn update(&mut self, rng: &Rng) -> Result<Envelope, SchemeError> {
+    ///
+    /// Returns every message to broadcast: the merge updates the heads needed first, if any, then
+    /// the update itself (P4.7).
+    pub fn update(&mut self, rng: &Rng) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
-        self.ensure_parents_fit()?;
-        self.step(|y| EncryptionGroup::update(y, rng))
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.step(|y| EncryptionGroup::update(y, rng))?);
+        Ok(messages)
     }
 
     /// Recovers a device whose key is suspect: removes `removed`, then adds `added` back by a join.
@@ -378,10 +474,14 @@ impl Session {
     }
 
     /// Encrypts `plaintext` under the current epoch.
-    pub fn send(&mut self, plaintext: &[u8], rng: &Rng) -> Result<Envelope, SchemeError> {
+    ///
+    /// Returns every message to broadcast, in order: the merge updates the heads needed first, if
+    /// any, then the application message (P4.7).
+    pub fn send(&mut self, plaintext: &[u8], rng: &Rng) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
-        self.ensure_parents_fit()?;
-        self.step(|y| EncryptionGroup::send(y, plaintext, rng))
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.step(|y| EncryptionGroup::send(y, plaintext, rng))?);
+        Ok(messages)
     }
 
     /// Handles a message from the group.
@@ -394,9 +494,22 @@ impl Session {
         self.check_scheme(message)?;
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
         if !Self::can_read(y, message) {
-            if !self.held.iter().any(|held| held.id() == message.id()) {
-                self.held.push(message.clone());
+            if self.held.iter().any(|(held, _)| held.id() == message.id()) {
+                return Ok(vec![Received::Withheld(message.id())]);
             }
+            // The bound is checked here, before the push and before any crate call, so a
+            // refusal neither poisons the session nor drops a held message (#186).
+            let bytes = held_len(message)?;
+            if self.held.len() >= MAX_HELD_MESSAGES || self.held_bytes + bytes > MAX_HELD_BYTES {
+                return Err(SchemeError::HeldFull {
+                    count: self.held.len(),
+                    bytes: self.held_bytes,
+                    cap_count: MAX_HELD_MESSAGES,
+                    cap_bytes: MAX_HELD_BYTES,
+                });
+            }
+            self.held.push((message.clone(), bytes));
+            self.held_bytes += bytes;
             return Ok(vec![Received::Withheld(message.id())]);
         }
         let mut read = self.receive(message)?;
@@ -409,7 +522,7 @@ impl Session {
     pub fn request_history(&self) -> Option<HistoryRequest> {
         let y = self.state.as_ref()?;
         let mut wanted = BTreeSet::new();
-        for message in &self.held {
+        for (message, _) in &self.held {
             if let GroupMessageContent::Application {
                 group_secret_id, ..
             } = message.content()
@@ -527,15 +640,19 @@ impl Session {
     /// Gives the crate each held message whose secret the device now holds, in arrival order.
     fn release(&mut self) -> Result<Vec<Received>, SchemeError> {
         let held = std::mem::take(&mut self.held);
-        let (ready, waiting): (Vec<Envelope>, Vec<Envelope>) = match self.state.as_ref() {
-            Some(y) => held
-                .into_iter()
-                .partition(|message| Self::can_read(y, message)),
-            None => (Vec::new(), held),
-        };
+        let (ready, waiting): (Vec<(Envelope, usize)>, Vec<(Envelope, usize)>) =
+            match self.state.as_ref() {
+                Some(y) => held
+                    .into_iter()
+                    .partition(|(message, _)| Self::can_read(y, message)),
+                None => (Vec::new(), held),
+            };
+        // The byte total is re-summed from the encoded lengths recorded when the waiting
+        // messages were held - the waiting set itself is never re-encoded (#186).
+        self.held_bytes = waiting.iter().map(|(_, bytes)| bytes).sum();
         self.held = waiting;
         let mut read = Vec::new();
-        for message in &ready {
+        for (message, _) in &ready {
             read.extend(self.receive(message)?);
         }
         Ok(read)
@@ -555,9 +672,34 @@ impl Session {
             .collect())
     }
 
-    /// Refuses a publish that would name more than [`MAX_PARENTS`] parents (P4.7). It runs before the
-    /// crate call, since a call that fails inside the orderer consumes the state and poisons the
-    /// session. Nothing is dropped from the parents: the change is refused.
+    /// Publishes the merge updates the heads need before a change can name them all (P4.7).
+    ///
+    /// A merge is an update that names up to [`MAX_PARENTS`] heads, so the heads it leaves stay
+    /// heads and the parent count falls by at least 31. A count above the cap therefore comes down
+    /// in a bounded number of merges, and the change that follows names at most the cap. Nothing is
+    /// merged while the device is not welcomed, since there is no head to merge, and nothing is
+    /// merged when the heads already fit.
+    ///
+    /// The returned messages must reach the group before the change that follows: the change names
+    /// the last merge as its author's latest, so a member that lacks it cannot deliver the change.
+    fn merge_heads(&mut self, rng: &Rng) -> Result<Vec<Envelope>, SchemeError> {
+        let mut merged = Vec::new();
+        loop {
+            let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
+            if !y.is_welcomed || y.orderer.parent_count() <= MAX_PARENTS {
+                return Ok(merged);
+            }
+            let message = self.step(|mut y| {
+                y.orderer.begin_merge();
+                EncryptionGroup::update(y, rng)
+            })?;
+            merged.push(message);
+        }
+    }
+
+    /// Refuses a change whose parents still exceed [`MAX_PARENTS`] after the merges (P4.7). It runs
+    /// before the crate call, since a call that fails inside the orderer consumes the state and
+    /// poisons the session. Nothing is dropped from the parents: the change is refused.
     fn ensure_parents_fit(&self) -> Result<(), SchemeError> {
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
         let count = y.orderer.parent_count();
@@ -724,6 +866,12 @@ fn member_of(key: Key) -> Result<VerifyingKey, SchemeError> {
 
 fn members_of(model: &BTreeSet<Key>) -> Result<Vec<VerifyingKey>, SchemeError> {
     model.iter().map(|key| member_of(*key)).collect()
+}
+
+/// The CBOR-encoded length of one envelope, the held set's byte measure (#186). Encoded
+/// with `encode_cbor`, as `Envelope::new` encodes in [`super::ordering`].
+fn held_len(message: &Envelope) -> Result<usize, SchemeError> {
+    Ok(encode_cbor(message).map_err(crate_error)?.len())
 }
 
 fn crate_error(err: impl std::fmt::Display) -> SchemeError {

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // capsFor is what mcpx declares to a client of rev.
@@ -93,7 +93,7 @@ func TestFeaturesServer(t *testing.T) {
 		n := newNotifier()
 		srv.Notify = n
 		ss := stdioServer(t, srv)
-		declared := true
+		var declared bool
 		if isModern(rev) {
 			ss.send(t, frame(5, "subscriptions/listen", params(rev, map[string]any{
 				"notifications": map[string]any{kind + "ListChanged": true}})))

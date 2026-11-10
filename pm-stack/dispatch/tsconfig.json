@@ -1,0 +1,1 @@
+{"compilerOptions":{"allowImportingTsExtensions":true,"lib":["ES2022","DOM"],"module":"ESNext","moduleResolution":"bundler","noEmit":true,"noUncheckedIndexedAccess":false,"resolveJsonModule":true,"skipLibCheck":true,"strict":true,"target":"ES2022","types":["bun"]},"include":["src/**/*.ts","test/**/*.ts"]}

@@ -22,7 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // DefaultURL is the official registry.
@@ -297,7 +298,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	if err != nil {
 		return fmt.Errorf("reaching %s: %w", c.BaseURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s returned %s for %s", c.BaseURL, resp.Status, path)
 	}
@@ -365,6 +366,54 @@ func (s Server) ToInstall(preferLocal bool) (*Install, error) {
 	}
 
 	for _, p := range s.Packages {
+		if strings.EqualFold(p.RegistryType, "nix") {
+			// A nix package installs as a program spec, not a runner
+			// command (#1921): the spawn path resolves it once with
+			// nix build --print-out-paths and runs the store path
+			// directly, so there is no runner row for it in Runtimes.
+			// The identifier is a flake ref with an attribute
+			// (github:owner/repo#tool), a bare ref (its default
+			// package), or a bare attribute name on nixpkgs.
+			spec := "nix:" + p.Identifier
+			if !strings.ContainsAny(p.Identifier, "#/:") {
+				spec = "nix:nixpkgs#" + p.Identifier
+			}
+			if _, err := progspec.Parse(spec); err != nil {
+				// Not a usable program spec (an empty identifier
+				// makes nix:nixpkgs#): skip this offer rather than
+				// install a command that is rejected at launch, so
+				// a later usable offer can still be selected.
+				continue
+			}
+			in := &Install{
+				Namespace: ns,
+				Command:   spec,
+				Env:       map[string]string{},
+				How: "nix package " + p.Identifier + " via program spec " + spec +
+					" (resolves once to a store path at launch)",
+			}
+			// The package's own metadata applies exactly as it does
+			// for a launcher-run package below: declared package
+			// arguments are the resolved program's arguments,
+			// environment defaults are set, required variables are
+			// reported as needs, and a non-stdio transport is kept.
+			// Dropping them here wrote an incomplete server config.
+			in.Args = append(in.Args, renderArgs(p.PackageArguments)...)
+			for _, v := range p.EnvironmentVars {
+				if v.Default != "" && !v.IsSecret {
+					in.Env[v.Name] = v.Default
+					continue
+				}
+				if v.IsRequired {
+					in.Needs = append(in.Needs, v)
+				}
+			}
+			if p.Transport != nil && p.Transport.Type != "" && p.Transport.Type != "stdio" {
+				in.Transport = p.Transport.Type
+				in.URL = p.Transport.URL
+			}
+			return in, nil
+		}
 		rt, ok := Runtimes[strings.ToLower(p.RegistryType)]
 		if !ok {
 			continue

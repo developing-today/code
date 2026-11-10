@@ -10,6 +10,8 @@ pub struct WorldHandle {
     /// The world's host metrics registry (F11.7), shared with the actor
     /// and the session layer.
     metrics: WorldMetrics,
+    /// Whether the actor runs in F12.13 read-only replica mode.
+    read_only: bool,
 }
 
 use super::*;
@@ -20,7 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use crate::world_caps::CapsReport;
+use crate::world_caps::{CapsReport, DeviceManifest};
 
 impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.
@@ -39,12 +41,97 @@ impl WorldHandle {
     /// [`WorldCore::restore`]); the actor only appends.
     pub fn spawn_durable(
         core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        Self::spawn_inner(core, program, journal, false, HashMap::new(), None)
+    }
+
+    /// Spawn a world actor whose host supplies a device manifest
+    /// (#7942): the manifest is enumerated once, here at the adapter
+    /// boundary, cached by the actor, and served by `device.info`
+    /// for the life of the world — never re-enumerated per request.
+    /// `None` keeps the historical behaviour: the host cannot
+    /// describe its device and `device.info` refuses `unknown_cap`.
+    pub fn spawn_with_device_manifest(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        device_manifest: Option<DeviceManifest>,
+    ) -> Self {
+        Self::spawn_durable_with_device_manifest(core, program, None, device_manifest)
+    }
+
+    /// [`Self::spawn_durable`] with a host-supplied device manifest
+    /// (#7942); see [`Self::spawn_with_device_manifest`].
+    pub fn spawn_durable_with_device_manifest(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        device_manifest: Option<DeviceManifest>,
+    ) -> Self {
+        Self::spawn_inner(
+            core,
+            program,
+            journal,
+            false,
+            HashMap::new(),
+            device_manifest,
+        )
+    }
+
+    /// The device manifest of a served host (#7942): a headless
+    /// server process. It has no display, keys, sensors, or audio
+    /// device of its own; programs reach it over the network.
+    /// Hosts with real hardware describe themselves instead of
+    /// using this.
+    #[must_use]
+    pub fn host_device_manifest() -> DeviceManifest {
+        DeviceManifest {
+            display: serde_json::json!({"kind": "headless"}),
+            input: serde_json::json!({"keys": 0, "encoder": false, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": null, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": null, "in": null}),
+            network: serde_json::json!({"transport": "https"}),
+        }
+    }
+
+    /// Spawn a replica actor over a verified, already-restored world.
+    /// Local mutations and program side effects are refused; the replica
+    /// carries no journal to append to. Only a core returned by
+    /// [`WorldCore::restore_replica`] may be served this way.
+    pub(crate) fn spawn_read_only(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        restored_presence: BTreeMap<u64, u64>,
+    ) -> Result<Self> {
+        if !core.replica_mode {
+            anyhow::bail!("read-only actors require a replica-restored core");
+        }
+        let presence = restored_presence
+            .into_iter()
+            .map(|(id, count)| (id, usize::try_from(count).map_or(usize::MAX, |count| count)))
+            .collect();
+        Ok(Self::spawn_inner(core, program, None, true, presence, None))
+    }
+
+    /// Whether this handle fronts a read-only replica actor.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn spawn_inner(
+        core: WorldCore,
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
+        read_only: bool,
+        presence: HashMap<u64, usize>,
+        device_manifest: Option<DeviceManifest>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
         let (revocations, _) = broadcast::channel(256);
+        let (replication_sender, _) = broadcast::channel(256);
         let (view_changed_sender, view_changed) = watch::channel(core.sequence);
         // Records are recomputed from the (restored) program, so they are a
         // pure function of the journal and need no storage of their own here.
@@ -73,20 +160,24 @@ impl WorldHandle {
             journal,
             metrics: metrics.clone(),
             storage_failed: false,
+            read_only,
             program_healthy,
             view_failures: 0,
             compaction_off: false,
             event_sender: events.clone(),
             revocation_sender: revocations.clone(),
             records_sender,
+            replication_sender,
             view_changed: view_changed_sender,
-            presence: HashMap::new(),
+            presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
             acting: None,
+            acting_session: None,
+            device_manifest,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver));
@@ -97,6 +188,7 @@ impl WorldHandle {
             records,
             view_changed,
             metrics,
+            read_only,
         }
     }
 
@@ -123,6 +215,40 @@ impl WorldHandle {
             .await
             .context("world actor dropped metrics response")
     }
+
+    /// Capture journal-order event history and its records for an admin export.
+    /// The session layer must authorize the admin token before calling this.
+    pub(crate) async fn admin_event_history(&self) -> Result<AdminEventHistory> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminEventHistory { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped admin history response")?
+    }
+
+    /// Capture a durable journal image and subscribe atomically to later
+    /// appends and reset snapshots. The returned receiver is live before the
+    /// snapshot is taken, preventing a write from being missed between them.
+    pub(crate) async fn replication_feed(
+        &self,
+    ) -> Result<(
+        String,
+        JournalSnapshotSource,
+        broadcast::Receiver<ReplicationUpdate>,
+    )> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ReplicationFeed { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped replication feed response")?
+    }
+
     /// The latest `(sequence, records)` published by the world program.
     /// Callers must authorize the reader first (see [`Self::participant_id`]).
     #[must_use]
@@ -236,6 +362,59 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped execution profile")
+    }
+
+    /// Read the manifest-reconciliation state: the active install seed and
+    /// the pending schedules (id to fire time, unix ms). Admin-layer only:
+    /// the seed never enters a participant projection (#240).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn manifest_state(&self) -> Result<(u64, BTreeMap<String, u64>)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ManifestState { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped manifest state response")
+    }
+
+    /// Admin: pend one schedule (replacing any pending schedule with the
+    /// same id), journaled before it is visible. Returns the pending map.
+    ///
+    /// # Errors
+    ///
+    /// A malformed id, a time past the horizon, a full schedule, or world
+    /// storage failure.
+    pub async fn admin_schedule_at(&self, id: String, at_ms: u64) -> Result<BTreeMap<String, u64>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminScheduleAt { id, at_ms, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule response")?
+    }
+
+    /// Admin: cancel a pending schedule by id (a no-op when absent),
+    /// journaled before it is visible. Returns the pending map.
+    ///
+    /// # Errors
+    ///
+    /// A malformed id or world storage failure.
+    pub async fn admin_cancel_schedule(&self, id: String) -> Result<BTreeMap<String, u64>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminCancelSchedule { id, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule response")?
     }
 
     /// Change the world's isolation.
@@ -536,6 +715,31 @@ impl WorldHandle {
             .context("world actor dropped revocation response")
     }
 
+    /// Revoke a participant on the authority of a joined moderator's live
+    /// capability (design #835 phase 2). The world actor authorizes the
+    /// capability itself and derives the audit actor from it. Returns
+    /// `Err` when the capability is invalid, expired, revoked, or lacks
+    /// `MODERATOR`, and when the revoke's journal append fails (the
+    /// in-memory revocation still stands in that case).
+    pub async fn revoke_authorized(
+        &self,
+        token: JoinCapability,
+        participant_id: u64,
+    ) -> Result<bool> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::RevokeAuthorized {
+                token,
+                participant_id,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped revocation response")?
+    }
+
     /// Submit a bounded chat message.
     pub async fn chat(&self, token: JoinCapability, text: impl Into<String>) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
@@ -554,11 +758,79 @@ impl WorldHandle {
 
     /// Submit bounded opaque game input.
     pub async fn input(&self, token: JoinCapability, input: Vec<u8>) -> Result<WorldEvent> {
+        self.input_with_session(token, input, None).await
+    }
+
+    /// Submit bounded opaque game input from a live session connection.
+    pub(crate) async fn input_from_session(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        session_id: SessionId,
+    ) -> Result<WorldEvent> {
+        self.input_with_session(token, input, Some(session_id))
+            .await
+    }
+
+    async fn input_with_session(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        session_id: Option<SessionId>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::Input {
                 token,
                 input,
+                session_id,
+                signed_move: None,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped input response")?
+    }
+
+    /// Bind the calling participant's author key for signed play (#2814).
+    /// Once bound, the participant's inputs must be player-signed.
+    pub async fn bind_author_key(
+        &self,
+        token: JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::BindAuthorKey {
+                token,
+                author_key,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped bind response")?
+    }
+
+    /// Submit a player-signed game input (#2814): `signed_move` is the
+    /// chain event the player signed over exactly `input` (see
+    /// [`super::signed::sign_move`]).
+    pub async fn input_signed(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        signed_move: Vec<u8>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::Input {
+                token,
+                input,
+                session_id: None,
+                signed_move: Some(signed_move),
                 reply,
             })
             .await
@@ -578,6 +850,19 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped snapshot response")?
+    }
+
+    /// Return the admin-only snapshot and presentation for a read-only host
+    /// view. The caller must authenticate the world admin before invoking it.
+    pub(crate) async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::HostView { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped host-view response")?
     }
 
     /// What the holder of `token` may see of a live `event` (from
@@ -689,6 +974,51 @@ impl WorldHandle {
         installed_by: Option<u64>,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
+        self.install_program_with_trust(module_hash, seed, provenance, installed_by, None, program)
+            .await
+    }
+
+    /// Install a program on the authority of a joined builder's live
+    /// capability (design #835 phase 2). The world actor authorizes the
+    /// capability itself at the mutation boundary and derives the audit
+    /// actor (`BuilderInstalled { by }`) from it.
+    pub async fn install_program_authorized(
+        &self,
+        token: JoinCapability,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::InstallProgramAuthorized {
+                token,
+                module_hash,
+                seed,
+                provenance,
+                trust: None,
+                program,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped install response")?
+    }
+
+    /// As [`Self::install_program_by`], also recording the module trust
+    /// decision that admitted the module for the audit journal (#1069).
+    pub async fn install_program_with_trust(
+        &self,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        installed_by: Option<u64>,
+        trust: Option<crate::world::TrustDecision>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgram {
@@ -696,6 +1026,7 @@ impl WorldHandle {
                 seed,
                 provenance,
                 installed_by,
+                trust,
                 program,
                 reply,
             })

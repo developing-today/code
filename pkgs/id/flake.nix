@@ -135,6 +135,7 @@
             fi
             cp "$TEST_BIN" $out/bin/cli_integration_test
             cp -r examples $out/share/id-test/examples
+            cp -r apps $out/share/id-test/apps
           '';
         };
 
@@ -158,9 +159,18 @@
           '';
         };
 
-        # Helper to create a check that runs a just command
-        mkCheck =
-          name: justCmd:
+        # Helper to create a check that runs a just command or direct test
+        # command, with an optional pre-check step and check-specific tools.
+        mkCheck = name: justCmd: mkCheckWith { inherit name justCmd; };
+
+        mkCheckWith =
+          {
+            name,
+            justCmd ? null,
+            checkCommand ? null,
+            extraNativeBuildInputs ? [ ],
+            beforeCheck ? "",
+          }:
           pkgs.stdenv.mkDerivation {
             name = "id-${name}";
             # Every check builds its own debug test binaries in parallel on a
@@ -170,12 +180,18 @@
             CARGO_INCREMENTAL = "0";
             CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
             CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+            # Fake-compiler probe tests need a real interpreter for their
+            # shebang in the sandbox, where /bin/sh does not exist (#5926).
+            ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs = nativeBuildInputs ++ [
-              bun2nixPkg.hook
-              pkgs.rustPlatform.cargoSetupHook
-            ];
+            nativeBuildInputs =
+              nativeBuildInputs
+              ++ extraNativeBuildInputs
+              ++ [
+                bun2nixPkg.hook
+                pkgs.rustPlatform.cargoSetupHook
+              ];
             inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -203,7 +219,9 @@
 
               ${buildWasmHost}
 
-              just ${justCmd}
+              ${beforeCheck}
+
+              ${if checkCommand != null then checkCommand else "just ${justCmd}"}
             '';
             installPhase = ''
               mkdir -p $out
@@ -260,7 +278,9 @@
           let
             hasParams = (builtins.length (recipe.parameters or [ ])) > 0;
             script = if hasParams then ''just ${name} "$@"'' else "just ${name}";
-            description = recipe.doc or name;
+            # The or-default catches a missing doc attr but not an explicit null
+            # (just-recipes.json emits "doc": null) -- coalesce both (#5651).
+            description = if (recipe.doc or null) == null then name else recipe.doc;
           in
           mkApp (mkScript name script) { inherit description; };
 
@@ -273,9 +293,30 @@
           mkRecipeApp name targetRecipe;
 
         # Filter: exclude private recipes and 'default' (handled separately)
-        publicRecipes = pkgs.lib.filterAttrs (
-          name: recipe: !(recipe.private or false) && name != "default"
-        ) justRecipes.recipes;
+        filterPublicRecipes =
+          recipes:
+          pkgs.lib.filterAttrs (name: recipe: !(recipe.private or false) && name != "default") recipes;
+
+        publicRecipes = filterPublicRecipes justRecipes.recipes;
+
+        # Admit aliases only when their target is a public recipe and their
+        # name cannot shadow a recipe or a manually defined app.
+        filterAliasApps =
+          recipes: aliases: reservedNames:
+          let
+            publicTargets = filterPublicRecipes recipes;
+          in
+          pkgs.lib.filterAttrs (
+            name: alias:
+            builtins.hasAttr (alias.target or "") publicTargets
+            && !(builtins.hasAttr name recipes)
+            && !(builtins.elem name reservedNames)
+          ) aliases;
+
+        publicAliases = filterAliasApps justRecipes.recipes (justRecipes.aliases or { }) [
+          "default"
+          "just"
+        ];
 
       in
       {
@@ -293,7 +334,7 @@
 
         # =======================================================================
         # Formatter: nix fmt
-        # Uses treefmt to orchestrate rustfmt + biome + prettier + nixfmt + statix + shfmt + taplo
+        # Uses treefmt to orchestrate rustfmt + biome + prettier + nixfmt + statix + shfmt + taplo + just
         # =======================================================================
         formatter = pkgs.writeShellScriptBin "formatter" ''
           export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
@@ -306,7 +347,7 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
+          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test roc-examples doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
           default = mkCheck "ci" "ci";
 
@@ -314,9 +355,13 @@
           cargo-fmt-check = mkCheck "cargo-fmt-check" "cargo-fmt-check";
           web-fmt-check = mkCheck "web-fmt-check" "web-fmt-check";
           clippy-lint = mkCheck "clippy-lint" "clippy-lint";
+          # id-native-shell gate (#5582): the crate is a non-default
+          # workspace member, invisible to the default-member checks.
+          clippy-native-shell = mkCheck "clippy-native-shell" "clippy-native-shell";
           web-lint = mkCheck "web-lint" "web-lint";
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
+          test-native-shell = mkCheck "test-native-shell" "test-native-shell";
           test-int = mkCheck "test-int" "test-int-sandbox";
           # PR-gate shards of the integration suite (#869): the four
           # shards together run every target test-sandbox runs, in
@@ -330,8 +375,36 @@
           test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
+          # Roc library expect() tests (#813): runs the roc-test just
+          # recipe with the pinned nightly from nix/roc.nix (already in
+          # nativeBuildInputs); fails on a missing compiler or a failing
+          # expect — the world_compile.rs skip path is not reused here.
+          roc-test = mkCheck "roc-test" "roc-test";
+          # Rebuild all checked-in Roc examples with the pinned compiler, then
+          # run the sandbox behavior and fuel-budget tests against them.
+          roc-examples = mkCheckWith {
+            name = "roc-examples";
+            checkCommand = ''
+              cargo test --no-default-features --features sandbox,world --lib sandbox
+              cargo test --test toolchain_pin
+            '';
+            extraNativeBuildInputs = [
+              pkgs.binaryen
+              pkgs.wasm-tools
+            ];
+            beforeCheck = ''
+              ROC=${rocCompiler}/bin/roc \
+                WASM_TOOLS=${pkgs.wasm-tools}/bin/wasm-tools \
+                WASM_OPT=${pkgs.binaryen}/bin/wasm-opt \
+                bash scripts/rebuild-roc-examples.sh
+            '';
+          };
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+          # Production module-size guard (#1411): fails when any
+          # production .rs file exceeds 2,500 production lines
+          # (grandfathered: src/web/markdown.rs, split tracked in #1438).
+          prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs
           # every heavy full sweep serially (~15 min, the slowest PR
@@ -343,6 +416,83 @@
           crash-gate-sweep = mkCheck "crash-gate-sweep" "crash-gate-sweep";
           crash-gate-control = mkCheck "crash-gate-control" "crash-gate-control";
           crash-gate-ingest = mkCheck "crash-gate-ingest" "crash-gate-ingest";
+          # Drift guard for the generated just-recipes.json (#2729): fails
+          # when the checked-in JSON disagrees with the justfile on the
+          # semantic recipe fields. The recipe projects out generation
+          # noise (absolute source path, body serialisation), so this is
+          # green on any correctly regenerated file.
+          just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+
+          # Regression pins for scripts/build.sh variant handling (#6869):
+          # the fixture suite stubs cargo and exercises every variant, so a
+          # variant-specific regression fails here instead of in a just recipe.
+          build-sh-test = mkCheckWith {
+            name = "build-sh-test";
+            checkCommand = "bash scripts/build-sh-test.sh";
+          };
+
+          # Exercise the same alias-admission function used by apps against
+          # synthetic recipes/aliases, including dangling targets and names
+          # that would shadow recipe or manual apps.
+          just-recipes-alias-admission =
+            let
+              fixtureRecipes = {
+                public = { };
+                private = {
+                  private = true;
+                };
+                default = { };
+                recipeCollision = { };
+                privateCollision = {
+                  private = true;
+                };
+              };
+              fixtureAliases = {
+                valid = {
+                  target = "public";
+                };
+                privateTarget = {
+                  target = "private";
+                };
+                defaultTarget = {
+                  target = "default";
+                };
+                missingTarget = {
+                  target = "missing";
+                };
+                recipeCollision = {
+                  target = "public";
+                };
+                privateCollision = {
+                  target = "public";
+                };
+                default = {
+                  target = "public";
+                };
+                just = {
+                  target = "public";
+                };
+              };
+              admittedAliases = filterAliasApps fixtureRecipes fixtureAliases [
+                "default"
+                "just"
+              ];
+              fixtureRecipeApps = filterPublicRecipes fixtureRecipes;
+              fixtureApps =
+                (builtins.mapAttrs (_: _: "recipe") fixtureRecipeApps)
+                // (builtins.mapAttrs (_: _: "alias") admittedAliases)
+                // {
+                  default = "manual";
+                  just = "manual";
+                };
+            in
+            assert builtins.attrNames admittedAliases == [ "valid" ];
+            assert fixtureApps.recipeCollision == "recipe";
+            assert fixtureApps.default == "manual";
+            assert fixtureApps.just == "manual";
+            pkgs.runCommand "id-just-recipes-alias-admission" { } ''
+              touch "$out"
+            '';
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {
@@ -554,6 +704,18 @@
               echo "taplo-check passed at $(date)" > $out/result.txt
             '';
           };
+          justfmt-check = pkgs.stdenv.mkDerivation {
+            name = "id-justfmt-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.just ];
+            buildPhase = ''
+              just --fmt --check --justfile ./justfile
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "justfmt-check passed at $(date)" > $out/result.txt
+            '';
+          };
           prettier-check = pkgs.stdenv.mkDerivation {
             name = "id-prettier-check";
             src = ./.;
@@ -610,6 +772,7 @@
             buildFeatures = [
               "web"
               "sandbox"
+              "ssh"
               "world"
             ];
 
@@ -657,11 +820,16 @@
             '';
 
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
@@ -704,11 +872,16 @@
             preBuild = buildWasmHost;
 
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh";
@@ -726,7 +899,7 @@
         # =======================================================================
         apps =
           pkgs.lib.mapAttrs mkRecipeApp publicRecipes
-          // pkgs.lib.mapAttrs mkAliasApp (justRecipes.aliases or { })
+          // pkgs.lib.mapAttrs mkAliasApp publicAliases
           // {
             # Default: run the web-enabled CLI binary
             default = {

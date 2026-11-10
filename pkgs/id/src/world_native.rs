@@ -30,27 +30,10 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::world::WorldEvent;
 
 /// Resource bounds for one native worker.
-#[derive(Clone, Copy, Debug)]
-pub struct NativeLimits {
-    /// Address-space cap (`RLIMIT_AS`).
-    pub memory_bytes: u64,
-    /// CPU cap (`RLIMIT_CPU`).
-    pub cpu_seconds: u64,
-    /// Wall-clock budget per call.
-    pub call_deadline: Duration,
-}
-
-impl Default for NativeLimits {
-    fn default() -> Self {
-        Self {
-            memory_bytes: 256 * 1024 * 1024,
-            cpu_seconds: 10,
-            // Generous: the host machine may be loaded while a world is
-            // starting; correctness does not depend on snappy guests.
-            call_deadline: Duration::from_secs(10),
-        }
-    }
-}
+///
+/// The definition lives in `id-core`'s `world_limits` since the Phase 1
+/// crate split (#3447); re-exported here at its historical path.
+pub use crate::world_limits::NativeLimits;
 
 const OP_INIT: u8 = 1;
 const OP_UPDATE: u8 = 2;
@@ -278,6 +261,12 @@ impl crate::world::WorldProgram for NativeProgram {
         match &event.kind {
             crate::world::WorldEventKind::Input(bytes) => {
                 self.deliver(event.participant_id, bytes)?;
+                Ok(())
+            }
+            // Entity-addressed input (#3870): the bytes are the program's;
+            // the entity scoping is host-side fencing metadata.
+            crate::world::WorldEventKind::EntityInput { input, .. } => {
+                self.deliver(event.participant_id, input)?;
                 Ok(())
             }
             // Host events are JSON text delivered as participant 0.

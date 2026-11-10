@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The promise these tests make: a client that holds a keep-alive TCP
@@ -54,7 +54,7 @@ func (c *tcpKeepAlive) do(method, path string, body []byte) (status int, out []b
 	if err != nil {
 		return 0, nil, "", false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	out, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, out, "", false, err

@@ -1,0 +1,27 @@
+[Unit]
+Description=PM dispatch — launch/track OpenCode sessions + queue intake (pm-stack)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/pm-stack/dispatch
+# Binds loopback + the tailnet address only (DISPATCH_HOSTS in the env
+# file) — no public route; a public hostname arrives via the pm-stack
+# Cloudflare tunnel (amd-6-pm-stack) once Drew adds it. Listens on 4879.
+ExecStart=/run/current-system/sw/bin/bun run src/server.ts
+# Rendered by install.sh from ~/secrets/pm-stack.sops.yaml (mode 600,
+# never committed): build version, bind hosts, GitHub App material,
+# and the fleet Supabase config (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).
+EnvironmentFile=%h/pm-stack/dispatch/.env
+# Operator secrets that are NOT in the sops file (mode 600, laptop-only):
+# DISPATCH_API_TOKEN only. Optional-file syntax so a missing file
+# degrades to bearer-auth-off, not a crash loop. This file is read
+# AFTER the rendered file, so it must never carry SUPABASE_* lines —
+# they would override the sops-managed Supabase config above.
+EnvironmentFile=-%h/secrets/dispatch.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

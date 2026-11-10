@@ -9,34 +9,38 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/registry"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // routesV1Ops registers the operations that are not part of the original
 // route table. They live in their own file so the surface can grow without
 // the file that owns the daemon's lifecycle growing with it.
 func (s *Server) routesV1Ops(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/log", s.handleLogQuery)
-	mux.HandleFunc("GET /v1/stats", s.handleStats)
-	mux.HandleFunc("GET /v1/registry/search", s.handleRegistrySearch)
-	mux.HandleFunc("POST /v1/complete", s.handleComplete)
-	mux.HandleFunc("GET /v1/tasks", s.handleTasksList)
-	mux.HandleFunc("GET /v1/tasks/{id}", s.handleTaskGet)
-	mux.HandleFunc("GET /v1/tasks/{id}/result", s.handleTaskResult)
-	mux.HandleFunc("POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
-	mux.HandleFunc("GET /v1/openapi.json", s.handleOpenAPI)
+	s.route(mux, "GET /v1/log", s.handleLogQuery)
+	s.route(mux, "GET /v1/stats", s.handleStats)
+	s.route(mux, "GET /v1/registry/search", s.handleRegistrySearch)
+	s.route(mux, "POST /v1/complete", s.handleComplete)
+	s.route(mux, "GET /v1/tasks", s.handleTasksList)
+	s.route(mux, "GET /v1/tasks/{id}", s.handleTaskGet)
+	s.route(mux, "GET /v1/tasks/{id}/result", s.handleTaskResult)
+	s.route(mux, "POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
+	s.route(mux, "POST /v1/writes/{server}/clear", s.handleWriteClear)
+	s.route(mux, "GET /v1/openapi.json", s.handleOpenAPI)
 }
 
 // ---- the log ----
@@ -74,7 +78,7 @@ func (s *Server) openStore() (*logstore.Store, error) {
 	}
 	if s.set.Bool("plumbing.indexOnQuery") {
 		if _, err := st.Ingest(); err != nil {
-			st.Close()
+			_ = st.Close()
 			return nil, err
 		}
 	}
@@ -125,7 +129,10 @@ func namedFilters(q url.Values) []string {
 
 func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit == 0 {
 		limit = s.callSettings(r).Int("logstore.queryLimit")
 	}
@@ -150,7 +157,7 @@ func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	if chain := q.Get("chain"); chain != "" {
 		// Chain walks a trace tree by id and takes no filters. Accepting
@@ -197,7 +204,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if dim == "" {
 		dim = "calls"
 	}
-	top, _ := strconv.Atoi(q.Get("top"))
+	top, ok := parseOptionalIntQuery(w, q, "top")
+	if !ok {
+		return
+	}
 	if top <= 0 {
 		top = s.callSettings(r).Int("stats.top")
 	}
@@ -221,7 +231,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	var rows any
 	switch dim {
@@ -272,7 +282,11 @@ func capped[T any](rows []T, top int) []T {
 
 func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 	cs := s.callSettings(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	q := r.URL.Query()
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		limit = cs.Int("registry.limit")
 	}
@@ -349,6 +363,37 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cs := s.callSettings(r)
+	cc := callContext(r, req.Context, req.Session)
+	// The completion rate limit (#2387, Phase 1 of #2386) is consulted
+	// here -- after shape validation, before any pool lookup -- so a
+	// refused request never acquires a pool lease or wakes an upstream.
+	// The caller is the identity callContext already resolved, never
+	// anything else the request reports.
+	// Both keys use the canonical (configured) server name: Pool also
+	// answers to the namespace spelling, and keying by the raw request
+	// spelling would give one server a budget per spelling (Codex
+	// review, PR #3730). CanonicalName is a registry map read -- it
+	// acquires no lease and wakes no upstream.
+	serverName := s.reg.CanonicalName(req.Server)
+	if refused := s.completeLimiter.admit([]limitCheck{
+		{
+			Name:  "completion.perMinute",
+			What:  "this caller and server",
+			Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
+			Limit: cs.Int("completion.perMinute"),
+		},
+		{
+			Name:  "completion.serverPerMinute",
+			What:  "this server",
+			Key:   "server\x00" + serverName,
+			Limit: cs.Int("completion.serverPerMinute"),
+		},
+	}); refused != nil {
+		writeErr(w, http.StatusTooManyRequests, fmt.Errorf(
+			"completion rate limit: %s allows %d per minute for %s",
+			refused.Name, refused.Limit, refused.What))
+		return
+	}
 	p, ok := s.reg.Pool(req.Server)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown server or namespace %q", req.Server))
@@ -363,8 +408,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		fwd["context"] = map[string]any{"arguments": req.Arguments}
 	}
 	params, _ := json.Marshal(fwd)
-	cc := callContext(r, req.Context, req.Session)
-	raw, upstream, err := p.Complete(r.Context(), s.reg.keyFor(p, cc), params)
+	raw, upstream, err := p.Complete(r.Context(), s.reg.resolvedFor(p, cc), params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -380,13 +424,15 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(raw, &res) == nil && len(res.Completion) > 0 {
 			payload = res.Completion
 		}
+		payload = capUpstreamCompletion(payload,
+			settings.EffectiveCompletionCap(cs.Int("completion.maxValues")))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"completion": payload, "upstream": true, "source": "upstream"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"completion": localCompletion(p.CachedPrompts(), p.CachedTemplates(), req,
-			cs.Int("completion.maxValues")),
+			settings.EffectiveCompletionCap(cs.Int("completion.maxValues"))),
 		// Said plainly, because a client that cannot tell an empty answer
 		// from an unimplemented one shows nothing and the user concludes
 		// completion is broken. `upstream` stays for the callers that read
@@ -398,27 +444,45 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// completionCaller names the caller a completion rate-limit window
+// binds: the session the caller resolved to, else its PID, else its
+// per-call id. A PIDShared PID is the daemon's own (every /v1/exec run
+// reports it), not the caller's, so it falls through to the per-call id
+// too -- the same !PIDShared guard CallerOwned applies (#3783). The
+// per-call fallback means a caller with neither a
+// session nor a PID is effectively unwindowed per caller -- which is
+// honest, because there is nothing stable to bind -- and the per-server
+// window (completion.serverPerMinute) remains the backstop that does
+// not depend on caller identity at all.
+func completionCaller(cc config.CallContext) string {
+	switch {
+	case cc.SessionID != "":
+		return "session:" + cc.SessionID
+	case cc.PID > 0 && !cc.PIDShared:
+		return "pid:" + strconv.Itoa(cc.PID)
+	default:
+		return "call:" + cc.CallID
+	}
+}
+
 // localCompletion answers from the schemas mcpx already holds.
 //
 // Only the names it knows: prompt names and resource template URIs. A
 // server's own completion knows the *values* an argument may take, which
 // mcpx cannot guess, so this is a floor rather than a substitute.
 func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource, req completeReq, max int) map[string]any {
-	var values []string
+	var candidates []string
 	switch req.Ref.Type {
 	case "ref/prompt":
 		for _, p := range prompts {
-			if hasPrefixFold(p.Name, req.Argument.Value) {
-				values = append(values, p.Name)
-			}
+			candidates = append(candidates, p.Name)
 		}
 	case "ref/resource":
 		for _, t := range templates {
-			if hasPrefixFold(t.URI, req.Argument.Value) {
-				values = append(values, t.URI)
-			}
+			candidates = append(candidates, t.URI)
 		}
 	}
+	values := rankCompletions(candidates, req.Argument.Value)
 	if values == nil {
 		values = []string{}
 	}
@@ -431,57 +495,219 @@ func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource,
 	return map[string]any{"values": values, "total": total, "hasMore": total > len(values)}
 }
 
+// capUpstreamCompletion applies the shared completion cap to an
+// upstream CompleteResult payload (#2878): values are truncated to
+// limit, total keeps the upstream full count, and hasMore is
+// recomputed from the two. A payload that does not decode as a
+// completion object with a values array passes through unchanged —
+// capping must never corrupt a reply it cannot read.
+func capUpstreamCompletion(payload json.RawMessage, limit int) json.RawMessage {
+	var obj map[string]any
+	if json.Unmarshal(payload, &obj) != nil {
+		return payload
+	}
+	rawValues, ok := obj["values"].([]any)
+	if !ok || len(rawValues) <= limit {
+		return payload
+	}
+	total := len(rawValues)
+	if t, ok := obj["total"].(float64); ok && int(t) > total {
+		total = int(t)
+	}
+	obj["values"] = rawValues[:limit]
+	obj["total"] = total
+	obj["hasMore"] = total > limit
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+// rankCompletions orders the candidates that match value by relevance
+// (issue #2388, Phase 2 of design #2386): tier 1 is an exact
+// case-folded match, tier 2 a prefix match (shorter names first, then
+// folded alphabetical, then the raw string), tier 3 a substring
+// (non-prefix) match (by first-match position, then folded
+// alphabetical, then raw). Matching and ordering are case-folded with
+// strings.ToLower, consistent with hasPrefixFold. An empty value puts
+// every candidate in the prefix tier. The sort is stable and duplicate
+// candidates are preserved. Non-matches are dropped.
+func rankCompletions(candidates []string, value string) []string {
+	q := strings.ToLower(value)
+	type scored struct {
+		raw    string
+		folded string
+		tier   int
+		pos    int // tier 3: first-match index in the folded candidate
+	}
+	var hits []scored
+	for _, c := range candidates {
+		fc := strings.ToLower(c)
+		switch {
+		case q != "" && fc == q:
+			hits = append(hits, scored{c, fc, 1, 0})
+		case strings.HasPrefix(fc, q):
+			hits = append(hits, scored{c, fc, 2, 0})
+		case q != "" && strings.Contains(fc, q):
+			hits = append(hits, scored{c, fc, 3, strings.Index(fc, q)})
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if a.tier != b.tier {
+			return a.tier < b.tier
+		}
+		switch a.tier {
+		case 2:
+			if ra, rb := utf8.RuneCountInString(a.raw), utf8.RuneCountInString(b.raw); ra != rb {
+				return ra < rb
+			}
+		case 3:
+			if a.pos != b.pos {
+				return a.pos < b.pos
+			}
+		}
+		if a.folded != b.folded {
+			return a.folded < b.folded
+		}
+		return a.raw < b.raw
+	})
+	values := make([]string, 0, len(hits))
+	for _, h := range hits {
+		values = append(values, h.raw)
+	}
+	return values
+}
+
 // ---- tasks ----
 
-// taskStore is the daemon's own, created on first use so a daemon that never
-// runs one carries nothing.
 // TaskStore returns the daemon's one task store, creating it on first
 // use exactly as the /v1 handlers do. internal/cli uses it to share
 // the same instance with the daemon's MCP surface (issue #1555): a
 // task started over MCP is then visible via /v1, and a /v1 task lives
 // in the same store the MCP surface reads.
+// taskStore is the daemon's own, created on first use so a daemon that never
+// runs one carries nothing.
 func (s *Server) TaskStore() *tasks.Store { return s.taskStore() }
 
 func (s *Server) taskStore() *tasks.Store {
 	s.taskOnce.Do(func() {
 		if s.paths.State != "" {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
-			if store, err := tasks.Open(dbPath); err == nil {
+			// Retention must reach the store before Open migrates
+			// legacy rows, or startup deletes results the configured
+			// retention promises to keep (issue #6248). The hot
+			// Configure refresh below still applies later updates.
+			var cfgTTL, cfgMaxAge time.Duration
+			if s.set != nil {
+				cfgTTL = s.set.Duration("tasks.ttl")
+				cfgMaxAge = s.set.Duration("tasks.maxAge")
+			}
+			if store, err := tasks.OpenWithRetention(dbPath, cfgTTL, cfgMaxAge); err == nil {
 				s.tasks = store
+			} else if s.logger != nil {
+				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)
 			}
 		}
 		if s.tasks == nil {
 			s.tasks = tasks.New()
 		}
+		if s.sink != nil {
+			sink := s.sink
+			s.tasks.Audit = func(record logging.Record) { sink.Write(record, nil) }
+		}
 		if s.set != nil {
 			s.tasks.PollInterval = s.set.Duration("protoTasks.pollInterval")
+			// The task-store limits (#2498): both surfaces share this
+			// store, so wiring them here covers /v1 and, when this store
+			// is injected into the MCP server, MCP too.
+			s.tasks.MaxTTL = s.set.Duration("protoTasks.maxTTL")
+			s.tasks.MaxPerRequestor = s.set.Int("protoTasks.maxPerRequestor")
+			s.tasks.CancelGrace = s.set.Duration("protoTasks.cancelGrace")
+			// The setting's 0 disables the window; the store's 0 means
+			// "default", so translate here.
+			if pm := s.set.Int("protoTasks.perMinute"); pm == 0 {
+				s.tasks.PerMinute = -1
+			} else {
+				s.tasks.PerMinute = pm
+			}
 		}
 	})
+	// Retention settings are hot: refresh them on access so runtime updates
+	// affect new tasks and subsequent item/result reads without replacing the
+	// shared store.
+	if s.set != nil {
+		s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
+	}
 	return s.tasks
 }
 
-func (s *Server) handleTasksList(w http.ResponseWriter, _ *http.Request) {
+// taskRequestor names who a /v1 request belongs to for the task store's
+// per-requestor limits: the session the caller named (the query param,
+// or the X-Mcpx-Session header creation keys by via callContext), else
+// its run, else the unbound bucket (capped like any other).
+func taskRequestor(r *http.Request) tasks.Requestor {
+	if v := r.URL.Query().Get("session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Run"); v != "" {
+		return tasks.Caller(v)
+	}
+	return tasks.UnboundRequestor
+}
+
+// admitTaskRoute counts one /v1/tasks call against the tasks/* admission
+// window (protoTasks.perMinute) and writes the 429 when it is full.
+func (s *Server) admitTaskRoute(w http.ResponseWriter, r *http.Request) bool {
+	if !s.taskStore().Admit(taskRequestor(r)) {
+		writeErr(w, http.StatusTooManyRequests, tasks.ErrRateWindow)
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleTasksList(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskStore().List()})
 }
 
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
-	t, ok := s.taskStore().Get(r.PathValue("id"))
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
+	store := s.taskStore()
+	id := r.PathValue("id")
+	store.RecordRetrieval("v1", "tasks/get", id)
+	t, ok := store.Read(id)
 	if !ok {
-		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
+		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: id})
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
 }
 
 func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
-	wait := s.callSettings(r).Duration("tasks.resultWait")
-	if ms, err := strconv.Atoi(r.URL.Query().Get("waitMs")); err == nil && ms > 0 {
-		wait = time.Duration(ms) * time.Millisecond
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
+	store := s.taskStore()
+	id := r.PathValue("id")
+	store.RecordRetrieval("v1", "tasks/result", id)
+	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("tasks.resultWait"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
 
-	result, fault, err := s.taskStore().Result(ctx, r.PathValue("id"))
+	result, fault, err := store.ReadResult(ctx, id)
 	switch {
 	case err != nil:
 		var missing tasks.ErrNoTask
@@ -508,6 +734,9 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	reason := r.URL.Query().Get("reason")
 	if reason == "" {
 		reason = "cancelled by client"
@@ -521,8 +750,18 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 // startCallTask runs a tool call in the background and hands back a handle.
-func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallContext, args any) tasks.Task {
-	return s.taskStore().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+// The task counts against requestor (the caller session, else its
+// run); an empty requestor lands in the store unbound bucket.
+func (s *Server) startCallTask(ttl int64, server, tool string, requestor tasks.Requestor, cc config.CallContext, args any, cs *settings.Set) (tasks.Task, error) {
+	return s.taskStore().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+		// The task outlives the request that created it, so the
+		// caller's call settings arrive by value (captured in
+		// handleCall) and are attached here, inside the callback --
+		// the same treatment the ask and reporting paths give them.
+		// Registry.Call threads the requested pool.callTimeout off
+		// this context; without it an explicit-task call silently
+		// kept the daemon's configured timeout (#1864 item 4).
+		ctx = withCallSettings(ctx, cs)
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		if err != nil {
@@ -539,8 +778,16 @@ func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallCon
 
 // ---- the specification ----
 
-func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	doc := api.OpenAPI(s.version)
+	// The static variant (?static=1, #1883 item 4) returns only the
+	// ops-table document, without the live catalogue merged in: a docs
+	// build that fetches it publishes the API surface, not the builder's
+	// configured servers. The live default below stays the default.
+	if staticOpenAPI(r) {
+		writeJSON(w, http.StatusOK, doc)
+		return
+	}
 	// Generated per request rather than once, so a server that appears after
 	// startup is described without a restart. The per-tool paths were served
 	// only by `mcpx serve --transport http`; a document without them
@@ -551,6 +798,16 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, doc)
+}
+
+// staticOpenAPI reports whether the request asks for the static
+// (ops-table only) OpenAPI document: ?static=1 or ?static=true.
+func staticOpenAPI(r *http.Request) bool {
+	switch r.URL.Query().Get("static") {
+	case "1", "true":
+		return true
+	}
+	return false
 }
 
 // toolPaths describes every upstream tool as its own POST path.
@@ -585,9 +842,4 @@ func firstSentence(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
-}
-
-// hasPrefixFold matches the way a person types: case is not a filter.
-func hasPrefixFold(s, prefix string) bool {
-	return strings.HasPrefix(strings.ToLower(s), strings.ToLower(prefix))
 }

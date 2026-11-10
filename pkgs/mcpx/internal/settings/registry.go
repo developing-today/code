@@ -1,6 +1,6 @@
 package settings
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 // Registry is every setting mcpx has.
 //
@@ -18,18 +18,22 @@ func Registry() []Setting {
 	s = append(s, loggingSettings()...)
 	s = append(s, scriptSettings()...)
 	s = append(s, execSettings()...)
+	s = append(s, depsSettings()...)
 	s = append(s, pathSettings()...)
 	s = append(s, daemonSettings()...)
+	s = append(s, hookSettings()...)
 	s = append(s, outputSettings()...)
 	s = append(s, protoSettings()...)
 	s = append(s, transportSettings()...)
 	s = append(s, plumbingSettings()...)
 	s = append(s, consumerSettings()...)
+	s = append(s, modelSettings()...)
 	s = append(s, wireSettings()...)
 	s = append(s, pluginSettings()...)
 	s = append(s, protoMessagesSettings()...)
 	s = append(s, protoTasksSettings()...)
 	s = append(s, upstreamSettings()...)
+	s = append(s, proxySettings()...)
 	s = append(s, envSettings()...)
 	s = append(s, presetSettings()...)
 	s = append(s, specSettings()...)
@@ -105,7 +109,7 @@ func poolSettings() []Setting {
 		},
 		{
 			Path: "pool.callTimeout", Kind: KindDuration, Default: pool.CallTimeout,
-			Scope: ScopeDaemon, Hot: true,
+			Scope: ScopeDaemon, Hot: true, CallRequest: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Call timeout", Short: "how long one tool call may take",
 		},
@@ -259,6 +263,31 @@ func scriptSettings() []Setting {
 				"value. The default is wide open because the scripts are yours.",
 		},
 		{
+			Path: "script.interpreter", Commands: runCommands, Kind: KindString, Default: "",
+			Scope:       ScopeClient,
+			FlagAliases: []string{"interpreter", "shell"},
+			Name:        "Interpreter", Short: "command line that runs scripts instead of a JavaScript runtime",
+			Long: "Dispatch order for a script: a #! shebang in the source or file wins, " +
+				"then this command line (the script path is appended), then the configured " +
+				"TypeScript runtime (script.runtime). A non-JavaScript interpreter gets " +
+				"MCPX_ENDPOINT, MCPX_SESSION and MCPX_SOCKET in its environment and the " +
+				"same output, exit-code and timeout handling, but no generated client, " +
+				"and script.permissions profiles -- JavaScript runtime flags -- are not " +
+				"enforced for it. --shell and --interpreter are aliases of this one " +
+				"setting; there is no per-language flag family.",
+		},
+		{
+			Path: "script.cwd", Commands: runCommands, Kind: KindEnum, Default: "caller",
+			Scope: ScopeClient,
+			Enum:  []string{"caller", "script", "config", "workdir"},
+			Name:  "Script working directory", Short: "where a script runs: caller, script, config or workdir",
+			Long: "caller: the directory the caller runs in (Options.Dir, or inherited) -- " +
+				"the historical behaviour. script: the directory holding the script file. " +
+				"config: the directory holding the mcpx configuration in force. workdir: " +
+				"the runner's working directory for the run, where snippets and the " +
+				"generated client live.",
+		},
+		{
 			Path: "script.profiles", Commands: runCommands, Kind: KindString, Default: "",
 			Scope: ScopeClient,
 			Name:  "Permission profiles",
@@ -320,20 +349,199 @@ func scriptSettings() []Setting {
 			Long: srcLong,
 		},
 		{
-			Path: "script.typecheck", Commands: runCommands, Kind: KindEnum, Default: "off",
+			Path: "script.check", PathAliases: []string{"script.typecheck"},
+			Commands: runCommands, Kind: KindEnum, Default: "off",
+			Scope:       ScopeClient,
+			Enum:        []string{"off", "types", "strict"},
+			EnumAliases: map[string][]string{"types": {"on"}},
+			FlagAliases: []string{"script-typecheck", "typecheck"},
+			EnvAliases:  []string{"MCPX_SCRIPT_TYPECHECK"},
+			Name:        "Script check",
+			Short:       "check the generated program before running it",
+			Long: "types resolves imports and checks types; strict also checks " +
+				"declaration files. Checking is off by default. Type checking is " +
+				"currently supported by Deno. The old " +
+				"script.typecheck path, MCPX_SCRIPT_TYPECHECK variable, --script-typecheck " +
+				"flag and --typecheck flag remain accepted; the old value on means types.",
+		},
+		{
+			Path: "script.checkOnError", Commands: runCommands, Kind: KindEnum, Default: "fail",
 			Scope: ScopeClient,
-			Enum:  []string{"off", "on", "strict"},
-			Name:  "Type check",
-			Short: "check the generated program before running it",
-			Long: "Resolves and checks every import without executing anything. Costs " +
-				"a second or two on a cold module cache, which is why it is off by " +
-				"default rather than on.",
+			Enum:  []string{"fail", "warn", "run"},
+			Name:  "Script check errors",
+			Short: "what to do when script checking finds an error",
+			Long:  "fail stops before running the script, warn reports the error and runs it, and run continues without reporting the check error.",
+		},
+		{
+			Path: "script.checkOnUnsupported", Commands: runCommands, Kind: KindEnum, Default: "warn",
+			Scope: ScopeClient,
+			Enum:  []string{"skip", "warn", "switch"},
+			Name:  "Unsupported script check runtime",
+			Short: "what to do when the selected runtime cannot check the script",
+			Long:  "skip omits the check, warn reports that it could not run, and switch uses Deno only for checking while the configured runtime still runs the script.",
+		},
+		{
+			Path: "script.imports", Commands: runCommands, Kind: KindEnum, Default: "report",
+			Scope: ScopeClient,
+			Enum:  []string{"off", "report", "prepare"},
+			Name:  "Import graph",
+			Short: "resolve the script's import graph before running it",
+			Long: "Computes the static import graph with deno info and resolves " +
+				"unresolved packages before a single server starts. report lists " +
+				"the dependency set; prepare requests the later materialisation " +
+				"stage. Nothing is installed by the resolve stage. Default report; " +
+				"off disables the pipeline entirely.",
+		},
+		{
+			Path: "script.importsOnMissing", Commands: runCommands, Kind: KindEnum, Default: "fail",
+			Scope: ScopeClient,
+			Enum:  []string{"fail", "warn", "install"},
+			Name:  "Missing imports",
+			Short: "how to handle a package absent from the dependency set",
+			Long: "fail stops on a missing package, warn reports it and continues, " +
+				"and install includes the pinned package in the dependency set for " +
+				"the prepare stage. Install does not modify a project manifest.",
+		},
+		{
+			Path: "script.importsOnDynamic", Commands: runCommands, Kind: KindEnum, Default: "warn",
+			Scope: ScopeClient,
+			Enum:  []string{"warn", "fail", "ignore"},
+			Name:  "Computed dynamic imports",
+			Short: "what to do about an import() whose specifier is computed",
+			Long: "A computed import() or require() is the one edge a static " +
+				"graph cannot decide. warn names the script and the span and " +
+				"lets the run proceed; fail stops it; ignore stays silent.",
+		},
+		{
+			Path: "script.importsCrossProject", Commands: runCommands, Kind: KindEnum, Default: "isolate",
+			Scope: ScopeClient,
+			Enum:  []string{"isolate", "merge", "ignore"},
+			Name:  "Cross-project imports",
+			Short: "how to handle a file edge into another project's manifest",
+			Long: "isolate keeps the imported project's manifest as a distinct " +
+				"dependency subset; merge combines it with the entry project's set; " +
+				"ignore omits the foreign subset. Default isolate.",
+		},
+		{
+			Path: "script.importsNetwork", Commands: runCommands, Kind: KindEnum, Default: "on",
+			Scope: ScopeClient,
+			Enum:  []string{"off", "on"},
+			Name:  "Import resolution network",
+			Short: "allow registry lookups when a package has no declared version",
+			Long: "on may query the npm registry to pin an otherwise undeclared " +
+				"package to its current latest version and announces that choice. " +
+				"off refuses to guess a version. Default on.",
 		},
 		{
 			Path: "script.env", Commands: runCommands, Kind: KindList, Default: "", Repeatable: true,
 			Scope:       ScopeClient,
 			FlagAliases: []string{"env"},
 			Name:        "Extra environment", Short: "KEY=VALUE pairs added to the script's environment",
+		},
+	}
+}
+
+// hookSettings are the config-declared hooks of docs/decisions/0001:
+// one structured `hooks` setting, in the same JSON-in-a-string shape as
+// script.runtimes and presets, because the registry has no structured
+// kind and those two are the precedent for one that needs it.
+func hookSettings() []Setting {
+	return []Setting{
+		{
+			Path: "hooks", Kind: KindString, Default: "",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status", "restart", "hook", "doctor"},
+			Name:     "Declared hooks",
+			Short:    "config-declared hooks over the event bus: a JSON array of hook objects",
+			Long: "A JSON array. Each entry is one hook: {name, on, run | module, " +
+				"when, timeoutMs, failure}. `on` is an events.Filter kind prefix " +
+				"verbatim -- \"elicit\" matches every elicitation event, \"*\" " +
+				"matches everything hookable; resource.watching is never on the " +
+				"bus and hook.* is the runner's own, and both are refused. `run` " +
+				"is an argv array, never a shell string -- write [\"sh\", \"-c\", " +
+				"...\"] to ask for a shell. `module` is a file run for its kind: " +
+				".py by python3 (or uv run), .ts/.js/.mjs by deno, bun or node. " +
+				"Every hook is phase observe: it runs after the fact, off the " +
+				"bus, under a hard timeout, and can never slow, veto or rewrite " +
+				"what it watched. The event arrives as JSON on stdin, with " +
+				"MCPX_HOOK_* variables for the flat fields. A non-zero exit is a " +
+				"result, not an error: it is counted, `mcpx hook ls` and doctor " +
+				"report it, and a hook.failed event is published. \"failure\": " +
+				"\"closed\" marks a hook whose failures are guard-shaped; the " +
+				"default is \"open\".",
+		},
+		{
+			Path: "hooks.timeout", Kind: KindDuration, Default: "2s",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status", "restart", "hook", "doctor"},
+			Name:     "Hook timeout",
+			Short:    "the hard timeout for a declared hook that does not set its own",
+			Long: "Low on purpose: a hook is an observer, and an observer that " +
+				"needs longer than this is a job, not a hook. A hook may set its " +
+				"own timeoutMs; this is the cut for the ones that do not.",
+		},
+	}
+}
+
+// depsSettings are where a script's packages come from (#1913). The chain is
+// the script's own pinned specifiers, then an explicit request, then the
+// nearest project manifest on paths.deps, then the configuration directory's
+// own packages, then whatever the host already provides.
+func depsSettings() []Setting {
+	return []Setting{
+		{
+			Path: "deps.source", Kind: KindEnum, Default: "host",
+			Scope: ScopeClient, Commands: runCommands,
+			Enum:  []string{"host", "config", "cwd", "explicit", "none"},
+			Name:  "Dependency source",
+			Short: "where a script's packages come from when nothing more specific says",
+			Long: "host uses whatever the machine already provides, the way running " +
+				"the script by hand would. config uses only the packages declared " +
+				"in mcpx's own configuration directory. cwd uses the project the " +
+				"script sits in. explicit uses only what the caller asked for. " +
+				"none provides nothing and lets the runtime fail, which is what you " +
+				"want when a missing package should be loud. none drops the rest " +
+				"of the chain too: neither deps.packages nor the nearest project " +
+				"manifest is provided. For every other source, a script's own " +
+				"pinned specifiers and the nearest project manifest still win " +
+				"over this.",
+		},
+		{
+			Path: "deps.manifest", Kind: KindSource, Default: "",
+			Scope: ScopeClient, Commands: runCommands,
+			Name:  "Dependency manifest",
+			Short: "the package.json or package.jsonc naming a script's packages",
+			Long: "An explicit manifest replaces project discovery: the named file " +
+				"is the project for every script mcpx runs. A package.jsonc is " +
+				"accepted and its comments are stripped before any runtime sees it. " +
+				"Without this, the nearest manifest found from the script's " +
+				"directory along paths.deps is used.",
+		},
+		{
+			Path: "deps.packages", Kind: KindList, Default: "", Repeatable: true,
+			Scope: ScopeClient, Commands: runCommands,
+			FlagAliases: []string{"package"},
+			Name:        "Dependency packages",
+			Short:       "packages a script may import, as name or name@version",
+			Long: "Repeatable. Each entry is a package the script should be able to " +
+				"import: a bare name asks for whatever the project or host already " +
+				"has, and name@version pins one. A pin that contradicts the " +
+				"project's manifest is reported as a conflict rather than silently " +
+				"replacing it, because the manifest is what the person reading the " +
+				"project believes.",
+		},
+		{
+			Path: "deps.autoInstall", Kind: KindEnum, Default: "off",
+			Scope: ScopeClient, Commands: runCommands,
+			Enum:  []string{"off", "fallback", "always"},
+			Name:  "Dependency auto-install",
+			Short: "whether the runtime may fetch a missing package on its own",
+			Long: "off means a missing package fails the run, which is the default " +
+				"because fetching whatever a script asks for is how a pinned project " +
+				"quietly stops being pinned. fallback lets the runtime install only " +
+				"when nothing else satisfied the specifier. always leaves the " +
+				"runtime's own resolution alone. mcpx never runs an installer into " +
+				"a user's project directory regardless of this setting.",
 		},
 	}
 }
@@ -350,6 +558,17 @@ func pathSettings() []Setting {
 			Scope: ScopeClient,
 			Name:  "Config search path", Short: "where configuration files are looked for",
 			Long: spliceLong,
+		},
+		{
+			Path: "paths.deps", Kind: KindPathList, Default: "", Repeatable: true,
+			Scope: ScopeClient, Commands: runCommands,
+			Name:  "Dependency manifest search path",
+			Short: "where a script's package.json / package.jsonc is looked for",
+			Long: "A script's packages normally come from the project it sits in, and " +
+				"the project is found by walking up from the script to its nearest " +
+				"manifest. This path says where to look instead, or first: the " +
+				"nearest entry naming a directory holding a manifest wins, exactly " +
+				"as the script search path resolves. " + spliceLong,
 		},
 		{
 			Path: "paths.scripts", Kind: KindPathList, Default: "", Repeatable: true,
@@ -390,6 +609,21 @@ func pathSettings() []Setting {
 				"and it changes when the service does. " + spliceLong,
 		},
 		{
+			Path: "paths.plugins", Kind: KindPathList, Default: "", Repeatable: true,
+			Scope: ScopeClient,
+			Name:  "Plugin search path",
+			Short: "directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins",
+			Long: "A plugin is an MCP server (#1870, Approach C). A directory " +
+				"holding mcpx-plugin.json is a plugin -- the manifest names it, " +
+				"gives its spawn recipe or remote url, and may state the mcpx API " +
+				"it requires and the hooks it subscribes to. Any other executable " +
+				"in a named directory, and any mcpx-plugin-<name> executable on " +
+				"PATH, is a plugin with default manifest values. Discovered " +
+				"plugins are added as servers of their own, so they are pooled " +
+				"and appear in mcpx ls, the catalog and the generated client " +
+				"like any configured server. " + spliceLong,
+		},
+		{
 			Path: "paths.state", Kind: KindString, Default: "",
 			Scope:      ScopeClient,
 			EnvAliases: []string{"MCPX_STATE_DIR"},
@@ -407,6 +641,12 @@ func pathSettings() []Setting {
 func daemonSettings() []Setting {
 	return []Setting{
 		{
+			Path: "daemon.tsnetUpTimeout", Kind: KindDuration, Default: "30s",
+			Scope:    ScopeDaemon,
+			Plumbing: true,
+			Name:     "tsnet up timeout", Short: "how long a node may take to authenticate",
+		},
+		{
 			Path: "daemon.reapInterval", Kind: KindDuration, Default: "30s",
 			Scope:    ScopeDaemon,
 			Plumbing: true,
@@ -419,7 +659,7 @@ func daemonSettings() []Setting {
 			Name:     "Save interval", Short: "how often daemon state is written to disk",
 		},
 		{
-			Path: "daemon.port", Kind: KindInt, Default: "0",
+			Path: "daemon.port", Kind: KindInt, Default: "0", Ceiling: 65535,
 			Scope:       ScopeDaemon,
 			Commands:    []string{"daemon", "status"},
 			FlagAliases: []string{"port"},
@@ -436,9 +676,27 @@ func daemonSettings() []Setting {
 				"one on a VPN -- and mcpx will not try to start that one, because " +
 				"answering from a local daemon when a remote one is unreachable " +
 				"would be worse than failing. unix:///path targets a different " +
-				"socket on this machine.",
+				"socket on this machine; ssh://[user@]host[:port] reaches a daemon " +
+				"through your own ssh (no port or credential on the far side), with " +
+				"?bin= for a remote mcpx not on PATH and ?sock= for a specific remote " +
+				"daemon; tsnet://name reaches one by tailnet identity. See " +
+				"docs/remote.md.",
 			Commands: []string{"run", "exec", "call", "ls", "types", "catalog",
 				"search", "status", "client", "serve", "tui", "prompts", "resources"},
+		},
+		{
+			Path: "daemon.tsnet.hostname", Kind: KindString, Default: "",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status"},
+			Name:     "Tailnet hostname",
+			Short:    "also serve the daemon on a tailnet, under this name",
+			Long: "Empty serves only the local socket and TCP port. A name " +
+				"joins a tailnet as that identity (tsnet) and serves the same " +
+				"API there, so the daemon is reachable by name from another " +
+				"network with no port forwarded. The node joins with the auth " +
+				"key in the TS_AUTHKEY environment variable; with no key the " +
+				"daemon refuses to start rather than silently serving only " +
+				"the local routes. Clients reach it with a tsnet:// endpoint.",
 		},
 		{
 			Path: "daemon.address", Kind: KindString, Default: "127.0.0.1",
@@ -451,6 +709,32 @@ func daemonSettings() []Setting {
 				"inherited. 0.0.0.0 exposes it to everything that can route to " +
 				"this host.",
 			Commands: []string{"daemon"},
+		},
+		{
+			Path: "daemon.ui", Kind: KindBool, Default: "true",
+			Scope: ScopeDaemon, Hot: true, FlagAliases: []string{"ui"},
+			Name:  "Web dashboard",
+			Short: "serve the dashboard page at /dashboard",
+			Long: "The embedded page is served on the loopback bind the daemon " +
+				"uses unless somebody widened it. Set daemon.address beyond " +
+				"loopback and the page is served only when this was asked for " +
+				"explicitly, because the API is unauthenticated: widening the " +
+				"bind should not also expose a UI nobody chose to publish. " +
+				"`mcpx dashboard` keeps working on the default bind. Setting " +
+				"it to false removes the route entirely and /dashboard answers " +
+				"404.",
+		},
+		{
+			Path: "daemon.uiDir", Kind: KindString, Default: "",
+			Scope: ScopeDaemon, Hot: true, FlagAliases: []string{"ui-dir"},
+			Name:  "Dashboard directory",
+			Short: "serve your own pages instead of the embedded dashboard",
+			Long: "When set, /dashboard serves index.html and everything beside it " +
+				"from this directory, so a frontend can be edited without " +
+				"rebuilding the binary. A ~ prefix is expanded to the home " +
+				"directory. Empty keeps the embedded single-file page, which " +
+				"is what a stock install should get: one nix derivation and no " +
+				"second build system.",
 		},
 		{
 			Path: "daemon.inline", Kind: KindBool, Default: "false",

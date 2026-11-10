@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // scripted is an MCP server in memory. It completes the handshake and then
@@ -97,7 +97,7 @@ func callThrough(t *testing.T, s *scripted) error {
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_, err = c.CallTool(ctx, "create_issue", map[string]any{"title": "x"})
 	if err == nil {
 		t.Fatal("the scripted server should have refused the call")
@@ -250,7 +250,7 @@ func TestAFailedCallsBodyCarriesTheServersError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_, rerr := c.ReadResource(ctx, "file:///nope")
 	var missing *mcpclient.ResourceNotFoundError
 	if !errors.As(rerr, &missing) {

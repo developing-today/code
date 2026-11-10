@@ -9,9 +9,32 @@ func init() {
 	const expire = "elicit.TestAnExpiredQuestionBecomesCancelNotDecline@2025-06-18,2025-11-25,2026-07-28"
 	const cliAnswer = "e2e.TestElicitationsCanBeListedAndAnsweredFromTheCommandLine@2025-11-25,2026-07-28"
 	const storeProtected = "elicit.TestOpenAtCreatesOwnerOnlyStore@2025-11-25,2026-07-28"
+	// #1677 (Phase 2 of #1675): terminal rows are pruned on open and
+	// elicitation events carry a summary only, so prompts and answers
+	// are neither retained forever nor broadcast on the bus.
+	const retentionPrune = "elicit.TestOpenPrunesTerminalRowsPastTheAgeBound@2024-11-05,2025-03-26,2025-06-18,2025-11-25,2026-07-28"
+	const summaryEvents = "daemon.TestElicitEventsAreSummaryOnly@2024-11-05,2025-03-26,2025-06-18,2025-11-25,2026-07-28"
 	const storeMigrated = "elicit.TestOpenAtMigratesLegacyStore@2025-11-25,2026-07-28"
+	// #1678 (Phase 3 of #1675): the CLI review-first elicit surface --
+	// domain line + punycode warning on URL questions, schema defaults in
+	// form rendering, and the masked confirm-before-relay answer review.
+	const cliReview = "cli.TestRenderAnswerReviewMasksSensitiveFields@2025-11-25,2026-07-28"
+	const cliReviewApp = "cli.TestRenderAnswerReviewMasksSensitiveFields@2025-06-18"
+	const cliDefaults = "cli.TestRenderQuestionFormShowsSchemaDefaults@2025-11-25,2026-07-28"
+	const cliDefaultsApp = "cli.TestRenderQuestionFormShowsSchemaDefaults@2025-06-18"
+	const cliDomain = "cli.TestRenderQuestionURLShowsRegistrableDomain@2025-11-25,2026-07-28"
+	const cliPuny = "cli.TestRenderQuestionURLWarnsOnPunycodeHost@2025-11-25,2026-07-28"
 	register(
+		C("elicitation-client-validate-responses", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2025-11-25/elicitation/wrong-typed-answer-is-32602-not-relayed",
+			"mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2026-07-28/elicitation/input-required-wrong-typed-answer-is-rejected"),
+		C("elicitation-both-validate-against-schema", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema@2025-06-18"),
+		S("elicitation-both-validate-against-schema", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema@2025-06-18"),
+		S("elicitation-server-validate-received-data", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2025-11-25/elicitation/wrong-typed-answer-is-32602-not-relayed",
+			"mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2026-07-28/elicitation/input-required-wrong-typed-answer-is-rejected"),
 		C("elicitation-client-32602-on-undeclared-mode", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/undeclared-mode-is-32602"),
+		S("elicitation-server-must-return-32042", "mcpserver.TestURLRequiredWhenNoChannelToAskOn@2025-11-25",
+			"mcpserver.TestURLRequiredWhenPushFailsInLoop@2025-11-25", "mcpserver.TestURLRequiredListsOnlyURLQuestions@2025-11-25",
+			"mcpserver.TestUpstreamURLRequiredRelayedOnlyToDeclaredHosts@2025-11-25"),
 		C("sampling-client-error-on-tools-without-capability", "mcpclient.TestSamplingDeclarations/2025-11-25/sampling/tools-without-capability-is-32602",
 			"mcpclient.TestModernSamplingShape/2026-07-28/sampling/tools-without-capability-is-32602"),
 		C("elicitation-client-prepopulate-defaults", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/client-applies-schema-defaults",
@@ -22,7 +45,21 @@ func init() {
 		C("elicitation-client-user-approval-controls", human),
 		C("elicitation-client-open-url-securely", human),
 		C("elicitation-client-manual-retry-cancel-controls", cliAnswer),
+		C("elicitation-app-review-modify-responses", cliReviewApp, cliDefaultsApp),
+		C("elicitation-client-form-review-modify-responses", cliReview, cliDefaults),
+		C("elicitation-client-url-show-domain-and-consent", cliDomain, cliPuny),
+		C("elicitation-client-handle-urls-carefully", cliDomain, cliPuny),
+		C("elicitation-client-highlight-domain", cliDomain),
+		C("elicitation-client-warn-punycode", cliPuny),
 		S("elicitation-state-storage-protected", storeProtected, storeMigrated),
+		S("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
+		C("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
+		SReq("conformance.TestSamplingValidation",
+			"sampling-both-validate-message-content",
+		),
+		CReq("conformance.TestSamplingValidation",
+			"sampling-both-validate-message-content",
+		),
 		SReq("conformance.TestClientFeaturesServer",
 			"sampling-tool-result-message-only-tool-results",
 			"sampling-tool-use-result-balance",
@@ -85,6 +122,7 @@ func init() {
 			"sampling-toolresult-structured-conform-outputschema",
 			"sampling-message-must-have-role-and-content",
 			"sampling-client-errors-user-rejected",
+			"sampling-client-errors-user-rejected-and-tool-shape",
 			"sampling-human-in-loop-can-deny",
 			"sampling-both-iteration-limits-tool-loops",
 			"elicitation-client-declare-capability-at-initialize",
@@ -103,37 +141,22 @@ func init() {
 			"elicitation-client-clear-what-and-why",
 			"elicitation-client-ignore-unknown-complete",
 			"elicitation-client-may-auto-retry-on-complete",
+			"sampling-client-rate-limit",
+			"elicitation-client-rate-limit",
 		),
 	)
 	registerGaps(
-		Gap{ID: "sampling-app-review-ui", Side: Client, Issue: "#256", Why: "a sampling request is routed to the agent audience; nothing lets a person review or edit the prompt or the result"},
-		Gap{ID: "sampling-app-view-edit-prompts", Side: Client, Issue: "#256", Why: "a sampling request is routed to the agent audience; nothing lets a person review or edit the prompt or the result"},
-		Gap{ID: "sampling-app-review-responses", Side: Client, Issue: "#256", Why: "a sampling request is routed to the agent audience; nothing lets a person review or edit the prompt or the result"},
-		Gap{ID: "sampling-client-user-approval-controls", Side: Client, Issue: "#256", Why: "a sampling request is routed to the agent audience; nothing lets a person review or edit the prompt or the result"},
-		Gap{ID: "sampling-both-validate-message-content", Side: Client, Issue: "#256", Why: "sampling messages and results are relayed without validation"},
-		Gap{ID: "sampling-both-validate-message-content", Side: Server, Issue: "#256", Why: "sampling messages and results are relayed without validation"},
-		Gap{ID: "sampling-both-handle-sensitive-data", Side: Client, Issue: "#255", Why: "prompts and answers are stored unredacted in state/logs/elicit.db under a 0755 directory and published on the event bus"},
-		Gap{ID: "sampling-both-handle-sensitive-data", Side: Server, Issue: "#255", Why: "prompts and answers are stored unredacted in state/logs/elicit.db under a 0755 directory and published on the event bus"},
-		Gap{ID: "sampling-messages-not-retained-between-requests", Side: Client, Issue: "#255", Why: "every CreateMessageRequest is kept in state/logs/elicit.db and never pruned"},
-		Gap{ID: "sampling-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server or per-session limit on sampling requests"},
-		Gap{ID: "elicitation-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server limit on elicitation requests"},
-		Gap{ID: "sampling-client-errors-user-rejected-and-tool-shape", Side: Client, Issue: "#256", Why: "every refusal or failure is -32603; neither -1 nor -32602 is produced"},
+		Gap{ID: "sampling-app-review-ui", Side: Client, Issue: "#256", Why: "partial: a person can review a pending sampling request in the CLI -- mcpx elicit list/show renders the requesting server, system prompt and messages verbatim with a CreateMessageResult answer skeleton (#1837) -- but mcpx has no app UI and sampling questions still route to the agent audience by default"},
+		Gap{ID: "sampling-app-view-edit-prompts", Side: Client, Issue: "#256", Why: "partial: prompts are viewable verbatim via mcpx elicit show (#1837) and a person can override a request by answering with their own completion or declining it, but the prompt itself is not editable in place"},
+		Gap{ID: "sampling-app-review-responses", Side: Client, Issue: "#256", Why: "partial: answered results are recorded on the broker row and visible via mcpx elicit result <id> (#1837), but there is no pre-delivery staging hold -- a result relays when it is answered (a staging state is an open question on #1834)"},
+		Gap{ID: "sampling-client-user-approval-controls", Side: Client, Issue: "#256", Why: "partial: the existing controls are unchanged (audience routing, policy, decline -- #1837 invented no new gate); a person can inspect, answer/override or decline a pending sampling question via the CLI, but there is no dedicated per-request approval control"},
+		Gap{ID: "sampling-messages-not-retained-between-requests", Side: Client, Issue: "#255", Why: "terminal sampling rows are now pruned past the #1677 age bound, but a sampling request's messages are still retained in elicit.db between separate requests until that bound; the SHOULD NOT is not met"},
+		Gap{ID: "sampling-client-errors-user-rejected-and-tool-shape", Side: Client, Issue: "#1836", Why: "only the -32602 content half remains: sampling messages/results are not yet checked for a missing tool result or tool results mixed with other content (Phase 2 of #1834); the -1 half is covered -- a refusal reaches the upstream as -1 (typed CodedError, #1835)"},
 		Gap{ID: "sampling-server-avoid-includecontext-values", Side: Server, Issue: "#210", Why: "an upstream sampling request is relayed as-is: tools and includeContext reach a client that did not declare sampling.tools or sampling.context"},
-		Gap{ID: "elicitation-app-review-modify-responses", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
-		Gap{ID: "elicitation-client-form-review-modify-responses", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
-		Gap{ID: "elicitation-client-url-show-domain-and-consent", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
-		Gap{ID: "elicitation-client-handle-urls-carefully", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
-		Gap{ID: "elicitation-client-highlight-domain", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
-		Gap{ID: "elicitation-client-warn-punycode", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
-		Gap{ID: "elicitation-client-validate-responses", Side: Client, Issue: "#255", Why: "an answer is checked only for non-empty content, not against requestedSchema"},
-		Gap{ID: "elicitation-both-validate-against-schema", Side: Client, Issue: "#255", Why: "an answer is checked only for non-empty content, not against requestedSchema"},
-		Gap{ID: "elicitation-both-validate-against-schema", Side: Server, Issue: "#255", Why: "an answer is checked only for non-empty content, not against requestedSchema"},
-		Gap{ID: "elicitation-server-validate-received-data", Side: Server, Issue: "#255", Why: "a client answer is relayed upstream without a schema check"},
-		Gap{ID: "elicitation-server-must-return-32042", Side: Server, Issue: "#214", Why: "a url question for a client that cannot take it stays with the broker; -32042 is never returned"},
 		Gap{ID: "elicitation-server-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
 		Gap{ID: "elicitation-server-stored-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
 		Gap{ID: "elicitation-server-no-trust-client-user-id", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
-		Gap{ID: "elicitation-server-follow-best-practices", Side: Server, Issue: "#255", Why: "requestState signing is sound; question storage is world-readable and there is no user identity"},
+		Gap{ID: "elicitation-server-follow-best-practices", Side: Server, Issue: "#255", Why: "requestState signing is sound and question storage is owner-only (0700/0600, #1676); there is no user identity"},
 		Gap{ID: "elicitation-state-not-session-id-alone", Side: Server, Issue: "#257", Why: "state is bound to the request, not a user; there is no user to bind to"},
 	)
 }

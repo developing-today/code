@@ -70,35 +70,63 @@ is the way to configure a drop-in installation.
 | file | what it is for |
 | --- | --- |
 | `mcpx-session.ts` | the opencode adapter: hooks, tools, toasts, and the session id. The only file opencode loads as a plugin. |
-| `mcpx/daemon.ts` | the portable core: the daemon HTTP client, the discovery ladder, and the remembered-choice file. Imports nothing from opencode. |
-| `mcpx/daemon.test.ts` | `bun test` over the ladder, against real sockets and real temporary state directories. |
+| `../core/daemon.ts` | the portable core: the daemon HTTP client, the discovery ladder, and the remembered-choice file. Imports nothing from opencode. |
+| `../core/daemon.test.ts` | `bun test` over the ladder, against real sockets and real temporary state directories. |
 | `mcpx/ops.gen.ts` | a typed method for every `/v1` operation, generated from the Go operation table. Do not edit; `go test ./internal/api -run TestPluginOpsAreGenerated -update` rewrites it. |
 | `mcpx/ops.test.ts` | `bun test` over the generated methods, against a fake daemon and -- run from the Go suite -- a real one. |
 | `mcpx-tui.tsx` | optional TUI plugin: a real picker for the daemon. Different realm, different API, installed separately. |
 | `skills/mcpx-basics` | getting started (install, first config, first `ls`/`call`/`exec`), writing an `mcpx exec` script, and filtering in the script rather than in context. `examples/` holds seven runnable scripts. |
 | `skills/mcpx-observability` | investigating a failure or a slowdown through the log rather than by re-running it. |
-| `skills/mcpx-browser` | driving a stateful server, and what exclusive leasing is for. `examples/screenshot-and-errors.ts` is a full chrome-devtools run. |
+| `skills/mcpx-browser` | driving a stateful server, and what exclusive leasing is for. `skills/mcpx-browser/examples/screenshot-and-errors.ts` is a full chrome-devtools run. |
 | `skills/mcpx-daemon` | the guided flow for choosing between daemons. |
 
 ## Configuration
 
 Read in this order: **plugin option, then environment variable, then default.**
 
+The table is generated from the settings registry — `internal/settings/plugin.go`
+for the `plugin.*` options, `daemon.endpoint` and `scriptenv.go` for the two
+that name a daemon — so it cannot drift from what the code reads. Regenerate it
+with `go test ./internal/settings -run TestThePluginReadmeListsEveryOption -update`.
+
+<!-- BEGIN GENERATED: settings.Registry() plugin.*, plus the two daemon options; `go test ./internal/settings -run TestThePluginReadmeListsEveryOption -update` -->
+
 | option | variable | default | effect |
 | --- | --- | --- | --- |
 | `endpoint` | `MCPX_DAEMON_ENDPOINT`, `MCPX_ENDPOINT` | — | a daemon named outright: `http://host:port` or `unix:///path`. Stops the ladder. |
 | `socket` | `MCPX_SOCKET` | — | a socket named outright. Stops the ladder. |
-| `bin` | `MCPX_PLUGIN_BIN` | `mcpx` | the binary for rung 4. `""` forbids spawning anything. |
-| `binArgs` | `MCPX_PLUGIN_BIN_ARGS` | — | arguments before mcpx's own. Whitespace-separated, or a JSON array when one contains a space. |
-| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | `auto` prefers the socket and spawns only as a fallback; `v1` never spawns; `cli` never uses the socket. |
-| `remember` | `MCPX_PLUGIN_REMEMBER` | `session` | default scope for a daemon choice. |
-| `env` | `MCPX_PLUGIN_ENV` | `full` | how much to inject into shell environments: `minimal`, `standard`, `full`. |
-| `instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | off | add mcpx usage to the system prompt. |
-| `toolTiming` | `MCPX_PLUGIN_TOOL_TIMING` | off | record opencode's tool timings into mcpx's log. |
-| `tools` | `MCPX_PLUGIN_TOOLS` | off | offer `mcpx_discover`, `mcpx_exec` and `mcpx_observe`. |
-| `daemonTools` | `MCPX_PLUGIN_DAEMON_TOOLS` | when unclear | offer `mcpx_daemon_status`, `mcpx_daemon_select` and `mcpx_daemon_forget`. Default: on when `tools` is on, or when more than one daemon was found at boot. |
-| `annotate` | `MCPX_PLUGIN_ANNOTATE` | on | put one line on each mcpx tool result naming the daemon that answered, when more than one matched. |
-| `headless` | `MCPX_PLUGIN_HEADLESS` | detected | `1` suppresses toasts. Detected from whether the server is running in the TUI's worker realm. |
+| `bin` | `MCPX_PLUGIN_BIN` | `mcpx` | the executable the plugin invokes. |
+| `binArgs` | `MCPX_PLUGIN_BIN_ARGS` | — | arguments put in front of every plugin invocation of mcpx. |
+| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | whether the plugin talks to the daemon or spawns the binary. |
+| `discoveryRetry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | `1m0s` | how long the plugin waits before looking for mcpx again. |
+| `toolTiming` | `MCPX_PLUGIN_TOOL_TIMING` | `false` | write every tool outcome into mcpx's log. |
+| `env` | `MCPX_PLUGIN_ENV` | `full` | how much session context is put into each command's environment. |
+| `instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | `false` | add mcpx usage guidance to the system prompt. |
+| `tools` | `MCPX_PLUGIN_TOOLS` | `false` | expose mcpx itself as tools the model can call. |
+| `remember` | `MCPX_PLUGIN_REMEMBER` | `session` | how long a chosen daemon stays chosen. |
+| `annotate` | `MCPX_PLUGIN_ANNOTATE` | `true` | add mcpx's own notes to a tool result. |
+| `headless` | `MCPX_PLUGIN_HEADLESS` | `auto` | suppress toasts, because nobody is looking at a screen. |
+| `daemonTools` | `MCPX_PLUGIN_DAEMON_TOOLS` | `auto` | offer the tools that list and choose between daemons. |
+| `disabledTools` | `MCPX_PLUGIN_DISABLED_TOOLS` | — | model-facing mcpx tools hidden from every session. |
+
+<!-- END GENERATED -->
+
+Three of those need more than the one line the generated column carries. `bin:
+""` forbids spawning anything, which is how a machine with no binary says so
+rather than falling back. `binArgs` is whitespace-separated, or a JSON array
+when one argument contains a space. And `backend` is a choice between three
+behaviours: `auto` prefers the socket and spawns only as a fallback; `v1`
+refuses the spawn fallback for tool execution (discovery may still spawn when no
+daemon is discoverable — `bin: ""` forbids spawning entirely); `cli` never uses
+the socket.
+
+`headless` and `daemonTools` default to `auto`, which the plugin works out at
+boot: headless from whether it is running in the TUI's worker realm, and
+daemonTools to on when `tools` is on or when discovery found more than one
+daemon. `env` and `remember` are lists — `minimal`, `standard` or `full`, and
+`session`, `until-gone` or `indefinite` — described under
+[what gets injected](#what-gets-injected) and
+[remembering a choice](#remembering-a-choice).
 
 `MCPX_STATE_DIR` and `XDG_STATE_HOME` are read too, because that is where the
 daemon publishes its info files and where the remembered choice is kept. They
@@ -291,7 +319,7 @@ With no daemon the record is **dropped**, not spawned. A timing is not worth
 
 ## Talking to the daemon directly
 
-`mcpx/daemon.ts` connects over the unix socket instead of spawning. Measured
+`../core/daemon.ts` connects over the unix socket instead of spawning. Measured
 here, same request, mean of thirty:
 
 | | |
@@ -307,7 +335,7 @@ rather than transport. That does not matter for something called once a session.
 It matters a great deal for anything on the path of every tool call.
 
 ```ts
-import { connect } from "./mcpx/daemon.ts"
+import { connect } from "../core/daemon.ts"
 
 const { client, discovery } = await connect({ directory })
 if (client) await client.call("fff", "grep", { query: "x" }, sessionID)
@@ -370,7 +398,7 @@ them at runtime.
 ## Tests
 
 ```sh
-bun test plugin/opencode/mcpx/daemon.test.ts
+bun test plugin/core/daemon.test.ts
 ```
 
 Real unix sockets and real temporary state directories, because every failure

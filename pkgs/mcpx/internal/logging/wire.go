@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
 	"log/slog"
 	"runtime"
@@ -185,7 +185,7 @@ func Stream(src io.Reader, w *Writer, opts StreamOptions) error {
 		rec, ok := ParseLine(line)
 		if !ok {
 			if opts.Passthrough != nil {
-				io.WriteString(opts.Passthrough, line+"\n")
+				_, _ = io.WriteString(opts.Passthrough, line+"\n")
 			}
 			continue
 		}

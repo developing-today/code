@@ -12,13 +12,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/mcpheaders"
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // ProtocolVersion is the MCP revision mcpx negotiates.
@@ -96,15 +98,44 @@ type Client struct {
 	loopDone chan struct{}
 	// Negotiated is the version actually in use.
 	Negotiated string
+	// negotiated mirrors Negotiated for answer, which runs on the server's
+	// goroutine while a concurrent recovery's finishLegacy may be writing
+	// Negotiated after a session-ending 404. Reading the plain field there
+	// raced that write; the mirror is published by every writer.
+	negotiated atomic.Value // string
 	// toolValidators holds each listed tool's compiled input/output
 	// schema validators (schemacheck.go), keyed by tool name.
 	toolValidators map[string]*toolSchemas
 	// onElicit answers server-initiated requests.
 	onElicit ElicitHandler
+	// Rate limits on server-initiated requests (ratelimit.go): the
+	// resolved limits, this session's sampling counter, and the shared
+	// per-server counters (nil when the session names no server).
+	reqLimits       RequestLimits
+	serverName      string
+	reqMu           sync.Mutex
+	sessionSampling *windowCounter
+	server          *ServerRequestLimiter
+
+	// onURLElicitationRequired opens the URL elicitations a -32042
+	// tools/call error names, when something (the daemon broker) can.
+	onURLElicitationRequired URLElicitationHandler
+	// onSessionSettled, when set, runs after a legacy session recovery
+	// has fully reinitialised -- new session id AND the protocol state
+	// finishLegacy installed from its answer. The transport's
+	// session-adopted hook fires earlier, when the initialize response
+	// headers arrive, so a consumer persisting session state (the
+	// pool's upstream-session record) must read it from here, not from
+	// the adoption moment, or it saves the old session's state against
+	// the new id.
+	onSessionSettled func()
 	// notif holds notification handlers.
 	notif Notifications
 	// roots are the directories servers may work within.
 	roots []Root
+	// root is the scope-resolved workspace root this instance serves, named
+	// at initialize when non-empty (decision 0004 §5).
+	root string
 	// clientName and clientVersion identify mcpx on every modern request.
 	clientName, clientVersion string
 	// metaVersion is the version stamped into each request's _meta. Empty
@@ -139,6 +170,11 @@ type Client struct {
 	// again.
 	reinitMu  sync.Mutex
 	reinitGen atomic.Uint64
+	// resumedSession limits the cold-resume recovery to the first
+	// application request. resumedFirstRequest stays set until that request
+	// succeeds or its one recovery attempt is consumed.
+	resumedSession      atomic.Bool
+	resumedFirstRequest atomic.Bool
 	// toolHeaders are each tool's x-mcp-header annotations, learned from
 	// tools/list, for a modern connection over HTTP.
 	toolHeaders map[string][]mcpheaders.Param
@@ -149,6 +185,19 @@ type Client struct {
 	// gated on mirrorsHeaders -- the gate must work whether or not
 	// header mirroring is on, and over every transport.
 	toolHints map[string]toolHint
+	// toolExec is each tool's execution.taskSupport declaration, learned
+	// from the same tools/list snapshot as toolHints, for CallTool's
+	// taskSupport "required" handling (tasks.go). A nil map means this
+	// client has never listed, and its calls take the plain path.
+	toolExec map[string]string
+	// toolExecSeeded holds taskSupport declarations seeded from the
+	// pool's cached catalogue (SeedToolExec) for tools this client has
+	// not listed itself. It is tracked separately from toolExec so a
+	// refreshed catalogue can replace earlier seeds -- a tool that
+	// changed from optional to required must not keep the stale seeded
+	// value -- while never overriding the client's own list, which
+	// resolveTaskSupport consults first.
+	toolExecSeeded map[string]string
 	// invalidTools are tools excluded for invalid annotations, with why.
 	invalidTools map[string]string
 	// listen is the subscriptions/listen stream of a modern connection.
@@ -164,6 +213,11 @@ type ServerInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Title   string `json:"title,omitempty"`
+	// Instance is the serving process's unique instance identity, when
+	// it reports one (mcpx does, in serverInfo.instance; #1877). It is
+	// what lets a client tell "mcpx itself, this very daemon" apart
+	// from "a different mcpx daemon" -- the name alone cannot.
+	Instance string `json:"instance,omitempty"`
 }
 
 type initResult struct {
@@ -340,16 +394,18 @@ func NewWithPreference(ctx context.Context, t Transport, clientName, clientVersi
 
 func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 	c := &Client{
-		t:              t,
-		pending:        map[int64]chan *rpcResponse{},
-		closeCh:        make(chan struct{}),
-		clientName:     o.ClientName,
-		clientVersion:  o.ClientVersion,
-		onElicit:       o.OnServerRequest,
-		roots:          append([]Root(nil), o.Roots...),
-		modernVersions: o.ModernVersions,
-		probeTimeout:   o.ProbeTimeout,
-		loopDone:       make(chan struct{}),
+		t:                        t,
+		pending:                  map[int64]chan *rpcResponse{},
+		closeCh:                  make(chan struct{}),
+		clientName:               o.ClientName,
+		clientVersion:            o.ClientVersion,
+		onElicit:                 o.OnServerRequest,
+		onURLElicitationRequired: o.OnURLElicitationRequired,
+		roots:                    append([]Root(nil), o.Roots...),
+		root:                     o.Root,
+		modernVersions:           o.ModernVersions,
+		probeTimeout:             o.ProbeTimeout,
+		loopDone:                 make(chan struct{}),
 	}
 	if len(c.modernVersions) == 0 {
 		c.modernVersions = ModernVersions
@@ -357,6 +413,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 	if c.probeTimeout <= 0 {
 		c.probeTimeout = defaults.UpstreamProbeTimeout
 	}
+	c.setupRequestLimits(o)
 	go c.recvLoop()
 
 	pref := o.Preference
@@ -393,7 +450,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 		err = c.probe(ctx, true)
 	}
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	if c.Era == EraModern {
@@ -420,13 +477,33 @@ func (c *Client) initializeLegacy(ctx context.Context, clientName, clientVersion
 }
 
 func (c *Client) initializeParams() json.RawMessage {
-	params, _ := json.Marshal(map[string]any{
+	params := map[string]any{
 		"protocolVersion": ProtocolVersion,
 		// Declared only where mcpx can actually deliver; see capabilities.
 		"capabilities": c.capabilities(false),
 		"clientInfo":   map[string]any{"name": c.clientName, "version": c.clientVersion},
-	})
-	return params
+	}
+	// A scope-resolved instance tells the server which workspace it serves.
+	// initialize params are extensible in every era, so both get the same
+	// fields rather than growing per-server quirks (decision 0004 §5). An
+	// instance with no root -- global scope, or a degraded resolution --
+	// sends nothing and its initialize stays what it always was.
+	if uri, name, ok := c.workspaceRoot(); ok {
+		params["rootUri"] = uri
+		params["workspaceFolders"] = []map[string]any{{"uri": uri, "name": name}}
+	}
+	raw, _ := json.Marshal(params)
+	return raw
+}
+
+// workspaceRoot renders the instance root as the file:// URI and folder name
+// initialize carries. ok is false when the instance serves no root.
+func (c *Client) workspaceRoot() (uri, name string, ok bool) {
+	if c.root == "" {
+		return "", "", false
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(c.root)}
+	return u.String(), filepath.Base(c.root), true
 }
 
 // finishLegacy records an initialize result and completes the handshake.
@@ -443,7 +520,12 @@ func (c *Client) finishLegacy(ctx context.Context, ir initResult) error {
 	c.Capabilities = ir.Capabilities
 	c.Instructions = ir.Instructions
 	c.Negotiated = ir.ProtocolVersion
+	c.negotiated.Store(ir.ProtocolVersion)
 	c.Era = EraLegacy
+	// Publish the era mirror, as probe and Resume do: a connection that
+	// settled modern and then fell back to a legacy recovery would
+	// otherwise leave the mirror saying modern for its whole life.
+	c.modern.Store(false)
 
 	if h, ok := c.t.(interface{ setNegotiated(string) }); ok {
 		h.setNegotiated(ir.ProtocolVersion)
@@ -452,7 +534,7 @@ func (c *Client) finishLegacy(ctx context.Context, ir initResult) error {
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 	// The standalone GET stream arrived with Streamable HTTP (2025-03-26).
-	if h, ok := c.t.(interface{ listen() }); ok && ir.ProtocolVersion >= "2025-03-26" {
+	if h, ok := c.t.(interface{ listen() }); ok && spec.AtOrAfter("2025-03-26")(ir.ProtocolVersion) {
 		h.listen()
 	}
 	return nil
@@ -582,7 +664,7 @@ func (c *Client) dispatch(origin context.Context, raw []byte) {
 	}
 }
 
-// OnElicit is called when a server asks a question. Nil means mcpx answers
+// ElicitHandler is called when a server asks a question. Nil means mcpx answers
 // on the server's behalf, which it must do rather than ignore: a server that
 // asks into silence waits until the call times out.
 type ElicitHandler func(ctx context.Context, method string, params json.RawMessage) (any, error)
@@ -592,6 +674,58 @@ func (c *Client) SetElicitHandler(h ElicitHandler) {
 	c.mu.Lock()
 	c.onElicit = h
 	c.mu.Unlock()
+}
+
+// URLElicitation is one entry of a -32042 (UrlElicitationRequired)
+// error's data.elicitations: a URL-mode elicitation the server needs
+// opened before the failed tool call can proceed (2025-11-25).
+type URLElicitation struct {
+	Mode          string `json:"mode"`
+	URL           string `json:"url"`
+	ElicitationID string `json:"elicitationId"`
+	Message       string `json:"message"`
+}
+
+// URLElicitationHandler opens the URL elicitations a -32042 names. It
+// reports true only when every entry was accepted; false or an error
+// fails the call with no retry. A nil handler (the default) means
+// -32042 propagates untouched, exactly as a client with nobody to open
+// URLs behaved before this existed.
+type URLElicitationHandler func(ctx context.Context, elicitations []URLElicitation) (bool, error)
+
+// SetURLElicitationHandler installs the -32042 handler after connect.
+func (c *Client) SetURLElicitationHandler(h URLElicitationHandler) {
+	c.mu.Lock()
+	c.onURLElicitationRequired = h
+	c.mu.Unlock()
+}
+
+// SetSessionSettledHook installs the hook run after a legacy session
+// recovery has fully reinitialised (see onSessionSettled).
+func (c *Client) SetSessionSettledHook(fn func()) {
+	c.mu.Lock()
+	c.onSessionSettled = fn
+	c.mu.Unlock()
+}
+
+// parseURLElicitations reads a -32042 error's data. ok is false for any
+// malformed shape: unparseable data, an empty list, a non-url entry, or
+// an entry with no elicitationId. In every such case the caller returns
+// the original error unmodified, because guessing at a server's
+// question is worse than failing its call.
+func parseURLElicitations(data json.RawMessage) ([]URLElicitation, bool) {
+	var d struct {
+		Elicitations []URLElicitation `json:"elicitations"`
+	}
+	if len(data) == 0 || json.Unmarshal(data, &d) != nil || len(d.Elicitations) == 0 {
+		return nil, false
+	}
+	for _, e := range d.Elicitations {
+		if e.Mode != "url" || e.ElicitationID == "" {
+			return nil, false
+		}
+	}
+	return d.Elicitations, true
 }
 
 // handleServerRequest answers a request the server sent to us.
@@ -844,7 +978,7 @@ func declares(caps map[string]json.RawMessage, capability, flag string) bool {
 // subscriptions/listen, so against a modern server this adds the URI to the
 // connection's listen stream, which is reopened with the new filter.
 func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		l := c.listen
 		c.mu.Unlock()
@@ -860,7 +994,7 @@ func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
 
 // UnsubscribeResource stops notifications for a resource.
 func (c *Client) UnsubscribeResource(ctx context.Context, uri string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		l := c.listen
 		c.mu.Unlock()
@@ -876,11 +1010,32 @@ func (c *Client) UnsubscribeResource(ctx context.Context, uri string) error {
 
 // ListResourceTemplates returns the server's parameterised resources.
 func (c *Client) ListResourceTemplates(ctx context.Context) ([]Resource, error) {
-	var tres resourceTemplatesListResult
-	if err := c.call(ctx, "resources/templates/list", json.RawMessage(`{}`), &tres); err != nil {
-		return nil, err
+	all, _, err := c.ListResourceTemplatesWithHints(ctx)
+	return all, err
+}
+
+// ListResourceTemplatesWithHints is ListResourceTemplates plus the cache
+// hints the server declared on the pages it returned. It pages like the
+// other list calls (PG-07, #1924): templates past page 1 used to be
+// silently dropped by the single unpaginated call this replaces.
+func (c *Client) ListResourceTemplatesWithHints(ctx context.Context) ([]Resource, CacheHints, error) {
+	var all []Resource
+	var hints CacheHints
+	var cursor *string
+	for i := 0; i < defaults.ListPageLimit; i++ {
+		var tres resourceTemplatesListResult
+		if err := c.call(ctx, "resources/templates/list", pageParams(cursor), &tres); err != nil {
+			return all, hints, err
+		}
+		hints.merge(tres.TTLMs, tres.CacheScope)
+		all = append(all, tres.ResourceTemplates...)
+		next, more := c.nextPage(tres.NextCursor, cursor)
+		if !more {
+			break
+		}
+		cursor = &next
 	}
-	return tres.ResourceTemplates, nil
+	return all, hints, nil
 }
 
 // SetLogLevel asks the server to send messages at or above a level.
@@ -893,7 +1048,7 @@ func (c *Client) ListResourceTemplates(ctx context.Context) ([]Resource, error) 
 // a modern server this only records the level, and every later request
 // carries it.
 func (c *Client) SetLogLevel(ctx context.Context, level string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		c.logLevel = level
 		c.mu.Unlock()
@@ -1004,15 +1159,19 @@ func (c *Client) callReissue(ctx context.Context, method string, params json.Raw
 		}
 		var ir inputRequired
 		_ = json.Unmarshal(raw, &ir)
-		switch ir.ResultType {
-		case "", "complete":
+		switch {
+		case ir.ResultType == "" || ir.ResultType == "complete" ||
+			(ir.ResultType == "task" && method == "tools/call"):
+			// "task" is a tools/call answer in the 2026-07-28 tasks
+			// extension: a handle, returned raw so CallTool can poll
+			// it (tasks.go). For every other method it stays invalid.
 			// Absent means complete: an earlier revision's result, or a
 			// server that left it out.
 			if out == nil {
 				return nil
 			}
 			return json.Unmarshal(raw, out)
-		case "input_required":
+		case ir.ResultType == "input_required":
 		default:
 			// "A resultType of any value unrecognized by the client MUST
 			// be considered invalid." Treating it as complete would hand a
@@ -1069,18 +1228,25 @@ func isStreamLost(err error) bool {
 // is its own call to roundTrip, so each round re-issues independently.
 func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMessage, allowReissue bool) (json.RawMessage, error) {
 	gen := c.reinitGen.Load()
+	resumedFirst := c.resumedFirstRequest.Load()
 	for attempt := 0; ; attempt++ {
 		raw, err := c.roundTripOnce(ctx, method, params)
 		if err == nil {
+			if resumedFirst {
+				c.resumedFirstRequest.CompareAndSwap(true, false)
+			}
 			return raw, err
 		}
-		if attempt == 0 && c.sessionGone(err, method) {
-			if !c.reinitializeLegacy(ctx, gen) {
+		if attempt == 0 && (c.sessionGone(err, method, resumedFirst) || (resumedFirst && c.sessionRejected(err))) {
+			if !c.reinitializeLegacy(ctx, gen, resumedFirst) {
 				return raw, err
 			}
 			return c.roundTripOnce(ctx, method, params)
 		}
-		if attempt > 0 || !allowReissue || c.Era != EraModern || ctx.Err() != nil || !isStreamLost(err) {
+		if resumedFirst {
+			c.resumedFirstRequest.CompareAndSwap(true, false)
+		}
+		if attempt > 0 || !allowReissue || c.modernEra() != EraModern || ctx.Err() != nil || !isStreamLost(err) {
 			return raw, err
 		}
 	}
@@ -1089,14 +1255,22 @@ func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMe
 // sessionGone reports whether err is the narrow recovery trigger: a
 // request (never initialize itself; notifications never reach roundTrip)
 // failed with HTTP 404 on a legacy-era connection.
-func (c *Client) sessionGone(err error, method string) bool {
+func (c *Client) sessionGone(err error, method string, resumedFirst bool) bool {
 	// The atomic modern mirror, not c.Era: a concurrent recovery's
 	// finishLegacy writes Era, and this check runs on every failed call.
 	if method == "initialize" || c.modern.Load() {
 		return false
 	}
+	if c.resumedSession.Load() && !resumedFirst {
+		return false
+	}
 	var he *HTTPStatusError
 	return errors.As(err, &he) && he.Status == http.StatusNotFound
+}
+
+func (c *Client) sessionRejected(err error) bool {
+	var he *HTTPStatusError
+	return errors.As(err, &he) && (he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden)
 }
 
 // reinitializeLegacy replaces a forgotten legacy session, singleflight
@@ -1104,7 +1278,7 @@ func (c *Client) sessionGone(err error, method string) bool {
 // set out with: if it has already moved, another call replaced the
 // session and this one simply retries on it. It reports whether the
 // caller should retry its request.
-func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
+func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64, resumedFirst bool) bool {
 	ft, ok := c.t.(interface{ forgetSession() bool })
 	if !ok {
 		return false // stdio transports have no session to forget
@@ -1114,6 +1288,11 @@ func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
 	if c.reinitGen.Load() != gen {
 		return true
 	}
+	if c.resumedSession.Load() {
+		if !resumedFirst || !c.resumedFirstRequest.CompareAndSwap(true, false) {
+			return false
+		}
+	}
 	if !ft.forgetSession() {
 		return false
 	}
@@ -1121,6 +1300,17 @@ func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
 		return false
 	}
 	c.reinitGen.Add(1)
+	c.resumedSession.Store(false)
+	c.resumedFirstRequest.Store(false)
+	// The recovery has settled: the new session's id and protocol state
+	// are both installed, so a persistence consumer reading the session
+	// now gets the pair that belongs together.
+	c.mu.Lock()
+	settled := c.onSessionSettled
+	c.mu.Unlock()
+	if settled != nil {
+		settled()
+	}
 	// A restarted upstream's catalogue is not the cached one.
 	c.mu.Lock()
 	n := c.notif
@@ -1162,7 +1352,7 @@ func (c *Client) roundTripOnce(ctx context.Context, method string, params json.R
 			// The HTTP transport's Send lasts until the response headers
 			// arrive, so a server that is slow to start answering is timed
 			// out here, not below -- and was never told.
-			c.cancelled(method, id)
+			c.cancelled(method, id, ctx.Err())
 		}
 		return nil, err
 	}
@@ -1172,7 +1362,7 @@ func (c *Client) roundTripOnce(ctx context.Context, method string, params json.R
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
-		c.cancelled(method, id)
+		c.cancelled(method, id, ctx.Err())
 		return nil, ctx.Err()
 	case resp := <-ch:
 		if resp.Error != nil {
@@ -1194,7 +1384,7 @@ func (c *Client) roundTripOnce(ctx context.Context, method string, params json.R
 // server/discover instead, which every modern server MUST implement and
 // which, like ping, does nothing but answer.
 func (c *Client) Ping(ctx context.Context) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		return c.call(ctx, "server/discover", json.RawMessage(`{}`), nil)
 	}
 	return c.call(ctx, "ping", json.RawMessage(`{}`), nil)
@@ -1215,7 +1405,7 @@ func (c *Client) nextPage(next *string, sent *string) (string, bool) {
 	if next == nil {
 		return "", false
 	}
-	if *next == "" && c.Era != EraModern {
+	if *next == "" && c.modernEra() != EraModern {
 		return "", false
 	}
 	if sent != nil && *sent == *next {
@@ -1273,11 +1463,40 @@ func (c *Client) ListToolsWithHints(ctx context.Context) ([]Tool, CacheHints, er
 // every transport, since the gate is not a header-mirroring concern.
 func (c *Client) recordToolHints(tools []Tool) {
 	hints := make(map[string]toolHint, len(tools))
+	execs := make(map[string]string, len(tools))
 	for _, t := range tools {
 		hints[t.Name] = parseToolHint(t.Annotations)
+		execs[t.Name] = parseTaskSupport(t.Execution)
 	}
 	c.mu.Lock()
 	c.toolHints = hints
+	c.toolExec = execs
+	c.mu.Unlock()
+}
+
+// SeedToolExec records taskSupport declarations learned elsewhere --
+// the pool's cached catalogue -- for names the client has not listed
+// itself. Pool.refreshSchemas lists on whichever instance the schema
+// lease happens to hold; a session- or call-scoped serving client, or
+// a restarted global instance behind a retained catalogue, may never
+// have listed, and its snapshot would otherwise stay empty so a
+// taskSupport-"required" tool silently took the plain path (#1556
+// Codex review). The seeds live in their own map, replaced whole on
+// every call as recordToolHints replaces the listed snapshot: the
+// pool re-seeds from its current catalogue before every pooled call,
+// so a refreshed catalogue must be able to replace an earlier seed (a
+// tool redeclared from optional to required), while the client's own
+// list -- consulted first by resolveTaskSupport -- is never touched.
+func (c *Client) SeedToolExec(tools []Tool) {
+	if len(tools) == 0 {
+		return
+	}
+	seeded := make(map[string]string, len(tools))
+	for _, t := range tools {
+		seeded[t.Name] = parseTaskSupport(t.Execution)
+	}
+	c.mu.Lock()
+	c.toolExecSeeded = seeded
 	c.mu.Unlock()
 }
 
@@ -1373,8 +1592,14 @@ func (c *Client) ListPromptsWithHints(ctx context.Context) ([]Prompt, CacheHints
 		if err := c.call(ctx, "prompts/list", pageParams(cursor), &res); err != nil {
 			// A server without prompts answers method-not-found, which is an
 			// absence rather than a failure. Treating it as an error would
-			// make every listing fail on the majority of servers.
-			return all, hints, nil
+			// make every listing fail on the majority of servers. Every
+			// OTHER error is a real failure and surfaces (PG-07, #1924):
+			// swallowing it made a broken server look prompt-less.
+			var re *rpcError
+			if errors.As(err, &re) && re.Code == -32601 {
+				return all, hints, nil
+			}
+			return all, hints, err
 		}
 		hints.merge(res.TTLMs, res.CacheScope)
 		all = append(all, res.Prompts...)
@@ -1400,6 +1625,9 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	if err := c.call(ctx, "prompts/get", params, &raw); err != nil {
 		return nil, err
 	}
+	if err := ValidatePromptResult(raw); err != nil {
+		return nil, fmt.Errorf("prompts/get %q: invalid result from upstream: %w", name, err)
+	}
 	return raw, nil
 }
 
@@ -1418,6 +1646,38 @@ func (c *Client) toolCallReissueAllowed(name string) bool {
 	h, ok := c.toolHints[name]
 	c.mu.Unlock()
 	return ok && (h.readOnly || h.idempotent)
+}
+
+// urlElicitationRetry applies the bounded -32042 URL-elicitation
+// recovery to one failed call (#2079): on a 2025-11-25 connection, a
+// well-formed -32042 names URL elicitations the installed handler opens
+// before the call can proceed. It reports retry=true when the handler
+// accepted and the call should be re-issued once. Every other outcome
+// returns the error to surface: the original error untouched when the
+// fault is not a recoverable -32042 (wrong version, malformed data, no
+// handler installed), the handler's own error when it fails, and a
+// declined error when the elicitations were refused or expired.
+func (c *Client) urlElicitationRetry(ctx context.Context, name string, err error) (bool, error) {
+	var re *rpcError
+	if err == nil || c.negotiatedVersion() != "2025-11-25" ||
+		!errors.As(err, &re) || re.Code != codeURLElicitationRequired {
+		return false, err
+	}
+	els, wellFormed := parseURLElicitations(re.Data)
+	c.mu.Lock()
+	h := c.onURLElicitationRequired
+	c.mu.Unlock()
+	if !wellFormed || h == nil {
+		return false, err
+	}
+	accepted, herr := h(ctx, els)
+	if herr != nil {
+		return false, herr
+	}
+	if !accepted {
+		return false, fmt.Errorf("mcpx: the URL elicitations required by tool %s were declined or expired", name)
+	}
+	return true, nil
 }
 
 // CallTool invokes a tool and returns the raw CallToolResult.
@@ -1441,6 +1701,26 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	if err := c.validateToolArgs(ctx, name, argsJSON); err != nil {
 		return nil, err
 	}
+	// A tool that declared taskSupport "required" cannot be called the
+	// plain way (tasks.go): legacy is task-augmented from the start;
+	// modern is server-directed, so the plain call below runs and a
+	// task answer is polled to its terminal result before returning.
+	support := c.resolveTaskSupport(name)
+	if support == taskSupportRequired && c.modernEra() == EraLegacy {
+		raw, err := c.callToolAsLegacyTask(ctx, name, args)
+		if err != nil {
+			// A -32042 can surface from the task-augmented call itself
+			// or from tasks/result at the end of the poll; it gets the
+			// same one-shot URL-elicitation recovery as the plain path
+			// below (#1556 Codex review).
+			if retry, rerr := c.urlElicitationRetry(ctx, name, err); retry {
+				raw, err = c.callToolAsLegacyTask(ctx, name, args)
+			} else {
+				err = rerr
+			}
+		}
+		return raw, err
+	}
 	params, err := json.Marshal(map[string]any{"name": name, "arguments": args})
 	if err != nil {
 		return nil, err
@@ -1452,6 +1732,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	defer done()
 	var raw json.RawMessage
 	allowReissue := false
+	retried32042 := false
 	for attempt := 0; ; attempt++ {
 		hctx, err := c.toolCallHeaders(ctx, name, args, attempt > 0)
 		if err != nil {
@@ -1467,8 +1748,31 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		if attempt == 0 && errors.As(err, &re) && re.Code == codeHeaderMismatch && c.mirrorsHeaders() {
 			continue
 		}
+		// A -32042 on a 2025-11-25 connection names URL elicitations to
+		// open before the call can proceed (#2079). The retry is gated
+		// on its own flag, not the attempt index: the -32020 continue
+		// above already spends attempts, and the -32042 retry must
+		// happen exactly once regardless.
+		if !retried32042 && err != nil {
+			retry, rerr := c.urlElicitationRetry(ctx, name, err)
+			if retry {
+				retried32042 = true
+				continue
+			}
+			err = rerr
+		}
 		if err != nil {
 			return nil, err
+		}
+		// Any modern task answer is polled to its terminal result, not
+		// only a required tool's: advertising the tasks extension lets
+		// the server answer an optional tool with a task past its eager
+		// window, and the handle is not the tool's result.
+		if c.modernEra() == EraModern && isTaskResult(raw) {
+			raw, err = c.finishModernTask(ctx, name, raw)
+			if err != nil {
+				return nil, err
+			}
 		}
 		c.checkToolOutput(ctx, name, raw)
 		return raw, nil
@@ -1486,18 +1790,80 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 	var raw json.RawMessage
 	if err := c.call(ctx, "resources/read", params, &raw); err != nil {
 		var re *rpcError
-		if errors.As(err, &re) && (re.Code == codeResourceNotFound || (re.Code == codeInvalidParams && c.Era == EraModern)) {
+		if errors.As(err, &re) && (re.Code == codeResourceNotFound || (re.Code == codeInvalidParams && c.modernEra() == EraModern)) {
 			return nil, &ResourceNotFoundError{URI: uri, err: re}
 		}
 		return nil, err
+	}
+	if err := ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read %q: invalid result from upstream: %w", uri, err)
 	}
 	return raw, nil
 }
 
 const (
-	codeResourceNotFound = -32002
-	codeInvalidParams    = -32602
+	// codeURLElicitationRequired is -32042 UrlElicitationRequired
+	// (2025-11-25): the tool call needs the URL-mode elicitations in
+	// the error's data opened before it can proceed.
+	codeURLElicitationRequired = -32042
+	codeResourceNotFound       = -32002
+	codeInvalidParams          = -32602
+	codeInternalError          = -32603
+	// codeUserRejected is the code the sampling error table assigns to a
+	// person refusing a sampling request (2025-11-25 client/sampling
+	// error handling: "User rejected sampling request: -1"). It is not a
+	// JSON-RPC reserved code; the specification spends it on exactly
+	// this refusal, so an upstream can tell "the user said no" apart
+	// from an internal failure and not retry.
+	codeUserRejected = -1
 )
+
+// CodedError is a handler error that carries the JSON-RPC code it must
+// reach the upstream as. Client.answer recognises it (errors.As, so a
+// wrapped CodedError counts) and relays its code and message instead of
+// flattening every handler failure to -32603. Producers that know which
+// spec-assigned code their failure is -- the daemon's sampling broker
+// path, Phase 2's content validator -- return this type; everything
+// untyped keeps the -32603 wrap.
+type CodedError struct {
+	Code    int
+	Message string
+}
+
+func (e *CodedError) Error() string { return e.Message }
+
+// RPCCode is the JSON-RPC error code this failure stands for, matching
+// the InvalidParamsError precedent: surfaces that translate generic
+// errors check for it by interface, with no import cycle.
+func (e *CodedError) RPCCode() int { return e.Code }
+
+// NewCodedError builds a CodedError for a spec-assigned code with no
+// dedicated constructor below.
+func NewCodedError(code int, message string) *CodedError {
+	return &CodedError{Code: code, Message: message}
+}
+
+// UserRejectedError is a sampling request refused by the person or
+// agent answering it (decline or cancel): code -1, per the 2025-11-25
+// sampling error table.
+func UserRejectedError(message string) *CodedError {
+	return &CodedError{Code: codeUserRejected, Message: message}
+}
+
+// ToolShapeError is a sampling message or result whose content breaks
+// the tool-use/tool-result shape rules: code -32602 (Invalid params),
+// per the same table. Defined here for Phase 2 of #1834 (#1836), whose
+// validator raises it; Phase 1 adds no content checks.
+func ToolShapeError(message string) *CodedError {
+	return &CodedError{Code: codeInvalidParams, Message: message}
+}
+
+// InternalError is a failure that is mcpx's own: code -32603, but as a
+// typed error so the message wording (e.g. naming a broker expiry) is
+// chosen by the producer, not reconstructed downstream.
+func InternalError(message string) *CodedError {
+	return &CodedError{Code: codeInternalError, Message: message}
+}
 
 // ResourceNotFoundError is a resources/read of a URI the server does not
 // have.

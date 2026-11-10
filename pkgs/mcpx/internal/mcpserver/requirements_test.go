@@ -19,10 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
-
-const spec = "https://modelcontextprotocol.io/specification/"
 
 func handle(t *testing.T, s *mcpserver.Server, method string, params any) map[string]any {
 	t.Helper()
@@ -757,7 +755,7 @@ func TestHTTPListenIsAStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 			t.Fatalf("content type %q, status %d", ct, resp.StatusCode)
 		}
@@ -1104,7 +1102,7 @@ func TestMRTRServerRules(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if id := resp.Header.Get("Mcp-Session-Id"); id != "" {
 			t.Errorf("session issued: %s", id)
 		}
