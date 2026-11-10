@@ -64,7 +64,7 @@ const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, 
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
-    exclusion_reason, assigned_by, session_id, fallback_reason, \
+    exclusion_reason, opencode_reason, assigned_by, session_id, fallback_reason, \
     assigned_at, executed_at, updated_at";
 /// Task columns whose stored TEXT is JSON (PG jsonb) — parsed back
 /// into values so the wire shape matches the Postgres broker's.
@@ -366,6 +366,23 @@ impl TursoBackend {
                 self.exec(&format!("ALTER TABLE tasks ADD COLUMN {col} TEXT"), &[])?;
             }
         }
+        // #8187: the ledger's opencode_reason column (the recorded
+        // specific reason an opencode assignment exists at all) lands
+        // the same additive way for ledgers created before it.
+        let lcols = self.query_objs(
+            "SELECT name FROM pragma_table_info('repo_task_lane_ledger')",
+            &[],
+            &[],
+        )?;
+        if !lcols
+            .iter()
+            .any(|c| c.get("name").and_then(|v| v.as_str()) == Some("opencode_reason"))
+        {
+            self.exec(
+                "ALTER TABLE repo_task_lane_ledger ADD COLUMN opencode_reason TEXT",
+                &[],
+            )?;
+        }
         Ok(())
     }
 }
@@ -421,7 +438,7 @@ const SCHEMA: [&str; 12] = [
     "CREATE TABLE IF NOT EXISTS repo_task_lane_ledger (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, \
         task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, \
-        exclusion_reason TEXT, assigned_by TEXT, session_id TEXT, \
+        exclusion_reason TEXT, opencode_reason TEXT, assigned_by TEXT, session_id TEXT, \
         fallback_reason TEXT, assigned_at TEXT, executed_at TEXT, \
         updated_at TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS events (\
@@ -2003,22 +2020,80 @@ fn claim_update_sql(pick_predicate: &str) -> String {
     )
 }
 
-/// The default (lane) pick predicate (#8184): queued rows due
-/// under the attempts cap, or parked rows whose wait timer has
-/// passed — EXCEPT recorded opencode handoffs. A handed-off row is
-/// claimant-owned: the claimant collects it through the
-/// parked_handoff pick (or by id) with no timer gating, and serving
-/// it to a lane only re-runs the claim -> handoff -> park cycle
-/// that burned attempts across the fleet. Genuine wait parks (a
-/// stage other than the yield stages, or a direct lane) are
-/// unaffected and keep releasing through claim at not_before.
+/// The default (lane) pick predicate (#8184, amended #8187):
+/// queued rows due under the attempts cap, or parked rows whose
+/// wait timer has passed — plus, as a third branch, parked recorded
+/// opencode handoffs (the #8185 handoff sink) WITHOUT the not_before
+/// gate. #8184 excluded sink rows from lanes entirely (they were
+/// claimant-owned, and serving one to a lane only re-ran the
+/// claim -> handoff -> park cycle); #8187 reverses that: a lane is
+/// single-session by default, claims a sink row as an ordinary
+/// parked claim (+0 attempts, per the claim UPDATE's parked CASE),
+/// and verb_lane flips its ledger assignment to direct when the
+/// lane passes --exclusion-reason (see lane_reassignment_flip).
+/// The claimant's parked_handoff pick and by-id claim keep working
+/// unchanged. The timed parked branch keeps its NOT sink exclusion
+/// so a sink row is admitted by exactly one branch, and genuine
+/// wait parks keep releasing through claim at not_before. The sink
+/// branch carries no `?` placeholder, so the pick SELECT and the
+/// claim UPDATE re-check keep their two `now` arguments.
 fn default_pick_predicate() -> String {
     format!(
         "(status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
        OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ? \
-         AND NOT ({PARKED_HANDOFF_SQL}))"
+         AND NOT ({PARKED_HANDOFF_SQL})) \
+       OR ({PARKED_HANDOFF_SQL})"
     )
+}
+
+/// The lane a FRESH ledger assignment gets (#8187): `direct` by
+/// default — the claiming session owns the task, and no task is
+/// routed to opencode (or any specific lane) without a specific
+/// reason recorded at assignment time. The only doors to an
+/// opencode assignment are an explicit `--opencode-reason` from
+/// the caller (recorded on the ledger row) — or, symmetrically, a
+/// caller `--exclusion-reason` forces direct. Exclusion wins when
+/// both are passed: it is the older, stronger contract ("this task
+/// must NOT go to opencode"). Returns (lane, reason) where reason
+/// is the value recorded on the lane_assigned event:
+/// "default_direct" | "exclusion" | "opencode_reason".
+///
+/// tasks.platform deliberately plays NO part here: it is a
+/// claim-side family filter (#8097 Rule 2 — PLATFORM_FAMILIES:
+/// "openchamber" | "muse", "a platform names a FAMILY, never a
+/// specific lane"), gating WHICH family may claim a row, not an
+/// execution-platform requirement for the lane assignment. So
+/// there is no "platform" reason in practice; the name is reserved
+/// in the reason vocabulary for a future genuine execution
+/// requirement.
+fn lane_decision(
+    exclusion: Option<&str>,
+    opencode_reason: Option<&str>,
+) -> (&'static str, &'static str) {
+    if exclusion.is_some() {
+        ("direct", "exclusion")
+    } else if opencode_reason.is_some() {
+        ("opencode", "opencode_reason")
+    } else {
+        ("direct", "default_direct")
+    }
+}
+
+/// Whether an EXISTING ledger row flips to direct (#8187): only an
+/// opencode row, only when the caller passes --exclusion-reason
+/// (a Muse lane taking a sink/legacy opencode task direct), and
+/// never once a session is bound (session_id set) — a bound row's
+/// assignment is history, not a routing decision. Claimant flows
+/// that pass no exclusion keep their existing assignment.
+fn lane_reassignment_flip(
+    assigned_lane: &str,
+    session_id: Option<&str>,
+    exclusion: Option<&str>,
+) -> bool {
+    assigned_lane == "opencode"
+        && exclusion.is_some()
+        && session_id.map(str::trim).unwrap_or("").is_empty()
 }
 
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
@@ -2266,6 +2341,7 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let exclusion = req_str(req, "exclusion_reason").map(str::to_string);
+    let opencode_reason = req_str(req, "opencode_reason").map(str::to_string);
     let work = (|| -> Result<Value, TErr> {
         let Some(task) = get_task(t, task_id)? else {
             return Err(format!(
@@ -2274,11 +2350,43 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
         };
         if let Some(existing) = get_ledger(t, task_id)? {
             // Idempotent (migration 0021): keep progress.lane in step.
-            let lane = existing
+            let mut lane = existing
                 .get("assigned_lane")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // #8187 reassignment: an unbound opencode row flips to
+            // direct when the caller passes --exclusion-reason (a
+            // Muse lane taking a sink/legacy opencode task direct).
+            // The progress.lane re-sync below then stamps direct.
+            if lane_reassignment_flip(
+                &lane,
+                existing.get("session_id").and_then(|v| v.as_str()),
+                exclusion.as_deref(),
+            ) {
+                t.exec(
+                    "UPDATE repo_task_lane_ledger SET assigned_lane = 'direct', \
+                       exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
+                    &[
+                        arg_str(exclusion.as_deref()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(task_id),
+                    ],
+                )?;
+                event(
+                    t,
+                    Some(&worker),
+                    Some(task_id),
+                    "lane_assigned",
+                    &json!({
+                        "assigned_lane": "direct", "previous_lane": "opencode",
+                        "exclusion_reason": exclusion, "opencode_reason": Value::Null,
+                        "reason": "exclusion", "reassignment": true,
+                        "via": "assign_repo_task_lane_turso",
+                    }),
+                )?;
+                lane = "direct".to_string();
+            }
             let cur = task
                 .get("progress")
                 .and_then(|p| p.get("lane"))
@@ -2299,47 +2407,27 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                     ],
                 )?;
             }
-            return Ok(existing);
+            return Ok(get_ledger(t, task_id)?.unwrap_or(existing));
         }
         let queue = task
             .get("queue")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let counts = t.query_objs(
-            "SELECT \
-               COALESCE(SUM(CASE WHEN COALESCE(executed_lane, assigned_lane) = 'opencode' THEN 1 ELSE 0 END), 0) AS o, \
-               COALESCE(SUM(CASE WHEN COALESCE(executed_lane, assigned_lane) = 'direct' THEN 1 ELSE 0 END), 0) AS d \
-             FROM repo_task_lane_ledger WHERE queue = ? AND exclusion_reason IS NULL",
-            &[Arg::Text(queue.clone())],
-            &[],
-        )?;
-        let (o_count, d_count) = counts
-            .first()
-            .map(|r| {
-                (
-                    r.get("o").and_then(|v| v.as_i64()).unwrap_or(0),
-                    r.get("d").and_then(|v| v.as_i64()).unwrap_or(0),
-                )
-            })
-            .unwrap_or((0, 0));
-        let lane = if exclusion.is_some() {
-            "direct"
-        } else if o_count <= d_count {
-            "opencode"
-        } else {
-            "direct"
-        };
+        // #8187: no balancing counts — direct by default; opencode
+        // only for a specific reason recorded at assignment time.
+        let (lane, reason) = lane_decision(exclusion.as_deref(), opencode_reason.as_deref());
         let now = now_iso();
         t.exec(
             "INSERT INTO repo_task_lane_ledger \
-             (queue, task_id, assigned_lane, exclusion_reason, assigned_by, assigned_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (queue, task_id, assigned_lane, exclusion_reason, opencode_reason, assigned_by, assigned_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &[
                 Arg::Text(queue),
                 Arg::Int(task_id),
                 Arg::Text(lane.to_string()),
                 arg_str(exclusion.as_deref()),
+                arg_str(opencode_reason.as_deref()),
                 Arg::Text(worker.clone()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
@@ -2364,7 +2452,7 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
             "lane_assigned",
             &json!({
                 "assigned_lane": lane, "exclusion_reason": exclusion,
-                "opencode_count": o_count, "direct_count": d_count,
+                "opencode_reason": opencode_reason, "reason": reason,
                 "via": "assign_repo_task_lane_turso",
             }),
         )?;
@@ -3784,21 +3872,124 @@ mod tests {
     }
 
     #[test]
-    fn default_pick_never_serves_parked_handoffs_8184() {
-        // #8184 regression pin: the lane pick's parked branch must
-        // exclude the recorded-handoff shape (the claimant's own
-        // parked_handoff pick is the only collection path), while
-        // the queued branch keeps its attempts cap.
+    fn default_pick_drains_parked_handoff_sink_8187() {
+        // #8187 (amending #8184): the lane pick now ADMITS parked
+        // recorded opencode handoffs (the handoff sink) through a
+        // third branch with NO not_before gate, so lanes can claim
+        // stranded sink tasks and work them direct. The timed parked
+        // branch keeps its NOT sink exclusion (a sink row is admitted
+        // by exactly one branch), the queued branch keeps its
+        // attempts cap, and the sink branch adds no placeholder: the
+        // predicate still carries exactly the two `now` arguments
+        // the pick SELECT and claim UPDATE bind.
         let pred = default_pick_predicate();
         assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
-        assert!(pred.contains("status = 'parked'"));
+        assert!(pred.contains("status = 'parked' AND not_before IS NOT NULL AND not_before <= ?"));
         assert!(pred.contains("NOT ("));
         assert!(pred.contains("json_extract(progress, '$.lane') = 'opencode'"));
         assert!(pred.contains("'handed_off', 'launch_failed'"));
-        // And the claim UPDATE re-check carries the same exclusion.
+        // Third branch: the full sink predicate, ungated.
+        let sink_branch = format!("OR ({PARKED_HANDOFF_SQL})");
+        assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
+        assert_eq!(pred.matches("not_before <= ?").count(), 2);
+        assert_eq!(pred.matches('?').count(), 2, "no new placeholders: {pred}");
+        // And the claim UPDATE re-check carries the same sink branch.
         let upd = claim_update_sql(&pred);
+        assert!(upd.contains(&sink_branch));
         assert!(upd.contains("NOT ("));
-        assert!(upd.contains("json_extract(progress, '$.lane') = 'opencode'"));
+        assert_eq!(upd.matches("not_before <= ?").count(), 2);
+    }
+
+    #[test]
+    fn fresh_lane_assignment_defaults_direct_8187() {
+        // #8187: no reason -> direct (the claiming session owns the
+        // task); NO balancing, NO opencode routing by default.
+        assert_eq!(lane_decision(None, None), ("direct", "default_direct"));
+        // --exclusion-reason forces direct, as before.
+        assert_eq!(
+            lane_decision(Some("claude-only work"), None),
+            ("direct", "exclusion")
+        );
+        // --opencode-reason is the only door to opencode, recorded.
+        assert_eq!(
+            lane_decision(None, Some("needs opencode session")),
+            ("opencode", "opencode_reason")
+        );
+        // Both passed: exclusion (the must-NOT-go-to-opencode
+        // contract) wins over the opencode reason.
+        assert_eq!(
+            lane_decision(Some("no opencode"), Some("wants opencode")),
+            ("direct", "exclusion")
+        );
+    }
+
+    #[test]
+    fn lane_reassignment_flips_only_unbound_opencode_with_exclusion_8187() {
+        // Sink/legacy opencode row + exclusion -> flip to direct.
+        assert!(lane_reassignment_flip(
+            "opencode",
+            None,
+            Some("lane takes it direct")
+        ));
+        assert!(lane_reassignment_flip("opencode", Some(""), Some("x")));
+        // No exclusion: claimant flows keep their assignment.
+        assert!(!lane_reassignment_flip("opencode", None, None));
+        // A session-bound row NEVER flips, exclusion or not.
+        assert!(!lane_reassignment_flip(
+            "opencode",
+            Some("ses_123"),
+            Some("x")
+        ));
+        assert!(!lane_reassignment_flip("opencode", Some("ses_123"), None));
+        // Direct rows are already direct; nothing to flip.
+        assert!(!lane_reassignment_flip("direct", None, Some("x")));
+        assert!(!lane_reassignment_flip("direct", None, None));
+    }
+
+    #[test]
+    fn opencode_reason_is_recorded_on_the_ledger_8187() {
+        // Source oracle: the reason column exists on the read
+        // surface, the fresh schema, the additive migration, and
+        // the fresh-assignment INSERT; the client exposes the flag.
+        assert!(LEDGER_COLS.contains("opencode_reason"));
+        let schema = SCHEMA.join(" ");
+        assert!(schema.contains("opencode_reason TEXT"));
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            impl_src.contains("ALTER TABLE repo_task_lane_ledger ADD COLUMN opencode_reason TEXT")
+        );
+        assert!(impl_src.contains("assigned_lane, exclusion_reason, opencode_reason, assigned_by"));
+        assert!(impl_src.contains("\"reason\": reason"));
+        assert!(impl_src.contains("\"reassignment\": true"));
+        // No balancing artifact survives in the lane decision path.
+        assert!(!impl_src.contains("opencode_count"));
+        assert!(!impl_src.contains("o_count <= d_count"));
+        let client_src = include_str!("client.rs");
+        assert!(client_src.contains("\"opencode-reason\""));
+        assert!(client_src.contains("\"opencode_reason\": args.get(\"opencode-reason\")"));
+    }
+
+    #[test]
+    fn platform_is_a_claim_family_filter_not_a_lane_input_8187() {
+        // #8187 platform audit: tasks.platform holds only the two
+        // claim families and lane_decision takes no platform input
+        // (its signature is exclusion + opencode_reason only), so a
+        // platform selector can never route a task to opencode.
+        assert_eq!(PLATFORM_FAMILIES, ["openchamber", "muse"]);
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        let lane_fn = impl_src
+            .split("fn verb_lane")
+            .nth(1)
+            .expect("verb_lane exists")
+            .split("fn verb_bind")
+            .next()
+            .unwrap_or("");
+        assert!(
+            !lane_fn.contains("platform"),
+            "verb_lane must not read tasks.platform: {lane_fn}"
+        );
     }
 
     #[test]
