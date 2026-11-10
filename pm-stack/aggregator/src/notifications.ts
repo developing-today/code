@@ -37,6 +37,101 @@ export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   "blocked-age": true,
 };
 
+/** Notification preference classes (#3318, slice (d) of the #1254
+ * design): the classes a subscription can toggle on the preferences
+ * page (/alerts/preferences). Ids are exactly the keys of
+ * NOTIFICATION_CLASS_DEFAULTS — the stored subscription `classes`
+ * map and the engine's classEnabled check read the same keys, so a
+ * toggle on the page is the next engine decision. */
+export interface NotificationClassMeta {
+  id: string;
+  label: string;
+  blurb: string;
+}
+
+export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
+  {
+    id: "incident",
+    label: "Incident alerts",
+    blurb: "A watchdog reports something down. Always immediate — quiet hours never hold an incident.",
+  },
+  {
+    id: "needs-drew",
+    label: "Needs Drew",
+    blurb: "An item enters the needs-Drew tier on the attention page.",
+  },
+  {
+    id: "quota-wall",
+    label: "Quota wall",
+    blurb: "A pool hits its limit well before reset, or a sole-door pool walls at all.",
+  },
+  {
+    id: "quota-near-wall",
+    label: "Quota near wall",
+    blurb: "A sole-door pool crosses 85% of a window.",
+  },
+  {
+    id: "stack-health",
+    label: "Stack health",
+    blurb: "A monitored stack service starts failing its probe.",
+  },
+  {
+    id: "blocked-age",
+    label: "Blocked-age reminders",
+    blurb: "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
+  },
+];
+
+/** Classes a per-class test send accepts: every preference class,
+ * plus "digest" — the digest is not a stored preference (it is the
+ * delivery shape quiet/digest-only candidates take), but its landing
+ * is part of the deep-link acceptance, so it gets a test too. */
+export const NOTIFICATION_TEST_CLASSES: string[] = [...NOTIFICATION_CLASSES.map((c) => c.id), "digest"];
+
+export function isNotificationTestClass(value: unknown): value is string {
+  return typeof value === "string" && NOTIFICATION_TEST_CLASSES.includes(value);
+}
+
+/** The test item's stable object ref for a class test send. The
+ * `test:` prefix keeps test traffic distinguishable in the sends
+ * ledger from real candidates of the same class. */
+export const classTestObjectRef = (cls: string): string => `test:${cls}`;
+
+/** Deep-link landing for a per-class test notification (design §3,
+ * #3318 acceptance). With a real candidate in hand, the landing is
+ * the candidate's own URL — the same URL its dashboard card links
+ * to. Without one, the test item lands on the view the engine itself
+ * assigns that class: incident → its anchored Alerts card, quota
+ * classes → /quota, stack-health → /health, and the attention
+ * classes → /attention anchored to the test item (mirroring
+ * tierItemCandidate's fallback for items with no session/GitHub
+ * ref). Never the origin root; the only list-shaped landing is the
+ * digest case, filtered to the digest's refs. */
+export function notificationTestLanding(
+  cls: string,
+  origin: string,
+  candidate?: Pick<NotificationCandidate, "url"> | null,
+): string {
+  if (candidate?.url) return /^https?:\/\//.test(candidate.url) ? candidate.url : `${origin}${candidate.url}`;
+  switch (cls) {
+    case "incident":
+      return `${origin}/alerts#incident-test`;
+    case "quota-wall":
+    case "quota-near-wall":
+      return `${origin}/quota`;
+    case "stack-health":
+      return `${origin}/health`;
+    case "digest":
+      return `${origin}/attention?refs=${encodeURIComponent("test:needs-drew,test:blocked-age")}`;
+    case "needs-drew":
+      return `${origin}/attention#test-needs-drew`;
+    case "blocked-age":
+      return `${origin}/attention#test-blocked-age`;
+    default:
+      return `${origin}/alerts`;
+  }
+}
+
 export const NOTIFICATION_COOLDOWN_MS = 6 * 60 * 60_000;
 export const BLOCKED_AGE_REMINDER_MS = 24 * 60 * 60_000;
 export const BLOCKED_AGE_BREAKTHROUGH_MS = 48 * 60 * 60_000;
