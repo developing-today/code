@@ -107,6 +107,17 @@ summary or no-action resolution that has no addressable result object is not a
 `resolved-into` edge; it remains a thread-resolution outcome, not a fabricated
 object target. Proposal and approval mechanics remain with #5874.
 
+Projecting a `resolved-into` edge requires the target `ObjectRef`, and the
+mapping to it is guaranteed, not heuristic: the `chat.resolution.v1` edit
+event names the target object and the resulting revision, and the
+`author_key` is read from that object's own record. Where an object type
+identifies edit results only by a stable logical ID, its adapter must
+supply a deterministic mapping from that logical ID to the record
+`(object_id, author_key)` pair as part of the identity contract below.
+If no such mapping exists, the edge is not projected; the outcome stays
+a thread-resolution outcome until the result has an addressable object
+identity.
+
 `talk-for` is a separate `chat.anchor.v1` binding projection, not a fifth
 `ConversationLink` relation. #5872 already defines its single-canonical
 binding and disputed-conflict fold; #5871 owns who may bind and the lifecycle
@@ -167,9 +178,16 @@ pa1~g~<revision>~1~<part>~<selector-type>~<value>
 
 `r`, `b`, and `g` mean range, block, and region. The revision, part, block,
 and selector-type fields are UTF-8 percent-encoded, leaving only ASCII
-alphanumerics, `.`, `_`, and `-` unescaped (`~` is always escaped inside a
-field, so it remains an unambiguous separator). In the region form, `0` means
-there is no part ID and `1` means the next field is a part ID; no sentinel is
+alphanumerics, `.`, `_`, and `-` unescaped. Inside a field, a literal `~`
+is written `~~` and a literal `%` is written `%25`; the field encoding
+never uses `%7E`. Parsing scans a field left to right: `~~` decodes to
+one literal `~`, a lone `~` is the separator, and percent-decoding runs
+exactly once, only after the fields have been split. Because no field
+can contain `%7E`, a URL normalizer that decodes percent-encoded
+unreserved characters cannot manufacture a separator inside a field,
+and a fragment whose field count does not match the form above is
+malformed and must be rejected, never parsed leniently. In the region
+form, `0` means there is no part ID and `1` means the next field is a part ID; no sentinel is
 overloaded as a valid ID. Range offsets are decimal Unicode-scalar values. The
 region `value` is the unpadded base64url encoding of the object type's
 canonical UTF-8 selector value. This grammar is safe in a URL fragment and has
@@ -199,8 +217,10 @@ save creating a new event ID (the document model described in #2259 is an
 example). Such an ID is version-specific unless that object type separately
 defines a stable logical ID. `about` may target any addressable ID object. A
 part anchor can follow later edits only when the object's adapter supplies the
-identity/revision contract above; otherwise the anchor is pinned to that
-version and cannot automatically follow a new object ID.
+identity/revision contract above, including, for record-per-save models, a
+deterministic mapping from each new record object ID to the same stable
+logical ID; otherwise the anchor is pinned to that version and cannot
+automatically follow a new object ID.
 
 ### Edit, version, and delete survival
 
@@ -213,10 +233,13 @@ uses these states and rules:
    identity maps the selection exactly, resolve it as **current** with no
    warning.
 2. Otherwise, if the resolver finds exactly one match for the opaque content
-   fingerprint in the same object's revision lineage, resolve it as
-   **relocated** and show a non-blocking “anchor moved” warning. Preserve both
-   original and resolved selectors. Confirmed relocation is recorded by a
-   new `chat.anchor.v1` event; the initial binding event is never rewritten.
+   fingerprint in the target revision, resolve it as
+   **relocated** and show a non-blocking “anchor moved” warning. Candidate
+   counting is scoped to the target revision: matches in other revisions
+   of the lineage neither add candidates nor make this one ambiguous.
+   Preserve both original and resolved selectors. Confirmed relocation is
+   recorded by a new `chat.anchor.v1` event; the initial binding event is
+   never rewritten.
 3. If only an approximate match exists, or more than one candidate exists,
    mark it **drifted**. Warn, retain the original anchor, and require a person
    or object-specific resolver to confirm a candidate before navigation
@@ -266,6 +289,12 @@ key, relation, and by-reference selector when the relation is
 `chat.resolution.v1` edit events under #5874. The event log(s) are authoritative;
 `ConversationLink`, `TalkPageBinding`, current resolution, and reverse indexes
 are deterministic projections.
+
+Link events replicate with the conversation group's existing event
+stream, exactly as the other chained events in that group do; this
+record defines no new replication transport and does not rely on a
+#2036 application metadata/extension path, which #2036 does not define
+for link records.
 
 The existing `ChatLink` in `chat.message.v1` may also carry the `object` kind
 selected by #5872 for an in-message object reference or a recognized pasted
@@ -340,7 +369,8 @@ Implementations of this decision must hold all of the following:
 5. Original revision and selector are immutable. Cross-edit following is
    allowed only for object types with the stable identity/revision contract.
    Resolution is revision-bound derived state, and only an exact deterministic
-   mapping or unique exact fingerprint match may retarget automatically.
+   mapping or a unique exact fingerprint match within the target revision
+   may retarget automatically.
 6. Approximate or ambiguous candidate matches are `drifted`; insufficient
    evidence is `unresolved`; concurrent mutation heads are `disputed`. All
    three are visibly warned and never silently followed. Proven removal is
@@ -348,7 +378,10 @@ Implementations of this decision must hold all of the following:
    `unbound` and removes the edge from active navigation without erasing its
    event history.
 7. Orphaning or tombstoning a target does not delete the link, its conversation,
-   or chat messages. No resolver follows content into a different object ID.
+   or chat messages. No resolver follows content into a different logical
+   object: following across changing record object IDs is permitted only
+   where the identity contract maps them to the same stable logical
+   identity, and content similarity alone never establishes that mapping.
 8. Unknown or unsupported `chat.anchor.v1` events do not prevent a client from
    reading or sending ordinary `chat.message.v1` messages. `resolved-into`
    projection follows #5874's `chat.resolution.v1` fold; clients that render a
