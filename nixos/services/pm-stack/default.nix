@@ -43,14 +43,22 @@
 # renderer and the fallback installer; this module owns the unit
 # lifecycle.
 #
-# The Kaneo stack is the exception to the checkout model: pm-kaneo
-# runs deploy.sh from the ~/pm-stack deployment dir, because the
-# rendered .env, the compose project, and the pm-stack_postgres_data
-# volume live there. deploy.sh also renders ~/pm-stack/tunnel.env,
-# which pm-tunnel consumes — systemd expands TUNNEL_TOKEN from that
-# EnvironmentFile in the tunnel's ExecStart, exactly as the
-# hand-written unit relied on. (The tunnel's ingress is managed in
-# Cloudflare: kaneo.security.cab -> http://localhost:5173 and
+# The Kaneo stack was the exception to the checkout model until
+# 2026-11-08: pm-kaneo ran deploy.sh from the ~/pm-stack deployment
+# dir, because the rendered .env, the compose project, and the
+# pm-stack_postgres_data volume live there. Under Drew's 2026-11-08
+# ruling (code#1752, Option A — provisional: unify under NixOS
+# first, not a permanent compose-vs-NixOS ruling), Kaneo +
+# PostgreSQL are declared as oci-containers by the pm-apps module,
+# and pm-kaneo.service / pm-kaneo.timer are removed. deploy.sh also
+# renders ~/pm-stack/tunnel.env, which pm-tunnel consumes — systemd
+# expands TUNNEL_TOKEN from that EnvironmentFile in the tunnel's
+# ExecStart, exactly as the hand-written unit relied on. The
+# rendered files persist on disk; re-render with
+# `~/pm-stack/deploy.sh render` if the SOPS secrets rotate, and do
+# not run deploy.sh's compose actions anymore (see the pm-apps
+# module header). (The tunnel's ingress is managed in Cloudflare:
+# kaneo.security.cab -> http://localhost:5173 and
 # dispatch.security.cab -> http://localhost:4879.)
 #
 # The projector is ENABLED: the aggregator's environment pins
@@ -340,10 +348,13 @@ in
           Service = {
             Type = "simple";
             WorkingDirectory = "${stackDir}";
-            # tunnel.env is rendered by the pm-kaneo deploy flow
-            # (deploy.sh); systemd expands TUNNEL_TOKEN from this
-            # EnvironmentFile in ExecStart, exactly as the hand-written
-            # unit relied on.
+            # tunnel.env was rendered by the pm-kaneo deploy flow
+            # (deploy.sh render); systemd expands TUNNEL_TOKEN from
+            # this EnvironmentFile in ExecStart, exactly as the
+            # hand-written unit relied on. Since the 2026-11-08
+            # code#1752 cutover nothing re-renders it automatically —
+            # re-run `~/pm-stack/deploy.sh render` by hand if the
+            # SOPS secrets rotate.
             EnvironmentFile = "${stackDir}/tunnel.env";
             # --protocol http2 (#5647): the default QUIC transport kept
             # dropping on this host's network path - cloudflared logged
@@ -360,37 +371,10 @@ in
           Install.WantedBy = [ "default.target" ];
         };
 
-        # The Kaneo stack is a oneshot, not a daemon: deploy.sh renders
-        # the env, pulls the images, and (re)creates the containers,
-        # which then run under docker's own restart policy. A user unit
-        # cannot order itself against the system docker.service, so if
-        # dockerd is not ready when this first runs, the pm-kaneo timer
-        # below retries it until it has succeeded once (a succeeded
-        # oneshot stays active, so later timer elapses are no-ops) —
-        # the same self-heal shape as the projector reconcile.
-        pm-kaneo = {
-          Unit = {
-            Description = "Kaneo stack — render env + docker compose up via pm-stack/deploy.sh (NixOS)";
-            After = [
-              "network-online.target"
-              "docker.service"
-            ];
-            Wants = [ "network-online.target" ];
-          };
-          Service = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            # The first activation pulls both images and then waits
-            # out deploy.sh's health gate; give it room.
-            TimeoutStartSec = 1200;
-            WorkingDirectory = "${stackDir}";
-            ExecStart = "${stackDir}/deploy.sh";
-            # No -v: stopping the stack never deletes the postgres
-            # data volume.
-            ExecStop = "${docker} compose down";
-          };
-          Install.WantedBy = [ "default.target" ];
-        };
+        # pm-kaneo.service removed 2026-11-08: Kaneo + PostgreSQL
+        # are oci-containers in the pm-apps module now (code#1752
+        # cutover; see the header note). deploy.sh is no longer
+        # run by systemd.
       };
 
       systemd.user.timers = {
@@ -459,15 +443,8 @@ in
           Install.WantedBy = [ "timers.target" ];
         };
 
-        pm-kaneo = {
-          Unit.Description = "Retry pm-kaneo until the Kaneo stack is up (docker-ordering self-heal)";
-          Timer = {
-            OnBootSec = "1min";
-            OnUnitActiveSec = "30min";
-            Unit = "pm-kaneo.service";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        };
+        # pm-kaneo.timer removed 2026-11-08 with pm-kaneo.service
+        # (code#1752 cutover — Kaneo is a pm-apps oci-container now).
       };
     };
   };
