@@ -21,6 +21,7 @@ import random
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
@@ -354,6 +355,82 @@ class InhibitorDeadChildTests(unittest.TestCase):
         self.assertTrue(
             any("exit=3" in m for m in self.logs),
             f"dead-child exit not logged on release: {self.logs}",
+        )
+
+
+class FakeStalledProc:
+    """Child that ignores terminate and kill (#8183 regression).
+
+    wait() raises TimeoutExpired on the caller's grace wait, then
+    blocks inside the background reap until the test unblocks it,
+    then raises TimeoutExpired again (the kill did not work either).
+    """
+
+    def __init__(self):
+        self.terminated = False
+        self.killed = False
+        self.wait_calls = 0
+        self.unblock = threading.Event()
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        if self.wait_calls > 1:
+            self.unblock.wait(timeout=10)
+        raise subprocess.TimeoutExpired(cmd="fake-inhibit", timeout=timeout)
+
+
+class InhibitorNonBlockingReapTests(unittest.TestCase):
+    """Oracle: issue #8183 acceptance -- a stalled reap must not block
+    the sampling loop for the full double-wait, the timeout/kill
+    safeguards are preserved, and the lock is not believed released
+    while the child is still running."""
+
+    def setUp(self):
+        self.logs = []
+        self._orig_log = pg.log
+        pg.log = self.logs.append
+        self.addCleanup(setattr, pg, "log", self._orig_log)
+
+    def test_stalled_child_reap_moves_off_the_calling_loop(self):
+        proc = FakeStalledProc()
+        inh = pg.Inhibitor()
+        inh.proc = proc
+        start = time.monotonic()
+        settled = inh.release()
+        elapsed = time.monotonic() - start
+        self.assertFalse(settled, "stalled reap reported settled synchronously")
+        self.assertLess(
+            elapsed, 2.0, "release() blocked on the stalled child (old path: ~10s)"
+        )
+        self.assertTrue(proc.terminated)
+        self.assertIsNone(inh.proc)
+        self.assertFalse(inh.reap_settled(), "sleep could fire before release settles")
+        self.assertTrue(inh.held, "lock believed released while child still runs")
+        # Sampling continues while the reap is pending; once the
+        # background escalation finishes, the release settles, the
+        # kill safeguard has run, and the unconfirmed exit is loud.
+        proc.unblock.set()
+        deadline = time.time() + 5
+        while not inh.reap_settled() and time.time() < deadline:
+            inh.poll_reap()
+            time.sleep(0.01)
+        self.assertTrue(inh.reap_settled())
+        self.assertTrue(proc.killed, "kill escalation was not preserved")
+        self.assertGreaterEqual(proc.wait_calls, 2)
+        inh.poll_reap()
+        self.assertFalse(inh.held)
+        self.assertTrue(
+            any("UNCONFIRMED" in m for m in self.logs),
+            f"unconfirmed release not logged loudly: {self.logs}",
         )
 
 
