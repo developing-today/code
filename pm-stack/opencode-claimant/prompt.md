@@ -304,3 +304,23 @@ queue task and issue>, "model": {"id": <route model>,
 - No credential value ever enters a prompt, log, or task record; the queue
   CLI and poll.py reach the queue-broker with the broker's client
   token — no queue credential lives on this path.
+
+## Muse→opencode send (#8210)
+
+A Muse session that holds a task can send it directly to an
+opencode session with `send_to_opencode.py` (this directory): it
+records the opencode assignment with the sender's stated reason,
+creates the session in the task's worktree, and moves the claim
+with the broker's transfer claim — `repo-queue claim --task <id>
+--from-session <sender session> --session-id <new session>
+--worker opencode-claimant` — holder -> claimer in one operation,
+never through queued or parked, binding the new session
+atomically. The sender's notes ride in the launched session's
+prompt (SENDER NOTES section) and in `SEND_NOTES.md` in the
+worktree. A transferred task arrives already claimed by
+opencode-claimant and bound; it is not a poll candidate and must
+not be collected or launched a second time. The transfer refuses
+— leaving the sender's claim untouched — when `--from-session`
+does not match the holder's session mark, when the row is not
+under a live claim, or when it is already bound to a third
+session.
