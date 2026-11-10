@@ -76,6 +76,7 @@ records.
 - [Server-side invariants: budgets, observability, exploit resistance, containment](../../doc/2026-11-09T05-15-00Z_design_id_server_invariants/2026-11-09T05-15-00Z_design_id_server_invariants.md)
 - [Two-level metering: burst bucket + hard per-tick ceiling, per function](../../doc/2026-11-10T03-10-00Z_design_id_two_level_metering/2026-11-10T03-10-00Z_design_id_two_level_metering.md)
 - [Framing and fragmentation across ID carrier classes](../../doc/2026-11-09_decision_id5810_carrier_framing.md) (decision for #5810: length-prefixed stream frames, datagram whole-frame-or-checked-chunk assembly, store-and-forward opaque-object-or-checked-chunk assembly, and the invariants each adapter must hold)
+- [Draft approval queues, outcomes, and rejected-draft forks](../../doc/2026-11-08T11-06-39Z_design_id_draft_approval_flow/2026-11-08T11-06-39Z_design_id_draft_approval_flow.md)
 
 ## Package architecture docs (living, with the code)
 
