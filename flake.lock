@@ -2248,11 +2248,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794340138,
-        "narHash": "sha256-3+kREPfvbZYouwtaiUsII+rSwXHHY97E0PmV8SoJyCs=",
+        "lastModified": 1794341590,
+        "narHash": "sha256-bY5VVhs2328w2hpu3IBKq/PI5b1z5/TVkAFB84UiPnM=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "fafff7073054dbaa822e47c910974d8982b9e561",
+        "rev": "3497ea22c9468d46474e7613ab59d01d8ada57bb",
         "type": "github"
       },
       "original": {
