@@ -427,6 +427,65 @@
             "context": 1000000,
             "output": 64000
           }
+        },
+        // 2026-11-10 (Drew, direct order): Claude Fable 5.2 joins the
+        // _claude catalog, same shape as the three models above. The
+        // door serves it today: the wire probe on the laptop's Claude
+        // Code credential returned "pong" for --model claude-fable-5-2
+        // (preceded by a [claude-code:unrecognized_model] notice from
+        // the CLI's local catalog, which the endpoint answered
+        // anyway). Seated as fable-plan's lead at #low in specialist,
+        // summit, and the new workhorse-last-resort stage (see those
+        // routes) - it draws the dedicated Fable quota (Drew,
+        // 2026-11-07), not the shared Claude Max allowance.
+        "claude-fable-5-2": {
+          "name": "Fable 5.2 (Claude Code)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 4096
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 8192
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 32768
+                }
+              }
+            },
+            "max": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 65536
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
         }
       }
     },
@@ -2212,6 +2271,22 @@
           "_commandcode/deepseek/deepseek-v4-pro": 0.5
         }
       },
+      "fable-plan": {
+        "name": "Claude Fable - plan providers",
+        // NEW 2026-11-10 (Drew, direct order): the Fable plan route,
+        // mirroring opus-plan/sonnet-plan - the _claude door leads.
+        // Single-door by fact, not omission: no other enabled door
+        // serves claude-fable-5-2 (Antigravity's Claude bucket serves
+        // Sonnet/Opus only; the _commandcode catalog carries Fable 5.1
+        // and Fable 5, which are deliberately NOT this route's model).
+        // Seated at #low at the head of specialist and summit, and
+        // alone in workhorse-last-resort (see those routes).
+        "targets": [
+          "_claude/claude-fable-5-2"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "haiku-plan": {
         "name": "Claude Haiku - plan providers",
         // 2026-10-27 pool redesign: ORDERED, flat doors first and the
@@ -2867,7 +2942,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse": {
-        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
+        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
         // 2026-10-27 pool redesign (Drew's structure): incremental —
         // DeepSeek Flash #high is the primary every session tries first;
         // the weighted relief pool (workhorse-weighted) absorbs failover
@@ -2896,10 +2971,14 @@
         // 2026-11-03 (Drew): workhorse-ordered (deepseek-flash-plan
         // only, ordered) joins the chain IN FRONT of workhorse-primary.
         // deepseek-flash-plan is NOT removed from workhorse-primary.
+        // 2026-11-10 (Drew, direct order): workhorse-last-resort
+        // joins the chain as the FOURTH stage - reached only when
+        // every stage ahead of it yields nothing (see that route).
         "targets": [
           "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
-          "opencode-route/workhorse-weighted"
+          "opencode-route/workhorse-weighted",
+          "opencode-route/workhorse-last-resort"
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -3045,8 +3124,42 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      "workhorse-last-resort": {
+        "name": "Workhorse last resort - Fable #low from Claude, only if all else is down",
+        // NEW 2026-11-10 (Drew, direct order): the fourth and final
+        // stage of the workhorse chain. Its only target is Fable
+        // #low on the _claude door (via fable-plan), reached only
+        // when workhorse-ordered, workhorse-primary, and
+        // workhorse-weighted all yield nothing. This is a
+        // deliberate, named exception to Drew's 2026-11-06 rule
+        // ("do not add Claude to workhorse") - last-resort only,
+        // ordered by Drew explicitly today (2026-11-10). The burn
+        // case is the point: when every other pool is walled at
+        // once (the 2026-11-09/10 pattern, code#8086), workhorse
+        // sessions land here instead of dying on no-candidates, and
+        // they draw the dedicated Fable quota (Drew, 2026-11-07),
+        // not the shared Claude Max allowance. AA v5 #low II 53.9
+        // at $3.10/task (TTFT 6.4s) - stronger than any workhorse
+        // member; it is seated last by COST and quota role, not by
+        // score.
+        "targets": [
+          "opencode-route/fable-plan#low"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules",
+        // Same #7927 guard as the sibling stages: 60s sizes the
+        // deadline above observed leg maxima while still bounding
+        // a truly dead leg to one minute.
+        "health": { "firstTokenTimeoutMs": 60000 }
+      },
       "specialist": {
-        "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
+        "name": "Specialist - hard work: quality first, Fable #low head, then Claude Sonnet, Argon, Meta Spark, OpenAI",
+        // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
+        // _claude door) takes the HEAD of this chain. AA v5 #low
+        // II 53.9 tops every member it now leads (the former head,
+        // Sonnet #high, is II 41.5), and the seat draws the
+        // dedicated Fable quota (Drew, 2026-11-07), not the shared
+        // Claude Max allowance.
         // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): Sonnet #high II 41 / TTFT ~12s /
         // $1.64 per task (AA v5 costing),
         // Spark contributor #max / 42.0s / 176 t/s (single Meta door is the caveat), Sol
@@ -3070,6 +3183,7 @@
         // diversity (if Sol walls on quota, Terra walls too). DeepSeek Pro
         // tail REMOVED: its <=36 ceiling is below this tier's band.
         "targets": [
+          "opencode-route/fable-plan#low",
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
         // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
@@ -3080,7 +3194,12 @@
         "autonomy": "rules"
       },
       "summit": {
-        "name": "Summit - very complex design only, deliberate use",
+        "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Wonder, Sol",
+        // 2026-11-10 (Drew, direct order): Fable #low (fable-plan,
+        // _claude door) takes the HEAD of this chain. AA v5 #low
+        // II 53.9 tops the former head, Opus #high (II 51.8), and
+        // the seat draws the dedicated Fable quota (Drew,
+        // 2026-11-07), not the shared Claude Max allowance.
         // 2026-10-30: the Wonder leaf ran through muse-proxy
         // (provider "muse", muse/muse-wonder-1.0#max) — the direct
         // meta door is dead (attestation; see the "muse" provider
@@ -3099,6 +3218,7 @@
         // all; the previous order burned Sol ahead of Wonder, backwards
         // under the reserve rule.
         "targets": [
+          "opencode-route/fable-plan#low",
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
           "_muse/muse-wonder-1.0-contributor#xhigh",
