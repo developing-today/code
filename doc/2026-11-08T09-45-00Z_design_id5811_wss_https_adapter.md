@@ -136,18 +136,24 @@ different protocols:
   presenting its session ID and last accepted sequence. This is what makes
   the two modes interchangeable mid-session.
 - **Idle and lifetime bounds are explicit and configurable** (the
-  `WorldLimits` pattern, `pkgs/id/src/world/mod.rs:111-160`): max frame size
-  = `MAX_FRAME_BYTES` (1 MiB, already enforced by
-  `ws.max_message_size(MAX_FRAME_BYTES)` at `pkgs/id/src/web/world_ws.rs:582`),
-  max frames per POST batch, max concurrent sessions per origin, and a
-  server-side idle timeout.
+  `WorldLimits` pattern, `pkgs/id/src/world/mod.rs:111-160`): max payload
+  size = `MAX_FRAME_BYTES` (1 MiB, the `encode_frame` payload limit in
+  `pkgs/id/src/frames.rs`); the WebSocket message limit is
+  `MAX_FRAME_BYTES + 4`, because one binary message carries the whole
+  length-prefixed frame (4-byte prefix + payload) — the existing
+  `ws.max_message_size(MAX_FRAME_BYTES)` guard at
+  `pkgs/id/src/web/world_ws.rs:582` must therefore be raised by 4 when
+  this contract is implemented, or a maximum-size valid frame would be
+  rejected. Also bounded: max frames per POST batch, max concurrent
+  sessions per origin, and a server-side idle timeout.
 
 ### 3.3 MTU, framing and fragmentation
 
 - **WSS mode:** the carrier has no MTU problem — WebSocket is a message
-  stream over TCP. One ID frame per binary message; `MAX_FRAME_BYTES` is the
-  ceiling, matching the existing `world_ws` guard. No adapter-level
-  fragmentation.
+  stream over TCP. One ID frame per binary message; the payload ceiling
+  is `MAX_FRAME_BYTES` and the message ceiling is `MAX_FRAME_BYTES + 4`
+  (the 4-byte length prefix travels inside the message). No
+  adapter-level fragmentation.
 - **HTTPS mode:** a proxy may cap request body size well below 1 MiB. The
   adapter therefore **splits one ID frame across several POSTs only at the
   #5810 chunk boundary** (the checked chunk/reassembly pattern), never by
@@ -313,7 +319,8 @@ and recorded rather than forked:
 4. **No live retry, no live queue.** The adapter never retries a live frame
    on its own and never buffers live frames for a disconnected peer.
    Ambiguous POST outcomes are deduped by sequence, not re-delivered.
-5. **Bounded everything.** Frame ≤ `MAX_FRAME_BYTES`; POST batch ≤ the
+5. **Bounded everything.** Payload ≤ `MAX_FRAME_BYTES`; WebSocket
+   message ≤ `MAX_FRAME_BYTES + 4` (prefix included); POST batch ≤ the
    configured cap; sessions per origin ≤ the configured cap; idle timeout
    enforced. An oversized or malformed message closes the session with a
    defined error, never panics or hangs (the #5674 conformance rule).
