@@ -133,15 +133,7 @@ outage is recoverable, a double-launch's damage is not.
    verified, use the atomic recovery operation below to clear both
    bindings before the task becomes a launch candidate. Until the lease
    expires, note it in the fire log and let Tend's fleet-watchdog
-   (ledger backstop) see it. Never relaunch over a live session. A task may also carry a recorded platform limitation
-(lane ledger `platform_limit` + `platform_limit_reason`, set only
-through the lane verb with both `--limit-platform` and
-`--limit-reason`): a valid limitation binds the transfer — a
-muse-limited task refuses an opencode transfer/send, naming the
-limitation and its reason — while a stored limitation with no
-recorded reason is invalid and is cleared by the transfer claim
-instead of enforced. Default is no limitation: either platform
-may claim.
+   (ledger backstop) see it. Never relaunch over a live session.
    RECOVERY RULE for a bound session that never received its prompt
    (#4758, Phase 3 of design #4912): poll.py's `stuck_bound` list
    names the candidates — bound session present as a root with no
@@ -332,3 +324,13 @@ not be collected or launched a second time. The transfer refuses
 does not match the holder's session mark, when the row is not
 under a live claim, or when it is already bound to a third
 session.
+
+A task may also carry a recorded platform limitation (lane
+ledger `platform_limit` + `platform_limit_reason`, set only
+through the lane verb with both `--limit-platform` and
+`--limit-reason`): a valid limitation binds the transfer — a
+muse-limited task refuses an opencode transfer/send, naming the
+limitation and its reason — while a stored limitation with no
+recorded reason is invalid and is cleared by the transfer claim
+instead of enforced. Default is no limitation: either platform
+may claim.
