@@ -191,9 +191,17 @@ def claim_batch(queue_name, worker, lane, count, family,
     if data is None:
         return [], f"batch claim unparseable (rc={rc}): {err.strip()[:200]}"
     tasks = data.get("tasks")
-    if not isinstance(tasks, list):
-        return [], f"batch claim returned no tasks array: {str(data)[:200]}"
-    return tasks, None
+    if isinstance(tasks, list):
+        return tasks, None
+    # count == 1 IS the single claim (#8217: count absent or 1 is
+    # the ordinary claim), and the client answers a single claim
+    # with the bare row — or {"task": null} when nothing is
+    # claimable. Normalize both to the batch shape.
+    if isinstance(data.get("id"), int):
+        return [data], None
+    if data.get("task") is None and "task" in data:
+        return [], None
+    return [], f"batch claim returned no tasks array: {str(data)[:200]}"
 
 
 def release_task(task_id, worker, reason):

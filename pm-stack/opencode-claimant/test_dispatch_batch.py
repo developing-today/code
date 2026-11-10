@@ -78,6 +78,17 @@ class FakeQueue:
         return [c for c in self.calls if c[0] == verb]
 
 
+class BareRowQueue(FakeQueue):
+    """The client's count==1 shape: a claim answers with the bare
+    row (the single claim), not the batch {"tasks": [...]} body."""
+
+    def __call__(self, *args, timeout=120):
+        self.calls.append(args)
+        if args[0] == "claim":
+            return 0, json.dumps(self.claim_rows[0]), ""
+        return 0, "{}", ""
+
+
 class DispatchBatchTests(unittest.TestCase):
     def setUp(self):
         self.worktree_calls: list[tuple] = []
@@ -274,6 +285,22 @@ class DispatchBatchTests(unittest.TestCase):
         self.assertEqual(item["outcome"], "prepared_unbound")
         self.assertIn("bind_command", item)
         self.assertEqual(fake_q.verbs("bind"), [])
+
+    def test_single_item_batch_accepts_bare_row_response(self):
+        # Regression (live acceptance, #8217): --count 1 is the
+        # single claim, whose response is the bare row; dispatch
+        # must normalize it instead of failing the claim phase.
+        fake_q = BareRowQueue([row(101, 555)])
+        db.queue = fake_q
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = db.main(["dispatch_batch.py",
+                          *self.base_argv("--to", "opencode",
+                                          "--session-id", "ses_lane",
+                                          "--count", "1", "--dry-run")])
+        self.assertEqual(rc, 0)
+        summary = json.loads(out.getvalue().strip().splitlines()[-1])
+        self.assertEqual(summary["tasks"], [101])
 
     # -- validation ---------------------------------------------------
 
