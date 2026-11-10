@@ -180,6 +180,9 @@
             CARGO_INCREMENTAL = "0";
             CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
             CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+            # Fake-compiler probe tests need a real interpreter for their
+            # shebang in the sandbox, where /bin/sh does not exist (#5926).
+            ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs =
@@ -824,6 +827,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
@@ -873,6 +879,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh";
