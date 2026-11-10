@@ -262,8 +262,9 @@ export type ProvenanceDetail = Record<keyof Provenance, ProvenanceFacet>;
 
 /** "error"/"stale" are gatherer-overlay states (#1151): the gatherer
  * could not read the pool, or its read is past the freshness bound.
- * They are never rendered as healthy, and never as zero usage. */
-export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale";
+ * "lapsed" is a confirmed terminal subscription state, not a provider
+ * failure. None are rendered as healthy or as zero usage. */
+export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale" | "lapsed";
 
 /** One usage window a provider exposes (5-hour, weekly, monthly, ...). */
 export interface QuotaWindow {
@@ -322,8 +323,8 @@ export interface QuotaCredentialRow {
 export interface PoolFreshness {
   measuredAt: string;
   source: string;
-  state: "ok" | "stale" | "error";
-  /** Why the gatherer could not read the pool, when state is "error". */
+  state: "ok" | "stale" | "error" | "lapsed";
+  /** Why the gatherer could not read the pool, when state is "error" or "lapsed". */
   error?: string;
 }
 
@@ -332,7 +333,7 @@ export interface GathererProviderFreshness {
   providerId: string;
   serviceId: string;
   credentialLabel?: string;
-  state: "ok" | "stale" | "error";
+  state: "ok" | "stale" | "error" | "lapsed";
   measuredAt: string;
   source: string;
   error?: string;
@@ -1419,7 +1420,7 @@ export interface QuotaCurrentWindow {
   resetsAt: string | null;
   measuredAt: string;
   source: string;
-  state: "ok" | "error";
+  state: "ok" | "error" | "lapsed";
 }
 
 export interface QuotaCurrentEntry {
@@ -1442,7 +1443,7 @@ export interface QuotaCurrentEntry {
   /** ISO time of the provider's last successful read, when the quota
    *  module carries one; lets readers age a degraded row honestly. */
   lastSuccessAt?: string;
-  state: "ok" | "error" | "unconfigured";
+  state: "ok" | "error" | "lapsed" | "unconfigured";
   measuredAt: string;
   /** #1268: ISO time of the tick that retained this entry from the
    *  previous tick after the provider's run errored. The data is
@@ -1463,7 +1464,7 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error"; ms: number; rows: number; error?: string }>;
+  perProvider: Record<string, { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string }>;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }

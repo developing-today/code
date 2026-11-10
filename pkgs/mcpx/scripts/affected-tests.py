@@ -316,7 +316,8 @@ def embedded_owners(mcpx, rel):
     code change for the package whose //go:embed directive covers it,
     even though no .go file moved: that package's tests validate the
     embedded bytes. Directory embeds cover everything under the named
-    directory; glob patterns are matched with fnmatch."""
+    directory; glob patterns are matched with fnmatch. Go's optional
+    ``all:`` prefix is removed from each pattern before matching."""
     import fnmatch
 
     owners = set()
@@ -335,6 +336,8 @@ def embedded_owners(mcpx, rel):
                 continue
             for m in re.finditer(r"^//go:embed\s+(.+)$", text, re.M):
                 for pat in m.group(1).split():
+                    if pat.startswith("all:"):
+                        pat = pat[4:]
                     base = pat if pkg_dir == "." else pkg_dir + "/" + pat
                     for cand in non_go:
                         if (

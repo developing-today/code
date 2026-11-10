@@ -33,7 +33,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate | auth
+    mode: "ok", // ok | rate | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
     last: null,
     hits: 0,
     server: null,
@@ -67,6 +67,46 @@ const makeLeaf = (name, expectedKey) => {
         });
         return res.end(JSON.stringify({ error: { message: "quota" } }));
       }
+      if (leaf.mode === "sse-rate") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "retry-after": "30",
+        });
+        const error = JSON.stringify({
+          error: {
+            message: "quota exhausted",
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status: 429,
+          },
+        });
+        res.write(`data: ${error.slice(0, 14)}`);
+        return setTimeout(() => res.end(`${error.slice(14)}\n\n`), 10);
+      }
+      if (leaf.mode === "delayed-sse-rate") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "retry-after": "30",
+        });
+        res.write(": heartbeat\n\n");
+        const error = JSON.stringify({
+          error: {
+            message: "quota exhausted",
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status: 429,
+          },
+        });
+        return setTimeout(() => {
+          res.write(`data: ${error.slice(0, 14)}`);
+          setTimeout(() => res.end(`${error.slice(14)}\n\n`), 10);
+        }, 300);
+      }
+      if (leaf.mode === "stream-break") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(": heartbeat\n\n");
+        return setTimeout(() => res.destroy(), 10);
+      }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         const chunk = (delta, usage) =>
@@ -84,7 +124,87 @@ const makeLeaf = (name, expectedKey) => {
             ],
             ...(usage ? { usage } : {}),
           })}\n\n`;
-        res.write(chunk({ role: "assistant", content: name }));
+        if (leaf.mode === "big-first-event") {
+          // One valid first content event larger than the relay's
+          // 64 KiB preface window, delivered in slices so the parser
+          // buffer crosses the window mid-event (#5558 Codex P2).
+          const big = "A".repeat(96 * 1024);
+          const event = `data: ${JSON.stringify({
+            id: "chatcmpl-x",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    { index: 0, function: { name: "f", arguments: big } },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })}\n\n`;
+          let off = 0;
+          const step = () => {
+            if (off < event.length) {
+              res.write(event.slice(off, off + 8192));
+              off += 8192;
+              return setTimeout(step, 1);
+            }
+            res.write(
+              chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+            );
+            return res.end("data: [DONE]\n\n");
+          };
+          return step();
+        }
+        if (leaf.mode === "preface-flood") {
+          // A non-content preface past the relay's pre-content
+          // limit, then the response stays open: the relay must
+          // fail over AND cancel this stream (#5558 Codex P2).
+          // Cancellation is observable here as the socket closing
+          // before the response ever ended.
+          leaf.prefaceAborted = false;
+          res.on("close", () => {
+            if (!res.writableEnded) leaf.prefaceAborted = true;
+          });
+          res.write(": preface\n\n");
+          let sent = 0;
+          const step = () => {
+            if (res.destroyed || res.writableEnded) return;
+            res.write(`: ${"p".repeat(4096)}\n\n`);
+            sent += 4096;
+            if (sent < 192 * 1024) return setTimeout(step, 1);
+            // Hold the response open; only the relay's cancel ends it.
+          };
+          return step();
+        }
+        if (leaf.mode === "delayed-stream") {
+          res.write(chunk({ role: "assistant" }));
+          return setTimeout(() => {
+            res.write(chunk({ content: name }));
+            res.write(
+              chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+            );
+            res.end("data: [DONE]\n\n");
+          }, 350);
+        }
+        res.write(chunk({ role: "assistant" }));
+        res.write(chunk({ content: name }));
+        if (leaf.mode === "late-sse-rate") {
+          return res.end(
+            `data: ${JSON.stringify({
+              error: {
+                message: "late quota exhausted",
+                type: "rate_limit_error",
+                code: "insufficient_quota",
+                status: 429,
+              },
+            })}\n\n`,
+          );
+        }
         res.write(
           chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
         );
@@ -271,7 +391,7 @@ const startProxy = async (arg = {}) => {
     const ro = new DatabaseSync(dbPath, { readOnly: true });
     const rows = ro
       .prepare(
-        "SELECT route_id, provider_id, model_id, variant, outcome, error_tag, error_status, quota, session_id, failed_over_to, output_started FROM route_attempt ORDER BY id",
+        "SELECT route_id, provider_id, model_id, variant, outcome, error_tag, error_status, error_message, quota, session_id, failed_over_to, output_started, first_token_ms FROM route_attempt ORDER BY id",
       )
       .all();
     ro.close();
@@ -295,6 +415,18 @@ const MSGS = [
   { role: "system", content: "be terse" },
   { role: "user", content: "hello" },
 ];
+
+const waitForAttempts = async (p, count) => {
+  let rows = [];
+  for (let i = 0; i < 20; i++) {
+    try {
+      rows = p.attempts();
+    } catch {}
+    if (rows.length >= count) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return rows;
+};
 
 test("invalid timeout exits at startup with a useful diagnostic", () => {
   for (const raw of ["0", "-1", "1.5", "1e3", "0x10", " 100", "2147483648", "3000000000", "abc", "nope"]) {
@@ -401,7 +533,7 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
     // leafB has no static key in config: it must be served by the
     // credential-store key, which the leaf verifies.
     assert.equal(p.leafB.last.headers.authorization, "Bearer key-b");
-    const rows = p.attempts();
+    const rows = await waitForAttempts(p, 2);
     assert.equal(rows.length, 2);
     assert.equal(rows[0].outcome, "failure");
     assert.equal(rows[0].error_tag, "RateLimit");
@@ -511,7 +643,7 @@ test("variant remap reaches the leaf as reasoning_effort", async () => {
     });
     assert.equal(res.status, 200);
     assert.equal(p.leafA.last.body.reasoning_effort, "high");
-    const rows = p.attempts();
+    const rows = await waitForAttempts(p, 1);
     assert.equal(rows[0].variant, "high");
   } finally {
     await p.cleanup();
@@ -557,6 +689,179 @@ test("streaming relays SSE and records a success attempt", async () => {
     assert.equal(rows[0].outcome, "success");
     assert.equal(rows[0].output_started, 1);
     assert.equal(rows[0].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("first-token timing includes delay past the pre-content window", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "delayed-stream";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    assert.ok((await res.text()).includes("LEAF-A"));
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.ok(rows[0].first_token_ms > 200, `first_token_ms=${rows[0].first_token_ms}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content SSE quota error fails over to the next stream", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("quota exhausted"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.equal(rows[0].error_status, 429);
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(JSON.parse(rows[0].quota).retryAfterMs, 30_000);
+    assert.equal(rows[1].outcome, "success");
+    assert.equal(rows[1].provider_id, "leafB");
+    assert.equal(rows[1].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content SSE error after the buffer window still fails over cleanly", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "delayed-sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("quota exhausted"), text);
+    assert.ok(!text.includes("heartbeat"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(JSON.parse(rows[0].quota).retryAfterMs, 30_000);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content transport break fails over without committing the heartbeat", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "stream-break";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("heartbeat"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "Transport");
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("stream errors after content do not fail over", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "late-sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-A"), text);
+    assert.ok(text.includes("late quota exhausted"), text);
+    assert.equal(p.leafB.hits, 0);
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a first content event larger than the preface window is relayed, not rejected (#5558)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "big-first-event";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("A".repeat(1024)), "large first event must reach the client");
+    assert.ok(text.includes("[DONE]"));
+    assert.equal(p.leafB.hits, 0);
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content preface overflow fails over and cancels the rejected stream (#5558)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "preface-flood";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(rows[1].outcome, "success");
+    // The rejected leaf's stream was cancelled, not left generating.
+    for (let i = 0; i < 50 && !p.leafA.prefaceAborted; i++)
+      await new Promise((r) => setTimeout(r, 100));
+    assert.equal(p.leafA.prefaceAborted, true);
   } finally {
     await p.cleanup();
   }
