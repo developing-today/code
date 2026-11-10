@@ -662,6 +662,18 @@
       "instanceOf": "openai",
       "name": "OpenAI Main (drewrypope)"
     },
+    // _openai (2026-11-10, Drew direct order, #8163): the self-contained
+    // main OpenAI door. Same drewrypope ChatGPT account as openai.main, but
+    // its credential is its own: seeded into the store without the
+    // externalRefresh stamp, refreshed in-process by the provider (the
+    // openai.alternate pattern, #8102). No Muse, no ~/.codex/auth.json
+    // read, no codex-sync in its path (the fork's CodexSync explicitly
+    // never targets it). Seated in openai-plan by the stage-2 change once
+    // proven with real route traffic; until then openai.main keeps the seat.
+    "_openai": {
+      "instanceOf": "openai",
+      "name": "OpenAI Self-Contained (drewrypope, no Codex)"
+    },
     "opendesign": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Open Design",
