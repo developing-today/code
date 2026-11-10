@@ -1597,6 +1597,182 @@ fn claim_lease_until(claimed_at_unix: i64, lease_seconds: i64) -> String {
     iso(claimed_at_unix + lease_seconds)
 }
 
+/// The yield stage a task's progress records: the top-level `stage`
+/// when present, else the last checkpoint's stage (the checkpoint
+/// verb records it under progress.last_checkpoint.stage, #7706 — the
+/// same lift poll.py's normalize_row performs).
+fn progress_stage(progress: &Value) -> Option<&str> {
+    progress
+        .get("stage")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            progress
+                .get("last_checkpoint")
+                .and_then(|c| c.get("stage"))
+                .and_then(|v| v.as_str())
+        })
+}
+
+/// A parked row is a RECORDED OPENCODE HANDOFF when its progress
+/// carries the opencode lane assignment, a yield stage
+/// (handed_off, or launch_failed after a claimant recovery), and no
+/// session binding. This is the state every lane handoff lands in:
+/// the claiming lane checkpoints handed_off and then parks the task
+/// as its handoff sink (park clears the claim and stamps a default
+/// +20-minute timer), so the row sits parked — never claimed — while
+/// the opencode claimant's discovery only ever read claimed rows.
+/// 164 such rows sat parked in repo-health-code-pilot alone on
+/// 2026-11-09 while their issues (#7907, #6533) cycled
+/// claim → handoff → park → re-claim for days. A genuine wait park
+/// never matches: it carries a different stage (parked, gated,
+/// probe_*) or a direct lane, and a bound session's park cleared
+/// the binding but keeps its working stage.
+fn is_parked_handoff(row: &Value) -> bool {
+    if row.get("status").and_then(|v| v.as_str()) != Some("parked") {
+        return false;
+    }
+    let progress = row.get("progress").cloned().unwrap_or(json!({}));
+    if progress.get("lane").and_then(|v| v.as_str()) != Some("opencode") {
+        return false;
+    }
+    match progress.get("session_id") {
+        Some(Value::Null) | None => {}
+        Some(_) => return false,
+    }
+    matches!(
+        progress_stage(&progress),
+        Some("handed_off") | Some("launch_failed")
+    )
+}
+
+/// Whether a by-id claim (claim_repo_task with task_id) may take
+/// exactly this row. Two shapes only: a queued row under the pick
+/// path's ordinary predicate (attempts cap + not_before), or a
+/// parked recorded handoff (is_parked_handoff) — the handoff park's
+/// not_before is the park verb's default timer, not a real wait,
+/// so it does not gate the claimant collecting its own handoff.
+/// Anything else (claimed, blocked, a genuine wait park, a queued
+/// row parked into the future) is not claimable by id.
+fn by_id_claimable(row: &Value, now: &str) -> bool {
+    match row.get("status").and_then(|v| v.as_str()) {
+        Some("queued") => {
+            let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+            let max = row.get("max_attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+            let nb = row.get("not_before").and_then(|v| v.as_str());
+            attempts < max && nb.map_or(true, |nb| nb <= now)
+        }
+        Some("parked") => is_parked_handoff(row),
+        _ => false,
+    }
+}
+
+/// By-id claim: take exactly the requested row when by_id_claimable
+/// allows it, through the same post-claim flow as the pick path
+/// (guard quarantine, binding clear, lease row, claimed event).
+/// The conditional UPDATE re-checks the status read above, so a
+/// competing claim or transition in between loses cleanly (0 rows
+/// affected → no claim). Returns the claimed row, or None when the
+/// row is not claimable by id.
+fn claim_by_id(
+    t: &TursoBackend,
+    task_id: i64,
+    queue: &str,
+    worker: &str,
+    lane: &Option<String>,
+    lease_seconds: i64,
+) -> Result<Option<Value>, TErr> {
+    let Some(row) = get_task(t, task_id)? else {
+        return Ok(None);
+    };
+    if row.get("queue").and_then(|v| v.as_str()) != Some(queue) {
+        return Ok(None);
+    }
+    if let Some(reason) = claim_guard_reason(&row) {
+        quarantine_task(t, task_id, &reason)?;
+        return Ok(None);
+    }
+    let status = row
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let now_unix = now_unix();
+    let now = iso(now_unix);
+    if !by_id_claimable(&row, &now) {
+        return Ok(None);
+    }
+    let lease_until = claim_lease_until(now_unix, lease_seconds);
+    let upd = t.exec(
+        "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
+           lease_until = ?, \
+           attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
+           lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
+           updated_at = ? \
+         WHERE id = ? AND status = ? AND queue = ?",
+        &[
+            Arg::Text(worker.to_string()),
+            Arg::Text(now.clone()),
+            Arg::Text(lease_until.clone()),
+            arg_str(lane.as_deref()),
+            Arg::Text(now.clone()),
+            Arg::Int(task_id),
+            Arg::Text(status),
+            Arg::Text(queue.to_string()),
+        ],
+    )?;
+    if upd.affected == 0 {
+        return Ok(None);
+    }
+    let rows = t.query_objs(
+        &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
+        &[Arg::Int(task_id)],
+        &TASK_JSON_COLS,
+    )?;
+    let Some(mut row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    // Migration 0023 §4: a fresh claim never inherits a binding.
+    let progress = row.get("progress").cloned().unwrap_or(json!({}));
+    let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
+    if cleared.is_some() {
+        t.exec(
+            "UPDATE tasks SET progress = ? WHERE id = ?",
+            &[Arg::Text(progress.to_string()), Arg::Int(task_id)],
+        )?;
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert("progress".to_string(), progress);
+        }
+    }
+    t.exec(
+        "INSERT INTO leases (task_id, worker_id, lease_until, heartbeat_at) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(task_id) DO UPDATE SET worker_id = excluded.worker_id, \
+           lease_until = excluded.lease_until, heartbeat_at = excluded.heartbeat_at",
+        &[
+            Arg::Int(task_id),
+            Arg::Text(worker.to_string()),
+            Arg::Text(lease_until),
+            Arg::Text(now_iso()),
+        ],
+    )?;
+    touch_worker(t, worker, Some(task_id))?;
+    if let Some(old) = &cleared {
+        on_binding_cleared(t, worker, task_id, old, "claim_repo_task")?;
+    }
+    event(
+        t,
+        Some(worker),
+        Some(task_id),
+        "claimed",
+        &json!({
+            "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
+            "cleared_session_id": cleared, "lane_id": lane,
+            "by_id": true, "task_id": task_id,
+        }),
+    )?;
+    Ok(Some(row))
+}
+
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let queue = req_str(req, "queue").unwrap_or("").to_string();
@@ -1630,6 +1806,13 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         }
         expire_leases(t)?;
         quarantine_payload_missing(t, &queue)?;
+        // By-id claim: when the request names a task, take exactly
+        // that row (claim_by_id) instead of the pick. This is how
+        // the opencode claimant collects a recorded handoff out of
+        // the parked sink the handing-off lane left it in.
+        if let Some(want_id) = req_i64(req, "task_id") {
+            return claim_by_id(t, want_id, &queue, &worker, &lane, lease_seconds);
+        }
         let now_unix = now_unix();
         let now = iso(now_unix);
         let lease_until = claim_lease_until(now_unix, lease_seconds);
@@ -3267,6 +3450,91 @@ mod tests {
             p["issue"] = mutated;
             assert!(claim_guard_reason(&claimable_row(p)).is_some());
         }
+    }
+
+    fn handoff_row(status: &str, progress: Value) -> Value {
+        let mut row = claimable_row(valid_payload());
+        row["status"] = json!(status);
+        row["progress"] = progress;
+        row["attempts"] = json!(1);
+        row["max_attempts"] = json!(4);
+        row["not_before"] = json!("2999-01-01T00:00:00Z");
+        row
+    }
+
+    #[test]
+    fn by_id_claim_takes_a_parked_recorded_handoff() {
+        // The #7907/#6533 loop shape: opencode lane assigned, yield
+        // recorded under last_checkpoint (the #7706 lift), no session
+        // bound, parked under the park verb's default future timer.
+        // The future not_before must NOT gate a by-id claim — it is
+        // the park default, not a wait the task asked for.
+        let row = handoff_row(
+            "parked",
+            json!({
+                "lane": "opencode",
+                "last_checkpoint": {"stage": "handed_off", "at": "2026-11-09T23:15:55Z"},
+                "session_id": null,
+            }),
+        );
+        assert!(is_parked_handoff(&row));
+        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z"));
+        // Top-level stage and the launch_failed recovery yield are
+        // the same recorded handoff in their other spellings.
+        let row2 = handoff_row(
+            "parked",
+            json!({"lane": "opencode", "stage": "launch_failed"}),
+        );
+        assert!(by_id_claimable(&row2, "2026-11-09T23:20:00Z"));
+    }
+
+    #[test]
+    fn by_id_claim_refuses_genuine_wait_parks_and_bound_rows() {
+        // A gated dependency park: opencode lane, but its stage is
+        // the park itself, not a yield — never a handoff.
+        let gated = handoff_row(
+            "parked",
+            json!({"lane": "opencode", "stage": "parked", "gate": "#3801 OPEN"}),
+        );
+        assert!(!by_id_claimable(&gated, "2026-11-09T23:20:00Z"));
+        // A direct-lane yield is the direct lane's own business.
+        let direct = handoff_row(
+            "parked",
+            json!({"lane": "direct", "stage": "handed_off"}),
+        );
+        assert!(!by_id_claimable(&direct, "2026-11-09T23:20:00Z"));
+        // A bound session id means a launch already happened; the
+        // binding is supervision's, never a fresh claim's.
+        let bound = handoff_row(
+            "parked",
+            json!({
+                "lane": "opencode", "stage": "handed_off",
+                "session_id": "ses_abc",
+            }),
+        );
+        assert!(!by_id_claimable(&bound, "2026-11-09T23:20:00Z"));
+        // A claimed row is owned; by-id never steals a live claim.
+        let claimed = handoff_row(
+            "claimed",
+            json!({"lane": "opencode", "stage": "handed_off"}),
+        );
+        assert!(!by_id_claimable(&claimed, "2026-11-09T23:20:00Z"));
+    }
+
+    #[test]
+    fn by_id_claim_queued_rows_keep_the_pick_predicate() {
+        // Queued + attempts left + not_before passed: claimable.
+        let mut row = handoff_row("queued", json!({}));
+        row["not_before"] = json!("2026-11-09T00:00:00Z");
+        assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z"));
+        // Queued but parked into the future: not claimable by id.
+        let future = handoff_row("queued", json!({}));
+        assert!(!by_id_claimable(&future, "2026-11-09T23:20:00Z"));
+        // Queued at the attempts cap: not claimable by id.
+        let mut capped = handoff_row("queued", json!({}));
+        capped["not_before"] = json!("2026-11-09T00:00:00Z");
+        capped["attempts"] = json!(4);
+        assert!(!by_id_claimable(&capped, "2026-11-09T23:20:00Z"));
     }
 
     #[test]

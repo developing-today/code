@@ -250,16 +250,33 @@ class AppClient:
 
     def installations(self) -> list[dict]:
         if self._installations is None:
-            _, data = http(
-                "GET", "/app/installations?per_page=100", self.jwt, expect=list
-            )
-            for inst in data:
-                if not isinstance(inst, dict):
-                    die(
-                        "installation entry is not a JSON object "
-                        f"(got {_shape_name(inst)})"
-                    )
-            self._installations = data
+            # /app/installations is paginated: fetching only the first
+            # per_page=100 page silently drops every installation past
+            # 100 (#7930 - the developing-today org sits on page 2, so
+            # the App rate-limit fallback reported no installation for
+            # it). Page through all of them, stopping at a short or
+            # empty page, mirroring assert_repo_in_scope below; the
+            # endpoint returns a top-level array with no total_count.
+            collected: list[dict] = []
+            page = 1
+            while True:
+                _, data = http(
+                    "GET",
+                    f"/app/installations?per_page=100&page={page}",
+                    self.jwt,
+                    expect=list,
+                )
+                for inst in data:
+                    if not isinstance(inst, dict):
+                        die(
+                            "installation entry is not a JSON object "
+                            f"(got {_shape_name(inst)})"
+                        )
+                collected.extend(data)
+                if len(data) < 100:
+                    break
+                page += 1
+            self._installations = collected
         return self._installations
 
     def installation_for(self, owner: str) -> dict:
@@ -549,6 +566,12 @@ def cmd_close(args) -> int:
     client.assert_repo_in_scope(args.repo)
     token = client.token_for(args.repo.split("/")[0])
     _, current = http("GET", f"/repos/{args.repo}/issues/{args.issue}", token)
+    if "pull_request" in current:
+        die(
+            f"refusing to close {args.repo}#{args.issue}: that number is a "
+            "pull request, not an issue (the issues API returns PRs as "
+            "issues); close it through the pull request workflow instead"
+        )
     if current.get("state") == "closed":
         print(f"already closed: {args.repo}#{args.issue}")
         return 0
