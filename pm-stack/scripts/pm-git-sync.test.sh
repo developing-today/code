@@ -171,6 +171,32 @@ check "old==new retry after restart failure exits 0" test $? -eq 0
 check "dispatch restarted by retry" log_has "restart pm-dispatch"
 check "dispatch owed record cleared" test ! -e "$OWED_DISPATCH"
 
+# --- 4b. partial batch then revert: the successful unit rolls back ------------
+# (Codex P2 on PR #7132: successful deployments are tracked per unit.
+# The aggregator restarts at the partial head while the projector's
+# dep step fails, holding the baseline; the next commit reverts the
+# aggregator subtree to its baseline content and fixes the projector.
+# The baseline-range diff for the aggregator is then empty, so only
+# its per-unit deployed record can trigger the rollback restart.)
+push_change pm-stack/aggregator/index.ts 'agg v3-partial'
+push_change pm-stack/projector/package.json '{"name":"proj","version":"2"}'
+touch "$PM_TEST_PROJ_DEP_FAIL"
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "partial-batch run exits non-zero" test $? -ne 0
+check "aggregator restarted at the partial head" log_has "restart pm-aggregator"
+check "projector NOT restarted past its failing dep step" log_lacks "restart pm-projector"
+rm -f "$PM_TEST_PROJ_DEP_FAIL"
+push_change pm-stack/aggregator/index.ts 'agg v2'
+push_change pm-stack/projector/package.json '{"name":"proj","version":"3"}'
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "revert run exits 0" test $? -eq 0
+check "aggregator rolled back by the revert" log_has "restart pm-aggregator"
+check "projector redeployed by the revert run" log_has "restart pm-projector"
+check "revert run advances deployed baseline" test "$(cat "$DEPLOYED_HEAD")" = "$(git -C "$REPO" rev-parse HEAD)"
+check "aggregator deployed record tracks the revert head" test "$(cat "$STATE_DIR/deployed-pm-aggregator.service")" = "$(git -C "$REPO" rev-parse HEAD)"
+
 # --- 5. an unpersistable owed record must fail the run -------------------------
 # (Codex P2 on PR 2860: absent record != successful deployment.)
 push_change pm-stack/dispatch/index.ts 'dispatch v3'
