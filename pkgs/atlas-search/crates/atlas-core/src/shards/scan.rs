@@ -375,7 +375,7 @@ mod tests {
             topic: "main".into(),
             part: 1,
             expected_chunks: None,
-            embedding_model: super::EMBEDDING_MODEL_ID.to_string(),
+            embedding_model: crate::shards::EMBEDDING_MODEL_ID.to_string(),
             chunks: 0,
             endpoint: ShardEndpoint {
                 name: "atlas-core-secret-main-01".into(),
