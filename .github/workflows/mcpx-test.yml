@@ -93,6 +93,8 @@ jobs:
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v
       - name: Run-seed wrapper regressions (#1949)
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v
+      - name: Shard-packer discovery regressions (#6906)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_e2e_shard_packer.py' -v
       # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
       # shell out to deno/bun/node too, and a missing runtime reads as a
       # test failure (first run of this workflow, PR #2888).
