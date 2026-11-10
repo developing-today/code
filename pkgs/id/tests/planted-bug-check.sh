@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Planted-bug check for the membership / voiding layer (plan P2.3 / P2.8, #1395).
+# Planted-bug check for the membership / voiding layer (plan P2.3 / P2.8, #1395)
+# and the tag observed-remove fold (plan P5.1, #1421).
 #
 # A test suite that passes both the correct and a broken implementation proves
 # nothing. This script proves the voiding and frontier suites can fail: it
@@ -25,6 +26,7 @@ MUTATED_FILES=(
   "pkgs/id/crates/id-core/src/membership/layer.rs"
   "pkgs/id/crates/id-core/src/membership/frontier.rs"
   "pkgs/id/src/groups/delegation.rs"
+  "pkgs/id/src/tag_claims.rs"
 )
 
 restore() {
@@ -47,6 +49,10 @@ cd "$ID_DIR"
 SUITES_voiding_authority="cargo test --test voiding_scenarios --test voiding_properties"
 SUITES_delegation_voiding="cargo test --test delegation_voiding_scenarios"
 SUITES_frontier_mapping="cargo test -p id-core --lib membership::frontier && cargo test --test membership_properties --test membership_scenarios"
+# The tag suites judge the observed-remove fold: tag_claims carries the
+# live-set oracle property and the compacted-fold agreement property;
+# tag_index exercises the fold through the tag index.
+SUITES_tag_fold="cargo test --test tag_claims --test tag_index"
 
 run_suites() {
   # $1 = space-separated suite commands joined by &&
@@ -54,7 +60,7 @@ run_suites() {
 }
 
 echo "== baseline: all suites must pass unmutated =="
-if ! run_suites "$SUITES_voiding_authority && $SUITES_frontier_mapping && $SUITES_delegation_voiding" /tmp/planted-bug-baseline.log; then
+if ! run_suites "$SUITES_voiding_authority && $SUITES_frontier_mapping && $SUITES_delegation_voiding && $SUITES_tag_fold" /tmp/planted-bug-baseline.log; then
   echo "planted-bug-check: BASELINE RED — suites fail without any mutation; see /tmp/planted-bug-baseline.log" >&2
   exit 2
 fi
@@ -100,6 +106,15 @@ check_mutation "frontier-mapping" "$PATCH_DIR/frontier-mapping.patch" "$SUITES_f
 # scenarios judge a grant, its grantor's concurrent removal, and the
 # grantee's onward operation through the groups fold (#7071).
 check_mutation "delegation-voiding" "$PATCH_DIR/delegation-voiding.patch" "$SUITES_delegation_voiding"
+# tag-clear-seen: live_claims drops the causal-past filter, so a clear
+# removes every claim it names — including concurrent adds its author
+# never saw, which observed-remove semantics say must survive (#1421).
+check_mutation "tag-clear-seen" "$PATCH_DIR/tag-clear-seen.patch" "$SUITES_tag_fold"
+# tag-causal-past: causal_past never follows parent links, so a clear's
+# seen set is only its direct frontier and claims deeper in its causal
+# past are never removed, even though the frontier need not name a
+# claim for the clear to remove it (#1421).
+check_mutation "tag-causal-past" "$PATCH_DIR/tag-causal-past.patch" "$SUITES_tag_fold"
 
 if [ "$failed" -ne 0 ]; then
   exit 1

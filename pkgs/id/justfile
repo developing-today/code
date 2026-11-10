@@ -229,7 +229,7 @@ test-rust:
     cargo test --all-features --doc
 alias test-cargo := test-rust
 
-# Planted-bug check: prove the voiding/frontier suites catch planted bugs (#1395, P2.3/P2.8)
+# Planted-bug check: prove the voiding/frontier and tag-fold suites catch planted bugs (#1395 P2.3/P2.8, #1421 P5.1)
 [group('test')]
 planted-bug-check:
     bash tests/planted-bug-check.sh

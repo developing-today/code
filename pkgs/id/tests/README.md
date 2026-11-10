@@ -28,7 +28,7 @@ in the
 - `common/chain.rs`: the event decoder's contract, shared the same way.
 - `regressions/`: checked-in failing cases. See its [README](regressions/README.md).
 
-## Planted-bug check (#1395)
+## Planted-bug check (#1395, #1421)
 
 The plan of record (P2.3/P2.8) requires more than property tests: a planted
 bug in the voiding/frontier logic must actually fail the suites, so the
@@ -66,6 +66,19 @@ suites cannot silently pass a broken implementation.
 - Exit 0 means baseline green and every planted bug caught; exit 1 names a
   mutation that survived (a real test gap); exit 2 means the baseline is
   red, a patch no longer applies, or a mutated file was dirty.
+
+The tag observed-remove fold (plan P5.1) carries its own plants in the
+same script (#1421), judged by `tag_claims` and `tag_index`:
+
+  - `tag-clear-seen.patch`: `live_claims` (`src/tag_claims.rs`) drops the
+    causal-past filter, so a clear removes every claim it names —
+    including concurrent adds its author never saw, which
+    observed-remove semantics say must survive.
+  - `tag-causal-past.patch`: `causal_past` (`src/tag_claims.rs`) never
+    follows parent links, so a clear's seen set is only its direct
+    frontier and claims deeper in its causal past are never removed,
+    even though the frontier need not name a claim for the clear to
+    remove it.
 
 ## Running
 

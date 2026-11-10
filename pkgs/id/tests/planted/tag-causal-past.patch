@@ -1,0 +1,16 @@
+diff --git a/pkgs/id/src/tag_claims.rs b/pkgs/id/src/tag_claims.rs
+index cb0a69c142..2e6000bcda 100644
+--- a/pkgs/id/src/tag_claims.rs
++++ b/pkgs/id/src/tag_claims.rs
+@@ -290,8 +290,9 @@ pub fn causal_past(start: &[Hash], parents: &HashMap<Hash, Vec<Hash>>) -> HashSe
+         if !past.insert(id) {
+             continue;
+         }
+-        if let Some(named) = parents.get(&id) {
+-            queue.extend(named.iter().copied());
++        if let Some(_named) = parents.get(&id) {
++            // Planted bug: the walk never follows parent links, so the
++            // causal past is only the starting events themselves.
+         }
+     }
+     past
