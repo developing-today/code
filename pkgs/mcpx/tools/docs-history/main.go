@@ -524,11 +524,15 @@ func Render(doc *Document, agent bool) string {
 	}
 	// A section whose frozen ID no longer matches its heading's slug
 	// (the heading was reworded) gets an explicit anchor, so history
-	// links to #<id> resolve in the rendered document.
+	// links to #<id> resolve in the rendered document. The anchor is
+	// followed by a blank line: without one, CommonMark treats the
+	// heading as part of the anchor's HTML block, so it renders as
+	// literal text and loses its own heading anchor and TOC entry
+	// (Codex finding on PR #5208).
 	insertBefore := map[int][]string{}
 	for _, sec := range doc.Sections {
 		if sec.Explicit && sec.ID != Slugify(sec.Heading) {
-			insertBefore[sec.Line] = []string{`<a id="` + sec.ID + `"></a>`}
+			insertBefore[sec.Line] = []string{`<a id="` + sec.ID + `"></a>`, ""}
 		}
 	}
 	var out []string

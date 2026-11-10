@@ -292,8 +292,8 @@ func TestCheckDiffDeletionOnlyNeedsFragment(t *testing.T) {
 func TestRenderAnchorForRenamedSection(t *testing.T) {
 	src := "## New name\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: old-name\nsince: pre-release\nstatus: core\ndescription: d\nchanged:\n  - 0.2.0 (2026-11-02): x\n```\n\nProse.\n\n## Other\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: other\nsince: pre-release\nstatus: core\ndescription: d\nchanged:\n  - 0.2.0 (2026-11-02): y\n```\n\nMore.\n"
 	out := Render(ParseDocument("x.md", src), false)
-	if !strings.Contains(out, "<a id=\"old-name\"></a>\n## New name") {
-		t.Error("renamed section should get an explicit anchor for its frozen ID")
+	if !strings.Contains(out, "<a id=\"old-name\"></a>\n\n## New name") {
+		t.Error("renamed section should get an explicit anchor for its frozen ID, separated from the heading by a blank line so CommonMark still renders the heading")
 	}
 }
 
