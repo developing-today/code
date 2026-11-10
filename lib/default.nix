@@ -1331,6 +1331,15 @@ let
               python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
+        deploy-slice3-tests =
+          pkgs.runCommandLocal "check-deploy-slice3-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
         deploy-argv =
           pkgs.runCommandLocal "check-deploy-argv"
             {

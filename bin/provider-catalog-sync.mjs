@@ -896,6 +896,22 @@ export function parseArgs(argv) {
 // then the catalog-sync-specific OPENCODE_CATALOG_SYNC_CONFIG, then the
 // tracked configured default. OPENCODE_CONFIG_PATH is deliberately not
 // consulted — since #4544 it names the runtime overlay (sync-models' file).
+// Home-resolution contract (issues #5762 / #5763): the default
+// runtime-config path resolves under a non-empty HOME only. The old
+// `process.env.HOME || '/home/user'` fallback was a hardcoded-user
+// substitute directory; unset/empty HOME is a named error here.
+export function defaultRuntimeConfigPath(env) {
+  if (!env.HOME) {
+    throw new Error(
+      'HOME is not set or is empty: provider-catalog-sync requires a non-empty HOME to resolve the default runtime config path (home-resolution contract, issues #5762/#5763)',
+    );
+  }
+  return path.join(
+    env.HOME,
+    '.local/state/opencode/opencode-runtime.jsonc',
+  );
+}
+
 export function resolveConfigPath({ options, env, root }) {
   return (
     options['--config'] ??
@@ -916,10 +932,7 @@ async function main(argv) {
   const runtimeConfigPath = opt(
     '--runtime-config',
     process.env.OPENCODE_RUNTIME_CONFIG ||
-      path.join(
-        process.env.HOME || '/home/user',
-        '.local/state/opencode/opencode-runtime.jsonc',
-      ),
+      defaultRuntimeConfigPath(process.env),
   );
   const modelsDevSpec = opt('--models-dev', 'https://models.dev/api.json');
   const sourceDir = opt('--source-dir', null);

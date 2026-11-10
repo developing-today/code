@@ -47,6 +47,7 @@ impl WorldCommand {
             Self::Directory { .. } => "Directory",
             Self::ApplyDirectory { .. } => "ApplyDirectory",
             Self::Revoke { .. } => "Revoke",
+            Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
             Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
@@ -58,6 +59,7 @@ impl WorldCommand {
             Self::View { .. } => "View",
             Self::ViewAt { .. } => "ViewAt",
             Self::InstallProgram { .. } => "InstallProgram",
+            Self::InstallProgramAuthorized { .. } => "InstallProgramAuthorized",
             Self::Presence { .. } => "Presence",
             Self::UpdateCaps { .. } => "UpdateCaps",
             Self::SetCapsCeiling { .. } => "SetCapsCeiling",
@@ -120,6 +122,17 @@ pub(crate) enum WorldCommand {
         /// journal. `None` means the admin revoked.
         by: Option<u64>,
         reply: oneshot::Sender<bool>,
+    },
+    /// Revoke ordered by a joined moderator (design #835 phase 2): the
+    /// actor authorizes the live capability itself and derives the audit
+    /// actor from it; no caller-supplied actor ID is trusted. The reply is
+    /// a `Result` so a journal failure is surfaced instead of being
+    /// reported as an audited success; the in-memory revocation stands
+    /// either way (fail-closed).
+    RevokeAuthorized {
+        token: JoinCapability,
+        participant_id: u64,
+        reply: oneshot::Sender<Result<bool>>,
     },
     ParticipantId {
         token: JoinCapability,
@@ -185,6 +198,18 @@ pub(crate) enum WorldCommand {
         installed_by: Option<u64>,
         /// The trust decision that admitted the module, for the audit
         /// journal (#1069). `None` records no decision.
+        trust: Option<crate::world::TrustDecision>,
+        program: Box<dyn WorldProgram>,
+        reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    /// Install ordered by a joined builder (design #835 phase 2): the
+    /// actor authorizes the live capability itself at the mutation
+    /// boundary and derives `installed_by` from it.
+    InstallProgramAuthorized {
+        token: JoinCapability,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
         trust: Option<crate::world::TrustDecision>,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
@@ -1436,6 +1461,56 @@ impl WorldActor {
                 );
                 let _ = reply.send(was_active);
             }
+            WorldCommand::RevokeAuthorized {
+                token,
+                participant_id,
+                reply,
+            } => {
+                let result = match self.core.authorize(&token, WorldScopes::MODERATOR) {
+                    Err(error) => Err(error),
+                    Ok(by) => {
+                        if self.read_only {
+                            self.audit_admin_result(
+                                format!("participant:{by}"),
+                                "RevokeAuthorized",
+                                serde_json::json!({"participant_id": participant_id, "changed": false}),
+                                false,
+                            );
+                            Ok(false)
+                        } else {
+                            let revoked = self.core.revoke_tree(participant_id);
+                            let was_active = !revoked.is_empty();
+                            if was_active {
+                                // Fail-closed: the in-memory revocation and
+                                // the disconnects stand even if the journal
+                                // append fails, but the failure is surfaced
+                                // rather than reported as an audited success
+                                // (design #835 phase 2).
+                                let persisted = self.persist(JournalEntry::Revoked {
+                                    participant_id,
+                                    by: Some(by),
+                                });
+                                for id in revoked {
+                                    let _ = self.revocation_sender.send(id);
+                                }
+                                self.audit_admin_result(
+                                    format!("participant:{by}"),
+                                    "RevokeAuthorized",
+                                    serde_json::json!({"participant_id": participant_id, "changed": was_active}),
+                                    persisted.is_ok(),
+                                );
+                                match persisted {
+                                    Ok(()) => Ok(true),
+                                    Err(error) => Err(error),
+                                }
+                            } else {
+                                Ok(false)
+                            }
+                        }
+                    }
+                };
+                let _ = reply.send(result);
+            }
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
             }
@@ -1797,6 +1872,45 @@ impl WorldActor {
                     result.is_ok(),
                 );
                 let _ = reply.send(result);
+            }
+            WorldCommand::InstallProgramAuthorized {
+                token,
+                module_hash,
+                seed,
+                provenance,
+                trust,
+                program,
+                reply,
+            } => {
+                // The actor authorizes the live capability at the mutation
+                // boundary and derives the audit actor from it; no
+                // caller-supplied participant ID is trusted (design #835
+                // phase 2). On success the install runs through the exact
+                // admin install path with `installed_by` set, so the
+                // Committed + BuilderInstalled transaction is unchanged.
+                match self.core.authorize(&token, WorldScopes::BUILDER) {
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                    Ok(by) => {
+                        let (inner_reply, inner_result) = oneshot::channel();
+                        Box::pin(self.handle(WorldCommand::InstallProgram {
+                            module_hash,
+                            seed,
+                            provenance,
+                            installed_by: Some(by),
+                            trust,
+                            program,
+                            reply: inner_reply,
+                        }))
+                        .await;
+                        let result = match inner_result.await {
+                            Ok(result) => result,
+                            Err(_) => Err(anyhow::anyhow!("world actor dropped install response")),
+                        };
+                        let _ = reply.send(result);
+                    }
+                }
             }
             WorldCommand::UpdateCaps {
                 grant,

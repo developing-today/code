@@ -202,17 +202,16 @@ including mcpx's own clean refusal where a surface is absent:
 | --------------------------- | -------------------------------------- | --------------------------------------------------------------- |
 | `alpine-nonexec`            | `alpine:3.21`                          | `--version`; `exec` refuses with "no usable JavaScript runtime" |
 | `alpine-bunmusl-exec`       | alpine + bun's musl build              | `exec` runs a script                                            |
+| `alpine-node-exec`          | `alpine:3.21` + `apk add nodejs`        | `exec` runs a script or gives an actionable transform-types refusal |
 | `scratch-nonexec`           | `FROM scratch` + CA certs              | `--version`; the same clean `exec` refusal                      |
 | `distroless-static-nonexec` | `gcr.io/distroless/static-debian12`    | `--version`; the same clean `exec` refusal                      |
 | `distroless-cc-deno-exec`   | `gcr.io/distroless/cc-debian12` + deno | `exec` runs a script                                            |
 
-Deferred, with the reason recorded on #1987: an **alpine + nodejs exec**
-leg. Verified 2026-10-30, mcpx's node path dies with
-`ERR_NO_TYPESCRIPT` under Alpine's nodejs build, so the leg would
-enshrine a failure instead of catching one; it joins the matrix when the
-node invocation works on a musl node. Tier 3 (fedora, flatpak,
-silverblue/kinoite hosts, the Windows port) is unchanged: separate
-issues when a user appears.
+The **alpine + nodejs exec** leg (#2699) guards either a working Node
+TypeScript-transform path or mcpx's actionable refusal when that Node build
+does not support `--experimental-transform-types`. Tier 3 (fedora, flatpak,
+silverblue/kinoite hosts, the Windows port) is unchanged: separate issues
+when a user appears.
 
 ## 5. Historical prototype size measurements
 

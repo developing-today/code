@@ -5,14 +5,18 @@ Prints one JSON object:
   {
     "queues": {<queue>: {"claimed": n, "candidates": [...],
                "stuck_bound": [...]}, ...},
-    "candidates": [ {id, queue, priority, worker_id, lane_id,
+    "candidates": [ {id, queue, status, priority, worker_id, lane_id,
                      lease_until, lane, stage, session_id, issue,
                      issue_number, packet, attempts, max_attempts,
                      title, dedupe_key} ... ],
-                                              # claimed, progress.lane ==
+                                              # progress.lane ==
                                               # "opencode", stage
                                               # handed_off/launch_failed,
-                                              # no session_id
+                                              # no session_id; status
+                                              # "claimed", or "handed_off"
+                                              # for a task resting in
+                                              # the handoff sink (#8234;
+                                              # is_handoff_waiting)
     "stuck_bound": [ {id, queue, ..., session_id, session_updated} ... ],
                                               # bound tasks whose session
                                               # looks never-prompted and
@@ -329,9 +333,9 @@ def _broker_post(path, body):
     return data
 
 
-def fetch_claimed_rows(queue):
-    """Claimed rows for one queue from the broker's rich /list. The
-    repo-queue binary's list verb prints a human table, and
+def _fetch_rows(queue, status):
+    """Rows of one status for one queue from the broker's rich /list.
+    The repo-queue binary's list verb prints a human table, and
     json-parsing it read every queue as empty — the claimant was
     blind from the #5362 cutover until this route was restored
     (#7325/#7375). Returns [] with a warning on any failure: a queue
@@ -341,7 +345,7 @@ def fetch_claimed_rows(queue):
     try:
         data = _broker_post("/list", {
             "queue": queue,
-            "status": "claimed",
+            "status": status,
             "rich": True,
             "limit": LIST_LIMIT,
         })
@@ -356,12 +360,54 @@ def fetch_claimed_rows(queue):
     for row in data:
         if not isinstance(row, dict):
             continue
-        # Only claimed rows are claimant business; when the row carries
-        # a status, anything else is skipped.
-        if row.get("status") not in (None, "claimed"):
+        # Only rows of the requested status are claimant business;
+        # when the row carries a status, anything else is skipped.
+        if row.get("status") not in (None, status):
             continue
         rows.append(normalize_row(row))
     return rows
+
+
+def fetch_claimed_rows(queue):
+    """Claimed rows for one queue (supervision + claimed candidates)."""
+    return _fetch_rows(queue, "claimed")
+
+
+def fetch_handed_off_rows(queue):
+    """Handed_off rows for one queue (handoff-sink candidates)."""
+    return _fetch_rows(queue, "handed_off")
+
+
+def is_handoff_waiting(row):
+    """A handed_off (sink) row is a claimant candidate iff it is a
+    recorded opencode handoff resting in the handoff sink: status
+    'handed_off' (#8234), lane opencode, no session bound, and the
+    claiming lane is not itself an OpenChamber scheduled lane (the
+    same double-execution guard as is_candidate).
+
+    Deliberately NO stage test. Sink membership is the STATUS —
+    written once by the broker's park classification, the
+    lease-expiry sink return, or the #8234 migration — so this
+    reader must not reconstruct it from a stage, and in particular
+    must not care whether progress.stage or
+    progress.last_checkpoint.stage carries the yield: the broker
+    and this poll once read different sources and disagreed about
+    a resting row (#8192). For CLAIMED rows the stage test in
+    is_candidate stays — there it is the launch-safety contract
+    (a lane mid-work must never be launched into); a sink row has
+    no lane working it by construction. Historically the sink sat
+    in status 'parked' under the park verb's default timer, and
+    tasks looped claim -> handoff -> park -> re-claim for days
+    (#7907/#6533)."""
+    if row.get("status") not in (None, "handed_off"):
+        return False
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    lane_id = row.get("lane_id")
+    if lane_id and UUID_LANE.match(lane_id):
+        return False
+    return True
 
 
 def normalize_row(row):
@@ -408,6 +454,7 @@ def _candidate_entry(row, queue):
     return {
         "id": row.get("id"),
         "queue": queue,
+        "status": row.get("status") or "claimed",
         "priority": row.get("priority"),
         "worker_id": row.get("worker_id"),
         "lane_id": row.get("lane_id"),
@@ -452,6 +499,11 @@ def get_candidates(rows):
     return [r for r in rows if is_candidate(r)]
 
 
+def get_handed_off_candidates(rows):
+    """Unbound opencode-lane candidates from handoff-sink rows."""
+    return [r for r in rows if is_handoff_waiting(r)]
+
+
 def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
     """Bound tasks whose sessions look never-prompted and dead."""
     stuck = []
@@ -494,12 +546,17 @@ def main():
     for q in QUEUES:
         rows = fetch_claimed_rows(q)
         cands = [_candidate_entry(r, q) for r in get_candidates(rows)]
+        handed_off_rows = fetch_handed_off_rows(q)
+        cands.extend(
+            _candidate_entry(r, q) for r in get_handed_off_candidates(handed_off_rows)
+        )
         stuck = [
             _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
         out["queues"][q] = {
             "claimed": len(rows),
+            "handed_off": len(handed_off_rows),
             "candidates": cands,
             "stuck_bound": stuck,
         }

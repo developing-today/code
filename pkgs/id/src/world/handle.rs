@@ -22,7 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use crate::world_caps::CapsReport;
+use crate::world_caps::{CapsReport, DeviceManifest};
 
 impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.
@@ -44,7 +44,55 @@ impl WorldHandle {
         program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
     ) -> Self {
-        Self::spawn_inner(core, program, journal, false, HashMap::new())
+        Self::spawn_inner(core, program, journal, false, HashMap::new(), None)
+    }
+
+    /// Spawn a world actor whose host supplies a device manifest
+    /// (#7942): the manifest is enumerated once, here at the adapter
+    /// boundary, cached by the actor, and served by `device.info`
+    /// for the life of the world — never re-enumerated per request.
+    /// `None` keeps the historical behaviour: the host cannot
+    /// describe its device and `device.info` refuses `unknown_cap`.
+    pub fn spawn_with_device_manifest(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        device_manifest: Option<DeviceManifest>,
+    ) -> Self {
+        Self::spawn_durable_with_device_manifest(core, program, None, device_manifest)
+    }
+
+    /// [`Self::spawn_durable`] with a host-supplied device manifest
+    /// (#7942); see [`Self::spawn_with_device_manifest`].
+    pub fn spawn_durable_with_device_manifest(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        device_manifest: Option<DeviceManifest>,
+    ) -> Self {
+        Self::spawn_inner(
+            core,
+            program,
+            journal,
+            false,
+            HashMap::new(),
+            device_manifest,
+        )
+    }
+
+    /// The device manifest of a served host (#7942): a headless
+    /// server process. It has no display, keys, sensors, or audio
+    /// device of its own; programs reach it over the network.
+    /// Hosts with real hardware describe themselves instead of
+    /// using this.
+    #[must_use]
+    pub fn host_device_manifest() -> DeviceManifest {
+        DeviceManifest {
+            display: serde_json::json!({"kind": "headless"}),
+            input: serde_json::json!({"keys": 0, "encoder": false, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": null, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": null, "in": null}),
+            network: serde_json::json!({"transport": "https"}),
+        }
     }
 
     /// Spawn a replica actor over a verified, already-restored world.
@@ -63,7 +111,7 @@ impl WorldHandle {
             .into_iter()
             .map(|(id, count)| (id, usize::try_from(count).map_or(usize::MAX, |count| count)))
             .collect();
-        Ok(Self::spawn_inner(core, program, None, true, presence))
+        Ok(Self::spawn_inner(core, program, None, true, presence, None))
     }
 
     /// Whether this handle fronts a read-only replica actor.
@@ -78,6 +126,7 @@ impl WorldHandle {
         journal: Option<Box<dyn WorldJournal>>,
         read_only: bool,
         presence: HashMap<u64, usize>,
+        device_manifest: Option<DeviceManifest>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -128,7 +177,7 @@ impl WorldHandle {
             overdue_at_open,
             acting: None,
             acting_session: None,
-            device_manifest: None,
+            device_manifest,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver));
@@ -666,6 +715,31 @@ impl WorldHandle {
             .context("world actor dropped revocation response")
     }
 
+    /// Revoke a participant on the authority of a joined moderator's live
+    /// capability (design #835 phase 2). The world actor authorizes the
+    /// capability itself and derives the audit actor from it. Returns
+    /// `Err` when the capability is invalid, expired, revoked, or lacks
+    /// `MODERATOR`, and when the revoke's journal append fails (the
+    /// in-memory revocation still stands in that case).
+    pub async fn revoke_authorized(
+        &self,
+        token: JoinCapability,
+        participant_id: u64,
+    ) -> Result<bool> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::RevokeAuthorized {
+                token,
+                participant_id,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped revocation response")?
+    }
+
     /// Submit a bounded chat message.
     pub async fn chat(&self, token: JoinCapability, text: impl Into<String>) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
@@ -902,6 +976,36 @@ impl WorldHandle {
     ) -> Result<WorldEvent> {
         self.install_program_with_trust(module_hash, seed, provenance, installed_by, None, program)
             .await
+    }
+
+    /// Install a program on the authority of a joined builder's live
+    /// capability (design #835 phase 2). The world actor authorizes the
+    /// capability itself at the mutation boundary and derives the audit
+    /// actor (`BuilderInstalled { by }`) from it.
+    pub async fn install_program_authorized(
+        &self,
+        token: JoinCapability,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::InstallProgramAuthorized {
+                token,
+                module_hash,
+                seed,
+                provenance,
+                trust: None,
+                program,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped install response")?
     }
 
     /// As [`Self::install_program_by`], also recording the module trust
