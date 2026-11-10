@@ -120,6 +120,30 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
         ));
     }
     let shards = set.select(q.ceiling, q.topics)?;
+    // #6060 M1 (#7646): never merge across embedding models.
+    // Discovery already refuses a shard whose manifest model is
+    // missing or differs from the query model; re-check the selected
+    // set here so a fan-out fails loud instead of merging partially,
+    // whatever produced the set.
+    let mut scanned_model: Option<&str> = None;
+    for shard in &shards {
+        let model = shard.embedding_model.as_deref().ok_or_else(|| {
+            Error::fatal(format!(
+                "shard fan-out: {} has no embedding_model identity; refusing to scan",
+                shard.name
+            ))
+        })?;
+        match scanned_model {
+            None => scanned_model = Some(model),
+            Some(want) if want != model => {
+                return Err(Error::fatal(format!(
+                    "shard fan-out: mixed embedding models in the scanned set ({} has `{model}`, an earlier shard has `{want}`); refusing to merge across models",
+                    shard.name
+                )));
+            }
+            _ => {}
+        }
+    }
     let stmt = turso_vector_scan_stmt(
         set.vec_table(),
         q.filters,
@@ -315,6 +339,7 @@ mod tests {
             topic: "main".into(),
             part: 1,
             expected_chunks: None,
+            embedding_model: None,
             chunks: 0,
             endpoint: ShardEndpoint {
                 name: "atlas-core-secret-main-01".into(),

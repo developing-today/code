@@ -394,6 +394,12 @@ pub struct Manifest {
     pub part: Option<u32>,
     pub expected_chunks: Option<u64>,
     pub metric: String,
+    /// The embedding model that produced the shard's vectors, from
+    /// the `embedding_model` manifest key (#6060 M1, #7646). `None`
+    /// when the key is absent: pre-M1 shards carry no identity, and
+    /// discovery refuses them in strict mode rather than guessing
+    /// one (see `probe`).
+    pub embedding_model: Option<String>,
 }
 
 impl Manifest {
@@ -414,6 +420,7 @@ impl Manifest {
             part: pairs.get("part").and_then(|p| p.parse().ok()),
             expected_chunks: pairs.get("expected_chunks").and_then(|p| p.parse().ok()),
             metric: need("metric")?,
+            embedding_model: pairs.get("embedding_model").cloned(),
         })
     }
 
@@ -444,6 +451,10 @@ pub struct ShardInfo {
     pub topic: String,
     pub part: u32,
     pub expected_chunks: Option<u64>,
+    /// The shard's embedding model identity (manifest
+    /// `embedding_model` key), carried so fan-out can prove the
+    /// scanned set is single-model before merging (#6060 M1).
+    pub embedding_model: Option<String>,
     /// `count(*)` of `chunks` at discovery time.
     pub chunks: u64,
     pub endpoint: ShardEndpoint,
@@ -593,6 +604,29 @@ fn probe(
             c.endpoint.name, m.metric
         )));
     }
+    // #6060 M1 (#7646): vectors from different embedding models are
+    // not comparable, so a shard whose model identity is missing or
+    // differs from the query model is refused here, with the same
+    // strict/lenient posture as the metric check above. The query
+    // model is the mandated one: queries are embedded through
+    // atlas-embed with `DEFAULT_MODEL`.
+    match &m.embedding_model {
+        None => {
+            return Err(Error::fatal(format!(
+                "shard {}: atlas_manifest has no `embedding_model` key; this consumer embeds queries with `{}` and cannot verify the shard's vectors were produced by it",
+                c.endpoint.name,
+                crate::types::DEFAULT_MODEL
+            )));
+        }
+        Some(model) if model != crate::types::DEFAULT_MODEL => {
+            return Err(Error::fatal(format!(
+                "shard {}: embedding_model `{model}` does not match the query model `{}`; refusing to scan a mixed-model shard",
+                c.endpoint.name,
+                crate::types::DEFAULT_MODEL
+            )));
+        }
+        _ => {}
+    }
     let n = t
         .pipeline(&[Stmt::new("SELECT COUNT(*) AS n FROM chunks", vec![])])?
         .into_iter()
@@ -609,6 +643,7 @@ fn probe(
             topic: c.topic.clone(),
             part: m.part.unwrap_or(c.part),
             expected_chunks: m.expected_chunks,
+            embedding_model: m.embedding_model.clone(),
             chunks: n.max(0) as u64,
             endpoint: c.endpoint.clone(),
         },
