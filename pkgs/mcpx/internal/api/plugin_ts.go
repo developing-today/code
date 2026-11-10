@@ -1,10 +1,68 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 )
+
+type fingerprintParam struct {
+	Name     string   `json:"name"`
+	In       In       `json:"in"`
+	Type     string   `json:"type"`
+	Required bool     `json:"required"`
+	Enum     []string `json:"enum"`
+	Schema   string   `json:"schema"`
+	Raw      bool     `json:"raw"`
+}
+
+type fingerprintOperation struct {
+	Name     string             `json:"name"`
+	Method   string             `json:"method"`
+	Path     string             `json:"path"`
+	Params   []fingerprintParam `json:"params"`
+	Wrap     string             `json:"wrap"`
+	Response string             `json:"response"`
+}
+
+// OperationFingerprint identifies the request and response contract used by
+// generated plugin operations. Its input is a canonical projection of Ops,
+// not the generated TypeScript file (which embeds this value).
+func OperationFingerprint() string {
+	ops := Ops()
+	sort.Slice(ops, func(i, j int) bool { return ops[i].Name < ops[j].Name })
+	contract := make([]fingerprintOperation, 0, len(ops))
+	for _, op := range ops {
+		params := append([]Param(nil), op.Params...)
+		sort.Slice(params, func(i, j int) bool { return params[i].Name < params[j].Name })
+		projected := make([]fingerprintParam, 0, len(params))
+		for _, param := range params {
+			enum := append([]string{}, param.Enum...)
+			projected = append(projected, fingerprintParam{
+				Name: param.Name, In: param.In, Type: param.Type,
+				Required: param.Required, Enum: enum, Schema: param.Schema, Raw: param.Raw,
+			})
+		}
+		wrap, _ := op.bodyIsOneObject()
+		response := "json"
+		if op.Text || op.Streams {
+			response = "response"
+		}
+		contract = append(contract, fingerprintOperation{
+			Name: op.Name, Method: op.Method, Path: op.Path,
+			Params: projected, Wrap: wrap, Response: response,
+		})
+	}
+	encoded, err := json.Marshal(contract)
+	if err != nil {
+		panic(fmt.Sprintf("marshal operation fingerprint contract: %v", err))
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
 
 // PluginTS renders plugin/core/ops.gen.ts: one typed method per
 // /v1 operation, for the opencode plugin's DaemonClient.
@@ -43,7 +101,9 @@ type OpSpec = {
   response: "json" | "response"
 }
 
-/** Every /v1 operation, by name. */
+`)
+	fmt.Fprintf(&b, "export const OPERATION_FINGERPRINT = %q\n\n", OperationFingerprint())
+	b.WriteString(`/** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
 `)
 	for _, op := range ops {

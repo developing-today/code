@@ -7,7 +7,8 @@
 //! a vector pool with the caller's sensitivity ceiling and
 //! filters applied **inside the branch queries** — before any
 //! ranking — and [`run_search`] fuses the pools with reciprocal
-//! rank fusion (k = 10, pool 100/branch by default).
+//! rank fusion using the versioned per-query contract (defaults in
+//! atlas-proto's query-parameters-v1.json).
 //!
 //! Vector strategies all live behind the backend:
 //! [`VectorBackend::Scan`] (exact `vector_distance_cos` over the
@@ -29,22 +30,37 @@
 pub mod backend;
 pub mod embed;
 pub mod error;
+pub mod eval;
 pub mod filters;
 pub mod fusion;
 pub mod local;
 pub mod search;
+pub mod shards;
+pub mod stage;
 pub mod turso;
 pub mod types;
+
+/// Maximum neighbor chunks search expansion may attach to each result.
+/// Keep this aligned with the service's get-chunk neighbors ceiling.
+pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
 pub use backend::SearchBackend;
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
 pub use error::{Error, Result};
+pub use eval::{
+    EVAL_FORMAT, EvalData, EvalReport, MAX_GRADE, Metric, REPORT_FORMAT, Split, evaluate,
+    select_best_signal,
+};
 pub use filters::{Filters, Sensitivity};
-pub use fusion::{FusedEntry, RRF_K};
+pub use fusion::FusedEntry;
 pub use local::LocalBackend;
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, run_get_chunk,
     run_search, run_search_with_executor,
+};
+pub use stage::{
+    REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
+    UnitState, check_stage_schema, provision_staging_db, schema_version,
 };
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};

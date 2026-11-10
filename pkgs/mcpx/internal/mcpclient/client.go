@@ -170,6 +170,11 @@ type Client struct {
 	// again.
 	reinitMu  sync.Mutex
 	reinitGen atomic.Uint64
+	// resumedSession limits the cold-resume recovery to the first
+	// application request. resumedFirstRequest stays set until that request
+	// succeeds or its one recovery attempt is consumed.
+	resumedSession      atomic.Bool
+	resumedFirstRequest atomic.Bool
 	// toolHeaders are each tool's x-mcp-header annotations, learned from
 	// tools/list, for a modern connection over HTTP.
 	toolHeaders map[string][]mcpheaders.Param
@@ -445,7 +450,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 		err = c.probe(ctx, true)
 	}
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	if c.Era == EraModern {
@@ -659,7 +664,7 @@ func (c *Client) dispatch(origin context.Context, raw []byte) {
 	}
 }
 
-// OnElicit is called when a server asks a question. Nil means mcpx answers
+// ElicitHandler is called when a server asks a question. Nil means mcpx answers
 // on the server's behalf, which it must do rather than ignore: a server that
 // asks into silence waits until the call times out.
 type ElicitHandler func(ctx context.Context, method string, params json.RawMessage) (any, error)
@@ -1223,16 +1228,23 @@ func isStreamLost(err error) bool {
 // is its own call to roundTrip, so each round re-issues independently.
 func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMessage, allowReissue bool) (json.RawMessage, error) {
 	gen := c.reinitGen.Load()
+	resumedFirst := c.resumedFirstRequest.Load()
 	for attempt := 0; ; attempt++ {
 		raw, err := c.roundTripOnce(ctx, method, params)
 		if err == nil {
+			if resumedFirst {
+				c.resumedFirstRequest.CompareAndSwap(true, false)
+			}
 			return raw, err
 		}
-		if attempt == 0 && c.sessionGone(err, method) {
-			if !c.reinitializeLegacy(ctx, gen) {
+		if attempt == 0 && (c.sessionGone(err, method, resumedFirst) || (resumedFirst && c.sessionRejected(err))) {
+			if !c.reinitializeLegacy(ctx, gen, resumedFirst) {
 				return raw, err
 			}
 			return c.roundTripOnce(ctx, method, params)
+		}
+		if resumedFirst {
+			c.resumedFirstRequest.CompareAndSwap(true, false)
 		}
 		if attempt > 0 || !allowReissue || c.modernEra() != EraModern || ctx.Err() != nil || !isStreamLost(err) {
 			return raw, err
@@ -1243,14 +1255,22 @@ func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMe
 // sessionGone reports whether err is the narrow recovery trigger: a
 // request (never initialize itself; notifications never reach roundTrip)
 // failed with HTTP 404 on a legacy-era connection.
-func (c *Client) sessionGone(err error, method string) bool {
+func (c *Client) sessionGone(err error, method string, resumedFirst bool) bool {
 	// The atomic modern mirror, not c.Era: a concurrent recovery's
 	// finishLegacy writes Era, and this check runs on every failed call.
 	if method == "initialize" || c.modern.Load() {
 		return false
 	}
+	if c.resumedSession.Load() && !resumedFirst {
+		return false
+	}
 	var he *HTTPStatusError
 	return errors.As(err, &he) && he.Status == http.StatusNotFound
+}
+
+func (c *Client) sessionRejected(err error) bool {
+	var he *HTTPStatusError
+	return errors.As(err, &he) && (he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden)
 }
 
 // reinitializeLegacy replaces a forgotten legacy session, singleflight
@@ -1258,7 +1278,7 @@ func (c *Client) sessionGone(err error, method string) bool {
 // set out with: if it has already moved, another call replaced the
 // session and this one simply retries on it. It reports whether the
 // caller should retry its request.
-func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
+func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64, resumedFirst bool) bool {
 	ft, ok := c.t.(interface{ forgetSession() bool })
 	if !ok {
 		return false // stdio transports have no session to forget
@@ -1268,6 +1288,11 @@ func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
 	if c.reinitGen.Load() != gen {
 		return true
 	}
+	if c.resumedSession.Load() {
+		if !resumedFirst || !c.resumedFirstRequest.CompareAndSwap(true, false) {
+			return false
+		}
+	}
 	if !ft.forgetSession() {
 		return false
 	}
@@ -1275,6 +1300,8 @@ func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
 		return false
 	}
 	c.reinitGen.Add(1)
+	c.resumedSession.Store(false)
+	c.resumedFirstRequest.Store(false)
 	// The recovery has settled: the new session's id and protocol state
 	// are both installed, so a persistence consumer reading the session
 	// now gets the pair that belongs together.

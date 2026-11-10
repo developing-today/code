@@ -10,6 +10,7 @@ import { loadConfig } from "../src/config.ts";
 import { applySupabaseExport, extractSaasServices, type SupabaseExportDoc } from "../src/saas-extract.ts";
 import { SnapshotStore } from "../src/snapshots.ts";
 import { liveSource } from "../src/sources/live.ts";
+import { createSupabaseClientGetter } from "../src/supabase.ts";
 
 const VIEW = `
 ## Summary (b) — subscriptions, infrastructure, account tooling
@@ -27,6 +28,49 @@ const VIEW = `
 `;
 
 const NOW = Date.parse("2026-10-29T15:00:00Z");
+
+describe("getSupabaseClient retry-after-null memoization", () => {
+  test("retries null, shares the next in-flight attempt, and caches success", async () => {
+    const previousProjectRef = process.env.SUPABASE_PROJECT_REF;
+    process.env.SUPABASE_PROJECT_REF = "test-project";
+    let secretCalls = 0;
+    let resolveFirst!: (value: string | null) => void;
+    const firstResult = new Promise<string | null>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let resolveRetry!: (value: string | null) => void;
+    const retryResult = new Promise<string | null>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const getClient = createSupabaseClientGetter(async () => {
+      secretCalls += 1;
+      return secretCalls === 1 ? firstResult : retryResult;
+    });
+
+    try {
+      const initial = getClient();
+      const concurrentInitial = getClient();
+      expect(secretCalls).toBe(1);
+      resolveFirst(null);
+      expect(await Promise.all([initial, concurrentInitial])).toEqual([null, null]);
+
+      const first = getClient();
+      const second = getClient();
+      expect(secretCalls).toBe(2);
+      resolveRetry("test-token");
+
+      const [client, concurrentClient] = await Promise.all([first, second]);
+      expect(client).not.toBeNull();
+      expect(client).toBe(concurrentClient);
+      expect(client?.ref).toBe("test-project");
+      expect(await getClient()).toBe(client);
+      expect(secretCalls).toBe(2);
+    } finally {
+      if (previousProjectRef === undefined) delete process.env.SUPABASE_PROJECT_REF;
+      else process.env.SUPABASE_PROJECT_REF = previousProjectRef;
+    }
+  });
+});
 
 function freshDoc(overrides: Partial<SupabaseExportDoc> = {}): SupabaseExportDoc {
   return {

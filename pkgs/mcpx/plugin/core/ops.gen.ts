@@ -20,6 +20,8 @@ type OpSpec = {
   response: "json" | "response"
 }
 
+export const OPERATION_FINGERPRINT = "f991ef3215011e82484759f8a9b2122671e0b974d4da47647141cf2f1017e8af"
+
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
   adapters_add: {

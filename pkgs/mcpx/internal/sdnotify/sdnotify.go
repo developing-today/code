@@ -22,7 +22,7 @@ func Send(state string) error {
 	if err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.Write([]byte(state)); err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}

@@ -18,6 +18,13 @@
 //! pinned revision. Any mismatch prints the full per-probe table and
 //! fails with it — the numbers are the issue-comment evidence either
 //! way.
+//!
+//! The claim is VERSION-MATCHED (code#6663): the fixtures record the
+//! ONNX Runtime version that produced them in their provenance, and
+//! the gate refuses to run against a different runtime version —
+//! cross-version deltas of ~1e-7 on most components are expected
+//! floating-point noise (kernel/fusion choices differ per version),
+//! not parity evidence in either direction.
 
 use std::path::PathBuf;
 
@@ -26,7 +33,13 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Fixture {
+    provenance: Provenance,
     probes: Vec<Probe>,
+}
+
+#[derive(Deserialize)]
+struct Provenance {
+    onnxruntime_version: String,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +67,75 @@ fn delta_stats(got: &[f32; 768], want_bits: &[u32]) -> (f32, usize) {
     (max_delta, mismatches)
 }
 
+/// Extract the ONNX Runtime version from a versioned shared-object
+/// file name: `libonnxruntime.so.1.31.1` -> `1.31.1`. Anything that is
+/// not exactly three numeric components is not a version.
+fn ort_version_from_soname(name: &str) -> Option<String> {
+    let v = name.strip_prefix("libonnxruntime.so.")?;
+    let mut parts = v.split('.');
+    let full = (0..3).all(|_| {
+        parts
+            .next()
+            .is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    });
+    if full && parts.next().is_none() {
+        Some(v.to_string())
+    } else {
+        None
+    }
+}
+
+/// Best-effort version of the runtime the gate is about to load.
+/// Both layouts Gate A runs against carry the version in a versioned
+/// SONAME: the atlas venv's library IS `libonnxruntime.so.<x.y.z>`,
+/// and the nix store's `libonnxruntime.so` sits next to its
+/// `libonnxruntime.so.<x.y.z>` sibling. Returns None when no unique
+/// versioned name exists (the guard then stays silent rather than
+/// guessing).
+fn loaded_ort_version(ort_lib: &std::path::Path) -> Option<String> {
+    if let Some(v) = ort_lib
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(ort_version_from_soname)
+    {
+        return Some(v);
+    }
+    let dir = ort_lib.parent()?;
+    let mut found: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| ort_version_from_soname(&e.file_name().to_string_lossy()))
+        .collect();
+    found.sort();
+    found.dedup();
+    if found.len() == 1 {
+        found.pop()
+    } else {
+        None
+    }
+}
+
+#[test]
+fn ort_version_from_soname_parses_only_full_versions() {
+    assert_eq!(
+        ort_version_from_soname("libonnxruntime.so.1.31.1").as_deref(),
+        Some("1.31.1")
+    );
+    assert_eq!(
+        ort_version_from_soname("libonnxruntime.so.1.27.1").as_deref(),
+        Some("1.27.1")
+    );
+    assert_eq!(ort_version_from_soname("libonnxruntime.so"), None);
+    assert_eq!(ort_version_from_soname("libonnxruntime.so.1"), None);
+    assert_eq!(ort_version_from_soname("libonnxruntime.so.1.31"), None);
+    assert_eq!(ort_version_from_soname("libonnxruntime.so.1.31.1.2"), None);
+    assert_eq!(ort_version_from_soname("libonnxruntime.so.1.x.1"), None);
+    assert_eq!(
+        ort_version_from_soname("libonnxruntime_providers_shared.so"),
+        None
+    );
+}
+
 #[test]
 #[ignore = "requires ATLAS_ORT_LIB and the pinned model snapshot; see file docs"]
 fn gate_a_bit_identity() {
@@ -74,6 +156,30 @@ fn gate_a_bit_identity() {
     let ort_lib = std::env::var_os("ATLAS_ORT_LIB")
         .map(PathBuf::from)
         .expect("ATLAS_ORT_LIB must point at a libonnxruntime.so (Gate A environment)");
+
+    // Version guard (code#6663): bit-identity is a version-matched
+    // claim. The fixtures were recorded under the provenance runtime
+    // (onnxruntime 1.31.1, atlas venv); the nix closure's 1.27.1
+    // produces ~1e-7 deltas on most components of every probe, which
+    // reads as a parity failure but is only a version mismatch. Fail
+    // loudly as NOT APPLICABLE instead of printing a parity table.
+    match loaded_ort_version(&ort_lib) {
+        Some(v) if v != fixture.provenance.onnxruntime_version => panic!(
+            "Gate A NOT APPLICABLE: fixtures were recorded under ONNX Runtime {} \
+             but ATLAS_ORT_LIB resolves to ONNX Runtime {v} ({}). Bit-identity is \
+             a version-matched claim (code#6663): load the provenance runtime or \
+             re-record the fixtures against this one — do not read the deltas as \
+             a parity verdict.",
+            fixture.provenance.onnxruntime_version,
+            ort_lib.display()
+        ),
+        Some(_) => {}
+        None => eprintln!(
+            "Gate A: could not determine the loaded ONNX Runtime version from {}; \
+             version guard skipped",
+            ort_lib.display()
+        ),
+    }
 
     let mut embedder = Embedder::load(&model_dir, &ort_lib).expect("load embedder");
 

@@ -10,7 +10,11 @@
  * assert), tool registration (tools.ts: tool.transform under the mcpx
  * namespace, so the model sees the v1 names — mcpx_exec and friends),
  * and the sampling watcher (sampling.ts, #1858 item (4)): broker
- * sample rows answered through ctx.generate.text.
+ * sample rows answered through ctx.generate.text. The daemon picker
+ * (picker.ts, #1858 item (3)) rides the tool surface: mcpx_daemon_pick
+ * renders the candidate menu and confirms the choice through the
+ * permission domain — the closest equivalent of a TUI select the
+ * pinned Context supports (picker.ts records the evidence).
  * The v1 tree stays beside this one, untouched, until v2 is what runs.
  */
 import { targetKey, type Target } from "../../core/daemon.ts";

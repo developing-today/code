@@ -23,6 +23,7 @@ import {
   liveCandidates,
   rank,
   readInfoFiles,
+  runBin,
   splitArgs,
   targetKey,
   writeRemembered,
@@ -30,6 +31,7 @@ import {
   type Candidate,
   type DaemonInfo,
 } from "./daemon.ts";
+import { OPERATION_FINGERPRINT } from "./ops.gen.ts";
 
 // Short by design. A unix socket path is capped at 104 bytes on macOS, and
 // the daemon itself moves its socket elsewhere when the state path would
@@ -69,6 +71,8 @@ type FakeOptions = {
   config?: string;
   version?: string;
   servers?: number;
+  operationFingerprint?: string;
+  missingOperationFingerprint?: boolean;
 };
 
 const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
@@ -79,11 +83,17 @@ const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
       const url = new URL(req.url);
       seen.push(url.pathname);
       if (url.pathname === "/v1/health") {
-        return Response.json({ status: "ok", version: opts.version ?? "test", pid: 1 });
+        return Response.json({
+          status: "ok",
+          version: opts.version ?? "test",
+          pid: 1,
+          ...(opts.missingOperationFingerprint ? {} : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
+        });
       }
       if (url.pathname === "/v1/status") {
         return Response.json({
           version: opts.version ?? "test",
+          ...(opts.missingOperationFingerprint ? {} : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
           pid: 1,
           socket,
           config: opts.config,
@@ -98,6 +108,7 @@ const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
         if (!opts.resolve) return new Response("not found", { status: 404 });
         return Response.json(opts.resolve(url.searchParams.get("dir") ?? ""));
       }
+      if (url.pathname === "/v1/namespaces") return Response.json([]);
       return new Response("not found", { status: 404 });
     },
   });
@@ -120,6 +131,35 @@ const writeInfo = (state: string, key: string, info: DaemonInfo): string => {
 afterEach(() => {
   while (stopAll.length) stopAll.pop()!();
   while (scratch.length) rmSync(scratch.pop()!, { recursive: true, force: true });
+});
+
+describe("generated operation compatibility", () => {
+  test("allows operations when the daemon table fingerprint matches", async () => {
+    const socket = join(tempRoot(), "matching.sock");
+    const server = fake(socket);
+    const client = new DaemonClient({ kind: "socket", path: socket });
+
+    await expect(client.ops.namespaces()).resolves.toEqual([]);
+    expect(server.seen).toEqual(["/v1/health", "/v1/namespaces"]);
+  });
+
+  test("refuses generated operations when the daemon table fingerprint differs", async () => {
+    const socket = join(tempRoot(), "mismatch.sock");
+    const server = fake(socket, { operationFingerprint: "stale-table" });
+    const client = new DaemonClient({ kind: "socket", path: socket });
+
+    await expect(client.ops.namespaces()).rejects.toThrow("operation table mismatch");
+    expect(server.seen).toEqual(["/v1/health"]);
+  });
+
+  test("fails closed when an older daemon has no operation fingerprint", async () => {
+    const socket = join(tempRoot(), "missing-fingerprint.sock");
+    const server = fake(socket, { missingOperationFingerprint: true });
+    const client = new DaemonClient({ kind: "socket", path: socket });
+
+    await expect(client.ops.namespaces()).rejects.toThrow("does not publish an operation fingerprint");
+    expect(server.seen).toEqual(["/v1/health"]);
+  });
 });
 
 describe("rung 2: the info files", () => {
@@ -438,9 +478,30 @@ describe("goDurationMs", () => {
     // Just under the ceiling still parses (the largest Go duration
     // is 2562047h47m16.854775807s = 2^63-1 ns).
     expect(goDurationMs("2562047h47m16.854775s")).toBeDefined();
-    expect(goDurationMs("2562047h47m16.854775s")).toBeLessThanOrEqual(9_223_372_036_854.776);
+    expect(goDurationMs("2562047h47m16.854775s")).toBeLessThanOrEqual(9_223_372_036_854.775);
     // #2309: Go accepts a bare "0" as zero.
     expect(goDurationMs("0")).toBe(0);
+  });
+
+  test("matches Go on dot fractions and both mu spellings (#3490)", () => {
+    // Go-parity table: every spelling verified against
+    // time.ParseDuration (see #3490 for the probe).
+    const parity: Array<[string, number]> = [
+      [".5s", 500],
+      ["1.s", 1000],
+      [".5s.5s", 1000],
+      ["1.5s", 1500],
+      ["1\u03bcs", 0.001], // GREEK SMALL LETTER MU
+      ["1\u00b5s", 0.001], // MICRO SIGN
+      ["1us", 0.001],
+      [".5\u00b5s", 0.0005],
+    ];
+    for (const [spelling, ms] of parity) expect(goDurationMs(spelling)).toBe(ms);
+    // Go rejects these spellings; they stay absent, as do negative
+    // durations per the deliberate divergence pinned above.
+    for (const bad of ["00", "5.", ".s", "1e3s", "1_000s", "60", "60s please", "-.5s", "-0"]) {
+      expect(goDurationMs(bad)).toBeUndefined();
+    }
   });
 });
 
@@ -485,5 +546,30 @@ describe("withDaemonAuth (#1975)", () => {
     process.env.MCPX_TRANSPORT_BEARER_TOKEN = TOKEN;
     const out = withDaemonAuth({ headers: { Authorization: "Bearer stale" } });
     expect(new Headers(out.headers as any).get("Authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+});
+
+describe("runBin abort signal (PLG-38, #1940)", () => {
+  test("an abort kills the child instead of waiting for it", async () => {
+    const dir = tempRoot();
+    const bin = join(dir, "slow-bin");
+    writeFileSync(bin, ["#!/bin/sh", "sleep 30", "echo should-not-print"].join(String.fromCharCode(10)));
+    chmodSync(bin, 0o755);
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = runBin({ bin, env: envFor(dir) }, [], undefined, controller.signal);
+    setTimeout(() => controller.abort(), 150);
+    const out = await pending;
+    expect(out).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("without a signal the child runs to completion", async () => {
+    const dir = tempRoot();
+    const bin = join(dir, "fast-bin");
+    writeFileSync(bin, ["#!/bin/sh", "echo hello-from-bin"].join(String.fromCharCode(10)));
+    chmodSync(bin, 0o755);
+    const out = await runBin({ bin, env: envFor(dir) }, []);
+    expect(out).toBe("hello-from-bin");
   });
 });
