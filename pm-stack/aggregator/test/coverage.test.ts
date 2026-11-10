@@ -272,6 +272,30 @@ describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
     expect(rotated.anchorAt).toBe("2026-11-08T00:00:00.000Z");
     expect(rotated.baseline?.generatedAt).toBe("2026-10-24T00:00:00Z");
   });
+
+  test("isValidAnchorAt agrees with an independent calendar oracle on generated dates", () => {
+    // Oracle: plain leap-year + days-in-month arithmetic, written here
+    // independently of the implementation Date round-trip (#5196 Codex
+    // P1: parser invariants get property tests, not picked examples).
+    const isLeap = (y: number) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+    const daysInMonth = (y: number, m: number) =>
+      [31, isLeap(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+    // Deterministic LCG so the generated cases are reproducible.
+    let seed = 5196;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    for (let i = 0; i < 600; i++) {
+      const year = 1900 + (next() % 400);
+      const month = 1 + (next() % 14); // 13-14: invalid months
+      const day = next() % 34; // 0 and 32-33: invalid days
+      const stamp = year + "-" + pad(month) + "-" + pad(day) + "T00:00:00Z";
+      const expected = month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+      expect(isValidAnchorAt(stamp)).toBe(expected);
+    }
+    // Non-string and unparseable shapes never validate.
+    for (const junk of ["", "not-a-date", null, undefined, 0, {}])
+      expect(isValidAnchorAt(junk)).toBe(false);
+  });
 });
 
 describe("computeCoverage — pool unavailable (PR #3309 Codex)", () => {
