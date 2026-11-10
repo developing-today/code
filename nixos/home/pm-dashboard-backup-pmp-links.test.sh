@@ -21,9 +21,30 @@
 #     at the default state path: run completes and uploads; the
 #     archive's projector/pmp_links.sql restores into a scratch DB
 #     with content identical to the source, contains NO pmp_items
-#     data, and the manifest records the member required + present.
+#     data, and the manifest records the member required + present;
+#     the stub log shows copyto calls to BOTH offsite legs (R2 and
+#     Drive) for the same archive.
 #   * env-url — the env file's database URL points at a fixture DB
 #     elsewhere: the export comes from THAT database.
+#   * env-last — two DATABASE_URL assignments in the env file: the
+#     LAST one selects the source (the stale first one must not).
+#   * env-quoted — the last assignment is quoted, CR-terminated and
+#     percent-encoded, and its path contains a space: the quote pair,
+#     CR and edge whitespace are trimmed, the %XX escapes decoded, and
+#     interior spaces preserved.
+#   * env-remote — DATABASE_URL names a non-file DSN: the run fails
+#     explicitly (nothing is uploaded, the cursor is unchanged, the
+#     failure names pmp_links and does not leak the DSN).
+#   * env-relative — DATABASE_URL names a relative path and
+#     PM_PROJECTOR_DIR is set: the DB resolves under that directory.
+#   * projector-dir — no DATABASE_URL, PM_PROJECTOR_DIR names the
+#     projector working dir: the active DB is data/projector.db under
+#     it (the projector own default), and it wins over a stale
+#     projector.db at the dir root and over the state-dir default.
+#   * env-encoded-q — DATABASE_URL is file:...projector%3Fprod.db:
+#     the decoded path names a real file with a literal ? in its name,
+#     and that exact file is exported (the decoded ? must not turn
+#     into SQLite URI query syntax).
 #   * no-db — no projector DB anywhere: run completes, manifest
 #     records the member optional + missing.
 #   * corrupt-db — the configured DB file is garbage: run fails,
@@ -139,10 +160,15 @@ SQL
 
 run_backup() {
   local name="$1"
-  HOME="$RUN_HOME" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="test-token" \
+  shift
+  # PM_PROJECTOR_* are cleared so an ambient value can never pick the
+  # source for a scenario; scenarios pass their own as env(1) arguments.
+  env -u PM_PROJECTOR_DIR -u PM_PROJECTOR_DB -u PM_PROJECTOR_ENV \
+    HOME="$RUN_HOME" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="test-token" \
     RCLONE_STUB_DIR="$TMP_ROOT/$name/rclone-store" \
     RCLONE_CALLS_LOG="$TMP_ROOT/$name/rclone-calls.log" \
     PM_DB_DUMP_SCRIPT="$RUN_HOME/no-such-dump-script.sh" \
+    "$@" \
     bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/$name.log" 2>&1
   RC=$?
   MARKER_AFTER="$(cat "$RUN_HOME/backups/dashboard/.last-run-epoch" 2>/dev/null || echo missing)"
@@ -176,6 +202,13 @@ sys.exit(1)
 no_upload() { # $1 scenario name
   [[ ! -f "$TMP_ROOT/$1/rclone-calls.log" ]] \
     || ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
+}
+
+copied_both() { # $1 scenario name — copyto recorded for BOTH offsite legs
+  local log="$TMP_ROOT/$1/rclone-calls.log"
+  [[ -f "$log" ]] || return 1
+  grep -qE '^copyto .*/dashboard-2026-10-28\.tar\.zst r2bak:.*/dashboard-2026-10-28\.tar\.zst$' "$log" &&
+    grep -qE '^copyto .*/dashboard-2026-10-28\.tar\.zst drive:.*/dashboard-2026-10-28\.tar\.zst$' "$log"
 }
 
 canonical_links() { # $1 = sqlite db path; canonical pmp_links content
@@ -218,10 +251,10 @@ else
   fail "with-db: restored pmp_links content differs from source"
 fi
 assert_member with-db required present
-if ! no_upload with-db; then
-  ok "with-db: archive uploaded to the offsite legs (stub rclone copyto recorded)"
+if copied_both with-db; then
+  ok "with-db: stub log records copyto to both R2 and Drive"
 else
-  fail "with-db: expected uploads to the offsite legs"
+  fail "with-db: expected copyto to BOTH R2 and Drive; calls: $(cat "$TMP_ROOT/with-db/rclone-calls.log" 2>/dev/null || echo none)"
 fi
 
 # --- env-url: the env file's database URL selects the source DB ----------------
@@ -238,6 +271,112 @@ else
   fail "env-url: export did not come from the env-configured database (rc=$RC); log: $(cat "$TMP_ROOT/env-url.log")"
 fi
 assert_member env-url required present
+
+# --- env-last: the LAST DATABASE_URL assignment selects the source -------------
+setup_home env-last
+mkdir -p "$RUN_HOME/elsewhere" "$RUN_HOME/.local/state/pm-projector"
+make_fixture_db "$RUN_HOME/elsewhere/stale.db" 'stale-first-link-note'
+make_fixture_db "$RUN_HOME/elsewhere/live.db" 'last-assignment-link-note'
+{
+  printf '%s=file:%s\n' 'DATABASE_URL' "$RUN_HOME/elsewhere/stale.db"
+  printf '%s=file:%s\n' 'DATABASE_URL' "$RUN_HOME/elsewhere/live.db"
+} >"$RUN_HOME/.local/state/pm-projector/.env"
+run_backup env-last
+D="$(archive_dir env-last)"
+if [[ "$RC" -eq 0 ]] \
+  && grep -q 'last-assignment-link-note' "$D/projector/pmp_links.sql" 2>/dev/null \
+  && ! grep -q 'stale-first-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+  ok "env-last: export sourced from the last DATABASE_URL assignment"
+else
+  fail "env-last: export did not come from the last assignment (rc=$RC); log: $(cat "$TMP_ROOT/env-last.log")"
+fi
+
+# --- env-quoted: quotes, CR, edge space trimmed; %XX decoded -------------------
+setup_home env-quoted
+mkdir -p "$RUN_HOME/with space" "$RUN_HOME/.local/state/pm-projector"
+make_fixture_db "$RUN_HOME/with space/quoted db.db" 'quoted-encoded-link-note'
+printf 'DATABASE_URL = "file:%s/with%%20space/quoted%%20db.db" \r\n' "$RUN_HOME" \
+  >"$RUN_HOME/.local/state/pm-projector/.env"
+run_backup env-quoted
+D="$(archive_dir env-quoted)"
+if [[ "$RC" -eq 0 ]] && grep -q 'quoted-encoded-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+  ok "env-quoted: quoted, CR-terminated, percent-encoded URL resolved to the real DB"
+else
+  fail "env-quoted: quoted/encoded URL was not resolved (rc=$RC); log: $(cat "$TMP_ROOT/env-quoted.log")"
+fi
+
+# --- env-remote: a non-file DSN fails explicitly, no local fallback -----------
+setup_home env-remote
+mkdir -p "$RUN_HOME/.local/state/pm-projector"
+# A local DB exists at the fallback path: it must NOT be silently archived.
+make_fixture_db "$RUN_HOME/.local/state/pm-projector/projector.db" 'fallback-must-not-be-used'
+printf '%s=postgres://user:sup3rsecret@db.example.invalid/app\n' 'DATABASE_URL' \
+  >"$RUN_HOME/.local/state/pm-projector/.env"
+run_backup env-remote
+if [[ "$RC" -ne 0 ]]; then
+  ok "env-remote: remote DATABASE_URL fails the run ($RC)"
+else
+  fail "env-remote: remote DATABASE_URL silently accepted (exit 0)"
+fi
+if grep -q 'pmp_links' "$TMP_ROOT/env-remote.log" \
+  && ! grep -q 'sup3rsecret' "$TMP_ROOT/env-remote.log"; then
+  ok "env-remote: failure names pmp_links and does not leak the DSN"
+else
+  fail "env-remote: failure output missing pmp_links or leaked the DSN: $(cat "$TMP_ROOT/env-remote.log")"
+fi
+if no_upload env-remote; then
+  ok "env-remote: nothing uploaded"
+else
+  fail "env-remote: an upload was attempted"
+fi
+if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+  ok "env-remote: journal marker unchanged"
+else
+  fail "env-remote: marker advanced — was $PRESET, now $MARKER_AFTER"
+fi
+
+# --- env-relative: relative DB resolves under PM_PROJECTOR_DIR -----------------
+setup_home env-relative
+mkdir -p "$RUN_HOME/projector" "$RUN_HOME/.local/state/pm-projector"
+make_fixture_db "$RUN_HOME/projector/rel.db" 'relative-dir-link-note'
+printf '%s=file:rel.db\n' 'DATABASE_URL' >"$RUN_HOME/.local/state/pm-projector/.env"
+run_backup env-relative PM_PROJECTOR_DIR="$RUN_HOME/projector"
+D="$(archive_dir env-relative)"
+if [[ "$RC" -eq 0 ]] && grep -q 'relative-dir-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+  ok "env-relative: relative DB resolved under PM_PROJECTOR_DIR"
+else
+  fail "env-relative: relative DB not resolved under PM_PROJECTOR_DIR (rc=$RC); log: $(cat "$TMP_ROOT/env-relative.log")"
+fi
+
+# --- projector-dir: PM_PROJECTOR_DIR default wins over the state-dir fallback --
+setup_home projector-dir
+mkdir -p "$RUN_HOME/projector/data" "$RUN_HOME/.local/state/pm-projector"
+make_fixture_db "$RUN_HOME/projector/data/projector.db" 'projector-dir-link-note'
+make_fixture_db "$RUN_HOME/projector/projector.db" 'stale-root-link-note'
+make_fixture_db "$RUN_HOME/.local/state/pm-projector/projector.db" 'state-dir-fallback-link-note'
+run_backup projector-dir PM_PROJECTOR_DIR="$RUN_HOME/projector"
+D="$(archive_dir projector-dir)"
+if [[ "$RC" -eq 0 ]] \
+  && grep -q 'projector-dir-link-note' "$D/projector/pmp_links.sql" 2>/dev/null \
+  && ! grep -q 'stale-root-link-note' "$D/projector/pmp_links.sql" 2>/dev/null   && ! grep -q 'state-dir-fallback-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+  ok "projector-dir: PM_PROJECTOR_DIR/data DB chosen before stale-root and state-dir DBs"
+else
+  fail "projector-dir: PM_PROJECTOR_DIR/data DB not chosen (rc=$RC); log: $(cat "$TMP_ROOT/projector-dir.log")"
+fi
+
+# --- env-encoded-q: decoded ? in the filename stays a filename character -----
+setup_home env-encoded-q
+mkdir -p "$RUN_HOME/elsewhere" "$RUN_HOME/.local/state/pm-projector"
+make_fixture_db "$RUN_HOME/elsewhere/projector?prod.db" 'encoded-q-link-note'
+printf '%s=file:%s
+' 'DATABASE_URL' "$RUN_HOME/elsewhere/projector%3Fprod.db"   >"$RUN_HOME/.local/state/pm-projector/.env"
+run_backup env-encoded-q
+D="$(archive_dir env-encoded-q)"
+if [[ "$RC" -eq 0 ]] && grep -q 'encoded-q-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+  ok "env-encoded-q: percent-decoded ? filename exported as-is"
+else
+  fail "env-encoded-q: decoded ? filename not exported (rc=$RC); log: $(cat "$TMP_ROOT/env-encoded-q.log")"
+fi
 
 # --- no-db: not applicable, recorded optional + missing ------------------------
 setup_home no-db

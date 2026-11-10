@@ -549,7 +549,10 @@ mod tests {
         .await
         .unwrap();
         (
-            super::super::routes::create_router(state),
+            super::super::routes::create_router(
+                state,
+                super::super::security::WebSecurity::default(),
+            ),
             dir,
             endpoint,
             docs,

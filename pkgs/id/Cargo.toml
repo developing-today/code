@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.96"
 description = "A peer-to-peer file sharing CLI built with Iroh"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/id"
+repository = "https://github.com/developing-today/code"
 keywords = ["p2p", "file-sharing", "iroh", "cli"]
 categories = ["command-line-utilities", "network-programming"]
 
@@ -148,6 +148,13 @@ zeroize = "1"
 rpassword = "7"
 base64 = "0.22"
 blake3 = "1"
+# Turso/libsql HTTP adapter v1 (#7577, decision record #5806): raw HTTP
+# pipeline client in src/foreign_libsql.rs. rustls, tokio-rustls and
+# webpki-roots are already in Cargo.lock via iroh/quinn; no SQLite-family
+# dependency is added (the store_traits guard test stays green).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
 # SHA-256 for the hosted binding ceremony's service attestation (slice 1,
@@ -171,6 +178,7 @@ tokio = { version = "1", features = ["test-util"] }
 # The root package's tests exercise dial deadlines using id-core's test-only helpers.
 id-core = { path = "crates/id-core", default-features = false, features = [
   "test-utils",
+  "test-provider",
 ] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.32", features = ["bundled"] }

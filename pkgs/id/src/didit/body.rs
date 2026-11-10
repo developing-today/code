@@ -240,7 +240,48 @@ pub struct Record {
     pub place: Option<Place>,
 }
 
+/// The default cross-app view of a record (design §7, decision D7).
+///
+/// Stable event and subject IDs are retained so related opinions and entity
+/// references still resolve, while structural details and free text are
+/// omitted. This is a derived view; it is never encoded as a didit body.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecordSummary {
+    /// The carrying event's stable ID.
+    pub id: Hash,
+    /// The explicit entity IDs covered by the act.
+    pub subjects: Vec<Hash>,
+    /// The number of subjects, retained as a convenient summary field.
+    pub subject_count: usize,
+    /// What happened.
+    pub act: String,
+    /// The author's clock, in unix seconds.
+    pub at: i64,
+    /// The author's UTC offset at `at`, in minutes.
+    pub tz_offset_minutes: i32,
+}
+
 impl Record {
+    /// Returns the summary projection, omitting details, shared detail,
+    /// measure, note, and place while retaining the stable record ID.
+    #[must_use]
+    pub fn summary_projection(&self) -> RecordSummary {
+        RecordSummary {
+            id: self.id,
+            subjects: self.subjects.clone(),
+            subject_count: self.subjects.len(),
+            act: self.act.clone(),
+            at: self.at,
+            tz_offset_minutes: self.tz_offset_minutes,
+        }
+    }
+
+    /// Returns the full projection without dropping any record fields.
+    #[must_use]
+    pub fn full_projection(&self) -> Self {
+        self.clone()
+    }
+
     /// The detail slot for `subject`, when the record carries one.
     #[must_use]
     pub fn detail_for(&self, subject: &Hash) -> Option<&RecordDetail> {

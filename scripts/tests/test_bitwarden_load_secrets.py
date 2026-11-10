@@ -115,5 +115,49 @@ class TestBitwardenLoadSecrets(unittest.TestCase):
         self.eval_format("source", "--item Item")
 
 
+    def run_raw(self, *args, timeout=10):
+        # check=False + a hard timeout: the pre-fix script loops forever
+        # on a trailing value-option, so a hang must fail the test, not
+        # block the suite.
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args],
+            env=self.env, capture_output=True, text=True, timeout=timeout,
+        )
+
+    def test_trailing_value_option_fails_fast(self):
+        # #6932: --item/--field/--secret/--project/--prefix/--format with
+        # no following argument hung the parse loop (shift 2 cannot
+        # advance past the last argument).
+        for args in (("--item",), ("--item", "Item", "--format"),
+                     ("--bws", "--secret"), ("--item", "Item", "--prefix")):
+            with self.subTest(args=args):
+                proc = self.run_raw(*args)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("requires a value", proc.stderr)
+
+    def test_flag_as_value_rejected(self):
+        # #6932: --item --bws swallowed --bws as the item name and ran in
+        # vault mode; a flag-like value is a usage error naming the option.
+        proc = self.run_raw("--item", "--bws")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--item", proc.stderr)
+        self.assertIn("requires a value", proc.stderr)
+
+    def test_empty_value_rejected(self):
+        proc = self.run_raw("--item", "")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires a value", proc.stderr)
+
+    def test_sourced_trailing_option_aborts_source(self):
+        # Sourced mode is the primary documented use: the guard must
+        # abort the source with a non-zero status, never hang the shell.
+        proc = subprocess.run(
+            ["bash", "-c", f'source "{SCRIPT}" --item'],
+            env=self.env, capture_output=True, text=True, timeout=10,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires a value", proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -235,7 +235,7 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 | `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | opencode-route / workhorse | not recorded | not recorded  | not recorded | 2026-11-03  |
 
-### 2b. Laptop systemd user timers (39 timers: 38 enabled, 1 installed-but-disabled)
+### 2b. Laptop systemd user timers (39 loaded: 38 enabled, 1 installed-but-disabled; 1 Nix-configured pending deployment)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -262,7 +262,9 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `laptop-backups-watchdog.timer`          | `OnCalendar=*-*-* 06,12,18:30:00`                     | `laptop-backups-watchdog.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `laptop-repo-keeper.timer`               | `OnCalendar=*-*-* *:23:00`                            | `laptop-repo-keeper.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `laptop-untracked-review.timer`          | `OnCalendar=*-*-* 07:37:00`                           | `laptop-untracked-review.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `meta-quota-export.timer`                 | `OnCalendar=*-*-* *:00/15:00`                         | `meta-quota-export.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-05  |
 | `openai-cred-watchdog.timer`             | `OnCalendar=*-*-* *:00:00`                            | `openai-cred-watchdog.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `opencode-go-seating-guard.timer` (Nix-configured; not yet loaded) | `OnCalendar=hourly (not live-verified)` | `opencode-go-seating-guard.service` | laptop (user systemd; code#5611) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
 | `openclaw-backup.timer`                  | `OnCalendar=*-*-* 04:05:00`                           | `openclaw-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `opencode-quota-freshness-summary.timer` (disabled) | `OnCalendar=*-*-* *:00:00`                            | `opencode-quota-freshness-summary.service` | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `opencode-usage-export.timer`            | `OnCalendar=*-*-* *:00/15:00`                         | `opencode-usage-export.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
@@ -275,6 +277,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `quota-gatherer.timer`                   | `OnCalendar=*-*-* *:00/15:00`                         | `quota-gatherer.service`                   | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `repo-archive-backup.timer`              | `OnCalendar=*-*-* 05:15:00`                           | `repo-archive-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `repo-universe-issue-check.timer`        | `OnCalendar=*-*-* 00:00:00`                           | `repo-universe-issue-check.service`        | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `queue-coverage-reconcile.timer` (repo-shipped, not yet installed) | `OnCalendar=*-*-* *:41:00` | `queue-coverage-reconcile.service` | laptop (user systemd; code#7016) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
 | `supabase-backup.timer`                  | `OnCalendar=*-*-* 04:42:00,OnCalendar=*-*-* 16:42:00` | `supabase-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `sync-models.timer`                      | `OnCalendar=*-*-* 00:00:00`                           | `sync-models.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `systemd-tmpfiles-clean.timer`           | `OnUnitActiveUSec=1d,OnStartupUSec=5min`              | `systemd-tmpfiles-clean.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
@@ -297,3 +300,16 @@ issue #1319.
 **None others known.** No other Jules schedule exists or is planned;
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
+
+## Surface 4 — GitHub Actions schedules (1 entry)
+
+Scheduled workflows in this repo (`.github/workflows/*` with a
+`schedule:` trigger). This surface was added 2026-11-05 with its first
+registered entry (#5451); other scheduled workflows that predate the
+surface are not yet recorded here — that gap is a registry defect of
+the same kind the maintenance rule names, to be backfilled by a later
+review, not silently normalised.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
+| `bws-freshness` (`.github/workflows/bws-freshness.yml`) | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch` | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`) | issue #5451 | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05 |

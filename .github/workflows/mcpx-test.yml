@@ -29,6 +29,12 @@ name: mcpx test
 # adding a seventh shard there would have bought ~25 s of test time and
 # more queue pressure. Target leg and max shards live in the init step.
 #
+# 2026-11-10 (#7795): PR + main triggers restored per .github/ci-policy.md
+# (they were removed in 5a94833ea3), and the unit leg regained its
+# `needs: init` -- without it the file was invalid (unit consumes
+# needs.init.outputs.seed), which failed every run at startup while
+# the workflow sat dispatch-only and disabled.
+#
 # Reconciliation with the live workflows (#1998): mcpx.yml keeps its
 # direct-Go push test + bot vendorhash-repair, mcpx-nixbuild.yml keeps
 # the nix build leg, mcpx-conformance.yml keeps conformance. This
@@ -36,6 +42,9 @@ name: mcpx test
 # vendorHash repair.
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -54,8 +63,16 @@ jobs:
     outputs:
       matrix: ${{ steps.shards.outputs.matrix }}
       total: ${{ steps.shards.outputs.total }}
+      seed: ${{ steps.seed.outputs.seed }}
     steps:
       - uses: actions/checkout@v7
+      - id: seed
+        name: Mint the run seed (#1949)
+        run: |
+          set -euo pipefail
+          seed="$(python3 -c "import os,time;b=bytearray(int(time.time()*1000).to_bytes(6,'big')+os.urandom(10));b[6]=b[6]&15|0x70;b[8]=b[8]&63|0x80;h=b.hex();print(f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}')")"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "MCPX_TEST_SEED=$seed" >> "$GITHUB_STEP_SUMMARY"
       - id: shards
         name: Generate the measured-time e2e shard matrix
         # Measured-time packing (#1994). target-seconds is the intended
@@ -71,6 +88,7 @@ jobs:
 
   unit:
     name: "basic: mcpx-test unit"
+    needs: init
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -83,6 +101,15 @@ jobs:
           cache-dependency-path: pkgs/mcpx/go.sum
       - name: Affected-test selector regressions
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v
+      - name: Affected embed-selector regressions (#6866)
+        run: |
+          test -f pkgs/mcpx/scripts/tests/test_affected_embeds.py
+          command -v git >/dev/null
+          python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v
+      - name: Run-seed wrapper regressions (#1949)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v
+      - name: Shard-packer discovery regressions (#6906)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_e2e_shard_packer.py' -v
       # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
       # shell out to deno/bun/node too, and a missing runtime reads as a
       # test failure (first run of this workflow, PR #2888).
@@ -95,6 +122,8 @@ jobs:
           node-version: 24
       - name: Unit tests (everything except internal/e2e)
         working-directory: pkgs/mcpx
+        env:
+          MCPX_TEST_SEED: ${{ needs.init.outputs.seed }}
         run: |
           # Intentional word splitting: $pkgs is a newline-separated package list
           # from go list and must split into separate go test arguments --
@@ -127,6 +156,35 @@ jobs:
           fi
           go vet ./...
 
+
+  plugin-ts:
+    name: "basic: mcpx-test plugin-ts"
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # #5151: lint + type-check coverage for the mcpx-owned TypeScript
+      # plugin sources (plugin/opencode/mcpx/), which the Go jobs and
+      # the bun test suite never type-check. Toolchain is pinned
+      # exactly in plugin/opencode/package.json + bun.lock: biome lint
+      # under the repo-root biome.json (mcpx/biome.json extends it and
+      # disables only noAssignInExpressions — daemon.ts parses Go
+      # durations with the canonical while ((m = re.exec(s))) loop)
+      # and tsc --noEmit under plugin/opencode/tsconfig.json (strict).
+      # Deno was evaluated first (it is already in this workflow for
+      # the Go legs):  fails on these sources inside its
+      # tsc host, and  default rules flag the daemon wire
+      # codes established patterns wholesale, so the repos existing
+      # biome + tsc pair (id web, pm-stack aggregator) is the fit.
+      - name: Install the pinned plugin check toolchain
+        working-directory: pkgs/mcpx/plugin/opencode
+        run: bun install --frozen-lockfile
+      - name: Lint and type-check the plugin TypeScript
+        working-directory: pkgs/mcpx/plugin/opencode
+        run: bun run check
+
   e2e:
     name: "basic: mcpx-test e2e (shard ${{ matrix.shard }})"
     needs: init
@@ -156,6 +214,7 @@ jobs:
           RUN_PATTERN: ${{ matrix.run }}
           SHARD: ${{ matrix.shard }}
           EXPECTED_COUNT: ${{ matrix.count }}
+          MCPX_TEST_SEED: ${{ needs.init.outputs.seed }}
         run: |
           echo "go test ./internal/e2e -run '^($RUN_PATTERN)$' -count=1 -json"
           set +e
@@ -215,7 +274,7 @@ jobs:
 
   ci-ok:
     name: "mcpx-test ci-ok"
-    needs: [init, unit, lint, e2e]
+    needs: [init, unit, lint, plugin-ts, e2e]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10
