@@ -68,6 +68,7 @@ records.
 - [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
 - [Capability observability: who can see which capability facts, where](../../doc/2026-11-08T10-40-00Z_design_id_capability_observability/2026-11-08T10-40-00Z_design_id_capability_observability.md)
 - [Server-side invariants: budgets, observability, exploit resistance, containment](../../doc/2026-11-09T05-15-00Z_design_id_server_invariants/2026-11-09T05-15-00Z_design_id_server_invariants.md)
+- [Two-level metering: burst bucket + hard per-tick ceiling, per function](../../doc/2026-11-10T03-10-00Z_design_id_two_level_metering/2026-11-10T03-10-00Z_design_id_two_level_metering.md)
 
 ## Package architecture docs (living, with the code)
 
