@@ -69,10 +69,13 @@ function daysInMonth(year: number, month: number): number {
  * phantom March date (#2264's defect shape). A missing timezone on a
  * timestamp is read as UTC, matching how the fleet's producers stamp
  * `generatedAt`. Non-strings, non-ISO shapes, and out-of-range time
- * components all return null. */
+ * components all return null. Surrounding whitespace is not trimmed:
+ * a padded value is rejected, so anything accepted here stays
+ * parseable by the downstream `Date.parse` consumers that retain
+ * the original string (health, live provenance). */
 export function parseIsoDate(v: unknown): Date | null {
   if (typeof v !== "string") return null;
-  const m = ISO_DATE_RE.exec(v.trim());
+  const m = ISO_DATE_RE.exec(v);
   if (!m) return null;
   const year = Number(m[1]);
   const month = Number(m[2]);

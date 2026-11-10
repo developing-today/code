@@ -259,4 +259,8 @@ describe("isFleetFeed proof consumer — strict generatedAt (#2577)", () => {
     expect(isFleetFeed(feed("2026-02-30T00:00:00Z"))).toBe(false);
     expect(isFleetFeed(feed("2026-13-01T00:00:00Z"))).toBe(false);
   });
+  test("rejects whitespace-padded timestamps downstream Date.parse cannot read", () => {
+    expect(isFleetFeed(feed("2026-10-25T17:00:00Z "))).toBe(false);
+    expect(isFleetFeed(feed(" 2026-10-25T17:00:00Z"))).toBe(false);
+  });
 });
