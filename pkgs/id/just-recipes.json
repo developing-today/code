@@ -2003,6 +2003,19 @@
       "namepath": "outdated",
       "shebang": false
     },
+    "planted-bug-check": {
+      "attributes": [{ "group": "test" }],
+      "body": [["bash tests/planted-bug-check.sh"]],
+      "dependencies": [],
+      "doc": "Planted-bug check: prove the voiding/frontier suites catch planted bugs (#1395, P2.3/P2.8)",
+      "name": "planted-bug-check",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "planted-bug-check",
+      "shebang": false
+    },
     "prod-lines-check": {
       "attributes": [{ "group": "lint" }],
       "body": [["bash scripts/prod-lines-check.sh && bash scripts/prod-lines-check-test.sh"]],
@@ -2546,10 +2559,10 @@
     "test-full": {
       "attributes": [{ "group": "test" }],
       "body": [
-        ["cargo test --all-features --no-fail-fast"],
-        ["cargo test --all-features --test regression_replay"],
+        ["cargo nextest run --all-features --no-fail-fast"],
+        ["cargo nextest run --all-features --test regression_replay"],
         [
-          "PROPTEST_CASES=\"${PROPTEST_CASES:-4096}\" ID_TUPLE_FUZZ_CASES=\"${ID_TUPLE_FUZZ_CASES:-20000}\" cargo test --all-features --test tuple_properties"
+          "PROPTEST_CASES=\"${PROPTEST_CASES:-4096}\" ID_TUPLE_FUZZ_CASES=\"${ID_TUPLE_FUZZ_CASES:-20000}\" cargo nextest run --all-features --test tuple_properties"
         ],
         ["@echo \"✓ Full Rust test run passed\""]
       ],
@@ -2565,7 +2578,7 @@
     },
     "test-int-sandbox": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features --test cli_integration -- --skip serve_tests"]],
+      "body": [["cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests)'"]],
       "dependencies": [],
       "doc": "Run integration tests (sandbox-safe: excludes serve_tests requiring network)",
       "name": "test-int-sandbox",
@@ -2578,7 +2591,7 @@
     },
     "test-integration": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features --test cli_integration"]],
+      "body": [["cargo nextest run --all-features --test cli_integration"]],
       "dependencies": [],
       "doc": "Run integration tests only",
       "name": "test-integration",
@@ -2591,7 +2604,7 @@
     },
     "test-native-shell": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test -p id-native-shell"]],
+      "body": [["cargo nextest run -p id-native-shell"]],
       "dependencies": [],
       "doc": "Run the id-native-shell unit + contract transcript tests (#5582): non-default workspace member, so the default-member test recipes never run it.",
       "name": "test-native-shell",
@@ -2687,7 +2700,7 @@
     },
     "test-one": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features ", [["variable", "NAME"]]]],
+      "body": [["cargo nextest run --all-features -E 'test(", [["variable", "NAME"]], ")'"]],
       "dependencies": [],
       "doc": "Run a specific test by name",
       "name": "test-one",
@@ -2716,7 +2729,7 @@
     },
     "test-rust": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features"]],
+      "body": [["cargo nextest run --all-features"], ["cargo test --all-features --doc"]],
       "dependencies": [],
       "doc": "Run all Rust tests",
       "name": "test-rust",
@@ -2729,7 +2742,7 @@
     },
     "test-sandbox": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features -- --skip serve_tests"]],
+      "body": [["cargo nextest run --all-features -E 'not test(serve_tests)'"]],
       "dependencies": [],
       "doc": "Run all Rust tests (sandbox-safe: excludes tests requiring network)",
       "name": "test-sandbox",
@@ -2786,7 +2799,7 @@
     },
     "test-unit": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features --lib"]],
+      "body": [["cargo nextest run --all-features --lib"]],
       "dependencies": [],
       "doc": "Run unit tests only (fast)",
       "name": "test-unit",
@@ -2799,7 +2812,7 @@
     },
     "test-verbose": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo test --all-features -- --nocapture"]],
+      "body": [["cargo nextest run --all-features --nocapture"]],
       "dependencies": [],
       "doc": "Run tests with output shown",
       "name": "test-verbose",
@@ -3326,7 +3339,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/6592/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/14371-6378-nextest/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

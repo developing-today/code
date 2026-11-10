@@ -116,7 +116,7 @@ Status column: SMP-03/09/11 are current (audited at `2a93f3f64`); other rows ret
   2025-11-25. Because `CreateMessageResult extends SamplingMessage`, results may be arrays too.
 - **Where.** 2025-11-25 and 2026-07-28.
 - **mcpx @ 05c78b2.** Upstream requests are relayed as raw params on the 2026 path (`internal/mcpserver/ask.go:256-266`);
-  how the broker and the answering agent handle array content was not examined.
+  As built now: the broker validates array-or-single content per the negotiated era (`internal/elicit/sampling.go` `decodeSampleContent`, Phase 2 of #1834 / #1836), and the CLI review rendering shows both shapes (`internal/cli/elicit.go` `sampleContentLines`, #1837).
 - **Value to mcpx.** + low: a relay must not assume one block.
 - **Effort.** S.
 - **Risk.** low: decoding an array as an object fails.
@@ -130,7 +130,7 @@ Status column: SMP-03/09/11 are current (audited at `2a93f3f64`); other rows ret
 - **What.** A user message containing `tool_result` blocks MUST contain only tool results, and every assistant message with
   `tool_use` blocks MUST be followed by a user message of only matching `tool_result`s.
 - **Where.** 2025-11-25 and 2026-07-28 (deprecated).
-- **mcpx @ 05c78b2.** mcpx runs no sampling tool loop, so nothing to check.
+- **mcpx @ 05c78b2.** mcpx runs no sampling tool loop, but the broker now checks the pairing on relay: `ValidateSampleRequest` (`internal/elicit/sampling.go`, #1836) refuses a message mixing tool results with other content and a `tool_result` whose `toolUseId` no earlier message used.
 - **Value to mcpx.** − moot: needed only if mcpx relayed tool loops.
 - **Effort.** S.
 - **Risk.** low: `-32602` from strict clients if violated.
@@ -199,7 +199,10 @@ Status column: SMP-03/09/11 are current (audited at `2a93f3f64`); other rows ret
 - **Risk.** med: without an answerer, 120 s of waiting per call (SMP-09).
 - **Detail.** Sampling has no `decline`/`cancel` result, so mapping a declined broker row to an error is the only option
   in legacy; in 2026 it is also the only option, since MRTR has no per-input error (MRTR-17). `stopReason` is not filled;
-  the schema makes it optional.
+  the schema makes it optional. A person can also review and answer a pending sampling row directly:
+  `mcpx elicit list/show` renders the server, system prompt and messages verbatim with a `CreateMessageResult`
+  answer skeleton, and answered results are recorded on the broker row, visible via `mcpx elicit result <id>`
+  (#1837, Phase 3 of #1834); there is no pre-delivery staging hold.
 - **Sources.** `internal/daemon/hooks.go:215-217` "the sampling request was"; `internal/daemon/hooks.go:180-232`.
 
 ## SMP-11 Relaying sampling to a host checks declared sub-capabilities

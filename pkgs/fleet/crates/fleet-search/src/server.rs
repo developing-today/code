@@ -36,7 +36,8 @@ use atlas_core::{
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
     JobCreated, JobDeleted, JobListResponse, JobStatus, JobStatusResponse, JobSummary,
-    SearchMode as ProtoSearchMode, SearchPage, SearchRequest, Sensitivity as ProtoSensitivity,
+    SearchMode as ProtoSearchMode, SearchPage, SearchParametersV1, SearchRequest,
+    Sensitivity as ProtoSensitivity,
     VectorBackend as ProtoVectorBackend,
 };
 use serde::Deserialize;
@@ -627,6 +628,10 @@ where
             embedder_label: request.embedder.clone(),
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
+            // #8268: the wire request carries no parameters;
+            // the production defaults are the server's controls
+            // (the same values SearchOptions::default uses).
+            parameters: SearchParametersV1::default(),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -809,12 +814,16 @@ where
             match_expr: query.match_expr.clone(),
             query_vector: None,
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         let vector_query = BranchQuery {
             match_expr: None,
             query_vector: query.query_vector.clone(),
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         // Fast path (Drew's usage profile, 2026-11-04): the
