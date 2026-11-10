@@ -84,22 +84,23 @@ outage is recoverable, a double-launch's damage is not.
   close — plus the live root-session count for the cap, plus a
   `stuck_bound` list: bound tasks whose sessions look
   created-but-never-prompted and dead (step 1's recovery rule, #4758).
-  Candidates ALSO include handed-off tasks sitting PARKED
-  (`status: "parked"` in the candidate entry): the handing-off lane
-  parks the task as its handoff sink (the park clears its claim and
-  stamps a default timer), so claimed-only discovery never saw them
-  and they looped claim → handoff → park → re-claim (#7907/#6533).
-  For parked candidates, claimant.py first collects their claims
+  Candidates ALSO include handed-off tasks resting in the
+  handoff sink (`status: "handed_off"` in the candidate entry,
+  #8234): the handing-off lane's handoff lands the task in the
+  sink — its own status, not a park and not a wait — so
+  claimed-only discovery never saw them and they once looped
+  claim → handoff → park → re-claim (#7907/#6533).
+  For sink candidates, claimant.py first collects their claims
   WITHOUT naming any task id (#8097 Rule 1): one
-  `repo-queue claim --handoff --platform openchamber` per parked
+  `repo-queue claim --handoff --platform openchamber` per sink
   candidate, as worker `opencode-claimant`, lets the BROKER pick
-  the next parked recorded opencode handoff (the pick only ever
-  returns an unbound yield, never a live claim or a genuine wait
-  park; the `openchamber` family declaration keeps a
-  `muse`-selected item out of this claimant's hands, #8097
-  Rule 2). It then launches exactly as for a claimed candidate,
-  with the session working under `--worker opencode-claimant`.
-  A parked candidate the collection did not claim is skipped
+  the next sink row (the pick only ever returns an unbound sink
+  row, never a live claim or a genuine wait park; the
+  `openchamber` family declaration keeps a `muse`-selected item
+  out of this claimant's hands, #8097 Rule 2). It then launches
+  exactly as for a claimed candidate, with the session working
+  under `--worker opencode-claimant`.
+  A sink candidate the collection did not claim is skipped
   with the reason logged — never launched over a guessed claim.
   (The by-id claim, `claim --task <id>`, remains only as the
   special-case verb for one-off revivals; no default flow uses
@@ -304,3 +305,33 @@ queue task and issue>, "model": {"id": <route model>,
 - No credential value ever enters a prompt, log, or task record; the queue
   CLI and poll.py reach the queue-broker with the broker's client
   token — no queue credential lives on this path.
+
+## Muse→opencode send (#8210)
+
+A Muse session that holds a task can send it directly to an
+opencode session with `send_to_opencode.py` (this directory): it
+records the opencode assignment with the sender's stated reason,
+creates the session in the task's worktree, and moves the claim
+with the broker's transfer claim — `repo-queue claim --task <id>
+--from-session <sender session> --session-id <new session>
+--worker opencode-claimant` — holder -> claimer in one operation,
+never through queued, parked, or the sink, binding the new session
+atomically. The sender's notes ride in the launched session's
+prompt (SENDER NOTES section) and in `SEND_NOTES.md` in the
+worktree. A transferred task arrives already claimed by
+opencode-claimant and bound; it is not a poll candidate and must
+not be collected or launched a second time. The transfer refuses
+— leaving the sender's claim untouched — when `--from-session`
+does not match the holder's session mark, when the row is not
+under a live claim, or when it is already bound to a third
+session.
+
+A task may also carry a recorded platform limitation (lane
+ledger `platform_limit` + `platform_limit_reason`, set only
+through the lane verb with both `--limit-platform` and
+`--limit-reason`): a valid limitation binds the transfer — a
+muse-limited task refuses an opencode transfer/send, naming the
+limitation and its reason — while a stored limitation with no
+recorded reason is invalid and is cleared by the transfer claim
+instead of enforced. Default is no limitation: either platform
+may claim.

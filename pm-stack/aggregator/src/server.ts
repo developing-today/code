@@ -118,6 +118,7 @@ import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type D
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
+  sendClassTestPush,
   sendTestPush,
   startAlertEngine,
   toPublicSubscription,
@@ -127,8 +128,15 @@ import {
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, renderNotifications, renderDigest, esc } from "./render.ts";
-import { deriveSoleDoorPoolIds, rollupNotificationSends, type NotificationSnapshot } from "./notifications.ts";
+import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import {
+  deriveSoleDoorPoolIds,
+  isNotificationTestClass,
+  NOTIFICATION_CLASS_DEFAULTS,
+  NOTIFICATION_CLASSES,
+  rollupNotificationSends,
+  type NotificationSnapshot,
+} from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import { searchWork } from "./search-view.ts";
@@ -1779,10 +1787,10 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov(), provDetail()));
+    return html(renderAa(await source.aa(url.searchParams.get("batch")), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
-    const section = await source.aa();
+    const section = await source.aa(url.searchParams.get("batch"));
     return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
   }
 
@@ -2241,6 +2249,23 @@ async function handler(req: Request): Promise<Response> {
     return json(summary);
   }
 
+  // Per-class test sends (#3318): one test per preference class,
+  // honouring the stored class toggles, landing per design §3.
+  if (path === "/api/push/test-class") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    let cls: unknown;
+    try {
+      cls = ((await readJsonBody(req)) as { class?: unknown })?.class;
+    } catch {
+      return json({ error: "invalid test-class body" }, 400);
+    }
+    if (!isNotificationTestClass(cls)) return json({ error: "unknown notification class" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendClassTestPush(store, cfg.publicOrigin, cls);
+    return json(summary);
+  }
+
   // --- Alert throat (#3676): incident intake + ack/close --------------
   if (req.method === "POST" && path === "/api/alerts") {
     if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
@@ -2301,6 +2326,33 @@ async function handler(req: Request): Promise<Response> {
               VAPID_PUBLIC_KEY,
             ),
           )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/alerts/preferences" || path === "/api/alerts/preferences.json") {
+    // #3318: subscription preferences — per-class toggles, quiet
+    // hours, this-browser state, per-class test sends. Writes go
+    // through the existing /api/push/subscriptions upsert; this
+    // route only reads the stored subscriptions for the form.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const subscriptions = await store.listSubscriptions();
+      if (path === "/api/alerts/preferences.json")
+        return json({
+          available: true,
+          subscriptions: subscriptions.map(toPublicSubscription),
+          classes: NOTIFICATION_CLASSES,
+          defaults: NOTIFICATION_CLASS_DEFAULTS,
+        });
+      return html(renderNotificationPreferences({ available: true, subscriptions }, prov(), VAPID_PUBLIC_KEY));
+    } catch {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
         : json({ error: "alerts store unavailable" }, 503);
     }
   }

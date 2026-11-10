@@ -919,7 +919,7 @@ describe("pool splits (#1331)", () => {
     ]);
   });
 
-  test("Go lapse: an errored drewrypope row splits as a pool error; unconfigured rows never split", () => {
+  test("Go lapse: a lapsed drewrypope row splits as a pool lapsed; unconfigured rows never split", () => {
     const lapsed: QuotaProviderResult = {
       providerId: "opencode-go",
       providerName: "OpenCode Go",
@@ -929,7 +929,9 @@ describe("pool splits (#1331)", () => {
       credentialId: "cred_personal",
       credentialLabel: "drewrypope",
       error: "No active OpenCode Go subscription on the selected Console account",
-      usage: null,
+      // Even if a provider includes old usage alongside the lapse error,
+      // it must not be published as a current quota window or snapshot.
+      usage: { windows: { monthly: { usedPercent: 100 } } },
     };
     const unconfigured: QuotaProviderResult = {
       providerId: "opencode-go",
@@ -944,8 +946,40 @@ describe("pool splits (#1331)", () => {
     const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
     expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_DREWRYPOPE_SERVICE_ID]);
     const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
-    expect(personal.state).toBe("error");
+    expect(personal.state).toBe("lapsed");
     expect(personal.error).toContain("No active OpenCode Go subscription");
+    expect(personal.windows).toEqual([]);
+    expect(recordsFromEntries(split, new Map(), "quota-gatherer").records).toEqual([]);
+    // Control: a configured Go failure without the lapse signal stays an error.
+    const failed = entryFromResult(
+      {
+        providerId: "opencode-go",
+        providerName: "OpenCode Go",
+        ok: false,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        credentialId: "cred_personal",
+        credentialLabel: "drewrypope",
+        error: "timeout",
+        usage: null,
+      },
+      TICK,
+    );
+    expect(failed.state).toBe("error");
+    expect(failed.error).toContain("timeout");
+    // The signal only maps for the opencode-go provider itself: a
+    // different provider with the same words still throws an error.
+    const sameReason = entryFromResult(
+      {
+        providerId: "claude",
+        ok: false,
+        configured: true,
+        error: "No active OpenCode Go subscription on the selected Console account",
+        usage: null,
+      },
+      TICK,
+    );
+    expect(sameReason.state).toBe("error");
   });
 
   test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {

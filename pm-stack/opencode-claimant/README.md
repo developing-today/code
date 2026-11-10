@@ -61,7 +61,7 @@ of waiting for the next claimant fire.
 # Read-only: is this task a launch candidate, and what would happen?
 python3 pm-stack/opencode-claimant/launch_one.py --preflight repo-health-code-pilot:12345
 
-# Live only (mode file must read `live`): collect a parked handoff's
+# Live only (mode file must read `live`): collect a sink row's
 # claim by id if needed, create + verify + bind a session, checkpoint
 # launched, send the prompt, post the agent-note. Prints the bound
 # session_id; any failure exits non-zero and deletes a created
