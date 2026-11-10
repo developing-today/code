@@ -361,3 +361,21 @@ moved or dropped by #6741.
   Functions hosting (the `github-ci` receiver above). Re-home
   that function first; nothing else needs moving — these stay
   in the decommissioned project, unused, like everything else.
+
+
+## Amendment 2026-11-10 — claim-model stamp columns (#8176)
+
+Drew's order (2026-11-10 10:53 CST): a session picking up an item
+provides its own model to the queue. `tasks` gains three additive
+columns — `claim_provider`, `claim_model`, `claim_variant` — the
+claiming session's serving leaf at claim time, read by the session
+from its own `route_usage` lastServing surface (opencode#1891) and
+passed on the claim (`repo-queue claim --model-provider/--model-id
+[--model-variant]`; broker request fields `model_provider` /
+`model_id` / `model_variant`). `ensure_schema` adds the columns to
+pre-existing databases exactly like `platform` (#8097); existing
+rows read NULL (the claim carried no model). The `claimed` event
+detail carries the same three fields. Non-session claimants (Muse
+lanes) stamp the distinct provider marker `muse-lane` rather than
+a model. Claim-time semantics: a later failover changes the
+serving leaf but never rewrites the stamp.
