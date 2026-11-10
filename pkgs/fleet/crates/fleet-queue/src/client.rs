@@ -1557,8 +1557,14 @@ fn claim_output(resp: &Value) -> (Value, i32) {
 fn cmd_lane(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["worker", "exclusion-reason", "opencode-reason"],
-        &[],
+        &[
+            "worker",
+            "exclusion-reason",
+            "opencode-reason",
+            "limit-platform",
+            "limit-reason",
+        ],
+        &["clear-platform-limit"],
     );
     reject_extra_pos("lane", &args, 1);
     let resp = unwrap_ok(call(
@@ -1568,6 +1574,12 @@ fn cmd_lane(rest: &[String]) -> i32 {
             "worker": opt_worker(&args),
             "exclusion_reason": args.get("exclusion-reason"),
             "opencode_reason": args.get("opencode-reason"),
+            // #8210: a platform limitation — an exception that
+            // exists only with its recorded reason. The broker
+            // refuses a limitation with no --limit-reason.
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
+            "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
     print_json(&require_row(&resp, "assign_repo_task_lane"));

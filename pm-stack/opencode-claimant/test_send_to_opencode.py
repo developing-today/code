@@ -92,10 +92,11 @@ def quiet_logs():
 class FakeQueue:
     """launch_one.queue stand-in dispatching on the verb."""
 
-    def __init__(self, claim_rc=0, assign_lane="opencode"):
+    def __init__(self, claim_rc=0, assign_lane="opencode", read_limit=None):
         self.calls = []
         self.claim_rc = claim_rc
         self.assign_lane = assign_lane
+        self.read_limit = read_limit
 
     def __call__(self, *args, timeout=120):
         self.calls.append(args)
@@ -103,7 +104,12 @@ class FakeQueue:
         if verb == "lane":
             if "--opencode-reason" in args:
                 return 0, json.dumps({"assigned_lane": self.assign_lane}), ""
-            return 0, json.dumps({"assigned_lane": "direct"}), ""
+            if "--exclusion-reason" in args:
+                return 0, json.dumps({"assigned_lane": "direct"}), ""
+            row = {"assigned_lane": "direct"}
+            if self.read_limit:
+                row.update(self.read_limit)
+            return 0, json.dumps(row), ""
         if verb == "checkpoint":
             return 0, "{}", ""
         if verb == "claim":
@@ -228,10 +234,12 @@ class TestHappyPath(unittest.TestCase):
             self.assertEqual(rec["session_id"], NEW_SESSION)
             self.assertEqual(rec["worktree"], wt)
             self.assertEqual(deleted, [])
-            # Order: assignment -> sender checkpoint -> transfer
-            # claim -> launched checkpoint.
+            # Order: ledger read (limitation check) -> assignment
+            # -> sender checkpoint -> transfer claim -> launched
+            # checkpoint.
             self.assertEqual(
-                fq.verbs(), ["lane", "checkpoint", "claim", "checkpoint"])
+                fq.verbs(),
+                ["lane", "lane", "checkpoint", "claim", "checkpoint"])
             claim = fq.claim_args()
             self.assertIn("--from-session", claim)
             self.assertEqual(claim[claim.index("--from-session") + 1],
@@ -269,9 +277,10 @@ class TestRollback(unittest.TestCase):
             self.assertTrue(rec["rolled_back"])
             self.assertTrue(rec["assignment_flipped_back"])
             self.assertEqual(deleted, [NEW_SESSION])
-            # lane assign, sender checkpoint, claim, lane flip-back.
+            # ledger read, lane assign, sender checkpoint, claim,
+            # lane flip-back.
             self.assertEqual(
-                fq.verbs(), ["lane", "checkpoint", "claim", "lane"])
+                fq.verbs(), ["lane", "lane", "checkpoint", "claim", "lane"])
 
     def test_failed_assignment_creates_no_session(self):
         created = []
@@ -305,6 +314,31 @@ class TestRollback(unittest.TestCase):
             self.assertFalse(rec["rolled_back"])
             self.assertIn("prompt_failed", rec["reason"])
             self.assertEqual(deleted, [])
+
+
+class TestPlatformLimitation(unittest.TestCase):
+    def test_valid_muse_limitation_refuses_the_send(self):
+        with tempfile.TemporaryDirectory() as wt:
+            fq = FakeQueue(read_limit={
+                "platform_limit": "muse",
+                "platform_limit_reason": "needs claude-only context",
+            })
+            rec, fq, deleted, _prompts = run_send(wt, fq=fq)
+            self.assertFalse(rec["ok"])
+            self.assertEqual(rec["phase"], "platform_limit")
+            self.assertIn("needs claude-only context", rec["reason"])
+            # Only the ledger read happened: no assignment, no
+            # session, no claim.
+            self.assertEqual(fq.verbs(), ["lane"])
+            self.assertEqual(deleted, [])
+
+    def test_reasonless_limitation_is_invalid_and_does_not_block(self):
+        with tempfile.TemporaryDirectory() as wt:
+            fq = FakeQueue(read_limit={
+                "platform_limit": "muse", "platform_limit_reason": None,
+            })
+            rec, _fq, _d, _p = run_send(wt, fq=fq)
+            self.assertTrue(rec["ok"], rec)
 
 
 class TestBuildPromptSenderNotes(unittest.TestCase):

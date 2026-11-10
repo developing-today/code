@@ -232,6 +232,14 @@ def assign_opencode(task_id, worker, reason):
     return row, None
 
 
+def ledger_row(task_id, worker):
+    """The task's lane ledger row (the lane verb with no reason
+    flags is the idempotent read), or None when unreadable."""
+    rc, data, _err = queue_json("lane", str(task_id), "--worker", worker)
+    row = data.get("row") if isinstance(data, dict) and "row" in data else data
+    return row if rc == 0 and isinstance(row, dict) else None
+
+
 def flip_back_direct(task_id, worker, why):
     """Roll the assignment back to direct (the #8187 flip). Returns
     True when the ledger reads direct afterwards."""
@@ -358,6 +366,23 @@ def send(queue_name, task_id, sender_worker, from_session, reason,
                         "post the agent note",
                     ]})
 
+    # Platform limitation (#8210): a recorded limitation with a
+    # reason binds this send — a task limited to muse refuses an
+    # opencode send, naming the limitation and its reason. A
+    # reason-less stored limitation is invalid: the broker
+    # clears it at transfer time rather than enforcing it, so it
+    # does not block the send here.
+    led = ledger_row(task_id, sender_worker)
+    if led:
+        limit = led.get("platform_limit")
+        limit_reason = led.get("platform_limit_reason")
+        if limit and limit_reason and str(limit_reason).strip() \
+                and limit != "openchamber":
+            return fail_record(
+                base, "platform_limit",
+                f"task is limited to platform '{limit}' "
+                f"(reason: {limit_reason}); an opencode send is "
+                f"refused — the sender keeps the item (#8210)")
     notes_path = write_notes_file(worktree, notes, task_id, from_session, reason)
 
     # Assignment, with the reason recorded (#8187).
