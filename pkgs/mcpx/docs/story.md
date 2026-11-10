@@ -2818,7 +2818,9 @@ second exposure of the same declarations, and it is by design:
   daemon's operations, one tool apiece.
 - A recipe is a saved script with a typed header, executed on demand; it
   has no server process to pool, lease or probe. Recipes are first-class
-  on their own surface (`mcpx scripts`, `mcpx run`), and the recipe
+  on their own surface (`mcpx recipes` to list them, `mcpx recipes run
+  <name>` to execute one -- plain `mcpx run` refuses recipes carrying
+  `@param` holes and directs the caller there), and the recipe
   extras are the shortest honest path from that surface to an MCP host.
   A recipe that needs namespace treatment wraps as an adapter
   declaration, which is first-class by the augment path above.
