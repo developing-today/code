@@ -245,6 +245,12 @@ hl.bind(
   )
 )
 hl.bind("SUPER + R", hl.dsp.exec_cmd("pkill -SIGUSR1 waybar"))
+-- On-screen keyboard (wvkbd): re-show after it hides itself; falls back
+-- to launching it when it is not running at all.
+hl.bind(
+  mainMod .. " + SHIFT + O",
+  hl.dsp.exec_cmd("pkill -USR2 wvkbd-mobintl || wvkbd-mobintl -L 500")
+)
 hl.bind("SUPER_L", hl.dsp.exec_cmd("if [ -e /tmp/waybar_autotoggle ]; then pkill -SIGUSR1 waybar; fi"))
 hl.bind(
   "SUPER + SUPER_L",

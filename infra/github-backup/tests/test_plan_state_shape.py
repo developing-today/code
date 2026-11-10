@@ -210,7 +210,15 @@ class FetchMirrorsShapeTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("state.json", err)
             with open(os.path.join(root, "state.json")) as f:
-                self.assertEqual(json.load(f), {})
+                saved = json.load(f)
+            # The wrong-shape top level is still dropped as a single
+            # named problem (the #6637 contract); the only entry in
+            # the saved state is the #3270 missing-day record for
+            # a/b — valid_mirror is patched False in run_main, so
+            # the repo is missing and its unavailable day is now
+            # recorded instead of leaving state untouched.
+            self.assertEqual(list(saved), ["a/b"])
+            self.assertEqual(len(saved["a/b"]["fail_days"]), 1)
 
     def test_main_survives_string_state_entry_and_poison_plan(self):
         with tempfile.TemporaryDirectory() as root:

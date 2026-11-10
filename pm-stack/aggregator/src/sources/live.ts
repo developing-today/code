@@ -36,6 +36,7 @@ import {
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
@@ -56,6 +57,20 @@ import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../qu
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type AaFeedSection,
@@ -222,7 +237,16 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
             // refs are never invented from a guessed repo.
             const m = /github\.com\/([\w.-]+\/[\w.-]+)\//.exec(l.url);
             if (!m) return [];
-            return [{ ref: `${m[1]}#${l.externalId}`, relation: "tracks" as const }];
+            const ref = `${m[1]}#${l.externalId}` as RefKey;
+            // #6243 (ref contract rule 3): a producer mints only valid
+            // refs - an externalId parseRef would reject (unsafe integer,
+            // non-numeric) must not become a board link renderers throw
+            // on; the card survives, the drop is traced.
+            if (!isValidRef(ref)) {
+              console.error(`[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`);
+              return [];
+            }
+            return [{ ref, relation: "tracks" as const }];
           });
         out.push({
           // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
@@ -250,9 +274,33 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
 
 // --- Grist --------------------------------------------------------------
 
-interface GristRecord {
+export interface GristRecord {
   id: number;
   fields: Record<string, unknown>;
+}
+
+/** Map a live Grist row without dropping or rewriting an invalid Horizon value. */
+export function mapGristRoadmapRecord(docId: string, rec: GristRecord): RoadmapRow {
+  const f = rec.fields;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const source = str(f.Source);
+  const notes = str(f.Notes);
+  const horizon = str(f.Horizon);
+  const horizonValidation = validateRoadmapHorizon(horizon);
+  const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
+  return {
+    id: rec.id,
+    subject: `grist:${docId}/Roadmap/${rec.id}`,
+    title: str(f.Title),
+    area: str(f.Area),
+    status: str(f.Status),
+    horizon,
+    ...(!horizonValidation.valid ? { horizonError: horizonValidation.error } : {}),
+    source,
+    notes,
+    links,
+    gristUrl: gristDocUrl(docId),
+  };
 }
 
 async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
@@ -262,25 +310,7 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
   });
   if (!r.ok) throw new Error("grist roadmap read failed");
   const records = (r.json as { records?: GristRecord[] }).records ?? [];
-  return records.map((rec) => {
-    const f = rec.fields;
-    const str = (v: unknown) => (typeof v === "string" ? v : "");
-    const source = str(f.Source);
-    const notes = str(f.Notes);
-    const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
-    return {
-      id: rec.id,
-      subject: `grist:${cfg.grist.docId}/Roadmap/${rec.id}`,
-      title: str(f.Title),
-      area: str(f.Area),
-      status: str(f.Status),
-      horizon: str(f.Horizon),
-      source,
-      notes,
-      links,
-      gristUrl: gristDocUrl(cfg.grist.docId),
-    };
-  });
+  return records.map((rec) => mapGristRoadmapRecord(cfg.grist.docId, rec));
 }
 
 // --- Projector (J's service, pm-stack/projector) -------------------------
@@ -368,7 +398,11 @@ export function mapProjectorComment(row: ProjectorCommentRow): Comment {
     author: row.author ?? "",
     body: row.body ?? "",
     createdAt: row.created_at,
-    url: row.url ?? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr"),
+    // #6243 (ref contract rule 4): row.ref is stored projector data; the
+    // stored url wins, and the refUrl fallback fires only for a ref the
+    // shared rule accepts - an invalid stored ref yields no URL instead
+    // of throwing out of the map (cf. the #6211 read gate for links).
+    url: row.url ?? (isValidRef(row.ref) ? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr") : ""),
     path: row.path ?? undefined,
     line: row.line ?? undefined,
     reviewState: row.review_state ?? undefined,
@@ -550,10 +584,15 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
  * also carries queue/task numbers — so it is left unlinked rather
  * than guessed at.
  */
-export function titleRefs(title: string): RefKey[] {
+export function titleRefs(title: string, onInvalid?: (ref: string) => void): RefKey[] {
   const out: RefKey[] = [];
   const add = (ref: RefKey) => {
-    if (!isValidRef(ref)) return;
+    // #6243 (ref contract rule 2): a dropped candidate is traced, never
+    // silent - callers that own a trace surface pass onInvalid.
+    if (!isValidRef(ref)) {
+      onInvalid?.(ref);
+      return;
+    }
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
@@ -643,7 +682,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
       if (!refs.includes(ref)) refs.push(ref);
     };
     if (item.ref !== undefined && item.ref !== null && item.ref !== "") add(item.ref);
-    for (const ref of titleRefs(item.title)) add(ref);
+    for (const ref of titleRefs(item.title, (bad) => add(bad))) add(ref);
     const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
     if (refs.length > 0 && remainingRefs.length === 0) continue;
     const titleKey = normTitle(item.title);
@@ -1044,7 +1083,7 @@ export function liveSource(
             actor: "aggregator",
             kind: "session-outcome",
             ref: `session:${r.source}:${r.id}`,
-            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+            summary: capUnits(`session ${r.label} (${r.agentLabel}) merged into the registry`, 500),
           });
         } catch (err) {
           console.error(
@@ -1609,7 +1648,7 @@ export function liveSource(
                 actor: "orchestrator",
                 kind: action.kind,
                 ref: orchestrationActionRef(action.target),
-                summary: action.summary.slice(0, 500),
+                summary: capUnits(action.summary, 500),
               });
             }
             if (lastOrchEventRunId !== null) {
@@ -1622,7 +1661,7 @@ export function liveSource(
                     actor: "orchestrator",
                     kind: "tier-change",
                     ref: id,
-                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
+                    summary: capUnits(`tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`, 500),
                   });
                 }
               }

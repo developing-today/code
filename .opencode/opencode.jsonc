@@ -1095,6 +1095,10 @@
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (popesdrew)"
     },
+    "opencode-go.developing-today-0": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (developing-today-0)"
+    },
     "_commandcode": {
           // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
           // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
@@ -1966,14 +1970,16 @@
       // 2026-11-07 (Drew, direct order): internal split back to
       // 1:1 — each account door at weight 1, superseding the 2:1
       // above.
+      // 2026-11-08 (Drew, direct order): third Go account
+      // opencode-go.developing-today-0 joins as a peer at weight 1.
       // The bare opencode-go provider is NOT a member: it has no account
       // of its own and rides whichever console login is active, so its
       // burn landed on that account unattributed. Quota/health rules
       // still demote a walled member inside the group.
       "opencode-go-plans": {
-        "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew"],
+        "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0"],
         "selection": "weighted",
-        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1 }
+        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1 }
       }
     },
     "model_routes": {
@@ -2867,7 +2873,7 @@
         "autonomy": "rules"
       },
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Luna #xhigh, Spark contributor #high, Gemini 3.8 Flash #high, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07)",
+        "name": "Workhorse weighted - Luna #xhigh, Spark contributor #high, Gemini 3.8 Flash #high, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -2945,16 +2951,45 @@
         // just been proven live (first routed success 23:00 CST,
         // after the runtime-overlay rename fix). Weights: Luna
         // 2 -> 10, Spark 1 -> 10, Gemini new at 10.
+        // 2026-11-09 (fleet fix, minder escalation OB-2026-11-10-FMWALL1):
+        // Claude Sonnet 5.5 joins this stage as the fourth member -
+        // _antigravity/claude-sonnet-5-5#high as a DIRECT leaf, same
+        // pattern as the Gemini leaf below. Reason: tonight every other
+        // workhorse leg is genuinely quota-walled at once (Flash pool:
+        // Go weekly to Nov 16, ClinePass to Nov 13, OpenDesign to
+        // Nov 14, CommandCode to Tue 06:52Z, Vibe budget exhausted;
+        // Luna weekly to Nov 13; Spark weekly to Nov 16; Antigravity
+        // Gemini weekly to Nov 13) and workhorse decisions returned
+        // no-candidates ~2,500 times in 2h while the Antigravity
+        // Claude bucket (weekly 63%, 5h 14%) sat outside the route
+        // serving other tiers. Drew took Antigravity out of the
+        // primary path 2026-10-31 over GEMINI-bucket burn and
+        // re-seated the Gemini leaf in THIS stage 2026-11-07; this
+        // seat is the CLAUDE bucket, same stage, equal weight 10.
+        // 2026-11-09 (Drew, AA-match rule): the Sonnet seat drops
+        // #high -> #medium. A pool is matched by its AA score, not
+        // its effort label. AA v5 (Supabase ainventory via the
+        // aggregator collector's aa-last-good, generated
+        // 2026-11-10T00:40Z, read tonight): this pool sits at Luna
+        // #xhigh II 23, Gemini 3.8 Flash #high II 31, and Spark
+        // contributor II 34 at #xhigh / II 36 at #max (no #high row
+        // recorded), while Claude Sonnet 5.5 runs low II 25 /
+        // medium II 30 / high II 41 / xhigh II 50 / max II 54.
+        // #medium (II 30) is the rung that matches the pool; #high
+        // (II 41) sat above every other member. Same leaf, same
+        // weight 10 — only the effort rung changes.
         "targets": [
           "openai-plan/gpt-6-luna#xhigh",
           "_muse/muse-spark-1.3-contributor#high",
-          "_antigravity/gemini-3.8-flash#high"
+          "_antigravity/gemini-3.8-flash#high",
+          "_antigravity/claude-sonnet-5-5#medium"
         ],
         "selection": "weighted",
         "weights": {
           "openai-plan/gpt-6-luna": 10,
           "_muse/muse-spark-1.3-contributor": 10,
-          "_antigravity/gemini-3.8-flash": 10
+          "_antigravity/gemini-3.8-flash": 10,
+          "_antigravity/claude-sonnet-5-5": 10
         },
         "autonomy": "rules"
       },

@@ -821,6 +821,41 @@ func TestCancelGraceExpiryWinsOverLateResult(t *testing.T) {
 	}
 }
 
+func TestCancelGraceExpiryReleasesResultWaiters(t *testing.T) {
+	// Regression for #6897: grace expiry records Cancelled, so Result()
+	// waiters must be released with the cancelled fault even when the
+	// work itself never returns. Before the fix, expireCancellation
+	// never closed done, so this Result call hung until its own
+	// context expired; releasing the work afterwards also exercises
+	// the once-only close (the late worker return must not re-close).
+	st := tasks.New()
+	st.CancelGrace = 15 * time.Millisecond
+	release := make(chan struct{})
+	task, err := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
+		<-release
+		return "late result", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer close(release)
+	if _, ok := st.CancelWithReason(task.TaskID, "grace expiry releases waiters"); !ok {
+		t.Fatal("cancel lost the task")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, fault, err := st.Result(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("grace expiry did not release the Result waiter: %v", err)
+	}
+	if fault == nil || fault.Message != "the task was cancelled" {
+		t.Fatalf("waiter should get the cancelled fault, got %v", fault)
+	}
+	if got, _ := st.Get(task.TaskID); got.Status != tasks.Cancelled {
+		t.Fatalf("status = %q, want cancelled", got.Status)
+	}
+}
+
 func TestFaultWithinCancelGraceKeepsItsFailure(t *testing.T) {
 	st := tasks.New()
 	st.CancelGrace = time.Second

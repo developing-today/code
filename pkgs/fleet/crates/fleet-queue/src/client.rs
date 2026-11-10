@@ -8,6 +8,11 @@
 //! socket); on the laptop itself, a direct HTTP connection selected
 //! by REPO_QUEUE_BROKER_URL or ~/.config/repo-queue/broker-url (the
 //! opencode claimant and the worker sessions it launches use this).
+//! Without a configured URL, the direct path is probe-selected
+//! (#6218): fleet-config's transport choice for the queue-broker
+//! role picks the broker's Unix socket when it answers; an absent
+//! or stale socket keeps the session-proxy route, and a failed
+//! UDS attempt falls back to it within the same call.
 //! No Bitwarden fetch, no direct Supabase access. Exit 3 means the
 //! broker path itself is unavailable.
 //!
@@ -53,7 +58,14 @@ fn print_json(v: &Value) {
 // ---------------------------------------------------------------------------
 
 fn broker_sock() -> String {
-    broker_sock_from_home(Some(&home())).unwrap_or_else(|error| die(3, error))
+    // #6218: ask fleet-config instead of hardcoding the path --
+    // env beats the config file beats the compiled-in default,
+    // which is the same path broker_sock_from_home builds. A
+    // config load error falls back to the home-anchored default.
+    match fleet_config::Config::load() {
+        Ok(cfg) => cfg.broker_socket().to_string_lossy().into_owned(),
+        Err(_) => broker_sock_from_home(Some(&home())).unwrap_or_else(|error| die(3, error)),
+    }
 }
 
 fn broker_sock_from_home(home_dir: Option<&str>) -> Result<String, &'static str> {
@@ -88,35 +100,60 @@ fn direct_broker_url() -> Option<String> {
     None
 }
 
-fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or("broker URL must be http://host:port")?;
-    let hostport = rest.trim_end_matches('/');
-    if hostport.is_empty() || hostport.contains('/') {
-        return Err(format!("bad broker URL {url:?}"));
+/// The direct route to the queue-broker (#6218): its TCP
+/// listener, or its Unix socket (the broker dual-binds both,
+/// #6216). Selected by [`direct_route`].
+#[derive(Debug, PartialEq, Eq)]
+enum DirectRoute {
+    Tcp(String),
+    Unix(std::path::PathBuf),
+}
+
+/// Parse a configured broker URL into a route: `unix://<path>`
+/// selects the socket; anything else keeps the historical
+/// `http://host:port` TCP reading (validated in the TCP leg).
+fn route_from_configured_url(url: &str) -> Result<DirectRoute, String> {
+    if let Some(p) = url.strip_prefix("unix://") {
+        if p.is_empty() {
+            return Err(format!("bad broker URL {url:?}"));
+        }
+        return Ok(DirectRoute::Unix(std::path::PathBuf::from(p)));
     }
+    Ok(DirectRoute::Tcp(url.to_string()))
+}
+
+/// Which direct route, if any (#6218): an explicitly configured
+/// URL (env or broker-url file) wins; otherwise fleet-config's
+/// probe-based choice for the queue-broker role -- a live role
+/// socket selects UDS, the TCP choice keeps today's behavior
+/// (None: the session-proxy route below IS the sandbox's TCP
+/// route, and sandbox consumers are untouched by design).
+fn direct_route() -> Option<DirectRoute> {
+    if let Some(url) = direct_broker_url() {
+        return match route_from_configured_url(&url) {
+            Ok(route) => Some(route),
+            Err(e) => die(3, &e),
+        };
+    }
+    let cfg = fleet_config::Config::load().unwrap_or_default();
+    match cfg.role_transport_choice("queue-broker") {
+        Some(fleet_config::RoleTransport::Socket(socket)) => Some(DirectRoute::Unix(socket)),
+        _ => None,
+    }
+}
+
+fn direct_token() -> Result<String, String> {
     let token_file_env = std::env::var("REPO_QUEUE_TOKEN_FILE").ok();
     let home_env = std::env::var("HOME").ok();
     let token_file = token_file_from_env(token_file_env.as_deref(), home_env.as_deref())
         .unwrap_or_else(|error| die(3, error));
     let token = crate::token_file::load_token_file(&token_file)?;
-    let token = token.trim();
-    let payload = serde_json::to_vec(body).unwrap();
-    let mut s = TcpStream::connect(hostport)
-        .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
-    s.set_read_timeout(Some(Duration::from_secs(300))).ok();
-    s.set_write_timeout(Some(Duration::from_secs(60))).ok();
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        payload.len()
-    );
-    s.write_all(head.as_bytes())
-        .and_then(|_| s.write_all(&payload))
-        .map_err(|e| format!("queue-broker write failed: {e}"))?;
-    let mut raw = Vec::new();
-    s.read_to_end(&mut raw)
-        .map_err(|e| format!("queue-broker read failed: {e}"))?;
+    Ok(token.trim().to_string())
+}
+
+/// The response handling both direct legs share: status line,
+/// JSON body, 401 and >=400 die with exit 3 exactly as before.
+fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -142,9 +179,76 @@ fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String
     Ok(resp_body)
 }
 
+fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("broker URL must be http://host:port")?;
+    let hostport = rest.trim_end_matches('/');
+    if hostport.is_empty() || hostport.contains('/') {
+        return Err(format!("bad broker URL {url:?}"));
+    }
+    let token = direct_token()?;
+    let payload = serde_json::to_vec(body).unwrap();
+    let mut s = TcpStream::connect(hostport)
+        .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
+    s.set_read_timeout(Some(Duration::from_secs(300))).ok();
+    s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    s.write_all(head.as_bytes())
+        .and_then(|_| s.write_all(&payload))
+        .map_err(|e| format!("queue-broker write failed: {e}"))?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw)
+        .map_err(|e| format!("queue-broker read failed: {e}"))?;
+    finish_direct_response(&raw)
+}
+
+/// The UDS leg of the direct path (#6218): the same HTTP/1.1
+/// exchange over the queue-broker's Unix socket. The broker's
+/// handler is transport-agnostic (uds_http), so the wire surface
+/// -- routes, token auth, JSON envelope -- is identical.
+fn direct_uds_roundtrip(
+    socket: &std::path::Path,
+    path: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let token = direct_token()?;
+    let payload = serde_json::to_vec(body).unwrap();
+    let mut s = UnixStream::connect(socket).map_err(|e| {
+        format!(
+            "cannot connect to queue-broker at unix://{}: {e}",
+            socket.display()
+        )
+    })?;
+    s.set_read_timeout(Some(Duration::from_secs(300))).ok();
+    s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    s.write_all(head.as_bytes())
+        .and_then(|_| s.write_all(&payload))
+        .map_err(|e| format!("queue-broker write failed: {e}"))?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw)
+        .map_err(|e| format!("queue-broker read failed: {e}"))?;
+    finish_direct_response(&raw)
+}
+
 fn broker_roundtrip(path: &str, body: &Value) -> Result<Value, String> {
-    if let Some(url) = direct_broker_url() {
-        return direct_roundtrip(&url, path, body);
+    match direct_route() {
+        Some(DirectRoute::Tcp(url)) => return direct_tcp_roundtrip(&url, path, body),
+        Some(DirectRoute::Unix(socket)) => match direct_uds_roundtrip(&socket, path, body) {
+            Ok(v) => return Ok(v),
+            // #6218 acceptance: a failed socket attempt falls back
+            // to TCP within the same connection attempt -- here the
+            // session-proxy route below, the sandbox's TCP route.
+            Err(_) => {}
+        },
+        None => {}
     }
     let payload = json!({
         "method": "POST",
@@ -916,6 +1020,18 @@ fn validate_via_broker(packet: &Value, quiet: bool) -> Vec<String> {
 // Subcommands
 // ---------------------------------------------------------------------------
 
+/// #8097 Rule 2: a --platform value is a coarse FAMILY selector,
+/// never a lane name: exactly "openchamber" or "muse". Shared by
+/// the enqueue and claim verbs so both spell the rule once.
+fn platform_flag(v: &str) -> Result<String, String> {
+    match v {
+        "openchamber" | "muse" => Ok(v.to_string()),
+        other => Err(format!(
+            "invalid --platform {other:?} (expected \"openchamber\" or \"muse\")"
+        )),
+    }
+}
+
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -966,7 +1082,7 @@ fn resolve_enqueue_queue(
 }
 
 fn cmd_enqueue(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &["dry-run", "shadow-intent"]);
+    let args = parse_args(rest, &["queue", "platform"], &["dry-run", "shadow-intent"]);
     reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
@@ -985,6 +1101,15 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         Ok(q) => q,
         Err(e) => die(2, &e),
     };
+    // #8097 Rule 2: the platform selector is optional; when given
+    // it restricts the item to that family. Absent = unset.
+    let platform = match args.get("platform") {
+        None => None,
+        Some(p) => match platform_flag(&p) {
+            Ok(v) => Some(v),
+            Err(e) => die(2, &e),
+        },
+    };
     let shadow_intent = args.has("shadow-intent");
     if queue.ends_with("-shadow") && !shadow_intent {
         die(
@@ -1000,7 +1125,7 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         "/enqueue",
         &json!({
             "packet": packet, "queue": queue, "dry_run": dry_run,
-            "shadow_intent": shadow_intent,
+            "shadow_intent": shadow_intent, "platform": platform,
         }),
     );
     let resp = unwrap_ok(resp);
@@ -1102,7 +1227,11 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 }
 
 fn cmd_list(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
+    let args = parse_args(
+        rest,
+        &["queue", "status", "limit", "not-before", "lane", "worker"],
+        &[],
+    );
     reject_extra_pos("list", &args, 0);
     let limit = match list_limit_or_default(args.get_i64("limit")) {
         Ok(limit) => limit,
@@ -1115,6 +1244,8 @@ fn cmd_list(rest: &[String]) -> i32 {
             "status": args.get("status"),
             "limit": limit,
             "not_before": args.get("not-before"),
+            "lane": args.get("lane"),
+            "worker": args.get("worker"),
         }),
     );
     let resp = unwrap_ok(resp);
@@ -1137,7 +1268,11 @@ fn cmd_list(rest: &[String]) -> i32 {
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane"], &[]);
+    let args = parse_args(
+        rest,
+        &["queue", "worker", "lease-seconds", "lane", "task", "platform"],
+        &["handoff"],
+    );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
@@ -1147,6 +1282,31 @@ fn cmd_claim(rest: &[String]) -> i32 {
     });
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
+    }
+    // --platform <family>: declare this claim's family (#8097
+    // Rule 2). The broker only hands this claim items whose
+    // platform selector is unset or equal to it. A claim that
+    // declares no family keeps its pre-#8097 reach (unset items).
+    if let Some(p) = args.get("platform") {
+        match platform_flag(&p) {
+            Ok(v) => body["platform"] = json!(v),
+            Err(e) => die(2, &e),
+        }
+    }
+    // --handoff: the no-id collection of the next parked recorded
+    // opencode handoff (#8097 Rule 1) — the claimant's default
+    // parked-handoff path. The BROKER picks the row; the caller
+    // names no task id. (--task remains the special-case claim.)
+    if args.has("handoff") {
+        body["pick"] = json!("parked_handoff");
+    }
+    // --task <id>: by-id claim — take exactly that row when the
+    // broker's by-id predicate allows it (a queued row under the
+    // ordinary predicate, or a parked recorded opencode handoff).
+    // The opencode claimant uses this to collect handed-off tasks
+    // out of the parked sink; a plain claim never names a task.
+    if let Some(task) = args.get_i64("task") {
+        body["task_id"] = json!(task);
     }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
     let (mut out, code) = claim_output(&resp);
@@ -1287,10 +1447,24 @@ const NO_CLAIM_EXIT: i32 = 5;
 fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
-        (json!({"task": Value::Null}), NO_CLAIM_EXIT)
-    } else {
-        (row, 0)
+        return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
     }
+    // Defense in depth (#5444): the broker's claim path validates
+    // packets before handing them out, but a row that still arrives
+    // carrying a payload field that is null or an empty object is a
+    // payload-less packet — never print it as a claimed task. Rows
+    // without a payload field keep the #5486 verbatim contract.
+    if let Some(payload) = row.get("payload") {
+        let missing = payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty());
+        if missing {
+            eprint(&format!(
+                "repo-queue: claim skipped: task {} arrived payload-less (#5444); treating as no claim",
+                row.get("id").cloned().unwrap_or(Value::Null)
+            ));
+            return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
+        }
+    }
+    (row, 0)
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
@@ -1781,6 +1955,16 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn platform_flag_accepts_only_the_two_families() {
+        // #8097 Rule 2: the selector is a coarse family, never a
+        // lane name — a lane id as --platform is a usage error.
+        assert_eq!(platform_flag("openchamber"), Ok("openchamber".to_string()));
+        assert_eq!(platform_flag("muse"), Ok("muse".to_string()));
+        assert!(platform_flag("code-a").is_err());
+        assert!(platform_flag("").is_err());
+    }
+
+    #[test]
     fn fallback_switch_json_shape() {
         let v = fallback_switch_json("/claim", 4, "store down");
         assert_eq!(v["ok"], json!(false));
@@ -1822,7 +2006,10 @@ mod tests {
     #[test]
     fn task_issue_reads_payload_identity() {
         let row = json!({"payload": {"repo": "developing-today/code", "issue": {"number": 6741}}});
-        assert_eq!(task_issue(&row), ("developing-today/code".to_string(), 6741));
+        assert_eq!(
+            task_issue(&row),
+            ("developing-today/code".to_string(), 6741)
+        );
         assert_eq!(task_issue(&json!({"payload": {}})), (String::new(), 0));
     }
 
@@ -1852,8 +2039,7 @@ mod tests {
         // loudly — it never resolves to the shadow default.
         let packet = json!({"queue": "repo-health-code-pilot"});
         assert_eq!(
-            resolve_enqueue_queue(Some("repo-health-nix-pilot"), &packet, Some("env-q"))
-                .unwrap(),
+            resolve_enqueue_queue(Some("repo-health-nix-pilot"), &packet, Some("env-q")).unwrap(),
             "repo-health-nix-pilot"
         );
         assert_eq!(
@@ -1879,6 +2065,34 @@ mod tests {
             |value| signal_path_from_env(value, Some(home_dir)).unwrap(),
             &default,
         );
+    }
+
+    #[test]
+    fn configured_url_routes_unix_and_http_forms() {
+        // #6218: unix:// selects the socket route; the historical
+        // http:// form stays TCP; an empty unix path is rejected.
+        assert_eq!(
+            route_from_configured_url("unix:///run/fleet/queue-broker.sock"),
+            Ok(DirectRoute::Unix(std::path::PathBuf::from(
+                "/run/fleet/queue-broker.sock"
+            )))
+        );
+        assert_eq!(
+            route_from_configured_url("http://100.99.113.103:4801"),
+            Ok(DirectRoute::Tcp("http://100.99.113.103:4801".to_string()))
+        );
+        assert!(route_from_configured_url("unix://").is_err());
+    }
+
+    #[test]
+    fn finish_direct_response_parses_status_and_body() {
+        // #6218: both direct legs share this response handling.
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
+        assert_eq!(
+            finish_direct_response(ok).expect("200 parses"),
+            json!({"ok": true})
+        );
+        assert!(finish_direct_response(b"no header split").is_err());
     }
 
     #[test]
@@ -2202,6 +2416,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn claim_payload_less_row_is_a_no_claim_not_a_task() {
+        // #5444 defense in depth: a claimed row that CARRIES a
+        // payload field which is null or an empty object is the
+        // 2026-11-04 payload-less incident shape — it must degrade
+        // to the distinguishable no-claim marker with a nonzero
+        // exit, never print as a task a worker would try to route.
+        for payload in [Value::Null, json!({})] {
+            let mut row = claimed_row_fixture();
+            row["payload"] = payload;
+            let (out, code) = claim_output(&json!({"ok": true, "row": row}));
+            assert_eq!(code, NO_CLAIM_EXIT);
+            assert_eq!(out, json!({"task": Value::Null}));
+        }
+        // A row carrying a real payload object passes through.
+        let mut row = claimed_row_fixture();
+        row["payload"] = json!({"schema": "repo-task/v1", "kind": "small_fix"});
+        let (out, code) = claim_output(&json!({"ok": true, "row": row.clone()}));
+        assert_eq!(code, 0);
+        assert_eq!(out, row);
     }
 
     #[test]

@@ -54,8 +54,16 @@ jobs:
     outputs:
       matrix: ${{ steps.shards.outputs.matrix }}
       total: ${{ steps.shards.outputs.total }}
+      seed: ${{ steps.seed.outputs.seed }}
     steps:
       - uses: actions/checkout@v7
+      - id: seed
+        name: Mint the run seed (#1949)
+        run: |
+          set -euo pipefail
+          seed="$(python3 -c "import os,time;b=bytearray(int(time.time()*1000).to_bytes(6,'big')+os.urandom(10));b[6]=b[6]&15|0x70;b[8]=b[8]&63|0x80;h=b.hex();print(f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}')")"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "MCPX_TEST_SEED=$seed" >> "$GITHUB_STEP_SUMMARY"
       - id: shards
         name: Generate the measured-time e2e shard matrix
         # Measured-time packing (#1994). target-seconds is the intended
@@ -83,6 +91,10 @@ jobs:
           cache-dependency-path: pkgs/mcpx/go.sum
       - name: Affected-test selector regressions
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v
+      - name: Run-seed wrapper regressions (#1949)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v
+      - name: Shard-packer discovery regressions (#6906)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_e2e_shard_packer.py' -v
       # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
       # shell out to deno/bun/node too, and a missing runtime reads as a
       # test failure (first run of this workflow, PR #2888).
@@ -95,6 +107,8 @@ jobs:
           node-version: 24
       - name: Unit tests (everything except internal/e2e)
         working-directory: pkgs/mcpx
+        env:
+          MCPX_TEST_SEED: ${{ needs.init.outputs.seed }}
         run: |
           # Intentional word splitting: $pkgs is a newline-separated package list
           # from go list and must split into separate go test arguments --
@@ -185,6 +199,7 @@ jobs:
           RUN_PATTERN: ${{ matrix.run }}
           SHARD: ${{ matrix.shard }}
           EXPECTED_COUNT: ${{ matrix.count }}
+          MCPX_TEST_SEED: ${{ needs.init.outputs.seed }}
         run: |
           echo "go test ./internal/e2e -run '^($RUN_PATTERN)$' -count=1 -json"
           set +e

@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -173,7 +172,7 @@ func NewJWKSValidator(jwksURL *url.URL, issuer *url.URL, audience []string, cach
 	log.Info("JWKS Validator", "jwksClientCacheTTL", cacheTTL, "jwksURL", jwksURL, "issuer", issuer, "audience", audience, "jwksClientCustomJWKSURI", jwksClient.CustomJWKSURI, "jwksClientIssuerURL", jwksClient.IssuerURL)
 
 	return func(token *jwt.Token) (any, error) {
-		log.Info("Validating token", "token", token)
+		log.Info("Validating token", "algorithm", token.Method.Alg())
 
 		alg, ok := token.Header["alg"].(string)
 		if !ok {
@@ -288,7 +287,7 @@ func invalidateCookieHandler(cookieName string) http.HandlerFunc {
 			w.Write([]byte("No cookie found"))
 			return
 		}
-		log.Info("Cookie found", "cookie", cookie)
+		log.Info("Cookie found", "name", cookie.Name)
 
 		err = ExpireCookie(cookie.Value)
 		if err != nil {
@@ -314,7 +313,7 @@ func validateCookie(cookieName string) func(r *http.Request) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		log.Info("Cookie found", "cookie", cookie)
+		log.Info("Cookie found", "name", cookie.Name)
 		// validate the cookie in the cache, else the database, if found, return true, else false and error (is it found but expired?)
 
 		return true, nil
@@ -334,12 +333,7 @@ func parseToken(token string, keyFunc jwt.Keyfunc) (bool, error) {
 	parsed, err := jwt.Parse(token, keyFunc)
 
 	if err != nil {
-		log.Error("Error parsing token", "error", err)
-		jsonToken, err := json.Marshal(token)
-		if err != nil {
-			log.Error("Error parsing token", "error", err)
-		}
-		log.Error("Token: ", "token", string(jsonToken))
+		log.Error("Error parsing token")
 		return false, err
 	}
 
@@ -349,13 +343,13 @@ func parseToken(token string, keyFunc jwt.Keyfunc) (bool, error) {
 		return false, nil
 	}
 
-	claims, ok := parsed.Claims.(jwt.MapClaims)
+	_, ok := parsed.Claims.(jwt.MapClaims)
 
 	if !ok {
 		return false, fmt.Errorf("invalid claims")
 	}
 
-	log.Info("Claims", "claims", claims)
+	log.Info("Token claims validated")
 
 	return true, nil
 }
@@ -371,51 +365,56 @@ func NewTokenConnection(token string, keyFunc jwt.Keyfunc) (*auth.Connection, er
 	logJWT(parsed)
 
 	if err != nil {
-		log.Error("Error parsing token", "error", err)
+		log.Error("Error parsing token")
 		return nil, err
 	}
 
-	claims, ok := parsed.Claims.(jwt.MapClaims)
+	_, ok := parsed.Claims.(jwt.MapClaims)
 
 	if !ok {
 		log.Error("Invalid claims")
 		return nil, fmt.Errorf("invalid claims")
 	}
 
-	log.Info("Claims", "claims", claims)
+	log.Info("Token claims validated")
 
 	connection := &auth.Connection{}
 
 	connection.Insert()
 
-	log.Info("Connection created", "connection", connection)
+	log.Info("Connection created", "connectionID", connection.ConnectionID)
 
 	return connection, nil
 }
 
 func setCookieHandler(keyFunc jwt.Keyfunc, authorizationCookieName string) func(w http.ResponseWriter, r *http.Request) {
+	return setCookieHandlerWithConnectionFactory(keyFunc, authorizationCookieName, NewTokenConnection)
+}
+
+func setCookieHandlerWithConnectionFactory(
+	keyFunc jwt.Keyfunc,
+	authorizationCookieName string,
+	createConnection func(string, jwt.Keyfunc) (*auth.Connection, error),
+) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		// todo check current cookie first, if it exists, return error
 
-		log.Info("Request", "request", r)
 		token := r.FormValue(authorizationCookieName)
 		if token == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			log.Error("No token found")
 			return
 		}
-		log.Info("Token", "token", token)
-
 		validToken, err := parseToken(token, keyFunc)
 		if err != nil {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			log.Error("Error parsing token", "error", err)
+			log.Error("Error parsing token")
 			return
 		}
-		log.Info("Valid token", "validToken", validToken)
+		log.Info("Token validation complete", "valid", validToken)
 
-		connection, err := NewTokenConnection(token, keyFunc)
+		connection, err := createConnection(token, keyFunc)
 		if err != nil {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			log.Error("Error creating connection", "error", err)
@@ -427,7 +426,7 @@ func setCookieHandler(keyFunc jwt.Keyfunc, authorizationCookieName string) func(
 			log.Error("No connection found")
 			return
 		}
-		log.Info("Connection created", "connection", connection)
+		log.Info("Connection created", "connectionID", connection.ConnectionID)
 
 		cookie := &http.Cookie{
 			Name:     authorizationCookieName,
@@ -438,7 +437,7 @@ func setCookieHandler(keyFunc jwt.Keyfunc, authorizationCookieName string) func(
 
 		http.SetCookie(w, cookie)
 		w.Write([]byte("Cookie set"))
-		log.Info("Cookie set", "token", token, "cookie", cookie, "connection", connection)
+		log.Info("Cookie set", "name", cookie.Name)
 	}
 }
 
@@ -502,37 +501,18 @@ func JWTMiddleware(token string, keyFunc jwt.Keyfunc) func(http.Handler) http.Ha
 	}
 }
 
-// logJWT logs the JWT header, payload (claims), and signature.
+// logJWT records only non-sensitive JWT metadata. Claims and signatures may
+// contain authentication material and must not be written to application logs.
 func logJWT(token *jwt.Token) {
-	headerJson, err := json.Marshal(token.Header)
-	if err != nil {
-		log.Error("Failed to parse JWT header")
+	if token == nil {
+		log.Error("JWT parsing returned no token")
 		return
 	}
-	log.Info("", "JWT Header", string(headerJson))
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		log.Error("Failed to parse JWT claims")
-		return
+	algorithm := ""
+	if token.Method != nil {
+		algorithm = token.Method.Alg()
 	}
-	log.Info("", "JWT Claims", claims)
-
-	signatureJson, err := json.Marshal(token.Signature)
-	if err != nil {
-		log.Error("Failed to parse JWT signature")
-		return
-	}
-	log.Info("", "JWT Signature", string(signatureJson))
-
-	method, err := json.Marshal(token.Method)
-	if err != nil {
-		log.Error("Failed to parse JWT method")
-		return
-	}
-	log.Info("", "JWT Method", string(method))
-
-	log.Info("", "JWT Valid", token.Valid)
+	log.Info("JWT parsed", "algorithm", algorithm, "valid", token.Valid)
 }
 
 func ConnectionsMiddleware(connections *auth.SafeConnectionMap) func(next http.Handler) http.Handler {
