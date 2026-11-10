@@ -116,7 +116,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:    "MCPX_EPHEMERAL",
-			SetBy:   []Setter{SetByCLI},
+			SetBy:   []Setter{SetByCLI, SetByExec},
 			Meaning: "1 when the session key was minted for this run alone, so its instances may be stopped as soon as it ends",
 			ReadBy:  client,
 		},
@@ -210,7 +210,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:  "MCPX_TRANSPORT_BEARER_TOKEN",
-			SetBy: []Setter{SetByCLI},
+			SetBy: []Setter{SetByCLI, SetByExec, SetByConsumer},
 			When:  "only when transport.bearerToken is configured",
 			Meaning: "the daemon's bearer token, handed to the script so the " +
 				"generated client can authenticate to a daemon that requires " +
@@ -277,6 +277,20 @@ func ScriptEnv() []EnvVar {
 			SetBy:   []Setter{SetByCLI},
 			Meaning: "the fingerprint of a declared API's declaration, set on the child a declared API launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
 			ReadBy:  "the pool, as a pool identity input (api serve: PoolID hashes the server environment)",
+		},
+		{
+			Name:    "MCPX_ADAPTER_DECLARATION_SHA256",
+			SetBy:   []Setter{SetByCLI},
+			Meaning: "the fingerprint of a declared adapter's declaration, set in the environment of the adapter server the CLI generates: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one; the daemon also reads a configured server's entry for this name to tell an adapter-generated server from a configured one",
+			ReadBy:  "the pool, as a pool identity input; the daemon, when checking adapter name collisions on reload",
+		},
+		{
+			Name:    "MCPX_PATHS_CONFIG",
+			SetBy:   []Setter{SetByCLI},
+			When:    "only when this process resolved its paths from a --paths-config seed that lives only in its memory",
+			Meaning: "the paths.config seed, forwarded to a daemon this invocation auto-starts so the daemon resolves the same chain this process did; an environment seed needs no forwarding, as the child inherits the environment",
+			ReadBy:  nested + ", as paths.config when it seeds its discovery pass",
+			Setting: "paths.config",
 		},
 		// ---- how the script runs ----
 		{
