@@ -719,6 +719,63 @@ describe("entryFromTurso (#1049)", () => {
     expect(byMetric.get("storage")).toMatchObject({ value: 7.358009, unit: "gb", limit: 5 });
     expect(byMetric.get("rows-read")).toMatchObject({ value: 164.287, unit: "pct" });
   });
+  test("dynamic limits: a /plans doc matched by plan name supplies the denominators (#5468)", () => {
+    // The 2026-11-08 live shape: org on Scaler since 2026-11-04, but
+    // Starter denominators made rows-read read ~235% and storage
+    // ~213%. /plans is the source of truth.
+    const plansDoc = {
+      plans: [
+        { name: "starter", quotas: { rowsRead: 500_000_000, rowsWritten: 10_000_000, databases: 100, storage: 5_000_000_000, bytesSynced: 3_000_000_000 } },
+        { name: "Scaler", quotas: { rowsRead: 100_000_000_000, rowsWritten: 100_000_000, databases: 1_000_000_000, storage: 24_000_000_000, bytesSynced: 24_000_000_000 } },
+      ],
+    };
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 40,
+            storage_bytes: 10_800_000_000,
+            rows_read: 1_180_000_000,
+            rows_written: 4_000_000,
+            bytes_synced: 1_200_000_000,
+          },
+        },
+      },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at, plansDoc },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.planLabel).toBe("scaler");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("rows-read")?.valueLabel).toBe("1,180,000,000 / 100,000,000,000");
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    expect(byName.get("rows-written")?.pctOfLimit).toBe(4);
+    expect(byName.get("sync")?.pctOfLimit).toBe(5);
+    expect(byName.get("sync")?.valueLabel).toBe("1.2 GB / 24 GB");
+    // Native-unit snapshot records carry the plan's limits too.
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 10.8, unit: "gb", limit: 24 });
+    expect(byMetric.get("sync")).toMatchObject({ value: 1.2, unit: "gb", limit: 24 });
+    expect(byMetric.get("databases")).toMatchObject({ value: 40, unit: "count", limit: 1_000_000_000 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 1.18, unit: "pct", limit: 100 });
+  });
+  test("plans doc absent: the per-plan fallback applies, so Scaler never regresses to Starter (#5468)", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { rows_read: 1_180_000_000, storage_bytes: 10_800_000_000 } } },
+      { subscription: { plan: "scaler", name: "scaler" } },
+      { measuredAt: at },
+    );
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(1.18);
+    expect(byName.get("storage")?.pctOfLimit).toBe(45);
+    expect(byName.get("storage")?.valueLabel).toBe("10.8 GB / 24 GB");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 24 });
+  });
 });
 
 describe("entryFromTurso period stamps (#5091)", () => {

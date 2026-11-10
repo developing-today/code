@@ -1,0 +1,13 @@
+[Unit]
+Description=Queue coverage reconciliation, hourly (#7016)
+
+[Timer]
+# Hourly, offset from the sweeper's 05:17 daily run so the two never
+# contend for the broker. Persistent so a laptop that was asleep runs
+# the missed cycle on wake rather than skipping it.
+OnCalendar=*-*-* *:41:00
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

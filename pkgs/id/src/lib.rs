@@ -159,6 +159,7 @@ pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
+pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
@@ -194,6 +195,7 @@ pub mod envelope_outbox;
 pub mod event_store;
 pub mod event_sync;
 pub mod fileops;
+pub mod foreign_libsql;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
@@ -209,6 +211,7 @@ pub mod local_claims;
 pub mod local_events;
 pub mod log_sync;
 mod peer_announcement;
+pub mod serve_proxy;
 pub use id_core::membership;
 pub mod match_audit;
 pub mod meta_client;

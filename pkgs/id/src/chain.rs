@@ -22,6 +22,7 @@ use p2panda_core::{AnyHeader, Hash, Header, HeaderError, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
+use crate::chat::{ChatLink, ChatMessage, is_chat_message_kind};
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
 use crate::issuer_rotation::{IssuerRotation, check_rotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
@@ -47,6 +48,10 @@ const LENGTH_LIMIT: u64 = 512;
 
 /// Byte budget for speculative pre-allocation. Matches p2panda's decoder.
 const OOM_MITIGATION: usize = 64;
+
+/// p2panda's header decoder caps each CBOR text string at 512 bytes. Longer chat
+/// text is represented as chunks so the message shape's 2,048-byte limit remains usable.
+const CHAT_TEXT_CHUNK_BYTES: usize = 512;
 
 /// Why an event header, or the extension it carries, was refused.
 #[derive(Debug, thiserror::Error)]
@@ -137,6 +142,96 @@ pub struct ChainExt {
     /// with the header and persisted with it, because the event store keeps the
     /// header but not an event body, so an event carries its whole rotation.
     pub rotation: Option<IssuerRotation>,
+    /// The chat message of a `chat.message.v1`, and `None` for every other kind. It is the
+    /// message's body (#3799): it is signed with the header, so an event carries its
+    /// message, and sync needs no separate body.
+    pub chat: Option<ChatMessage>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ChatTextWireRef<'a> {
+    Plain(&'a str),
+    Chunks(Vec<&'a str>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ChatTextWire {
+    Plain(String),
+    Chunks(Vec<String>),
+}
+
+#[derive(Serialize)]
+struct ChatMessageWireRef<'a> {
+    text: ChatTextWireRef<'a>,
+    links: &'a [ChatLink],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatMessageWire {
+    text: ChatTextWire,
+    #[serde(default)]
+    links: Vec<ChatLink>,
+}
+
+/// A chat message's header-only wire representation. Keeping chunking here
+/// leaves the general `ChatMessage` serde shape unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HeaderChatMessage(ChatMessage);
+
+impl Serialize for HeaderChatMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let message = &self.0;
+        let text = if message.text.len() <= CHAT_TEXT_CHUNK_BYTES {
+            ChatTextWireRef::Plain(&message.text)
+        } else {
+            ChatTextWireRef::Chunks(chat_text_chunks(&message.text))
+        };
+        ChatMessageWireRef {
+            text,
+            links: &message.links,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HeaderChatMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ChatMessageWire::deserialize(deserializer)?;
+        let text = match wire.text {
+            ChatTextWire::Plain(text) => text,
+            ChatTextWire::Chunks(chunks) => chunks.concat(),
+        };
+        Ok(Self(ChatMessage {
+            text,
+            links: wire.links,
+        }))
+    }
+}
+
+/// Splits only at UTF-8 character boundaries, keeping each CBOR text string
+/// inside the header decoder's declared length limit.
+fn chat_text_chunks(text: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    for (index, character) in text.char_indices() {
+        if index > start && index + character.len_utf8() - start > CHAT_TEXT_CHUNK_BYTES {
+            chunks.push(&text[start..index]);
+            start = index;
+        }
+    }
+    if start < text.len() {
+        chunks.push(&text[start..]);
+    }
+    chunks
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
@@ -163,6 +258,8 @@ struct Wire {
     checkpoint: Option<SessionCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rotation: Option<IssuerRotation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat: Option<HeaderChatMessage>,
 }
 
 impl From<ChainExt> for Wire {
@@ -179,6 +276,7 @@ impl From<ChainExt> for Wire {
             link: ext.link,
             checkpoint: ext.checkpoint,
             rotation: ext.rotation,
+            chat: ext.chat.map(HeaderChatMessage),
         }
     }
 }
@@ -201,6 +299,7 @@ impl TryFrom<Wire> for ChainExt {
             link: wire.link,
             checkpoint: wire.checkpoint,
             rotation: wire.rotation,
+            chat: wire.chat.map(|message| message.0),
         };
         ext.validate()?;
         Ok(ext)
@@ -370,6 +469,26 @@ impl ChainExt {
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
+        match (is_chat_message_kind(&self.kind), &self.chat) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a chat message",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its chat message",
+                    self.kind
+                )));
+            }
+            (true, Some(message)) => {
+                message
+                    .check()
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
         Ok(())
     }
 }
@@ -528,6 +647,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         }
     }
 
@@ -1008,6 +1128,8 @@ mod tests {
                     },
                 }),
                 rotation: None,
+
+                chat: None,
             },
         )
         .unwrap()
@@ -1237,6 +1359,7 @@ mod golden {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             },
         )
         .unwrap();
@@ -1257,6 +1380,7 @@ mod golden {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             },
         )
         .unwrap();

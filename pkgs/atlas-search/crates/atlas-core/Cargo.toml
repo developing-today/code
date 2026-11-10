@@ -8,6 +8,7 @@ description = "Atlas search semantics as a library: filters and sensitivity ceil
 
 [dependencies]
 atlas-embed = { path = "../atlas-embed" }
+atlas-proto = { path = "../atlas-proto" }
 base64 = "0.22"
 rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }

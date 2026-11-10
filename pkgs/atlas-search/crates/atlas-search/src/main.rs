@@ -35,8 +35,8 @@ use atlas_core::{
     SearchMode, SearchOptions, TursoBackend, VectorBackend, run_get_chunk, run_search,
 };
 use atlas_proto::{
-    FilterSpec, SearchMode as ProtoSearchMode, SearchRequest, Sensitivity as ProtoSensitivity,
-    VectorBackend as ProtoVectorBackend,
+    FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
+    Sensitivity as ProtoSensitivity, VectorBackend as ProtoVectorBackend,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::Value as Json;
@@ -108,6 +108,42 @@ enum ModeChoice {
     Vector,
 }
 
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum VariantChoice {
+    #[default]
+    Raw,
+    Rewritten,
+    Both,
+}
+
+fn parameter_defaults() -> SearchParametersV1 {
+    SearchParametersV1::default()
+}
+
+fn default_parameters_version() -> i64 {
+    i64::from(parameter_defaults().parameters_version)
+}
+
+fn default_shard_top_k() -> i64 {
+    parameter_defaults().shard_top_k as i64
+}
+
+fn default_global_top_k() -> i64 {
+    parameter_defaults().global_top_k as i64
+}
+
+fn default_rrf_k() -> i64 {
+    parameter_defaults().rrf_k as i64
+}
+
+fn default_variant_choice() -> VariantChoice {
+    match parameter_defaults().variant {
+        QueryVariant::Raw => VariantChoice::Raw,
+        QueryVariant::Rewritten => VariantChoice::Rewritten,
+        QueryVariant::Both => VariantChoice::Both,
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum EmbedderChoice {
     Auto,
@@ -168,10 +204,10 @@ struct VectorArgs {
 struct SearchArgs {
     query: String,
     /// final results (default 10)
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = SearchParametersV1::default_k() as i64)]
     k: i64,
     /// per-branch candidates (default 100)
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = SearchParametersV1::default_pool() as i64)]
     pool: i64,
     #[arg(long, value_enum, default_value_t = ModeChoice::Hybrid)]
     mode: ModeChoice,
@@ -196,8 +232,47 @@ struct SearchArgs {
     #[arg(long)]
     group_by_session: bool,
     /// include N neighboring chunks (same message) around each hit
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = SearchParametersV1::default_expand() as i64)]
     expand: i64,
+    /// version of the shared query-parameter contract (currently 1)
+    #[arg(long = "parameters_version", default_value_t = default_parameters_version())]
+    parameters_version: i64,
+    /// candidates scanned per shard (default 100)
+    #[arg(long = "shard_top_k", default_value_t = default_shard_top_k())]
+    shard_top_k: i64,
+    /// candidates retained after shard fan-in (default 100)
+    #[arg(long = "global_top_k", default_value_t = default_global_top_k())]
+    global_top_k: i64,
+    /// reciprocal-rank-fusion multiplier for FTS (default 1)
+    #[arg(long = "fts_weight", default_value_t = parameter_defaults().fts_weight)]
+    fts_weight: f64,
+    /// reciprocal-rank-fusion multiplier for vectors (default 1)
+    #[arg(long = "vector_weight", default_value_t = parameter_defaults().vector_weight)]
+    vector_weight: f64,
+    /// candidate depth for Jaccard rescoring (unsupported unless 0)
+    #[arg(long = "jaccard_depth", default_value_t = parameter_defaults().jaccard_depth as i64)]
+    jaccard_depth: i64,
+    /// threshold for Jaccard rescoring (unsupported unless 0)
+    #[arg(long = "jaccard_threshold", default_value_t = parameter_defaults().jaccard_threshold)]
+    jaccard_threshold: f64,
+    /// reciprocal-rank-fusion constant (default 10)
+    #[arg(long = "rrf_k", default_value_t = default_rrf_k())]
+    rrf_k: i64,
+    /// enable query planner/rewriter (not implemented yet)
+    #[arg(long = "planner_enabled")]
+    planner_enabled: bool,
+    /// enable spell correction (not implemented yet)
+    #[arg(long = "spell_enabled")]
+    spell_enabled: bool,
+    /// query-class hint (not implemented yet)
+    #[arg(long = "query_class_hint")]
+    query_class_hint: Option<String>,
+    /// query variant: raw (supported), rewritten or both (unsupported)
+    #[arg(long, value_enum, default_value_t = default_variant_choice())]
+    variant: VariantChoice,
+    /// use the verbatim query with planner/spell and expansion disabled
+    #[arg(long)]
+    raw: bool,
     /// include the parent message text (truncated at 50000 chars)
     #[arg(long)]
     with_message: bool,
@@ -250,9 +325,16 @@ fn map_get_chunk_err(e: CoreError, chunk_id: i64) -> CliError {
 // ------------------------------------------------------------ backends --
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"))
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!(
+            "HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
+    }
 }
 
 /// The Python's `default_db_path`.
@@ -490,6 +572,7 @@ fn proto_search_request(args: &SearchArgs) -> SearchRequest {
         pool: u(args.pool),
         group_by_session: args.group_by_session,
         expand: u(args.expand),
+        parameters: parameters_from_args(args),
         with_message: args.with_message,
         model: args.vector.model.clone(),
         embedder: match args.vector.embedder {
@@ -505,6 +588,28 @@ fn proto_search_request(args: &SearchArgs) -> SearchRequest {
             VectorBackendChoice::IndexFixed => ProtoVectorBackend::IndexFixed,
         },
         page_limit: None,
+    }
+}
+
+fn parameters_from_args(args: &SearchArgs) -> SearchParametersV1 {
+    SearchParametersV1 {
+        parameters_version: u(args.parameters_version) as u32,
+        shard_top_k: u(args.shard_top_k),
+        global_top_k: u(args.global_top_k),
+        fts_weight: args.fts_weight,
+        vector_weight: args.vector_weight,
+        jaccard_depth: u(args.jaccard_depth),
+        jaccard_threshold: args.jaccard_threshold,
+        rrf_k: u(args.rrf_k),
+        planner_enabled: args.planner_enabled,
+        spell_enabled: args.spell_enabled,
+        query_class_hint: args.query_class_hint.clone(),
+        variant: match args.variant {
+            VariantChoice::Raw => QueryVariant::Raw,
+            VariantChoice::Rewritten => QueryVariant::Rewritten,
+            VariantChoice::Both => QueryVariant::Both,
+        },
+        raw: args.raw,
     }
 }
 
@@ -618,6 +723,14 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
         Some(i64::try_from(atlas_core::MAX_EXPAND_NEIGHBORS).expect("neighbor cap fits in i64")),
     )?;
     let trunc = count("--trunc", args.vector.trunc, 0, None)?;
+    count("--parameters_version", args.parameters_version, 1, Some(1))?;
+    count("--shard_top_k", args.shard_top_k, 1, Some(400))?;
+    count("--global_top_k", args.global_top_k, 1, Some(400))?;
+    count("--jaccard_depth", args.jaccard_depth, 0, Some(4000))?;
+    count("--rrf_k", args.rrf_k, 1, Some(10000))?;
+    parameters_from_args(&args)
+        .validate(expand)
+        .map_err(|m| (2, m))?;
     let mut note: Option<String> = None;
     // The shard fan-out is standalone-only: the service does not
     // honor it yet, so a via-service answer would silently come
@@ -678,6 +791,7 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             VectorBackendChoice::IndexFill => VectorBackend::IndexFill,
             VectorBackendChoice::IndexFixed => VectorBackend::IndexFixed,
         },
+        parameters: parameters_from_args(&args),
     };
     let mut out = run_search(backend.as_ref(), &embedder, &filters, &opts).map_err(map_err)?;
     if let Some(note) = note {
@@ -770,6 +884,43 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_and_raw_request_share_query_parameter_names_and_values() {
+        let cli = Cli::try_parse_from([
+            "atlas-search",
+            "search",
+            "atlas",
+            "--shard_top_k",
+            "32",
+            "--global_top_k",
+            "8",
+            "--fts_weight",
+            "1.5",
+            "--vector_weight",
+            "0.75",
+            "--rrf_k",
+            "20",
+            "--raw",
+        ])
+        .unwrap();
+        let Cmd::Search(args) = cli.cmd else {
+            panic!("expected search command")
+        };
+        let cli_request = proto_search_request(&args);
+        let raw_request: SearchRequest = serde_json::from_value(serde_json::json!({
+            "query":"atlas",
+            "parameters_version":1,
+            "shard_top_k":32,
+            "global_top_k":8,
+            "fts_weight":1.5,
+            "vector_weight":0.75,
+            "rrf_k":20,
+            "raw":true
+        }))
+        .unwrap();
+        assert_eq!(cli_request.parameters, raw_request.parameters);
+    }
 
     #[test]
     fn count_validation_mirrors_the_service_contract() {

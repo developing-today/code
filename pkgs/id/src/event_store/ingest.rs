@@ -95,12 +95,12 @@ use p2panda_auth::group::GroupAction;
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 
-use super::resolve::{self, decode_action, encode_action};
+use super::resolve::{self, decode_action, encode_action, encode_device_op};
 use super::waiting_rows::{Hold, Mirror};
 use super::{
-    ACTIONS, APPLIED, CHAINS, Chain, EVENTS, EventStore, FORKS, ForkProof, HASHES, PROOF_HEADERS,
-    PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof, position_key, store_chain,
-    store_event, store_fork,
+    ACTIONS, APPLIED, CHAINS, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS, ForkProof, HASHES,
+    PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof, position_key,
+    store_chain, store_event, store_fork,
 };
 use crate::chain::{self, Event};
 use crate::documents::{is_document_kind, is_removal_kind};
@@ -236,6 +236,15 @@ impl EventStore {
     /// - A body that is not a group operation, or no body at all, makes the event content.
     /// - A body that claims to be a group operation decodes to its action, or it is refused.
     /// - A body that is not the one the header commits to, by BLAKE3 hash and size, is refused.
+    /// - A writer-set or rescind event's verified body is retained with the store
+    ///   (`writer_set_bodies`), so the stored object can be read back and projected
+    ///   (issue #6690; see the `writer_set` submodule).
+    /// - A device operation carried by a `group.event` body is recorded with the store
+    ///   (`device_ops`), so the resolution can fold it as a group device event (issue
+    ///   #5656). The membership body codec does not carry device operations, so without
+    ///   this channel a device grant could never reach the event-store fold. A body that
+    ///   claims to be a `group.event` device operation but does not decode, or names an
+    ///   author other than the event's signer, is refused.
     /// - A tag event (kind `tag.set` or `tag.clear`) takes no body. Its operation is in its
     ///   header (#182), so a payload on a tag event is refused. Its tag takes no membership
     ///   action, and the fold reads it from the stored header (see `claims`).
@@ -258,6 +267,13 @@ impl EventStore {
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
         let kind = &event.header.extensions.kind;
+        // A writer-set or rescind body is retained with its event (issue
+        // #6690): the header commits to it by hash, and `body_action` below
+        // has already refused a body that is not the committed one, so what
+        // is retained here is the object the signer published.
+        let retain_body = body
+            .filter(|_| crate::idset::is_writer_kind(kind) || crate::idset::is_rescind_kind(kind));
+        let event_id = event.id;
         let action = if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
             if body.is_some() {
                 return Ok(Ingest::Refused(Refusal::Malformed(
@@ -272,7 +288,53 @@ impl EventStore {
                 Err(refusal) => return Ok(Ingest::Refused(refusal)),
             }
         };
-        self.ingest_event(event, action.as_ref(), now_ms)
+        let device = if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
+            None
+        } else {
+            match body_device_op(&event, body) {
+                Ok(device) => device,
+                Err(refusal) => return Ok(Ingest::Refused(refusal)),
+            }
+        };
+        let result = self.ingest_event(event, action.as_ref(), now_ms)?;
+        if let Some(body) = retain_body
+            && !matches!(result, Ingest::Refused(_))
+        {
+            self.record_writer_body(&event_id, body)?;
+        }
+        if let Some((op, group)) = &device
+            && !matches!(result, Ingest::Refused(_))
+        {
+            self.record_device_op(&event_id, op, group.as_ref())?;
+        }
+        Ok(result)
+    }
+
+    /// Records the device operation a verified `group.event` body carries, by event ID
+    /// (issue #5656). Written after the ingest decision, in its own transaction, like
+    /// [`EventStore::record_writer_body`]: the row is keyed by the event's ID and read
+    /// back only for events the store holds, so recording one for an event that is held
+    /// or later released is inert until the event is stored, and a duplicate delivery
+    /// simply rewrites the same row.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the write fails, or [`StoreError::Corrupt`] if the op
+    /// does not encode.
+    fn record_device_op(
+        &self,
+        id: &Hash,
+        op: &crate::groups::DeviceOp,
+        group: Option<&Hash>,
+    ) -> Result<(), StoreError> {
+        let encoded = encode_device_op(op, group)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut device_ops = txn.open_table(DEVICE_OPS)?;
+            device_ops.insert(id.as_bytes().as_slice(), encoded.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     /// Verifies one received event, which may be a group operation, and applies what it allows.
@@ -422,6 +484,42 @@ impl EventStore {
     }
 }
 
+/// The first bytes of every `group.event` body: a CBOR array of seven items, then the
+/// family's tag as a text string. A body that starts with these bytes claims to be a
+/// group-layer event in the wire family of [`crate::groups::event`].
+const GROUP_EVENT_CLAIM: &[u8] = b"\x87\x6bgroup.event";
+
+/// The device operation an event's body carries, with the group the body names (issue
+/// #5656). `Ok(None)` when the body is absent, is not a `group.event` body, or is a
+/// `group.event` body of any other kind: those stay content, exactly as before. The
+/// caller has already verified the body is the one the header commits to (see
+/// [`body_action`]). A body that claims to be a `group.event` device operation and
+/// does not decode is refused, as is one whose named author is not the event's
+/// signer: the grant a device operation records is the signer's, so a body naming
+/// another author is not the operation it claims to be.
+fn body_device_op(
+    event: &Event,
+    body: Option<&[u8]>,
+) -> Result<Option<(crate::groups::DeviceOp, Option<Hash>)>, Refusal> {
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    if !body.starts_with(GROUP_EVENT_CLAIM) {
+        return Ok(None);
+    }
+    let wire =
+        crate::groups::event::decode(body).map_err(|err| Refusal::Malformed(err.to_string()))?;
+    let crate::groups::event::EventBody::Group(crate::groups::Body::Device(op)) = wire.body else {
+        return Ok(None);
+    };
+    if wire.author != author_of(event) {
+        return Err(Refusal::Malformed(
+            "a device operation body names an author other than the event's signer".to_owned(),
+        ));
+    }
+    Ok(Some((op, wire.group)))
+}
+
 /// The membership action an event's body carries. `Ok(None)` makes the event content: it has no
 /// body, or its body is not a group operation. A body that is not the one the header commits to is
 /// refused, and so is a body that claims to be a group operation and does not decode.
@@ -471,6 +569,7 @@ enum Staged {
 
 impl Staged {
     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+    #[allow(dead_code)]
     fn keeps(&self) -> bool {
         matches!(
             self,
@@ -937,9 +1036,10 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
     let (stored, forks, headers) = {
         let events = txn.open_table(EVENTS)?;
         let actions = txn.open_table(ACTIONS)?;
+        let device_ops = txn.open_table(DEVICE_OPS)?;
         let forks = txn.open_table(FORKS)?;
         let proof_headers = txn.open_table(PROOF_HEADERS)?;
-        resolve::load(&events, &actions, &forks, &proof_headers)?
+        resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
     };
     let resolved = resolve::resolve(&stored, &forks, &headers)?;
 
@@ -1159,6 +1259,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1573,6 +1674,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -1631,6 +1734,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1882,6 +1987,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1918,6 +2024,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
