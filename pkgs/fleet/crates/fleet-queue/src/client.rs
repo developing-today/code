@@ -1270,14 +1270,7 @@ fn cmd_list(rest: &[String]) -> i32 {
 fn cmd_claim(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &[
-            "queue",
-            "worker",
-            "lease-seconds",
-            "lane",
-            "task",
-            "platform",
-        ],
+        &["queue", "worker", "lease-seconds", "lane", "task", "platform"],
         &["handoff"],
     );
     reject_extra_pos("claim", &args, 0);

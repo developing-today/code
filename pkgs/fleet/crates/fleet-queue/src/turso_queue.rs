@@ -317,16 +317,17 @@ impl TursoBackend {
     }
 
     fn exec(&self, sql: &str, args: &[Arg]) -> Result<StmtResult, TErr> {
-        Ok(self
-            .pipeline(&[(sql, args.to_vec())])?
-            .into_iter()
-            .next()
-            .unwrap())
+        Ok(self.pipeline(&[(sql, args.to_vec())])?.into_iter().next().unwrap())
     }
 
     /// Rows of one SELECT as JSON objects, with the given TEXT
     /// columns parsed back into JSON values.
-    fn query_objs(&self, sql: &str, args: &[Arg], json_cols: &[&str]) -> Result<Vec<Value>, TErr> {
+    fn query_objs(
+        &self,
+        sql: &str,
+        args: &[Arg],
+        json_cols: &[&str],
+    ) -> Result<Vec<Value>, TErr> {
         let r = self.exec(sql, args)?;
         Ok(r.rows
             .iter()
@@ -353,7 +354,11 @@ impl TursoBackend {
         // selector) — databases created before the column landed
         // gain it here. Existing rows read NULL (unset: either
         // family may claim them); no backfill, nothing destructive.
-        let cols = self.query_objs("SELECT name FROM pragma_table_info('tasks')", &[], &[])?;
+        let cols = self.query_objs(
+            "SELECT name FROM pragma_table_info('tasks')",
+            &[],
+            &[],
+        )?;
         let has_platform = cols
             .iter()
             .any(|c| c.get("name").and_then(|v| v.as_str()) == Some("platform"));
@@ -477,7 +482,9 @@ fn get_task(t: &TursoBackend, id: i64) -> Result<Option<Value>, TErr> {
 
 fn get_ledger(t: &TursoBackend, task_id: i64) -> Result<Option<Value>, TErr> {
     let rows = t.query_objs(
-        &format!("SELECT {LEDGER_COLS} FROM repo_task_lane_ledger WHERE task_id = ?"),
+        &format!(
+            "SELECT {LEDGER_COLS} FROM repo_task_lane_ledger WHERE task_id = ?"
+        ),
         &[Arg::Int(task_id)],
         &[],
     )?;
@@ -508,7 +515,9 @@ fn event(
 /// Parse an /events-append request: kind is required and must be a
 /// non-empty string; worker_id/task_id optional (the PG stream's
 /// non-queue writers always wrote task_id NULL); detail defaults {}.
-fn parse_event_append(req: &Value) -> Result<(Option<String>, Option<i64>, String, Value), String> {
+fn parse_event_append(
+    req: &Value,
+) -> Result<(Option<String>, Option<i64>, String, Value), String> {
     let kind = req_str(req, "kind")
         .map(str::trim)
         .filter(|k| !k.is_empty())
@@ -738,7 +747,9 @@ fn revalidate_parked(
                     target_status = trow
                         .into_iter()
                         .next()
-                        .and_then(|r| r.get("status").and_then(|v| v.as_str()).map(str::to_string));
+                        .and_then(|r| {
+                            r.get("status").and_then(|v| v.as_str()).map(str::to_string)
+                        });
                 }
             }
             Some("event_seen") => {
@@ -1227,7 +1238,11 @@ fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option
     get_ledger(t, task_id)
 }
 
-fn verb_with_execution(t: &TursoBackend, req: &Value, row: Value) -> Result<Value, TErr> {
+fn verb_with_execution(
+    t: &TursoBackend,
+    req: &Value,
+    row: Value,
+) -> Result<Value, TErr> {
     if row.is_null() {
         return Ok(ok(json!({"row": Value::Null})));
     }
@@ -1315,7 +1330,8 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     // family may claim it). The selector names a family, never a
     // lane, and is never required.
     let platform = match parse_platform(
-        req_str(req, "platform").or_else(|| packet.get("platform").and_then(|v| v.as_str())),
+        req_str(req, "platform")
+            .or_else(|| packet.get("platform").and_then(|v| v.as_str())),
     ) {
         Ok(p) => p,
         Err(e) => return fail(2, format!("enqueue: {e}")),
@@ -1323,18 +1339,11 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     if let Some(obj) = task.as_object_mut() {
         obj.insert("platform".to_string(), json!(platform));
     }
-    if req
-        .get("dry_run")
-        .and_then(|d| d.as_bool())
-        .unwrap_or(false)
-    {
+    if req.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(false) {
         return ok(json!({"dry_run": true, "task": task, "warnings": warnings}));
     }
     let now = now_iso();
-    let dedupe = task
-        .get("dedupe_key")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    let dedupe = task.get("dedupe_key").and_then(|v| v.as_str()).map(str::to_string);
     let work = (|| -> Result<(Value, Option<Value>), TErr> {
         let mut predecessor: Option<Value> = None;
         if let Some(dk) = &dedupe {
@@ -1461,9 +1470,7 @@ fn revive_eligible(status: &str, attempts: i64, max_attempts: i64) -> Result<(),
 /// re-points to, replacing its direct SQL.
 fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
-    let worker = req_str(req, "worker")
-        .unwrap_or("fleet-queue-cli")
-        .to_string();
+    let worker = req_str(req, "worker").unwrap_or("fleet-queue-cli").to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
     let not_before = req_str(req, "not_before")
         .map(str::to_string)
@@ -1540,7 +1547,9 @@ fn payload_missing(parsed: Option<&Value>) -> bool {
 /// quarantine reason for a row that must not be handed out.
 fn claim_guard_reason(row: &Value) -> Option<String> {
     if payload_missing(row.get("payload")) {
-        return Some("quarantined by claim path: payload missing/empty (#5444)".to_string());
+        return Some(
+            "quarantined by claim path: payload missing/empty (#5444)".to_string(),
+        );
     }
     let (errors, _warnings) = validate_packet(row);
     if errors.is_empty() {
@@ -1672,12 +1681,15 @@ const PARKED_HANDOFF_SQL: &str = "status = 'parked' \
 /// verb records it under progress.last_checkpoint.stage, #7706 — the
 /// same lift poll.py's normalize_row performs).
 fn progress_stage(progress: &Value) -> Option<&str> {
-    progress.get("stage").and_then(|v| v.as_str()).or_else(|| {
-        progress
-            .get("last_checkpoint")
-            .and_then(|c| c.get("stage"))
-            .and_then(|v| v.as_str())
-    })
+    progress
+        .get("stage")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            progress
+                .get("last_checkpoint")
+                .and_then(|c| c.get("stage"))
+                .and_then(|v| v.as_str())
+        })
 }
 
 /// A parked row is a RECORDED OPENCODE HANDOFF when its progress
@@ -1729,10 +1741,7 @@ fn by_id_claimable(row: &Value, now: &str, family: Option<&str>) -> bool {
     match row.get("status").and_then(|v| v.as_str()) {
         Some("queued") => {
             let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
-            let max = row
-                .get("max_attempts")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let max = row.get("max_attempts").and_then(|v| v.as_i64()).unwrap_or(0);
             let nb = row.get("not_before").and_then(|v| v.as_str());
             attempts < max && nb.map_or(true, |nb| nb <= now)
         }
@@ -1932,111 +1941,111 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         let mut id: i64;
         let mut skipped = 0usize;
         loop {
-            // #7617: pick the candidate id FIRST, then claim THAT row by
-            // id, and read it back by id. The previous shape claimed via
-            // a subquery and re-read the result as "the newest claimed
-            // row for (queue, worker_id)" — but every lane shares
-            // worker_id repo-worker-code, so under concurrent claims
-            // that re-read could return ANOTHER lane's just-claimed
-            // task: the caller was handed a row stamped with a foreign
-            // lane_id (live repro 2026-11-08: lane code-u claims
-            // returned tasks stamped code-e and code-t), it checkpointed
-            // and parked a task it did not own, and the guard below
-            // could quarantine a live foreign claim. The conditional
-            // UPDATE by id stays atomic: it re-checks the full pick
-            // eligibility (status, attempts cap, not_before) at claim
-            // instant, so if a competing claim takes the picked row
-            // first — or it is parked into the future in between — this
-            // UPDATE affects 0 rows and the loop re-picks.
-            // #8097: the pick predicate is built per pick mode. Both
-            // modes carry the Rule 2 platform gate — an undeclared
-            // family is the empty string here, which no stored
-            // selector equals, so such claims only ever pick unset
-            // items. The default mode keeps the ordinary predicate
-            // (queued rows due; parked rows whose timer has passed).
-            // Handoff mode picks the next parked recorded opencode
-            // handoff (PARKED_HANDOFF_SQL) with no caller-named id
-            // and no not_before gating — Rule 1's default collection
-            // path for the claimant.
-            let pick_predicate = if handoff_pick {
-                PARKED_HANDOFF_SQL.to_string()
-            } else {
-                "(status = 'queued' AND attempts < max_attempts \
+        // #7617: pick the candidate id FIRST, then claim THAT row by
+        // id, and read it back by id. The previous shape claimed via
+        // a subquery and re-read the result as "the newest claimed
+        // row for (queue, worker_id)" — but every lane shares
+        // worker_id repo-worker-code, so under concurrent claims
+        // that re-read could return ANOTHER lane's just-claimed
+        // task: the caller was handed a row stamped with a foreign
+        // lane_id (live repro 2026-11-08: lane code-u claims
+        // returned tasks stamped code-e and code-t), it checkpointed
+        // and parked a task it did not own, and the guard below
+        // could quarantine a live foreign claim. The conditional
+        // UPDATE by id stays atomic: it re-checks the full pick
+        // eligibility (status, attempts cap, not_before) at claim
+        // instant, so if a competing claim takes the picked row
+        // first — or it is parked into the future in between — this
+        // UPDATE affects 0 rows and the loop re-picks.
+        // #8097: the pick predicate is built per pick mode. Both
+        // modes carry the Rule 2 platform gate — an undeclared
+        // family is the empty string here, which no stored
+        // selector equals, so such claims only ever pick unset
+        // items. The default mode keeps the ordinary predicate
+        // (queued rows due; parked rows whose timer has passed).
+        // Handoff mode picks the next parked recorded opencode
+        // handoff (PARKED_HANDOFF_SQL) with no caller-named id
+        // and no not_before gating — Rule 1's default collection
+        // path for the claimant.
+        let pick_predicate = if handoff_pick {
+            PARKED_HANDOFF_SQL.to_string()
+        } else {
+            "(status = 'queued' AND attempts < max_attempts \
                  AND (not_before IS NULL OR not_before <= ?)) \
                OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)"
-                    .to_string()
-            };
-            let pick_sql = format!(
-                "SELECT id FROM tasks WHERE queue = ? \
+                .to_string()
+        };
+        let pick_sql = format!(
+            "SELECT id FROM tasks WHERE queue = ? \
                AND payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
                AND (platform IS NULL OR platform = ?) \
                AND ( {pick_predicate} ) \
              ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1"
-            );
-            let mut pick_args: Vec<Arg> = vec![
-                Arg::Text(queue.clone()),
-                Arg::Text(family.as_deref().unwrap_or("").to_string()),
-            ];
-            if !handoff_pick {
-                pick_args.push(Arg::Text(now.clone()));
-                pick_args.push(Arg::Text(now.clone()));
-            }
-            let pick = t.query_objs(&pick_sql, &pick_args, &[])?;
-            let Some(picked) = pick.into_iter().next() else {
-                return Ok(None);
-            };
-            let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-            let upd_sql = format!(
-                "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
+        );
+        let mut pick_args: Vec<Arg> = vec![
+            Arg::Text(queue.clone()),
+            Arg::Text(family.as_deref().unwrap_or("").to_string()),
+        ];
+        if !handoff_pick {
+            pick_args.push(Arg::Text(now.clone()));
+            pick_args.push(Arg::Text(now.clone()));
+        }
+        let pick = t.query_objs(&pick_sql, &pick_args, &[])?;
+        let Some(picked) = pick.into_iter().next() else {
+            return Ok(None);
+        };
+        let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let upd_sql = format!(
+            "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
                lease_until = ?, \
                attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
                lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
                updated_at = ? \
              WHERE id = ? AND (platform IS NULL OR platform = ?) \
                AND ( {pick_predicate} )"
-            );
-            let mut upd_args: Vec<Arg> = vec![
-                Arg::Text(worker.clone()),
-                Arg::Text(now.clone()),
-                Arg::Text(lease_until.clone()),
-                arg_str(lane.as_deref()),
-                Arg::Text(now.clone()),
-                Arg::Int(pick_id),
-                Arg::Text(family.as_deref().unwrap_or("").to_string()),
-            ];
-            if !handoff_pick {
-                upd_args.push(Arg::Text(now.clone()));
-                upd_args.push(Arg::Text(now.clone()));
-            }
-            let upd = t.exec(&upd_sql, &upd_args)?;
-            if upd.affected == 0 {
-                // Lost the race for the picked row; re-pick.
-                skipped += 1;
-                if skipped >= 32 {
-                    return Ok(None);
-                }
-                continue;
-            }
-            let rows = t.query_objs(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
-                &[Arg::Int(pick_id)],
-                &TASK_JSON_COLS,
-            )?;
-            let Some(candidate) = rows.into_iter().next() else {
+        );
+        let mut upd_args: Vec<Arg> = vec![
+            Arg::Text(worker.clone()),
+            Arg::Text(now.clone()),
+            Arg::Text(lease_until.clone()),
+            arg_str(lane.as_deref()),
+            Arg::Text(now.clone()),
+            Arg::Int(pick_id),
+            Arg::Text(family.as_deref().unwrap_or("").to_string()),
+        ];
+        if !handoff_pick {
+            upd_args.push(Arg::Text(now.clone()));
+            upd_args.push(Arg::Text(now.clone()));
+        }
+        let upd = t.exec(&upd_sql, &upd_args)?;
+        if upd.affected == 0 {
+            // Lost the race for the picked row; re-pick.
+            skipped += 1;
+            if skipped >= 32 {
                 return Ok(None);
-            };
-            if let Some(reason) = claim_guard_reason(&candidate) {
-                let cid = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                quarantine_task(t, cid, &reason)?;
-                skipped += 1;
-                if skipped >= 32 {
-                    return Ok(None);
-                }
-                continue;
             }
-            id = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-            row = candidate;
-            break;
+            continue;
+        }
+        let rows = t.query_objs(
+            &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
+            &[Arg::Int(pick_id)],
+            &TASK_JSON_COLS,
+        )?;
+        let Some(candidate) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        if let Some(reason) = claim_guard_reason(&candidate) {
+            let cid = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            quarantine_task(t, cid, &reason)?;
+            skipped += 1;
+            if skipped >= 32 {
+                return Ok(None);
+            }
+            continue;
+        }
+        id = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        row = candidate;
+        break;
         }
         let mut row = row;
         // Migration 0023 §4: a fresh claim never inherits a binding.
@@ -2228,9 +2237,7 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
             return Err(format!(
                 "bind_repo_task_lane_session: task {task_id} is not claimed with a live lease (status {}, lease_until {})",
                 task.get("status").and_then(|v| v.as_str()).unwrap_or(""),
-                task.get("lease_until")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                task.get("lease_until").and_then(|v| v.as_str()).unwrap_or("")
             ));
         }
         let Some(ledger) = get_ledger(t, task_id)? else {
@@ -2287,7 +2294,12 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
 
 /// Shared guard for the claimed-by verbs: returns the task row or
 /// the PG-shaped refusal.
-fn claimed_by(t: &TursoBackend, task_id: i64, worker: &str, verb: &str) -> Result<Value, Value> {
+fn claimed_by(
+    t: &TursoBackend,
+    task_id: i64,
+    worker: &str,
+    verb: &str,
+) -> Result<Value, Value> {
     match get_task(t, task_id) {
         Ok(Some(row))
             if row.get("status").and_then(|v| v.as_str()) == Some("claimed")
@@ -2358,10 +2370,7 @@ fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
     let given = req.get("progress").cloned().unwrap_or(json!({}));
     let progress = merge_obj(
         &row.get("progress").cloned().unwrap_or(json!({})),
-        &merge_obj(
-            &given,
-            &json!({"last_checkpoint": {"stage": stage, "at": now_iso()}}),
-        ),
+        &merge_obj(&given, &json!({"last_checkpoint": {"stage": stage, "at": now_iso()}})),
     );
     let work = (|| -> Result<Value, TErr> {
         // PG checkpoints is a per-worker KV (worker_id, key, value):
@@ -2376,7 +2385,9 @@ fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
             &[
                 Arg::Text(worker.clone()),
                 Arg::Text(format!("task:{task_id}")),
-                Arg::Text(json!({"stage": stage, "progress": given, "at": now_iso()}).to_string()),
+                Arg::Text(
+                    json!({"stage": stage, "progress": given, "at": now_iso()}).to_string(),
+                ),
                 Arg::Text(now_iso()),
             ],
         )?;
@@ -2410,9 +2421,8 @@ fn wait_kind(condition: &Value) -> &'static str {
         Some("time") => "timer",
         Some("ci") | Some("ci_green") | Some("pr_merged") | Some("issue_closed")
         | Some("upstream_pr") => "ci",
-        Some("review") | Some("codex_review") | Some("pr_review") | Some("person_answer") => {
-            "review"
-        }
+        Some("review") | Some("codex_review") | Some("pr_review")
+        | Some("person_answer") => "review",
         Some("capacity") | Some("quota_reset") => "capacity",
         _ => "external",
     }
@@ -2540,17 +2550,15 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
 
 fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
-    let worker = req_str(req, "worker")
-        .unwrap_or("fleet-monitor")
-        .to_string();
+    let worker = req_str(req, "worker").unwrap_or("fleet-monitor").to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
     let work = (|| -> Result<Value, TErr> {
         let Some(row) = get_task(t, task_id)? else {
             return Ok(Value::Null);
         };
-        if ["done", "cancelled", "failed"]
-            .contains(&row.get("status").and_then(|v| v.as_str()).unwrap_or(""))
-        {
+        if ["done", "cancelled", "failed"].contains(
+            &row.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+        ) {
             return Ok(row);
         }
         let result = merge_obj(
@@ -2578,10 +2586,7 @@ fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
     })();
     match work {
         Ok(row) if !row.is_null() => ok(json!({"row": row})),
-        Ok(_) => fail(
-            5,
-            format!("cancel_repo_task: task {task_id} does not exist"),
-        ),
+        Ok(_) => fail(5, format!("cancel_repo_task: task {task_id} does not exist")),
         Err(e) => terr(e),
     }
 }
@@ -2590,9 +2595,7 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let error = req_str(req, "error").unwrap_or("").to_string();
-    let reason_class = req_str(req, "reason_class")
-        .unwrap_or("transient")
-        .to_string();
+    let reason_class = req_str(req, "reason_class").unwrap_or("transient").to_string();
     let row = match claimed_by(t, task_id, &worker, "fail_repo_task") {
         Ok(r) => r,
         Err(v) => return v,
@@ -2601,10 +2604,7 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     // requeues with a backoff (900 s first, else 2700 s); 'blocked'
     // blocks; anything else fails terminally.
     let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
-    let max_attempts = row
-        .get("max_attempts")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(4);
+    let max_attempts = row.get("max_attempts").and_then(|v| v.as_i64()).unwrap_or(4);
     let requeue = reason_class == "transient" && attempts < max_attempts;
     let new_status = if requeue {
         "queued"
@@ -2690,7 +2690,9 @@ enum CompletionClass {
 
 fn completion_class(payload: &Value) -> CompletionClass {
     match payload.get("kind").and_then(|k| k.as_str()) {
-        Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => CompletionClass::Fix,
+        Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => {
+            CompletionClass::Fix
+        }
         Some("triage") => CompletionClass::Triage,
         _ => CompletionClass::Ungated,
     }
@@ -2743,10 +2745,12 @@ fn gate_completion(
         CompletionClass::Ungated => Ok(None),
         CompletionClass::Fix => {
             if evidence_ref(result).is_none() {
-                return Err("complete_task: fix-class completion requires an evidence \
+                return Err(
+                    "complete_task: fix-class completion requires an evidence \
                      reference on the result (merged PR, commit, or \
                      verified-closure note); the task remains claimed"
-                    .to_string());
+                        .to_string(),
+                );
             }
             Ok(None)
         }
@@ -2766,20 +2770,24 @@ fn gate_completion(
                             Some(Value::String(s)) if !s.trim().is_empty()
                         );
                     if !noted {
-                        return Err("complete_task: triage exit 'invalid' requires the \
+                        return Err(
+                            "complete_task: triage exit 'invalid' requires the \
                              validation evidence on the result (evidence or \
                              triage_note); the task remains claimed"
-                            .to_string());
+                                .to_string(),
+                        );
                     }
                     Ok(Some(TriageOutcome::ExitInvalid))
                 }
                 "already_solved" => {
                     if evidence_ref(result).is_none() {
-                        return Err("complete_task: triage exit 'already_solved' requires \
+                        return Err(
+                            "complete_task: triage exit 'already_solved' requires \
                              an evidence reference on the result (merged PR, \
                              commit, or verified-closure note); the task \
                              remains claimed"
-                            .to_string());
+                                .to_string(),
+                        );
                     }
                     Ok(Some(TriageOutcome::ExitAlreadySolved))
                 }
@@ -2984,7 +2992,9 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
     };
-    let mut sql = format!("SELECT {select} FROM tasks WHERE queue = ?");
+    let mut sql = format!(
+        "SELECT {select} FROM tasks WHERE queue = ?"
+    );
     let mut args: Vec<Arg> = vec![Arg::Text(queue)];
     if let Some(s) = req_str(req, "status") {
         sql += " AND status = ?";
@@ -3004,7 +3014,9 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         sql += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
-    sql += &format!(" ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}");
+    sql += &format!(
+        " ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}"
+    );
     let json_cols: &[&str] = if rich { &["progress", "payload"] } else { &[] };
     match t.query_objs(&sql, &args, json_cols) {
         Ok(rows) => ok(json!({"rows": rows})),
@@ -3062,9 +3074,9 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let entry = by_queue
-                .entry(q.clone())
-                .or_insert_with(|| health_entry(&q));
+            let entry = by_queue.entry(q.clone()).or_insert_with(|| {
+                health_entry(&q)
+            });
             let status = r
                 .get("status")
                 .and_then(|v| v.as_str())
@@ -3124,9 +3136,9 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let entry = by_queue
-                .entry(q.clone())
-                .or_insert_with(|| health_entry(&q));
+            let entry = by_queue.entry(q.clone()).or_insert_with(|| {
+                health_entry(&q)
+            });
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert(
                     "terminal_events_24h".to_string(),
@@ -3317,15 +3329,18 @@ mod tests {
     fn event_append_requires_a_kind() {
         assert!(parse_event_append(&json!({})).is_err());
         assert!(parse_event_append(&json!({"kind": "  "})).is_err());
-        let (w, tid, kind, detail) =
-            parse_event_append(&json!({"kind": "push", "worker_id": "github-webhook"})).unwrap();
+        let (w, tid, kind, detail) = parse_event_append(
+            &json!({"kind": "push", "worker_id": "github-webhook"}),
+        )
+        .unwrap();
         assert_eq!(kind, "push");
         assert_eq!(w.as_deref(), Some("github-webhook"));
         assert_eq!(tid, None);
         assert_eq!(detail, json!({}));
-        let (_, tid2, _, _) =
-            parse_event_append(&json!({"kind": "claimed", "task_id": 42, "detail": {"a": 1}}))
-                .unwrap();
+        let (_, tid2, _, _) = parse_event_append(
+            &json!({"kind": "claimed", "task_id": 42, "detail": {"a": 1}}),
+        )
+        .unwrap();
         assert_eq!(tid2, Some(42));
     }
 
@@ -3341,60 +3356,24 @@ mod tests {
     fn revalidate_outcome_matrix() {
         // Time parks are never released by the sweeper: elapsed time
         // is not evidence; they release through claim at not_before.
-        assert_eq!(
-            revalidate_outcome(Some("time"), None, None, false),
-            "confirmed"
-        );
+        assert_eq!(revalidate_outcome(Some("time"), None, None, false), "confirmed");
         // No condition, or a kind the database cannot verify: stale,
         // so the park surfaces instead of sitting silently.
         assert_eq!(revalidate_outcome(None, None, None, false), "stale");
-        assert_eq!(
-            revalidate_outcome(Some("issue_closed"), None, None, false),
-            "stale"
-        );
-        assert_eq!(
-            revalidate_outcome(Some("person_answer"), None, None, false),
-            "stale"
-        );
+        assert_eq!(revalidate_outcome(Some("issue_closed"), None, None, false), "stale");
+        assert_eq!(revalidate_outcome(Some("person_answer"), None, None, false), "stale");
         // task_terminal releases on done/cancelled only.
-        assert_eq!(
-            revalidate_outcome(Some("task_terminal"), Some("done"), None, false),
-            "released"
-        );
-        assert_eq!(
-            revalidate_outcome(Some("task_terminal"), Some("cancelled"), None, false),
-            "released"
-        );
-        assert_eq!(
-            revalidate_outcome(Some("task_terminal"), Some("queued"), None, false),
-            "confirmed"
-        );
-        assert_eq!(
-            revalidate_outcome(Some("task_terminal"), None, None, false),
-            "stale"
-        );
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("done"), None, false), "released");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("cancelled"), None, false), "released");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("queued"), None, false), "confirmed");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), None, None, false), "stale");
         // task_status releases on the exact wanted status.
-        assert_eq!(
-            revalidate_outcome(Some("task_status"), Some("blocked"), Some("blocked"), false),
-            "released"
-        );
-        assert_eq!(
-            revalidate_outcome(Some("task_status"), Some("queued"), Some("blocked"), false),
-            "confirmed"
-        );
-        assert_eq!(
-            revalidate_outcome(Some("task_status"), None, Some("blocked"), false),
-            "stale"
-        );
+        assert_eq!(revalidate_outcome(Some("task_status"), Some("blocked"), Some("blocked"), false), "released");
+        assert_eq!(revalidate_outcome(Some("task_status"), Some("queued"), Some("blocked"), false), "confirmed");
+        assert_eq!(revalidate_outcome(Some("task_status"), None, Some("blocked"), false), "stale");
         // event_seen releases when the event exists for the task.
-        assert_eq!(
-            revalidate_outcome(Some("event_seen"), None, None, true),
-            "released"
-        );
-        assert_eq!(
-            revalidate_outcome(Some("event_seen"), None, None, false),
-            "confirmed"
-        );
+        assert_eq!(revalidate_outcome(Some("event_seen"), None, None, true), "released");
+        assert_eq!(revalidate_outcome(Some("event_seen"), None, None, false), "confirmed");
     }
 
     #[test]
@@ -3448,9 +3427,7 @@ mod tests {
         let mut by_queue: Map<String, Value> = Map::new();
         for (q, queued) in [("queue-dead", 3), ("queue-live", 5), ("queue-calm", 2)] {
             let mut e = health_entry(q);
-            e.as_object_mut()
-                .unwrap()
-                .insert("queued".to_string(), json!(queued));
+            e.as_object_mut().unwrap().insert("queued".to_string(), json!(queued));
             by_queue.insert(q.to_string(), e);
         }
         let rows = vec![
@@ -3481,21 +3458,17 @@ mod tests {
         assert!(gate_completion(&fix, &json!({"note": "did stuff"})).is_err());
         assert!(gate_completion(&fix, &json!({"evidence": ""})).is_err());
         assert!(gate_completion(&fix, &json!({"evidence": []})).is_err());
-        assert!(
-            gate_completion(
-                &fix,
-                &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
-            )
-            .is_ok()
-        );
+        assert!(gate_completion(
+            &fix,
+            &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
+        )
+        .is_ok());
         assert!(gate_completion(&fix, &json!({"commit": "abc123"})).is_ok());
-        assert!(
-            gate_completion(
-                &fix,
-                &json!({"verified_closure": "closed by #1, verified on the issue"})
-            )
-            .is_ok()
-        );
+        assert!(gate_completion(
+            &fix,
+            &json!({"verified_closure": "closed by #1, verified on the issue"})
+        )
+        .is_ok());
         assert!(gate_completion(&fix, &json!({"evidence": ["artifact"]})).is_ok());
     }
 
@@ -3522,7 +3495,9 @@ mod tests {
             Some(TriageOutcome::ExitInvalid)
         );
         // Already-solved needs a real evidence reference.
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "already_solved"})).is_err());
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "already_solved"})).is_err()
+        );
         assert_eq!(
             gate_completion(
                 &triage,
@@ -3531,7 +3506,9 @@ mod tests {
             .unwrap(),
             Some(TriageOutcome::ExitAlreadySolved)
         );
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "done"})).is_err());
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "done"})).is_err()
+        );
     }
 
     fn claimable_row(payload: Value) -> Value {
@@ -3596,13 +3573,16 @@ mod tests {
         // mismatch) fails the same validator enqueue runs.
         let mut bad = valid_payload();
         bad["schema"] = json!("repo-task/v0");
-        let reason =
-            claim_guard_reason(&claimable_row(bad)).expect("schema-invalid packet must be guarded");
+        let reason = claim_guard_reason(&claimable_row(bad))
+            .expect("schema-invalid packet must be guarded");
         assert!(reason.contains("packet failed validation"), "{reason}");
         // Invariant sweep: mutating any required identity field of a
         // valid packet to a placeholder must trip the guard — claim
         // never returns a row failing validate_packet.
-        for mutated in [json!({"number": 0}), json!({"number": -1})] {
+        for mutated in [
+            json!({"number": 0}),
+            json!({"number": -1}),
+        ] {
             let mut p = valid_payload();
             p["issue"] = mutated;
             assert!(claim_guard_reason(&claimable_row(p)).is_some());
@@ -3655,7 +3635,10 @@ mod tests {
         );
         assert!(!by_id_claimable(&gated, "2026-11-09T23:20:00Z", None));
         // A direct-lane yield is the direct lane's own business.
-        let direct = handoff_row("parked", json!({"lane": "direct", "stage": "handed_off"}));
+        let direct = handoff_row(
+            "parked",
+            json!({"lane": "direct", "stage": "handed_off"}),
+        );
         assert!(!by_id_claimable(&direct, "2026-11-09T23:20:00Z", None));
         // A bound session id means a launch already happened; the
         // binding is supervision's, never a fresh claim's.
@@ -3685,7 +3668,10 @@ mod tests {
             parse_platform(Some("openchamber")),
             Ok(Some("openchamber".to_string()))
         );
-        assert_eq!(parse_platform(Some("muse")), Ok(Some("muse".to_string())));
+        assert_eq!(
+            parse_platform(Some("muse")),
+            Ok(Some("muse".to_string()))
+        );
         assert!(parse_platform(Some("code-a")).is_err());
         assert!(parse_platform(Some("OpenChamber")).is_err());
     }
@@ -3748,10 +3734,7 @@ mod tests {
         );
         assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
         // Ungated completions never gate, whatever the result.
-        assert_eq!(
-            gate_completion(&CompletionClass::Ungated, &json!({})).unwrap(),
-            None
-        );
+        assert_eq!(gate_completion(&CompletionClass::Ungated, &json!({})).unwrap(), None);
         assert_eq!(
             follow_on_key("repo-health:v1:triage:developing-today/code:issue:787"),
             Some("repo-health:v1:fix:developing-today/code:issue:787".to_string())
@@ -3769,10 +3752,7 @@ mod tests {
     fn issue_number_parses_canonical_keys() {
         let repo = "developing-today/code";
         assert_eq!(
-            issue_number_from_dedupe(
-                "repo-health:v1:triage:developing-today/code:issue:7016",
-                repo
-            ),
+            issue_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:7016", repo),
             Some(7016)
         );
         assert_eq!(
@@ -3798,18 +3778,12 @@ mod tests {
         let repo = "developing-today/code";
         // A different repo is not coverage for this one.
         assert_eq!(
-            issue_number_from_dedupe(
-                "repo-health:v1:triage:developing-today-forks/opencode:issue:195",
-                repo
-            ),
+            issue_number_from_dedupe("repo-health:v1:triage:developing-today-forks/opencode:issue:195", repo),
             None
         );
         // Maintenance keys carry no issue number.
         assert_eq!(
-            issue_number_from_dedupe(
-                "repo-health:v1:maintenance:developing-today/code:weekly:2026-W44",
-                repo
-            ),
+            issue_number_from_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W44", repo),
             None
         );
         // No number at all.
@@ -3821,10 +3795,7 @@ mod tests {
         // (e.g. `:issue:12abc`), so a malformed key cannot silently
         // claim coverage for issue 12.
         assert_eq!(
-            issue_number_from_dedupe(
-                "repo-health:v1:triage:developing-today/code:issue:12abc",
-                repo
-            ),
+            issue_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:12abc", repo),
             None
         );
     }
