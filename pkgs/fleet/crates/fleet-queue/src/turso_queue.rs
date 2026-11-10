@@ -64,7 +64,8 @@ const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, 
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
-    exclusion_reason, opencode_reason, assigned_by, session_id, fallback_reason, \
+    exclusion_reason, opencode_reason, platform_limit, platform_limit_reason, \
+    assigned_by, session_id, fallback_reason, \
     assigned_at, executed_at, updated_at";
 /// Task columns whose stored TEXT is JSON (PG jsonb) — parsed back
 /// into values so the wire shape matches the Postgres broker's.
@@ -383,6 +384,23 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #8210: the ledger's platform-limitation columns (a
+        // task may be limited to one platform family, but only
+        // with a good reason recorded beside it) land the same
+        // additive way.
+        for col in ["platform_limit", "platform_limit_reason"] {
+            if !lcols
+                .iter()
+                .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col))
+            {
+                self.exec(
+                    &format!(
+                        "ALTER TABLE repo_task_lane_ledger ADD COLUMN {col} TEXT"
+                    ),
+                    &[],
+                )?;
+            }
+        }
         Ok(())
     }
 }
@@ -438,7 +456,8 @@ const SCHEMA: [&str; 12] = [
     "CREATE TABLE IF NOT EXISTS repo_task_lane_ledger (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, \
         task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, \
-        exclusion_reason TEXT, opencode_reason TEXT, assigned_by TEXT, session_id TEXT, \
+        exclusion_reason TEXT, opencode_reason TEXT, platform_limit TEXT, \
+        platform_limit_reason TEXT, assigned_by TEXT, session_id TEXT, \
         fallback_reason TEXT, assigned_at TEXT, executed_at TEXT, \
         updated_at TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS events (\
@@ -1905,6 +1924,203 @@ fn by_id_claimable(row: &Value, now: &str) -> bool {
     }
 }
 
+/// Session-to-session transfer (#8210): claim task_id DIRECTLY
+/// from its current holder, named by from_session, in one
+/// operation — the task never passes through queued or parked,
+/// there is no release-and-reclaim gap, and when the request
+/// carries a session_id the claiming session is bound in the
+/// same operation (progress + lane ledger, the marks a separate
+/// bind would write). Callable by the claimant machinery itself:
+/// the claiming worker is whoever invokes it, recorded like any
+/// claim. Every refusal is computed before the single
+/// conditional UPDATE and mutates nothing.
+fn claim_transfer(
+    t: &TursoBackend,
+    task_id: i64,
+    queue: &str,
+    worker: &str,
+    lane: &Option<String>,
+    lease_seconds: i64,
+    family: Option<&str>,
+    model: &Option<ClaimModel>,
+    from_session: &str,
+    new_session: Option<&str>,
+) -> Result<Option<Value>, TErr> {
+    let Some(row) = get_task(t, task_id)? else {
+        return Ok(None);
+    };
+    if row.get("queue").and_then(|v| v.as_str()) != Some(queue) {
+        return Ok(None);
+    }
+    if let Some(reason) = claim_guard_reason(&row) {
+        quarantine_task(t, task_id, &reason)?;
+        return Ok(None);
+    }
+    // The holder's session as recorded on the latest claimed
+    // event — the mark a session leaves when it claims with
+    // --session-id.
+    let ev_rows = t.query_objs(
+        "SELECT detail FROM events WHERE task_id = ? AND kind = 'claimed' \
+         ORDER BY id DESC LIMIT 1",
+        &[Arg::Int(task_id)],
+        &[],
+    )?;
+    let ev_detail = ev_rows.first().and_then(|e| e.get("detail")).and_then(|d| {
+        match d {
+            Value::String(s) => serde_json::from_str(s).ok(),
+            Value::Object(_) => Some(d.clone()),
+            _ => None,
+        }
+    });
+    let claimed_event_session = ev_detail
+        .as_ref()
+        .and_then(|d| d.get("session_id"))
+        .and_then(|v| v.as_str());
+    let ledger = get_ledger(t, task_id)?;
+    let ledger_session = ledger
+        .as_ref()
+        .and_then(|l| l.get("session_id"))
+        .and_then(|v| v.as_str());
+    // Platform limitation (#8210): a recorded, reason-carrying
+    // limitation binds this transfer; a reason-less stored one
+    // is invalid — cleared here, never enforced, and the
+    // clearing is carried on the claimed event below.
+    let limit = ledger
+        .as_ref()
+        .and_then(|l| l.get("platform_limit"))
+        .and_then(|v| v.as_str());
+    let limit_reason = ledger
+        .as_ref()
+        .and_then(|l| l.get("platform_limit_reason"))
+        .and_then(|v| v.as_str());
+    let mut limit_cleared_invalid = false;
+    if platform_limit_invalid(limit, limit_reason) {
+        t.exec(
+            "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
+               platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
+            &[Arg::Text(now_iso()), Arg::Int(task_id)],
+        )?;
+        limit_cleared_invalid = true;
+    } else if let Some(r) = platform_limit_refusal(limit, limit_reason, family) {
+        return Err(format!("claim_repo_task: transfer refused: {r}"));
+    }
+    let now_unix = now_unix();
+    let now = iso(now_unix);
+    if let Some(reason) = transfer_refusal(
+        &row,
+        from_session,
+        claimed_event_session,
+        ledger_session,
+        new_session,
+        &now,
+    ) {
+        return Err(format!("claim_repo_task: transfer refused: {reason}"));
+    }
+    let old_worker = row
+        .get("worker_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let old_lane = row
+        .get("lane_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let old_bound = row
+        .get("progress")
+        .and_then(|p| p.get("session_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let new_lane = lane.clone().or_else(|| old_lane.clone());
+    let lease_until = claim_lease_until(now_unix, lease_seconds);
+    let upd = t.exec(
+        transfer_update_sql(),
+        &[
+            Arg::Text(worker.to_string()),
+            Arg::Text(now.clone()),
+            Arg::Text(lease_until.clone()),
+            arg_str(new_lane.as_deref()),
+            arg_str(family),
+            Arg::Text(now.clone()),
+            Arg::Int(task_id),
+            Arg::Text(old_worker.clone()),
+        ],
+    )?;
+    if upd.affected == 0 {
+        return Err(
+            "claim_repo_task: transfer refused: the claim changed under the transfer"
+                .to_string(),
+        );
+    }
+    t.exec(
+        "INSERT INTO leases (task_id, worker_id, lease_until, heartbeat_at) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(task_id) DO UPDATE SET worker_id = excluded.worker_id, \
+           lease_until = excluded.lease_until, heartbeat_at = excluded.heartbeat_at",
+        &[
+            Arg::Int(task_id),
+            Arg::Text(worker.to_string()),
+            Arg::Text(lease_until),
+            Arg::Text(now_iso()),
+        ],
+    )?;
+    let mut row = get_task(t, task_id)?.unwrap_or(row);
+    // Bind the claiming session in the same operation.
+    if let Some(sid) = new_session {
+        let progress = merge_obj(
+            &row.get("progress").cloned().unwrap_or(json!({})),
+            &json!({"session_id": sid, "launched_by": worker}),
+        );
+        t.exec(
+            "UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?",
+            &[
+                Arg::Text(progress.to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ],
+        )?;
+        if ledger.is_some() {
+            t.exec(
+                "UPDATE repo_task_lane_ledger SET session_id = ?, updated_at = ? \
+                 WHERE task_id = ?",
+                &[
+                    Arg::Text(sid.to_string()),
+                    Arg::Text(now_iso()),
+                    Arg::Int(task_id),
+                ],
+            )?;
+        }
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert("progress".to_string(), progress);
+        }
+    }
+    stamp_claim_model(t, task_id, &mut row, model)?;
+    touch_worker(t, worker, Some(task_id))?;
+    event(
+        t,
+        Some(worker),
+        Some(task_id),
+        "claimed",
+        &with_marks(
+            &json!({
+                "lease_seconds": lease_seconds, "via": "claim_repo_task_transfer",
+                "transfer": true, "by_id": true, "task_id": task_id,
+                "from_session": from_session, "session_id": new_session,
+                "previous_worker": old_worker, "previous_lane_id": old_lane,
+                "previous_session_id": old_bound,
+                "platform_limit": if limit_cleared_invalid { None } else { limit },
+                "platform_limit_reason": if limit_cleared_invalid { None } else { limit_reason },
+                "platform_limit_cleared_invalid": limit_cleared_invalid,
+                "lane_id": new_lane, "platform": family,
+                "model_provider": model.as_ref().map(|m| m.provider.clone()),
+                "model_id": model.as_ref().and_then(|m| m.model.clone()),
+                "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
+            }),
+            &row,
+        ),
+    )?;
+    Ok(Some(row))
+}
+
 /// By-id claim: take exactly the requested row when by_id_claimable
 /// allows it, through the same post-claim flow as the pick path
 /// (guard quarantine, binding clear, lease row, claimed event).
@@ -2116,6 +2332,182 @@ fn lane_reassignment_flip(
         && session_id.map(str::trim).unwrap_or("").is_empty()
 }
 
+/// Whether an EXISTING direct ledger row flips to opencode
+/// (#8210): only a direct row, only when the caller passes
+/// --opencode-reason (a Muse session sending its task to
+/// opencode with a stated reason), and never once a session is
+/// bound — the mirror of lane_reassignment_flip. Before #8210 the
+/// existing-row path of verb_lane only flipped opencode -> direct,
+/// so a lane that had claimed a task (fresh direct ledger row)
+/// had no way to record an opencode assignment on it at all.
+fn lane_flip_to_opencode(
+    assigned_lane: &str,
+    session_id: Option<&str>,
+    opencode_reason: Option<&str>,
+) -> bool {
+    assigned_lane == "direct"
+        && !opencode_reason.map(str::trim).unwrap_or("").is_empty()
+        && session_id.map(str::trim).unwrap_or("").is_empty()
+}
+
+/// Platform limitation validity (#8210 — Drew: a task may be
+/// limited to muse or opencode "but better be good reason"). A
+/// limitation is an EXCEPTION beside the open default: it exists
+/// only with a reason recorded next to it. A stored limitation
+/// whose reason is blank is invalid — never enforced; the
+/// transfer path clears it and records the clearing.
+fn platform_limit_invalid(limit: Option<&str>, reason: Option<&str>) -> bool {
+    !limit.map(str::trim).unwrap_or("").is_empty()
+        && reason.map(str::trim).unwrap_or("").is_empty()
+}
+
+/// Why a requested limitation cannot be recorded, or None when
+/// it can: the family must be a real platform family (#8187's
+/// vocabulary), and the reason must be present and non-blank —
+/// the lane verb refuses the set otherwise. A reason without a
+/// limitation is likewise refused (it would record nothing).
+fn platform_limit_error(
+    limit: Option<&str>,
+    reason: Option<&str>,
+) -> Option<String> {
+    let l = limit.map(str::trim).unwrap_or("");
+    let r = reason.map(str::trim).unwrap_or("");
+    if l.is_empty() {
+        if !r.is_empty() {
+            return Some(
+                "platform_limit_reason requires a platform_limit to limit"
+                    .to_string(),
+            );
+        }
+        return None;
+    }
+    if let Err(e) = parse_platform(Some(l)) {
+        return Some(e);
+    }
+    if r.is_empty() {
+        return Some(format!(
+            "a platform limitation requires a recorded reason \
+             (--limit-reason): a task is limited to '{l}' only for \
+             a good reason, recorded on the task"
+        ));
+    }
+    None
+}
+
+/// Transfer refusal for a platform limitation (#8210), or None
+/// when the limitation does not bind this claim: no limitation,
+/// an invalid (reason-less) limitation — those are cleared, not
+/// enforced — or a limitation naming the claimer's own family.
+/// A valid limitation refuses every other family, and refuses a
+/// claim that declares no family at all (it cannot show it is
+/// the allowed one). The refusal names the limitation and its
+/// recorded reason.
+fn platform_limit_refusal(
+    limit: Option<&str>,
+    reason: Option<&str>,
+    family: Option<&str>,
+) -> Option<String> {
+    let l = limit.map(str::trim).unwrap_or("");
+    if l.is_empty() || platform_limit_invalid(limit, reason) {
+        return None;
+    }
+    let r = reason.map(str::trim).unwrap_or("");
+    match family {
+        Some(f) if f == l => None,
+        Some(f) => Some(format!(
+            "task is limited to platform '{l}' (reason: {r}); \
+             a '{f}' transfer-claim cannot take it"
+        )),
+        None => Some(format!(
+            "task is limited to platform '{l}' (reason: {r}); \
+             the transfer-claim must declare its platform family to take it"
+        )),
+    }
+}
+
+/// Session-to-session transfer refusal (#8210), or None when the
+/// transfer may proceed. Pure over the gathered marks so the
+/// tests pin every guard without a live store; claim_transfer
+/// runs this BEFORE any mutation, so a refusal leaves the
+/// original claim untouched. Guards, in order:
+/// - the row must be claimed under a live lease — terminal rows,
+///   queued rows and parked rows (genuine broker wait-parks stay
+///   excluded from by-id taking, exactly as by_id_claimable has
+///   them) are not transfer sources;
+/// - from_session must match a holder session mark: the bound
+///   progress.session_id, a progress.from_session the holder
+///   checkpointed, or the session on the task's latest claimed
+///   event — only the current holder can give a task away;
+/// - a row already bound to a session that is neither the passer
+///   nor the claiming session refuses: that binding is a live
+///   launch, not a pass.
+fn transfer_refusal(
+    row: &Value,
+    from_session: &str,
+    claimed_event_session: Option<&str>,
+    ledger_session: Option<&str>,
+    new_session: Option<&str>,
+    now: &str,
+) -> Option<String> {
+    let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status != "claimed" {
+        return Some(format!(
+            "task is {status}, not claimed: only a live claim can be transferred"
+        ));
+    }
+    let lease = row
+        .get("lease_until")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if lease <= now {
+        return Some(
+            "the holder's lease is not live: no live claim to transfer".to_string(),
+        );
+    }
+    if from_session.trim().is_empty() {
+        return Some("from_session is empty".to_string());
+    }
+    let progress = row.get("progress").cloned().unwrap_or(json!({}));
+    let bound = progress
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let offered = progress
+        .get("from_session")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let marks = [bound, offered, claimed_event_session.unwrap_or("")];
+    if !marks.iter().any(|m| !m.is_empty() && *m == from_session) {
+        return Some(
+            "from_session does not match the current holder's session mark: \
+             only the current holder can give this task away"
+                .to_string(),
+        );
+    }
+    for existing in [bound, ledger_session.unwrap_or("")] {
+        if !existing.is_empty() && existing != from_session && Some(existing) != new_session {
+            return Some(format!(
+                "task is already bound to session {existing}: \
+                 a bound launch is not a transfer"
+            ));
+        }
+    }
+    None
+}
+
+/// The transfer UPDATE (#8210): one conditional statement moves
+/// a live claim holder -> claimer. Status stays 'claimed',
+/// attempts are NOT touched (a transfer is not a new attempt),
+/// and the WHERE re-checks the status and the HOLDER worker read
+/// above, so a competing transition in between loses cleanly
+/// (0 rows -> refusal, original claim intact).
+fn transfer_update_sql() -> &'static str {
+    "UPDATE tasks SET worker_id = ?, claimed_at = ?, lease_until = ?, \
+       lane_id = ?, platform = COALESCE(?, platform), \
+       park_kind = NULL, wait_kind = NULL, not_before = NULL, updated_at = ? \
+     WHERE id = ? AND status = 'claimed' AND worker_id = ?"
+}
+
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let queue = req_str(req, "queue").unwrap_or("").to_string();
@@ -2188,6 +2580,24 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         // flow never names a task — the claimant collects parked
         // handoffs through the pick="parked_handoff" mode above.
         if let Some(want_id) = req_i64(req, "task_id") {
+            // #8210: task_id + from_session is a session-to-session
+            // TRANSFER — take the row directly from its current
+            // holder, never through queued or parked. (A bare
+            // task_id stays the by-id special case below.)
+            if let Some(from_session) = req_str(req, "from_session") {
+                return claim_transfer(
+                    t,
+                    want_id,
+                    &queue,
+                    &worker,
+                    &lane,
+                    lease_seconds,
+                    family.as_deref(),
+                    &model,
+                    from_session,
+                    claim_session.as_deref(),
+                );
+            }
             return claim_by_id(
                 t,
                 want_id,
@@ -2367,11 +2777,84 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let exclusion = req_str(req, "exclusion_reason").map(str::to_string);
     let opencode_reason = req_str(req, "opencode_reason").map(str::to_string);
+    let limit_platform = req_str(req, "platform_limit").map(str::to_string);
+    let limit_reason = req_str(req, "platform_limit_reason").map(str::to_string);
+    let clear_limit = req
+        .get("clear_platform_limit")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let work = (|| -> Result<Value, TErr> {
         let Some(task) = get_task(t, task_id)? else {
             return Err(format!(
                 "assign_repo_task_lane: task {task_id} does not exist"
             ));
+        };
+        // #8210: a platform limitation is recorded only with its
+        // reason — validate before anything mutates.
+        if !clear_limit {
+            if let Some(e) = platform_limit_error(
+                limit_platform.as_deref(),
+                limit_reason.as_deref(),
+            ) {
+                return Err(format!("assign_repo_task_lane: {e}"));
+            }
+        }
+        // Apply a limitation set/clear to the ledger row (called
+        // once the row exists, on either path). Records the
+        // limitation + reason (or the clearing) on a
+        // lane_assigned event, like every assignment change.
+        let apply_limit = |t: &TursoBackend| -> Result<(), TErr> {
+            if clear_limit {
+                t.exec(
+                    "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
+                       platform_limit_reason = NULL, updated_at = ? \
+                     WHERE task_id = ?",
+                    &[Arg::Text(now_iso()), Arg::Int(task_id)],
+                )?;
+                event(
+                    t,
+                    Some(&worker),
+                    Some(task_id),
+                    "lane_assigned",
+                    &with_marks(
+                        &json!({
+                            "platform_limit": Value::Null,
+                            "platform_limit_reason": Value::Null,
+                            "platform_limit_cleared": true,
+                            "via": "assign_repo_task_lane_turso",
+                        }),
+                        &task,
+                    ),
+                )?;
+            } else if let Some(l) = limit_platform.as_deref() {
+                let fam = parse_platform(Some(l)).ok().flatten();
+                t.exec(
+                    "UPDATE repo_task_lane_ledger SET platform_limit = ?, \
+                       platform_limit_reason = ?, updated_at = ? \
+                     WHERE task_id = ?",
+                    &[
+                        arg_str(fam.as_deref()),
+                        arg_str(limit_reason.as_deref()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(task_id),
+                    ],
+                )?;
+                event(
+                    t,
+                    Some(&worker),
+                    Some(task_id),
+                    "lane_assigned",
+                    &with_marks(
+                        &json!({
+                            "platform_limit": fam,
+                            "platform_limit_reason": limit_reason,
+                            "via": "assign_repo_task_lane_turso",
+                        }),
+                        &task,
+                    ),
+                )?;
+            }
+            Ok(())
         };
         if let Some(existing) = get_ledger(t, task_id)? {
             // Idempotent (migration 0021): keep progress.lane in step.
@@ -2415,6 +2898,45 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                 )?;
                 lane = "direct".to_string();
             }
+            // #8210: the symmetric flip — an existing DIRECT row
+            // flips to opencode when the caller passes
+            // --opencode-reason (a Muse session sending its
+            // task to opencode with a stated reason) and no
+            // session is bound. The progress.lane re-sync below
+            // then stamps opencode.
+            if lane_flip_to_opencode(
+                &lane,
+                existing.get("session_id").and_then(|v| v.as_str()),
+                opencode_reason.as_deref(),
+            ) {
+                t.exec(
+                    "UPDATE repo_task_lane_ledger SET assigned_lane = 'opencode', \
+                       opencode_reason = ?, exclusion_reason = NULL, updated_at = ? \
+                     WHERE task_id = ?",
+                    &[
+                        arg_str(opencode_reason.as_deref()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(task_id),
+                    ],
+                )?;
+                event(
+                    t,
+                    Some(&worker),
+                    Some(task_id),
+                    "lane_assigned",
+                    &with_marks(
+                        &json!({
+                            "assigned_lane": "opencode", "previous_lane": "direct",
+                            "exclusion_reason": Value::Null,
+                            "opencode_reason": opencode_reason,
+                            "reason": "opencode_reason", "reassignment": true,
+                            "via": "assign_repo_task_lane_turso",
+                        }),
+                        &task,
+                    ),
+                )?;
+                lane = "opencode".to_string();
+            }
             let cur = task
                 .get("progress")
                 .and_then(|p| p.get("lane"))
@@ -2435,6 +2957,7 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                     ],
                 )?;
             }
+            apply_limit(t)?;
             return Ok(get_ledger(t, task_id)?.unwrap_or(existing));
         }
         let queue = task
@@ -2487,6 +3010,7 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                 &task,
             ),
         )?;
+        apply_limit(t)?;
         get_ledger(t, task_id).map(|r| r.unwrap_or(Value::Null))
     })();
     match work {
@@ -3991,6 +4515,194 @@ mod tests {
     }
 
     #[test]
+    fn lane_flip_to_opencode_only_unbound_direct_with_reason_8210() {
+        // #8210: a claimed task's default direct ledger row flips
+        // to opencode only with a stated reason and no bound
+        // session — the send path's assignment step.
+        assert!(lane_flip_to_opencode(
+            "direct",
+            None,
+            Some("sender at time limit; opencode continues")
+        ));
+        assert!(lane_flip_to_opencode("direct", Some(""), Some("reason")));
+        // No reason (or a blank one): no flip — opencode routing
+        // stays reason-gated (#8187).
+        assert!(!lane_flip_to_opencode("direct", None, None));
+        assert!(!lane_flip_to_opencode("direct", None, Some("  ")));
+        // A bound row never flips, either direction.
+        assert!(!lane_flip_to_opencode("direct", Some("ses_1"), Some("reason")));
+        // Opencode rows are not this flip's business.
+        assert!(!lane_flip_to_opencode("opencode", None, Some("reason")));
+    }
+
+    fn transfer_row(status: &str, progress: Value, lease_until: &str) -> Value {
+        let mut row = claimable_row(valid_payload());
+        row["status"] = json!(status);
+        row["progress"] = progress;
+        row["lease_until"] = json!(lease_until);
+        row["worker_id"] = json!("repo-worker-code-m");
+        row["attempts"] = json!(2);
+        row["max_attempts"] = json!(4);
+        row
+    }
+
+    #[test]
+    fn transfer_accepts_each_holder_session_mark_8210() {
+        let now = "2026-11-10T20:00:00Z";
+        let live = "2999-01-01T00:00:00Z";
+        // Holder mark on the latest claimed event (a session that
+        // claimed with --session-id).
+        let row = transfer_row("claimed", json!({"lane": "direct"}), live);
+        assert_eq!(
+            transfer_refusal(&row, "ses_muse_1", Some("ses_muse_1"), None, Some("ses_new"), now),
+            None
+        );
+        // Holder mark checkpointed into progress.from_session.
+        let row = transfer_row(
+            "claimed",
+            json!({"lane": "direct", "from_session": "ses_muse_2"}),
+            live,
+        );
+        assert_eq!(
+            transfer_refusal(&row, "ses_muse_2", None, None, Some("ses_new"), now),
+            None
+        );
+        // A bound holder session passing its own task on: the
+        // bound session IS the holder mark.
+        let row = transfer_row(
+            "claimed",
+            json!({"lane": "opencode", "session_id": "ses_holder"}),
+            live,
+        );
+        assert_eq!(
+            transfer_refusal(&row, "ses_holder", None, Some("ses_holder"), Some("ses_new"), now),
+            None
+        );
+    }
+
+    #[test]
+    fn transfer_refuses_poach_terminal_parked_expired_and_bound_8210() {
+        let now = "2026-11-10T20:00:00Z";
+        let live = "2999-01-01T00:00:00Z";
+        // A random session cannot poach a claimed task by id:
+        // its id matches no holder mark.
+        let row = transfer_row("claimed", json!({"lane": "direct"}), live);
+        let r = transfer_refusal(&row, "ses_random", Some("ses_muse_1"), None, Some("ses_new"), now)
+            .expect("poach must refuse");
+        assert!(r.contains("only the current holder"), "{r}");
+        // No holder mark anywhere: nobody can give the task away.
+        assert!(transfer_refusal(&row, "ses_muse_1", None, None, Some("ses_new"), now).is_some());
+        // Terminal states refuse.
+        for st in ["done", "cancelled", "failed"] {
+            let row = transfer_row(st, json!({"from_session": "ses_m"}), live);
+            assert!(transfer_refusal(&row, "ses_m", None, None, None, now).is_some(), "{st}");
+        }
+        // Queued and parked rows are not transfer sources (a
+        // genuine wait-park stays excluded, as by-id claim has it).
+        for st in ["queued", "parked", "blocked"] {
+            let row = transfer_row(st, json!({"from_session": "ses_m"}), live);
+            assert!(transfer_refusal(&row, "ses_m", None, None, None, now).is_some(), "{st}");
+        }
+        // A dead lease is not a live claim.
+        let row = transfer_row(
+            "claimed",
+            json!({"from_session": "ses_m"}),
+            "2000-01-01T00:00:00Z",
+        );
+        assert!(transfer_refusal(&row, "ses_m", None, None, None, now).is_some());
+        // Bound to a third session (neither passer nor claimer):
+        // a live launch, not a transfer.
+        let row = transfer_row(
+            "claimed",
+            json!({"from_session": "ses_m", "session_id": "ses_third"}),
+            live,
+        );
+        let r = transfer_refusal(&row, "ses_m", None, Some("ses_third"), Some("ses_new"), now)
+            .expect("third-party binding must refuse");
+        assert!(r.contains("already bound"), "{r}");
+    }
+
+    #[test]
+    fn transfer_update_is_one_atomic_claimed_to_claimed_move_8210() {
+        // #8210: the whole transfer is ONE conditional UPDATE —
+        // status stays claimed, attempts untouched, and the WHERE
+        // re-checks status + the holder worker so a lost race
+        // affects 0 rows and the original claim stands.
+        let sql = transfer_update_sql();
+        assert!(sql.contains("status = 'claimed'"), "{sql}");
+        assert!(sql.contains("worker_id = ?"), "{sql}");
+        assert!(!sql.contains("attempts"), "{sql}");
+        // Source oracles: the transfer path, its event marks, and
+        // the client flag all exist.
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("claim_repo_task_transfer"));
+        assert!(impl_src.contains("\"transfer\": true"));
+        assert!(impl_src.contains("\"from_session\": from_session"));
+        assert!(impl_src.contains("\"previous_worker\": old_worker"));
+        let client_src = include_str!("client.rs");
+        assert!(client_src.contains("\"from-session\""));
+        assert!(client_src.contains("body[\"from_session\"] = json!(fs)"));
+    }
+
+    #[test]
+    fn platform_limit_rules_8210() {
+        // No limitation: open default, either family may claim,
+        // and nothing is invalid or refused.
+        assert!(!platform_limit_invalid(None, None));
+        assert_eq!(platform_limit_error(None, None), None);
+        assert_eq!(platform_limit_refusal(None, None, Some("muse")), None);
+        assert_eq!(platform_limit_refusal(None, None, Some("openchamber")), None);
+        assert_eq!(platform_limit_refusal(None, None, None), None);
+        // Recording one demands a real family AND a reason.
+        assert!(platform_limit_error(Some("muse"), Some("needs claude-only context")).is_none());
+        let e = platform_limit_error(Some("muse"), None)
+            .expect("a limitation without a reason is refused at the verb");
+        assert!(e.contains("requires a recorded reason"), "{e}");
+        assert!(platform_limit_error(Some("muse"), Some("  ")).is_some());
+        assert!(platform_limit_error(Some("bogus"), Some("reason")).is_some());
+        assert!(platform_limit_error(None, Some("orphan reason")).is_some());
+        // A stored limitation with no reason is invalid: never
+        // enforced (the transfer path clears it instead).
+        assert!(platform_limit_invalid(Some("muse"), None));
+        assert!(platform_limit_invalid(Some("muse"), Some(" ")));
+        assert!(!platform_limit_invalid(Some("muse"), Some("real reason")));
+        assert_eq!(
+            platform_limit_refusal(Some("muse"), None, Some("openchamber")),
+            None
+        );
+        // A valid limitation binds transfers: the limited family
+        // passes, every other family refuses — naming the
+        // limitation and its reason — and an undeclared family
+        // cannot take a limited task.
+        let reason = Some("needs claude-only context window");
+        assert_eq!(platform_limit_refusal(Some("muse"), reason, Some("muse")), None);
+        let r = platform_limit_refusal(Some("muse"), reason, Some("openchamber"))
+            .expect("muse-limited task refuses an opencode transfer");
+        assert!(r.contains("limited to platform 'muse'"), "{r}");
+        assert!(r.contains("needs claude-only context window"), "{r}");
+        let r = platform_limit_refusal(Some("openchamber"), reason, Some("muse"))
+            .expect("opencode-limited task refuses a muse transfer");
+        assert!(r.contains("limited to platform 'openchamber'"), "{r}");
+        assert!(platform_limit_refusal(Some("muse"), reason, None).is_some());
+        // Source oracles: columns, migration, event fields, and
+        // the client flags all exist.
+        assert!(LEDGER_COLS.contains("platform_limit"));
+        assert!(LEDGER_COLS.contains("platform_limit_reason"));
+        let schema = SCHEMA.join(" ");
+        assert!(schema.contains("platform_limit TEXT"));
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("ADD COLUMN {col} TEXT"));
+        assert!(impl_src.contains("platform_limit_cleared_invalid"));
+        assert!(impl_src.contains("\"platform_limit_cleared\": true"));
+        let client_src = include_str!("client.rs");
+        assert!(client_src.contains("\"limit-platform\""));
+        assert!(client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"));
+        assert!(client_src.contains("\"clear-platform-limit\""));
+    }
+
+    #[test]
     fn opencode_reason_is_recorded_on_the_ledger_8187() {
         // Source oracle: the reason column exists on the read
         // surface, the fresh schema, the additive migration, and
@@ -4030,8 +4742,14 @@ mod tests {
             .split("fn verb_bind")
             .next()
             .unwrap_or("");
+        // #8210 amendment: verb_lane now also records a platform
+        // LIMITATION (platform_limit / platform_limit_reason
+        // request fields, written to the lane ledger with their
+        // recorded reason) — that is not a read of the mark. The
+        // invariant that stands: verb_lane never reads the task
+        // row's platform FIELD (the mark) as an input.
         assert!(
-            !lane_fn.contains("platform"),
+            !lane_fn.contains("get(\"platform\")"),
             "verb_lane must not read tasks.platform: {lane_fn}"
         );
     }

@@ -1315,6 +1315,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "lease-seconds",
             "lane",
             "task",
+            "from-session",
             "platform",
             "session-id",
             "model-provider",
@@ -1383,6 +1384,16 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // out of the parked sink; a plain claim never names a task.
     if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
+    }
+    // --from-session <ses>: with --task, a session-to-session
+    // TRANSFER (#8210) — claim exactly this task DIRECTLY from
+    // the session named, which must be the task's current holder
+    // (its session mark is the capability; a mismatch refuses and
+    // leaves the claim untouched). The task never passes through
+    // queued or parked. --session-id on the same claim binds the
+    // claiming session in the same operation.
+    if let Some(fs) = args.get("from-session") {
+        body["from_session"] = json!(fs);
     }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
     let (mut out, code) = claim_output(&resp);
@@ -1546,8 +1557,14 @@ fn claim_output(resp: &Value) -> (Value, i32) {
 fn cmd_lane(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["worker", "exclusion-reason", "opencode-reason"],
-        &[],
+        &[
+            "worker",
+            "exclusion-reason",
+            "opencode-reason",
+            "limit-platform",
+            "limit-reason",
+        ],
+        &["clear-platform-limit"],
     );
     reject_extra_pos("lane", &args, 1);
     let resp = unwrap_ok(call(
@@ -1557,6 +1574,12 @@ fn cmd_lane(rest: &[String]) -> i32 {
             "worker": opt_worker(&args),
             "exclusion_reason": args.get("exclusion-reason"),
             "opencode_reason": args.get("opencode-reason"),
+            // #8210: a platform limitation — an exception that
+            // exists only with its recorded reason. The broker
+            // refuses a limitation with no --limit-reason.
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
+            "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
     print_json(&require_row(&resp, "assign_repo_task_lane"));
