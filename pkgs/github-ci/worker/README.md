@@ -9,7 +9,10 @@ during the dual-run diff period.
 ## Shape
 
 - `src/index.ts` — HMAC-SHA256 gate (Web Crypto, same semantics as
-  the Edge Function), routing, workflow_run ingest.
+  the Edge Function), routing, workflow_run ingest. The gate is
+  unconditional (#6936): with `GITHUB_WEBHOOK_SECRET` unset or empty,
+  every POST is rejected 503 "webhook secret not configured" before
+  any write — the Worker fails closed, never open.
 - `src/policy.ts` — the v4 ingest policy as pure functions:
   completed runs only, conclusion != skipped, raw payload kept
   only for failures, dedupe_key `github:<repo>:<run>:<attempt>:<action>`.

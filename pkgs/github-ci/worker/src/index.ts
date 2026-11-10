@@ -69,14 +69,17 @@ export default {
     if (req.method === "GET") return new Response("github-ci worker ok", { status: 200 });
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 
-    const raw = await req.text();
     const secret = env.GITHUB_WEBHOOK_SECRET ?? "";
-    if (secret) {
-      const given = (req.headers.get("x-hub-signature-256") ?? "").replace("sha256=", "");
-      const expected = await hmacHex(secret, raw);
-      if (!timingSafeEqual(given, expected)) {
-        return new Response("bad signature", { status: 401 });
-      }
+    if (!secret.trim()) {
+      console.error("github-ci worker rejected webhook: GITHUB_WEBHOOK_SECRET is not configured");
+      return new Response("webhook secret not configured", { status: 503 });
+    }
+
+    const raw = await req.text();
+    const given = (req.headers.get("x-hub-signature-256") ?? "").replace("sha256=", "");
+    const expected = await hmacHex(secret, raw);
+    if (!timingSafeEqual(given, expected)) {
+      return new Response("bad signature", { status: 401 });
     }
 
     let payload: Record<string, unknown>;
