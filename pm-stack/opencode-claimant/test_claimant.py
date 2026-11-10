@@ -417,5 +417,26 @@ class TestMainFireLog(unittest.TestCase):
                          [{"task_id": 777, "reason": "task_state_changed"}])
 
 
+class TestGateExitFireLog(unittest.TestCase):
+    def test_gate_exit_logs_cap_room_null_not_zero(self):
+        # #7732: a fire that exits at the gate never ran cap_step, so
+        # its cap_room is unknown (null) - a hardcoded 0 would read as
+        # a saturated fleet in fires.jsonl.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with patch.object(claimant, "read_mode", return_value="shadow"), \
+                 patch.object(claimant, "run_poll",
+                              return_value={"candidates": []}), \
+                 patch.object(claimant, "STATE_DIR", state_dir), \
+                 patch.object(claimant, "FIRES_FILE", fires):
+                self.assertEqual(claimant.main(), 0)
+            entries = [json.loads(line)
+                       for line in fires.read_text().splitlines() if line]
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["cap_room"])
+        self.assertEqual(entries[0]["skips"], [{"reason": "no_candidates"}])
+
+
 if __name__ == "__main__":
     unittest.main()
