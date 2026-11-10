@@ -1371,18 +1371,19 @@ fn cmd_claim(rest: &[String]) -> i32 {
         Ok(None) => {}
         Err(e) => die(2, &e),
     }
-    // --handoff: the no-id collection of the next parked recorded
-    // opencode handoff (#8097 Rule 1) — the claimant's default
-    // parked-handoff path. The BROKER picks the row; the caller
-    // names no task id. (--task remains the special-case claim.)
+    // --handoff: the no-id collection of the next recorded
+    // opencode handoff from the sink (status 'handed_off', #8234;
+    // #8097 Rule 1) — the claimant's default handoff path. The
+    // BROKER picks the row; the caller names no task id. (--task
+    // remains the special-case claim.)
     if args.has("handoff") {
-        body["pick"] = json!("parked_handoff");
+        body["pick"] = json!("handed_off");
     }
     // --task <id>: by-id claim — take exactly that row when the
     // broker's by-id predicate allows it (a queued row under the
-    // ordinary predicate, or a parked recorded opencode handoff).
-    // The opencode claimant uses this to collect handed-off tasks
-    // out of the parked sink; a plain claim never names a task.
+    // ordinary predicate, or a sink row). The opencode claimant
+    // uses this to collect handed-off tasks out of the sink; a
+    // plain claim never names a task.
     if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
     }

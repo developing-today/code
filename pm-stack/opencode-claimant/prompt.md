@@ -84,22 +84,23 @@ outage is recoverable, a double-launch's damage is not.
   close — plus the live root-session count for the cap, plus a
   `stuck_bound` list: bound tasks whose sessions look
   created-but-never-prompted and dead (step 1's recovery rule, #4758).
-  Candidates ALSO include handed-off tasks sitting PARKED
-  (`status: "parked"` in the candidate entry): the handing-off lane
-  parks the task as its handoff sink (the park clears its claim and
-  stamps a default timer), so claimed-only discovery never saw them
-  and they looped claim → handoff → park → re-claim (#7907/#6533).
-  For parked candidates, claimant.py first collects their claims
+  Candidates ALSO include handed-off tasks resting in the
+  handoff sink (`status: "handed_off"` in the candidate entry,
+  #8234): the handing-off lane's handoff lands the task in the
+  sink — its own status, not a park and not a wait — so
+  claimed-only discovery never saw them and they once looped
+  claim → handoff → park → re-claim (#7907/#6533).
+  For sink candidates, claimant.py first collects their claims
   WITHOUT naming any task id (#8097 Rule 1): one
-  `repo-queue claim --handoff --platform openchamber` per parked
+  `repo-queue claim --handoff --platform openchamber` per sink
   candidate, as worker `opencode-claimant`, lets the BROKER pick
-  the next parked recorded opencode handoff (the pick only ever
-  returns an unbound yield, never a live claim or a genuine wait
-  park; the `openchamber` family declaration keeps a
-  `muse`-selected item out of this claimant's hands, #8097
-  Rule 2). It then launches exactly as for a claimed candidate,
-  with the session working under `--worker opencode-claimant`.
-  A parked candidate the collection did not claim is skipped
+  the next sink row (the pick only ever returns an unbound sink
+  row, never a live claim or a genuine wait park; the
+  `openchamber` family declaration keeps a `muse`-selected item
+  out of this claimant's hands, #8097 Rule 2). It then launches
+  exactly as for a claimed candidate, with the session working
+  under `--worker opencode-claimant`.
+  A sink candidate the collection did not claim is skipped
   with the reason logged — never launched over a guessed claim.
   (The by-id claim, `claim --task <id>`, remains only as the
   special-case verb for one-off revivals; no default flow uses
@@ -314,7 +315,7 @@ creates the session in the task's worktree, and moves the claim
 with the broker's transfer claim — `repo-queue claim --task <id>
 --from-session <sender session> --session-id <new session>
 --worker opencode-claimant` — holder -> claimer in one operation,
-never through queued or parked, binding the new session
+never through queued, parked, or the sink, binding the new session
 atomically. The sender's notes ride in the launched session's
 prompt (SENDER NOTES section) and in `SEND_NOTES.md` in the
 worktree. A transferred task arrives already claimed by

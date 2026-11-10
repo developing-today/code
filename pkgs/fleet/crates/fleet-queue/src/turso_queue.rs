@@ -1015,7 +1015,7 @@ fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         let rows = t.query_objs(
             "SELECT id, status, dedupe_key FROM tasks \
              WHERE queue = ? AND dedupe_key IS NOT NULL \
-               AND status IN ('queued','claimed','parked','blocked')",
+               AND status IN ('queued','claimed','parked','handed_off','blocked')",
             &[Arg::Text(queue.clone())],
             &[],
         )?;
@@ -1215,15 +1215,14 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         let to_sink = expired_claim_returns_to_sink(&progress);
         let (progress, cleared) = clear_binding(&progress, "expire_leases");
         let upd = if to_sink {
-            let sink_nb = after_iso(1200);
+            // #8234: the sink is its own status now — the return
+            // lands in 'handed_off' with NO wait fields at all. The
+            // pre-#8234 shape stamped a fresh not_before = +1200s
+            // and a {"kind": "time"} ready_condition here: a fake
+            // timer, since the sink pick never read it.
             t.exec(
-                "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
-                   not_before = ?, park_kind = 'relative', wait_kind = NULL, \
-                   ready_condition = ?, progress = ?, updated_at = ? \
-                 WHERE id = ? AND status = 'claimed' AND lease_until < ?",
+                sink_return_sql(),
                 &[
-                    Arg::Text(sink_nb.clone()),
-                    Arg::Text(json!({"kind": "time", "until": sink_nb}).to_string()),
                     Arg::Text(progress.to_string()),
                     Arg::Text(now.clone()),
                     Arg::Int(id),
@@ -1253,7 +1252,7 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
             Some(id),
             "lease_expired",
             &json!({"via": "expire_leases", "cleared_session_id": cleared,
-                    "return": if to_sink { "handoff_sink" } else { "queued" }}),
+                    "return": if to_sink { "handed_off" } else { "queued" }}),
         )?;
         if let Some(old) = cleared {
             on_binding_cleared(t, &worker, id, &old, "expire_leases")?;
@@ -1351,7 +1350,7 @@ fn req_bool(req: &Value, key: &str) -> Option<bool> {
 /// the live row. Terminal rows (done/cancelled/failed) do NOT block
 /// the key (#6838): PG's enqueue revived on dedupe-over-terminal,
 /// and the Turso port dropped that nuance (cutover doc deviation 6).
-pub const LIVE_STATUSES: [&str; 4] = ["queued", "claimed", "parked", "blocked"];
+pub const LIVE_STATUSES: [&str; 5] = ["queued", "claimed", "parked", "handed_off", "blocked"];
 pub const TERMINAL_STATUSES: [&str; 3] = ["done", "cancelled", "failed"];
 
 /// Partition the rows sharing one (queue, dedupe_key) into the live
@@ -1678,7 +1677,7 @@ fn quarantine_task(t: &TursoBackend, id: i64, reason: &str) -> Result<(), TErr> 
 /// claim path, which is where such rows would otherwise circulate.
 fn quarantine_payload_missing(t: &TursoBackend, queue: &str) -> Result<(), TErr> {
     let rows = t.query_objs(
-        "SELECT id FROM tasks WHERE queue = ? AND status IN ('queued', 'parked') \
+        "SELECT id FROM tasks WHERE queue = ? AND status IN ('queued', 'parked', 'handed_off') \
            AND (payload IS NULL OR payload = '' OR payload = '{}')",
         &[Arg::Text(queue.to_string())],
         &[],
@@ -1821,19 +1820,21 @@ fn stamp_claim_model(
     Ok(())
 }
 
-/// The SQL predicate mirroring is_parked_handoff, for the broker's
-/// no-id handoff pick (#8097 Rule 1): a parked recorded opencode
-/// handoff — progress lane opencode, a yield stage (the top-level
-/// stage, else the last checkpoint's), and no session binding.
-/// The park verb's default not_before timer is the handoff sink's
-/// bookkeeping, not a genuine wait, so the predicate deliberately
-/// ignores not_before.
-const PARKED_HANDOFF_SQL: &str = "status = 'parked' \
+/// The SQL predicate mirroring is_handed_off, for the broker's
+/// no-id handoff pick (#8097 Rule 1): a row in the handoff sink —
+/// status 'handed_off' (#8234), progress lane opencode, and no
+/// session binding. Sink membership is the STATUS, written once
+/// by the park verb's classification, the lease-expiry sink
+/// return, or the #8234 migration; this predicate deliberately
+/// does NOT reconstruct it from progress stage — the broker and
+/// the claimant poll once disagreed about which stage source
+/// (top-level vs last_checkpoint) named a sink row, and rows
+/// stranded in that gap (#8192). The lane and session conditions
+/// stay as guards: a bound row is a live session's business, and
+/// only an opencode yield is the claimant's to collect.
+const HANDOFF_SQL: &str = "status = 'handed_off' \
     AND json_extract(progress, '$.lane') = 'opencode' \
-    AND json_extract(progress, '$.session_id') IS NULL \
-    AND COALESCE(json_extract(progress, '$.stage'), \
-                 json_extract(progress, '$.last_checkpoint.stage')) \
-        IN ('handed_off', 'launch_failed')";
+    AND json_extract(progress, '$.session_id') IS NULL";
 
 /// The yield stage a task's progress records: the top-level `stage`
 /// when present, else the last checkpoint's stage (the checkpoint
@@ -1848,24 +1849,24 @@ fn progress_stage(progress: &Value) -> Option<&str> {
     })
 }
 
-/// A parked row is a RECORDED OPENCODE HANDOFF when its progress
-/// carries the opencode lane assignment, a yield stage
-/// (handed_off, or launch_failed after a claimant recovery), and no
-/// session binding. This is the state every lane handoff lands in:
-/// the claiming lane checkpoints handed_off and then parks the task
-/// as its handoff sink (park clears the claim and stamps a default
-/// +20-minute timer), so the row sits parked — never claimed — while
-/// the opencode claimant's discovery only ever read claimed rows.
-/// 164 such rows sat parked in repo-health-code-pilot alone on
-/// 2026-11-09 while their issues (#7907, #6533) cycled
-/// claim → handoff → park → re-claim for days. A genuine wait park
-/// never matches: it carries a different stage (parked, gated,
-/// probe_*) or a direct lane, and a bound session's park cleared
-/// the binding but keeps its working stage.
 /// The progress shape of a recorded opencode handoff (#8184):
 /// the opencode lane assignment plus a yield stage (handed_off, or
 /// launch_failed after a claimant recovery), regardless of the
-/// row's status or session binding.
+/// row's status or session binding. This shape is the WRITE-side
+/// classification: the park verb uses it to decide that a park
+/// lands in the sink (status 'handed_off', #8234), and
+/// expire_leases uses it to decide that an expired claimed row
+/// returns to the sink. It is never used to decide sink
+/// MEMBERSHIP for a resting row — that is the status itself
+/// (is_handed_off) — because the shape's stage can be read two
+/// ways (progress_stage prefers the top-level stage; the
+/// claimant's normalize_row lifts last_checkpoint), and #8192 was
+/// exactly the two readers disagreeing about a resting row.
+/// Historically this shape sat in status 'parked' with the park
+/// verb's default +20-minute timer stamped on it; 164 such rows
+/// sat in repo-health-code-pilot alone on 2026-11-09 while their
+/// issues (#7907, #6533) cycled claim → handoff → park → re-claim
+/// for days.
 fn handoff_shape(progress: &Value) -> bool {
     progress.get("lane").and_then(|v| v.as_str()) == Some("opencode")
         && matches!(
@@ -1874,38 +1875,84 @@ fn handoff_shape(progress: &Value) -> bool {
         )
 }
 
-fn is_parked_handoff(row: &Value) -> bool {
-    if row.get("status").and_then(|v| v.as_str()) != Some("parked") {
+/// A row is IN the handoff sink (#8234) when its status is
+/// 'handed_off', its progress carries the opencode lane, and no
+/// session is bound. The status is the membership — written only
+/// by the park classification, the lease-expiry sink return, and
+/// the #8234 migration, all of which gate on handoff_shape plus
+/// an absent binding — so the lane check here is a guard, not a
+/// reconstruction, and no stage is consulted at all (#8192).
+fn is_handed_off(row: &Value) -> bool {
+    if row.get("status").and_then(|v| v.as_str()) != Some("handed_off") {
         return false;
     }
     let progress = row.get("progress").cloned().unwrap_or(json!({}));
+    if progress.get("lane").and_then(|v| v.as_str()) != Some("opencode") {
+        return false;
+    }
+    match progress.get("session_id") {
+        Some(Value::Null) | None => true,
+        Some(_) => false,
+    }
+}
+
+/// Whether a park lands in the handoff sink (#8234): the merged
+/// progress is a recorded opencode handoff (handoff_shape), and
+/// the caller declared no genuine wait — the ready condition is
+/// absent (defaulted by the park verb), or a bare {"kind": "time"}
+/// timer, which on a handoff row was only ever the park verb's
+/// own default bookkeeping. Any other condition kind (ci/triage
+/// floors aside, task_terminal, task_status, event_seen,
+/// quota_reset, person_answer) is a real wait the caller named,
+/// and that park stays a park. The caller passes the
+/// binding-cleared merged progress, so a bound session's row —
+/// whose stage may still read as a yield — never sinks.
+fn handoff_park(progress: &Value, condition_defaulted: bool, condition: &Value) -> bool {
+    if !handoff_shape(progress) {
+        return false;
+    }
     match progress.get("session_id") {
         Some(Value::Null) | None => {}
         Some(_) => return false,
     }
-    handoff_shape(&progress)
+    condition_defaulted || condition.get("kind").and_then(|v| v.as_str()) == Some("time")
 }
 
 /// Where an expired claim returns (#8184): a claimed row whose
-/// progress is a recorded opencode handoff goes back to the parked
-/// handoff sink, never to queued — the claimant collects it from
-/// parked at +0 attempts, so a claimant launch that died on the
-/// lease can never burn an attempt through the queued interlude.
-/// Anything else (a direct claim, a bound session mid-work whose
-/// stage advanced past the yield stages) returns to queued as
-/// before.
+/// progress is a recorded opencode handoff goes back to the
+/// handoff sink (status 'handed_off', #8234), never to queued —
+/// the claimant collects it from the sink at +0 attempts, so a
+/// claimant launch that died on the lease can never burn an
+/// attempt through the queued interlude. Anything else (a direct
+/// claim, a bound session mid-work whose stage advanced past the
+/// yield stages) returns to queued as before.
 fn expired_claim_returns_to_sink(progress: &Value) -> bool {
     handoff_shape(progress)
+}
+
+/// The lease-expiry sink return as a statement builder (#8234),
+/// extracted so the regression tests pin its shape without a
+/// live store (the claim_update_sql pattern): an expired claimed
+/// handoff lands in status 'handed_off' with every wait field
+/// NULL — no not_before, no park_kind, no ready_condition. The
+/// pre-#8234 return stamped a fresh +1200s not_before and a
+/// {"kind": "time"} ready_condition: a fake timer on a state
+/// that is not a wait, which the sink pick never read.
+fn sink_return_sql() -> &'static str {
+    "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
+       not_before = NULL, park_kind = NULL, wait_kind = NULL, \
+       ready_condition = NULL, progress = ?, updated_at = ? \
+     WHERE id = ? AND status = 'claimed' AND lease_until < ?"
 }
 
 /// Whether a by-id claim (claim_repo_task with task_id) may take
 /// exactly this row. Two shapes only: a queued row under the pick
 /// path's ordinary predicate (attempts cap + not_before), or a
-/// parked recorded handoff (is_parked_handoff) — the handoff park's
-/// not_before is the park verb's default timer, not a real wait,
-/// so it does not gate the claimant collecting its own handoff.
-/// Anything else (claimed, blocked, a genuine wait park, a queued
-/// row parked into the future) is not claimable by id.
+/// sink row (is_handed_off, #8234) — the sink is not a wait, so
+/// nothing gates the claimant collecting its own handoff.
+/// Anything else (claimed, blocked, a genuine wait park — a
+/// 'parked' row is never a sink row since #8234, whatever its
+/// progress carries) is not claimable by id.
 fn by_id_claimable(row: &Value, now: &str) -> bool {
     // #8187: platform is a mark, not a filter — a by-id claim takes
     // the row whatever platform either side carries (or none).
@@ -1919,7 +1966,7 @@ fn by_id_claimable(row: &Value, now: &str) -> bool {
             let nb = row.get("not_before").and_then(|v| v.as_str());
             attempts < max && nb.map_or(true, |nb| nb <= now)
         }
-        Some("parked") => is_parked_handoff(row),
+        Some("handed_off") => is_handed_off(row),
         _ => false,
     }
 }
@@ -2185,7 +2232,7 @@ fn claim_by_id(
     let upd = t.exec(
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
            lease_until = ?, \
-           attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
+           attempts = attempts + (CASE WHEN status IN ('parked', 'handed_off') THEN 0 ELSE 1 END), \
            lane_id = ?, platform = COALESCE(?, platform), \
            park_kind = NULL, wait_kind = NULL, not_before = NULL, \
            updated_at = ? \
@@ -2293,7 +2340,7 @@ fn claim_update_sql(pick_predicate: &str) -> String {
     format!(
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
            lease_until = ?, \
-           attempts = attempts + (CASE WHEN status = 'parked' THEN 0 ELSE 1 END), \
+           attempts = attempts + (CASE WHEN status IN ('parked', 'handed_off') THEN 0 ELSE 1 END), \
            lane_id = ?, platform = COALESCE(?, platform), \
            park_kind = NULL, wait_kind = NULL, not_before = NULL, \
            updated_at = ? \
@@ -2302,30 +2349,30 @@ fn claim_update_sql(pick_predicate: &str) -> String {
     )
 }
 
-/// The default (lane) pick predicate (#8184, amended #8187):
-/// queued rows due under the attempts cap, or parked rows whose
-/// wait timer has passed — plus, as a third branch, parked recorded
-/// opencode handoffs (the #8185 handoff sink) WITHOUT the not_before
-/// gate. #8184 excluded sink rows from lanes entirely (they were
+/// The default (lane) pick predicate (#8184, amended #8187,
+/// #8234): queued rows due under the attempts cap, or parked rows
+/// whose wait timer has passed — plus, as a third branch, handoff
+/// sink rows (status 'handed_off', the #8185 sink with its own
+/// status since #8234) with no timer at all: the sink is not a
+/// wait. #8184 excluded sink rows from lanes entirely (they were
 /// claimant-owned, and serving one to a lane only re-ran the
 /// claim -> handoff -> park cycle); #8187 reverses that: a lane is
-/// single-session by default, claims a sink row as an ordinary
-/// parked claim (+0 attempts, per the claim UPDATE's parked CASE),
-/// and verb_lane flips its ledger assignment to direct when the
-/// lane passes --exclusion-reason (see lane_reassignment_flip).
-/// The claimant's parked_handoff pick and by-id claim keep working
-/// unchanged. The timed parked branch keeps its NOT sink exclusion
-/// so a sink row is admitted by exactly one branch, and genuine
-/// wait parks keep releasing through claim at not_before. The sink
-/// branch carries no `?` placeholder, so the pick SELECT and the
-/// claim UPDATE re-check keep their two `now` arguments.
+/// single-session by default, claims a sink row at +0 attempts
+/// (per the claim UPDATE's parked/handed_off CASE), and verb_lane
+/// flips its ledger assignment to direct when the lane passes
+/// --exclusion-reason (see lane_reassignment_flip). The claimant's
+/// handoff pick and by-id claim keep working unchanged. Since
+/// #8234 a sink row is never 'parked', so the timed parked branch
+/// needs no sink exclusion — genuine wait parks release through
+/// claim at not_before, and only there. The sink branch carries
+/// no `?` placeholder, so the pick SELECT and the claim UPDATE
+/// re-check keep their two `now` arguments.
 fn default_pick_predicate() -> String {
     format!(
         "(status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
-       OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ? \
-         AND NOT ({PARKED_HANDOFF_SQL})) \
-       OR ({PARKED_HANDOFF_SQL})"
+       OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?) \
+       OR ({HANDOFF_SQL})"
     )
 }
 
@@ -2644,13 +2691,14 @@ fn claim_pick_once(
         // #8187: NEITHER mode filters by platform — the mark a
         // claim declares (family) is stamped by the claim
         // UPDATE, never matched against the item. The default mode keeps the ordinary predicate
-        // (queued rows due; parked rows whose timer has passed).
-        // Handoff mode picks the next parked recorded opencode
-        // handoff (PARKED_HANDOFF_SQL) with no caller-named id
-        // and no not_before gating — Rule 1's default collection
+        // (queued rows due; parked rows whose timer has passed;
+        // sink rows by their own branch).
+        // Handoff mode picks the next sink row (HANDOFF_SQL:
+        // status 'handed_off', #8234) with no caller-named id
+        // and no timer gating — Rule 1's default collection
         // path for the claimant.
         let pick_predicate = if handoff_pick {
-            PARKED_HANDOFF_SQL.to_string()
+            HANDOFF_SQL.to_string()
         } else {
             default_pick_predicate()
         };
@@ -2761,7 +2809,7 @@ fn claim_pick_once(
                 "model_provider": model.as_ref().map(|m| m.provider.clone()),
                 "model_id": model.as_ref().and_then(|m| m.model.clone()),
                 "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
-                "pick": if handoff_pick { "parked_handoff" } else { "default" },
+                "pick": if handoff_pick { "handed_off" } else { "default" },
             }),
             &row,
         ),
@@ -2871,13 +2919,16 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         Err(e) => return fail(2, format!("claim_repo_task: {e}")),
     };
     // #8097 Rule 1: pick mode. The default pick is the queue's next
-    // suitable item. "parked_handoff" restricts the pick to parked
-    // recorded opencode handoffs — the broker chooses the row, the
-    // caller names NO task id. Naming a task (task_id, below) stays
-    // the explicit special case.
+    // suitable item. "handed_off" restricts the pick to recorded
+    // opencode handoffs in the sink (status 'handed_off', #8234) —
+    // the broker chooses the row, the caller names NO task id.
+    // Naming a task (task_id, below) stays the explicit special
+    // case. ("parked_handoff" is the pre-#8234 spelling of the
+    // mode, kept as a deprecated alias so a straggler caller fails
+    // soft; the sink has not been a park since #8234.)
     let handoff_pick = match req_str(req, "pick") {
         None => false,
-        Some("parked_handoff") => true,
+        Some("handed_off") | Some("parked_handoff") => true,
         Some(other) => {
             return fail(2, format!("claim_repo_task: unknown pick mode {other:?}"));
         }
@@ -2919,9 +2970,9 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         // By-id claim — the SPECIAL CASE (#8097 Rule 1): when the
         // request names a task, take exactly that row (claim_by_id)
         // instead of the pick. Reserved for one-off revivals of a
-        // specific row (e.g. a single parked handoff); the default
-        // flow never names a task — the claimant collects parked
-        // handoffs through the pick="parked_handoff" mode above.
+        // specific row (e.g. a single sink row); the default flow
+        // never names a task — the claimant collects sink rows
+        // through the pick="handed_off" mode above.
         if let Some(want_id) = req_i64(req, "task_id") {
             // #8210: task_id + from_session is a session-to-session
             // TRANSFER — take the row directly from its current
@@ -3528,41 +3579,73 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
         &row.get("result").cloned().unwrap_or(json!({})),
         &json!({"park_reason": reason}),
     );
+    // #8234: the park verb classifies its own landing. A park whose
+    // merged progress is a recorded opencode handoff with no
+    // caller-declared genuine wait is not a wait at all: it lands
+    // in the handoff sink (status 'handed_off', every wait field
+    // NULL) instead of 'parked' under the default timer. The
+    // triage classification above is a genuine wait by #8184's own
+    // rule and never sinks.
+    let to_sink = wk != "triage" && handoff_park(&progress, condition_defaulted, &condition);
     let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
-               not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
-               last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
-               updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(not_before.clone()),
-                Arg::Text(park_kind.to_string()),
-                Arg::Text(wk.to_string()),
-                Arg::Text(condition.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Text(progress.to_string()),
-                Arg::Text(result.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
-        )?;
+        if to_sink {
+            t.exec(
+                "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
+                   not_before = NULL, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                   last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
+                   updated_at = ? WHERE id = ?",
+                &[
+                    Arg::Text(now_iso()),
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(result.to_string()),
+                    Arg::Text(now_iso()),
+                    Arg::Int(task_id),
+                ],
+            )?;
+        } else {
+            t.exec(
+                "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
+                   not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
+                   last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
+                   updated_at = ? WHERE id = ?",
+                &[
+                    Arg::Text(not_before.clone()),
+                    Arg::Text(park_kind.to_string()),
+                    Arg::Text(wk.to_string()),
+                    Arg::Text(condition.to_string()),
+                    Arg::Text(now_iso()),
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(result.to_string()),
+                    Arg::Text(now_iso()),
+                    Arg::Int(task_id),
+                ],
+            )?;
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         if let Some(old) = &cleared {
             on_binding_cleared(t, &worker, task_id, old, "park_task")?;
         }
+        let detail = if to_sink {
+            json!({
+                "reason": reason, "status": "handed_off",
+                "park_kind": Value::Null, "wait_kind": Value::Null,
+                "not_before": Value::Null, "ready_condition": Value::Null,
+                "cleared_session_id": cleared,
+            })
+        } else {
+            json!({
+                "reason": reason, "status": "parked",
+                "park_kind": park_kind, "wait_kind": wk,
+                "not_before": not_before, "ready_condition": condition,
+                "cleared_session_id": cleared,
+            })
+        };
         event(
             t,
             Some(&worker),
             Some(task_id),
             "parked",
-            &with_marks(
-                &json!({
-                    "reason": reason, "park_kind": park_kind, "wait_kind": wk,
-                    "not_before": not_before, "ready_condition": condition,
-                    "cleared_session_id": cleared,
-                }),
-                &row,
-            ),
+            &with_marks(&detail, &row),
         )?;
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
         verb_with_execution(t, req, row)
@@ -3579,6 +3662,14 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
 fn wake_eligible(status: &str) -> Result<(), String> {
     match status {
         "parked" => Ok(()),
+        // #8234: a sink row is not a wait and cannot be woken —
+        // it is already claimable; the refusal says so instead of
+        // the generic not-a-wait message.
+        "handed_off" => Err(
+            "task status handed_off cannot be woken: a handed_off row is not \
+             a wait — it is already claimable, claim it instead"
+                .to_string(),
+        ),
         other => Err(format!(
             "task status {other} cannot be woken (only parked waits)"
         )),
@@ -4243,7 +4334,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
 fn health_entry(queue: &str) -> Value {
     json!({
         "queue": queue, "queued": 0, "at_cap_queued": 0, "claimed": 0,
-        "parked": 0, "blocked": 0, "done": 0, "cancelled": 0,
+        "parked": 0, "handed_off": 0, "blocked": 0, "done": 0, "cancelled": 0,
         "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
         "terminal_events_24h": 0, "terminal_events_7d": 0,
     })
@@ -4707,30 +4798,38 @@ mod tests {
 
     #[test]
     fn default_pick_drains_parked_handoff_sink_8187() {
-        // #8187 (amending #8184): the lane pick now ADMITS parked
-        // recorded opencode handoffs (the handoff sink) through a
-        // third branch with NO not_before gate, so lanes can claim
-        // stranded sink tasks and work them direct. The timed parked
-        // branch keeps its NOT sink exclusion (a sink row is admitted
-        // by exactly one branch), the queued branch keeps its
-        // attempts cap, and the sink branch adds no placeholder: the
-        // predicate still carries exactly the two `now` arguments
-        // the pick SELECT and claim UPDATE bind.
+        // #8187 (amending #8184): the lane pick ADMITS recorded
+        // opencode handoffs (the handoff sink) through a third
+        // branch with NO not_before gate, so lanes can claim
+        // stranded sink tasks and work them direct. #8234: the sink
+        // is its own status ('handed_off'), so the timed parked
+        // branch no longer needs its NOT sink exclusion — a sink
+        // row cannot be 'parked' — and the sink branch keys on the
+        // status, never on a reconstructed stage (#8192). The
+        // queued branch keeps its attempts cap, and the sink branch
+        // adds no placeholder: the predicate still carries exactly
+        // the two `now` arguments the pick SELECT and claim UPDATE
+        // bind.
         let pred = default_pick_predicate();
         assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
         assert!(pred.contains("status = 'parked' AND not_before IS NOT NULL AND not_before <= ?"));
-        assert!(pred.contains("NOT ("));
+        assert!(!pred.contains("NOT ("), "no sink exclusion since #8234: {pred}");
+        assert!(pred.contains("status = 'handed_off'"));
         assert!(pred.contains("json_extract(progress, '$.lane') = 'opencode'"));
-        assert!(pred.contains("'handed_off', 'launch_failed'"));
+        assert!(
+            !pred.contains("last_checkpoint"),
+            "no stage reconstruction in the pick (#8192): {pred}"
+        );
         // Third branch: the full sink predicate, ungated.
-        let sink_branch = format!("OR ({PARKED_HANDOFF_SQL})");
+        let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(pred.matches('?').count(), 2, "no new placeholders: {pred}");
-        // And the claim UPDATE re-check carries the same sink branch.
+        // And the claim UPDATE re-check carries the same sink branch,
+        // and collecting a sink row costs no attempt (#8234).
         let upd = claim_update_sql(&pred);
         assert!(upd.contains(&sink_branch));
-        assert!(upd.contains("NOT ("));
+        assert!(upd.contains("status IN ('parked', 'handed_off')"));
         assert_eq!(upd.matches("not_before <= ?").count(), 2);
     }
 
@@ -5050,6 +5149,10 @@ mod tests {
         assert!(wake_eligible("queued").is_err());
         assert!(wake_eligible("claimed").is_err());
         assert!(wake_eligible("done").is_err());
+        // #8234: a sink row is refused wake with the reason — it is
+        // not a wait at all, it is already claimable.
+        let err = wake_eligible("handed_off").unwrap_err();
+        assert!(err.contains("already claimable"), "{err}");
     }
 
     #[test]
@@ -5205,6 +5308,9 @@ mod tests {
         let e = health_entry("repo-health-code-pilot");
         assert_eq!(e.get("at_cap_queued"), Some(&json!(0)));
         assert_eq!(e.get("queued"), Some(&json!(0)));
+        // #8234: the sink is its own health bucket — 'parked' in
+        // health output means genuine waits only.
+        assert_eq!(e.get("handed_off"), Some(&json!(0)));
     }
 
     #[test]
@@ -5388,28 +5494,44 @@ mod tests {
 
     #[test]
     fn by_id_claim_takes_a_parked_recorded_handoff() {
-        // The #7907/#6533 loop shape: opencode lane assigned, yield
-        // recorded under last_checkpoint (the #7706 lift), no session
-        // bound, parked under the park verb's default future timer.
-        // The future not_before must NOT gate a by-id claim — it is
-        // the park default, not a wait the task asked for.
+        // The #7907/#6533 loop shape, post-#8234: opencode lane
+        // assigned, yield recorded under last_checkpoint (the #7706
+        // lift), no session bound — and the row RESTS IN THE SINK:
+        // status 'handed_off', no wait fields. The not_before on
+        // this fixture row is deliberately in the far future: a
+        // sink row's claim ignores timers entirely, because the
+        // sink is not a wait.
         let row = handoff_row(
-            "parked",
+            "handed_off",
             json!({
                 "lane": "opencode",
                 "last_checkpoint": {"stage": "handed_off", "at": "2026-11-09T23:15:55Z"},
                 "session_id": null,
             }),
         );
-        assert!(is_parked_handoff(&row));
+        assert!(is_handed_off(&row));
         assert!(by_id_claimable(&row, "2026-11-09T23:20:00Z"));
-        // Top-level stage and the launch_failed recovery yield are
-        // the same recorded handoff in their other spellings.
+        // The launch_failed recovery yield in the sink is the same
+        // recorded handoff in its other spelling.
         let row2 = handoff_row(
-            "parked",
+            "handed_off",
             json!({"lane": "opencode", "stage": "launch_failed"}),
         );
         assert!(by_id_claimable(&row2, "2026-11-09T23:20:00Z"));
+        // #8192 regression: the stage sources DISAGREE on this row
+        // (top-level 'working' vs last_checkpoint 'handed_off') —
+        // sink membership is the status, so it is claimable either
+        // way; neither the broker nor the claimant reads a stage
+        // for a resting sink row anymore.
+        let row3 = handoff_row(
+            "handed_off",
+            json!({
+                "lane": "opencode", "stage": "working",
+                "last_checkpoint": {"stage": "handed_off"},
+            }),
+        );
+        assert!(is_handed_off(&row3));
+        assert!(by_id_claimable(&row3, "2026-11-09T23:20:00Z"));
     }
 
     #[test]
@@ -5421,13 +5543,31 @@ mod tests {
             json!({"lane": "opencode", "stage": "parked", "gate": "#3801 OPEN"}),
         );
         assert!(!by_id_claimable(&gated, "2026-11-09T23:20:00Z"));
-        // A direct-lane yield is the direct lane's own business.
-        let direct = handoff_row("parked", json!({"lane": "direct", "stage": "handed_off"}));
+        // #8234: a 'parked' row with handoff-SHAPED progress (the
+        // pre-migration / task-10995 shape: a recorded handoff that
+        // later took a genuine triage wait) is a genuine wait park,
+        // NOT a sink row — the status decides, the shape does not.
+        let wait_shaped = handoff_row(
+            "parked",
+            json!({
+                "lane": "opencode",
+                "last_checkpoint": {"stage": "handed_off"},
+                "session_id": null,
+            }),
+        );
+        assert!(!is_handed_off(&wait_shaped));
+        assert!(!by_id_claimable(&wait_shaped, "2026-11-09T23:20:00Z"));
+        // A direct-lane yield in the sink status is not the
+        // claimant's row (the lane guard holds).
+        let direct = handoff_row(
+            "handed_off",
+            json!({"lane": "direct", "stage": "handed_off"}),
+        );
         assert!(!by_id_claimable(&direct, "2026-11-09T23:20:00Z"));
         // A bound session id means a launch already happened; the
         // binding is supervision's, never a fresh claim's.
         let bound = handoff_row(
-            "parked",
+            "handed_off",
             json!({
                 "lane": "opencode", "stage": "handed_off",
                 "session_id": "ses_abc",
@@ -5440,6 +5580,63 @@ mod tests {
             json!({"lane": "opencode", "stage": "handed_off"}),
         );
         assert!(!by_id_claimable(&claimed, "2026-11-09T23:20:00Z"));
+    }
+
+    #[test]
+    fn park_classification_lands_handoffs_in_the_sink_8234() {
+        // A recorded handoff parked with no declared condition
+        // sinks; so does one carrying only the bare time timer
+        // (the park verb's own default bookkeeping).
+        let handoff = json!({
+            "lane": "opencode",
+            "last_checkpoint": {"stage": "handed_off"},
+            "session_id": null,
+        });
+        assert!(handoff_park(&handoff, true, &json!({"kind": "time"})));
+        assert!(handoff_park(&handoff, false, &json!({"kind": "time"})));
+        // A caller-named real wait always wins, even on a
+        // handoff-shaped row: CI, a task dependency, a quota reset.
+        assert!(!handoff_park(&handoff, false, &json!({"kind": "ci", "pr": 1})));
+        assert!(!handoff_park(
+            &handoff,
+            false,
+            &json!({"kind": "task_terminal", "task_id": 7})
+        ));
+        assert!(!handoff_park(
+            &handoff,
+            false,
+            &json!({"kind": "quota_reset", "at": "2026-11-13T00:00:00Z"})
+        ));
+        // A triage-stage park is the broker's triage wait, never
+        // a handoff — it does not even have the handoff shape.
+        let triage = json!({"lane": "opencode", "stage": "awaiting_triage"});
+        assert!(!handoff_park(&triage, true, &json!({"kind": "time"})));
+        // A direct-lane yield is not an opencode handoff.
+        let direct = json!({"lane": "direct", "stage": "handed_off"});
+        assert!(!handoff_park(&direct, true, &json!({"kind": "time"})));
+        // A still-bound row never sinks, whatever the stage says:
+        // the binding means a live session owns it.
+        let bound = json!({
+            "lane": "opencode", "stage": "handed_off",
+            "session_id": "ses_abc",
+        });
+        assert!(!handoff_park(&bound, true, &json!({"kind": "time"})));
+    }
+
+    #[test]
+    fn sink_return_lands_in_handed_off_without_a_timer_8234() {
+        // The lease-expiry sink return: status 'handed_off', every
+        // wait field NULL, and no trace of the pre-#8234 fake timer
+        // (+1200s not_before with a time ready_condition).
+        let sql = sink_return_sql();
+        assert!(sql.contains("status = 'handed_off'"));
+        assert!(sql.contains("not_before = NULL"));
+        assert!(sql.contains("ready_condition = NULL"));
+        assert!(sql.contains("park_kind = NULL"));
+        assert!(!sql.contains("1200"));
+        assert!(!sql.contains("'parked'"));
+        // Live statuses include the sink (dedupe ownership).
+        assert!(LIVE_STATUSES.contains(&"handed_off"));
     }
 
     #[test]

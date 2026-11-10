@@ -42,8 +42,8 @@ The sequence (each step verified before the next):
   7. the claim TRANSFER (`repo-queue claim --task <id>
      --from-session <muse ses> --session-id <new ses> --worker
      opencode-claimant --platform openchamber`, #8210): holder ->
-     claimer in one broker operation, never through queued or
-     parked, binding the new session atomically. The returned
+     claimer in one broker operation, never through queued,
+     parked, or the sink, binding the new session atomically. The returned
      row must show the claimant as worker and the new session
      bound;
   8. checkpoint `launched` as the claimant, then the execution
