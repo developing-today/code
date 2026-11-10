@@ -213,7 +213,11 @@ def discover(tests_dir: str) -> list[str]:
     for path in sorted(glob.glob(os.path.join(tests_dir, "*_test.go"))):
         with open(path, errors="replace") as fh:
             text = fh.read()
-        if not _file_included(path, text):
+        try:
+            included = _file_included(path, text)
+        except ValueError as exc:
+            raise SystemExit(f"coverage defect: {path}: {exc}")
+        if not included:
             continue
         # TestMain is the package test entry point, not a test: go test
         # -list never reports it and a -run leg can never report it either,
