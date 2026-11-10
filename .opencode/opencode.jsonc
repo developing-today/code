@@ -2898,7 +2898,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Terra #low, Spark contributor #high, Gemini 3.8 Flash #high, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
+        "name": "Workhorse weighted - Terra #low, Spark contributor #high, Gemini 3.8 Flash #medium, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -3003,17 +3003,20 @@
         // #medium (II 30) is the rung that matches the pool; #high
         // (II 41) sat above every other member. Same leaf, same
         // weight 10 — only the effort rung changes.
-        // 2026-11-10 (Drew, direct order): the Luna #xhigh seat in
-        // workhorse-weighted switches to Terra #low -
-        // openai-plan/gpt-6.1-terra#low at the same weight 10, on
-        // the same openai-plan door (openai.main + openai.alternate,
-        // 2:1). The other three members (Spark contributor #high,
-        // Gemini 3.8 Flash #high, Claude Sonnet 5.5 #medium) are
-        // untouched.
+        // 2026-11-10 (Drew, direct order): two seat changes in
+        // this stage. (1) The Luna #xhigh seat switches to Terra
+        // #low - openai-plan/gpt-6.1-terra#low at the same weight
+        // 10, on the same openai-plan door (openai.main +
+        // openai.alternate, 2:1). (2) The Gemini 3.8 Flash seat
+        // drops #high -> #medium - same leaf, same weight 10
+        // (AA from today's pool-intelligence pull: medium II 30.1
+        // vs high II 30.8 - same pool band, faster first token).
+        // The other two members (Spark contributor #high, Claude
+        // Sonnet 5.5 #medium) are untouched.
         "targets": [
           "openai-plan/gpt-6.1-terra#low",
           "_muse/muse-spark-1.3-contributor#high",
-          "_antigravity/gemini-3.8-flash#high",
+          "_antigravity/gemini-3.8-flash#medium",
           "_antigravity/claude-sonnet-5-5#medium"
         ],
         "selection": "weighted",
