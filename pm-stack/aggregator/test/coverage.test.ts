@@ -523,4 +523,32 @@ describe("isValidAnchorAt (#5196)", () => {
     expect(isValidAnchorAt(undefined)).toBe(false);
     expect(isValidAnchorAt(1234)).toBe(false);
   });
+
+  test("property: generated calendar dates match an independent calendar oracle", () => {
+    // Oracle: Gregorian month lengths + the leap-year rule, computed
+    // without Date parsing — the invariant is that isValidAnchorAt
+    // accepts exactly the (year, month, day) triples this oracle calls
+    // real calendar dates (Codex P1 on PR #5197: property coverage for
+    // the parser, per the repo testing doctrine).
+    const isLeap = (y: number) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+    const monthDays = (y: number, m: number) =>
+      [31, isLeap(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+    const pad = (n: number) => String(n).padStart(2, "0");
+    let checked = 0;
+    for (const y of [1900, 2000, 2024, 2025, 2026, 2100]) {
+      for (let m = 1; m <= 12; m++) {
+        for (const d of [1, 15, 28, 29, 30, 31]) {
+          const valid = d <= (monthDays(y, m) ?? 0);
+          expect(isValidAnchorAt(`${y}-${pad(m)}-${pad(d)}T00:00:00Z`)).toBe(valid);
+          checked++;
+        }
+      }
+    }
+    // Impossible months and day zero are never valid.
+    for (const bad of ["2026-00-10T00:00:00Z", "2026-13-10T00:00:00Z", "2026-01-00T00:00:00Z"]) {
+      expect(isValidAnchorAt(bad)).toBe(false);
+      checked++;
+    }
+    expect(checked).toBe(6 * 12 * 6 + 3);
+  });
 });
