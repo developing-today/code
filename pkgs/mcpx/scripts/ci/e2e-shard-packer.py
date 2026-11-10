@@ -59,25 +59,71 @@ def discover(tests_dir: str) -> list[str]:
     return sorted(names)
 
 
+def _weight_seconds(value: object) -> float | None:
+    # Timing weights must be finite positive numbers. bool is an int
+    # subclass, so reject it before the numeric check: True would
+    # otherwise silently become a 1.0s measurement. Non-finite floats
+    # (Infinity via a bare token or 1e999, -Infinity, NaN) must not
+    # poison the median or the shard-count arithmetic in pack().
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        seconds = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
+    return seconds
+
+
 def load_weights(path: str | None, names: list[str]) -> tuple[dict[str, float], str]:
     measured: dict[str, float] = {}
+    skipped: list[str] = []
     if path and os.path.exists(path):
         with open(path) as fh:
             doc = json.load(fh)
-        raw = doc.get("tests", doc) if isinstance(doc, dict) else {}
+        if isinstance(doc, dict) and "tests" in doc:
+            tests_val = doc["tests"]
+            if not isinstance(tests_val, dict):
+                return {name: DEFAULT_SECONDS for name in names}, (
+                    f"equal weights at the run-41530429335 rate ({DEFAULT_SECONDS:.0f}s/test; "
+                    f"timing seed defect: 'tests' is {type(tests_val).__name__}, "
+                    f"expected object; ignoring seed)")
+            raw = tests_val
+        elif isinstance(doc, dict):
+            raw = doc
+        else:
+            raw = {}
         for name, seconds in raw.items():
-            if name in names and isinstance(seconds, (int, float)) and seconds > 0:
-                measured[name] = float(seconds)
+            if name not in names:
+                continue
+            weight = _weight_seconds(seconds)
+            if weight is None:
+                skipped.append(name)
+            else:
+                measured[name] = weight
+    skipped_note = (
+        f"; skipped invalid weight(s): {', '.join(sorted(skipped))}"
+        if skipped else ""
+    )
     if not measured:
         # Equal weights, scaled by the only per-test rate this repo has:
         # run 41530429335 spent ~174 s over ~58 tests in each of six shards,
         # i.e. ~3 s per test. Unit weights would under-count the suite and
         # silently drop the shard count, so the fallback keeps that scale.
+        fallback_reason = (
+            f"no usable timing seed{skipped_note}" if skipped else "no timing seed"
+        )
         return {name: DEFAULT_SECONDS for name in names}, (
-            f"equal weights at the run-41530429335 rate ({DEFAULT_SECONDS:.0f}s/test; no timing seed)")
+            f"equal weights at the run-41530429335 rate ({DEFAULT_SECONDS:.0f}s/test; "
+            f"{fallback_reason})")
     median = statistics.median(measured.values())
     weights = {name: measured.get(name, median) for name in names}
-    return weights, f"seed: {len(measured)} measured, median {median:.1f}s for the rest"
+    return weights, (
+        f"seed: {len(measured)} measured, median {median:.1f}s for the rest"
+        f"{skipped_note}")
 
 
 def lpt_pack(weights: dict[str, float], shards: int) -> list[list[str]]:
