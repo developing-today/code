@@ -391,8 +391,16 @@ impl Checkpoint {
         buf.push(self.close_reason.byte());
         buf
     }
-    fn frame_count(&self) -> u64 {
-        self.last_frame_seq - self.first_frame_seq + 1
+    /// Number of frames the checkpoint commits to, or `None` when
+    /// the range is reversed or overflows. An owner-signed checkpoint
+    /// can carry any values: unchecked arithmetic here panicked in
+    /// debug builds and, for `0..=u64::MAX`, wrapped to a count of
+    /// zero in release builds, which would have let an empty body
+    /// pass the frame-count check (Codex P2 on PR #4435).
+    fn frame_count(&self) -> Option<u64> {
+        self.last_frame_seq
+            .checked_sub(self.first_frame_seq)?
+            .checked_add(1)
     }
 }
 
@@ -628,14 +636,17 @@ fn verify_segment(
         checkpoint.id == blake(&checkpoint.core_bytes(&header.session_id)),
         "checkpoint ID does not match its core"
     );
+    let frame_count = checkpoint
+        .frame_count()
+        .ok_or_else(|| anyhow::anyhow!("checkpoint frame range is reversed or overflows"))?;
     anyhow::ensure!(
-        checkpoint.frame_count() == body.frames.len() as u64,
+        frame_count == body.frames.len() as u64,
         "truncated or extended segment: checkpoint commits {} frames, body carries {}",
-        checkpoint.frame_count(),
+        frame_count,
         body.frames.len()
     );
     anyhow::ensure!(
-        checkpoint.frame_count() <= u64::from(header.max_frames),
+        frame_count <= u64::from(header.max_frames),
         "segment exceeds the signed max_frames policy"
     );
     let seed_id = checkpoint.previous_checkpoint.unwrap_or(header.session_id);
@@ -713,7 +724,10 @@ fn verify_chain(header: &SessionHeader, checkpoints: &[Checkpoint]) -> anyhow::R
             "state discontinuity at segment {i}"
         );
         expected_state = checkpoint.state_after;
-        expected_first = checkpoint.last_frame_seq + 1;
+        expected_first = checkpoint
+            .last_frame_seq
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("frame sequence overflows at segment {i}"))?;
     }
     Ok(())
 }
@@ -801,7 +815,7 @@ fn main() -> anyhow::Result<()> {
             checkpoint.segment_seq,
             checkpoint.first_frame_seq,
             checkpoint.last_frame_seq,
-            checkpoint.frame_count(),
+            checkpoint.frame_count().unwrap_or_default(),
             checkpoint.close_reason.name(),
             hex(&checkpoint.state_after[..8])
         );
@@ -1035,6 +1049,55 @@ mod tests {
         assert!(
             verify_chain(&header, &producer.checkpoints).is_err(),
             "chain verification accepted a tampered header"
+        );
+    }
+
+    #[test]
+    fn reversed_or_overflowing_frame_range_is_rejected() {
+        let producer = build_session().unwrap();
+        let owner_key = producer.signer.verifying_key();
+        let latest = producer.checkpoints.last().unwrap();
+        let latest_body = producer.bodies.last().unwrap();
+        // Reversed range: the old `last - first + 1` panicked in debug
+        // builds instead of returning a verification error.
+        let mut reversed = latest.clone();
+        reversed.first_frame_seq = latest.last_frame_seq + 1;
+        let core = reversed.core_bytes(&producer.header.session_id);
+        reversed.id = blake(&core);
+        reversed.signature = producer.signer.sign(&core).to_bytes();
+        assert!(reversed.frame_count().is_none());
+        assert!(
+            verify_segment(&producer.header, &reversed, latest_body, None, &owner_key).is_err(),
+            "verification accepted a reversed frame range"
+        );
+        // Overflowing range: `0..=u64::MAX` wrapped to a count of zero
+        // in release builds, matching an empty body.
+        let mut overflowing = latest.clone();
+        overflowing.first_frame_seq = 0;
+        overflowing.last_frame_seq = u64::MAX;
+        let core = overflowing.core_bytes(&producer.header.session_id);
+        overflowing.id = blake(&core);
+        overflowing.signature = producer.signer.sign(&core).to_bytes();
+        assert!(overflowing.frame_count().is_none());
+        let mut empty_body = latest_body.clone();
+        empty_body.frames.clear();
+        assert!(
+            verify_segment(
+                &producer.header,
+                &overflowing,
+                &empty_body,
+                None,
+                &owner_key
+            )
+            .is_err(),
+            "verification accepted an overflowing frame range with an empty body"
+        );
+        // Chain advancement past u64::MAX is an error, not a wrap.
+        let mut chain = producer.checkpoints.clone();
+        chain.last_mut().unwrap().last_frame_seq = u64::MAX;
+        assert!(
+            verify_chain(&producer.header, &chain).is_err(),
+            "chain verification accepted a frame sequence that overflows"
         );
     }
 
