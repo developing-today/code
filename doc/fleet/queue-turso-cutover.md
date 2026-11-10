@@ -379,3 +379,37 @@ detail carries the same three fields. Non-session claimants (Muse
 lanes) stamp the distinct provider marker `muse-lane` rather than
 a model. Claim-time semantics: a later failover changes the
 serving leaf but never rewrites the stamp.
+
+
+## Amendment 2026-11-10 — broker-owned waits (#8184)
+
+Drew's order (2026-11-10): the park churn ends — "the system can
+lock a item and drop it after done or some ttl". Lane shifts were
+spending most bundle slots re-discovering unchanged waits: a
+20-task bundle measured 9 handoffs + 8 triage parks + 3
+CI/dependency parks + 1 completion, with 395 of 398 queued tasks
+at their attempt cap. The broker now owns waiting:
+
+- **Claim eligibility.** The default (lane) pick's parked branch
+  excludes recorded opencode handoffs (`NOT (PARKED_HANDOFF_SQL)`):
+  a handed-off row is claimant-owned and is collected only
+  through the `parked_handoff` pick or by id. Serving it to a
+  lane re-ran the claim → handoff → park cycle for zero work.
+- **Wait TTL floors.** `verb_park` classifies the wait — a park
+  whose recorded stage is `awaiting_triage` is a triage wait
+  (`wait_kind = 'triage'`; the condition mapping gains the
+  `triage` kind) — and floors `not_before` broker-side: triage
+  6h, ci 1h, capacity 1h. Timer/review/external parks keep the
+  caller's delay.
+- **Wake verb.** `POST /wake` (`fleet queue wake <task_id>`)
+  releases a parked wait to `queued` immediately when its
+  condition is satisfied — the triage step waking an item it
+  just triaged is the canonical caller. The TTL floor is the
+  backstop, not the wake path.
+- **Handoff expiry sink.** `expire_leases` returns an expired
+  claim whose progress is a recorded handoff to the parked
+  handoff sink instead of `queued`. Attempts burn only on a
+  claim from `queued`; the claimed → expired → queued interlude
+  was the one place bookkeeping cycles consumed attempts (task
+  10501 reached 24/24 on handoff cycles alone). Direct claims
+  and bound sessions mid-work still return to `queued`.

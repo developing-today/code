@@ -1670,6 +1670,22 @@ fn cmd_park(rest: &[String]) -> i32 {
     0
 }
 
+/// wake (#8184): release a broker-held parked wait now that
+/// its condition is satisfied (e.g. the triage step finished
+/// triaging the item). The broker flips it back to queued.
+fn cmd_wake(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("wake", &args, 1);
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+    });
+    let resp = unwrap_ok(call("/wake", &body));
+    print_json(&require_row(&resp, "wake_task"));
+    0
+}
+
 fn cmd_block(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -1985,7 +2001,7 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|revive|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|wake|block|cancel|fail|complete|revive|health|signal|fallback> ...",
         );
         return 2;
     }
@@ -2004,6 +2020,7 @@ pub fn run(args: &[String]) -> i32 {
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),

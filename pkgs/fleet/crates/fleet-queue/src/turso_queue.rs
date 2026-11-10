@@ -1146,18 +1146,37 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
             .unwrap_or("")
             .to_string();
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
+        let to_sink = expired_claim_returns_to_sink(&progress);
         let (progress, cleared) = clear_binding(&progress, "expire_leases");
-        let upd = t.exec(
-            "UPDATE tasks SET status = 'queued', worker_id = NULL, lease_until = NULL, \
-               progress = ?, updated_at = ? \
-             WHERE id = ? AND status = 'claimed' AND lease_until < ?",
-            &[
-                Arg::Text(progress.to_string()),
-                Arg::Text(now.clone()),
-                Arg::Int(id),
-                Arg::Text(now.clone()),
-            ],
-        )?;
+        let upd = if to_sink {
+            let sink_nb = after_iso(1200);
+            t.exec(
+                "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
+                   not_before = ?, park_kind = 'relative', wait_kind = NULL, \
+                   ready_condition = ?, progress = ?, updated_at = ? \
+                 WHERE id = ? AND status = 'claimed' AND lease_until < ?",
+                &[
+                    Arg::Text(sink_nb.clone()),
+                    Arg::Text(json!({"kind": "time", "until": sink_nb}).to_string()),
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Int(id),
+                    Arg::Text(now.clone()),
+                ],
+            )?
+        } else {
+            t.exec(
+                "UPDATE tasks SET status = 'queued', worker_id = NULL, lease_until = NULL, \
+                   progress = ?, updated_at = ? \
+                 WHERE id = ? AND status = 'claimed' AND lease_until < ?",
+                &[
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Int(id),
+                    Arg::Text(now.clone()),
+                ],
+            )?
+        };
         if upd.affected == 0 {
             continue;
         }
@@ -1167,7 +1186,8 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
             Some(&worker),
             Some(id),
             "lease_expired",
-            &json!({"via": "expire_leases", "cleared_session_id": cleared}),
+            &json!({"via": "expire_leases", "cleared_session_id": cleared,
+                    "return": if to_sink { "handoff_sink" } else { "queued" }}),
         )?;
         if let Some(old) = cleared {
             on_binding_cleared(t, &worker, id, &old, "expire_leases")?;
@@ -1787,22 +1807,40 @@ fn progress_stage(progress: &Value) -> Option<&str> {
 /// never matches: it carries a different stage (parked, gated,
 /// probe_*) or a direct lane, and a bound session's park cleared
 /// the binding but keeps its working stage.
+/// The progress shape of a recorded opencode handoff (#8184):
+/// the opencode lane assignment plus a yield stage (handed_off, or
+/// launch_failed after a claimant recovery), regardless of the
+/// row's status or session binding.
+fn handoff_shape(progress: &Value) -> bool {
+    progress.get("lane").and_then(|v| v.as_str()) == Some("opencode")
+        && matches!(
+            progress_stage(progress),
+            Some("handed_off") | Some("launch_failed")
+        )
+}
+
 fn is_parked_handoff(row: &Value) -> bool {
     if row.get("status").and_then(|v| v.as_str()) != Some("parked") {
         return false;
     }
     let progress = row.get("progress").cloned().unwrap_or(json!({}));
-    if progress.get("lane").and_then(|v| v.as_str()) != Some("opencode") {
-        return false;
-    }
     match progress.get("session_id") {
         Some(Value::Null) | None => {}
         Some(_) => return false,
     }
-    matches!(
-        progress_stage(&progress),
-        Some("handed_off") | Some("launch_failed")
-    )
+    handoff_shape(&progress)
+}
+
+/// Where an expired claim returns (#8184): a claimed row whose
+/// progress is a recorded opencode handoff goes back to the parked
+/// handoff sink, never to queued — the claimant collects it from
+/// parked at +0 attempts, so a claimant launch that died on the
+/// lease can never burn an attempt through the queued interlude.
+/// Anything else (a direct claim, a bound session mid-work whose
+/// stage advanced past the yield stages) returns to queued as
+/// before.
+fn expired_claim_returns_to_sink(progress: &Value) -> bool {
+    handoff_shape(progress)
 }
 
 /// Whether a by-id claim (claim_repo_task with task_id) may take
@@ -1965,6 +2003,24 @@ fn claim_update_sql(pick_predicate: &str) -> String {
     )
 }
 
+/// The default (lane) pick predicate (#8184): queued rows due
+/// under the attempts cap, or parked rows whose wait timer has
+/// passed — EXCEPT recorded opencode handoffs. A handed-off row is
+/// claimant-owned: the claimant collects it through the
+/// parked_handoff pick (or by id) with no timer gating, and serving
+/// it to a lane only re-runs the claim -> handoff -> park cycle
+/// that burned attempts across the fleet. Genuine wait parks (a
+/// stage other than the yield stages, or a direct lane) are
+/// unaffected and keep releasing through claim at not_before.
+fn default_pick_predicate() -> String {
+    format!(
+        "(status = 'queued' AND attempts < max_attempts \
+         AND (not_before IS NULL OR not_before <= ?)) \
+       OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ? \
+         AND NOT ({PARKED_HANDOFF_SQL}))"
+    )
+}
+
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let queue = req_str(req, "queue").unwrap_or("").to_string();
@@ -2085,10 +2141,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             let pick_predicate = if handoff_pick {
                 PARKED_HANDOFF_SQL.to_string()
             } else {
-                "(status = 'queued' AND attempts < max_attempts \
-                 AND (not_before IS NULL OR not_before <= ?)) \
-               OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)"
-                    .to_string()
+                default_pick_predicate()
             };
             let pick_sql = format!(
                 "SELECT id FROM tasks WHERE queue = ? \
@@ -2528,6 +2581,7 @@ fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
 fn wait_kind(condition: &Value) -> &'static str {
     match condition.get("kind").and_then(|k| k.as_str()) {
         Some("time") => "timer",
+        Some("triage") => "triage",
         Some("ci") | Some("ci_green") | Some("pr_merged") | Some("issue_closed")
         | Some("upstream_pr") => "ci",
         Some("review") | Some("codex_review") | Some("pr_review") | Some("person_answer") => {
@@ -2535,6 +2589,44 @@ fn wait_kind(condition: &Value) -> &'static str {
         }
         Some("capacity") | Some("quota_reset") => "capacity",
         _ => "external",
+    }
+}
+
+/// Broker-owned minimum wait TTLs (#8184): whatever delay a lane
+/// asks for, a recorded wait is held at least this long. Lanes
+/// re-discovering an unchanged wait every 20-25 minutes was the
+/// park churn: one discovery park per wait at these scales costs
+/// ~3% of the cycles. Floors: triage waits 6h (the triage step
+/// works on its own cadence and wakes the item via /wake when
+/// done), ci and capacity waits 1h (backlog-scale, not
+/// poll-scale). Timer/review/external waits keep the caller's
+/// delay — those parks carry an explicit owner-chosen horizon.
+fn wait_floor_seconds(wait_kind: &str) -> Option<i64> {
+    match wait_kind {
+        "triage" => Some(21_600),
+        "ci" | "capacity" => Some(3_600),
+        _ => None,
+    }
+}
+
+/// Apply the wait-kind floor to a park's not_before: a requested
+/// wake earlier than the floor is bumped to the floor (and the
+/// park becomes relative); a later one stands.
+fn apply_wait_floor(
+    wait_kind: &str,
+    not_before: String,
+    park_kind: &'static str,
+) -> (String, &'static str) {
+    match wait_floor_seconds(wait_kind) {
+        Some(floor) => {
+            let earliest = after_iso(floor);
+            if not_before < earliest {
+                (earliest, "relative")
+            } else {
+                (not_before, park_kind)
+            }
+        }
+        None => (not_before, park_kind),
     }
 }
 
@@ -2554,13 +2646,33 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
         ),
     };
     let given_progress = req.get("progress").cloned().unwrap_or(json!({}));
-    let condition = req
+    let mut condition_defaulted = false;
+    let condition = match req
         .get("ready_condition")
         .filter(|v| !v.is_null())
         .cloned()
         .or_else(|| given_progress.get("ready_condition").cloned())
-        .unwrap_or_else(|| json!({"kind": "time", "until": not_before}));
-    let wk = wait_kind(&condition);
+    {
+        Some(c) => c,
+        None => {
+            condition_defaulted = true;
+            json!({"kind": "time", "until": not_before})
+        }
+    };
+    // #8184: a park whose recorded stage is awaiting_triage IS a
+    // triage wait, whatever condition the caller attached — the
+    // broker classifies it, floors its TTL, and owns the wait.
+    let wk = if progress_stage(&given_progress) == Some("awaiting_triage") {
+        "triage"
+    } else {
+        wait_kind(&condition)
+    };
+    let (not_before, park_kind) = apply_wait_floor(wk, not_before, park_kind);
+    let condition = if condition_defaulted {
+        json!({"kind": "time", "until": not_before})
+    } else {
+        condition
+    };
     let (progress, cleared) = clear_binding(
         &row.get("progress").cloned().unwrap_or(json!({})),
         "park_task",
@@ -2607,6 +2719,77 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     })();
     match work {
         Ok(v) => v,
+        Err(e) => terr(e),
+    }
+}
+
+/// Whether a task row may be woken by the /wake verb (#8184):
+/// only a parked (broker-held waiting) row. Claimed/queued rows
+/// are already in the claim flow; terminal rows are done.
+fn wake_eligible(status: &str) -> Result<(), String> {
+    match status {
+        "parked" => Ok(()),
+        other => Err(format!(
+            "task status {other} cannot be woken (only parked waits)"
+        )),
+    }
+}
+
+/// The wake verb (#8184): release a broker-held wait NOW because
+/// its condition was satisfied — the triage step waking an item
+/// it just triaged is the canonical caller. The row returns to
+/// queued with its wait fields cleared, due immediately; the
+/// next claim is an ordinary execution claim. This replaces the
+/// lanes' 25-minute re-check loop as the wake path for recorded
+/// waits: the park TTL floor is only the backstop.
+fn verb_wake(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id").unwrap_or(0);
+    let worker = req_str(req, "worker")
+        .unwrap_or("fleet-queue-cli")
+        .to_string();
+    let reason = req_str(req, "reason").unwrap_or("").to_string();
+    let work = (|| -> Result<Value, String> {
+        let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
+            return Err(format!("wake_task: task {task_id} does not exist"));
+        };
+        let status = row
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let prev_wait_kind = row
+            .get("wait_kind")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        wake_eligible(&status).map_err(|e| format!("wake_task: task {task_id}: {e}"))?;
+        t.exec(
+            "UPDATE tasks SET status = 'queued', not_before = NULL, \
+               park_kind = NULL, wait_kind = NULL, worker_id = NULL, \
+               lease_until = NULL, updated_at = ? \
+             WHERE id = ? AND status = 'parked'",
+            &[Arg::Text(now_iso()), Arg::Int(task_id)],
+        )
+        .map_err(|e| e)?;
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            "woken",
+            &json!({
+                "reason": reason, "previous_status": status,
+                "previous_wait_kind": prev_wait_kind,
+                "via": "wake_task_turso",
+            }),
+        )
+        .map_err(|e| e)?;
+        get_task(t, task_id)
+            .map(|r| r.unwrap_or(Value::Null))
+            .map_err(|e| e)
+    })();
+    match work {
+        Ok(row) if !row.is_null() => ok(json!({"row": row})),
+        Ok(_) => fail(5, format!("wake_task: task {task_id} does not exist")),
+        Err(e) if e.starts_with("wake_task:") => fail(5, e),
         Err(e) => terr(e),
     }
 }
@@ -3325,6 +3508,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/heartbeat" => verb_heartbeat(t, req),
         "/checkpoint" => verb_checkpoint(t, req),
         "/park" => verb_park(t, req),
+        "/wake" => verb_wake(t, req),
         "/block" => verb_block(t, req),
         "/cancel" => verb_cancel(t, req),
         "/fail" => verb_fail(t, req),
@@ -3571,7 +3755,87 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn wait_floors_match_broker_policy_8184() {
+        // #8184: triage waits are held 6h, ci/capacity 1h; waits
+        // with an owner-chosen horizon are unfloored.
+        assert_eq!(wait_floor_seconds("triage"), Some(21_600));
+        assert_eq!(wait_floor_seconds("ci"), Some(3_600));
+        assert_eq!(wait_floor_seconds("capacity"), Some(3_600));
+        assert_eq!(wait_floor_seconds("timer"), None);
+        assert_eq!(wait_floor_seconds("review"), None);
+        assert_eq!(wait_floor_seconds("external"), None);
+    }
+
+    #[test]
+    fn apply_wait_floor_bumps_short_waits_only_8184() {
+        // A long-past requested wake is bumped to the floor and
+        // becomes relative; a far-future one stands as absolute.
+        let (nb, kind) = apply_wait_floor("triage", "2000-01-01T00:00:00Z".to_string(), "absolute");
+        assert_eq!(kind, "relative");
+        assert!(nb > "2000-01-01T00:00:00Z".to_string());
+        let (nb, kind) = apply_wait_floor("triage", "2999-01-01T00:00:00Z".to_string(), "absolute");
+        assert_eq!(nb, "2999-01-01T00:00:00Z");
+        assert_eq!(kind, "absolute");
+        // Unfloored kinds never move.
+        let (nb, kind) = apply_wait_floor("timer", "2000-01-01T00:00:00Z".to_string(), "absolute");
+        assert_eq!(nb, "2000-01-01T00:00:00Z");
+        assert_eq!(kind, "absolute");
+    }
+
+    #[test]
+    fn default_pick_never_serves_parked_handoffs_8184() {
+        // #8184 regression pin: the lane pick's parked branch must
+        // exclude the recorded-handoff shape (the claimant's own
+        // parked_handoff pick is the only collection path), while
+        // the queued branch keeps its attempts cap.
+        let pred = default_pick_predicate();
+        assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
+        assert!(pred.contains("status = 'parked'"));
+        assert!(pred.contains("NOT ("));
+        assert!(pred.contains("json_extract(progress, '$.lane') = 'opencode'"));
+        assert!(pred.contains("'handed_off', 'launch_failed'"));
+        // And the claim UPDATE re-check carries the same exclusion.
+        let upd = claim_update_sql(&pred);
+        assert!(upd.contains("NOT ("));
+        assert!(upd.contains("json_extract(progress, '$.lane') = 'opencode'"));
+    }
+
+    #[test]
+    fn expired_claims_return_handoffs_to_sink_only_8184() {
+        // #8184: expiry of a claimed recorded handoff returns to
+        // the parked sink (no attempt burn); anything else queues.
+        assert!(expired_claim_returns_to_sink(
+            &json!({"lane": "opencode", "stage": "handed_off"})
+        ));
+        assert!(expired_claim_returns_to_sink(
+            &json!({"lane": "opencode", "stage": "launch_failed"})
+        ));
+        assert!(expired_claim_returns_to_sink(&json!({
+            "lane": "opencode",
+            "last_checkpoint": {"stage": "handed_off"}
+        })));
+        assert!(!expired_claim_returns_to_sink(
+            &json!({"lane": "direct", "stage": "handed_off"})
+        ));
+        assert!(!expired_claim_returns_to_sink(&json!({
+            "lane": "opencode",
+            "stage": "implementation_complete"
+        })));
+        assert!(!expired_claim_returns_to_sink(&json!({})));
+    }
+
+    #[test]
+    fn wake_eligibility_is_parked_only_8184() {
+        assert!(wake_eligible("parked").is_ok());
+        assert!(wake_eligible("queued").is_err());
+        assert!(wake_eligible("claimed").is_err());
+        assert!(wake_eligible("done").is_err());
+    }
+
+    #[test]
     fn wait_kind_mapping_matches_pg_park() {
+        assert_eq!(wait_kind(&json!({"kind": "triage"})), "triage");
         assert_eq!(wait_kind(&json!({"kind": "time"})), "timer");
         assert_eq!(wait_kind(&json!({"kind": "pr_merged"})), "ci");
         assert_eq!(wait_kind(&json!({"kind": "person_answer"})), "review");
