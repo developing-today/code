@@ -350,7 +350,8 @@ and recorded rather than forked:
   browser-trusted certificate, which is rare.
 - **Implementation is out of scope** for this record (the issue makes
   implementation timing a separate decision). The follow-on implementation
-  work is tracked by the linked implementation issue below.
+  work is tracked by implementation issue
+  [#8215](https://github.com/developing-today/code/issues/8215).
 
 ## 9. Evidence map
 
