@@ -236,6 +236,9 @@ impl EventStore {
     /// - A body that is not a group operation, or no body at all, makes the event content.
     /// - A body that claims to be a group operation decodes to its action, or it is refused.
     /// - A body that is not the one the header commits to, by BLAKE3 hash and size, is refused.
+    /// - A writer-set or rescind event's verified body is retained with the store
+    ///   (`writer_set_bodies`), so the stored object can be read back and projected
+    ///   (issue #6690; see the `writer_set` submodule).
     /// - A tag event (kind `tag.set` or `tag.clear`) takes no body. Its operation is in its
     ///   header (#182), so a payload on a tag event is refused. Its tag takes no membership
     ///   action, and the fold reads it from the stored header (see `claims`).
@@ -258,6 +261,13 @@ impl EventStore {
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
         let kind = &event.header.extensions.kind;
+        // A writer-set or rescind body is retained with its event (issue
+        // #6690): the header commits to it by hash, and `body_action` below
+        // has already refused a body that is not the committed one, so what
+        // is retained here is the object the signer published.
+        let retain_body = body
+            .filter(|_| crate::idset::is_writer_kind(kind) || crate::idset::is_rescind_kind(kind));
+        let event_id = event.id;
         let action = if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
             if body.is_some() {
                 return Ok(Ingest::Refused(Refusal::Malformed(
@@ -272,7 +282,13 @@ impl EventStore {
                 Err(refusal) => return Ok(Ingest::Refused(refusal)),
             }
         };
-        self.ingest_event(event, action.as_ref(), now_ms)
+        let result = self.ingest_event(event, action.as_ref(), now_ms)?;
+        if let Some(body) = retain_body
+            && !matches!(result, Ingest::Refused(_))
+        {
+            self.record_writer_body(&event_id, body)?;
+        }
+        Ok(result)
     }
 
     /// Verifies one received event, which may be a group operation, and applies what it allows.

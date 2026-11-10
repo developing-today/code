@@ -33,6 +33,7 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
 //!
@@ -1325,6 +1326,32 @@ pub enum Command {
         /// The claim action to run.
         #[command(subcommand)]
         command: ClaimCommand,
+    },
+    /// Writer sets stored in the event store: show one, expand it, or discover
+    /// sets by scope (writer-set spec §§4–5; issue #6690).
+    ///
+    /// A writer set is a signed `idset.writer` event whose body the store
+    /// retains at ingest. `show` prints the stored object, `expand` runs the
+    /// view projection over the store's resolved group state at the set's own
+    /// publishing frontier, and `discover` lists every stored set for a scope
+    /// with the writers each expands to. `--resolution` names the resolution
+    /// snapshot the projection is pinned under; without one, the zero hash
+    /// names the store's current resolved state.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id writer-sets discover --scope metrics
+    /// id writer-sets expand EVENT --json
+    /// id writer-sets show EVENT
+    /// ```
+    WriterSets {
+        /// Print JSON instead of lines (one array for `discover`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The writer-set action to run.
+        #[command(subcommand)]
+        command: WriterSetCommand,
     },
     /// Migrate existing files to have name/file auto-tags.
     ///
@@ -2643,6 +2670,45 @@ pub enum DocCommand {
     History {
         /// The document's event ID, as `publish` printed it.
         document: String,
+    },
+}
+
+/// The actions of `id writer-sets` (writer-set spec §§4–5; issue #6690).
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum WriterSetCommand {
+    /// Show one stored writer set: its ID, version, owner, scope, and the
+    /// counts of its admission entries and exclusions.
+    Show {
+        /// The publishing event's ID.
+        event: String,
+    },
+    /// Expand one stored writer set at its publishing frontier: whether the
+    /// expansion is public, and the explicit authors it admits after
+    /// exclusions.
+    Expand {
+        /// The publishing event's ID.
+        event: String,
+        /// The resolution snapshot to pin the projection under, as hex.
+        /// Without one, the zero hash names the store's current resolved
+        /// state.
+        #[arg(long)]
+        resolution: Option<String>,
+        /// Expand retroactively: only entries marked include-history
+        /// contribute (exclusions always apply).
+        #[arg(long)]
+        retro: bool,
+    },
+    /// Discover stored writer sets by scope: one row per set, with the
+    /// writers it expands to. Without `--scope`, every stored set matches.
+    Discover {
+        /// The scope (subject) to match, exactly.
+        #[arg(long)]
+        scope: Option<String>,
+        /// The resolution snapshot to pin each expansion under, as hex.
+        /// Without one, the zero hash names the store's current resolved
+        /// state.
+        #[arg(long)]
+        resolution: Option<String>,
     },
 }
 

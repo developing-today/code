@@ -70,11 +70,13 @@ pub mod range;
 mod resolve;
 pub mod sync;
 mod waiting_rows;
+mod writer_set;
 
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use ingest::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
+pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
 /// The store's file name in its directory.
 pub const FILE_NAME: &str = "events.redb";
@@ -109,6 +111,14 @@ const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
 const BLOCKS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("blocks");
+/// Each writer-set or rescind event's retained body, by event ID (writer-set
+/// spec §§4–5; issue #6690). Headers commit to bodies by hash but are stored
+/// without them; this table is the one place a body is kept, so a stored
+/// writer-set object can be read back and checked against its header. Written
+/// only from the ingest path, after the body has been verified against the
+/// header's payload commitment.
+const WRITER_SET_BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("writer_set_bodies");
 /// Each group operation's encoded action, by event ID. Written when the event arrives, held or
 /// stored, so a release reads it back without the caller. The resolution reads it again.
 const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -647,12 +657,13 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        // The blocks table is additive: stores created before it gain it here,
-        // on the write every open already performs, instead of a format change
-        // that would refuse them.
+        // The blocks and writer-set-bodies tables are additive: stores created
+        // before them gain them here, on the write every open already
+        // performs, instead of a format change that would refuse them.
         {
             let txn = db.begin_write()?;
             txn.open_table(BLOCKS)?;
+            txn.open_table(WRITER_SET_BODIES)?;
             txn.commit()?;
         }
         let mut store = Self {
