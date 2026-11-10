@@ -24,6 +24,7 @@ import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views
 import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
+import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -1077,6 +1078,15 @@ async function handler(req: Request): Promise<Response> {
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  // --- #3978: freshness delivery for browsers ------------------------------
+  // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
+  // #3977 journal only. Scope is server-derived from the page name; a caller
+  // cannot widen it, and no notice carries source payload or a secret.
+  if (req.method === "GET" && (path === "/freshness/stream" || path === "/api/freshness-events.json")) {
+    const delivery = await freshnessDeliveryResponse(req, url, { reader: freshnessStore });
+    if (delivery !== null) return delivery;
+  }
 
   // --- Author identities for the on-demand picker (#1179) ------------------
   // List pages render author pickers with the standing identities only;
