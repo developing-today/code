@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
@@ -1790,7 +1791,10 @@ func (a *App) CmdInit(ctx context.Context, args []string) error {
 	}
 	path := ".mcpx.json"
 	if *global {
-		home, _ := os.UserHomeDir()
+		home, err := homeutil.Home()
+		if err != nil {
+			return err
+		}
 		path = filepath.Join(home, ".config", "mcpx", "config.json")
 	}
 	if _, err := os.Stat(path); err == nil && !*force {
@@ -1996,25 +2000,44 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 
 	if subcmd == "install" {
 		dest := toDir
+		globalDest := func(parts ...string) (string, error) {
+			home, err := homeutil.Home()
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(append([]string{home}, parts...)...), nil
+		}
 		if dest == "" {
 			switch agent {
 			case "claude":
 				if st, err := os.Stat(".claude"); err == nil && st.IsDir() {
 					dest = ".claude/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".claude", "skills")
+					gd, err := globalDest(".claude", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "codex":
 				if st, err := os.Stat(".codex"); err == nil && st.IsDir() {
 					dest = ".codex/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".codex", "skills")
+					gd, err := globalDest(".codex", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "agy":
 				if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity", "skills")
+					gd, err := globalDest(".gemini", "antigravity", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			default:
 				if st, err := os.Stat(".opencode"); err == nil && st.IsDir() {
@@ -2022,7 +2045,11 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 				} else if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".config", "opencode", "skills")
+					gd, err := globalDest(".config", "opencode", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			}
 		}

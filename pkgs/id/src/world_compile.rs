@@ -694,16 +694,31 @@ fn apply_rlimits() -> std::io::Result<()> {
 /// The exact nightly matters: a different one produces a different module
 /// layout (found the hard way). `id world doctor` and the compile path agree
 /// on the toolchain by both going through this function.
+/// The homes under which `locate_roc` probes for the pinned nightly:
+/// exactly the non-empty `HOME`, or nothing. Pure, so the contract
+/// probe matrix (unset and empty both yield no candidate; set yields
+/// exactly that home) is unit-testable without touching the process
+/// environment.
+fn roc_home_candidates(home: Option<String>) -> Vec<String> {
+    match home {
+        Some(home) if !home.is_empty() => vec![home],
+        _ => Vec::new(),
+    }
+}
+
 pub fn locate_roc() -> Result<String> {
     if let Ok(path) = std::env::var("ID_ROC_BIN") {
         return Ok(path);
     }
     let tag = "nightly-2026-10-04-130536d";
     let version = tag.trim_start_matches("nightly-");
-    for home in [
-        std::env::var("HOME").unwrap_or_default(),
-        "/home/user".to_owned(),
-    ] {
+    // Home-resolution contract (issues #5762 / #5763): the pinned-roc
+    // probe runs only under a non-empty HOME. The old candidate list
+    // probed a root-anchored path (empty HOME via unwrap_or_default)
+    // and a hardcoded "/home/user" - both are substitute directories
+    // the contract bans. With HOME unset/empty the probe is skipped
+    // and the PATH lookup below decides, so no invented home is used.
+    for home in roc_home_candidates(std::env::var("HOME").ok()) {
         let path = format!(
             "{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc"
         );
@@ -722,6 +737,20 @@ pub fn locate_roc() -> Result<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roc_home_candidates_follow_the_home_contract() {
+        // Oracle: the home-resolution contract (issues #5762 / #5763) -
+        // unset and empty HOME both yield no probe candidate (never a
+        // root-anchored "" or a hardcoded user), and a set HOME yields
+        // exactly itself, so the pinned-roc path is unchanged.
+        assert!(roc_home_candidates(None).is_empty());
+        assert!(roc_home_candidates(Some(String::new())).is_empty());
+        assert_eq!(
+            roc_home_candidates(Some("/home/someone".to_owned())),
+            vec!["/home/someone".to_owned()]
+        );
+    }
 
     fn spec(files: Vec<(&str, &str)>) -> CompileSpec {
         CompileSpec {
