@@ -149,7 +149,11 @@ pub struct GamePost {
 ///
 /// The game post's own author cannot accept their own challenge; an
 /// acceptance is the record that opens the game for [`GameTurn`] objects.
-/// One acceptance per (game post, author) is accepted into the graph.
+/// Competing acceptance records from one participant (re-signed envelopes,
+/// divergent arrivals) are all kept as signed history: acceptance is
+/// effective by existence, never by a first-arrival-wins check, so peers
+/// holding the same signed set converge in any arrival order — the same
+/// rule [`BoardGraph::has_role`] documents for role grants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GameChallengeAcceptance {
@@ -164,9 +168,13 @@ pub struct GameChallengeAcceptance {
 /// A turn is bound to its game post (and through it to the pinned package
 /// hash and version), to the role its signer is assigned in that post, to
 /// its index in a lineage, and to the prior turn it builds on (`prev_turn`,
-/// `None` only for the opening turn). Two valid turns may name the same
-/// `prev_turn`: they are competing branches of the game, kept as forks in
-/// the graph, never erased or overwritten by acceptance.
+/// `None` only for the opening turn). The acting participant rotates
+/// through the game post's participant list by turn index — turn `i` must
+/// be signed by `participants[i % participants.len()]` under that
+/// participant's role — so a lineage cannot advance on one player's
+/// signatures alone. Two valid turns may name the same `prev_turn`: they
+/// are competing branches of the game, kept as forks in the graph, never
+/// erased or overwritten by acceptance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GameTurn {
@@ -844,15 +852,6 @@ impl BoardGraph {
                     post_body.participants.iter().any(|participant| participant.author == author),
                     "a game challenge can be accepted only by an assigned participant"
                 );
-                ensure!(
-                    !self.objects.values().any(|signed| matches!(
-                        &signed.object,
-                        BoardObject::GameChallengeAcceptance(acceptance)
-                            if acceptance.game_post == value.game_post
-                                && signed.artifact.author == author
-                    )),
-                    "this participant has already accepted the game challenge"
-                );
             }
             BoardObject::GameTurn(value) => {
                 let post = self.require_scoped(&value.game_post, &value.board, "game_post")?;
@@ -863,11 +862,12 @@ impl BoardGraph {
                     post_body.mode == GameMode::AsyncTurns,
                     "game turns require the async-turns play mode"
                 );
+                let acting = &post_body.participants[usize::try_from(value.turn_index)
+                    .unwrap_or(usize::MAX)
+                    % post_body.participants.len()];
                 ensure!(
-                    post_body.participants.iter().any(|participant| {
-                        participant.author == author && participant.role == value.role
-                    }),
-                    "a game turn must be signed by the author assigned to its role"
+                    acting.author == author && acting.role == value.role,
+                    "a game turn must be signed by the participant whose turn its index names, under that participant's assigned role"
                 );
                 ensure!(
                     self.objects.values().any(|signed| matches!(
@@ -1281,12 +1281,18 @@ impl BoardGraph {
         if !genesis_bytes.is_empty() {
             instance.restore(&genesis_bytes)?;
         }
-        for (_, turn) in &lineage {
+        for (hash, turn) in &lineage {
+            let signed = self
+                .objects
+                .get(hash)
+                .context("game lineage reference is missing")?;
             let position = post_body
                 .participants
                 .iter()
-                .position(|participant| participant.role == turn.role)
-                .context("game turn role is not assigned in the game post")?;
+                .position(|participant| {
+                    participant.author == signed.artifact.author && participant.role == turn.role
+                })
+                .context("game turn signer is not assigned in the game post")?;
             let participant = u64::try_from(position + 1)?;
             let action_bytes = match &turn.action {
                 serde_json::Value::String(text) => text.clone().into_bytes(),
@@ -4300,17 +4306,31 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(graph.game_acceptances(&game_hash).len(), 1);
-        // One acceptance per participant: a second one is refused.
-        assert!(
-            graph
-                .insert(game_acceptance_object(
-                    &opponent,
-                    2,
-                    root_hash.clone(),
-                    game_hash.clone(),
-                ))
-                .is_err()
-        );
+        // A re-signed acceptance from the same participant is kept as
+        // signed history, and peers that receive the two records in
+        // opposite orders converge on the same set (Codex P1 on PR
+        // #8327: a first-arrival-wins rejection stalls replication).
+        let acceptance_a =
+            game_acceptance_object(&opponent, 1, root_hash.clone(), game_hash.clone());
+        let acceptance_b =
+            game_acceptance_object(&opponent, 2, root_hash.clone(), game_hash.clone());
+        let mut peer = BoardGraph::default();
+        let peer_root = peer.insert(board(&creator)).unwrap();
+        assert_eq!(peer_root, root_hash);
+        peer.insert(game_post_object(&creator, &opponent, root_hash.clone()))
+            .unwrap();
+        peer.insert(acceptance_b).unwrap();
+        peer.insert(acceptance_a).unwrap();
+        graph
+            .insert(game_acceptance_object(
+                &opponent,
+                2,
+                root_hash.clone(),
+                game_hash.clone(),
+            ))
+            .unwrap();
+        assert_eq!(graph.game_acceptances(&game_hash).len(), 2);
+        assert_eq!(peer.game_acceptances(&game_hash).len(), 2);
 
         // A turn signed by anyone but the author assigned to its role
         // is refused (here the opponent signing for role "x").
