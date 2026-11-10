@@ -12,6 +12,10 @@
 #   5. restart itself fails -> owed recorded; next old==new run
 #      retries and clears it
 #   6. unusable or corrupt baseline state fails safely
+#   7. partial batch then revert: a unit that restarted successfully
+#      at the partial head is rolled back when a later commit reverts
+#      its subtree, even though the baseline-range diff is empty
+#      (per-unit deployed tracking, #7132)
 # Run: bash pm-stack/scripts/pm-git-sync.test.sh
 set -uo pipefail
 
@@ -191,6 +195,26 @@ check "old==new retry after restart failure exits 0" test $? -eq 0
 check "dispatch restarted by retry" log_has "restart pm-dispatch"
 check "dispatch owed record cleared" test ! -e "$OWED_DISPATCH"
 check "restart recovery advances deployed baseline" deployed_head_is "$(git -C "$REPO" rev-parse HEAD)"
+
+# --- 4b. partial batch then revert: the successful unit rolls back ------------
+push_change pm-stack/aggregator/index.ts 'agg v3-partial'
+push_change pm-stack/projector/package.json '{"name":"proj","version":"2"}'
+touch "$PM_TEST_PROJ_DEP_FAIL"
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "partial-batch run exits non-zero" test $? -ne 0
+check "aggregator restarted at the partial head" log_has "restart pm-aggregator"
+check "projector NOT restarted past its failing dep step" log_lacks "restart pm-projector"
+rm -f "$PM_TEST_PROJ_DEP_FAIL"
+push_change pm-stack/aggregator/index.ts 'agg v2'
+push_change pm-stack/projector/package.json '{"name":"proj","version":"3"}'
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "revert run exits 0" test $? -eq 0
+check "aggregator rolled back by the revert" log_has "restart pm-aggregator"
+check "projector redeployed by the revert run" log_has "restart pm-projector"
+check "revert run advances deployed baseline" deployed_head_is "$(git -C "$REPO" rev-parse HEAD)"
+check "aggregator deployed record tracks the revert head" test "$(cat "$STATE_DIR/deployed-pm-aggregator.service")" = "$(git -C "$REPO" rev-parse HEAD)"
 
 # --- 5. an unusable state path must fail before treating HEAD as deployed -----
 touch "$SCRATCH/blocker"

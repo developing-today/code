@@ -27,6 +27,15 @@
 #   is likewise recorded and retried. While any redeploy is owed, the
 #   run FAILS LOUDLY (non-zero exit) so the state is visible in the
 #   journal instead of a silent WARN with exit 0.
+# - Successful deployments are tracked per unit (#7132): each unit's
+#   last successfully deployed commit is recorded, and a unit
+#   redeploys when its subtree at HEAD differs from the subtree at
+#   ITS deployed commit — not merely when it changed across the
+#   global baseline range. Without this, a unit restarted during a
+#   partially failed batch is stranded if a later commit reverts its
+#   subtree to the baseline content: the baseline-range diff is
+#   empty, the rollback restart is skipped, and the baseline
+#   advances while the unit keeps running the reverted content.
 set -uo pipefail
 REPO="${PM_GIT_SYNC_REPO:-$HOME/git/code}"
 BUN="${PM_GIT_SYNC_BUN:-/run/current-system/sw/bin/bun}"
@@ -129,8 +138,19 @@ clear_owed() { # <unit>
   if [ -e "$f" ]; then rm -f "$f"; fi
 }
 
+# --- deployed commits per unit (#7132) ---------------------------------------
+# One record per unit: $STATE_DIR/deployed-<unit> holds the commit
+# whose subtree the unit was last successfully restarted onto.
+deployed_file() { echo "$STATE_DIR/deployed-$1"; }
+
+record_deployed() { # <unit>
+  mkdir -p "$STATE_DIR" || return 1
+  printf '%s\n' "$new" >"$(deployed_file "$1")"
+}
+
 ATTEMPTED=" "
 OWED_PERSIST_FAILED=0
+DEPLOYED_PERSIST_FAILED=0
 
 # attempt_redeploy <subtree> <unit> <dep-step-or-empty>
 # Runs the dependency step (when given) and then the restart. A failed
@@ -160,6 +180,7 @@ attempt_redeploy() {
   if "$SYSTEMCTL" --user restart "$unit"; then
     echo "pm-git-sync: $unit restarted ($subtree)"
     clear_owed "$unit"
+    record_deployed "$unit" || DEPLOYED_PERSIST_FAILED=1
     return 0
   fi
   echo "pm-git-sync: FAIL $unit restart failed — redeploy owed"
@@ -200,6 +221,10 @@ finish() {
     echo "pm-git-sync: FAIL could not persist an owed-redeploy record in $STATE_DIR — a failed redeploy may not be retried"
     exit 1
   fi
+  if [ "$DEPLOYED_PERSIST_FAILED" -ne 0 ]; then
+    echo "pm-git-sync: FAIL could not persist a deployed-commit record in $STATE_DIR — a successful redeploy may be misjudged on a later run"
+    exit 1
+  fi
   if [ -n "$owed" ]; then
     echo "pm-git-sync: FAIL redeploy(s) still owed for: $(echo "$owed" | tr '\n' ' ')"
     exit 1
@@ -221,33 +246,38 @@ else
   echo "pm-git-sync: updated deployed baseline $old -> $new"
 fi
 
-redeploy() { # <subtree> <unit> <dep-step-or-empty>
-  local subtree="$1" unit="$2" dep="$3"
-  if [ "$BOOTSTRAP" -ne 1 ]; then
-    git diff --name-only "$old" "$new" -- "$subtree" | grep -q . || return 0
+# redeploy <subtree> <unit> <dep-step> <dep-input-path...>
+# A unit redeploys when its subtree at HEAD differs from the subtree
+# at the commit it last deployed successfully (its deployed record,
+# or the global baseline when it has none). The dependency step runs
+# when the dependency inputs changed across that same per-unit range.
+redeploy() {
+  local subtree="$1" unit="$2" dep_step="$3"
+  shift 3
+  if [ "$BOOTSTRAP" -eq 1 ]; then
+    attempt_redeploy "$subtree" "$unit" "$dep_step" || true
+    return 0
+  fi
+  local base="$old" f
+  f="$(deployed_file "$unit")"
+  if [ -e "$f" ]; then base="$(sed -n '1p' "$f")"; fi
+  if [ "$(git rev-parse "$base:$subtree" 2>/dev/null)" = "$(git rev-parse "$new:$subtree" 2>/dev/null)" ]; then
+    return 0
+  fi
+  local dep=""
+  if [ $# -gt 0 ] && git diff --name-only "$base" "$new" -- "$@" | grep -q .; then
+    dep="$dep_step"
   fi
   attempt_redeploy "$subtree" "$unit" "$dep" || true
 }
 
 # The aggregator installs with bun when its dependency inputs change.
-if [ "$BOOTSTRAP" -eq 1 ] ||
-  git diff --name-only "$old" "$new" -- pm-stack/aggregator/package.json pm-stack/aggregator/bun.lock | grep -q .; then
-  agg_dep="$BUN install --silent"
-else
-  agg_dep=""
-fi
-redeploy pm-stack/aggregator pm-aggregator.service "$agg_dep"
+redeploy pm-stack/aggregator pm-aggregator.service "$BUN install --silent" pm-stack/aggregator/package.json pm-stack/aggregator/bun.lock
 
 # The projector provisions @libsql/client via setup-deps.sh when its
 # package.json changes (bun install cannot reach the registry reliably
 # from this host; see pm-stack/projector/scripts/setup-deps.sh).
-if [ "$BOOTSTRAP" -eq 1 ] ||
-  git diff --name-only "$old" "$new" -- pm-stack/projector/package.json | grep -q .; then
-  proj_dep="bash scripts/setup-deps.sh"
-else
-  proj_dep=""
-fi
-redeploy pm-stack/projector pm-projector.service "$proj_dep"
+redeploy pm-stack/projector pm-projector.service "bash scripts/setup-deps.sh" pm-stack/projector/package.json
 
 # pm-dispatch has no dependency step: its package.json carries only
 # type-level devDependencies (the runtime is pure Bun), and its env
