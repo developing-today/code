@@ -5048,29 +5048,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   // price within 25% of the band leader; the scale select multiplies all
   // three. Lane charts visualize the same near-leader choices as the
   // comparison tables; they do not recalculate band membership.
-  function logEdges(vals, n) {
-    var xs = vals.filter(function (v) { return v != null && v > 0; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    if (mn === mx) return [mn, mx];
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn * Math.pow(mx / mn, i / n));
-    return edges;
-  }
-  function scoreEdges(rows, n) {
-    var xs = rows.map(function (p) { return p.score; }).filter(function (v) { return v != null; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn + ((mx - mn) * i) / n);
-    return edges;
-  }
-  function bandIndex(v, edges) {
-    for (var i = 0; i < edges.length - 1; i++) {
-      if (v >= edges[i] && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1])) return i;
-    }
-    return -1;
-  }
+  // logEdges/scoreEdges/bandIndex come from the aa-explorer-computations.js import above (#7562): no inline copies here - an inline definition would shadow the tested module implementation.
   function chipFor(p, leader) {
     var notes = [];
     if (leader && leader.key !== p.key) {

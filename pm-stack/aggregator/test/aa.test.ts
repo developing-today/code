@@ -791,6 +791,25 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(asset).toContain("export function computeRecommendations");
     expect(asset).toContain("export function projectTask");
   });
+
+  test("/aa page script does not redefine the computations it imports (#7562)", async () => {
+    // Oracle: the emitted page must execute the tested module copies.
+    // Any inline "function <name>(" for an imported name shadows the
+    // module implementation inside the page script (#3737 regression).
+    const page = await (await fetch("http://127.0.0.1:" + port + "/aa")).text();
+    const importMatch = page.match(/import \{([^}]+)\} from "\/assets\/aa-explorer-computations\.js";/);
+    expect(importMatch).not.toBeNull();
+    const imported = (importMatch as RegExpMatchArray)[1]
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    expect(imported).toContain("logEdges");
+    expect(imported).toContain("scoreEdges");
+    expect(imported).toContain("bandIndex");
+    for (const name of imported) {
+      expect(page).not.toMatch(new RegExp("function " + name + "\\s*\\("));
+    }
+  });
 });
 
 describe("aa chart expand + zoom/pan (#3298)", () => {
