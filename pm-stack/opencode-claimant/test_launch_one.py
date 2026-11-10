@@ -14,11 +14,12 @@ Covered:
 - repo-queue resolution: ~/.local/bin/repo-queue by default (never
   the retired ~/fleet-brokers/bin tree), env override wins;
 - candidate discovery delegates to poll.py: claimed handed_off rows
-  and parked handoff rows are candidates; bound, unyielded, and
-  OpenChamber-lane rows are not, with the reason named;
+  and sink rows (status "handed_off", #8234) are candidates; bound,
+  unyielded, and OpenChamber-lane rows are not, with the reason
+  named;
 - preflight is read-only in effect: it reports candidate, blockers
   (exhausted, held labels, cap, mode) and the would-steps, and a
-  parked candidate's steps start with the by-id claim;
+  sink candidate's steps start with the by-id claim;
 - --launch refuses in shadow mode, on a saturated/unknown cap, and
   on held labels — before creating any session;
 - a claimed candidate launches end to end: create (location
@@ -27,7 +28,7 @@ Covered:
 - a bind failure deletes the created session (no orphan);
 - a location mismatch deletes the session and checkpoints
   launch_failed instead of binding;
-- a parked candidate whose by-id claim fails launches nothing.
+- a sink candidate whose by-id claim fails launches nothing.
 """
 
 import importlib.util
@@ -62,23 +63,24 @@ def claimed_row(**over):
     return row
 
 
-def parked_row(**over):
-    row = claimed_row(status="parked", worker_id=None)
+def sink_row(**over):
+    row = claimed_row(status="handed_off", worker_id=None)
     row.update(over)
     return row
 
 
-def serve(claimed=(), parked=()):
+def serve(claimed=(), sink=()):
     """Patch poll's broker fetches to serve the fixture rows."""
 
     def fetch_claimed(queue):
         return list(claimed) if queue == QUEUE else []
 
-    def fetch_parked(queue):
-        return list(parked) if queue == QUEUE else []
+    def fetch_handed_off(queue):
+        return list(sink) if queue == QUEUE else []
 
     return patch.multiple(
-        poll, fetch_claimed_rows=fetch_claimed, fetch_parked_rows=fetch_parked
+        poll, fetch_claimed_rows=fetch_claimed,
+        fetch_handed_off_rows=fetch_handed_off
     )
 
 
@@ -108,11 +110,11 @@ class TestFindRow(unittest.TestCase):
         self.assertEqual(status, "claimed")
         self.assertEqual(reasons, [])
 
-    def test_parked_handoff_is_candidate(self):
-        with serve(parked=[parked_row()]):
+    def test_sink_handoff_is_candidate(self):
+        with serve(sink=[sink_row()]):
             row, status, cand, reasons = launch_one.find_row(QUEUE, 777)
         self.assertTrue(cand)
-        self.assertEqual(status, "parked")
+        self.assertEqual(status, "handed_off")
 
     def test_bound_row_is_not_candidate_and_says_why(self):
         row = claimed_row(progress={"lane": "opencode", "stage": "handed_off",
@@ -137,8 +139,12 @@ class TestFindRow(unittest.TestCase):
         self.assertTrue(any("OpenChamber" in r for r in reasons))
 
     def test_genuine_wait_park_is_not_candidate(self):
-        row = parked_row(progress={"lane": "opencode", "stage": "awaiting_ci"})
-        with serve(parked=[row]):
+        # A genuine wait park (status 'parked') is never a sink
+        # candidate — even served through the sink fetch, the
+        # status gate in is_handoff_waiting refuses it (#8234).
+        row = sink_row(status="parked",
+                       progress={"lane": "opencode", "stage": "awaiting_ci"})
+        with serve(sink=[row]):
             _r, _s, cand, _reasons = launch_one.find_row(QUEUE, 777)
         self.assertFalse(cand)
 
@@ -150,8 +156,8 @@ class TestFindRow(unittest.TestCase):
 
 
 class TestPreflight(unittest.TestCase):
-    def test_parked_candidate_reports_would_steps(self):
-        with serve(parked=[parked_row()]), live_and_room(2), \
+    def test_sink_candidate_reports_would_steps(self):
+        with serve(sink=[sink_row()]), live_and_room(2), \
              patch.object(launch_one, "hard_stop_reason", return_value=None):
             out = launch_one.preflight(QUEUE, 777)
         self.assertTrue(out["candidate"])
@@ -324,9 +330,9 @@ class TestLaunch(unittest.TestCase):
         self.assertIn("prompt_failed", rec["reason"])
         self.assertEqual(deleted, [])  # bound session is supervision's, not deleted
 
-    def test_parked_candidate_claims_by_id_then_launches(self):
+    def test_sink_candidate_claims_by_id_then_launches(self):
         fq = FakeQueue(claim_row={"task": {"id": 777, "worker_id": "opencode-claimant"}})
-        rec, _d = self.run_launch(rows_kw={"parked": [parked_row()]}, fq=fq)
+        rec, _d = self.run_launch(rows_kw={"sink": [sink_row()]}, fq=fq)
         self.assertTrue(rec["ok"], rec)
         self.assertEqual(fq.verbs(), ["claim", "bind", "checkpoint"])
         claim = fq.calls[0]
@@ -336,11 +342,11 @@ class TestLaunch(unittest.TestCase):
         checkpoint = fq.calls[2]
         self.assertIn("opencode-claimant", checkpoint)
 
-    def test_parked_claim_failure_launches_nothing(self):
+    def test_sink_claim_failure_launches_nothing(self):
         fq = FakeQueue(claim_row=None, claim_rc=1)
-        rec, deleted = self.run_launch(rows_kw={"parked": [parked_row()]}, fq=fq)
+        rec, deleted = self.run_launch(rows_kw={"sink": [sink_row()]}, fq=fq)
         self.assertFalse(rec["ok"])
-        self.assertEqual(rec["reason"], "parked_claim_failed")
+        self.assertEqual(rec["reason"], "sink_claim_failed")
         self.assertEqual(fq.verbs(), ["claim"])
         self.assertEqual(deleted, [])
 

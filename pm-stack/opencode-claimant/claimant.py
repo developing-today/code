@@ -481,29 +481,26 @@ def _send_prompt(session_id: str, prompt: str) -> bool:
 CLAIMANT_WORKER = "opencode-claimant"
 
 
-def _collect_parked_handoffs(queue: str, want: int) -> Dict[int, Dict]:
-    """Collect up to `want` parked recorded handoffs from `queue`
-    WITHOUT naming a task id (#8097 Rule 1): each
+def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
+    """Collect up to `want` recorded handoffs from `queue`'s
+    handoff sink WITHOUT naming a task id (#8097 Rule 1): each
     `repo-queue claim --handoff` lets the BROKER pick the next
-    parked handoff (its ordinary pick order), claimed as the
-    claimant, so the launch flow below has a live claim to bind
-    against. Returns {task_id: claimed row}.
+    sink row (its ordinary pick order), claimed as the claimant,
+    so the launch flow below has a live claim to bind against.
+    Returns {task_id: claimed row}.
 
-    The handing-off lane parks the task as its handoff sink, so
-    without collection the task is never in the claimed state the
-    launch flow binds against — it waited out the park timer, was
-    re-claimed by the next shift wave, handed off, and parked again
-    (#7907/#6533). Collection used to name the task
-    (`claim --task <id>`); that by-id claim is now the special-case
-    verb (one-off revivals), and this default path does not depend
-    on it — the broker's handoff pick only ever returns a parked
-    recorded opencode handoff (unbound yield progress), never a
-    live claim or a genuine wait park.
+    A handed-off task rests in the sink (status 'handed_off',
+    #8234), so without collection it is never in the claimed state
+    the launch flow binds against. Collection used to name the
+    task (`claim --task <id>`); that by-id claim is now the
+    special-case verb (one-off revivals), and this default path
+    does not depend on it — the broker's handoff pick only ever
+    returns a sink row (status 'handed_off', unbound opencode
+    yield), never a live claim or a genuine wait park.
 
     The claim declares the claimant's family, --platform
-    openchamber (#8097 Rule 2): a parked handoff whose item
-    carries the `muse` selector is not the opencode claimant's
-    to collect.
+    openchamber (#8097 Rule 2): a sink row whose item carries the
+    `muse` selector is not the opencode claimant's to collect.
     """
     collected: Dict[int, Dict] = {}
     for _ in range(max(want, 0)):
@@ -632,20 +629,20 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
         ]
         
         # Parked handoff sink (#8097 Rule 1): collect this fire's
-        # parked candidates' claims up front, grouped by queue,
+        # sink candidates' claims up front, grouped by queue,
         # without naming any task id — one broker-picked handoff
-        # claim per discovered parked candidate. A parked
-        # candidate whose id is not in `collected` when its turn
-        # comes was not collected (its pick lost a race or the
-        # broker had nothing claimable) and is skipped below —
-        # the binding is never improvised.
-        parked_by_queue: Dict[str, int] = {}
+        # claim per discovered sink candidate. A sink candidate
+        # whose id is not in `collected` when its turn comes was
+        # not collected (its pick lost a race or the broker had
+        # nothing claimable) and is skipped below — the binding is
+        # never improvised.
+        handed_off_by_queue: Dict[str, int] = {}
         for c in unbound_opencode:
-            if c.get("status") == "parked":
-                parked_by_queue[c["queue"]] = parked_by_queue.get(c["queue"], 0) + 1
+            if c.get("status") == "handed_off":
+                handed_off_by_queue[c["queue"]] = handed_off_by_queue.get(c["queue"], 0) + 1
         collected: Dict[int, Dict] = {}
-        for queue_name, want in parked_by_queue.items():
-            collected.update(_collect_parked_handoffs(queue_name, want))
+        for queue_name, want in handed_off_by_queue.items():
+            collected.update(_collect_handed_offs(queue_name, want))
 
         for candidate in unbound_opencode:
             if cap_room <= 0:
@@ -660,18 +657,19 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             issue = candidate.get("issue", "")
             packet = candidate.get("packet", {})
 
-            # Parked handoff sink: the candidate was handed off and
-            # then parked by its claiming lane, so no live claim
-            # existed to bind against until the collection above
-            # claimed it (as the claimant; the launched session
-            # then works under the claimant's worker identity). A
-            # candidate the collection did not claim is skipped —
-            # the binding is never improvised.
-            if candidate.get("status") == "parked":
+            # Handoff sink: the candidate was handed off by its
+            # claiming lane and rests in the sink (status
+            # 'handed_off'), so no live claim existed to bind
+            # against until the collection above claimed it (as
+            # the claimant; the launched session then works under
+            # the claimant's worker identity). A candidate the
+            # collection did not claim is skipped — the binding
+            # is never improvised.
+            if candidate.get("status") == "handed_off":
                 if task_id not in collected:
                     skips.append({
                         "task_id": task_id,
-                        "reason": "parked_claim_failed"
+                        "reason": "sink_claim_failed"
                     })
                     continue
                 candidate["status"] = "claimed"
