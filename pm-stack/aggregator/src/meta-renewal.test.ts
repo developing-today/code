@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ensureExporterArmedForUnitDir,
   renewMetaSession,
   type MetaExporterDoc,
   type MetaRenewalState,
@@ -121,5 +122,89 @@ describe("meta session keeper", () => {
     expect(state.status).toBe("attention");
     expect(state.recovery.result).toBe("exporter-missing");
     expect(state.alert).toContain("units");
+  });
+});
+
+describe("default ensure-armed implementation against a fake unit directory", () => {
+  const TIMER = "meta-quota-export.timer";
+  const SERVICE = "meta-quota-export.service";
+  const noop = async (): Promise<void> => undefined;
+  async function fakeUnitDir(files: string[]): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "meta-units-"));
+    for (const f of files) await writeFile(join(dir, f), "[Unit]\n", "utf8");
+    return dir;
+  }
+  const existsIn = async (dir: string, f: string): Promise<boolean> =>
+    access(join(dir, f)).then(
+      () => true,
+      () => false,
+    );
+
+  test("already armed: both units present -> armed, nothing renamed", async () => {
+    const dir = await fakeUnitDir([TIMER, SERVICE]);
+    expect(await ensureExporterArmedForUnitDir(dir, noop)).toBe("armed");
+    expect(await existsIn(dir, TIMER)).toBe(true);
+    expect(await existsIn(dir, SERVICE)).toBe(true);
+  });
+
+  test("both .backup copies -> restored, both units materialised", async () => {
+    const dir = await fakeUnitDir([`${TIMER}.backup`, `${SERVICE}.backup`]);
+    let reloaded = false;
+    const result = await ensureExporterArmedForUnitDir(dir, async () => {
+      reloaded = true;
+    });
+    expect(result).toBe("restored");
+    expect(reloaded).toBe(true);
+    expect(await existsIn(dir, TIMER)).toBe(true);
+    expect(await existsIn(dir, SERVICE)).toBe(true);
+    expect(await existsIn(dir, `${TIMER}.backup`)).toBe(false);
+    expect(await existsIn(dir, `${SERVICE}.backup`)).toBe(false);
+  });
+
+  test("partial backup (timer only), service present -> timer restored independently, result restored", async () => {
+    const dir = await fakeUnitDir([SERVICE, `${TIMER}.backup`]);
+    expect(await ensureExporterArmedForUnitDir(dir, noop)).toBe("restored");
+    expect(await existsIn(dir, TIMER)).toBe(true);
+    expect(await existsIn(dir, SERVICE)).toBe(true);
+  });
+
+  test("partial backup (service only), timer present -> service restored independently, result restored", async () => {
+    const dir = await fakeUnitDir([TIMER, `${SERVICE}.backup`]);
+    expect(await ensureExporterArmedForUnitDir(dir, noop)).toBe("restored");
+    expect(await existsIn(dir, TIMER)).toBe(true);
+    expect(await existsIn(dir, SERVICE)).toBe(true);
+  });
+
+  test("partial backup restored, other unit missing entirely -> partial naming per-unit state", async () => {
+    const dir = await fakeUnitDir([`${TIMER}.backup`]);
+    const result = await ensureExporterArmedForUnitDir(dir, noop);
+    expect(result).toBe("partial:timer=restored,service=missing");
+    expect(await existsIn(dir, TIMER)).toBe(true);
+  });
+
+  test("one unit present, other missing with no backup -> partial, present unit untouched", async () => {
+    const dir = await fakeUnitDir([SERVICE]);
+    const result = await ensureExporterArmedForUnitDir(dir, noop);
+    expect(result).toBe("partial:timer=missing,service=present");
+    expect(await existsIn(dir, SERVICE)).toBe(true);
+  });
+
+  test("neither unit nor any .backup -> missing", async () => {
+    const dir = await fakeUnitDir([]);
+    expect(await ensureExporterArmedForUnitDir(dir, noop)).toBe("missing");
+  });
+
+  test("keeper alert for a partial state names the per-unit state and never claims no backups exist", async () => {
+    const state = await renewMetaSession({
+      statePath: await statePath(),
+      now: () => NOW,
+      readLatest: async () => null,
+      ensureExporterArmed: async () => "partial:timer=restored,service=missing",
+      runExporter: async () => undefined,
+    });
+    expect(state.status).toBe("attention");
+    expect(state.recovery.result).toBe("exporter-partial:timer=restored,service=missing");
+    expect(state.alert).toContain("timer=restored,service=missing");
+    expect(state.alert).not.toContain("no .backup copies exist");
   });
 });

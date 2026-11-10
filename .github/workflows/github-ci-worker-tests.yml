@@ -1,0 +1,58 @@
+name: github-ci worker tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Test verification for pkgs/github-ci/worker (#7674).
+#
+# The github-ci Worker's vitest suite — pkgs/github-ci/worker/test/
+# (policy, turso, sink, worker; 22 tests pinning the #6949 envelope
+# and #6925 broker-route fixes) — was run by no workflow, and the
+# package shipped no package-lock.json, so `npm ci` could not run
+# it either.
+#
+# This workflow runs `npm ci` + `npm test` (vitest) on pushes to
+# main that touch pkgs/github-ci/ and on dispatch, following the
+# house pattern for test workflows (id-hosted-worker-tests.yml,
+# bin-tests.yml). Main tier only: not a merge gate.
+#
+# The run step first fails if any suite file, the package manifest,
+# or the lockfile is missing, so a green run can never be a
+# silently skipped suite.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/github-ci/**"
+      - ".github/workflows/github-ci-worker-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-ci-worker-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  github-ci-worker-tests:
+    name: "full (main tier): github-ci worker vitest suite"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Run the github-ci worker vitest suite
+        working-directory: pkgs/github-ci/worker
+        run: |
+          for f in package.json package-lock.json test/policy.test.ts test/turso.test.ts test/sink.test.ts test/worker.test.ts; do
+            if [ ! -f "$f" ]; then
+              echo "::error::pkgs/github-ci/worker/$f is missing — the vitest suite was not run."
+              exit 1
+            fi
+          done
+          npm ci
+          npm test
