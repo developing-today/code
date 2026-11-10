@@ -204,9 +204,14 @@ against, and is rejected here by construction.
   step-up cannot ride the IdP factor path: the named role holds a
   pre-enrolled, hardware-bound emergency credential that the server
   verifies locally. Enrolment happens in advance (itself a stepped-up,
-  per-use-consented admin action), the credential is usable only for
-  break-glass, and its use is possible exactly when the IdP path is
-  unavailable. Rotation and revocation of emergency credentials are
+  per-use-consented admin action), and the credential is usable only
+  for break-glass — but under any declared break-glass condition, not
+  only an IdP outage: escrow or assertion-service failures with a
+  healthy IdP are covered outages too (above), and the emergency path
+  is never gated on which dependency failed. (When the IdP is healthy
+  its step-up also satisfies D1; the emergency credential is the
+  route that does not depend on it.) Rotation and revocation of
+  emergency credentials are
   declaration-stated procedures, audited like escrow administration
   (D5). An implementation whose break-glass still depends on the IdP
   does not satisfy §6.5 for the IdP-down case and must say so
