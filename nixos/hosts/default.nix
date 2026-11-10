@@ -28,6 +28,8 @@ in
       "services/pm-apps"
       "services/power-guard"
       "services/openai-cred-watchdog"
+      "services/opencode-go-seating-guard"
+      "services/opencode-watchdog"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -83,6 +85,21 @@ in
         # asserting the OpenCode credential store never regains an
         # active token-sharing credential for the GPT providers.
         services.openai-cred-watchdog.enable = true;
+      }
+      {
+        # OpenCode Go seating guard (code#5611): hourly user timer
+        # asserting every Go leaf seated in a pool has an exact-id active
+        # credential and has recorded a successful route attempt recently.
+        services.opencode-go-seating-guard.enable = true;
+      }
+      {
+        # OpenCode watchdog (code#7780): per-minute user timer asserting
+        # opencode.service is active or port 13420 is serving; an
+        # exit-0 non-serving restart sticks dark under Restart=on-failure,
+        # so after a 120s dark grace window the watchdog alerts and
+        # restarts the unit (Restart=always would race lifecycle
+        # handovers — see the module).
+        services.opencode-watchdog.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard

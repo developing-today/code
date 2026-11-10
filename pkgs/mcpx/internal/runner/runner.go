@@ -94,6 +94,14 @@ type Options struct {
 	OnResult func(logging.Streamed)
 	// OnArtifact receives files a script registered with artifact().
 	OnArtifact func(logging.Artifacted)
+	// OnWarning receives each non-fatal preflight diagnostic, in order,
+	// as the runner produces it. The same text still goes to Stderr; a
+	// caller that captures Stderr and only surfaces it on a non-zero
+	// exit (the daemon's exec buffer) uses this to deliver the
+	// diagnostic through its own result and stream even when the run
+	// succeeds, where a stderr-only caller never saw it (Codex review,
+	// PR #6111).
+	OnWarning func(string)
 	// Export names the function to call instead of the default export.
 	Export string
 	// Permissions is the sandbox setting; empty means wide open.
@@ -132,6 +140,10 @@ type Options struct {
 	PlaceholderFiles []string
 	// TypeCheck resolves and checks the generated program before running it.
 	TypeCheck string
+	// TypeCheckOnError selects how a failed checker affects execution.
+	TypeCheckOnError string
+	// TypeCheckOnUnsupported selects what to do when the runtime cannot check.
+	TypeCheckOnUnsupported string
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
 	// Imports selects the preflight import-graph stage: "off" or "report"
@@ -219,6 +231,20 @@ func warnSink(opts Options) io.Writer {
 		return opts.Stderr
 	}
 	return os.Stderr
+}
+
+// reportWarning emits one non-fatal preflight diagnostic: to the
+// caller's diagnostic writer, and to OnWarning when one is installed.
+// A service that captures Stderr and only reads it on a non-zero exit
+// (execsvc) delivers the first write nowhere on success, so the
+// callback is how a `checkOnError=warn` diagnostic reaches a remote
+// caller whose script otherwise runs fine (Codex review, PR #6111).
+func reportWarning(opts Options, w preflight.Problem) {
+	msg := w.String()
+	_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", msg)
+	if opts.OnWarning != nil {
+		opts.OnWarning(msg)
+	}
 }
 
 // workDirKeyMaterial is the WorkRoot directory key's input: the
@@ -638,6 +664,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rt.Bin = abs
 		}
 	}
+	if rt.Kind == KindNode {
+		if err := checkNodeTransformTypes(rt.Bin); err != nil {
+			return nil, err
+		}
+	}
 
 	// Checked after the launcher is written, because the launcher is what
 	// actually gets run and therefore what has to be valid. Doing it here
@@ -647,13 +678,23 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if timeout == 0 {
 			timeout = defaults.TypecheckTimeout
 		}
-		rep := preflight.TypeCheckResolved(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
-			append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
+		// The checker is not necessarily the execution runtime: the
+		// switch policy checks a Node or Bun script with Deno. depsFlags
+		// describes the EXECUTION runtime (Bun's --no-install, or none
+		// for Node), and ResolutionArgs drops what a checker cannot use,
+		// so a deps.autoInstall=off set would let the Deno checker fetch
+		// uncached dependencies before execution even starts. Give the
+		// checker the flags its own runtime would carry for this set
+		// (Codex review, PR #6111).
+		checkerFlags := checkerDepsFlags(rt.Kind, opts.TypeCheckOnUnsupported, opts.Deps, depsFlags)
+		rep := preflight.TypeCheckWithPolicy(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+			append(append([]string{}, rt.ConfigArgs...), checkerFlags...), opts.Dir,
+			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			reportWarning(opts, w)
 		}
 	}
 
@@ -710,7 +751,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			reportWarning(opts, w)
 		}
 	}
 

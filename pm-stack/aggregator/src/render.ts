@@ -22,11 +22,13 @@ import {
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
-import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
+import { diffCoverage, staleIssueState, type CoverageSnapshotFile } from "./coverage.ts";
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
+import { formatForecastSummary, type ForecastContract } from "./forecast-contract.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
-import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
+import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT, selectVisibleDoneCards } from "./board-policy.ts";
+import { summarizeWipLanes } from "./wip-limits.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -1473,11 +1475,17 @@ export function renderBoardBody(
   // source assembled it (the Kaneo source filters too; see
   // board-policy.ts). Surviving done renders collapsed, below.
   board = applyBoardDonePolicy(board);
+  const wipByLane = new Map(
+    summarizeWipLanes(board, [...(act?.poolByRef?.values() ?? [])]).map((summary) => [summary.lane, summary]),
+  );
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
     const key = item.status === "done" ? "done" : item.status;
     const k = key === "to-do" ? "to-do" : key;
     cols.set(k, [...(cols.get(k) ?? []), item]);
+  }
+  for (const lane of wipByLane.keys()) {
+    if (!cols.has(lane)) cols.set(lane, []);
   }
   const order = ["in-flight", "to-do", "in-progress", "in-review", "done"];
   const extra = [...cols.keys()].filter((k) => !order.includes(k));
@@ -1491,14 +1499,10 @@ export function renderBoardBody(
       let visibleItems = colItems;
       let doneNote = "";
       if (k === "done" && colItems.length > DONE_STRIP_RENDER_LIMIT) {
-        const sorted = [...colItems].sort(
-          (a, b) => (Date.parse(b.updatedAt ?? "") || 0) - (Date.parse(a.updatedAt ?? "") || 0),
-        );
+        visibleItems = selectVisibleDoneCards(colItems, { showAll: renderOpts?.showAllDone ?? false });
         if (renderOpts?.showAllDone) {
-          visibleItems = sorted;
           doneNote = ` — showing all, newest first; <a href="/board">show fewer</a>`;
         } else {
-          visibleItems = sorted.slice(0, DONE_STRIP_RENDER_LIMIT);
           doneNote = ` — showing the ${DONE_STRIP_RENDER_LIMIT} most recent; <a href="/board?done=all">show all ${colItems.length}</a>`;
         }
       }
@@ -1548,9 +1552,18 @@ export function renderBoardBody(
       }
       const heading =
         k === "in-flight"
-          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
-          : `${esc(k)} (${colItems.length})`;
-      return `<div class="col"><h2>${heading}</h2>${cards}</div>`;
+          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`
+          : `${esc(k)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`;
+      const summary = wipByLane.get(k);
+      const scopeFlags = [
+        ...(summary?.projects ?? []).filter((scope) => scope.overCap).map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.epics ?? []).filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
+      ];
+      if (summary?.overCap) scopeFlags.unshift(`lane over cap by ${summary.count - summary.cap}`);
+      const overCapBadges = scopeFlags
+        .map((flag) => `<span class="badge blocked" role="status">${esc(flag)}</span>`)
+        .join(" ");
+      return `<div class="col"><h2>${heading} ${overCapBadges}</h2>${cards}</div>`;
     })
     .join("");
   return `<div class="board">${bodies}</div>`;
@@ -1639,7 +1652,15 @@ export function buildRoadmapDrill(
   );
 }
 
-function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
+/** The shared forecast contract (§4, #3984) as page lines: the same
+ * one-line summaries the API serves, never a bare date. */
+export function forecastSummaryHtml(contracts: ForecastContract[] | undefined): string {
+  if (!contracts?.length) return "";
+  const lines = contracts.map((c) => `<div class="forecast-line">${esc(formatForecastSummary(c))}</div>`).join("");
+  return `<div class="forecast">${lines}</div>`;
+}
+
+function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>): string {
   const parts: string[] = [];
   if (!drill.epic) {
     parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
@@ -1667,6 +1688,10 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
       );
     }
   }
+  if (drill.epic) {
+    const fc = forecastSummaryHtml(forecasts?.get(drill.epic.ref));
+    if (fc) parts.push(fc);
+  }
   if (row.notes.trim()) parts.push(`<p class="notes">${esc(row.notes)}</p>`);
   return `<details class="roadmap-drill"><summary>Epic &amp; issues</summary>${parts.join("")}</details>`;
 }
@@ -1678,6 +1703,7 @@ function roadmapCard(
   drill?: RoadmapDrill,
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
+  forecasts?: Map<RefKey, ForecastContract[]>,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1687,13 +1713,16 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
-  const expansion = drill ? roadmapDrilldown(drill, row) : "";
+  const expansion = drill ? roadmapDrilldown(drill, row, forecasts) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
     : "";
   const briefPanels = briefPanelsForRefs(refs, briefs);
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  const horizonWarning = row.horizonError
+    ? ` <span class="badge horizon-invalid" title="${esc(row.horizonError)}">Invalid Horizon</span>`
+    : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1707,17 +1736,20 @@ function timelineTable(
   drill?: Map<string, RoadmapDrill>,
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
+  forecasts?: Map<RefKey, ForecastContract[]>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
     .map((theme) => {
+      const themeRows = [...(tl.cells.get(theme)?.values() ?? [])].flat();
+      const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts)).join("")}</td>`;
         })
         .join("");
-      return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
+      return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
     })
     .join("");
   return `<div class="tblwrap"><table class="table table-zebra"><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
@@ -1735,6 +1767,7 @@ export function renderRoadmap(
   annotations?: Map<string, RoadmapAnnotation[]>,
   viewQuery = "",
   briefs?: Map<RefKey, ItemBrief>,
+  forecasts?: Map<RefKey, ForecastContract[]>,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1749,31 +1782,46 @@ export function renderRoadmap(
     ([g, label]) =>
       `<a href="/roadmap?h=${g}${viewQuery ? `&${viewQuery}` : ""}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
+  const invalidHorizons = rows.filter((row) => row.horizonError);
+  const horizonFlag = invalidHorizons.length
+    ? `<div class="flag">${invalidHorizons.length} roadmap row${invalidHorizons.length === 1 ? " has" : "s have"} an invalid Horizon value. Original values are preserved and marked on their cards; correct them in Grist using the documented Horizon grammar.</div>`
+    : "";
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
   } else {
     const dg = roadmapDayGrain(rows, grain);
-    const sections = dg.lanes
-      .map(
-        (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
-      )
-      .join("");
-    const notes: string[] = [];
-    if (dg.outside > 0) notes.push(`${dg.outside} dated row${dg.outside === 1 ? "" : "s"} fall outside this window`);
-    if (dg.coarse.length > 0) {
-      notes.push(
-        `${dg.coarse.length} row${dg.coarse.length === 1 ? "" : "s"} have no calendar date (quarter grain, ongoing, or unscheduled) — see the Quarter view`,
-      );
+    const byTheme = new Map<string, RoadmapRow[]>();
+    for (const row of rows) {
+      const theme = row.area || "Unthemed";
+      byTheme.set(theme, [...(byTheme.get(theme) ?? []), row]);
     }
-    body = `${sections}${notes.length ? `<p class="muted">${notes.join(" · ")}</p>` : ""}`;
+    body = byTheme.size
+      ? [...byTheme.entries()]
+          .map(([theme, themeRows]) => {
+            const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
+            const cards = (laneRows: RoadmapRow[]) =>
+              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts)).join("");
+            const lanes = dg.lanes
+              .map((lane) => {
+                const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
+                return laneRows.length ? `<h3>${esc(lane.label)}</h3>${cards(laneRows)}` : "";
+              })
+              .join("");
+            const outsideRows = dg.outsideRows.filter((row) => (row.area || "Unthemed") === theme);
+            const coarseRows = dg.coarse.filter((row) => (row.area || "Unthemed") === theme);
+            const outside = outsideRows.length ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}` : "";
+            const coarse = coarseRows.length ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}` : "";
+            return `<section class="roadmap-theme"><h2>${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></h2>${lanes}${outside}${coarse}</section>`;
+          })
+          .join("")
+      : '<p class="muted">No roadmap rows.</p>';
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}`,
     provenance,
     "/roadmap",
     "",
@@ -1934,14 +1982,13 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const renderedRefs = r.taskRefs.flatMap((ref) => {
-    try {
-      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
-    } catch {
-      // A malformed ref may still exist in an older or ungated in-memory
-      // record. Keep the session visible and omit only the invalid link.
-      return [];
-    }
+  const renderedRefs = r.taskRefs.map((ref) => {
+    // #6243 (ref contract rule 4, #6242): a malformed ref may still
+    // exist in an older or ungated in-memory record. Keep the session
+    // visible and render the invalid ref as plain text — the same
+    // treatment tierItemCard (#6149) and poolRefLink give it — never
+    // a throw, and never silently omitted.
+    return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>` : esc(ref);
   });
   const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
@@ -2055,6 +2102,17 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     : "";
   const pace = paceLineHtml(svc.id, history);
   return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+}
+
+function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
+  if (!services.length) return "";
+  const rows = services
+    .map(
+      (svc) =>
+        `<tr><th scope="row">${esc(svc.name)}</th><td>${esc(svc.whatFor)}</td><td>${esc(svc.status)}</td><td>${esc(svc.checkedAt ?? "no check date recorded")}</td><td>${esc(svc.overageBehavior)}</td><td>${esc(svc.guardrailNotes)}</td></tr>`,
+    )
+    .join("");
+  return `<h2>Tracker services without instrumented quotas</h2><details><summary>${services.length} evaluated services — expand for tracker states and guardrails</summary><div class="tblwrap"><table><caption>Services in free-services-to-check.md</caption><tr><th scope="col">Service</th><th scope="col">What for</th><th scope="col">Tracker state</th><th scope="col">Checked</th><th scope="col">Overage behavior</th><th scope="col">Guardrail notes</th></tr>${rows}</table></div></details>`;
 }
 
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
@@ -2321,7 +2379,7 @@ ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
-<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
+<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
 <h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
@@ -3261,8 +3319,9 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
 /** Wrap one attention section as a Datastar fragment container: the
  *  shell's placeholder and the fragment payload share this shape, so
  *  a refresh re-patches the container with itself (attrs included). */
-export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string): string {
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}')" data-on-dashrefresh__window="@get('/frag/attention/${section}')">${innerHtml}</div>`;
+export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
+  const q = query ? `?${query}` : "";
+  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on-dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3270,12 +3329,13 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string): string {
+  const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
-${attentionFragment("header", skel("queue status"))}
-${attentionFragment("queues", skel("the queues"))}
-${attentionFragment("sessions", skel("sessions"))}`;
+${attentionFragment("header", skel("queue status"), refsQuery)}
+${attentionFragment("queues", skel("the queues"), refsQuery)}
+${attentionFragment("sessions", skel("sessions"), refsQuery)}`;
   return layout(
     "Needs you",
     body,
@@ -3390,6 +3450,16 @@ export function renderTodayBody(
   if (walled.length) {
     alerts.push(
       `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+    );
+  }
+  const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
+    ...(lane.overCap ? [`${lane.lane} ${lane.count}/${lane.cap}`] : []),
+    ...lane.projects.filter((scope) => scope.overCap).map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.epics.filter((scope) => scope.overCap).map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+  ]);
+  if (wipViolations.length) {
+    alerts.push(
+      `<div class="banner"><strong>WIP cap violations:</strong> ${wipViolations.map(esc).join("; ")} — <a href="/board">board</a>. Informational only; work is not blocked.</div>`,
     );
   }
   // #1139: the derived view's banner names the section's TRUE state —
@@ -6241,16 +6311,29 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   };
   const rows = current.repos
     .map(
-      (r) =>
-        `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td></tr>`,
+      (r) => {
+        const state = staleIssueState(r);
+        const status =
+          state === "error"
+            ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
+            : state === "stale"
+              ? "STALE — collection is over 7 days old"
+              : state === "unavailable"
+                ? "Unavailable — collection failed or not collected"
+                : "Current";
+        const collectedAt = r.staleIssuesCollectedAt
+          ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
+          : "—";
+        return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+      },
     )
     .join("");
   const note = baseline
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
- <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table></div>
-<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
+ <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th><th scope="col">Open issues untouched &gt;90 days</th><th scope="col">Stale count collected at (UTC)</th><th scope="col">Stale count status</th></tr></thead><tbody>${rows}</tbody></table></div>
+<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The stale count includes open issues only, is captured at the per-repository timestamp, and is marked stale after seven days; missing/error data is not presented as zero. The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
 /** The Projects pool body (cards, chips, coverage) without the page
@@ -6284,6 +6367,9 @@ export function projectsBodyHtml(
     /** Prebuilt briefs (#1279), e.g. with comment activity folded in.
      * Absent: briefs are built here from the pool + orchestration only. */
     briefs?: Map<RefKey, ItemBrief>;
+    /** Shared forecast contracts by item ref (#3984): the same objects
+     * /api/forecasts.json serves, rendered as one-line summaries. */
+    forecasts?: Map<RefKey, ForecastContract[]>;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -6347,7 +6433,8 @@ export function projectsBodyHtml(
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
       const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}${briefPanelHtml(brief)}</div>`;
+      const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
@@ -6374,6 +6461,8 @@ export function renderProjects(
     identities?: AuthorIdentity[];
     coverage?: CoverageSnapshotFile | null;
     basePath?: string;
+    briefs?: Map<RefKey, ItemBrief>;
+    forecasts?: Map<RefKey, ForecastContract[]>;
   } = {},
 ): string {
   return layout(
@@ -6473,12 +6562,13 @@ export function renderProgram(
     identities?: AuthorIdentity[];
     /** Prebuilt briefs (#1279), e.g. with comment activity folded in. */
     briefs?: Map<RefKey, ItemBrief>;
+    forecasts?: Map<RefKey, ForecastContract[]>;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
