@@ -1157,11 +1157,7 @@ impl SessionIo for SshIo {
                         terminal_text("[records truncated: too much output]\n")
                     )
                 } else if let Some(notice) = notice {
-                    format!(
-                        "\r\n{}\r\n{}",
-                        terminal_text(&text),
-                        terminal_text(notice)
-                    )
+                    format!("\r\n{}\r\n{}", terminal_text(&text), terminal_text(notice))
                 } else {
                     format!("\r\n{}", terminal_text(&text))
                 }
@@ -3501,16 +3497,12 @@ mod tests {
         // page ~18,700 times until the rendered-byte cap stopped it.
         // Oracle: the world_net records cursor contract (#6505/#6578)
         // — the cursor must be a string and must strictly advance.
-        let cursor = |value: serde_json::Value, produced_by: &str| {
-            records_cursor(Some(&value), produced_by)
-        };
+        let cursor =
+            |value: serde_json::Value, produced_by: &str| records_cursor(Some(&value), produced_by);
 
         // Absent and null both mean the host has no more pages.
         assert_eq!(records_cursor(None, ""), RecordsCursor::End);
-        assert_eq!(
-            cursor(serde_json::Value::Null, "k1"),
-            RecordsCursor::End
-        );
+        assert_eq!(cursor(serde_json::Value::Null, "k1"), RecordsCursor::End);
 
         // A normal multi-page drain: each cursor advances past the
         // one that produced the page, then the listing ends.

@@ -398,6 +398,10 @@
           };
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+          # Production module-size guard (#1411): fails when any
+          # production .rs file exceeds 2,500 production lines
+          # (grandfathered: src/web/markdown.rs, split tracked in #1438).
+          prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs
           # every heavy full sweep serially (~15 min, the slowest PR
@@ -415,6 +419,14 @@
           # noise (absolute source path, body serialisation), so this is
           # green on any correctly regenerated file.
           just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+
+          # Regression pins for scripts/build.sh variant handling (#6869):
+          # the fixture suite stubs cargo and exercises every variant, so a
+          # variant-specific regression fails here instead of in a just recipe.
+          build-sh-test = mkCheckWith {
+            name = "build-sh-test";
+            checkCommand = "bash scripts/build-sh-test.sh";
+          };
 
           # Exercise the same alias-admission function used by apps against
           # synthetic recipes/aliases, including dangling targets and names

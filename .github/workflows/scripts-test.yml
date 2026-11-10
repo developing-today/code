@@ -44,3 +44,7 @@ jobs:
         run: python3 -m unittest discover -s nixos/services/power-guard -p 'test_*.py' -v
       - name: Run sops atomic writers regression tests (#6555)
         run: bash lib/sops-atomic-writers.test.sh
+      - name: Run identity provider core static confinement regression tests (#6180)
+        run: |
+          test -f pkgs/identity/provider/core-static-test.sh
+          bash pkgs/identity/provider/core-static-test.sh
