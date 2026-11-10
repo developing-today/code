@@ -228,23 +228,24 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "serve",
-        summary: "Run a fleet daemon role (queue-broker, secrets-broker, search) in the foreground.",
+        summary: "Run a fleet daemon role (queue-broker, secrets-broker, search, proxy) in the foreground.",
         capabilities: &[
             Capability::QueueBroker,
             Capability::SecretsBroker,
             Capability::SearchServe,
+            Capability::ProxyServe,
         ],
         primary: Capability::QueueBroker,
         aliases: &["queue-broker", "secrets-broker"],
-        subcommands: &["queue-broker", "secrets-broker", "search"],
+        subcommands: &["queue-broker", "secrets-broker", "search", "proxy"],
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, or connect and init a client through it.",
+        summary: "The session proxy: serve the broker socket, connect or init through it, or run recovery SSH.",
         capabilities: &[Capability::ProxyServe, Capability::ProxyConnect],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init"],
+        subcommands: &["serve", "connect", "init", "ssh"],
     },
     Domain {
         name: "dispatch",

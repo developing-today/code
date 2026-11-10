@@ -61,14 +61,29 @@ case "$1 $2" in
     echo uploaded;;
   "deployments list")
     live=$(cat "$STUB_STATE/live" 2>/dev/null)
-    if [ -n "$live" ]; then
+    case " $* " in *" --json "*) json=1;; *) json=;; esac
+    if [ "$live" = "READFAIL" ] && [ -n "$json" ]; then
+      echo "stub: deployments list --json failed" >&2
+      exit 1
+    elif [ "$live" = "READFAIL" ]; then
+      echo "(human-readable deployments)"
+    elif [ "$live" = "SPLIT" ] && [ -z "$json" ]; then
+      echo "(human-readable deployments)"
+    elif [ "$live" = "SPLIT" ]; then
+      echo '[{"created_on":"2026-01-02T00:00:00Z","versions":[{"version_id":"a","percentage":50},{"version_id":"b","percentage":50}]}]'
+    elif [ "$live" = "GARBAGE" ] && [ -z "$json" ]; then
+      echo "(human-readable deployments)"
+    elif [ "$live" = "GARBAGE" ]; then
+      echo 'not json'
+    elif [ -n "$live" ]; then
       echo "[{\\"created_on\\":\\"2026-01-02T00:00:00Z\\",\\"versions\\":[{\\"version_id\\":\\"$live\\",\\"percentage\\":100}]}]"
     else
       echo '[]'
     fi;;
   "secret put")
     cat > /dev/null
-    echo "configured-final" > "$STUB_STATE/live";;
+    # STUB_AFTER_SECRET models what the post-provisioning re-read sees.
+    echo "${STUB_AFTER_SECRET-configured-final}" > "$STUB_STATE/live";;
   "versions view")
     if [ "$3" = "old-v9" ]; then
       echo '{"resources":{"bindings":[{"name":"DRAIN_BEARER","type":"secret_text"},{"name":"GITHUB_WEBHOOK_SECRET","type":"secret_text"}]}}'
@@ -86,7 +101,7 @@ exit 0
 """
 
 
-def run_deploy(args):
+def run_deploy(args, extra_env=None):
     root = tempfile.mkdtemp(prefix="ghb-deploy-rollback-test-")
     stub_bin = os.path.join(root, "bin")
     state = os.path.join(root, "state")
@@ -108,6 +123,7 @@ def run_deploy(args):
         "CLOUDFLARE_ACCOUNT_ID": "stub-account",
         "STUB_LOG": log,
         "STUB_STATE": state,
+        **(extra_env or {}),
     }
     proc = subprocess.run(
         ["node", DEPLOY, *args], env=env, capture_output=True, text=True, timeout=60
@@ -182,6 +198,31 @@ check(
 )
 check("unconfigured: no versions deploy happened", "versions deploy" not in calls)
 check("unconfigured: no secret put attempted", "wrangler secret put" not in calls)
+
+# 4. #6507: when the post-provisioning re-read cannot name a live
+# version, the pre-secrets upload must NOT be advertised as live or as
+# the rollback target; the run fails non-zero naming the problem.
+for label, mode in (
+    ("empty deployments list", ""),
+    ("deployments list read failure", "READFAIL"),
+    ("no version at 100% (split rollout)", "SPLIT"),
+    ("unparseable deployments output", "GARBAGE"),
+):
+    proc, calls = run_deploy([], {"STUB_AFTER_SECRET": mode})
+    out = proc.stdout + proc.stderr
+    check("indeterminate (%s): non-zero exit" % label, proc.returncode != 0)
+    check(
+        "indeterminate (%s): rollback target reported UNKNOWN" % label,
+        "UNKNOWN" in proc.stderr,
+    )
+    check(
+        "indeterminate (%s): no live: line advertising the upload" % label,
+        not any(ln.startswith("live:") for ln in proc.stdout.splitlines()),
+    )
+    check(
+        "indeterminate (%s): no mock secret value in output" % label,
+        "stub-bearer-value" not in out and "stub-webhook-value" not in out,
+    )
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
 sys.exit(0 if all(ok for _, ok in PASS) else 1)

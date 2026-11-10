@@ -39,6 +39,7 @@ import type {
   QuotaView,
   QuotaWindow,
   SaasService,
+  UninstrumentedSaasService,
   SessionFeedEntry,
   SessionRecord,
   SnapshotRecord,
@@ -98,6 +99,10 @@ export interface FleetFeed {
   /** Usage & billing hub (design §2.3): family-2 services extracted from
    * quota-view.md Part (b) by the collector; absent in older feeds. */
   saas?: SaasService[];
+  /** Tracker-derived services without an instrumented quota card. */
+  uninstrumentedServices?: UninstrumentedSaasService[];
+  /** Malformed tracker rows dropped by loadFeed (#1172). */
+  uninstrumentedServicesDropped?: number;
   /** Hub PAYG lines (§1.2), from quota-view.md + the provider registry. */
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
@@ -123,10 +128,10 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
-  /** Project #4 coverage census (#1220): per-repo open-issue and
-   * gate-label counts from the collector's Search API reads, embedded
-   * beside the projects section. Absent when the collector had no
-   * GitHub token or the census failed. */
+  /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
+   * gate-label, and timestamped >90-day untouched-issue counts from the
+   * collector's Search API reads, embedded beside the projects section.
+   * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
@@ -153,6 +158,19 @@ export interface FeedMetadata {
   sections: Record<string, FeedSectionCollectionStatus>;
 }
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7741, mirroring the #7694 capUnits guard in actions.ts):
+// an astral character straddling the cap is dropped whole. Local copy, like
+// comments.ts (#7731) — a shared import would tangle module dependencies.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 /** Keep collector diagnostics useful without allowing credentials or
  *  response payloads to leak into the shared feed. */
 export function sanitizeCollectionError(value: unknown): string {
@@ -174,8 +192,8 @@ export function sanitizeCollectionError(value: unknown): string {
     )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
-    .replace(/[\r\n\t]+/g, " ")
-    .slice(0, 240);
+    .replace(/[\r\n\t]+/g, " ");
+  message = capUnits(message, 240);
   return message || "collection failed";
 }
 
@@ -547,7 +565,7 @@ export function isQuotaWindow(v: unknown): v is QuotaWindow {
   );
 }
 
-const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale", "lapsed"];
 
 /** One quota pool whose own shape is safe to hand to the renderers
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
@@ -565,7 +583,7 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error", "lapsed"];
 
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (
@@ -915,7 +933,8 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
     // unguarded, so — like burn/choices above — the feed is rejected
     // whole. Malformed ELEMENTS inside an array are loadFeed's
     // drop-and-count concern, not the gate's.
-    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention)) &&
+    (f.uninstrumentedServices === undefined || Array.isArray(f.uninstrumentedServices))
   );
 }
 
@@ -946,6 +965,32 @@ export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
   if (v === undefined) return { dropped: 0 };
   if (!Array.isArray(v)) return { dropped: 1 };
   const rows = v.filter(isSubscriptionRow);
+  return { rows, dropped: v.length - rows.length };
+}
+
+export interface UninstrumentedServiceSanitization {
+  rows?: UninstrumentedSaasService[];
+  dropped: number;
+}
+
+/** A tracker row safe to hand to renderers (#1172). */
+export function isUninstrumentedSaasService(v: unknown): v is UninstrumentedSaasService {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    typeof v.whatFor === "string" &&
+    typeof v.status === "string" &&
+    (v.checkedAt === null || isIsoDate(v.checkedAt)) &&
+    typeof v.overageBehavior === "string" &&
+    typeof v.guardrailNotes === "string"
+  );
+}
+
+/** Drop malformed tracker rows at the shared feed boundary. */
+export function sanitizeUninstrumentedServices(v: unknown): UninstrumentedServiceSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isUninstrumentedSaasService);
   return { rows, dropped: v.length - rows.length };
 }
 
@@ -1034,6 +1079,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const charges =
       parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    const uninstrumented = sanitizeUninstrumentedServices(parsed.uninstrumentedServices);
     // Registry rows feed both the session registry and coverage, so sanitize
     // once here rather than letting the two consumers see different inputs.
     const registry = sanitizeRegistry(parsed.registry);
@@ -1079,6 +1125,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(uninstrumented.rows ? { uninstrumentedServices: uninstrumented.rows } : {}),
+      ...(uninstrumented.dropped > 0 ? { uninstrumentedServicesDropped: uninstrumented.dropped } : {}),
       ...(registry.rows !== undefined ? { registry: registry.rows } : {}),
       ...(registry.dropped > 0 ? { registryDropped: registry.dropped } : {}),
       ...(payg.rows !== undefined ? { payg: payg.rows } : {}),

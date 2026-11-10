@@ -53,6 +53,51 @@ pub const MAX_VALUE_BYTES: usize = 512;
 /// The most claims one `tag.clear` may name. The header decoder declares arrays at most 512 long.
 pub const MAX_CLEAR_CLAIMS: usize = 256;
 
+/// Where a tag claim lives: on this node only, or in the shared claim set (#1793).
+///
+/// The scope is part of the signed claim, so it is honoured by every replica that folds the
+/// event. [`TagScope::Shared`] is the v1 behaviour and is the default, so a claim recorded
+/// without a scope choice means exactly what it meant before scopes existed: it is published
+/// into the shared claim set and visible to every node. [`TagScope::Local`] is a claim that
+/// stays on the node that recorded it — it is not published, not synced, and not visible to
+/// other nodes. Nothing about already-landed claims changes: they decode as `Shared`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TagScope {
+    /// The claim is published into the shared claim set and replicated to other nodes.
+    #[default]
+    Shared,
+    /// The claim stays on this node only: never published, never replicated, never visible
+    /// to another node.
+    Local,
+}
+
+impl TagScope {
+    /// The scope's name, as the CLI and the review listing print it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Local => "local",
+        }
+    }
+
+    /// Parses a scope name. Accepts `shared` and `local`, case-insensitively.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TagError::Field`] naming the accepted values for anything else.
+    pub fn parse(text: &str) -> Result<Self, TagError> {
+        match text.to_ascii_lowercase().as_str() {
+            "shared" => Ok(Self::Shared),
+            "local" => Ok(Self::Local),
+            _ => Err(TagError::Field(format!(
+                "the scope is {text:?}, it must be \"shared\" or \"local\""
+            ))),
+        }
+    }
+}
+
 /// What a tag event does. The kind of the event says which form the operation takes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TagOp {
@@ -96,6 +141,67 @@ pub struct Claim {
     pub name: String,
     /// The tag value, if any.
     pub value: Option<String>,
+    /// Where the claim lives: shared, or this node only (#1793).
+    pub scope: TagScope,
+}
+
+/// A local-only claim, as the node's own local claim store holds it (#1793).
+///
+/// A local claim is never signed into the event store, so it is never in the sync set and never
+/// reaches another node. Its ID is derived from its content and author, so it is stable across
+/// reads and can be named by a local clear. It carries the same `author`/`subject`/`name`/`value`
+/// shape as a shared [`Claim`], with [`TagScope::Local`] as its scope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalClaim {
+    /// The claim's ID, derived from the author, subject, name and value.
+    pub id: Hash,
+    /// The key that recorded the claim.
+    pub author: AuthorKey,
+    /// The subject the claim is about.
+    pub subject: Hash,
+    /// The tag name.
+    pub name: String,
+    /// The tag value, if any.
+    pub value: Option<String>,
+}
+
+impl LocalClaim {
+    /// The claim's ID: the BLAKE3 hash of the author, subject, name and value, domain-separated
+    /// from any signed event so a local claim ID can never collide with a `tag.set` event ID.
+    /// `value` is length-prefixed, so `("a", Some("bc"))` and `("ab", Some("c"))` differ.
+    #[must_use]
+    pub fn id_for(author: &AuthorKey, subject: &Hash, name: &str, value: Option<&str>) -> Hash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"id.local-claim.v1\0");
+        hasher.update(author);
+        hasher.update(subject.as_bytes());
+        hasher.update(&(name.len() as u64).to_be_bytes());
+        hasher.update(name.as_bytes());
+        match value {
+            Some(text) => {
+                hasher.update(&[1]);
+                hasher.update(&(text.len() as u64).to_be_bytes());
+                hasher.update(text.as_bytes());
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+        Hash::from_bytes(*hasher.finalize().as_bytes())
+    }
+
+    /// This claim as a [`Claim`], with [`TagScope::Local`].
+    #[must_use]
+    pub fn as_claim(&self) -> Claim {
+        Claim {
+            id: self.id,
+            author: self.author,
+            subject: self.subject,
+            name: self.name.clone(),
+            value: self.value.clone(),
+            scope: TagScope::Local,
+        }
+    }
 }
 
 /// Why a tag operation was refused.
@@ -124,7 +230,8 @@ pub fn is_tag_kind(kind: &str) -> bool {
 ///
 /// Returns [`TagError::KindMismatch`] when the operation is not the one `kind` names. Returns
 /// [`TagError::Field`] for a name or value that breaks its limit or the NFC rule, and for a clear
-/// that names more than [`MAX_CLEAR_CLAIMS`] claims or names the same claim twice.
+/// that names no claims, names more than [`MAX_CLEAR_CLAIMS`] claims, or names the same claim
+/// twice.
 pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
     match (kind, op) {
         (SET_KIND, TagOp::Set { name, value, .. }) => {
@@ -135,6 +242,11 @@ pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
             Ok(())
         }
         (CLEAR_KIND, TagOp::Clear { claims }) => {
+            if claims.is_empty() {
+                return Err(TagError::Field(
+                    "a clear names at least one claim".to_owned(),
+                ));
+            }
             if claims.len() > MAX_CLEAR_CLAIMS {
                 return Err(TagError::Field(format!(
                     "{} claims, the most is {MAX_CLEAR_CLAIMS}",
@@ -154,7 +266,7 @@ pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
 }
 
 /// Checks a text field: its byte length is in `min..=max`, and it is NFC.
-fn check_text(field: &str, text: &str, min: usize, max: usize) -> Result<(), TagError> {
+pub(crate) fn check_text(field: &str, text: &str, min: usize, max: usize) -> Result<(), TagError> {
     let length = text.len();
     if !(min..=max).contains(&length) {
         return Err(TagError::Field(format!(
@@ -217,6 +329,7 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
                     subject: *subject,
                     name: name.clone(),
                     value: value.clone(),
+                    scope: TagScope::Shared,
                 },
             );
         }
@@ -373,6 +486,7 @@ pub fn compacted_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>)
                 subject: *subject,
                 name: name.clone(),
                 value: value.clone(),
+                scope: TagScope::Shared,
             }),
             TagOp::Clear { .. } => None,
         })
@@ -419,7 +533,9 @@ mod tests {
             name: "city".to_owned(),
             value: Some(String::new()),
         };
-        let clear_op = TagOp::Clear { claims: vec![] };
+        let clear_op = TagOp::Clear {
+            claims: vec![hash(1)],
+        };
         assert!(check_op(SET_KIND, &set_op).is_ok());
         assert!(check_op(CLEAR_KIND, &clear_op).is_ok());
         assert!(check_op(CLEAR_KIND, &set_op).is_err());
@@ -444,6 +560,16 @@ mod tests {
         assert!(check("a", Some("v".repeat(MAX_VALUE_BYTES))).is_ok());
         assert!(check("a", Some("v".repeat(MAX_VALUE_BYTES + 1))).is_err());
         assert!(check("a", Some("e\u{301}".to_owned())).is_err());
+    }
+
+    #[test]
+    fn test_a_clear_naming_no_claims_is_refused() {
+        let op = TagOp::Clear { claims: vec![] };
+        assert!(matches!(
+            check_op(CLEAR_KIND, &op),
+            Err(TagError::Field(message))
+                if message == "a clear names at least one claim"
+        ));
     }
 
     #[test]

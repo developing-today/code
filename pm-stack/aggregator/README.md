@@ -381,6 +381,20 @@ alerts-intake-token`, resolved by name at runtime
   within 24 hours. A class under 10% acted-on over the rolling
   four-week window renders as a default-off _proposal_ — display
   only; the page never changes a preference or a default.
+- **Preferences**: `/alerts/preferences` (#3318) is the
+  per-class subscription page: toggles for every class in
+  `NOTIFICATION_CLASS_DEFAULTS`, quiet-hours editing, this
+  browser's subscription state, and a send-test button per class
+  (`POST /api/push/test-class`). Saving writes through the same
+  subscription upsert; the engine reads the stored classes/quiet
+  on its next tick, and a per-class test honours the toggle (a
+  class that is off receives no test). Test landings follow the
+  design §3 deep-link contract (`notificationTestLanding`): a real
+  candidate's own URL when one is supplied, otherwise the class's
+  own view — never the origin root; the digest test is the only
+  list-shaped landing (attention filtered to its refs). The JSON
+  twin is `/api/alerts/preferences.json`. `/notifications` stays
+  the read-only #3319 measurement page.
 - **Ack surface**: `/alerts` lists open incidents with Ack/Close.
   Ack is exactly-once: only the open→acked transition writes an
   event (and stamps the sends' `acted_on_at`); a repeat ack returns
@@ -425,6 +439,76 @@ is 0.
 The contract's existing embodiment is `src/token-adapter.ts` (#1153):
 it validates its document once at the boundary and rejects-and-retains
 on failure, and new boundaries are written to its standard.
+
+## Parsed-shape contract (#3068)
+
+Sibling to the ingest contract above, stated here by reference: the
+parsed-shape contract from design #3068 — *parsed is not validated* —
+applies at every JSON trust boundary in this repo (`bin/`, `scripts/`,
+`pkgs/` tools, pm-stack's non-aggregator handlers, and id web), not
+only at aggregator ingest. Its recorded terms:
+
+- A successful parse proves syntax, never shape. Before a parsed
+  value is dereferenced, its relied-on shape is checked once, at the
+  boundary, in the surface's own error vocabulary — a wrong shape is
+  a named shape error, never a raw `TypeError`, never a silently
+  half-applied value, and never fabricated data.
+- The vocabulary is exact: a plain object is not an array, an array
+  is not a catalogue, and a present-but-wrong-typed field is a shape
+  error — coercion is not validation.
+- Absence is not emptiness: a missing field, section, or collection
+  is *absent* (the boundary's recorded outcome for absence applies),
+  never silently rewritten as an empty object or array that later
+  reads as a measured empty result.
+- Each surface records its own outcome for a shape failure (refuse
+  the run, drop the element and count it, reject and retain), chosen
+  per boundary as in the ingest contract above.
+
+The closing inventory audit for this contract, with the per-surface
+dispositions, is recorded on #3069; the design and its decisions are
+#3068.
+
+## Measurement grammar (#3005)
+
+A measurement string is a **plain decimal**. Everywhere the PM stack
+turns a string into a measurement — a coercion gate in this app or in
+the laptop exporters — exactly two forms exist:
+
+- **Field form** (a value that IS the measurement — API fields, sheet
+  cells): an optional sign where the gate's domain already admits
+  negatives, digits, and an optional single fraction
+  (`/^[+-]?[0-9]+(\.[0-9]+)?$/`, narrowed per gate — counts are
+  unsigned integers; kind rules stay with their gates). Everything
+  else — empty, whitespace-padded, radix-prefixed (`0x10`),
+  scientific (`1e2`), thousands separators in a field value — is
+  *not a measurement*: the gate returns its existing not-measured
+  outcome (`null` here; the exporters' fail-closed error), never a
+  reinterpreted number.
+- **Prose form** (a count embedded in a human-written bullet): the
+  extraction captures the grouped form (`[\d,]+`, strip commas —
+  the idiom in `src/dns.ts` `parsePriceUsd` and
+  `src/snapshot-records.ts`). A bare `\d+` adjacent to a count noun
+  is a defect; where a grouped figure cannot match, the metric is
+  absent — never truncated, never a partial-group match.
+
+Pins: scientific spellings are **refused** in both forms (no source
+emits them; the landed meta-exporter gate refuses them); whitespace
+padding is **refused** (padding is drift, not a spelling); grouping
+well-formedness is **stripped, not validated** (`1,2,3` parses as
+123 — strict grouping was considered and rejected). Already-typed
+numbers are untouched: a `typeof number` input keeps each gate's
+existing finite check — the grammar governs strings only.
+
+The grammar lives as **per-app copies with one shared probe matrix**
+(these apps deploy independently): `"12"`/`"12.5"` measure;
+`"1,234"` + noun reads 1234 in prose form and is not a measurement
+in field form; `""`, `"0x10"`, `"1e2"`, `" 12 "`, `"12abc"` are not
+measured. Embodiments: `src/aa.ts` `num()` (#2985),
+`src/saas-extract.ts` count patterns (#2997, #3000),
+cloudflare-export and supabase-export gates (#2791, #2743),
+meta-exporter's `parseSubscriptionQuota` (#2789 — drift found by
+the closing audit: the #6333 re-home restored the pre-#2789 bare
+coercion; restoration is filed as #7880). Closing audit: issue #3006.
 
 ## First-class requirements (from the design record)
 
@@ -488,6 +572,19 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
+### WIP-cap configuration (#1281 step 1)
+
+The single source for cross-repo board WIP caps is
+[`src/wip-caps.json`](src/wip-caps.json). `laneCaps` sets the starting
+cap for each standard board lane; `defaultCap` applies to any additional
+lane. The initial values are pilot thresholds, not hard limits: exceeding
+one only displays a warning and never blocks work. `projectCaps` may
+override a lane cap by the GitHub Project URL, and `epicCaps` may override
+it by canonical epic ref (`owner/repo#N`). Project and epic counts are
+derived from the board items linked to the current Project-pool snapshot;
+unlinked cards still count toward their lane total. The board and Today
+view use the same summary, and `/api/today.json` includes it. Done cards
+are completion history and are not counted as WIP.
 ### Activity ingestion into the event stream (#3321)
 
 Watchdog breach episodes and Kaneo board changes are ingested into the
@@ -580,6 +677,23 @@ The footer of every page states, facet by facet, whether it is live or
 fixture-backed. When a live reader is unreachable, that facet alone
 falls back to fixtures and the footer says why.
 
+## Roadmap Horizon contract (#1207)
+
+`Program roadmap.Horizon` accepts a real calendar date (`YYYY-MM-DD`), a
+quarter (`Q1`–`Q4 YYYY`), or one of `Now`, `Next`, `Later`, `Ongoing`, and
+`Unscheduled`. Dates must exist in the Gregorian calendar. Leading/trailing
+whitespace and bucket/quarter case are normalized for classification only;
+the reader never rewrites a Grist cell. `Now`/`Next`/`Later` are retained as
+legacy relative buckets, while blank and unknown values are invalid.
+
+Invalid rows are not filtered: the original value stays on the roadmap card,
+with a warning and an invalid-value banner. Correct cells in Grist explicitly;
+the seed command validates `seed/roadmap.json` before making API calls, but
+does not migrate or overwrite an existing populated table (seed is not a
+migration mechanism). Day views also show dated rows outside the selected
+window and undated/coarse rows, and every grain displays per-theme Done/total
+counts over the full roadmap set.
+
 ## The fleet feed (quota + sandbox attention, slice 1 — #890)
 
 The sandbox OpenCode server binds its own loopback and the quota
@@ -665,10 +779,13 @@ Each tick:
 
 Fail-soft: a subcommand failure or unparseable output writes a
 heartbeat with the error, exits non-zero, and leaves the previous
-`quota-current.json` untouched. **Remaining hop:** the aggregator
-does not read `quota-current.json` yet — `Source` pickup (freshness
-rendering, lazy pull on page load) is the follow-up that makes the
-tick visible on /quota.
+`quota-current.json` untouched. The aggregator does read
+`quota-current.json`: `overlayQuotaCurrent` (`src/quota-current.ts`)
+overlays the latest tick onto the /quota display, consumed by the
+live source (`src/sources/live.ts`). That consumption is
+display-only — decision consumption (measured placement, rotation,
+demotion) is the OpenCode-side remainder tracked by
+developing-today-forks/opencode#566.
 
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
