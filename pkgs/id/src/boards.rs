@@ -17,7 +17,11 @@
 //! ([`Board::theme_ref`]), and [`BoardGraph::compose_view`] projects the
 //! three-layer view (personal filter / board view / host view) under the
 //! transparency rule: hidden is never erased. It does not render markup, serve
-//! content, execute game packages, replay turns, or fetch attachment/game payloads.
+//! content, host live game sessions, or fetch attachment/game payloads.
+//! Signed async game turns (#6160) are the one execution-adjacent exception:
+//! [`BoardGraph::replay_game_lineage`] folds a verified turn lineage through
+//! the exact package bytes the game post pins, under the sandbox limits, so
+//! every peer recomputes the same state from the same signed inputs.
 //! Duplicate `Rules` objects for the same board and revision are legal signed
 //! history. [`BoardGraph::resolve_rules`] selects the greater content hash
 //! within a revision; current rules are the highest revision, using that same
@@ -28,6 +32,7 @@ use std::io::{self, Write};
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::artifact::SignedArtifact;
@@ -138,6 +143,45 @@ pub struct GamePost {
     pub participants: Vec<GameParticipant>,
     /// Package-specific initial state, carried as data.
     pub genesis: serde_json::Value,
+}
+
+/// Signed acceptance of a game post's challenge by one assigned participant.
+///
+/// The game post's own author cannot accept their own challenge; an
+/// acceptance is the record that opens the game for [`GameTurn`] objects.
+/// One acceptance per (game post, author) is accepted into the graph.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameChallengeAcceptance {
+    /// Board root hash.
+    pub board: ArtifactHash,
+    /// Hash of the immutable `BoardObject::GamePost` being accepted.
+    pub game_post: ArtifactHash,
+}
+
+/// One signed asynchronous turn in a package-pinned game.
+///
+/// A turn is bound to its game post (and through it to the pinned package
+/// hash and version), to the role its signer is assigned in that post, to
+/// its index in a lineage, and to the prior turn it builds on (`prev_turn`,
+/// `None` only for the opening turn). Two valid turns may name the same
+/// `prev_turn`: they are competing branches of the game, kept as forks in
+/// the graph, never erased or overwritten by acceptance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameTurn {
+    /// Board root hash.
+    pub board: ArtifactHash,
+    /// Hash of the immutable `BoardObject::GamePost` this turn belongs to.
+    pub game_post: ArtifactHash,
+    /// Package-defined role the signer is assigned in the game post.
+    pub role: String,
+    /// Zero-based position of this turn in its lineage.
+    pub turn_index: u64,
+    /// The prior turn in this lineage; `None` for the opening turn.
+    pub prev_turn: Option<ArtifactHash>,
+    /// Package-defined action data, carried as data; replay interprets it.
+    pub action: serde_json::Value,
 }
 
 /// Stable identity root for one public board.
@@ -421,6 +465,10 @@ pub enum BoardObject {
     Theme(Theme),
     /// Package-pinned playable game post metadata.
     GamePost(GamePost),
+    /// Signed challenge acceptance for a game post.
+    GameChallengeAcceptance(GameChallengeAcceptance),
+    /// Signed asynchronous game turn.
+    GameTurn(GameTurn),
     /// Signed opt-in host listing / withdrawal.
     BoardListing(BoardListing),
 }
@@ -442,6 +490,8 @@ impl BoardObject {
             Self::Tombstone(_) => "tombstone",
             Self::Theme(_) => "theme",
             Self::GamePost(_) => "game_post",
+            Self::GameChallengeAcceptance(_) => "game_challenge_acceptance",
+            Self::GameTurn(_) => "game_turn",
             Self::BoardListing(_) => "board_listing",
         }
     }
@@ -461,6 +511,8 @@ impl BoardObject {
             Self::Tombstone(value) => Some(&value.board),
             Self::BoardListing(value) => Some(&value.board),
             Self::GamePost(value) => Some(&value.board),
+            Self::GameChallengeAcceptance(value) => Some(&value.board),
+            Self::GameTurn(value) => Some(&value.board),
         }
     }
 
@@ -574,6 +626,11 @@ impl BoardObject {
                 }
                 validate_game_data("game configuration", &value.configuration)?;
                 validate_game_data("game genesis state", &value.genesis)?;
+            }
+            Self::GameChallengeAcceptance(_) => {}
+            Self::GameTurn(value) => {
+                validate_game_role(&value.role)?;
+                validate_game_data("game turn action", &value.action)?;
             }
             Self::BoardListing(value) => {
                 ensure!(
@@ -773,6 +830,74 @@ impl BoardGraph {
             }
             BoardObject::GamePost(value) => {
                 self.require_board(&value.board)?;
+            }
+            BoardObject::GameChallengeAcceptance(value) => {
+                let post = self.require_scoped(&value.game_post, &value.board, "game_post")?;
+                let BoardObject::GamePost(post_body) = &post.object else {
+                    unreachable!("require_scoped checked game post kind")
+                };
+                ensure!(
+                    post.artifact.author != author,
+                    "a game challenge cannot be accepted by the game post author"
+                );
+                ensure!(
+                    post_body.participants.iter().any(|participant| participant.author == author),
+                    "a game challenge can be accepted only by an assigned participant"
+                );
+                ensure!(
+                    !self.objects.values().any(|signed| matches!(
+                        &signed.object,
+                        BoardObject::GameChallengeAcceptance(acceptance)
+                            if acceptance.game_post == value.game_post
+                                && signed.artifact.author == author
+                    )),
+                    "this participant has already accepted the game challenge"
+                );
+            }
+            BoardObject::GameTurn(value) => {
+                let post = self.require_scoped(&value.game_post, &value.board, "game_post")?;
+                let BoardObject::GamePost(post_body) = &post.object else {
+                    unreachable!("require_scoped checked game post kind")
+                };
+                ensure!(
+                    post_body.mode == GameMode::AsyncTurns,
+                    "game turns require the async-turns play mode"
+                );
+                ensure!(
+                    post_body.participants.iter().any(|participant| {
+                        participant.author == author && participant.role == value.role
+                    }),
+                    "a game turn must be signed by the author assigned to its role"
+                );
+                ensure!(
+                    self.objects.values().any(|signed| matches!(
+                        &signed.object,
+                        BoardObject::GameChallengeAcceptance(acceptance)
+                            if acceptance.game_post == value.game_post
+                    )),
+                    "game turns require a signed challenge acceptance first"
+                );
+                match &value.prev_turn {
+                    None => ensure!(
+                        value.turn_index == 0,
+                        "an opening game turn has index 0"
+                    ),
+                    Some(previous) => {
+                        let previous_object =
+                            self.require_scoped(previous, &value.board, "game_turn")?;
+                        let BoardObject::GameTurn(previous_body) = &previous_object.object else {
+                            unreachable!("require_scoped checked game turn kind")
+                        };
+                        ensure!(
+                            previous_body.game_post == value.game_post,
+                            "a game turn's prior turn belongs to a different game"
+                        );
+                        ensure!(
+                            previous_body.turn_index.checked_add(1) == Some(value.turn_index),
+                            "a game turn's index must follow its prior turn"
+                        );
+                    }
+                }
             }
             BoardObject::Attachment(value) => {
                 self.require_board(&value.board)?;
@@ -1019,6 +1144,161 @@ impl BoardGraph {
         })
     }
 
+    /// The signed challenge acceptances recorded for one game post, in
+    /// content-hash order.
+    pub fn game_acceptances(&self, game_post: &ArtifactHash) -> Vec<&SignedBoardObject> {
+        self.objects
+            .values()
+            .filter(|signed| {
+                matches!(
+                    &signed.object,
+                    BoardObject::GameChallengeAcceptance(acceptance)
+                        if &acceptance.game_post == game_post
+                )
+            })
+            .collect()
+    }
+
+    /// Every accepted turn of one game post, ordered by (turn index,
+    /// content hash) so every peer enumerates the same set identically.
+    /// Competing branches are all present; see [`Self::game_heads`].
+    pub fn game_turns(&self, game_post: &ArtifactHash) -> Vec<(ArtifactHash, &GameTurn)> {
+        let mut turns: Vec<(ArtifactHash, &GameTurn)> = self
+            .objects
+            .iter()
+            .filter_map(|(hash, signed)| match &signed.object {
+                BoardObject::GameTurn(turn) if &turn.game_post == game_post => {
+                    Some((hash.clone(), turn))
+                }
+                _ => None,
+            })
+            .collect();
+        turns.sort_by(|(left_hash, left), (right_hash, right)| {
+            left.turn_index
+                .cmp(&right.turn_index)
+                .then_with(|| left_hash.cmp(right_hash))
+        });
+        turns
+    }
+
+    /// The heads of one game: accepted turns no other turn builds on.
+    /// A game with more than one head has forked — competing valid turns
+    /// on the same frontier stay visible as separate heads instead of
+    /// one erasing the other.
+    pub fn game_heads(&self, game_post: &ArtifactHash) -> Vec<ArtifactHash> {
+        let turns = self.game_turns(game_post);
+        let built_on: BTreeSet<&ArtifactHash> = turns
+            .iter()
+            .filter_map(|(_, turn)| turn.prev_turn.as_ref())
+            .collect();
+        turns
+            .into_iter()
+            .filter(|(hash, _)| !built_on.contains(hash))
+            .map(|(hash, _)| hash)
+            .collect()
+    }
+
+    /// One lineage of a game, from its opening turn to `head`, in play
+    /// order. Graph acceptance already binds each turn to its prior
+    /// turn, so a lineage is a walk of `prev_turn` references; this
+    /// re-checks game scope and index contiguity so the slice handed
+    /// to replay is self-verified.
+    pub fn game_lineage(
+        &self,
+        game_post: &ArtifactHash,
+        head: &ArtifactHash,
+    ) -> Result<Vec<(ArtifactHash, &GameTurn)>> {
+        let mut lineage = Vec::new();
+        let mut cursor = Some(head.clone());
+        while let Some(hash) = cursor {
+            let signed = self
+                .objects
+                .get(&hash)
+                .context("game lineage reference is missing")?;
+            let BoardObject::GameTurn(turn) = &signed.object else {
+                bail!("game lineage reference is not a game turn");
+            };
+            ensure!(
+                &turn.game_post == game_post,
+                "game lineage crosses into a different game"
+            );
+            cursor = turn.prev_turn.clone();
+            lineage.push((hash, turn));
+        }
+        lineage.reverse();
+        for (expected, (_, turn)) in lineage.iter().enumerate() {
+            ensure!(
+                usize::try_from(turn.turn_index) == Ok(expected),
+                "game lineage indices are not contiguous from 0"
+            );
+        }
+        Ok(lineage)
+    }
+
+    /// Deterministically replay one lineage of a game through the exact
+    /// package bytes its game post pins, under the sandbox limits.
+    ///
+    /// The bytes are accepted only when their SHA-256 equals the pinned
+    /// package hash — a different build is a different game. The fold
+    /// starts from the post's genesis state and applies each turn's
+    /// action in lineage order, attributing it to the participant the
+    /// game post assigns to the turn's role (participant IDs are the
+    /// one-based positions in the post's participant list, as in the
+    /// tic-tac-toe package). Player evidence comes only from the signed
+    /// turns; nothing is inferred from host-authored journal events.
+    /// Returns the package's state snapshot after the final turn: the
+    /// same signed lineage and the same bytes always produce the same
+    /// snapshot.
+    pub fn replay_game_lineage(
+        &self,
+        game_post: &ArtifactHash,
+        head: &ArtifactHash,
+        package_bytes: &[u8],
+    ) -> Result<Vec<u8>> {
+        let post = self
+            .objects
+            .get(game_post)
+            .context("game post reference is missing")?;
+        let BoardObject::GamePost(post_body) = &post.object else {
+            bail!("reference is not a game post");
+        };
+        ensure!(
+            sha256_hex(package_bytes) == post_body.package.hash.as_str(),
+            "package bytes do not match the game post's pinned package hash"
+        );
+        ensure!(
+            !self.game_acceptances(game_post).is_empty(),
+            "the game has no signed challenge acceptance"
+        );
+        let lineage = self.game_lineage(game_post, head)?;
+        let sandbox =
+            crate::sandbox::Sandbox::compile(package_bytes, crate::sandbox::SandboxLimits::default())?;
+        let mut instance = sandbox.instantiate(0)?;
+        let genesis_bytes = match &post_body.genesis {
+            serde_json::Value::String(text) => text.clone().into_bytes(),
+            other => serde_json::to_vec(other)?,
+        };
+        if !genesis_bytes.is_empty() {
+            instance.restore(&genesis_bytes)?;
+        }
+        for (_, turn) in &lineage {
+            let position = post_body
+                .participants
+                .iter()
+                .position(|participant| participant.role == turn.role)
+                .context("game turn role is not assigned in the game post")?;
+            let participant = u64::try_from(position + 1)?;
+            let action_bytes = match &turn.action {
+                serde_json::Value::String(text) => text.clone().into_bytes(),
+                other => serde_json::to_vec(other)?,
+            };
+            instance.update(participant, &action_bytes)?;
+        }
+        instance
+            .snapshot()?
+            .context("game package exposes no state snapshot")
+    }
+
     /// Every hash in one board's replication set: the board root plus
     /// every object scoped to it, plus the fork provenance record when
     /// this board is a fork (the [`BoardFork`] record names no board in
@@ -1130,6 +1410,24 @@ impl BoardGraph {
                     .chain(body.supersedes.iter().cloned())
                     .collect(),
                 BoardObject::GamePost(body) => vec![body.board.clone()],
+                BoardObject::GameChallengeAcceptance(body) => {
+                    vec![body.board.clone(), body.game_post.clone()]
+                }
+                BoardObject::GameTurn(body) => {
+                    let mut dependencies = vec![body.board.clone(), body.game_post.clone()];
+                    dependencies.extend(body.prev_turn.iter().cloned());
+                    dependencies.extend(self.objects.iter().filter_map(
+                        |(hash, signed)| match &signed.object {
+                            BoardObject::GameChallengeAcceptance(acceptance)
+                                if acceptance.game_post == body.game_post =>
+                            {
+                                Some(hash.clone())
+                            }
+                            _ => None,
+                        },
+                    ));
+                    dependencies
+                }
             };
             for dependency in dependencies {
                 if self.objects.contains_key(&dependency) && set.insert(dependency.clone()) {
@@ -1786,6 +2084,14 @@ impl Write for SerializedSizeLimit {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+/// Lower-case hex SHA-256 of `bytes`, the canonical package-hash form.
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn validate_game_data(name: &str, value: &serde_json::Value) -> Result<()> {
@@ -3859,6 +4165,370 @@ mod tests {
                 invalid,
             ));
         }
+    }
+
+    const TIC_TAC_TOE_WASM: &[u8] =
+        include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+
+    fn game_acceptance_object(
+        key: &SigningKey,
+        seq: u64,
+        board: ArtifactHash,
+        game_post: ArtifactHash,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            seq,
+            "",
+            BoardObject::GameChallengeAcceptance(GameChallengeAcceptance { board, game_post }),
+        )
+        .unwrap()
+    }
+
+    fn game_turn_object(
+        key: &SigningKey,
+        board: ArtifactHash,
+        game_post: ArtifactHash,
+        role: &str,
+        turn_index: u64,
+        prev_turn: Option<ArtifactHash>,
+        action: &str,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::GameTurn(GameTurn {
+                board,
+                game_post,
+                role: role.to_owned(),
+                turn_index,
+                prev_turn,
+                action: serde_json::Value::String(action.to_owned()),
+            }),
+        )
+        .unwrap()
+    }
+
+    fn wasm_game_post_object(
+        author: &SigningKey,
+        opponent: &SigningKey,
+        board: ArtifactHash,
+    ) -> SignedBoardObject {
+        let participants = vec![
+            GameParticipant {
+                author: hex_encode(&author.verifying_key().to_bytes()),
+                role: "x".to_owned(),
+            },
+            GameParticipant {
+                author: hex_encode(&opponent.verifying_key().to_bytes()),
+                role: "o".to_owned(),
+            },
+        ];
+        SignedBoardObject::sign(
+            author,
+            1,
+            "",
+            BoardObject::GamePost(GamePost {
+                board,
+                package: GamePackageRef {
+                    hash: ArtifactHash::new(sha256_hex(TIC_TAC_TOE_WASM)).unwrap(),
+                    version: "0.1.0".to_owned(),
+                },
+                mode: GameMode::AsyncTurns,
+                configuration: serde_json::json!({"board_size": 3}),
+                participants,
+                genesis: serde_json::json!("---------"),
+            }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn game_challenge_acceptance_gates_turns_and_forks_stay_visible() {
+        let creator = key(41);
+        let opponent = key(42);
+        let stranger = key(43);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let game_hash = graph
+            .insert(game_post_object(&creator, &opponent, root_hash.clone()))
+            .unwrap();
+
+        // No turns before a signed challenge acceptance.
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &creator,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    "x",
+                    0,
+                    None,
+                    "0",
+                ))
+                .is_err()
+        );
+        // The poster cannot accept their own challenge, and a
+        // non-participant cannot accept it either.
+        assert!(
+            graph
+                .insert(game_acceptance_object(
+                    &creator,
+                    1,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                ))
+                .is_err()
+        );
+        assert!(
+            graph
+                .insert(game_acceptance_object(
+                    &stranger,
+                    1,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                ))
+                .is_err()
+        );
+        graph
+            .insert(game_acceptance_object(
+                &opponent,
+                1,
+                root_hash.clone(),
+                game_hash.clone(),
+            ))
+            .unwrap();
+        assert_eq!(graph.game_acceptances(&game_hash).len(), 1);
+        // One acceptance per participant: a second one is refused.
+        assert!(
+            graph
+                .insert(game_acceptance_object(
+                    &opponent,
+                    2,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                ))
+                .is_err()
+        );
+
+        // A turn signed by anyone but the author assigned to its role
+        // is refused (here the opponent signing for role "x").
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    "x",
+                    0,
+                    None,
+                    "0",
+                ))
+                .is_err()
+        );
+        // A turn scoped to a different board than its game post is refused.
+        let foreign_root = graph.insert(board(&stranger)).unwrap();
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &creator,
+                    foreign_root,
+                    game_hash.clone(),
+                    "x",
+                    0,
+                    None,
+                    "0",
+                ))
+                .is_err()
+        );
+
+        let turn0 = graph
+            .insert(game_turn_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                "x",
+                0,
+                None,
+                "0",
+            ))
+            .unwrap();
+        // An index that skips ahead of its prior turn is refused.
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    "o",
+                    2,
+                    Some(turn0.clone()),
+                    "4",
+                ))
+                .is_err()
+        );
+        let turn1 = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "o",
+                1,
+                Some(turn0.clone()),
+                "4",
+            ))
+            .unwrap();
+        // A competing valid turn on the same frontier is a fork: it is
+        // accepted and stays visible next to the first branch.
+        let fork1 = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "o",
+                1,
+                Some(turn0.clone()),
+                "3",
+            ))
+            .unwrap();
+        let heads = graph.game_heads(&game_hash);
+        assert_eq!(heads.len(), 2);
+        assert!(heads.contains(&turn1));
+        assert!(heads.contains(&fork1));
+        assert_eq!(graph.game_turns(&game_hash).len(), 3);
+        let lineage = graph.game_lineage(&game_hash, &turn1).unwrap();
+        assert_eq!(lineage.len(), 2);
+        assert_eq!(lineage[0].0, turn0);
+        assert_eq!(lineage[1].0, turn1);
+
+        // A turn chaining onto another game's turn is refused.
+        let other_participants = vec![
+            GameParticipant {
+                author: hex_encode(&creator.verifying_key().to_bytes()),
+                role: "x".to_owned(),
+            },
+            GameParticipant {
+                author: hex_encode(&opponent.verifying_key().to_bytes()),
+                role: "o".to_owned(),
+            },
+        ];
+        let other_game = graph
+            .insert(
+                SignedBoardObject::sign(
+                    &creator,
+                    1,
+                    "",
+                    BoardObject::GamePost(game_post_body(
+                        root_hash.clone(),
+                        "0.2.0".to_owned(),
+                        serde_json::json!({"board_size": 3}),
+                        other_participants,
+                        serde_json::json!("---------"),
+                    )),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_ne!(other_game, game_hash);
+        graph
+            .insert(game_acceptance_object(
+                &opponent,
+                3,
+                root_hash.clone(),
+                other_game.clone(),
+            ))
+            .unwrap();
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &creator,
+                    root_hash.clone(),
+                    other_game,
+                    "x",
+                    1,
+                    Some(turn0.clone()),
+                    "1",
+                ))
+                .is_err()
+        );
+
+        // Tampering with a signed turn breaks receipt, like every
+        // other board object.
+        let turn_object = graph.get(&turn1).unwrap().clone();
+        let mut tampered = turn_object.artifact.clone();
+        tampered.body["data"]["action"] = serde_json::Value::String("8".to_owned());
+        assert!(SignedBoardObject::from_artifact(tampered).is_err());
+    }
+
+    #[test]
+    fn game_lineage_replays_deterministically_through_the_pinned_package() {
+        let creator = key(51);
+        let opponent = key(52);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let game_hash = graph
+            .insert(wasm_game_post_object(&creator, &opponent, root_hash.clone()))
+            .unwrap();
+
+        // Replay refuses a game with no signed challenge acceptance.
+        assert!(
+            graph
+                .replay_game_lineage(&game_hash, &game_hash, TIC_TAC_TOE_WASM)
+                .is_err()
+        );
+        graph
+            .insert(game_acceptance_object(
+                &opponent,
+                1,
+                root_hash.clone(),
+                game_hash.clone(),
+            ))
+            .unwrap();
+
+        // X takes the top row: 0, 1, 2 against O at 4 and 3.
+        let moves = [
+            (&creator, "x", "0"),
+            (&opponent, "o", "4"),
+            (&creator, "x", "1"),
+            (&opponent, "o", "3"),
+            (&creator, "x", "2"),
+        ];
+        let mut prev: Option<ArtifactHash> = None;
+        for (index, (player, role, action)) in moves.iter().enumerate() {
+            prev = Some(
+                graph
+                    .insert(game_turn_object(
+                        player,
+                        root_hash.clone(),
+                        game_hash.clone(),
+                        role,
+                        u64::try_from(index).unwrap(),
+                        prev,
+                        action,
+                    ))
+                    .unwrap(),
+            );
+        }
+        let head = prev.unwrap();
+        let state = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        assert_eq!(state, b"XXXOO----");
+        // The same signed lineage and the same bytes replay to the
+        // same state, every time.
+        let replayed = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        assert_eq!(replayed, state);
+
+        // Bytes that do not hash to the pinned package are refused:
+        // a different build is a different game.
+        assert!(
+            graph
+                .replay_game_lineage(&game_hash, &head, b"not the pinned package")
+                .is_err()
+        );
     }
 
     #[test]
