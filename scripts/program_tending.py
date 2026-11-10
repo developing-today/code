@@ -9,8 +9,11 @@ roadmaps in slice 2, projects + stalled-PRs + loose-ends in slice 3)
 land after this scaffold does — see the triage decomposition on #1352.
 
 Ownership rules (from #1352; enforced by every section stub):
-- never touch held / do-not-merge / user-owned PRs;
-- Drew's own feature PRs get a check-in comment at 7 days, never a packet;
+- never touch held / do-not-merge / user-owned PRs (hold labels only:
+  `held`, `user/owned`, `do-not-merge`, `do-not-auto-edit`);
+- PRs labeled `user/owned` get a check-in comment at 7 days, never a packet
+  (authorship alone never marks a PR held: a dezren39-authored PR with no
+  hold label is workable like any other — Drew ruling 2026-11-07, code#7077);
 - user/review is reported, never re-decided.
 
 Usage: python3 -I scripts/program_tending.py --run [--repo owner/name ...]
