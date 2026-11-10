@@ -173,6 +173,78 @@ class TestIsCandidate(unittest.TestCase):
         self.assertFalse(poll.is_candidate(self.row(progress={})))
 
 
+class TestIsHandoffWaiting(unittest.TestCase):
+    """The handoff sink: a handed-off task resting in the sink
+    (status 'handed_off', #8234) must surface as a candidate, or it
+    is never collected. Sink membership is the STATUS — no stage
+    is read here (#8192)."""
+
+    def row(self, **over):
+        r = {
+            "status": "handed_off",
+            "progress": {
+                "lane": "opencode",
+                "last_checkpoint": {"stage": "handed_off"},
+                "session_id": None,
+            },
+            "lane_id": "code-j",
+        }
+        r.update(over)
+        return poll.normalize_row(r)
+
+    def test_sink_handoff_is_candidate(self):
+        self.assertTrue(poll.is_handoff_waiting(self.row()))
+        cands = poll.get_handed_off_candidates([self.row()])
+        self.assertEqual(len(cands), 1)
+
+    def test_sink_launch_failed_yield_is_candidate(self):
+        r = self.row(progress={"lane": "opencode", "stage": "launch_failed"})
+        self.assertTrue(poll.is_handoff_waiting(r))
+
+    def test_stage_source_disagreement_is_still_candidate(self):
+        # #8192 regression: the top-level stage and the last
+        # checkpoint's stage DISAGREE (top-level advanced past the
+        # yield). The broker used to read one source and this poll
+        # the other; since #8234 neither reads a stage for a sink
+        # row — the status is the membership — so the row is a
+        # candidate either way.
+        r = self.row(
+            progress={
+                "lane": "opencode",
+                "stage": "working",
+                "last_checkpoint": {"stage": "handed_off"},
+                "session_id": None,
+            }
+        )
+        self.assertTrue(poll.is_handoff_waiting(r))
+
+    def test_genuine_wait_park_is_not_candidate(self):
+        # A 'parked' row is a genuine wait by definition since
+        # #8234 — even one whose progress is handoff-shaped (a
+        # recorded handoff that later took a real triage wait,
+        # task 10995's shape). The status decides, not the shape.
+        r = self.row(status="parked")
+        self.assertFalse(poll.is_handoff_waiting(r))
+
+    def test_sink_bound_row_is_not_candidate(self):
+        r = self.row(
+            progress={
+                "lane": "opencode",
+                "stage": "handed_off",
+                "session_id": "ses_1",
+            }
+        )
+        self.assertFalse(poll.is_handoff_waiting(r))
+
+    def test_claimed_row_is_not_a_sink_candidate(self):
+        r = self.row(status="claimed")
+        self.assertFalse(poll.is_handoff_waiting(r))
+
+    def test_sink_openchamber_lane_is_never_candidate(self):
+        r = self.row(lane_id="8d133595-c60c-4dcb-8e82-59b7d0ac9b5a")
+        self.assertFalse(poll.is_handoff_waiting(r))
+
+
 class TestParseLeaseMs(unittest.TestCase):
     def test_zulu_lease_parses(self):
         self.assertEqual(

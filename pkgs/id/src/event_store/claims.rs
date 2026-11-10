@@ -12,7 +12,7 @@ use p2panda_core::Hash;
 use redb::ReadableDatabase;
 
 use super::resolve::{self, author_of};
-use super::{ACTIONS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt};
+use super::{ACTIONS, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt};
 use crate::chain::Event;
 use crate::groups::{Projection, Role as GroupRole};
 use crate::tag_claims::{Applied, Claim, TagOp, compacted_claims, is_tag_kind};
@@ -32,7 +32,8 @@ fn parents_of(event: &Event) -> Vec<Hash> {
 
 impl EventStore {
     /// The default-view claims in the store. An applied `tag.clear` hides a claim only when the
-    /// marker's author is that claim's author, or is an Admin of the group owning the subject.
+    /// marker's author is that claim's author, is an Admin of the group owning the subject, or
+    /// signs as a device an Admin of that group authorized at Admin scope (issue #5656).
     /// Unauthorized markers remain stored and accessible through the raw/applied event APIs.
     ///
     /// # Errors
@@ -44,9 +45,10 @@ impl EventStore {
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
             let actions = txn.open_table(ACTIONS)?;
+            let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &forks, &proof_headers)?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
 
@@ -101,7 +103,10 @@ impl EventStore {
 /// settled projection is intentional: role is resolved from the store's current group state, not
 /// replayed at the marker's causal position. A subject without a stored, applied event with a
 /// group extension has no group-admin authority; there is no inferred owner for missing or
-/// ungrouped subjects.
+/// ungrouped subjects. A marker signed by a device key acts with the effective role the
+/// settled projection gives that device in the subject's group (the authorizing account's
+/// role capped by the grant's scope), so an Admin-scoped device of an Admin account hides a
+/// claim exactly as the account itself would (issue #5656).
 fn default_view_events(
     applied: &[Applied],
     subject_groups: &HashMap<Hash, Hash>,
@@ -131,10 +136,14 @@ fn default_view_events(
                     let Some(group) = subject_groups.get(subject) else {
                         return false;
                     };
+                    let Some(projection) = projection else {
+                        return false;
+                    };
                     projection
-                        .and_then(|projection| projection.group(group))
+                        .group(group)
                         .and_then(|view| view.members.get(&clear_author))
                         == Some(&GroupRole::Admin)
+                        || projection.device_role(group, &clear_author) == Some(GroupRole::Admin)
                 });
             }
             event

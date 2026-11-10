@@ -65,6 +65,20 @@ check stays `basic: proxy port fallbacks`, which the dedicated
 events. `gh pr merge` merges a PR directly; there is no
 merge-pending queue state.
 
+## Deploy flake checks (#7322)
+
+`.github/workflows/deploy-flake-checks.yml` is a **basic-tier** check
+(job `basic: deploy flake checks (deploy-list + deploy-list-malformed)`):
+on pull requests touching `pkgs/deploy/**`, `lib/default.nix`, or the
+workflow itself, it builds exactly the two root flake checks
+`checks.x86_64-linux.deploy-list` and
+`checks.x86_64-linux.deploy-list-malformed`. Before #7322 those checks
+ran only in the full flake check on main / the nix-ci schedule, so the
+deploy registry validation was unenforced at the merge gate. This is a
+targeted build of two `runCommandLocal` checks — never a full flake
+check on a PR (class 4 above). No `merge_group` trigger: main has no
+merge queue (ruling above).
+
 ## mcpx fix-test guard (#1969)
 
 `.github/workflows/mcpx-fix-test-guard.yml` is a **basic-tier** check
@@ -167,6 +181,8 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | nix ci                                                         | — (PR proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
 | proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request`                                                          | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
+| atlas-search                                                   | `basic: atlas-search Rust checks` on pull requests touching `pkgs/atlas-search/**`                 | —                                                                                                   | —                                                                |
+| deploy-flake-checks | `basic: deploy flake checks (deploy-list + deploy-list-malformed)` on `pull_request` (paths `pkgs/deploy/**`, `lib/default.nix`, the workflow itself) | full flake check in nix ci | — |
 | workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) | — | — |
 | id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                                        | — (main covers it)                                               |
