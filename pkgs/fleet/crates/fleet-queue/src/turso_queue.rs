@@ -3286,7 +3286,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn claim_update_sql_rechecks_pick_eligibility_for_the_picked_id() {
         // #7068 oracle, statement shape: the claim UPDATE is keyed
         // to the picked row's id and re-checks the full pick
