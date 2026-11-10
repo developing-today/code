@@ -33,7 +33,9 @@ import {
   activityCoverageHtml,
   gapsHtml,
   ACTIVITY_SOURCE_COVERAGE,
+  type ActivitySourceStatus,
 } from "./activity.ts";
+import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
@@ -220,6 +222,41 @@ const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 const activityStore = new IngestionStore(cfg.activityFile);
+const githubHotListConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubHotListConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: activityStore,
+        events: eventsStore,
+      })
+    : null;
+
+async function githubActivityStatus(): Promise<ActivitySourceStatus> {
+  return (
+    (await activityStore.sourceStatuses()).find((status) => status.source === "github") ?? unconfiguredGithubStatus()
+  );
+}
+
+function activitySourceStatusHtml(status: ActivitySourceStatus): string {
+  const cursorDistance =
+    status.checkpointCursor !== null && status.highWater !== null
+      ? Math.max(0, status.highWater - status.checkpointCursor)
+      : null;
+  const cursorText = status.cursor === null ? "not checkpointed" : String(status.cursor);
+  const checkpointText = status.checkpointCursor === null ? "not checkpointed" : String(status.checkpointCursor);
+  const highWaterText = status.highWater === null ? "unknown" : String(status.highWater);
+  const lagText = cursorDistance === null ? "unknown" : String(cursorDistance);
+  const escapeHtml = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const error = status.error ? `; detail: ${escapeHtml(status.error)}` : "";
+  return (
+    `<p>GitHub hot-list consumer: <strong>${status.state}</strong>; processed cursor ${cursorText}; ` +
+    `acknowledged cursor ${checkpointText}; high-water ${highWaterText}; unacknowledged cursor distance ${lagText}; ` +
+    `last successful sweep ${escapeHtml(status.lastSuccessAt ?? "never")}${error}. ` +
+    `Current means caught up to the hot-list high-water, not complete GitHub history.</p>`
+  );
+}
 
 /** #1739: the event log's fire-and-forget sink for source-side
  *  writers (orchestration publishes, registry merges). Never awaited,
@@ -229,7 +266,7 @@ function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
 }
 
 /** #3321: the activity-ingestion sink for the source-side writers
- *  (watchdog episodes, Kaneo board changes). Dedupe + checkpoints
+ *  (watchdog episodes, Kaneo board changes, GitHub hot-list rows). Dedupe + checkpoints
  *  live in the store. The returned promise resolves true only when
  *  every delivery is durable (ingested or already seen): the live
  *  source awaits it as the acknowledgment that lets it discard its
@@ -1421,6 +1458,7 @@ async function handler(req: Request): Promise<Response> {
         `<button type="submit">Filter</button></form>` +
         eventTableHtml(page.events) +
         (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
+        `<h2>Activity source status</h2>${activitySourceStatusHtml(await githubActivityStatus())}` +
         `<h2>Activity gaps</h2><div class="tblwrap">` +
         gapsHtml(await activityStore.gaps()) +
         `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
@@ -1433,8 +1471,18 @@ async function handler(req: Request): Promise<Response> {
     // #3321: activity-ingestion state — per-source checkpoints, gap
     // records, and the documented source coverage. The machine twin
     // of the sections the /events page renders below its table.
-    const [checkpoints, gaps] = await Promise.all([activityStore.checkpoints(), activityStore.gaps()]);
-    return json({ checkpoints, gaps, coverage: ACTIVITY_SOURCE_COVERAGE });
+    const [checkpoints, gaps, sources] = await Promise.all([
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+      activityStore.sourceStatuses(),
+    ]);
+    const github = sources.find((status) => status.source === "github") ?? unconfiguredGithubStatus();
+    return json({
+      checkpoints,
+      gaps,
+      sources: [{ ...github, completeHistory: false }],
+      coverage: ACTIVITY_SOURCE_COVERAGE,
+    });
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
@@ -2503,6 +2551,37 @@ if (source.ingestSnapshots) {
   };
   void ingestSnapshots(); // recover the latest feed immediately on startup
   setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
+}
+
+// The hot-list consumer is a server-owned writer just like snapshot
+// ingestion: it runs immediately on startup and then periodically, never
+// as a side effect of rendering a page. A failed sweep leaves the remote
+// checkpoint untouched and is retried on the next tick.
+const GITHUB_HOT_LIST_INTERVAL_MS = 60_000;
+if (githubHotListConsumer) {
+  let githubSyncRunning = false;
+  const syncGithubHotList = async (): Promise<void> => {
+    if (githubSyncRunning) return;
+    githubSyncRunning = true;
+    try {
+      await githubHotListConsumer.sync();
+    } catch (error) {
+      console.error(
+        `[activity] WARNING: GitHub hot-list worker failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      githubSyncRunning = false;
+    }
+  };
+  void syncGithubHotList();
+  const timer = setInterval(() => void syncGithubHotList(), GITHUB_HOT_LIST_INTERVAL_MS);
+  timer.unref?.();
+} else {
+  void activityStore.setSourceStatus(unconfiguredGithubStatus()).catch((error) => {
+    console.error(
+      `[activity] WARNING: could not persist unconfigured GitHub source status: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation

@@ -1,5 +1,5 @@
 // Activity ingestion for the cross-stack stream (#3321): the
-// watchdog-event and Kaneo-change writers that map external activity
+// watchdog-event, Kaneo-change, and GitHub-hot-list writers that map external activity
 // into the #1739 StreamEvent log, with the ingestion discipline the
 // local fire-and-forget writers never needed:
 //
@@ -30,11 +30,9 @@
 //   recovery/backfill pass flips the gap's status; the /events page
 //   renders open gaps as holes, never as coverage.
 //
-// The GitHub slice is deliberately NOT here: #3321's boundary says
-// GitHub activity reuses the #2072 webhook/hot-list ingestion rather
-// than a competing receiver, and #2072 has not landed. The coverage
-// table below states that plainly (github: unsupported) instead of
-// implying coverage that does not exist.
+// GitHub activity is consumed from #2072's append-only hot list; this
+// module does not create a competing webhook receiver. Coverage below
+// describes exactly what that bounded source can and cannot represent.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { EventsStore } from "./events.ts";
@@ -50,7 +48,7 @@ export interface ActivityDelivery {
   sourceId: string;
   /** ISO timestamp of the change at the source. */
   at: string;
-  /** StreamEvent kind ("watchdog-event" | "kaneo-change"). */
+  /** StreamEvent kind ("watchdog-event" | "kaneo-change" | "github-event"). */
   kind: string;
   /** StreamEvent ref (the item the change concerns). */
   ref: string;
@@ -96,13 +94,35 @@ export const ACTIVITY_SOURCE_COVERAGE: readonly ActivityCoverage[] = [
   },
   {
     source: "github",
-    status: "unsupported",
-    supported: "Nothing yet.",
+    status: "supported",
+    supported:
+      "Normalized issue, pull-request, comment/review, and push-commit rows present in the #2072/#5204 projector hot list are consumed into github-event records with the hot-list event id and source URL. The consumer checkpoint advances only after a complete fixed-high-water sweep is durably ingested.",
     unsupported:
-      "All GitHub activity. #3321's boundary forbids a competing receiver: GitHub events enter through the #2072 webhook/hot-list ingestion, which has not landed. When it does, its writer joins this module with the same checkpoint/dedupe discipline.",
-    historical: "None claimed. GitHub's own history stays in GitHub until #2072 lands.",
+      "GitHub activity not represented by the hot-list webhook mapping, raw webhook bodies, and webhook deliveries the projector never received. This consumer cannot independently detect or reconstruct missing upstream webhook deliveries; a receiver outage or hot-list API outage is surfaced as a source gap instead of complete history.",
+    historical:
+      "Only rows retained in the #5204 hot list, from that ledger's start. A new consumer begins at the persisted checkpoint (zero on first use) and can consume rows already in the ledger; no pre-ledger GitHub history is claimed.",
   },
 ];
+
+export type ActivitySourceState = "unconfigured" | "current" | "lagging" | "outage" | "unrecoverable";
+
+/** Durable operational status for a source consumer. Cursor distance is
+ *  intentionally not named an event count: hot-list sequence numbers are
+ *  monotonic but not necessarily dense. */
+export interface ActivitySourceStatus {
+  source: string;
+  state: ActivitySourceState;
+  consumer: string | null;
+  /** Last source seq processed locally, including an in-progress fixed sweep. */
+  cursor: number | null;
+  /** Last cursor the projector has durably acknowledged. */
+  checkpointCursor: number | null;
+  highWater: number | null;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  updatedAt: string;
+  error?: string;
+}
 
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7725, mirroring the #7694/#7711 capUnits guard in
@@ -133,6 +153,80 @@ export function watchdogDeliveries(items: readonly TierItem[]): ActivityDelivery
     ref: item.id,
     summary: capUnits(item.title, 500),
   }));
+}
+
+export interface GithubHotEvent {
+  seq: number;
+  event_id: string;
+  delivery_id: string | null;
+  repo: string;
+  event: string;
+  action: string | null;
+  ref: string | null;
+  actor: string | null;
+  source_url: string | null;
+  source_timestamp: string | null;
+  received_at: string;
+}
+
+function validGithubTimestamp(value: string | null): string | null {
+  if (!value || !Number.isFinite(Date.parse(value))) return null;
+  return new Date(value).toISOString();
+}
+
+function githubSourceLink(event: GithubHotEvent): string {
+  if (event.source_url) {
+    try {
+      const url = new URL(event.source_url);
+      if (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        (url.hostname === "github.com" || url.hostname === "www.github.com")
+      ) {
+        return url.toString();
+      }
+    } catch {
+      // Fall through to the canonical repository link.
+    }
+  }
+  const repo = event.repo.trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error("invalid_hot_event_repo");
+  return `https://github.com/${repo}`;
+}
+
+/** Map one normalized #5204 hot-list row into the #1739 activity contract.
+ *  `event_id` is the source identity, so EventsStore persists the stable
+ *  `activity:github:<event_id>` id and retries remain dedupe-safe. */
+export function githubHotEventDelivery(event: GithubHotEvent): ActivityDelivery {
+  const sourceId = event.event_id.trim();
+  const repo = event.repo.trim();
+  const kind = event.event.trim();
+  if (!sourceId) throw new Error("invalid_hot_event_id");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error("invalid_hot_event_repo");
+  if (!kind) throw new Error("invalid_hot_event_kind");
+  const at = validGithubTimestamp(event.source_timestamp) ?? validGithubTimestamp(event.received_at);
+  if (!at) throw new Error("invalid_hot_event_timestamp");
+  const sourceRef = event.ref?.trim() ?? "";
+  // EventsStore rejects refs longer than 300 characters or containing
+  // whitespace. Keep the original source ref visible in the bounded
+  // summary, but use the repository as a valid contract ref so one odd
+  // upstream branch name cannot permanently stall this hot-list page.
+  const ref = sourceRef && sourceRef.length <= 300 && !/\s/.test(sourceRef) ? sourceRef : repo;
+  const action = event.action?.trim();
+  const actor = event.actor?.trim();
+  const description = [event.event, action].filter(Boolean).join(" ");
+  const subject = sourceRef ? ` ref ${capUnits(sourceRef, 300)}` : "";
+  const by = actor ? ` by ${actor}` : "";
+  return {
+    source: "github",
+    sourceId,
+    at,
+    kind: "github-event",
+    ref,
+    summary: capUnits(`GitHub ${description} in ${repo}${subject}${by}`, 500),
+    link: githubSourceLink(event),
+  };
 }
 
 /** Pins each watchdog breach episode to the `since` it was FIRST
@@ -288,6 +382,7 @@ export interface IngestionFile {
   checkpoints: Record<string, SourceCheckpoint>;
   seen: Record<string, string[]>;
   gaps: GapRecord[];
+  sourceStatus?: Record<string, ActivitySourceStatus>;
 }
 
 /** Per-source seen-id bound: dedupe memory is finite by design; an id
@@ -325,8 +420,30 @@ function isCheckpoint(v: unknown): v is SourceCheckpoint {
   );
 }
 
+function isActivitySourceStatus(v: unknown): v is ActivitySourceStatus {
+  if (typeof v !== "object" || v === null) return false;
+  const s = v as Record<string, unknown>;
+  const cursor = (n: unknown): boolean => n === null || (Number.isSafeInteger(n) && Number(n) >= 0);
+  return (
+    typeof s.source === "string" &&
+    (s.state === "unconfigured" ||
+      s.state === "current" ||
+      s.state === "lagging" ||
+      s.state === "outage" ||
+      s.state === "unrecoverable") &&
+    (s.consumer === null || typeof s.consumer === "string") &&
+    cursor(s.cursor) &&
+    cursor(s.checkpointCursor) &&
+    cursor(s.highWater) &&
+    (s.lastAttemptAt === null || typeof s.lastAttemptAt === "string") &&
+    (s.lastSuccessAt === null || typeof s.lastSuccessAt === "string") &&
+    typeof s.updatedAt === "string" &&
+    (s.error === undefined || typeof s.error === "string")
+  );
+}
+
 export class IngestionStore {
-  private data: IngestionFile = { version: 1, checkpoints: {}, seen: {}, gaps: [] };
+  private data: IngestionFile = { version: 1, checkpoints: {}, seen: {}, gaps: [], sourceStatus: {} };
   private loadPromise: Promise<void> | null = null;
   private ingestChain: Promise<void> = Promise.resolve();
   private writeChain: Promise<void> = Promise.resolve();
@@ -359,6 +476,12 @@ export class IngestionStore {
         throw new Error("seen is not an object");
       }
       if (!Array.isArray(f.gaps)) throw new Error("gaps is not an array");
+      if (
+        f.sourceStatus !== undefined &&
+        (typeof f.sourceStatus !== "object" || f.sourceStatus === null || Array.isArray(f.sourceStatus))
+      ) {
+        throw new Error("sourceStatus is not an object");
+      }
       for (const cp of Object.values(f.checkpoints)) {
         if (!isCheckpoint(cp)) throw new Error("a checkpoint row is malformed");
       }
@@ -370,11 +493,15 @@ export class IngestionStore {
       for (const gap of f.gaps) {
         if (!isGapRecord(gap)) throw new Error("a gap row is malformed");
       }
+      for (const status of Object.values(f.sourceStatus ?? {})) {
+        if (!isActivitySourceStatus(status)) throw new Error("a source status row is malformed");
+      }
       this.data = {
         version: 1,
         checkpoints: f.checkpoints as Record<string, SourceCheckpoint>,
         seen: f.seen as Record<string, string[]>,
         gaps: f.gaps as GapRecord[],
+        sourceStatus: (f.sourceStatus ?? {}) as Record<string, ActivitySourceStatus>,
       };
     } catch (err) {
       await this.quarantine(`is unparseable (${err instanceof Error ? err.message : String(err)})`);
@@ -430,6 +557,18 @@ export class IngestionStore {
   async gaps(): Promise<GapRecord[]> {
     await this.load();
     return [...this.data.gaps].sort((a, b) => Date.parse(a.from) - Date.parse(b.from));
+  }
+
+  async sourceStatuses(): Promise<ActivitySourceStatus[]> {
+    await this.load();
+    return Object.values(this.data.sourceStatus ?? {}).sort((a, b) => a.source.localeCompare(b.source));
+  }
+
+  async setSourceStatus(status: ActivitySourceStatus): Promise<void> {
+    await this.load();
+    if (!this.data.sourceStatus) this.data.sourceStatus = {};
+    this.data.sourceStatus[status.source] = status;
+    await this.persist();
   }
 
   /**
@@ -535,8 +674,13 @@ export class IngestionStore {
       await this.persist();
       return open;
     }
+    const baseId = `gap:${source}:${from}`;
+    let id = baseId;
+    for (let suffix = 1; this.data.gaps.some((gap) => gap.id === id); suffix++) {
+      id = `${baseId}:${suffix}`;
+    }
     const gap: GapRecord = {
-      id: `gap:${source}:${from}`,
+      id,
       source,
       from,
       to,
@@ -558,7 +702,10 @@ export class IngestionStore {
    *  failed poll. */
   async resolveGap(id: string, status: Exclude<GapStatus, "open">, to?: string): Promise<GapRecord | null> {
     await this.load();
-    const gap = this.data.gaps.find((g) => g.id === id);
+    // Prefer an open row if older persisted data contains duplicate IDs
+    // from a previously resolved episode and a later reopened gap.
+    const gap =
+      this.data.gaps.find((g) => g.id === id && g.status === "open") ?? this.data.gaps.find((g) => g.id === id);
     if (!gap || gap.status !== "open") return gap ?? null;
     if (to && Date.parse(to) > Date.parse(gap.to)) gap.to = to;
     gap.status = status;
