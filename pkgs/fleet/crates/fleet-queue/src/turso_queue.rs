@@ -4392,7 +4392,17 @@ fn dep_recheck_one(
          WHERE id = ? AND status = 'blocked'",
         &[
             Arg::Text(json!(new_deps).to_string()),
-            Arg::Text(iso(now_unix_v + recheck_seconds)),
+            // The max TTL is a hard deadline: never schedule
+            // the next recheck past dep_blocked_until, or expiry
+            // would only be noticed one recheck too late. (ISO
+            // strings compare lexicographically in this store.)
+            Arg::Text({
+                let next = iso(now_unix_v + recheck_seconds);
+                match row.get("dep_blocked_until").and_then(|v| v.as_str()) {
+                    Some(until) if until < next.as_str() => until.to_string(),
+                    _ => next,
+                }
+            }),
             Arg::Text(now.clone()),
             Arg::Int(task_id),
         ],
@@ -6188,6 +6198,7 @@ mod tests {
         assert!(impl_src.contains("\"dep_unblocked\""));
         assert!(impl_src.contains("\"dep_unblock_override\""));
         assert!(impl_src.contains("\"dep_blocked\": 0"));
+        assert!(impl_src.contains("Some(until) if until < next.as_str()"));
         // The default pick has no blocked branch: dep-blocked
         // tasks (status 'blocked') are invisible to claims, so
         // no lane ever re-verifies a gate by claiming the item.
