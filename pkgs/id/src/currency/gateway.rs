@@ -240,6 +240,7 @@ pub struct RegisterCurrency {
     /// Decimal places for minor units.
     pub scale: u8,
     /// Finite v1 supply cap, in minor units.
+    #[serde(with = "u128_bytes")]
     pub cap: u128,
 }
 
@@ -941,6 +942,20 @@ mod tests {
         };
         let body = req.body().unwrap();
         assert_eq!(CurrencyRequest::from_body(&body).unwrap(), req);
+
+        // The registration cap is a u128 on the same protocol: above
+        // u64::MAX it round-trips only through the fixed-width adapter.
+        let register = CurrencyRequest {
+            client_request_id: 7,
+            op: CurrencyOp::RegisterCurrency(RegisterCurrency {
+                name: "Test Coin".to_owned(),
+                symbol: "TST".to_owned(),
+                scale: 2,
+                cap: u128::MAX,
+            }),
+        };
+        let body = register.body().unwrap();
+        assert_eq!(CurrencyRequest::from_body(&body).unwrap(), register);
     }
 
     #[test]
