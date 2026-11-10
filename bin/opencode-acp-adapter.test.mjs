@@ -614,3 +614,52 @@ test('#6939 a non-URL OPENCODE_ACP_SERVER env value fails fast naming the env va
   assert.notEqual(code, 0);
   assert.match(stderr, /OPENCODE_ACP_SERVER/);
 });
+
+test('late terminal event from a reconciled prompt does not finish the next prompt (#4617)', async (t) => {
+  // Prompt 1 finishes during a stream drop and is completed by
+  // reconciliation, but the serve's own execution.succeeded for it was
+  // already in flight on the reconnected stream. That late event
+  // carries only the session id; without the stale-event fence it
+  // would finish prompt 2 while prompt 2 is still running.
+  let promptCount = 0;
+  let genuineCompletionEmitted = false;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+      setTimeout(() => {
+        serve.dropEventStreams();
+        serve.setStatus({});
+      }, 50);
+      return;
+    }
+    serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+    // The stale terminal event for prompt 1 arrives while prompt 2 runs.
+    setTimeout(() => {
+      emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+    }, 200);
+    // Prompt 2's own completion, after it leaves the active set.
+    setTimeout(() => {
+      genuineCompletionEmitted = true;
+      serve.setStatus({});
+      emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+    }, 900);
+  };
+  const { acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first task' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second task' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+  assert.equal(
+    genuineCompletionEmitted,
+    true,
+    'second prompt waited for its own completion event, not the stale one',
+  );
+});

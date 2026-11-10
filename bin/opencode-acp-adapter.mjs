@@ -236,6 +236,42 @@ function requestClient(method, params) {
 
 const sessions = new Map(); // acpSessionId -> { directory }
 const pendingPrompts = new Map(); // acpSessionId -> { requestId, submitted }
+// Terminal events a reconnect reconciliation finished locally may still
+// arrive afterwards on the reconnected stream: reconciliation completes
+// the ACP request without consuming the serve's own
+// session.execution.succeeded / .failed for that prompt. Those late
+// events carry only the session id, so without a fence the first one
+// would finish the NEXT prompt on the session (Codex review on
+// PR #4632). Each reconciliation finish records one fence; the first
+// terminal event seen while a fence is armed is verified against the
+// active set before it is allowed to finish a newer prompt.
+const staleTerminalFences = new Map(); // acpSessionId -> count
+
+function fenceStaleTerminalEvent(sessionId) {
+  staleTerminalFences.set(sessionId, (staleTerminalFences.get(sessionId) || 0) + 1);
+}
+
+function consumeStaleTerminalFence(sessionId) {
+  const n = staleTerminalFences.get(sessionId) || 0;
+  if (n <= 1) staleTerminalFences.delete(sessionId);
+  else staleTerminalFences.set(sessionId, n - 1);
+  return n > 0;
+}
+
+// The serve's active session set (GET /api/session/active), as a Set of
+// session ids, or null when it cannot be read / has an unexpected shape.
+async function fetchActiveSessionIds() {
+  const active = await serveJson('/api/session/active');
+  // The v2 active set is a map keyed by session id (a list shape
+  // is accepted too, as in the claimant's poll.py reader).
+  if (Array.isArray(active)) {
+    return new Set(active.filter((x) => typeof x === 'string'));
+  }
+  if (active && typeof active === 'object') {
+    return new Set(Object.keys(active));
+  }
+  return null;
+}
 const cancelledSessions = new Set(); // acpSessionId
 
 function sessionUpdate(sessionId, update) {
@@ -290,14 +326,7 @@ async function reconcilePendingPrompts() {
   if (pendingAtRequest.length === 0) return;
   let activeIds = null;
   try {
-    const active = await serveJson('/api/session/active');
-    // The v2 active set is a map keyed by session id (a list shape
-    // is accepted too, as in the claimant's poll.py reader).
-    if (Array.isArray(active)) {
-      activeIds = new Set(active.filter((x) => typeof x === 'string'));
-    } else if (active && typeof active === 'object') {
-      activeIds = new Set(Object.keys(active));
-    }
+    activeIds = await fetchActiveSessionIds();
   } catch (err) {
     debug(`reconcile after reconnect: GET /api/session/active failed: ${err.message}`);
   }
@@ -310,6 +339,7 @@ async function reconcilePendingPrompts() {
     // failure path cleans up if submission itself failed).
     if (!wasSubmitted) continue;
     if (!activeIds) {
+      fenceStaleTerminalEvent(sessionId);
       finishPrompt(
         sessionId,
         null,
@@ -320,6 +350,7 @@ async function reconcilePendingPrompts() {
     if (activeIds.has(sessionId)) continue;
     const wasCancelled = cancelledSessions.has(sessionId);
     cancelledSessions.delete(sessionId);
+    fenceStaleTerminalEvent(sessionId);
     finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
   }
 }
@@ -452,6 +483,51 @@ function finishPrompt(sessionId, result, error) {
   else sendResult(pending.requestId, result);
 }
 
+function finishFromTerminalEvent(type, sessionId, data) {
+  if (!pendingPrompts.has(sessionId)) return;
+  if (type === 'session.execution.succeeded') {
+    const wasCancelled = cancelledSessions.has(sessionId);
+    cancelledSessions.delete(sessionId);
+    finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
+    return;
+  }
+  const message =
+    data?.error?.message || data?.message || data?.error?.name || 'session execution failed';
+  cancelledSessions.delete(sessionId);
+  finishPrompt(sessionId, null, `serve session error: ${message}`);
+}
+
+// A terminal event arriving while a stale-event fence is armed may
+// belong to the prompt reconciliation already finished, not to the
+// prompt now pending on the session. The two carry identical payloads
+// (session id only), so arbitrate with the active set: a session that
+// is active again is running the newer prompt, so the event is the
+// stale one and is dropped; a session no longer active has no newer
+// execution the event could be stealing from, so the event is the
+// newer prompt's own and finishes it. If the active set cannot be
+// read, fall back to the pre-fence behaviour (finish) rather than
+// hanging the prompt on a failed probe.
+async function resolveTerminalEvent(type, sessionId, data) {
+  if (!consumeStaleTerminalFence(sessionId)) {
+    finishFromTerminalEvent(type, sessionId, data);
+    return;
+  }
+  if (!pendingPrompts.has(sessionId)) return; // stale event; nobody to finish
+  let activeIds = null;
+  try {
+    activeIds = await fetchActiveSessionIds();
+  } catch (err) {
+    debug(`stale-event fence: GET /api/session/active failed: ${err.message}`);
+  }
+  if (activeIds && activeIds.has(sessionId)) {
+    debug(
+      `stale-event fence: dropped late ${type} for session ${sessionId} (session active again)`,
+    );
+    return;
+  }
+  finishFromTerminalEvent(type, sessionId, data);
+}
+
 function handleServeEvent(event) {
   const { type, data } = event;
   const sessionId = eventSessionId(data || {});
@@ -470,21 +546,9 @@ function handleServeEvent(event) {
       void handlePermissionAsked(data || {});
       break;
     case 'session.execution.succeeded':
-      if (sessionId && pendingPrompts.has(sessionId)) {
-        const wasCancelled = cancelledSessions.has(sessionId);
-        cancelledSessions.delete(sessionId);
-        finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
-      }
+    case 'session.execution.failed':
+      if (sessionId) void resolveTerminalEvent(type, sessionId, data);
       break;
-    case 'session.execution.failed': {
-      if (sessionId && pendingPrompts.has(sessionId)) {
-        const message =
-          data?.error?.message || data?.message || data?.error?.name || 'session execution failed';
-        cancelledSessions.delete(sessionId);
-        finishPrompt(sessionId, null, `serve session error: ${message}`);
-      }
-      break;
-    }
     default:
       break;
   }
