@@ -718,7 +718,7 @@ impl Clone for Arg {
     }
 }
 
-const SCHEMA: [&str; 12] = [
+const SCHEMA: [&str; 16] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -770,6 +770,24 @@ const SCHEMA: [&str; 12] = [
     "CREATE INDEX IF NOT EXISTS events_task ON events(task_id, id)",
     "CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, created_at)",
     "CREATE INDEX IF NOT EXISTS events_created ON events(created_at)",
+    "CREATE TABLE IF NOT EXISTS creation_outbox (\
+        id TEXT PRIMARY KEY, repo TEXT NOT NULL, kind TEXT NOT NULL, \
+        payload TEXT NOT NULL DEFAULT '{}', dedup_key TEXT NOT NULL, \
+        payload_hash TEXT NOT NULL, producer TEXT, \
+        state TEXT NOT NULL DEFAULT 'pending', \
+        created_at TEXT NOT NULL, available_at TEXT NOT NULL, \
+        attempt_count INTEGER NOT NULL DEFAULT 0, \
+        max_attempts INTEGER NOT NULL DEFAULT 8, \
+        last_error_class TEXT, lease_owner TEXT, lease_until TEXT, \
+        github_number INTEGER, github_url TEXT, completed_at TEXT)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS creation_outbox_dedupe \
+        ON creation_outbox(repo, dedup_key)",
+    "CREATE INDEX IF NOT EXISTS creation_outbox_due \
+        ON creation_outbox(state, available_at, created_at)",
+    "CREATE TABLE IF NOT EXISTS creation_outbox_circuit (\
+        id INTEGER PRIMARY KEY CHECK (id = 1), \
+        consecutive_rate_limits INTEGER NOT NULL DEFAULT 0, \
+        open_until TEXT, last_error_class TEXT, updated_at TEXT NOT NULL)",
 ];
 
 // ---------------------------------------------------------------------------
@@ -5238,6 +5256,541 @@ fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Creation outbox (#3706) — the bounded pilot's Turso verbs.
+//
+// Storage half of `crate::creation_outbox`: the enqueue API, the
+// serial drainer's claim/resolve verbs, and metrics, over the
+// `creation_outbox` table (schema in SCHEMA above) plus the
+// persisted circuit-breaker row (`creation_outbox_circuit`, id=1),
+// so every drainer sees the same circuit. The state-machine rules
+// (dedupe/conflict, backoff, pacing, read-back-before-done,
+// uncertain reconciliation) are the core module's; these verbs are
+// their SQL spelling. The drainer's GitHub leg is the client's
+// `fleet queue outbox drain` (client::outbox); these verbs never
+// shell out.
+// ---------------------------------------------------------------------------
+
+const OUTBOX_COLS: &str = "id, repo, kind, payload, dedup_key, payload_hash, \
+    producer, state, created_at, available_at, attempt_count, max_attempts, \
+    last_error_class, lease_owner, lease_until, github_number, github_url, completed_at";
+
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = (y_adj - era * 400) as u64;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as u64;
+    let doy = (153 * mp + 2) / 5 + (d as u64) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe as i64 - 719_468
+}
+
+/// Parse the `iso()` format back to unix seconds (the outbox core
+/// works in unix time; rows store ISO strings like every other
+/// table here, where lexicographic order is chronological order).
+fn iso_to_unix(s: &str) -> Option<i64> {
+    let (date, time) = s.split_once('T')?;
+    let mut dp = date.split('-');
+    let y: i64 = dp.next()?.parse().ok()?;
+    let m: u32 = dp.next()?.parse().ok()?;
+    let d: u32 = dp.next()?.parse().ok()?;
+    let time = time.trim_end_matches('Z');
+    let mut tp = time.split(':');
+    let hh: i64 = tp.next()?.parse().ok()?;
+    let mm: i64 = tp.next()?.parse().ok()?;
+    let ss: i64 = tp.next()?.parse::<f64>().ok()? as i64;
+    Some(days_from_civil(y, m, d) * 86_400 + hh * 3600 + mm * 60 + ss)
+}
+
+fn outbox_jitter_unit() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    ((nanos ^ (u64::from(std::process::id()) << 32)) % 10_000) as f64 / 10_000.0
+}
+
+fn outbox_get(t: &TursoBackend, id: &str) -> Result<Option<Value>, TErr> {
+    let rows = t.query_objs(
+        &format!("SELECT {OUTBOX_COLS} FROM creation_outbox WHERE id = ?"),
+        &[Arg::Text(id.to_string())],
+        &["payload"],
+    )?;
+    Ok(rows.into_iter().next())
+}
+
+fn outbox_circuit(t: &TursoBackend) -> Result<crate::creation_outbox::Circuit, TErr> {
+    let rows = t.query_objs(
+        "SELECT consecutive_rate_limits, open_until, last_error_class \
+         FROM creation_outbox_circuit WHERE id = 1",
+        &[],
+        &[],
+    )?;
+    let mut circuit = crate::creation_outbox::Circuit::default();
+    if let Some(row) = rows.into_iter().next() {
+        circuit.consecutive_rate_limits = row
+            .get("consecutive_rate_limits")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as u32;
+        circuit.open_until = row
+            .get("open_until")
+            .and_then(|v| v.as_str())
+            .and_then(iso_to_unix)
+            .unwrap_or(0);
+        circuit.last_error_class = row
+            .get("last_error_class")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+    }
+    Ok(circuit)
+}
+
+fn outbox_circuit_save(t: &TursoBackend, c: &crate::creation_outbox::Circuit) -> Result<(), TErr> {
+    t.exec(
+        "INSERT INTO creation_outbox_circuit (id, consecutive_rate_limits, open_until, last_error_class, updated_at) \
+         VALUES (1, ?, ?, ?, ?) \
+         ON CONFLICT(id) DO UPDATE SET consecutive_rate_limits = excluded.consecutive_rate_limits, \
+           open_until = excluded.open_until, last_error_class = excluded.last_error_class, \
+           updated_at = excluded.updated_at",
+        &[
+            Arg::Int(i64::from(c.consecutive_rate_limits)),
+            if c.open_until > 0 { Arg::Text(iso(c.open_until)) } else { Arg::Null },
+            arg_str(c.last_error_class.as_deref()),
+            Arg::Text(now_iso()),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Enqueue one creation intent. Insert + dedupe are one read-then-
+/// insert against the UNIQUE(repo, dedup_key) index (the same shape
+/// as task enqueue): same key + same payload hash returns the
+/// original row (`replay`), same key + different hash is a conflict
+/// (exit 5), never a silent overwrite.
+fn verb_outbox_enqueue(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        let repo = req_str(req, "repo").unwrap_or("");
+        let kind = req_str(req, "kind").unwrap_or("");
+        let dedup_key = req_str(req, "dedup_key").unwrap_or("");
+        let payload = req.get("payload").cloned().unwrap_or(json!({}));
+        if repo.is_empty() || dedup_key.is_empty() {
+            return Ok(fail(2, "outbox enqueue needs repo and dedup_key"));
+        }
+        if !crate::creation_outbox::KINDS.contains(&kind) {
+            return Ok(fail(
+                2,
+                format!("kind {kind:?} is not an outbox creation kind"),
+            ));
+        }
+        let hash = crate::creation_outbox::payload_hash(&payload);
+        let existing = t.query_objs(
+            &format!("SELECT {OUTBOX_COLS} FROM creation_outbox WHERE repo = ? AND dedup_key = ?"),
+            &[
+                Arg::Text(repo.to_string()),
+                Arg::Text(dedup_key.to_string()),
+            ],
+            &["payload"],
+        )?;
+        if let Some(row) = existing.into_iter().next() {
+            if row.get("payload_hash").and_then(|v| v.as_str()) == Some(hash.as_str()) {
+                return Ok(ok(json!({"row": row, "outcome": "replay"})));
+            }
+            return Ok(fail(
+                5,
+                format!(
+                    "outbox dedup conflict: ({repo}, {dedup_key}) already holds entry {} with a different payload",
+                    row.get("id").and_then(|v| v.as_str()).unwrap_or("?")
+                ),
+            ));
+        }
+        let now = now_unix();
+        let id = format!(
+            "ob-{}-{}",
+            now,
+            &crate::creation_outbox::sha256_hex(format!("{repo}\n{dedup_key}\n{hash}").as_bytes())
+                [..12]
+        );
+        t.exec(
+            "INSERT INTO creation_outbox (id, repo, kind, payload, dedup_key, payload_hash, \
+             producer, state, created_at, available_at, attempt_count, max_attempts) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?)",
+            &[
+                Arg::Text(id.clone()),
+                Arg::Text(repo.to_string()),
+                Arg::Text(kind.to_string()),
+                Arg::Text(payload.to_string()),
+                Arg::Text(dedup_key.to_string()),
+                Arg::Text(hash),
+                arg_str(req_str(req, "producer")),
+                Arg::Text(iso(now)),
+                Arg::Text(iso(now)),
+                Arg::Int(crate::creation_outbox::DEFAULT_MAX_ATTEMPTS),
+            ],
+        )?;
+        let row = outbox_get(t, &id)?.unwrap_or(json!({}));
+        Ok(ok(json!({"row": row, "outcome": "created"})))
+    })();
+    match work {
+        Ok(v) => v,
+        Err(e) => terr(e),
+    }
+}
+
+/// Claim the oldest due entry for a drainer: pending-and-available,
+/// an expired lease (crashed drainer), or an uncertain entry whose
+/// reconciliation delay has elapsed (claimed AS uncertain — the
+/// drainer must reconcile by marker before any re-create). Refuses
+/// while the circuit is open or the rolling-hour creation budget
+/// is spent; pacing (minimum gap between creates) is the drainer
+/// client's side of the same policy.
+fn verb_outbox_claim(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        let owner = req_str(req, "owner").unwrap_or("outbox-drainer");
+        let now = now_unix();
+        let circuit = outbox_circuit(t)?;
+        if circuit.is_open(now) {
+            return Ok(ok(json!({
+                "row": Value::Null,
+                "circuit_open_until": iso(circuit.open_until),
+            })));
+        }
+        let budget_rows = t.query_objs(
+            "SELECT COUNT(*) AS n FROM creation_outbox \
+             WHERE completed_at IS NOT NULL AND completed_at > ?",
+            &[Arg::Text(iso(now - 3600))],
+            &[],
+        )?;
+        let recent = budget_rows
+            .into_iter()
+            .next()
+            .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+            .unwrap_or(0);
+        if recent >= crate::creation_outbox::HOURLY_BUDGET as i64 {
+            return Ok(ok(json!({"row": Value::Null, "budget_exhausted": true})));
+        }
+        let rows = t.query_objs(
+            &format!(
+                "SELECT {OUTBOX_COLS} FROM creation_outbox \
+                 WHERE (state = 'pending' AND available_at <= ?) \
+                    OR (state = 'leased' AND lease_until IS NOT NULL AND lease_until <= ?) \
+                    OR (state = 'uncertain' AND available_at <= ?) \
+                 ORDER BY created_at ASC LIMIT 1"
+            ),
+            &[
+                Arg::Text(iso(now)),
+                Arg::Text(iso(now)),
+                Arg::Text(iso(now)),
+            ],
+            &["payload"],
+        )?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(ok(json!({"row": Value::Null})));
+        };
+        let id = row
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let state = row
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if state == "leased" {
+            // An expired lease: the previous drainer died
+            // mid-flight and its create may have landed. The row
+            // is claimed AS uncertain — the drainer reconciles by
+            // marker before any re-create (kill/restart trial).
+            t.exec(
+                "UPDATE creation_outbox SET state = 'uncertain', available_at = ?, \
+                 lease_owner = ?, lease_until = ? WHERE id = ?",
+                &[
+                    Arg::Text(iso(now)),
+                    Arg::Text(owner.to_string()),
+                    Arg::Text(iso(now + crate::creation_outbox::LEASE_SECONDS)),
+                    Arg::Text(id.clone()),
+                ],
+            )?;
+        } else if state != "uncertain" {
+            t.exec(
+                "UPDATE creation_outbox SET state = 'leased', lease_owner = ?, lease_until = ? \
+                 WHERE id = ?",
+                &[
+                    Arg::Text(owner.to_string()),
+                    Arg::Text(iso(now + crate::creation_outbox::LEASE_SECONDS)),
+                    Arg::Text(id.clone()),
+                ],
+            )?;
+        } else {
+            t.exec(
+                "UPDATE creation_outbox SET lease_owner = ?, lease_until = ? WHERE id = ?",
+                &[
+                    Arg::Text(owner.to_string()),
+                    Arg::Text(iso(now + crate::creation_outbox::LEASE_SECONDS)),
+                    Arg::Text(id.clone()),
+                ],
+            )?;
+        }
+        let claimed = outbox_get(t, &id)?.unwrap_or(json!({}));
+        Ok(ok(json!({"row": claimed})))
+    })();
+    match work {
+        Ok(v) => v,
+        Err(e) => terr(e),
+    }
+}
+
+/// Resolve a claimed entry. One verb, four outcomes — the SQL
+/// spelling of the core drainer's transitions:
+/// - `done` {github_number, github_url}: only with a verified
+///   number/URL (the drainer read the object back first); a done
+///   without both is refused (exit 2) — a gh exit 0 never marks done.
+/// - `rate_limited` {retry_after?}: backoff per the core policy and
+///   a strike on the persisted circuit.
+/// - `uncertain` {error}: the silent-loss shape; the entry waits
+///   for marker reconciliation, never a blind retry.
+/// - `failed` {error}: backoff-retry until max_attempts, then blocked.
+fn verb_outbox_resolve(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        let id = req_str(req, "id").unwrap_or("");
+        let outcome = req_str(req, "outcome").unwrap_or("");
+        let Some(current) = outbox_get(t, id)? else {
+            return Ok(fail(5, format!("outbox entry {id} not found")));
+        };
+        let now = now_unix();
+        let attempts = current
+            .get("attempt_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let max_attempts = current
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(crate::creation_outbox::DEFAULT_MAX_ATTEMPTS);
+        match outcome {
+            "done" => {
+                let number = req_i64(req, "github_number");
+                let url = req_str(req, "github_url");
+                let (Some(number), Some(url)) = (number, url) else {
+                    return Ok(fail(
+                        2,
+                        "outbox done requires the read-back-verified github_number and github_url",
+                    ));
+                };
+                t.exec(
+                    "UPDATE creation_outbox SET state = 'done', attempt_count = attempt_count + 1, github_number = ?, github_url = ?, \
+                     completed_at = ?, last_error_class = NULL, lease_owner = NULL, lease_until = NULL \
+                     WHERE id = ?",
+                    &[
+                        Arg::Int(number),
+                        Arg::Text(url.to_string()),
+                        Arg::Text(iso(now)),
+                        Arg::Text(id.to_string()),
+                    ],
+                )?;
+                let mut circuit = outbox_circuit(t)?;
+                circuit.record_success();
+                outbox_circuit_save(t, &circuit)?;
+            }
+            "rate_limited" => {
+                let mut circuit = outbox_circuit(t)?;
+                circuit.record_rate_limit(now);
+                outbox_circuit_save(t, &circuit)?;
+                let delay = crate::creation_outbox::backoff_delay(
+                    attempts + 1,
+                    req_i64(req, "retry_after"),
+                    outbox_jitter_unit(),
+                );
+                t.exec(
+                    "UPDATE creation_outbox SET state = 'pending', attempt_count = attempt_count + 1, \
+                     available_at = ?, last_error_class = 'rate_limit', \
+                     lease_owner = NULL, lease_until = NULL WHERE id = ?",
+                    &[Arg::Text(iso(now + delay)), Arg::Text(id.to_string())],
+                )?;
+            }
+            "uncertain" => {
+                let why = req_str(req, "error").unwrap_or("ambiguous create");
+                t.exec(
+                    "UPDATE creation_outbox SET state = 'uncertain', attempt_count = attempt_count + 1, \
+                     available_at = ?, last_error_class = ?, lease_owner = NULL, lease_until = NULL \
+                     WHERE id = ?",
+                    &[
+                        Arg::Text(iso(now + crate::creation_outbox::BACKOFF_BASE_SECONDS)),
+                        Arg::Text(format!("ambiguous: {why}")),
+                        Arg::Text(id.to_string()),
+                    ],
+                )?;
+            }
+            "failed" => {
+                let why = req_str(req, "error").unwrap_or("create failed");
+                if attempts + 1 >= max_attempts {
+                    t.exec(
+                        "UPDATE creation_outbox SET state = 'blocked', attempt_count = attempt_count + 1, \
+                         last_error_class = ?, lease_owner = NULL, lease_until = NULL WHERE id = ?",
+                        &[
+                            Arg::Text(format!("failed: {why}")),
+                            Arg::Text(id.to_string()),
+                        ],
+                    )?;
+                } else {
+                    let delay = crate::creation_outbox::backoff_delay(
+                        attempts + 1,
+                        None,
+                        outbox_jitter_unit(),
+                    );
+                    t.exec(
+                        "UPDATE creation_outbox SET state = 'pending', attempt_count = attempt_count + 1, \
+                         available_at = ?, last_error_class = ?, lease_owner = NULL, lease_until = NULL \
+                         WHERE id = ?",
+                        &[
+                            Arg::Text(iso(now + delay)),
+                            Arg::Text(format!("failed: {why}")),
+                            Arg::Text(id.to_string()),
+                        ],
+                    )?;
+                }
+            }
+            other => {
+                return Ok(fail(2, format!("unknown outbox outcome {other:?}")));
+            }
+        }
+        let row = outbox_get(t, id)?.unwrap_or(json!({}));
+        Ok(ok(json!({"row": row})))
+    })();
+    match work {
+        Ok(v) => v,
+        Err(e) => terr(e),
+    }
+}
+
+fn verb_outbox_list(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        let mut sql = format!("SELECT {OUTBOX_COLS} FROM creation_outbox WHERE 1 = 1");
+        let mut args: Vec<Arg> = Vec::new();
+        if let Some(repo) = req_str(req, "repo") {
+            sql += " AND repo = ?";
+            args.push(Arg::Text(repo.to_string()));
+        }
+        if let Some(state) = req_str(req, "state") {
+            sql += " AND state = ?";
+            args.push(Arg::Text(state.to_string()));
+        }
+        sql += " ORDER BY created_at ASC LIMIT 200";
+        let rows = t.query_objs(&sql, &args, &["payload"])?;
+        Ok(ok(json!({"rows": rows})))
+    })();
+    match work {
+        Ok(v) => v,
+        Err(e) => terr(e),
+    }
+}
+
+/// Metrics: per-state counts, oldest pending age, total attempts,
+/// last failure class, and the circuit — the alert fields the
+/// #3706 design requires (pending depth / oldest-pending-age).
+fn verb_outbox_metrics(t: &TursoBackend, _req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        let rows = t.query_objs(
+            &format!("SELECT {OUTBOX_COLS} FROM creation_outbox"),
+            &[],
+            &["payload"],
+        )?;
+        let now = now_unix();
+        let mut entries = Vec::new();
+        for row in &rows {
+            let parse_time = |key: &str| {
+                row.get(key)
+                    .and_then(|v| v.as_str())
+                    .and_then(iso_to_unix)
+                    .unwrap_or(0)
+            };
+            entries.push(crate::creation_outbox::Entry {
+                id: row
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                repo: row
+                    .get("repo")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                kind: row
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                payload: row.get("payload").cloned().unwrap_or(json!({})),
+                dedup_key: row
+                    .get("dedup_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                payload_hash: row
+                    .get("payload_hash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                producer: row
+                    .get("producer")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                state: row
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                created_at: parse_time("created_at"),
+                available_at: parse_time("available_at"),
+                attempt_count: row
+                    .get("attempt_count")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                max_attempts: row
+                    .get("max_attempts")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                last_error_class: row
+                    .get("last_error_class")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                lease_owner: row
+                    .get("lease_owner")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                lease_until: row
+                    .get("lease_until")
+                    .and_then(|v| v.as_str())
+                    .and_then(iso_to_unix),
+                github_number: row.get("github_number").and_then(|v| v.as_i64()),
+                github_url: row
+                    .get("github_url")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                completed_at: row
+                    .get("completed_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(iso_to_unix),
+            });
+        }
+        let circuit = outbox_circuit(t)?;
+        let m = crate::creation_outbox::metrics_of(&entries, &circuit, now);
+        Ok(ok(json!({"row": {
+            "pending": m.pending,
+            "leased": m.leased,
+            "uncertain": m.uncertain,
+            "done": m.done,
+            "blocked": m.blocked,
+            "oldest_pending_age_seconds": m.oldest_pending_age_seconds,
+            "total_attempts": m.total_attempts,
+            "last_error_class": m.last_error_class,
+            "circuit_open_until": m.circuit_open_until.map(iso),
+        }})))
+    })();
+    match work {
+        Ok(v) => v,
+        Err(e) => terr(e),
+    }
+}
 /// The Turso backend's half of the broker dispatch: every verb the
 /// Postgres path serves except /validate (purely local) and
 /// /healthz (transport-level), which stay in queue_broker::dispatch.
@@ -5266,6 +5819,11 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
         "/events-prune" => verb_events_prune(t, req),
+        "/outbox-enqueue" => verb_outbox_enqueue(t, req),
+        "/outbox-claim" => verb_outbox_claim(t, req),
+        "/outbox-resolve" => verb_outbox_resolve(t, req),
+        "/outbox-list" => verb_outbox_list(t, req),
+        "/outbox-metrics" => verb_outbox_metrics(t, req),
         "/sweep" => verb_sweep(t, req),
         "/coverage" => verb_coverage(t, req),
         _ => fail(2, format!("unknown command {path}")),
