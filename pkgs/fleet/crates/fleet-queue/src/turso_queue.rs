@@ -456,25 +456,57 @@ pub struct TursoBackend {
 
 type TErr = String;
 
-/// The canonical fleet lane registry (#6853): every lane id a
-/// fleet worker may claim with, and the worker that owns it. The
-/// queue binding is the one-queue default ("*": the lane may claim
-/// any stream; see lane_queue_binds). Registrations for
+/// The canonical fleet lane registry (#6853, re-based on the
+/// post-rename universe under #8097): every lane id a fleet worker
+/// may claim with, the worker that owns it, and the enabled flag a
+/// missing registration is restored with. The queue binding is the
+/// one-queue default ("*": the lane may claim any stream; see
+/// lane_queue_binds).
+///
+/// The set is EXACTLY the live registry universe left by the
+/// 2026-11-11 lane rename and trims (#8097): 35 lanes — code-a..j,
+/// not-code-a..f, any-a..s — 16 of them enabled. Lane ids Drew
+/// deleted (the code-k..z overhang, nix-a/b, opencode-a/b,
+/// openchamber-a/b) are deliberately ABSENT: the pre-rename seed
+/// still named them, so each schema ensure resurrected
+/// hand-deleted rows from it — openchamber-a/b came back enabled
+/// after being deleted on 2026-11-10. A lane outside this set is
+/// never seeded; a lane inside it that is deleted by hand comes
+/// back with exactly these fields. Registrations for
 /// session-scoped lanes (UUID ids) are created by their sessions
-/// and are deliberately NOT part of the canonical set.
-fn canonical_lanes() -> Vec<(&'static str, &'static str)> {
-    let mut lanes: Vec<(&'static str, &'static str)> = Vec::new();
-    for c in 'a'..='z' {
+/// and are not part of the canonical set; the OpenChamber lanes
+/// renamed out of UUID ids on 2026-11-11 are canonical under
+/// their final names below.
+fn canonical_lanes() -> Vec<(&'static str, &'static str, bool)> {
+    let mut lanes: Vec<(&'static str, &'static str, bool)> = Vec::new();
+    // code group: code-a..d (Muse) and code-f..j (OpenChamber),
+    // all owned by repo-worker-code. code-e (Muse) is disabled
+    // per the 2026-11-10 trims; the other nine are enabled.
+    for c in 'a'..='j' {
         // Leak-free: the ids are built from a fixed alphabet by a
         // match on the letter so the strings stay 'static.
-        lanes.push((code_lane_id(c), "repo-worker-code"));
+        lanes.push((code_lane_id(c), "repo-worker-code", c != 'e'));
     }
-    lanes.push(("opencode-a", "repo-worker-opencode"));
-    lanes.push(("opencode-b", "repo-worker-opencode"));
-    lanes.push(("openchamber-a", "repo-worker-openchamber"));
-    lanes.push(("openchamber-b", "repo-worker-openchamber"));
-    lanes.push(("nix-a", "repo-worker-nix"));
-    lanes.push(("nix-b", "repo-worker-nix"));
+    // not-code group: only not-code-d (OpenChamber) is enabled.
+    // Worker ids follow each lane's predecessor row: not-code-a
+    // was nix-a, not-code-b was opencode-a, and not-code-e was
+    // the opencode-project OpenChamber task.
+    for c in 'a'..='f' {
+        let worker = match c {
+            'a' => "repo-worker-nix",
+            'b' | 'e' => "repo-worker-opencode",
+            'd' => "repo-worker-openchamber",
+            _ => "repo-worker-code",
+        };
+        lanes.push((not_code_lane_id(c), worker, c == 'd'));
+    }
+    // any group: any-a..d (Muse) and any-n, any-o (OpenChamber)
+    // are enabled; any-e..m and any-p..s are disabled per the
+    // 2026-11-10 trims. All owned by repo-worker-code.
+    for c in 'a'..='s' {
+        let enabled = matches!(c, 'a' | 'b' | 'c' | 'd' | 'n' | 'o');
+        lanes.push((any_lane_id(c), "repo-worker-code", enabled));
+    }
     lanes
 }
 
@@ -490,33 +522,59 @@ fn code_lane_id(c: char) -> &'static str {
         'h' => "code-h",
         'i' => "code-i",
         'j' => "code-j",
-        'k' => "code-k",
-        'l' => "code-l",
-        'm' => "code-m",
-        'n' => "code-n",
-        'o' => "code-o",
-        'p' => "code-p",
-        'q' => "code-q",
-        'r' => "code-r",
-        's' => "code-s",
-        't' => "code-t",
-        'u' => "code-u",
-        'v' => "code-v",
-        'w' => "code-w",
-        'x' => "code-x",
-        'y' => "code-y",
-        'z' => "code-z",
-        _ => unreachable!("code lane letters are a..=z"),
+        _ => unreachable!("code lane letters are a..=j"),
+    }
+}
+
+fn not_code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "not-code-a",
+        'b' => "not-code-b",
+        'c' => "not-code-c",
+        'd' => "not-code-d",
+        'e' => "not-code-e",
+        'f' => "not-code-f",
+        _ => unreachable!("not-code lane letters are a..=f"),
+    }
+}
+
+fn any_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "any-a",
+        'b' => "any-b",
+        'c' => "any-c",
+        'd' => "any-d",
+        'e' => "any-e",
+        'f' => "any-f",
+        'g' => "any-g",
+        'h' => "any-h",
+        'i' => "any-i",
+        'j' => "any-j",
+        'k' => "any-k",
+        'l' => "any-l",
+        'm' => "any-m",
+        'n' => "any-n",
+        'o' => "any-o",
+        'p' => "any-p",
+        'q' => "any-q",
+        'r' => "any-r",
+        's' => "any-s",
+        _ => unreachable!("any lane letters are a..=s"),
     }
 }
 
 /// The registry seed statement (#6853): INSERT OR IGNORE, so it
-/// restores a missing registration and can never resurrect or
-/// re-enable a lane whose row already exists in any state.
+/// restores a missing registration with its canonical fields —
+/// including a disabled lane's enabled = 0 — and can never
+/// resurrect or re-enable a lane whose row already exists in any
+/// state. Lanes outside the canonical set are never seeded at
+/// all (#8097).
 fn lane_seed_sql() -> String {
     let values: Vec<String> = canonical_lanes()
         .iter()
-        .map(|(id, worker)| format!("('{id}', '{worker}', '*', 1)"))
+        .map(|(id, worker, enabled)| {
+            format!("('{id}', '{worker}', '*', {})", i32::from(*enabled))
+        })
         .collect();
     format!(
         "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
@@ -707,6 +765,9 @@ impl TursoBackend {
         // (rows gone). INSERT OR IGNORE fills only MISSING rows: an
         // existing registration — including a lane Drew disabled
         // (enabled = 0) — is never overwritten by the seed.
+        // #8097: the canonical set is exactly the post-rename
+        // registry universe, so a hand-deleted legacy lane (one
+        // outside the set) is not resurrected either.
         self.exec(&lane_seed_sql(), &[])?;
         // Additive task columns land here for databases created
         // before them: #8097 Rule 2's tasks.platform (the optional
@@ -6891,39 +6952,112 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn canonical_lanes_cover_every_fleet_lane_6853() {
-        // #6853 oracle: the registry the broker seeds contains every
-        // lane id the fleet runs — code-a..z, opencode-a/b,
-        // openchamber-a/b, nix-a/b — each owned by its worker, with
-        // no duplicates. The 2026-11-11 outage was exactly the two
-        // openchamber ids missing from this set.
+    fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
+        // #8097 oracle: after the 2026-11-11 lane rename + trims,
+        // the canonical seed set is exactly the 35-lane registry
+        // universe with the end-state enabled flags — no more, no
+        // fewer. The pre-rename set named ids that no longer exist
+        // (code-k..z, nix-a/b, opencode-a/b, openchamber-a/b), and
+        // ensure_schema kept resurrecting hand-deleted rows from
+        // it: openchamber-a/b were deleted on 2026-11-10 and came
+        // back enabled at the next seed run. Seeding an empty
+        // lanes table executes lane_seed_sql() — a pure function
+        // of this set — so pinning the set and its per-lane tuples
+        // (next test) pins the seeded database exactly.
         let lanes = canonical_lanes();
-        assert_eq!(lanes.len(), 32);
-        let mut ids: Vec<&str> = lanes.iter().map(|(id, _)| *id).collect();
+        assert_eq!(lanes.len(), 35);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| *id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 32, "duplicate lane ids in the canonical set");
-        let owner = |id: &str| lanes.iter().find(|(l, _)| *l == id).map(|(_, w)| *w);
-        assert_eq!(owner("openchamber-a"), Some("repo-worker-openchamber"));
-        assert_eq!(owner("openchamber-b"), Some("repo-worker-openchamber"));
-        assert_eq!(owner("opencode-a"), Some("repo-worker-opencode"));
-        assert_eq!(owner("opencode-b"), Some("repo-worker-opencode"));
-        assert_eq!(owner("nix-a"), Some("repo-worker-nix"));
-        assert_eq!(owner("nix-b"), Some("repo-worker-nix"));
+        assert_eq!(ids.len(), 35, "duplicate lane ids in the canonical set");
+        let expected_ids: Vec<&str> = vec![
+            "any-a", "any-b", "any-c", "any-d", "any-e", "any-f", "any-g", "any-h", "any-i",
+            "any-j", "any-k", "any-l", "any-m", "any-n", "any-o", "any-p", "any-q", "any-r",
+            "any-s", "code-a", "code-b", "code-c", "code-d", "code-e", "code-f", "code-g",
+            "code-h", "code-i", "code-j", "not-code-a", "not-code-b", "not-code-c",
+            "not-code-d", "not-code-e", "not-code-f",
+        ];
+        assert_eq!(
+            ids, expected_ids,
+            "the canonical set is not the post-rename universe"
+        );
+        // No legacy id may ever be seeded again: the deleted
+        // openchamber pair, the pre-rename stream lanes, the
+        // code-k..z overhang, and the rename's tmp ids.
+        for legacy in [
+            "openchamber-a",
+            "openchamber-b",
+            "nix-a",
+            "nix-b",
+            "opencode-a",
+            "opencode-b",
+        ] {
+            assert!(
+                !ids.contains(&legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        for c in 'k'..='z' {
+            let legacy = format!("code-{c}");
+            assert!(
+                !ids.iter().any(|id| *id == legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        assert!(
+            ids.iter().all(|id| !id.starts_with("tmp-")),
+            "tmp rename ids must not be seeded"
+        );
+        // The enabled set is exactly the 16 working lanes.
+        let mut enabled: Vec<&str> = lanes
+            .iter()
+            .filter(|(_, _, e)| *e)
+            .map(|(id, _, _)| *id)
+            .collect();
+        enabled.sort();
+        assert_eq!(
+            enabled,
+            [
+                "any-a", "any-b", "any-c", "any-d", "any-n", "any-o", "code-a", "code-b",
+                "code-c", "code-d", "code-f", "code-g", "code-h", "code-i", "code-j",
+                "not-code-d",
+            ]
+        );
+        // Worker ownership: the renamed lanes keep the worker of
+        // the registry row they came from.
+        let owner = |id: &str| lanes.iter().find(|(l, _, _)| *l == id).map(|(_, w, _)| *w);
         assert_eq!(owner("code-a"), Some("repo-worker-code"));
-        assert_eq!(owner("code-z"), Some("repo-worker-code"));
+        assert_eq!(owner("code-j"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-a"), Some("repo-worker-nix"));
+        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
+        assert_eq!(owner("any-s"), Some("repo-worker-code"));
     }
 
     #[test]
     fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
-        // #6853 oracle: the seed can only fill missing rows — an
-        // existing registration (in particular a lane disabled via
-        // enabled = 0) is never overwritten, so seeding at every
-        // broker start cannot undo a disable.
+        // #6853 oracle, extended under #8097: the seed can only
+        // fill missing rows — an existing registration (in
+        // particular a lane disabled via enabled = 0) is never
+        // overwritten, so seeding at every broker start cannot
+        // undo a disable — and every seeded row carries its
+        // canonical fields, so a restored disabled lane comes
+        // back disabled, and a restored enabled lane comes back
+        // with its owning worker and the one-queue binding.
         let sql = lane_seed_sql();
         assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
-        for (id, _) in canonical_lanes() {
-            assert!(sql.contains(&format!("('{id}'")), "seed misses {id}");
+        for (id, worker, enabled) in canonical_lanes() {
+            let tuple = format!("('{id}', '{worker}', '*', {})", i32::from(enabled));
+            assert!(sql.contains(&tuple), "seed misses {tuple}");
+        }
+        // Nothing outside the canonical set is seeded: a deleted
+        // legacy lane stays deleted across broker restarts.
+        for legacy in ["openchamber-a", "openchamber-b", "nix-a", "opencode-a", "code-z"] {
+            assert!(
+                !sql.contains(&format!("('{legacy}'")),
+                "seed must not name {legacy}"
+            );
         }
     }
 
