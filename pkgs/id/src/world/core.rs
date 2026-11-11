@@ -938,7 +938,7 @@ impl WorldCore {
                 }
                 JournalEntry::Committed { event } => {
                     ensure!(
-                        event.sequence == core.sequence.saturating_add(1),
+                        core.sequence.checked_add(1) == Some(event.sequence),
                         "journal sequence jumps from {} to {}",
                         core.sequence,
                         event.sequence

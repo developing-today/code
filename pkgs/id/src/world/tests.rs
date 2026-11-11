@@ -196,6 +196,58 @@ mod tests {
     }
 
     #[test]
+    fn restore_committed_sequence_does_not_wrap_at_u64_max() {
+        // #8370 (design #4000 decision 2): the Committed arm's succession
+        // predicate must be checked_add. With saturating_add, a core
+        // already at u64::MAX would accept a further committed event with
+        // sequence MAX — the saturated successor equals the current
+        // sequence, so the "advance by one" check passes without
+        // advancing, and repeated MAX events would each pass it again.
+        // Oracle: the succession contract itself — after a checkpoint at
+        // MAX, no committed event can legitimately follow.
+        fn chat(sequence: u64) -> WorldEvent {
+            WorldEvent {
+                sequence,
+                participant_id: 0,
+                kind: WorldEventKind::Chat("committed boundary test".to_owned()),
+            }
+        }
+
+        let journal = |committed: WorldEvent| {
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::Checkpoint {
+                    sequence: u64::MAX,
+                    module_hash: "h".to_owned(),
+                    seed: 1,
+                    provenance: None,
+                    execution_profile: None,
+                    caps_ceiling: None,
+                    schedules: None,
+                    transfers: None,
+                    lease: None,
+                    snapshot: "s".to_owned(),
+                    events: vec![chat(u64::MAX - 1), chat(u64::MAX)],
+                    open_presence: None,
+                    admin_history: None,
+                },
+                JournalEntry::Committed { event: committed },
+            ]
+        };
+
+        let error = WorldCore::restore("w", WorldLimits::default(), journal(chat(u64::MAX)))
+            .err()
+            .expect("a committed event at u64::MAX must not pass as the successor of MAX");
+        assert!(
+            error.to_string().contains("journal sequence jumps"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn restore_accepts_v1_through_v6_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
