@@ -232,6 +232,10 @@ push_targets_main() {
     # honors the escapes — the scanners that decide where scalars
     # and structures end must honor them too, or a delimiter inside
     # a quoted scalar is mistaken for structure.
+    # A YAML comment starts at an unquoted # that begins the line
+    # or follows whitespace (Codex P2, PR #8513 round 13): braces
+    # and brackets inside comments are not structure, so every
+    # structural scanner stops there.
     function unquoted_close(str,   j, c, q) {
       q = ""
       for (j = 1; j <= length(str); j++) {
@@ -244,6 +248,7 @@ push_targets_main() {
           else if (c == "\047") q = ""
         }
         else if (c == "\047" || c == "\"") q = c
+        else if (c == "#" && (j == 1 || substr(str, j - 1, 1) ~ /[[:space:]]/)) return 0
         else if (c == "]") return j
       }
       return 0
@@ -261,6 +266,7 @@ push_targets_main() {
           else if (c == "\047") q = ""
         }
         else if (c == "\047" || c == "\"") q = c
+        else if (c == "#" && (j == 1 || substr(str, j - 1, 1) ~ /[[:space:]]/)) return open
         else if (c == "[") open = 1
         else if (c == "]" && open) open = 0
       }
@@ -278,6 +284,7 @@ push_targets_main() {
           else if (c == "\047") q = ""
         }
         else if (c == "\047" || c == "\"") q = c
+        else if (c == "#" && (j == 1 || substr(str, j - 1, 1) ~ /[[:space:]]/)) return 0
         else if (c == "}") return 1
       }
       return 0
@@ -314,6 +321,30 @@ push_targets_main() {
       }
       if (str ~ /(^|[{,][[:space:]]*)["\047]?tags-ignore["\047]?[[:space:]]*:/) seen_tags = 1
       if (str ~ /(^|[{,][[:space:]]*)["\047]?tags["\047]?[[:space:]]*:/) seen_tags = 1
+    }
+    function resolve_push_alias(name,   before) {
+      # An aliased push inherits the anchored mapping filters
+      # (Codex P2, PR #8513 round 13). An alias that resolves to
+      # no recorded filter is unsupported syntax: mark it so the
+      # verdict never certifies it as an unfiltered push.
+      if (name in anchor_body) {
+        before = seen_branches seen_branch_filter seen_tags
+        apply_inline_filters(anchor_body[name])
+        if ((seen_branches seen_branch_filter seen_tags) == before) alias_unknown = 1
+      } else if ((name in anchor_seen_branches) || (name in anchor_seen_ignore) || (name in anchor_seen_tags)) {
+        if (name in anchor_seen_ignore) {
+          seen_branch_filter = 1
+          ignore_list = ignore_list anchor_ignore[name]
+        }
+        if (name in anchor_seen_branches) {
+          seen_branches = 1
+          seen_branch_filter = 1
+          branches_list = branches_list anchor_branches[name]
+        }
+        if (name in anchor_seen_tags) seen_tags = 1
+      } else {
+        alias_unknown = 1
+      }
     }
     function glob_regex(pat,   out, i, c, cls) {
       # GitHub filter-pattern syntax (workflow-syntax cheat sheet),
@@ -392,33 +423,119 @@ push_targets_main() {
       gsub(/["\047]/, "", key)
       inpush = (key == "push")
       if (!inpush) child_indent = 0
+      rest = $0
+      sub(/^  ["\047]?[a-z_]+["\047]?:[[:space:]]*/, "", rest)
+      # YAML anchors (Codex P2, PR #8513 round 13): a mapping
+      # value may carry &name and be referenced later as *name.
+      # Record anchored bodies so an aliased push resolves to
+      # its filters instead of looking like an unfiltered push.
+      anchor_here = ""
+      if (rest ~ /^&[A-Za-z0-9_-]+([[:space:]]|$)/) {
+        anchor_here = rest
+        sub(/^&/, "", anchor_here)
+        sub(/[[:space:]].*/, "", anchor_here)
+        sub(/^&[A-Za-z0-9_-]+[[:space:]]*/, "", rest)
+        if (rest ~ /^\{/) anchor_body[anchor_here] = rest
+      }
+      cur_anchor = anchor_here
+      anchor_child_indent = 0
+      anchor_flow_key = ""
+      anchor_seq_indent = 0
       if (inpush) {
         seen_push = 1
-        rest = $0
-        sub(/^  ["\047]?[a-z_]+["\047]?:[[:space:]]*/, "", rest)
-        if (rest ~ /^\{/) {
+        if (rest ~ /^\*[A-Za-z0-9_-]+/) {
+          alias = substr(rest, 2)
+          sub(/[^A-Za-z0-9_-].*/, "", alias)
+          resolve_push_alias(alias)
+        } else if (rest ~ /^\{/) {
           if (has_unquoted_brace(rest)) apply_inline_filters(rest)
-          else { inline_collect = 1; inline_buf = rest }
+          else { inline_collect = 1; inline_buf = rest; inline_anchor = anchor_here }
         }
       }
       subkey = ""
       next
     }
-    inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0; child_indent = 0 }
+    inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0; child_indent = 0; cur_anchor = "" }
     inline_collect {
       if ($0 ~ /^[^[:space:]#]/) {
         apply_inline_filters(inline_buf)
+        if (inline_anchor != "") { anchor_body[inline_anchor] = inline_buf; inline_anchor = "" }
         inline_collect = 0
       } else {
         inline_buf = inline_buf " " $0
         if (has_unquoted_brace($0)) {
           apply_inline_filters(inline_buf)
+          if (inline_anchor != "") { anchor_body[inline_anchor] = inline_buf; inline_anchor = "" }
           inline_collect = 0
         }
         next
       }
     }
 
+    !inpush && cur_anchor != "" && /^ +["\047]?[a-z-]+["\047]?:/ {
+      line = $0
+      match(line, /^ +/)
+      ind = RLENGTH
+      if (anchor_child_indent == 0) anchor_child_indent = ind
+      if (ind != anchor_child_indent) next
+      anchor_seq_key_indent = ind
+      anchor_seq_indent = 0
+      subkey_a = substr(line, ind + 1)
+      sub(/:.*/, "", subkey_a)
+      gsub(/["\047]/, "", subkey_a)
+      val = substr(line, ind + 1)
+      sub(/^[^:]*:[[:space:]]*/, "", val)
+      if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
+      if ((subkey_a == "branches" || subkey_a == "branches-ignore") && flow_unclosed(val)) anchor_flow_key = subkey_a
+      if (subkey_a == "branches") {
+        anchor_seen_branches[cur_anchor] = 1
+        anchor_branches[cur_anchor] = add_tokens(val)
+      } else if (subkey_a == "branches-ignore") {
+        anchor_seen_ignore[cur_anchor] = 1
+        anchor_ignore[cur_anchor] = add_tokens(val)
+      } else if (subkey_a == "tags" || subkey_a == "tags-ignore") {
+        anchor_seen_tags[cur_anchor] = 1
+      }
+      next
+    }
+    !inpush && cur_anchor != "" && anchor_flow_key != "" {
+      seg = $0
+      sub(/[[:space:]]#.*/, "", seg)
+      k = unquoted_close(seg)
+      if (k > 0) {
+        seg = substr(seg, 1, k - 1)
+        if (anchor_flow_key == "branches") anchor_branches[cur_anchor] = anchor_branches[cur_anchor] add_tokens(seg)
+        else if (anchor_flow_key == "branches-ignore") anchor_ignore[cur_anchor] = anchor_ignore[cur_anchor] add_tokens(seg)
+        anchor_flow_key = ""
+      } else if (anchor_flow_key == "branches") {
+        anchor_branches[cur_anchor] = anchor_branches[cur_anchor] add_tokens(seg)
+      } else if (anchor_flow_key == "branches-ignore") {
+        anchor_ignore[cur_anchor] = anchor_ignore[cur_anchor] add_tokens(seg)
+      }
+      next
+    }
+    !inpush && cur_anchor != "" && /^ +-[[:space:]]/ {
+      item = $0
+      match(item, /^ +/)
+      ind = RLENGTH
+      if (anchor_seq_indent == 0) {
+        if (ind < anchor_seq_key_indent) next
+        anchor_seq_indent = ind
+      }
+      if (ind != anchor_seq_indent) next
+      sub(/^ +-[[:space:]]*/, "", item)
+      if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") sub(/[[:space:]]#.*/, "", item)
+      if (subkey_a == "branches") {
+        anchor_seen_branches[cur_anchor] = 1
+        anchor_branches[cur_anchor] = anchor_branches[cur_anchor] " " clean(item)
+      } else if (subkey_a == "branches-ignore") {
+        anchor_seen_ignore[cur_anchor] = 1
+        anchor_ignore[cur_anchor] = anchor_ignore[cur_anchor] " " clean(item)
+      } else if (subkey_a == "tags" || subkey_a == "tags-ignore") {
+        anchor_seen_tags[cur_anchor] = 1
+      }
+      next
+    }
     inpush && /^ +["\047]?[a-z-]+["\047]?:/ {
       line = $0
       match(line, /^ +/)
@@ -494,7 +611,9 @@ push_targets_main() {
         print "absent"
         exit
       }
-      if (list_matches_main(ignore_list)) {
+      if (alias_unknown) {
+        print "no"
+      } else if (list_matches_main(ignore_list)) {
         print "no"
       } else if (seen_branches) {
         if (branches_allow_main(branches_list)) print "yes"

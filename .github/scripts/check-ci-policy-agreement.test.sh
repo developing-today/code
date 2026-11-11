@@ -755,6 +755,95 @@ if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-flow_escaped_quote.out"
 fi
 echo "pass: escaped quote in a flow list does not discard the branch filter"
 
+# Codex P2 regressions on #8513 round 13: a brace inside a YAML
+# comment does not terminate an inline mapping, and YAML anchors /
+# aliases on trigger mappings resolve to their filters instead of
+# looking like unfiltered pushes.
+build_tree "$TMP/filter-inline_comment_brace"
+wf_raw "$TMP/filter-inline_comment_brace" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: { # closing brace } in comment
+    branches-ignore: [main]}
+EOF
+bash "$SCRIPT" "$TMP/filter-inline_comment_brace" >"$TMP/filter-inline_comment_brace.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_comment_brace.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-inline_comment_brace.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_comment_brace.out"; then
+  echo "FAIL: a brace in a YAML comment ended the inline mapping early and hid branches-ignore" >&2
+  exit 1
+fi
+echo "pass: brace in a YAML comment does not hide the continuation's branches-ignore"
+
+build_tree "$TMP/filter-inline_comment_brace_main"
+wf_raw "$TMP/filter-inline_comment_brace_main" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: { # } comment
+    branches: [main]}
+EOF
+if bash "$SCRIPT" "$TMP/filter-inline_comment_brace_main" >"$TMP/filter-inline_comment_brace_main.out" 2>&1; then
+  echo "FAIL: checker missed branches: [main] after a comment brace" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_comment_brace_main.out"
+echo "pass: branches: [main] after a comment brace satisfies the main leg"
+
+build_tree "$TMP/filter-anchor_alias_block"
+wf_raw "$TMP/filter-anchor_alias_block" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch: &release_only
+    branches: [release]
+  push: *release_only
+EOF
+bash "$SCRIPT" "$TMP/filter-anchor_alias_block" >"$TMP/filter-anchor_alias_block.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_alias_block.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_alias_block.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_alias_block.out"; then
+  echo "FAIL: an aliased release-only push was certified as targeting main" >&2
+  exit 1
+fi
+echo "pass: push aliased to an anchored block mapping inherits its branches filter"
+
+build_tree "$TMP/filter-anchor_inline_push"
+wf_raw "$TMP/filter-anchor_inline_push" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: &release_only {branches: [release]}
+EOF
+bash "$SCRIPT" "$TMP/filter-anchor_inline_push" >"$TMP/filter-anchor_inline_push.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_inline_push.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_inline_push.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_inline_push.out"; then
+  echo "FAIL: an anchored inline release-only push was certified as targeting main" >&2
+  exit 1
+fi
+echo "pass: anchored inline push mapping applies its branches filter"
+
+build_tree "$TMP/filter-anchor_alias_inline"
+wf_raw "$TMP/filter-anchor_alias_inline" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch: &release_only {branches: [release]}
+  push: *release_only
+EOF
+bash "$SCRIPT" "$TMP/filter-anchor_alias_inline" >"$TMP/filter-anchor_alias_inline.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_alias_inline.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_alias_inline.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_alias_inline.out"; then
+  echo "FAIL: an aliased inline-anchored push was certified as targeting main" >&2
+  exit 1
+fi
+echo "pass: push aliased to an anchored inline mapping inherits its branches filter"
+
+build_tree "$TMP/filter-anchor_unknown_alias"
+wf_raw "$TMP/filter-anchor_unknown_alias" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: *never_defined
+EOF
+bash "$SCRIPT" "$TMP/filter-anchor_unknown_alias" >"$TMP/filter-anchor_unknown_alias.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_unknown_alias.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_unknown_alias.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_unknown_alias.out"; then
+  echo "FAIL: an unresolvable alias was certified as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: an unresolvable push alias is never certified as targeting main"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python
