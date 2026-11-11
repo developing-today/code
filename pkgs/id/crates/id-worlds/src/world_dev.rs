@@ -1206,13 +1206,34 @@ pub async fn run_dev_watch(
         });
     }
     let mut session = DevSession::launch(&module, seed, initial_snapshot_id.clone()).await?;
-    let initial_view = session.view().await?;
+    // Rendering failures before the first poll are captured, not
+    // fatal (Codex P2 on PR #8792): the program stays healthy after
+    // a failed view, and exiting here would stop the user repairing
+    // the rendering code through the watch -- an initial input can
+    // even be what makes the view render again. The diagnostic
+    // surfaces in the report through last_good.last_failure, the
+    // same channel as the other recoverable session failures;
+    // a later successful promotion clears it.
+    let initial_view = match session.view().await {
+        Ok(view) => view,
+        Err(err) => {
+            session.last_failure = Some(format!("initial view failed: {err:#}"));
+            None
+        }
+    };
     let mut steps = Vec::with_capacity(inputs.len());
     for input in inputs {
         session.input(input.as_bytes()).await?;
+        let view = match session.view().await {
+            Ok(view) => view,
+            Err(err) => {
+                session.last_failure = Some(format!("view failed after input: {err:#}"));
+                None
+            }
+        };
         steps.push(DevStep {
             input: input.clone(),
-            view: session.view().await?,
+            view,
         });
     }
     let started = std::time::Instant::now();
