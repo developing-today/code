@@ -149,6 +149,13 @@ function initWorld(): void {
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
+  // #7928: fields a socket handler renders or acts on must be strings
+  // when present. A present-but-non-string value (object, array,
+  // number, null) makes the frame an invalid response for that
+  // handler — never coerced into the UI ("[object Object]", "a,b")
+  // and never treated as a success.
+  const hasNonStringField = (frame: Record<string, unknown>, fields: string[]): boolean =>
+    fields.some((field) => frame[field] !== undefined && typeof frame[field] !== "string");
   const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
   const isWorldSnapshot = (value: unknown): value is NonNullable<WorldFrame["snapshot"]> =>
     isRecord(value) &&
@@ -630,6 +637,14 @@ function initWorld(): void {
         return;
       }
       const frame = parsed as WorldFrame;
+      if (
+        (frame.type === "error" && hasNonStringField(parsed, ["message"])) ||
+        (frame.type === "module_installed" && hasNonStringField(parsed, ["module_hash"]))
+      ) {
+        setStatus("Host returned an invalid upload response", "error");
+        upload.close();
+        return;
+      }
       if (frame.type === "error") {
         setStatus(frame.message ?? "Module install failed", "error");
         upload.close();
@@ -763,6 +778,14 @@ function initWorld(): void {
         return;
       }
       const frame = parsed as WorldFrame;
+      if (
+        (frame.type === "error" && hasNonStringField(parsed, ["message"])) ||
+        (frame.type === "compiled" && hasNonStringField(parsed, ["module_hash", "diagnostics"]))
+      ) {
+        setStatus("Host returned an invalid compile response", "error");
+        compiler.close();
+        return;
+      }
       if (frame.type === "error") {
         setStatus(frame.message ?? "Roc compilation failed", "error");
         appendLine(log, `compile error: ${frame.message ?? "Roc compilation failed"}`);
