@@ -1136,6 +1136,36 @@ pub fn start_server_config_persisted(
     })
 }
 
+/// Seed the serving world's own directory with the accounts the
+/// server config provisions (#5119, PR #8356 review): slice 3
+/// persists provisioning into the directory beside the groups log,
+/// but a durable world loads `.id-worlds/<name>/directory.jsonl`
+/// ([`crate::world_store::open_world`]), so without this seed the
+/// live world's directory view treats configured keys as anonymous
+/// while startup reports them provisioned. The caller names the
+/// default world, the one serve opens at startup. Seeding is the
+/// same idempotent account application provisioning itself runs,
+/// so a restart creates nothing. Group events are not seeded here:
+/// they live in the groups log, which live serving already folds.
+///
+/// # Errors
+///
+/// Fails when the world directory cannot be created or opened, or
+/// when the directory refuses a configured user -- the same
+/// startup-failing contract as the provisioning it mirrors.
+#[cfg(feature = "world")]
+pub fn seed_world_directory(
+    config: &crate::server_config::ServerConfig,
+    dir: &Path,
+) -> Result<crate::server_config::Report> {
+    std::fs::create_dir_all(dir)?;
+    let directory = crate::directory::Directory::open(&dir.join("directory.jsonl"))?;
+    let mut provisioned = crate::server_config::Provisioned::from_parts(directory, Vec::new());
+    provisioned.apply_users(config).map_err(|error| {
+        anyhow::anyhow!("server config world directory {}: {error}", dir.display())
+    })
+}
+
 /// The pull policy the live event-sync gate serves under (#5119): the server
 /// config's `[policy] pull_policy` when a config was loaded, else the code
 /// default ([`crate::pull_policy::PullPolicy::Open`]), so a `serve` without
@@ -1273,6 +1303,25 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         }
         None => None,
     };
+    // #5119 (PR #8356 review): a durable world's live directory is
+    // its own `.id-worlds/<name>/directory.jsonl`, not the directory
+    // beside the groups log that slice 3 persists into, so seed the
+    // default world's directory with the configured accounts too;
+    // otherwise the live directory view treats them as anonymous.
+    // Ephemeral worlds hold no directory file to seed: their state
+    // is in-memory and ends with the process, like the world itself.
+    #[cfg(feature = "world")]
+    if let Some(started) = &started_server_config {
+        if world && !ephemeral {
+            let seeded = seed_world_directory(&started.config, &world_dir(&world_name))?;
+            if seeded.users_created > 0 {
+                status!(
+                    "server config: seeded {} configured user(s) into world {world_name}'s directory",
+                    seeded.users_created
+                );
+            }
+        }
+    }
     // #5119: the pull policy the live event-sync gate uses, resolved once from
     // the same startup config load. No config keeps the code default (open).
     #[cfg(feature = "web")]
@@ -3628,6 +3677,50 @@ mod tests {
         assert!(restarted.provisioned.directory().account(&id(2)).is_some());
         // The create event plus the one member add.
         assert_eq!(restarted.provisioned.events().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #5119 (PR #8356 review): the accounts a server config
+    /// provisions must land in the directory the serving world
+    /// actually loads (`.id-worlds/<name>/directory.jsonl`), not
+    /// only in the directory beside the groups log.
+    #[cfg(feature = "world")]
+    #[test]
+    fn seed_world_directory_provisions_configured_accounts() {
+        let dir = serve_config_dir("world-seed");
+        let path = dir.join("server.toml");
+        // Real Ed25519 public keys, as in
+        // start_server_config_applies_provisioning.
+        let id = |n: u8| {
+            ed25519_dalek::SigningKey::from_bytes(&[n; 32])
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n",
+                id(1),
+                id(2)
+            ),
+        )
+        .unwrap();
+        let config = crate::server_config::ServerConfig::load(&path).unwrap();
+        let world = dir.join("world");
+        let seeded = seed_world_directory(&config, &world).unwrap();
+        assert_eq!(seeded.users_created, 2);
+        // The world's own directory now resolves both configured
+        // accounts, as world_store::open_world would load it.
+        let directory = crate::directory::Directory::open(&world.join("directory.jsonl")).unwrap();
+        assert!(directory.account(&id(1)).is_some());
+        assert!(directory.account(&id(2)).is_some());
+        drop(directory);
+        // A restart seeds nothing again.
+        let again = seed_world_directory(&config, &world).unwrap();
+        assert_eq!(again, crate::server_config::Report::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

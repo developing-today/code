@@ -160,20 +160,7 @@ impl Provisioned {
     /// server runs on that partial state.
     pub fn apply(&mut self, config: &ServerConfig) -> Result<Report, ProvisionError> {
         self.create = config.create_rule().clone();
-        let mut report = Report::default();
-        for user in config.users() {
-            let id = hex_encode(&user.id);
-            if self.directory.account(&id).is_some() {
-                continue;
-            }
-            self.directory
-                .sign_up_keyed(&id, &user.key)
-                .map_err(|error| ProvisionError::User {
-                    key: user.key.clone(),
-                    message: format!("{error:#}"),
-                })?;
-            report.users_created += 1;
-        }
+        let mut report = self.apply_users(config)?;
         for group in config.groups() {
             let batch = group_events(group);
             let missing: Vec<Event> = batch
@@ -211,6 +198,34 @@ impl Provisioned {
                 report.groups_created += 1;
             }
             report.members_added += missing.iter().filter(|event| event.id != group.id).count();
+        }
+        Ok(report)
+    }
+    /// Creates only the accounts the config names, in this value's
+    /// directory. What already exists is skipped, so a second run of
+    /// the same config changes nothing. Split out of [`Self::apply`]
+    /// so a directory that is not the provisioning home — the serving
+    /// world's own directory, seeded by `id serve` (#5119, PR #8356
+    /// review) — can receive the same accounts without taking the
+    /// group events, which belong to the groups log.
+    ///
+    /// # Errors
+    ///
+    /// Fails on the first user the directory refuses.
+    pub fn apply_users(&mut self, config: &ServerConfig) -> Result<Report, ProvisionError> {
+        let mut report = Report::default();
+        for user in config.users() {
+            let id = hex_encode(&user.id);
+            if self.directory.account(&id).is_some() {
+                continue;
+            }
+            self.directory
+                .sign_up_keyed(&id, &user.key)
+                .map_err(|error| ProvisionError::User {
+                    key: user.key.clone(),
+                    message: format!("{error:#}"),
+                })?;
+            report.users_created += 1;
         }
         Ok(report)
     }
