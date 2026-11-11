@@ -495,3 +495,116 @@ fn same_player_claims_with_different_position_fields_are_disputed() {
         );
     }
 }
+
+#[test]
+fn v1_witness_decision_is_versioned_signed_and_bound_to_named_witness() {
+    use id::attestation::v1::{
+        V1SignError, VERSION, WitnessDecision, WitnessEvidence, sign_witness_decision,
+    };
+
+    let x = key(0);
+    let o = key(100);
+    let witness = key(200);
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash: Hash::digest(b"pinned logic"),
+        players: [player_id(&x), player_id(&o)],
+        witness: Some(player_id(&witness)),
+        objection_window_secs: 3600,
+    };
+    let decision = WitnessDecision {
+        version: VERSION,
+        agreement: agreement.agreement_hash().unwrap(),
+        logic_hash: agreement.logic_hash,
+        outcome: hex(&player_id(&x)),
+        evidence: WitnessEvidence::Complete {
+            claim_a: Hash::digest(b"claim a"),
+            claim_b: Hash::digest(b"claim b"),
+            log_hash_a: Hash::digest(b"log a"),
+            log_hash_b: Hash::digest(b"log b"),
+        },
+    };
+
+    let body = decision.body().unwrap();
+    assert_eq!(WitnessDecision::from_body(&body).unwrap(), decision);
+    let event = sign_witness_decision(&witness, 0, None, &agreement, &decision, vec![]).unwrap();
+    let decoded = chain::decode(&event.bytes).unwrap();
+    assert_eq!(
+        decoded.header.extensions.kind,
+        "attestation.witness_decision"
+    );
+    assert_eq!(author_id(&decoded), player_id(&witness));
+    assert!(matches!(
+        sign_witness_decision(&x, 0, None, &agreement, &decision, vec![]),
+        Err(V1SignError::NotNamedWitness)
+    ));
+
+    let mut wrong_logic = decision;
+    wrong_logic.logic_hash = Hash::digest(b"other logic");
+    assert!(matches!(
+        sign_witness_decision(&witness, 0, None, &agreement, &wrong_logic, vec![]),
+        Err(V1SignError::WrongLogic)
+    ));
+}
+
+#[test]
+fn v1_objection_is_append_only_and_only_seated_players_may_sign() {
+    use id::attestation::v1::{OBJECTION_KIND, Objection, V1SignError, VERSION, sign_objection};
+
+    let x = key(0);
+    let o = key(100);
+    let outsider = key(200);
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash: Hash::digest(b"pinned logic"),
+        players: [player_id(&x), player_id(&o)],
+        witness: None,
+        objection_window_secs: 3600,
+    };
+    let objection = Objection {
+        version: VERSION,
+        target: Hash::digest(b"target claim"),
+        grounds: "replay evidence differs".to_owned(),
+        author_frontier: vec![Hash::digest(b"frontier")],
+    };
+    let body = objection.body().unwrap();
+    assert_eq!(Objection::from_body(&body).unwrap(), objection);
+    let event = sign_objection(&o, 0, None, &agreement, &objection, vec![]).unwrap();
+    let decoded = chain::decode(&event.bytes).unwrap();
+    assert_eq!(decoded.header.extensions.kind, OBJECTION_KIND);
+    assert_eq!(author_id(&decoded), player_id(&o));
+    assert!(matches!(
+        sign_objection(&outsider, 0, None, &agreement, &objection, vec![]),
+        Err(V1SignError::NotPlayer)
+    ));
+}
+
+#[test]
+fn counting_policy_is_registry_local_and_names_accepted_witnesses_and_logic() {
+    use id::attestation::v1::{CountingPolicy, V1MatchState};
+
+    let x = key(0);
+    let o = key(100);
+    let witness = key(200);
+    let logic_hash = Hash::digest(b"pinned logic");
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash,
+        players: [player_id(&x), player_id(&o)],
+        witness: Some(player_id(&witness)),
+        objection_window_secs: 3600,
+    };
+    let policy = CountingPolicy {
+        accepted_states: vec![V1MatchState::Final],
+        accepted_witnesses: vec![player_id(&witness)],
+        accepted_logic_hashes: vec![logic_hash],
+    };
+
+    assert!(policy.counts(&agreement, V1MatchState::Final));
+    assert!(!policy.counts(&agreement, V1MatchState::Disputed));
+    let rejecting_policy = CountingPolicy {
+        accepted_witnesses: vec![player_id(&x)],
+        ..policy
+    };
+    assert!(!rejecting_policy.counts(&agreement, V1MatchState::Final));
+}
