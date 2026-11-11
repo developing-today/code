@@ -18,6 +18,13 @@
 //   - deferred: Drew sent it back to the orchestrator, with a lean:
 //     "none" (plain defer), "skeptical" (leaning no), "approve"
 //     (leaning yes).
+//   - request-info: Drew asked for more information before deciding,
+//     with an optional note saying what is missing. The question leaves
+//     his page like a defer, but it is NOT a ruling: downstream (the
+//     dropped-thread catcher) marks the ledger question
+//     awaiting-enrichment and never closes the item for it; once the
+//     orchestrator gathers the information, the question is re-raised
+//     in a later set carrying it as `infoProvided`.
 // The set's per-set token (minted once, at raise) is the authority for
 // the decisions page (/decisions/<setId>?t=<token>) and the submit /
 // defer endpoints — possession of the set push is the authority, the
@@ -40,14 +47,22 @@ export interface DecisionOption {
 }
 
 export interface DecisionResolution {
-  kind: "answered" | "deferred";
-  /** Answered only: the chosen option's id and its label at record time. */
+  kind: "answered" | "deferred" | "request-info";
+  /** Answered: the chosen option's id and label at record time.
+   * Deferred: Drew's tentative pick, recorded as guidance for the
+   * orchestrator — the defer is still the resolution kind. */
   optionId?: string;
   optionLabel?: string;
   /** Answered only: Drew's own words, when he wrote any. */
   freeText?: string;
   /** Deferred only: the lean Drew recorded with the defer. */
   lean?: DeferLean;
+  /** Request-info only: what Drew said is missing (optional). */
+  note?: string;
+  /** Any kind: a remark Drew attached to the resolution — on a defer it
+   * is the free text he wrote on the question; it rides back to the
+   * ledger with the resolution, it is not part of the ruling itself. */
+  comment?: string;
   at: string;
   via: string;
 }
@@ -57,6 +72,10 @@ export interface DecisionQuestion {
   qid: string;
   question: string;
   context?: string;
+  /** Information the orchestrator gathered after Drew requested more
+   * info on this question in an earlier set (the re-raise payload);
+   * rendered on the page as a marked "information you requested" block. */
+  infoProvided?: string;
   options: DecisionOption[];
   resolution?: DecisionResolution;
 }
@@ -84,6 +103,7 @@ export interface DecisionSet {
 export interface DecisionQuestionInput {
   question: string;
   context?: string;
+  infoProvided?: string;
   options: DecisionOption[];
 }
 
@@ -108,11 +128,15 @@ export interface DecisionResolutionRecord {
   qid: string;
   /** 1-based index of the question within its ledger item. */
   questionIndex: number;
-  kind: "answered" | "deferred";
+  kind: "answered" | "deferred" | "request-info";
   optionId?: string;
   optionLabel?: string;
   freeText?: string;
   lean?: DeferLean;
+  /** Request-info only: what Drew said is missing (optional). */
+  note?: string;
+  /** Any kind: Drew's remark attached to the resolution. */
+  comment?: string;
   at: string;
   via: string;
 }
@@ -185,6 +209,9 @@ export function validateDecisionSet(
       if (q.context !== undefined && typeof q.context !== "string") {
         return { ok: false, error: `decisionSet item ${ledgerId} question context must be a string` };
       }
+      if (q.infoProvided !== undefined && typeof q.infoProvided !== "string") {
+        return { ok: false, error: `decisionSet item ${ledgerId} question infoProvided must be a string` };
+      }
       // Options may be empty: a free-text-only question is legitimate
       // (the ledger carries questions with no recorded options).
       if (!Array.isArray(q.options) || q.options.length > 8) {
@@ -211,6 +238,7 @@ export function validateDecisionSet(
       questions.push({
         question,
         ...(typeof q.context === "string" && q.context.trim() ? { context: q.context } : {}),
+        ...(typeof q.infoProvided === "string" && q.infoProvided.trim() ? { infoProvided: q.infoProvided } : {}),
         options,
       });
     }
@@ -292,6 +320,7 @@ export async function raiseDecisionSet(
           qid: `${item.ledgerId}#${i + 1}`,
           question: q.question,
           ...(q.context !== undefined ? { context: q.context } : {}),
+          ...(q.infoProvided !== undefined ? { infoProvided: q.infoProvided } : {}),
           options: q.options,
         })),
       })),
@@ -310,10 +339,14 @@ export async function getDecisionSet(file: string, setId: string): Promise<Decis
 export interface DecisionSubmission {
   ledgerId: string;
   qid: string;
-  kind: "answered" | "deferred";
+  kind: "answered" | "deferred" | "request-info";
   optionId?: string;
   freeText?: string;
   lean?: DeferLean;
+  /** Request-info only: what Drew says is missing (optional). */
+  note?: string;
+  /** Any kind: a remark to attach to the resolution (see DecisionResolution.comment). */
+  comment?: string;
 }
 
 export interface SubmissionOutcome {
@@ -361,7 +394,37 @@ export async function recordResolutions(
           outcomes.push({ qid: sub.qid, applied: false, reason: "bad-lean" });
           continue;
         }
-        q.resolution = { kind: "deferred", lean: sub.lean, at: now, via };
+        // Guided defer: a tentative option pick may ride along as
+        // guidance. It never changes the resolution kind.
+        const guide = sub.optionId !== undefined ? q.options.find((o) => o.id === sub.optionId) : undefined;
+        if (sub.optionId !== undefined && !guide) {
+          outcomes.push({ qid: sub.qid, applied: false, reason: "bad-option" });
+          continue;
+        }
+        const comment = typeof sub.comment === "string" ? sub.comment.trim() : "";
+        q.resolution = {
+          kind: "deferred",
+          lean: sub.lean,
+          ...(guide ? { optionId: guide.id, optionLabel: guide.label } : {}),
+          ...(comment ? { comment } : {}),
+          at: now,
+          via,
+        };
+        outcomes.push({ qid: sub.qid, applied: true });
+        continue;
+      }
+      if (sub.kind === "request-info") {
+        // Not a ruling: the note is optional, an empty request still
+        // sends the question back for enrichment.
+        const note = typeof sub.note === "string" ? sub.note.trim() : "";
+        const comment = typeof sub.comment === "string" ? sub.comment.trim() : "";
+        q.resolution = {
+          kind: "request-info",
+          ...(note ? { note } : {}),
+          ...(comment ? { comment } : {}),
+          at: now,
+          via,
+        };
         outcomes.push({ qid: sub.qid, applied: true });
         continue;
       }
@@ -376,10 +439,12 @@ export async function recordResolutions(
         outcomes.push({ qid: sub.qid, applied: false, reason: "empty-answer" });
         continue;
       }
+      const comment = typeof sub.comment === "string" ? sub.comment.trim() : "";
       q.resolution = {
         kind: "answered",
         ...(option ? { optionId: option.id, optionLabel: option.label } : {}),
         ...(freeText ? { freeText } : {}),
+        ...(comment ? { comment } : {}),
         at: now,
         via,
       };
@@ -401,6 +466,7 @@ export async function deferOpenQuestions(
   scope: { allRemaining: true } | { ledgerIds: string[] },
   lean: DeferLean,
   via = "decisions-page",
+  comment?: string,
 ): Promise<{ set: DecisionSet; deferredCount: number } | null> {
   return serializeDecisions(file, async () => {
     const sets = await readDecisionSets(file);
@@ -408,17 +474,83 @@ export async function deferOpenQuestions(
     if (!set) return null;
     const wanted = "allRemaining" in scope ? null : new Set(scope.ledgerIds);
     const now = new Date().toISOString();
+    const trimmedComment = typeof comment === "string" ? comment.trim() : "";
     let deferredCount = 0;
     for (const item of set.items) {
       if (wanted && !wanted.has(item.ledgerId)) continue;
       for (const q of item.questions) {
         if (q.resolution) continue;
-        q.resolution = { kind: "deferred", lean, at: now, via };
+        q.resolution = { kind: "deferred", lean, ...(trimmedComment ? { comment: trimmedComment } : {}), at: now, via };
         deferredCount++;
       }
     }
     if (deferredCount > 0) await writeDecisionSets(file, sets);
     return { set, deferredCount };
+  });
+}
+
+/**
+ * The bulk send-back with filled answers winning (#8766): record the
+ * submissions the page gathered from filled-in fields FIRST — an answer
+ * Drew typed but had not submitted is recorded as a ruling, never
+ * converted into a deferral or lost — then defer every still-open
+ * question in scope with the bulk lean (and the bulk comment, when one
+ * was written). A per-question defer inside the submissions keeps its
+ * own lean and comment; the bulk lean/comment apply only to the
+ * questions the bulk action itself defers.
+ */
+export async function deferWithSubmissions(
+  file: string,
+  setId: string,
+  submissions: DecisionSubmission[],
+  scope: { allRemaining: true } | { ledgerIds: string[] },
+  lean: DeferLean,
+  comment?: string,
+  via = "decisions-page",
+): Promise<{ set: DecisionSet; outcomes: SubmissionOutcome[]; deferredCount: number } | null> {
+  let outcomes: SubmissionOutcome[] = [];
+  if (submissions.length > 0) {
+    const applied = await recordResolutions(file, setId, submissions, via);
+    if (!applied) return null;
+    outcomes = applied.outcomes;
+  }
+  const deferred = await deferOpenQuestions(file, setId, scope, lean, via, comment);
+  if (!deferred) return null;
+  return { set: deferred.set, outcomes, deferredCount: deferred.deferredCount };
+}
+
+/**
+ * Request more information on every still-open question in scope (the
+ * page's checked-items request-info action): either the checked items,
+ * or all remaining questions in the set. Each open question records a
+ * request-info resolution carrying the shared note. Already-resolved
+ * questions are untouched. Returns the count requested.
+ */
+export async function requestInfoOpenQuestions(
+  file: string,
+  setId: string,
+  scope: { allRemaining: true } | { ledgerIds: string[] },
+  note?: string,
+  via = "decisions-page",
+): Promise<{ set: DecisionSet; requestedCount: number } | null> {
+  return serializeDecisions(file, async () => {
+    const sets = await readDecisionSets(file);
+    const set = sets.find((s) => s.setId === setId);
+    if (!set) return null;
+    const wanted = "allRemaining" in scope ? null : new Set(scope.ledgerIds);
+    const now = new Date().toISOString();
+    const trimmed = typeof note === "string" ? note.trim() : "";
+    let requestedCount = 0;
+    for (const item of set.items) {
+      if (wanted && !wanted.has(item.ledgerId)) continue;
+      for (const q of item.questions) {
+        if (q.resolution) continue;
+        q.resolution = { kind: "request-info", ...(trimmed ? { note: trimmed } : {}), at: now, via };
+        requestedCount++;
+      }
+    }
+    if (requestedCount > 0) await writeDecisionSets(file, sets);
+    return { set, requestedCount };
   });
 }
 
@@ -428,6 +560,7 @@ export interface DecisionSetProgress {
   openQuestions: number;
   answered: number;
   deferred: number;
+  infoRequested: number;
   /** Items with at least one open question. */
   openItems: number;
 }
@@ -437,6 +570,7 @@ export function decisionSetProgress(set: DecisionSet): DecisionSetProgress {
   let openQuestions = 0;
   let answered = 0;
   let deferred = 0;
+  let infoRequested = 0;
   let openItems = 0;
   for (const item of set.items) {
     let itemOpen = 0;
@@ -446,11 +580,12 @@ export function decisionSetProgress(set: DecisionSet): DecisionSetProgress {
         openQuestions++;
         itemOpen++;
       } else if (q.resolution.kind === "answered") answered++;
-      else deferred++;
+      else if (q.resolution.kind === "deferred") deferred++;
+      else infoRequested++;
     }
     if (itemOpen > 0) openItems++;
   }
-  return { items: set.items.length, questions, openQuestions, answered, deferred, openItems };
+  return { items: set.items.length, questions, openQuestions, answered, deferred, infoRequested, openItems };
 }
 
 export function isDecisionSetFullyResolved(set: DecisionSet): boolean {
@@ -502,6 +637,8 @@ export async function listDecisionResolutions(file: string): Promise<DecisionRes
           ...(r.optionLabel !== undefined ? { optionLabel: r.optionLabel } : {}),
           ...(r.freeText !== undefined ? { freeText: r.freeText } : {}),
           ...(r.lean !== undefined ? { lean: r.lean } : {}),
+          ...(r.note !== undefined ? { note: r.note } : {}),
+          ...(r.comment !== undefined ? { comment: r.comment } : {}),
           at: r.at,
           via: r.via,
         });

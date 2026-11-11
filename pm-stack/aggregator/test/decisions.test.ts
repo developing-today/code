@@ -6,12 +6,14 @@ import {
   decisionSetOpenState,
   decisionSetProgress,
   deferOpenQuestions,
+  deferWithSubmissions,
   getDecisionSet,
   isDecisionSetFullyResolved,
   listDecisionResolutions,
   listOpenDecisionSets,
   raiseDecisionSet,
   recordResolutions,
+  requestInfoOpenQuestions,
   validateDecisionSet,
   type DecisionSetInput,
 } from "../src/decisions.ts";
@@ -180,5 +182,203 @@ describe("decision set store (#8766)", () => {
     expect(future).toEqual([]);
     expect(await getDecisionSet(file, "set-open")).not.toBeNull();
     expect(await getDecisionSet(file, "nope")).toBeNull();
+  });
+});
+
+describe("request-info, comments, filled-answers-win (#8766 follow-up)", () => {
+  test("request-info records the optional note, counts separately, and is not overwritten in-set", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    const res = await recordResolutions(file, "set-test-1", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "request-info", note: "need the cost numbers" },
+      { ledgerId: "item-a", qid: "item-a#2", kind: "request-info" },
+    ]);
+    expect(res?.outcomes).toEqual([
+      { qid: "item-a#1", applied: true },
+      { qid: "item-a#2", applied: true },
+    ]);
+    const progress = decisionSetProgress(res!.set);
+    expect(progress.infoRequested).toBe(2);
+    expect(progress.answered).toBe(0);
+    expect(progress.deferred).toBe(0);
+    expect(decisionSetOpenState(res!.set).items.find((i) => i.ledgerId === "item-a")?.openQids).toEqual([]);
+    const records = await listDecisionResolutions(file);
+    expect(records.find((r) => r.qid === "item-a#1")).toMatchObject({ kind: "request-info", note: "need the cost numbers" });
+    expect(records.find((r) => r.qid === "item-a#2")?.note).toBeUndefined();
+    // First resolution still wins inside one set: a later answer in the
+    // SAME set does not overwrite the request-info.
+    const again = await recordResolutions(file, "set-test-1", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-1" },
+    ]);
+    expect(again?.outcomes).toEqual([{ qid: "item-a#1", applied: false, reason: "already-resolved" }]);
+  });
+
+  test("bulk request-info: checked items only, resolved questions untouched, shared note", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    await recordResolutions(file, "set-test-1", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-1" },
+    ]);
+    const out = await requestInfoOpenQuestions(file, "set-test-1", { ledgerIds: ["item-a", "item-b"] }, "missing the timeline");
+    expect(out?.requestedCount).toBe(2); // item-a#2 + item-b#1; item-a#1 already answered
+    const records = await listDecisionResolutions(file);
+    expect(records.find((r) => r.qid === "item-a#1")?.kind).toBe("answered");
+    expect(records.find((r) => r.qid === "item-b#1")).toMatchObject({ kind: "request-info", note: "missing the timeline" });
+  });
+
+  test("re-raise: an enriched question returns in a later set carrying infoProvided and can be answered there", async () => {
+    await raiseDecisionSet(file, sampleInput("set-first"));
+    await recordResolutions(file, "set-first", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "request-info", note: "what did it cost?" },
+    ]);
+    // The orchestrator gathers the information and raises a later set
+    // whose question carries it, visibly marked as the requested info.
+    const enriched = sampleInput("set-reraise");
+    enriched.items[0]!.questions[0]!.infoProvided = "It cost $4,100 over March-May (export linked on the issue).";
+    expect(validateDecisionSet(enriched).ok).toBe(true);
+    const set2 = await raiseDecisionSet(file, enriched);
+    expect(set2.items[0]!.questions[0]!.infoProvided).toContain("$4,100");
+    const res = await recordResolutions(file, "set-reraise", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-2" },
+    ]);
+    expect(res?.outcomes).toEqual([{ qid: "item-a#1", applied: true }]);
+    // Both resolutions for the same qid reach the feed, keyed by set.
+    const forQ = (await listDecisionResolutions(file)).filter((r) => r.qid === "item-a#1");
+    expect(forQ.map((r) => `${r.setId}:${r.kind}`)).toEqual(["set-first:request-info", "set-reraise:answered"]);
+    // infoProvided validation: a non-string is rejected.
+    const bad = sampleInput("set-bad");
+    (bad.items[0]!.questions[0] as { infoProvided?: unknown }).infoProvided = 42;
+    expect(validateDecisionSet(bad).ok).toBe(false);
+  });
+
+  test("filled answers win over bulk defer: typed answer recorded as a ruling, the rest deferred", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    const out = await deferWithSubmissions(
+      file,
+      "set-test-1",
+      [
+        { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-2" },
+        { ledgerId: "item-a", qid: "item-a#2", kind: "deferred", lean: "skeptical", comment: "not without the numbers" },
+      ],
+      { allRemaining: true },
+      "none",
+      "bulk note",
+    );
+    expect(out?.outcomes).toEqual([
+      { qid: "item-a#1", applied: true },
+      { qid: "item-a#2", applied: true },
+    ]);
+    expect(out?.deferredCount).toBe(1); // only item-b#1 was still unanswered
+    const records = await listDecisionResolutions(file);
+    const byQid = new Map(records.map((r) => [r.qid, r]));
+    // The filled-in answer is an answer resolution, never a deferral.
+    expect(byQid.get("item-a#1")).toMatchObject({ kind: "answered", optionId: "opt-2" });
+    // The per-question defer kept its own lean and comment.
+    expect(byQid.get("item-a#2")).toMatchObject({ kind: "deferred", lean: "skeptical", comment: "not without the numbers" });
+    // The bulk defer took the bulk lean and bulk comment.
+    expect(byQid.get("item-b#1")).toMatchObject({ kind: "deferred", lean: "none", comment: "bulk note" });
+    expect(isDecisionSetFullyResolved(out!.set)).toBe(true);
+  });
+
+  test("comments ride on every kind: answer, defer, request-info", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    await recordResolutions(file, "set-test-1", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-1", comment: "but revisit in Q1" },
+      { ledgerId: "item-a", qid: "item-a#2", kind: "deferred", lean: "approve", comment: "fine either way" },
+      { ledgerId: "item-b", qid: "item-b#1", kind: "request-info", note: "need dates", comment: "and who owns it" },
+    ]);
+    const records = await listDecisionResolutions(file);
+    expect(records.find((r) => r.qid === "item-a#1")?.comment).toBe("but revisit in Q1");
+    expect(records.find((r) => r.qid === "item-a#2")?.comment).toBe("fine either way");
+    expect(records.find((r) => r.qid === "item-b#1")).toMatchObject({ note: "need dates", comment: "and who owns it" });
+  });
+});
+
+describe("guided defer + mixed flavors (#8766 follow-up)", () => {
+  test("guided defer: option pick + comment ride along, kind stays deferred", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    const res = await recordResolutions(file, "set-test-1", [
+      {
+        ledgerId: "item-a",
+        qid: "item-a#1",
+        kind: "deferred",
+        lean: "skeptical",
+        optionId: "opt-1",
+        comment: "leaning yes on the tech, no on the timing",
+      },
+      { ledgerId: "item-a", qid: "item-a#2", kind: "deferred", lean: "none", optionId: "bogus" },
+    ]);
+    expect(res?.outcomes).toEqual([
+      { qid: "item-a#1", applied: true },
+      { qid: "item-a#2", applied: false, reason: "bad-option" },
+    ]);
+    const records = await listDecisionResolutions(file);
+    expect(records.find((r) => r.qid === "item-a#1")).toMatchObject({
+      kind: "deferred",
+      lean: "skeptical",
+      optionId: "opt-1",
+      optionLabel: "Yes",
+      comment: "leaning yes on the tech, no on the timing",
+    });
+    const progress = decisionSetProgress(res!.set);
+    expect(progress.deferred).toBe(1);
+    expect(progress.answered).toBe(0);
+  });
+
+  test("bulk send-all precedence: guided defer > filled answer > untouched (plain defer)", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    // One bulk action carrying: item-a#1 = option + comment + defer set
+    // (guided defer), item-a#2 = free-text answer only (an answer).
+    // item-b#1 is untouched and must defer plain with the bulk lean.
+    const out = await deferWithSubmissions(
+      file,
+      "set-test-1",
+      [
+        { ledgerId: "item-a", qid: "item-a#1", kind: "deferred", lean: "approve", optionId: "opt-2", comment: "if we must" },
+        { ledgerId: "item-a", qid: "item-a#2", kind: "answered", freeText: "Rockbot was the 2024 prototype" },
+      ],
+      { allRemaining: true },
+      "none",
+    );
+    expect(out?.deferredCount).toBe(1);
+    const records = await listDecisionResolutions(file);
+    const byQid = new Map(records.map((r) => [r.qid, r]));
+    // Defer setting wins over the filled option: kind is deferred, and
+    // the option + comment ride as guidance.
+    expect(byQid.get("item-a#1")).toMatchObject({
+      kind: "deferred",
+      lean: "approve",
+      optionId: "opt-2",
+      optionLabel: "No",
+      comment: "if we must",
+    });
+    // The answer-only question in the same bulk action is an answer.
+    expect(byQid.get("item-a#2")).toMatchObject({ kind: "answered", freeText: "Rockbot was the 2024 prototype" });
+    // The untouched question defers plain — no flavor stamped on it.
+    expect(byQid.get("item-b#1")).toMatchObject({ kind: "deferred", lean: "none" });
+    expect(byQid.get("item-b#1")?.optionId).toBeUndefined();
+  });
+});
+
+describe("bulk default flavor (#8766 follow-up)", () => {
+  test("bulk dropdown is only a default: own flavor beats it, filled answer beats it, untouched takes it", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    // Bulk send-all with the bottom dropdown on "skeptical":
+    // item-a#1 has its OWN defer flavor (approve) + a tentative pick —
+    // level 1 wins. item-a#2 has only a filled answer — level 2 wins.
+    // item-b#1 is untouched — it takes the bulk default, level 3.
+    const out = await deferWithSubmissions(
+      file,
+      "set-test-1",
+      [
+        { ledgerId: "item-a", qid: "item-a#1", kind: "deferred", lean: "approve", optionId: "opt-1", comment: "guidance" },
+        { ledgerId: "item-a", qid: "item-a#2", kind: "answered", freeText: "the answer" },
+      ],
+      { allRemaining: true },
+      "skeptical",
+    );
+    expect(out?.deferredCount).toBe(1); // only the untouched question is bulk-deferred
+    const byQid = new Map((await listDecisionResolutions(file)).map((r) => [r.qid, r]));
+    expect(byQid.get("item-a#1")).toMatchObject({ kind: "deferred", lean: "approve", optionId: "opt-1", comment: "guidance" });
+    expect(byQid.get("item-a#2")).toMatchObject({ kind: "answered", freeText: "the answer" });
+    expect(byQid.get("item-b#1")).toMatchObject({ kind: "deferred", lean: "skeptical" });
   });
 });
