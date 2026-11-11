@@ -469,6 +469,22 @@ func declaredToolNames(view *config.Resolved, all []mcpclient.Tool) map[string]b
 	return names
 }
 
+// catalogueKey is the internal key under which a tool view's
+// target sits in an assembled catalogue. For an ordinary view it
+// is the From name itself. For a mount (#1933 slice 3) it is the
+// resolved (MountServer, MountTool) pair, separated by a NUL --
+// a byte neither a configured server name nor an upstream tool
+// name carries in practice -- because the plain concatenation
+// "server.tool" is ambiguous exactly when it matters most: with
+// servers "a" and "a.b", a's tool "b.c" and a.b's tool "c" would
+// share a key and overwrite each other.
+func catalogueKey(tv config.ToolView) string {
+	if tv.MountServer != "" {
+		return tv.MountServer + "\x00" + tv.MountTool
+	}
+	return tv.From
+}
+
 func virtualCatalogue(view *config.Resolved, views map[string]*config.Resolved, pools map[string]*pool.Pool) []mcpclient.Tool {
 	names := make([]string, 0, len(view.ToolViews))
 	for vn := range view.ToolViews {
@@ -498,7 +514,7 @@ func virtualCatalogue(view *config.Resolved, views map[string]*config.Resolved, 
 			// (its pins, its renames) applies on top, in
 			// viewTools, exactly as for an alias.
 			t.InputSchema = effectiveViewSchema(views[tv.MountServer], t.Name, t.InputSchema)
-			t.Name = tv.MountServer + "." + t.Name
+			t.Name = tv.MountServer + "\x00" + t.Name
 			out = append(out, t)
 		}
 	}
@@ -574,7 +590,7 @@ func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
 		if tv.Command != "" || tv.File != "" {
 			t = scriptViewTool(name, tv)
 		} else {
-			up, ok := byName[tv.From]
+			up, ok := byName[catalogueKey(tv)]
 			if !ok {
 				continue // load-time validation names this; listing must not invent it
 			}
@@ -1542,7 +1558,7 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 			if tv.MountServer != "" && deferred[tv.MountServer] {
 				continue // this mount's source has no fresh catalogue; it defers
 			}
-			t, ok := byName[tv.From]
+			t, ok := byName[catalogueKey(tv)]
 			if !ok {
 				if tv.MountServer != "" {
 					continue // judged against the source's raw catalogue above

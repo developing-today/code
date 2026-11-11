@@ -562,3 +562,57 @@ func TestVirtualCallRefusedWhenNamespaceDependencyBlocked(t *testing.T) {
 		t.Fatalf("the home server itself must stay callable: %v", err)
 	}
 }
+
+// Dotted names must not collide in the assembled catalogue: with
+// servers "a" and "a.b", a's tool "b.c" and a.b's tool "c" share
+// the concatenated string "a.b.c", but they are different tools.
+// The mount "a.b.c" resolves (longest server prefix) to a.b's c,
+// and the catalogue must supply THAT tool's schema and route --
+// not a's b.c, whichever order sources are visited in
+// (Codex P2 on PR #8632).
+func TestVirtualDottedNamesDoNotCollide(t *testing.T) {
+	aTools := []mcpclient.Tool{
+		{Name: "x", Description: "a x", InputSchema: json.RawMessage(`{"type":"object","properties":{"who_a_x":{"type":"string"}}}`)},
+		{Name: "b.c", Description: "a b.c", InputSchema: json.RawMessage(`{"type":"object","properties":{"who_a_bc":{"type":"string"}}}`)},
+	}
+	abTools := []mcpclient.Tool{
+		{Name: "c", Description: "a.b c", InputSchema: json.RawMessage(`{"type":"object","properties":{"who_ab_c":{"type":"string"}}}`)},
+	}
+	a := newEchoUpstream(t, "a", aTools)
+	ab := newEchoUpstream(t, "a.b", abTools)
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"a":   {Name: "a", URL: a.URL},
+		"a.b": {Name: "a.b", URL: ab.URL},
+		"combo": {Name: "combo", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"first": {From: "a.b.c"},
+			"last":  {From: "a.x"},
+		}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	r.pools["a"].SetSchemas(aTools, nil, nil, "", now, now.Add(10*time.Minute), false)
+	r.pools["a.b"].SetSchemas(abTools, nil, nil, "", now, now.Add(10*time.Minute), false)
+	for _, ti := range r.Tools([]string{"combo"}) {
+		if ti.Tool == "first" {
+			if !strings.Contains(string(ti.InputSchema), "who_ab_c") || strings.Contains(string(ti.InputSchema), "who_a_bc") {
+				t.Errorf("first must carry a.b's c schema, got %s", ti.InputSchema)
+			}
+		}
+		if ti.Tool == "last" && !strings.Contains(string(ti.InputSchema), "who_a_x") {
+			t.Errorf("last must carry a's x schema, got %s", ti.InputSchema)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := r.Call(ctx, "combo", "first", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("call first: %v", err)
+	}
+	if !strings.Contains(string(res), "a.b") || !strings.Contains(string(res), `\"tool\":\"c\"`) && !strings.Contains(string(res), `"tool":"c"`) {
+		t.Errorf("first must route to a.b's c: %s", res)
+	}
+}
