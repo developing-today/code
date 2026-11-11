@@ -49,7 +49,7 @@ use super::history::{HistoryAnswer, HistoryError, HistoryMode, HistoryRequest, a
 use super::ordering::{Envelope, MAX_PARENTS, Orderer};
 use super::roster::Roster;
 use crate::groups::{GroupView, Key, Policy};
-use crate::rejection::Reason;
+use id_core::rejection::Reason;
 
 /// The name the group policy gives this scheme.
 pub const DATASCHEME: &str = "datascheme";

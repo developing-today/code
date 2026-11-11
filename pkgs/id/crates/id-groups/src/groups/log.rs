@@ -7,7 +7,7 @@
 //! comes after every event before it. The fold needs that: it refuses an `after` it cannot place.
 //!
 //! Events are not signed here. The caller names the author, and the log is trusted as the file the
-//! node keeps. Signature checks belong to the event store (see [`crate::chain`]).
+//! node keeps. Signature checks belong to the event store (see [`id_store::chain`]).
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -20,10 +20,6 @@ use p2panda_core::Hash;
 
 use super::fold::{FoldError, Outcome, Projection, fold};
 
-/// The serde adapters for the group model types, re-exported from
-/// `id-events` (step 2b of the crate split, #4405): the model they
-/// serialize moved down with the fold, and the adapters moved with it.
-pub(crate) use id_events::groups::wire;
 use super::{Body, Event, Key};
 
 /// The file a node keeps its group log in, under its data directory.

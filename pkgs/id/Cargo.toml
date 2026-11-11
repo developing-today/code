@@ -16,14 +16,14 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
-members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-sync", "crates/id-native-shell"]
+members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-native-shell"]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
 exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
-default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-sync"]
+default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync"]
 
 # =============================================================================
 # Features
@@ -80,6 +80,9 @@ id-events = { path = "crates/id-events", default-features = false }
 # Sync-family modules extracted in step 3 of the crate split (#4406).
 # Re-exported at their historical crate:: paths in src/lib.rs.
 id-sync = { path = "crates/id-sync", default-features = false }
+# Groups-family modules extracted in step 4 of the crate split (#4407).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-groups = { path = "crates/id-groups", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -111,11 +114,9 @@ p2panda-sync = { path = "vendor/p2panda-sync" }
 p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
   "serde",
 ] }
-# DataScheme group encryption (P4.1, src/encryption/). `data_scheme` is on because the adapter is the
-# scheme. `test_utils` and `message_scheme` stay off: the adapter brings its own orderer and membership.
-p2panda-encryption = { path = "vendor/p2panda-encryption", default-features = false, features = [
-  "data_scheme",
-] }
+# DataScheme group encryption (P4.1) moved to id-groups in step 4 of the
+# crate split (#4407): the vendored p2panda-encryption dependency is
+# declared there now, with the same features.
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 redb = "=4.3.0"

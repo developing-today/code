@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::ordering::Envelope;
-use crate::world_session::MAX_FRAME_BYTES;
+use id_core::frames::MAX_FRAME_BYTES;
 
 /// Bytes a chunk spends on everything but its payload: its position, the total, the two digests
 /// and their CBOR framing.
