@@ -80,6 +80,25 @@ export interface Incident {
   humanBlocked: boolean;
   /** Surfacing flag the stewardship/orchestration sweeps read. */
   surfacing: "none" | "human-blocked" | "escalate";
+  /** Rung-4 hand-off record (#6033), set once the escalation effects
+   *  have run for this incident. Its (source, class) pair is the dedupe
+   *  key: while it is present, no second queue task or incident issue
+   *  is created for the same failure. Absent/null = not yet escalated. */
+  escalation?: EscalationRecord | null;
+}
+
+/** What rung 4 created for one incident (#6033). */
+export interface EscalationRecord {
+  /** Failure class at escalation time — half of the dedupe pair. */
+  class: FailureClass;
+  /** When the escalation effects ran. */
+  since: string;
+  /** Fleet queue task id, or null if the enqueue has not confirmed. */
+  queueTaskId: string | null;
+  /** Repo owning the adapter (and therefore the incident issue). */
+  issueRepo: string;
+  /** Incident issue number, or null if creation has not confirmed. */
+  issueNumber: number | null;
 }
 
 /** What one tick saw for one source. */
@@ -389,6 +408,24 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
     }))
     .slice(-REPAIR_LOG_LIMIT);
   const incidentRaw = r.incident as Record<string, unknown> | null | undefined;
+  const escRaw = (incidentRaw?.escalation ?? null) as Record<string, unknown> | null;
+  const escalation: EscalationRecord | null =
+    typeof escRaw === "object" &&
+    escRaw !== null &&
+    FAILURE_CLASSES.includes(escRaw.class as FailureClass) &&
+    typeof escRaw.since === "string" &&
+    typeof escRaw.issueRepo === "string"
+      ? {
+          class: escRaw.class as FailureClass,
+          since: escRaw.since,
+          queueTaskId: typeof escRaw.queueTaskId === "string" ? escRaw.queueTaskId : null,
+          issueRepo: escRaw.issueRepo,
+          issueNumber:
+            typeof escRaw.issueNumber === "number" && Number.isFinite(escRaw.issueNumber)
+              ? escRaw.issueNumber
+              : null,
+        }
+      : null;
   const incident: Incident | null =
     typeof incidentRaw === "object" && incidentRaw !== null && typeof incidentRaw.id === "string"
       ? {
@@ -398,6 +435,7 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
           surfacing: (["none", "human-blocked", "escalate"].includes(incidentRaw.surfacing as string)
             ? incidentRaw.surfacing
             : "none") as Incident["surfacing"],
+          escalation,
         }
       : null;
   return {
