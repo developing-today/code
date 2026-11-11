@@ -3049,7 +3049,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Terra #low, Spark contributor #high, Gemini 3.8 Flash #medium, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
+        "name": "Workhorse weighted - Luna #high, Spark contributor #high, Gemini 3.8 Flash #medium, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -3164,15 +3164,24 @@
         // vs high II 30.8 - same pool band, faster first token).
         // The other two members (Spark contributor #high, Claude
         // Sonnet 5.5 #medium) are untouched.
+        // 2026-11-11 (Drew, direct order): the OpenAI seat switches
+        // BACK from Terra #low to Luna #high - openai-plan/gpt-6-luna#high
+        // at the same weight 10, same openai-plan door (_openai.alt +
+        // _openai.main, server-side round-robin). This reverses the
+        // 2026-11-10 seat change above. Reason: Terra burned the OpenAI
+        // weekly buckets faster - after the code#8653 fix it was the
+        // only serving leg in the chain, and the alt door weekly jumped
+        // 81% -> 89% in 30 minutes; Luna is also the lighter model per
+        // request. The other three members are untouched.
         "targets": [
-          "openai-plan/gpt-6.1-terra#low",
+          "openai-plan/gpt-6-luna#high",
           "_muse/muse-spark-1.3-contributor#high",
           "_antigravity/gemini-3.8-flash#medium",
           "_antigravity/claude-sonnet-5-5#medium"
         ],
         "selection": "weighted",
         "weights": {
-          "openai-plan/gpt-6.1-terra": 10,
+          "openai-plan/gpt-6-luna": 10,
           "_muse/muse-spark-1.3-contributor": 10,
           "_antigravity/gemini-3.8-flash": 10,
           "_antigravity/claude-sonnet-5-5": 10
