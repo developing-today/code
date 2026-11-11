@@ -46,6 +46,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import { AA_PLAN_FACTS } from "./aa.ts";
 import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
@@ -58,7 +59,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, filterAttentionViewByRefs, projectPace, type RoadmapGrain } from "./derive.ts";
+import { allRefs, buildAttention, buildQuotaActions, deriveToday, filterAttentionViewByRefs, projectPace, quotaActionTierItems, type RoadmapGrain } from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -789,8 +790,19 @@ async function attentionContext(opts: { census?: boolean } = {}) {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
+  const quota = await source.quota().catch(() => null);
+  const view = buildAttention(feed, summary, Date.now(), diagnosis, watchdog);
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /today, as orchestrator-tier task items — derived once here from
+  // the same pure function, so entries clear on every surface the
+  // moment their source condition no longer holds.
+  const quotaItems = quota ? quotaActionTierItems(buildQuotaActions(quota, AA_PLAN_FACTS)) : [];
+  if (quota) {
+    view.orchestratorExtra = [...view.orchestratorExtra, ...quotaItems];
+  }
   return {
-    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    view,
+    quotaItems,
     coverage,
     orchestration: summary,
     diagnosis,
@@ -2196,11 +2208,16 @@ async function handler(req: Request): Promise<Response> {
     // HTML renders — the array shape itself is unchanged (Codex P2
     // on PR #2431). #3317: include non-session needs-drew items too,
     // matching the full queue rendered by the attention page.
-    const { view } = await attentionContext();
+    const { view, quotaItems } = await attentionContext();
     return json([
       ...view.all,
       ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
       ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+      // #1174 (Codex P2, PR #4695): the synthesized quota tasks ride along
+      // in the same TierItem shape — this endpoint is the machine-first
+      // interface the attention page advertises, so the quota tasks must
+      // be discoverable here, not only in the HTML orchestrator tier.
+      ...quotaItems.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
     ]);
   }
   if (path === "/api/coverage.json") {

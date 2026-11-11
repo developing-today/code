@@ -606,6 +606,14 @@ export interface AaPlanFact {
   /** List-rate dollars of usage per $1 paid, when the plan meters so. */
   multiplier: number | null;
   note: string;
+  /** Typed cancellation source data (#1174): the plan is cancelled and
+   *  its paid period ends on this ISO date. The quota-action derivation
+   *  (buildQuotaActions) reads THESE fields — never the note prose —
+   *  so update them with the registry when a plan changes. */
+  cancelled?: boolean;
+  periodEndsAt?: string;
+  /** Concrete next step while the cancelled period still has time left. */
+  renewalAction?: string;
 }
 
 export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {

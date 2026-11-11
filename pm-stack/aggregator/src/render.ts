@@ -6,6 +6,7 @@ import {
   type RoadmapGrain,
   type TodayView,
   allRefs,
+  buildQuotaActions,
   commentStream,
   executionStrip,
   freshness,
@@ -43,7 +44,7 @@ import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCo
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { activityCoverageHtml, gapsHtml, type ActivityCoverage, type GapRecord } from "./activity.ts";
 import type { AuditEvent } from "./events.ts";
-import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import { AA_PLAN_FACTS, aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import {
   applyInequalityFilters,
   bandIndex,
@@ -3438,6 +3439,7 @@ export function renderTodayBody(
   queueStale = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  const quotaActions = buildQuotaActions(quota, AA_PLAN_FACTS);
   // "-direct" display rule (#6125), judged over this view's pool set.
   const poolDisplayNames = providerDisplayNames(quota.pools.map((p) => p.provider));
   const displayPoolProvider = (name: string) => poolDisplayNames.get(name) ?? name;
@@ -3448,9 +3450,17 @@ export function renderTodayBody(
       `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} in the user queue</strong> — <a href="/attention#drew">review them</a></div>`,
     );
   }
-  if (walled.length) {
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /attention's orchestrator tier, derived once above — never a
+  // second list. Walled pools without a typed action still banner.
+  for (const a of quotaActions) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Quota action:</strong> ${esc(a.title)} — ${esc(a.detail)} <a href="${esc(a.href)}">quota</a></div>`,
+    );
+  }
+  for (const p of walled.filter((p) => !quotaActions.some((a) => a.poolId === p.id))) {
+    alerts.push(
+      `<div class="banner"><strong>Walled pools:</strong> ${esc(`${displayPoolProvider(p.provider)} (${p.plan})`)} — <a href="/quota">quota</a></div>`,
     );
   }
   const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
@@ -3481,13 +3491,19 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  const quotaObjectives = quotaActions.map((a) => ({
+    title: a.title,
+    detail: a.detail,
+    chip: "quota · action",
+  }));
+  const allObjectives = [...today.objectives, ...quotaObjectives];
   // #6174: an objective ref comes from publisher lined-up data and is
   // only sometimes a GitHub ref — tracked-goal items carry their goal id,
   // and refUrl throws on those, which 500ed the whole /today render (the
   // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
   // GitHub refs link, everything else renders as plain code.
-  const objectives = today.objectives.length
-    ? today.objectives
+  const objectives = allObjectives.length
+    ? allObjectives
         .map(
           (o, i) =>
             `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
