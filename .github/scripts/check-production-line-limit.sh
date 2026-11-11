@@ -31,9 +31,6 @@ declare -A GRANDFATHERED=(
   # 5,325 production lines when the guard landed; split tracked by
   # https://github.com/developing-today/code/issues/4704
   ["pkgs/id/src/web/markdown.rs"]="https://github.com/developing-today/code/issues/4704"
-  # 2,821 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4717
-  ["pkgs/id/src/world_session/mod.rs"]="https://github.com/developing-today/code/issues/4717"
 )
 
 # Count production lines of one file: every line that is not part of
