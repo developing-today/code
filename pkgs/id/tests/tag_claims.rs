@@ -10,8 +10,8 @@
 //!    removes it when the frontier's events saw it.
 //! 5. The live set is the same under any delivery order, with duplicates.
 //!
-//! The oracle for 5 is the author's own record. Each writer knows which events it had seen when it
-//! wrote a clear, so the expected live set is computed from those records, not from the causal walk.
+//! The fold oracle uses each writer's own record of its causal past. The store oracle adds the
+//! default-view rule: without a group owner on these subjects, only a claim's author may clear it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -78,6 +78,8 @@ impl Writer {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
+            chat: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
@@ -139,8 +141,7 @@ fn test_a_clear_removes_the_claim_its_author_saw() {
     let mut a = Writer::new(1);
     let seen = a.send(&set(subject, "city", Some("Seattle")), vec![], 0);
     let kept = a.send(&set(subject, "name", None), vec![seen.id()], 0);
-    let mut b = Writer::new(2);
-    let cleared = b.send(&clear(&[seen.id()]), vec![kept.id()], 1);
+    let cleared = a.send(&clear(&[seen.id()]), vec![kept.id()], 0);
 
     let (_dir, mut store) = open();
     for sent in [&seen, &kept, &cleared] {
@@ -185,15 +186,14 @@ fn test_a_clear_of_an_unseen_claim_does_nothing_to_it() {
 
 #[test]
 fn test_a_clear_removes_a_claim_its_frontier_reaches_only_through_another_author() {
-    // Regression for the whole-causal-past clock (S8). `c` saw `x` through `y`, and its frontier
+    // Regression for the whole-causal-past clock (S8). `a` saw `x` through `y`, and its frontier
     // names only `y`. A frontier-only clock would leave `x` live.
     let (s1, s2) = (Hash::digest(b"one"), Hash::digest(b"two"));
     let mut a = Writer::new(1);
     let mut b = Writer::new(2);
-    let mut c = Writer::new(3);
     let x = a.send(&set(s1, "city", Some("Seattle")), vec![], 0);
     let y = b.send(&set(s2, "seen", None), vec![x.id()], 1);
-    let removes_x = c.send(&clear(&[x.id()]), vec![y.id()], 2);
+    let removes_x = a.send(&clear(&[x.id()]), vec![y.id()], 0);
 
     let (_dir, mut store) = open();
     for sent in [&x, &y, &removes_x] {
@@ -208,8 +208,7 @@ fn test_a_clear_delivered_before_the_claim_it_names_still_removes_it() {
     let mut a = Writer::new(1);
     let seen = a.send(&set(subject, "city", Some("Seattle")), vec![], 0);
     let kept = a.send(&set(subject, "name", None), vec![seen.id()], 0);
-    let mut b = Writer::new(2);
-    let cleared = b.send(&clear(&[seen.id()]), vec![kept.id()], 1);
+    let cleared = a.send(&clear(&[seen.id()]), vec![kept.id()], 0);
 
     let (_dir, mut store) = open();
     for sent in [&cleared, &kept, &seen] {
@@ -267,6 +266,8 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         note: None,
         link: None,
         checkpoint: None,
+        rotation: None,
+        chat: None,
     };
     assert!(sign(&a.key, 0, None, None, mismatch).is_err());
     let missing = ChainExt {
@@ -279,6 +280,8 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         note: None,
         link: None,
         checkpoint: None,
+        rotation: None,
+        chat: None,
     };
     assert!(sign(&a.key, 0, None, None, missing).is_err());
 }
@@ -307,7 +310,10 @@ impl Rng {
 /// A generated history: its events in the order they were written, and the expected live set.
 struct History {
     events: Vec<Sent>,
+    /// The pure observed-remove fold, before default-view role filtering.
     expected: BTreeSet<[u8; 32]>,
+    /// The default view: only the claim author may clear these ungrouped test subjects.
+    default_expected: BTreeSet<[u8; 32]>,
     /// For each event, the events its author had seen when it wrote it.
     written: Vec<(Hash, HashSet<Hash>)>,
 }
@@ -332,7 +338,7 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
     let mut events: Vec<Sent> = Vec::new();
     let mut sets: Vec<Sent> = Vec::new();
     // Each clear's named claims, and the claims its author had seen when it wrote it.
-    let mut clears: Vec<(Vec<Hash>, HashSet<Hash>)> = Vec::new();
+    let mut clears: Vec<(Vec<Hash>, HashSet<Hash>, AuthorKey)> = Vec::new();
     let mut written: Vec<(Hash, HashSet<Hash>)> = Vec::new();
 
     for _ in 0..steps {
@@ -360,15 +366,22 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
                     continue;
                 }
                 let named_count = 1 + rng.below(3);
-                let named: Vec<Hash> = (0..named_count)
-                    .map(|_| sets[rng.below(sets.len())].id())
-                    .collect();
+                // A clear naming a claim twice is invalid input since #4765 (the store
+                // refuses it in check_op), so the generator must not produce one: pick
+                // without replacement.
+                let mut named: Vec<Hash> = Vec::new();
+                for _ in 0..named_count {
+                    let id = sets[rng.below(sets.len())].id();
+                    if !named.contains(&id) {
+                        named.push(id);
+                    }
+                }
                 let seen: HashSet<Hash> = known[w].values().map(Sent::id).collect();
                 let after = frontier(&known[w], count);
                 let sent = writers[w].send(&clear(&named), after, w);
                 known[w].insert(*sent.id().as_bytes(), sent.clone());
                 written.push((sent.id(), seen.clone()));
-                clears.push((named, seen));
+                clears.push((named, seen, sent.author));
                 events.push(sent);
             }
         }
@@ -377,16 +390,33 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
     // The oracle: a set is live unless a clear names it and its author had seen it.
     let removed: HashSet<Hash> = clears
         .iter()
-        .flat_map(|(named, seen)| named.iter().filter(|id| seen.contains(id)).copied())
+        .flat_map(|(named, seen, _)| named.iter().filter(|id| seen.contains(id)).copied())
+        .collect();
+    let claim_authors: HashMap<Hash, AuthorKey> =
+        sets.iter().map(|sent| (sent.id(), sent.author)).collect();
+    let default_removed: HashSet<Hash> = clears
+        .iter()
+        .flat_map(|(named, seen, clear_author)| {
+            named
+                .iter()
+                .filter(|id| seen.contains(id) && claim_authors.get(id) == Some(clear_author))
+                .copied()
+        })
         .collect();
     let expected = sets
         .iter()
         .filter(|sent| !removed.contains(&sent.id()))
         .map(|sent| *sent.id().as_bytes())
         .collect();
+    let default_expected = sets
+        .iter()
+        .filter(|sent| !default_removed.contains(&sent.id()))
+        .map(|sent| *sent.id().as_bytes())
+        .collect();
     History {
         events,
         expected,
+        default_expected,
         written,
     }
 }
@@ -448,7 +478,7 @@ proptest! {
                 let outcome = store.ingest(&sent.event.bytes, 0).unwrap();
                 prop_assert!(!matches!(outcome, Ingest::Refused(_)), "refused: {outcome:?}");
             }
-            prop_assert_eq!(live(&store), history.expected.clone());
+            prop_assert_eq!(live(&store), history.default_expected.clone());
         }
     }
 }
@@ -518,7 +548,11 @@ fn test_the_regression_histories_reach_the_oracle_through_every_path() {
         for sent in &history.events {
             deliver(&mut store, sent);
         }
-        assert_eq!(live(&store), history.expected, "seed {seed}: the store");
+        assert_eq!(
+            live(&store),
+            history.default_expected,
+            "seed {seed}: the store"
+        );
 
         let applied: Vec<Applied> = history
             .events

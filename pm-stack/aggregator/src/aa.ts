@@ -223,8 +223,7 @@ export function mergeOpencodeConfigTexts(baseText: string, overlayText: string):
     return null;
   }
   if (typeof base !== "object" || base === null || typeof overlay !== "object" || overlay === null) return null;
-  const isObj = (v: unknown): v is Record<string, unknown> =>
-    typeof v === "object" && v !== null && !Array.isArray(v);
+  const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const merge = (b: unknown, o: unknown): unknown => {
     if (!isObj(b) || !isObj(o)) return o;
     const out: Record<string, unknown> = { ...b };
@@ -625,6 +624,11 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: 6,
     note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×).",
   },
+  "_commandcode": {
+    plan: "Command Code GOAT",
+    multiplier: 7,
+    note: "0/mo → 0 credits (7×); the entry Go tier is  → 0 credits (10×). Tier on the account is unconfirmed.",
+  },
   commandcode: {
     plan: "Command Code GOAT",
     multiplier: 7,
@@ -644,6 +648,11 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     plan: "ChatGPT plan (student)",
     multiplier: null,
     note: "Second ChatGPT account door; resolves through the fork's built-in catalog.",
+  },
+  "_claude": {
+    plan: "Claude plan",
+    multiplier: null,
+    note: "Claude Code door — the fork's fleet-built _claude provider (renamed from claude-code 2026-11-07, #1823).",
   },
   "claude-code": {
     plan: "Claude plan",
@@ -1126,9 +1135,8 @@ export function aaSectionFromSupabase(
     // (tracked default + runtime overlay) so the sync-owned providers'
     // models stay visible after the split.
     const effectiveText =
-      (opencodeRuntimeText
-        ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText)
-        : null) ?? opencodeConfigText;
+      (opencodeRuntimeText ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText) : null) ??
+      opencodeConfigText;
     const inputs = parseOpencodeCoverageInputs(effectiveText);
     if (inputs) coverage = computeAaCoverage(measuredNames, inputs);
     catalog = aaCatalogFromConfig(effectiveText, { configs, rankings }, prices) ?? undefined;
@@ -1147,6 +1155,37 @@ export function aaSectionFromSupabase(
     ...(cai && cai.length ? { cai } : {}),
     ...(prices && prices.length ? { prices } : {}),
   };
+}
+
+/**
+ * Re-derive a section's current-price overlay from `prices` (#8211).
+ *
+ * The batch-bound payload (rankings, configs, thresholds, test runs,
+ * sources, cai, coverage, catalog membership) is untouched; only the
+ * two price-derived facets move: the section's `prices` list and each
+ * catalog entry's `rate`, recomputed through the same lookup
+ * `aaCatalogFromConfig` uses (full id, then bare model part). This is
+ * what lets a cached historical batch report current rates at serve
+ * time without refetching any of its batch-bound measurements: the
+ * overlay is batch-independent by definition (`v_current_prices`), so
+ * freezing it into the per-batch cache was the defect. The input
+ * section is not mutated.
+ */
+export function aaApplyPriceOverlay(section: AaSection, prices: AaPrice[]): AaSection {
+  const rates = catalogRates(prices);
+  const out: AaSection = { ...section };
+  if (section.catalog) {
+    out.catalog = section.catalog.map((entry) => ({
+      ...entry,
+      rate: rates.get(entry.id) ?? rates.get(`part:${normalizeModelName(modelPart(entry.id))}`) ?? null,
+    }));
+  }
+  if (prices.length) {
+    out.prices = [...prices];
+  } else {
+    delete out.prices;
+  }
+  return out;
 }
 
 /** Structural check shared by the collector and the live source. */
@@ -1169,7 +1208,11 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) =>
         typeof r === "object" &&
         r !== null &&
-        (typeof (r as { snapshotDate?: unknown }).snapshotDate === "string" ||
+        // #5289: snapshotDate is a date, not just a string — summarizeAa
+        // publishes these values verbatim as the batch's snapshot vintage,
+        // so gate them with isIsoDate like generatedAt above (date-only
+        // forms pass; impossible/non-ISO strings degrade the section).
+        (isIsoDate((r as { snapshotDate?: unknown }).snapshotDate) ||
           (r as { snapshotDate?: unknown }).snapshotDate === null),
     ) &&
     // #2415: summarizeAa iterates thresholds and the /aa renderer maps

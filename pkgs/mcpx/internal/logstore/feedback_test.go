@@ -12,7 +12,7 @@ func TestFeedbackStoreOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFeedbackStore: %v", err)
 	}
-	defer fs.Close()
+	defer func() { _ = fs.Close() }()
 
 	rec := InteractionRecord{
 		TraceID:   "trc-12345",

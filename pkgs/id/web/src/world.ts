@@ -85,19 +85,15 @@ function initWorld(): void {
   const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
+  // The host controls (admin token, invite minting, module install,
+  // host view) are optional: the program-only surface (#2146 phase 2)
+  // renders a guest page without them, and their wiring below is
+  // guarded. The guest surface itself stays required.
   if (
     !name ||
-    !admin ||
     !capability ||
     !worldInput ||
-    !inviteButton ||
-    !moduleInput ||
-    !sourceInput ||
-    !moduleSeed ||
-    !installButton ||
-    !compileButton ||
     !joinButton ||
-    !hostViewButton ||
     !chatForm ||
     !chatInput ||
     !inputForm ||
@@ -119,6 +115,9 @@ function initWorld(): void {
   const worldSocketPath = root.dataset.worldSocket ?? "/ws/world";
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
+  // A program-only surface (#2146 phase 2) pins its world server-side:
+  // the rendered data-world-program wins over the ?world= parameter.
+  if (root.dataset.worldProgram) worldInput.value = root.dataset.worldProgram;
   // The world a request is addressed to; `null` means the server's default.
   const selectedWorld = (): string | null => worldInput.value.trim() || null;
 
@@ -392,6 +391,7 @@ function initWorld(): void {
   recordsRefresh.addEventListener("click", requestRecords);
 
   refreshHostView = async () => {
+    if (!admin || !hostViewButton) return;
     const secret = admin.value.trim();
     if (!secret) {
       setStatus("Enter the world admin token to view as host", "error");
@@ -480,7 +480,7 @@ function initWorld(): void {
       hostViewButton.disabled = false;
     }
   };
-  hostViewButton.addEventListener("click", () => void refreshHostView());
+  hostViewButton?.addEventListener("click", () => void refreshHostView());
 
   const connect = () => {
     const token = capability.value.trim();
@@ -543,7 +543,8 @@ function initWorld(): void {
     });
   };
 
-  inviteButton.addEventListener("click", async () => {
+  inviteButton?.addEventListener("click", async () => {
+    if (!admin || !inviteButton) return;
     const secret = admin.value;
     if (!secret) {
       setStatus("Enter the world admin token to create an invite", "error");
@@ -574,7 +575,8 @@ function initWorld(): void {
     }
   });
 
-  installButton.addEventListener("click", () => {
+  installButton?.addEventListener("click", () => {
+    if (!admin || !installButton || !moduleInput || !moduleSeed) return;
     const secret = admin.value;
     const file = moduleInput.files?.[0];
     if (!secret) {
@@ -635,7 +637,12 @@ function initWorld(): void {
       if (frame.type === "upload_ready" && !uploadStarted) {
         uploadStarted = true;
         const chunkBytes = frame.chunk_bytes;
-        if (typeof chunkBytes !== "number" || !Number.isInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > 6 * 1024) {
+        if (
+          typeof chunkBytes !== "number" ||
+          !Number.isInteger(chunkBytes) ||
+          chunkBytes < 1 ||
+          chunkBytes > 6 * 1024
+        ) {
           setStatus("Host returned an invalid module chunk size", "error");
           upload.close();
           return;
@@ -671,7 +678,8 @@ function initWorld(): void {
     });
   });
 
-  compileButton.addEventListener("click", async () => {
+  compileButton?.addEventListener("click", async () => {
+    if (!admin || !compileButton || !sourceInput || !moduleSeed) return;
     const secret = admin.value;
     const selected = Array.from(sourceInput.files ?? []);
     if (!secret) {

@@ -29,7 +29,7 @@ const (
 // that already looks like the sentinel, which would otherwise be decoded into
 // something the client never sent.
 func Encode(v string) string {
-	if Safe(v) && !(strings.HasPrefix(v, SentinelPrefix) && strings.HasSuffix(v, SentinelSuffix)) {
+	if Safe(v) && (!strings.HasPrefix(v, SentinelPrefix) || !strings.HasSuffix(v, SentinelSuffix)) {
 		return v
 	}
 	return SentinelPrefix + base64.StdEncoding.EncodeToString([]byte(v)) + SentinelSuffix

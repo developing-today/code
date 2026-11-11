@@ -109,7 +109,7 @@ async fn request_over_with_timeout(
         send.write_all(&postcard::to_allocvec(req)?).await?;
         send.finish()?;
         let buf = read_capped_response_unbounded(&mut recv).await?;
-        postcard::from_bytes(&buf).context("decoding meta response")
+        crate::protocol::decode_meta_exact(&buf).context("decoding meta response")
     })
     .await
 }
@@ -182,7 +182,7 @@ impl MetaRequester for MetaClient {
 mod tests {
     use super::*;
     use crate::MatchKind;
-    use crate::protocol::FindMatch;
+    use crate::protocol::{FindMatch, ListEntry};
     use iroh::{RelayMode, TransportAddr, endpoint::presets};
     use iroh_blobs::Hash;
     use std::net::Ipv4Addr;
@@ -341,8 +341,13 @@ mod tests {
     /// the shape of store (15–25k items) that could not be listed at all.
     #[tokio::test(flavor = "multi_thread")]
     async fn list_response_larger_than_1_mib_reads_through() {
-        let items: Vec<(Hash, String)> = (0..30_000)
-            .map(|i| (Hash::from_bytes([9u8; 32]), format!("file-{i:05}.txt")))
+        let items: Vec<ListEntry> = (0..30_000)
+            .map(|i| ListEntry {
+                hash: Hash::from_bytes([9u8; 32]),
+                name: format!("file-{i:05}.txt"),
+                origin: None,
+                uploaded_at: None,
+            })
             .collect();
         let payload = postcard::to_allocvec(&MetaResponse::List { items }).unwrap();
         assert!(
@@ -363,7 +368,7 @@ mod tests {
         match resp {
             MetaResponse::List { items } => {
                 assert_eq!(items.len(), 30_000);
-                assert_eq!(items[29_999].1, "file-29999.txt");
+                assert_eq!(items[29_999].name, "file-29999.txt");
             }
             _ => panic!("unexpected response"),
         }

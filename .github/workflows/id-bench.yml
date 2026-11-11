@@ -56,6 +56,7 @@ jobs:
       # Same store cache as the PR gate, so the bench build starts warm
       # (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's

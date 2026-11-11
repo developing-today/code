@@ -88,7 +88,7 @@ describe("buildHealth checkout surfacing", () => {
   function inputs(feed: FleetFeed | null): HealthInputs {
     return {
       mode: "live",
-      cfg: loadConfig({}),
+      cfg: loadConfig({ PM_AGG_DEV: "1" }),
       feed,
       feedFileMtimeMs: null,
     };
@@ -103,25 +103,34 @@ describe("buildHealth checkout surfacing", () => {
   }
 
   test("a feed without a checkout report surfaces unknown-with-reason", async () => {
-    const view = await buildHealth(inputs(feedWith()), { fetcher, cache: createProbeCache(), now: NOW, rfaState: rfaUp });
+    const view = await buildHealth(inputs(feedWith()), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
     expect(view.feed.checkout.state).toBe("unknown");
     expect(view.feed.checkout.reason).toContain("did not report");
   });
 
   test("behind drift is surfaced verbatim and marks the view degraded", async () => {
-    const view = await buildHealth(
-      inputs(feedWith({ state: "behind", head: HEAD, originMain: MAIN, behindBy: 3 })),
-      { fetcher, cache: createProbeCache(), now: NOW, rfaState: rfaUp },
-    );
+    const view = await buildHealth(inputs(feedWith({ state: "behind", head: HEAD, originMain: MAIN, behindBy: 3 })), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
     expect(view.feed.checkout).toEqual({ state: "behind", head: HEAD, originMain: MAIN, behindBy: 3 });
     expect(view.degraded).toBe(true);
   });
 
   test("in-sync drift does not degrade on its own", async () => {
-    const view = await buildHealth(
-      inputs(feedWith({ state: "in-sync", head: HEAD, originMain: HEAD, behindBy: 0 })),
-      { fetcher, cache: createProbeCache(), now: NOW, rfaState: rfaUp },
-    );
+    const view = await buildHealth(inputs(feedWith({ state: "in-sync", head: HEAD, originMain: HEAD, behindBy: 0 })), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
     expect(view.feed.checkout.state).toBe("in-sync");
     expect(view.degraded).toBe(false);
   });

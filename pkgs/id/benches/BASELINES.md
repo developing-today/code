@@ -98,8 +98,8 @@ proof of a regression.
 
 The slice-2 `guest_replay` line above (median=0.146) was measured with a
 harness whose guest saw **zero** events: the journal was built from
-committed *chat* events, and `WorldCore::restore` applies committed chat
-to core state directly — only committed *input* (and journal system)
+committed _chat_ events, and `WorldCore::restore` applies committed chat
+to core state directly — only committed _input_ (and journal system)
 events are put in `RestoredWorld.replay`. The old number was therefore
 restore-only time divided by N, mislabeled as guest replay.
 
@@ -150,4 +150,38 @@ and end-to-end acknowledgements averaged 1,523.1/s versus the scheduled
 2,000/s. This result is recorded rather than reported as acceptance; #557's
 latency criterion remains open for follow-up. The matching measurement is
 appended to `baseline.txt`; the four existing F11.8 baselines above are
+unchanged.
+
+## Fuel-spin isolation measurement (#1067, F12.10 exit criterion)
+
+The `fuel_spin_isolation` workload measures one victim counter world
+accepting inputs at 100 commands/s in two 3-second phases (300 scheduled
+inputs each): first calm, then while hostile Wasm worlds spin. Each
+hostile world runs a guest whose update loops until its fuel budget
+(20,000,000 per spin) is exhausted and traps; a trapping call poisons
+the instance, so every spin runs in a freshly instantiated world, and
+the harness asserts that every spin ended in fuel exhaustion. Samples
+are deadline-to-acknowledgement latencies, so a late acknowledgement
+stays in the sample. `--quick` is a smoke configuration only (750 ms
+phases, at most 4 spinners); its output is never a baseline - it passed
+on 2026-11-10 with 75/75 samples in both phases and 556 exhausted
+spins.
+
+Reference measurement (2026-11-10; rustc 1.99.0, cargo 1.99.0; AMD
+Ryzen 7 7840U, 16 threads, Linux 6.18.60, NixOS; the laptop was under
+shared fleet load during the run):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=2.084 min=0.428 reps=1 victim_p99_ms_calm=3.159 victim_p99_ms_spinning=7.952 ratio=2.517 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1821 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.116
+```
+
+The F12.10 target did **not** pass: with 15 spinners saturating the
+remaining worker threads, the victim's p99 rose from 3.159 ms calm to
+7.952 ms spinning - a ratio of 2.517 against `target_ratio=1.10`, with
+1,821 fuel-exhausted spins observed during the phase and all 300
+scheduled victim inputs acknowledged in each phase. This records the
+gap the fair-scheduling work in #1067 has to close; the workload
+implements no scheduler, quota, or back-pressure, and this result is
+recorded rather than reported as acceptance. The matching measurement
+is appended to `baseline.txt`; the existing baselines above are
 unchanged.
