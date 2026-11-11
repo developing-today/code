@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -53,21 +54,53 @@ func plantSleeper(t *testing.T, dir string) *exec.Cmd {
 // Every fixture builder that creates a build temp dir must register it,
 // or the suite-wide guard silently misses that builder's dirs and any
 // process surviving from them (the class-wide coverage rule). The
-// oracle is the builder sources themselves: a new builder that creates
-// a mcpx-* temp dir without registering fails here.
+// oracle is the builder sources themselves, discovered rather than
+// listed: every non-test source file in this package is split into its
+// functions, and any builder function — one in a build*.go file, or
+// one whose name ends in Binary — that creates a mcpx-* temp dir must
+// contain its own registerBuildTempDir call. The check is per builder,
+// not per file: build.go holds two builders, and one of them dropping
+// its registration must fail here even though the other still has it.
 func TestEveryFixtureBuilderRegistersItsTempDir(t *testing.T) {
-	for _, file := range []string{"build.go", "build_era.go", "build_proto.go", "build_task.go"} {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	funcRe := regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?(\w+)`)
+	checked := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
 		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
 		src := string(raw)
-		if !strings.Contains(src, "os.MkdirTemp(\"\", \"mcpx-") {
-			continue
+		starts := funcRe.FindAllStringSubmatchIndex(src, -1)
+		for i, m := range starts {
+			name := src[m[2]:m[3]]
+			end := len(src)
+			if i+1 < len(starts) {
+				end = starts[i+1][0]
+			}
+			span := src[m[0]:end]
+			builder := strings.HasPrefix(file, "build") || strings.HasSuffix(name, "Binary")
+			if !builder || !strings.Contains(span, "os.MkdirTemp(\"\", \"mcpx-") {
+				continue
+			}
+			checked++
+			if !strings.Contains(span, "registerBuildTempDir(dir)") {
+				t.Fatalf("%s: builder %s creates a mcpx-* build temp dir but never calls registerBuildTempDir(dir); the suite sweep cannot see it", file, name)
+			}
 		}
-		if !strings.Contains(src, "registerBuildTempDir(dir)") {
-			t.Fatalf("%s creates a mcpx-* build temp dir but never calls registerBuildTempDir(dir); the suite sweep cannot see it", file)
-		}
+	}
+	// Discovery itself is under test: the five known fixture builders
+	// (FakeMCPBinary, MCPXBinary, EraMCPBinary, AskMCPBinary,
+	// TaskMCPBinary) must all be found, or the loop above checked
+	// nothing and passed vacuously.
+	if checked < 5 {
+		t.Fatalf("builder discovery found only %d mcpx-* temp-dir builders; the five known fixture builders must all be discovered", checked)
 	}
 }
 
