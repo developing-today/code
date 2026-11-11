@@ -832,6 +832,7 @@ mod tests {
             None,
             vec![None, Some("arena".to_owned())],
             None,
+            SeitanState::default(),
         )
         .await
         .unwrap();
