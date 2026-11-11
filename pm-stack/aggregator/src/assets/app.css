@@ -5130,11 +5130,6 @@ pre {
   border-color: #d29922;
   color: #e3b341;
 }
-.badge.lapsed {
-  background: #6e768133;
-  border-color: #6e7681;
-  color: #8b949e;
-}
 .badge.conflict {
   background: #bc8cff33;
   border-color: #bc8cff;
@@ -6024,6 +6019,51 @@ nav {
 }
 .foot {
   padding-bottom: 8px;
+}
+.flow-scroll {
+  overflow-x: auto;
+}
+.flow-tp-bar {
+  fill: #58a6ff;
+}
+.flow-tp-value {
+  fill: #e6edf3;
+  font-size: 11px;
+}
+.flow-tp-week-label {
+  fill: #8b949e;
+  font-size: 9px;
+}
+.flow-axis {
+  stroke: #30363d;
+  stroke-width: 1;
+}
+.flow-tis-0 {
+  fill: #58a6ff;
+}
+.flow-tis-1 {
+  fill: #3fb950;
+}
+.flow-tis-2 {
+  fill: #d29922;
+}
+.flow-tis-3 {
+  fill: #bc8cff;
+}
+.flow-tis-4 {
+  fill: #f778ba;
+}
+.flow-tis-5 {
+  fill: #79c0ff;
+}
+html[data-theme="light"] .flow-tp-value {
+  fill: #1f2328;
+}
+html[data-theme="light"] .flow-tp-week-label {
+  fill: #59636e;
+}
+html[data-theme="light"] .flow-axis {
+  stroke: #d1d9e0;
 }
 @layer base {
   :where(:root),:root:has(input.theme-controller[value=dark]:checked),[data-theme=dark] {

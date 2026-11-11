@@ -35,16 +35,6 @@ pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
 maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>";
 
-fn is_empty(v: Option<&Value>) -> bool {
-    match v {
-        None | Some(Value::Null) => true,
-        Some(Value::String(s)) => s.is_empty(),
-        Some(Value::Array(a)) => a.is_empty(),
-        Some(Value::Object(o)) => o.is_empty(),
-        _ => false,
-    }
-}
-
 fn manual_schema_errors(p: &Value) -> Vec<String> {
     let mut errs = Vec::new();
     let obj = match p.as_object() {
@@ -70,13 +60,26 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         ));
     }
     for f in ["problem", "priority_reason"] {
-        if is_empty(get(f)) {
-            errs.push(format!("payload.{f}: required field missing or empty"));
+        match get(f) {
+            Some(Value::String(s)) if !s.is_empty() => {}
+            Some(Value::String(_)) | None => {
+                errs.push(format!("payload.{f}: required field missing or empty"))
+            }
+            // A non-string problem/priority_reason (123, {x:1}) used to pass
+            // is_empty and be forwarded verbatim (#6430).
+            Some(_) => errs.push(format!("payload.{f}: must be a non-empty string")),
         }
     }
     for f in ["evidence", "acceptance", "tests", "context_refs"] {
-        if !matches!(get(f), Some(Value::Array(_))) {
-            errs.push(format!("payload.{f}: must be a list"));
+        match get(f) {
+            Some(Value::Array(a)) => {
+                // Element types were never checked: [123], [null], [{x:1}]
+                // and [[t]] all validated and were forwarded verbatim (#6430).
+                if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                    errs.push(format!("payload.{f}: every element must be a string"));
+                }
+            }
+            _ => errs.push(format!("payload.{f}: must be a list")),
         }
     }
     for f in ["evidence", "acceptance", "tests"] {
@@ -88,19 +91,38 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     }
     match get("scope") {
         Some(Value::Object(scope)) => {
-            if !matches!(scope.get("include"), Some(Value::Array(_))) {
-                errs.push("payload.scope.include: must be a list".to_string());
+            match scope.get("include") {
+                Some(Value::Array(a)) => {
+                    if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                        errs.push(
+                            "payload.scope.include: every element must be a string".to_string(),
+                        );
+                    }
+                }
+                _ => errs.push("payload.scope.include: must be a list".to_string()),
             }
-            if is_empty(scope.get("exclude")) {
-                errs.push("payload.scope.exclude: required (scope exclusions)".to_string());
+            match scope.get("exclude") {
+                Some(Value::Array(a)) if !a.is_empty() => {
+                    if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                        errs.push(
+                            "payload.scope.exclude: every element must be a string".to_string(),
+                        );
+                    }
+                }
+                _ => errs.push("payload.scope.exclude: required (scope exclusions)".to_string()),
             }
         }
         _ => errs.push("payload.scope: must be an object with include/exclude".to_string()),
     }
     match get("risk") {
         Some(Value::Object(risk)) if matches!(risk.get("level"), Some(Value::String(l)) if ["low","medium","high"].contains(&l.as_str())) => {
-            if !matches!(risk.get("flags"), Some(Value::Array(_))) {
-                errs.push("payload.risk.flags: must be a list".to_string());
+            match risk.get("flags") {
+                Some(Value::Array(a)) => {
+                    if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                        errs.push("payload.risk.flags: every element must be a string".to_string());
+                    }
+                }
+                _ => errs.push("payload.risk.flags: must be a list".to_string()),
             }
         }
         _ => errs.push("payload.risk.level: must be low|medium|high".to_string()),
@@ -118,9 +140,12 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         }
     }
     let ded_ok = matches!(get("dedupe"), Some(Value::Object(d))
-        if !is_empty(d.get("checked_at")) && !is_empty(d.get("basis")));
+        if matches!(d.get("checked_at"), Some(Value::String(s)) if !s.is_empty())
+            && matches!(d.get("basis"), Some(Value::String(s)) if !s.is_empty()));
     if !ded_ok {
-        errs.push("payload.dedupe: must have checked_at and basis".to_string());
+        errs.push(
+            "payload.dedupe: must have checked_at and basis as non-empty strings".to_string(),
+        );
     }
     // Identity numbers are GitHub numbers: positive integers only. A
     // non-positive issue number names no issue, whatever the dedupe key
@@ -535,13 +560,24 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
         }
         Some(_) => errors.push("packet.priority: must be an integer".to_string()),
     }
-    if let Some(Value::String(body)) = obj.get("body") {
-        let words = body.split_whitespace().count();
-        if words > BODY_WARN_WORDS {
-            warnings.push(format!(
-                "packet.body: {words} words exceeds the ~{BODY_WARN_WORDS}-word design target"
-            ));
+    match obj.get("body") {
+        Some(Value::String(body)) if !body.trim().is_empty() => {
+            let words = body.split_whitespace().count();
+            if words > BODY_WARN_WORDS {
+                warnings.push(format!(
+                    "packet.body: {words} words exceeds the ~{BODY_WARN_WORDS}-word design target"
+                ));
+            }
         }
+        // Absent is valid, and null is its stored spelling:
+        // task_from_packet writes body:null for a body-less packet, and
+        // the claim guard (#5444) revalidates stored rows through this
+        // same function — a null body must not quarantine a task that
+        // enqueue accepted (Codex P1 on PR #8477).
+        None | Some(Value::Null) => {}
+        // body=12345/{x:1}/[a]/true and even body='' used to pass silently
+        // because the body was only read when it was a string (#6430).
+        Some(_) => errors.push("packet.body: must be a non-empty string".to_string()),
     }
     let size = serde_json::to_string(payload).map(|s| s.len()).unwrap_or(0);
     if size > PAYLOAD_MAX_BYTES {
@@ -762,6 +798,72 @@ mod tests {
                 .is_none()
         );
     }
+    fn valid_packet() -> Value {
+        json!({
+            "title": "t",
+            "body": "b",
+            "priority": 20,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:6430",
+            "payload": payload_with(json!({"issue": {"number": 6430}})),
+        })
+    }
+
+    #[test]
+    fn packet_string_fields_and_list_elements_are_type_checked() {
+        // Valid control: the well-typed packet still validates clean (#6430).
+        let (errors, _) = validate_packet(&valid_packet());
+        assert!(errors.is_empty(), "valid control errors: {errors:?}");
+
+        // A body-less packet validates, in both spellings: the key
+        // absent (enqueue form) and null (the stored-row form the claim
+        // guard revalidates, #5444 / PR #8477 Codex P1).
+        let mut no_body = valid_packet();
+        no_body.as_object_mut().unwrap().remove("body");
+        let (errors, _) = validate_packet(&no_body);
+        assert!(errors.is_empty(), "absent body errors: {errors:?}");
+        let mut null_body = valid_packet();
+        null_body["body"] = Value::Null;
+        let (errors, _) = validate_packet(&null_body);
+        assert!(errors.is_empty(), "null body errors: {errors:?}");
+
+        // The probe cases from issue #6430 (~/git/fleet/probe-queue-body):
+        // every malformed variant must now error, naming its field.
+        let cases: Vec<(&str, Value, &str)> = vec![
+            ("/body", json!(12345), "packet.body"),
+            ("/body", json!({"x": 1}), "packet.body"),
+            ("/body", json!(["a"]), "packet.body"),
+            ("/body", json!(true), "packet.body"),
+            ("/body", json!(""), "packet.body"),
+            ("/payload/problem", json!(123), "payload.problem"),
+            ("/payload/problem", json!({"x": 1}), "payload.problem"),
+            ("/payload/priority_reason", json!(123), "payload.priority_reason"),
+            ("/payload/dedupe/checked_at", json!(123), "payload.dedupe"),
+            ("/payload/dedupe/basis", json!(123), "payload.dedupe"),
+            ("/payload/evidence", json!([123]), "payload.evidence"),
+            ("/payload/evidence", json!([null]), "payload.evidence"),
+            ("/payload/evidence", json!([{"x": 1}]), "payload.evidence"),
+            ("/payload/evidence", json!([["t"]]), "payload.evidence"),
+            ("/payload/acceptance", json!([123]), "payload.acceptance"),
+            ("/payload/tests", json!([123]), "payload.tests"),
+            ("/payload/context_refs", json!([null]), "payload.context_refs"),
+            ("/payload/scope/include", json!([123]), "payload.scope.include"),
+            ("/payload/scope/exclude", json!([123]), "payload.scope.exclude"),
+            ("/payload/scope/exclude", json!("y"), "payload.scope.exclude"),
+            ("/payload/risk/flags", json!([123]), "payload.risk.flags"),
+        ];
+        for (pointer, bad, field) in cases {
+            let mut packet = valid_packet();
+            *packet
+                .pointer_mut(pointer)
+                .unwrap_or_else(|| panic!("pointer {pointer} exists")) = bad.clone();
+            let (errors, _) = validate_packet(&packet);
+            assert!(
+                errors.iter().any(|e| e.contains(field)),
+                "{pointer} = {bad} must error naming {field}; got {errors:?}"
+            );
+        }
+    }
+
     fn dedupe_errs(key: &str, kind: &str, identity: serde_json::Value) -> Vec<String> {
         let mut payload = payload_with(identity);
         payload

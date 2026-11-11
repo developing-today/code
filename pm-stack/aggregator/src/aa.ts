@@ -1211,11 +1211,20 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) => typeof r === "object" && r !== null && typeof r.testRunKey === "string" && typeof r.family === "string",
     ) &&
     Array.isArray(s.configs) &&
+    // #4169: aaConfigsTable maps entries dereferencing c.modelName — a
+    // null entry passed this gate and threw in the render.
+    s.configs.every(
+      (c) => typeof c === "object" && c !== null && typeof (c as { modelName?: unknown }).modelName === "string",
+    ) &&
     Array.isArray(s.testRuns) &&
     s.testRuns.every(
       (r) =>
         typeof r === "object" &&
         r !== null &&
+        // #4169: aaTimingsTable dereferences r.modelVariantKey via
+        // variantLabel (.split) — an entry without a string key passed
+        // this gate and threw in the render.
+        typeof (r as { modelVariantKey?: unknown }).modelVariantKey === "string" &&
         // #5289: snapshotDate is a date, not just a string — summarizeAa
         // publishes these values verbatim as the batch's snapshot vintage,
         // so gate them with isIsoDate like generatedAt above (date-only
@@ -1245,7 +1254,28 @@ export function isAaSection(v: unknown): v is AaFeedSection {
         src !== null &&
         typeof (src as { name?: unknown }).name === "string" &&
         typeof (src as { kind?: unknown }).kind === "string",
-    )
+    ) &&
+    // #4169: coverage, catalog, and cai are optional (absent when the
+    // collector could not build them) but the /aa renderer dereferences
+    // them when present — a present-but-malformed value passed this gate
+    // and threw in the render instead of degrading to the not-collected
+    // banner. Gate each at the depth its consumer dereferences it.
+    (s.coverage === undefined ||
+      (typeof s.coverage === "object" &&
+        s.coverage !== null &&
+        (["measuredNotPooled", "catalogNotPooledMeasured", "measuredNotInCatalog", "catalogNotPooledUnmeasured"] as const).every(
+          (k) => Array.isArray(s.coverage?.[k]) && (s.coverage?.[k] as unknown[]).every((n) => typeof n === "string"),
+        ))) &&
+    (s.catalog === undefined ||
+      (Array.isArray(s.catalog) &&
+        s.catalog.every(
+          (e) =>
+            typeof e === "object" &&
+            e !== null &&
+            typeof (e as { provider?: unknown }).provider === "string" &&
+            Array.isArray((e as { routes?: unknown }).routes),
+        ))) &&
+    (s.cai === undefined || (Array.isArray(s.cai) && s.cai.every((r) => typeof r === "object" && r !== null)))
   );
 }
 
