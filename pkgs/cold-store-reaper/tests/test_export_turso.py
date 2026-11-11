@@ -379,6 +379,47 @@ class TestDumpRepairFilter(unittest.TestCase):
         expected = opener + filler + b"');\n" + b"\n" + ESCAPED_SCHEMA_INSERT
         self.assertEqual(self.run_filter_capped(data, 4096), expected)
 
+    def test_over_cap_interior_insert_line_is_not_a_boundary(self):
+        # Codex P2 on PR #8415 (third round): in pass-through mode the
+        # old ends_statement() fallback parsed the current interior
+        # line standalone -- an interior line that itself parses as a
+        # complete schema INSERT (the fake_complete line below,
+        # followed by a blank line) ended pass-through while the
+        # tracker was
+        # still inside the outer literal, and a later interior
+        # INSERT-prefixed line was then treated as a new repair
+        # candidate and quote-rewritten, corrupting the valid outer
+        # statement. Oracle: the whole over-cap statement is
+        # byte-identical and the following broken statement is
+        # repaired.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 50  # 5 KB: cap crossed in filler
+        fake_complete = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES(1,2,3,4," + b"'" * 4 + b");\n"
+        )
+        fake_candidate = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES(1,2,3,4,''X'');\n"
+        )
+        # The tail after fake_candidate stays below the cap, so if
+        # fake_candidate is wrongly taken as a new candidate its
+        # buffer terminates below the cap and repair_chunk runs on
+        # it -- that is where the corruption would appear.
+        filler2 = (b"x" * 100 + b"\n") * 20
+        data = (
+            opener + filler + fake_complete + b"\n" + fake_candidate
+            + filler2 + b"');\n" + BROKEN_SCHEMA_INSERT
+        )
+        expected = (
+            opener + filler + fake_complete + b"\n" + fake_candidate
+            + filler2 + b"');\n" + ESCAPED_SCHEMA_INSERT
+        )
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
     def test_over_cap_candidate_emits_before_eof(self):
         # #6525, the streaming half of the oracle: with stdin held
         # open, output from an over-cap candidate must already be

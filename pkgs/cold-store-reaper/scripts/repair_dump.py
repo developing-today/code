@@ -181,6 +181,22 @@ def repair_chunk(chunk):
     return repair_statement(core) + newline
 
 
+def _next_line_starts_new(next_line):
+    """Whether next_line begins a new top-level statement (or is EOF).
+
+    The lookahead half of ends_statement(), shared with pass-through
+    mode: there the current line must never be parsed standalone --
+    an interior line of an over-cap statement can itself parse as a
+    complete schema INSERT while the outer literal is still open.
+    """
+    if next_line is None:
+        return True
+    return bool(
+        next_line.lstrip().startswith(SCHEMA_INSERT)
+        or TOP_LEVEL_START.match(next_line)
+    )
+
+
 def ends_statement(chunk, next_line):
     """Whether the buffered chunk (last line ends in ``');``) is complete.
 
@@ -196,12 +212,7 @@ def ends_statement(chunk, next_line):
             end = parse_literal(text, pos)
             if end is not None and text[end:] == b");":
                 return True
-    if next_line is None:
-        return True
-    return bool(
-        next_line.lstrip().startswith(SCHEMA_INSERT)
-        or TOP_LEVEL_START.match(next_line)
-    )
+    return _next_line_starts_new(next_line)
 
 
 def _final_literal_start(text):
@@ -271,14 +282,18 @@ def main():
         next_line = next(lines, None)
         if passthrough:
             # The rest of an over-cap candidate streams through
-            # unchanged; only its end is still recognised (the same
-            # boundary test, applied to the current line), so the
-            # statement after it is processed normally.
+            # unchanged; only its end is still recognised, so the
+            # statement after it is processed normally. The end is
+            # recognised from the statement's own bytes (the literal
+            # tracker) or from the next line starting a new statement
+            # -- never by parsing the current line standalone: an
+            # interior line can itself parse as a complete schema
+            # INSERT while the outer literal is still open.
             out.write(line)
             out.flush()
             tracker.feed(line)
             if line.rstrip(b"\r\n").endswith(STATEMENT_END) and (
-                tracker.outside_literal or ends_statement(line, next_line)
+                tracker.outside_literal or _next_line_starts_new(next_line)
             ):
                 passthrough = False
                 tracker = None
