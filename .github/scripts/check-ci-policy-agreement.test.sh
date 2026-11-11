@@ -533,6 +533,52 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-deep_indent_list.out"
 echo "pass: deep-indented branches list including main satisfies the main leg"
 
+
+# Codex P2 regressions on #8513 round 7: a quoted block item with a
+# trailing comment still unquotes, and quoted filter keys name the
+# same filters as bare keys.
+build_tree "$TMP/filter-quoted_item_comment"
+wf_raw "$TMP/filter-quoted_item_comment" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - 'main'  # main branch
+EOF
+bash "$SCRIPT" "$TMP/filter-quoted_item_comment" >"$TMP/filter-quoted_item_comment.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_item_comment.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_item_comment.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-quoted_item_comment.out"; then
+  echo "FAIL: a quoted block item with a trailing comment was not unquoted" >&2
+  exit 1
+fi
+echo "pass: quoted branches-ignore item with trailing comment keeps the main leg waived"
+
+build_tree "$TMP/filter-quoted_key"
+wf_raw "$TMP/filter-quoted_key" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    "branches": [release]
+EOF
+bash "$SCRIPT" "$TMP/filter-quoted_key" >"$TMP/filter-quoted_key.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_key.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_key.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-quoted_key.out"; then
+  echo "FAIL: a quoted branches key was treated as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: quoted branches key with [release] keeps the main leg waived"
+
+build_tree "$TMP/filter-quoted_key_ignore"
+wf_raw "$TMP/filter-quoted_key_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    'branches-ignore': [main]
+EOF
+bash "$SCRIPT" "$TMP/filter-quoted_key_ignore" >"$TMP/filter-quoted_key_ignore.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_key_ignore.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_key_ignore.out"
+echo "pass: quoted branches-ignore key with [main] keeps the main leg waived"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python

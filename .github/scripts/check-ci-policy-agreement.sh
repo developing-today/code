@@ -107,10 +107,11 @@ triggers_of() {
       exit
     }
     /^"?on"?:[[:space:]]*$/ { inblock = 1; next }
-    inblock && /^  [a-z_]+:/ {
+    inblock && /^  ["\047]?[a-z_]+["\047]?:/ {
       key = $0
       sub(/^  /, "", key)
       sub(/:.*/, "", key)
+      gsub(/["\047]/, "", key)
       print key
       next
     }
@@ -135,6 +136,8 @@ push_targets_main() {
   local file="$1"
   awk '
     function clean(tok) {
+      sub(/^[[:space:]]+/, "", tok)
+      sub(/[[:space:]]+$/, "", tok)
       if (length(tok) >= 2) {
         if ((substr(tok, 1, 1) == "\047" && substr(tok, length(tok), 1) == "\047") || (substr(tok, 1, 1) == "\"" && substr(tok, length(tok), 1) == "\"")) tok = substr(tok, 2, length(tok) - 2)
       }
@@ -279,10 +282,11 @@ push_targets_main() {
       exit
     }
     /^"?on"?:[[:space:]]*$/ { inblock = 1; next }
-    inblock && /^  [a-z_]+:/ {
+    inblock && /^  ["\047]?[a-z_]+["\047]?:/ {
       key = $0
       sub(/^  /, "", key)
       sub(/:.*/, "", key)
+      gsub(/["\047]/, "", key)
       inpush = (key == "push")
       if (!inpush) child_indent = 0
       if (inpush) {
@@ -295,7 +299,7 @@ push_targets_main() {
       next
     }
     inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0; child_indent = 0 }
-    inpush && /^ +[a-z-]+:/ {
+    inpush && /^ +["\047]?[a-z-]+["\047]?:/ {
       line = $0
       match(line, /^ +/)
       ind = RLENGTH
@@ -303,6 +307,7 @@ push_targets_main() {
       if (ind != child_indent) next
       subkey = substr(line, ind + 1)
       sub(/:.*/, "", subkey)
+      gsub(/["\047]/, "", subkey)
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
