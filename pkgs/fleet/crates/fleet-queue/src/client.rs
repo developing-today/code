@@ -886,6 +886,22 @@ fn opt_queue(args: &Args) -> String {
     args.get("queue").unwrap_or_else(default_queue)
 }
 
+/// The claim command's queue resolution (#8097 one-queue
+/// model): an explicit --queue wins, then the
+/// REPO_QUEUE_DEFAULT_QUEUE env; with neither, the claim is
+/// UNSCOPED (None) and the broker claims across the one fleet
+/// queue in priority order. Every other command keeps
+/// opt_queue's built-in default.
+fn opt_queue_claim(args: &Args) -> Option<String> {
+    if let Some(q) = args.get("queue") {
+        return Some(q);
+    }
+    std::env::var("REPO_QUEUE_DEFAULT_QUEUE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 fn opt_worker(args: &Args) -> String {
     args.get("worker")
         .unwrap_or_else(|| DEFAULT_WORKER.to_string())
@@ -1322,16 +1338,39 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "model-provider",
             "model-id",
             "model-variant",
+            "filter",
+            "pool",
         ],
         &["handoff"],
     );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
-        "queue": opt_queue(&args),
         "worker": worker,
         "lease_seconds": args.get_i64("lease-seconds").unwrap_or(2700),
     });
+    // One-queue model (#8097, 2026-11-10): a claim with no
+    // --queue (and no REPO_QUEUE_DEFAULT_QUEUE in the env) is
+    // UNSCOPED — the broker claims across the one fleet queue
+    // in priority order. An explicit --queue still scopes the
+    // claim to one stream exactly as before, so existing shift
+    // bodies keep working unchanged.
+    if let Some(q) = opt_queue_claim(&args) {
+        body["queue"] = json!(q);
+    }
+    // --filter '<expr>': the claimer-side boolean filter
+    // expression over task metadata (repo, queue, pool,
+    // platform, label, kind, priority, lane, model), evaluated
+    // by the broker inside the claim. Absent: no filtering.
+    if let Some(f) = args.get("filter") {
+        body["filter"] = json!(f);
+    }
+    // --pool <name>: the claimer's declared pool identity,
+    // recorded like the other claim marks and used only to
+    // satisfy a task's own requires.pool.
+    if let Some(p) = args.get("pool") {
+        body["pool"] = json!(p);
+    }
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
