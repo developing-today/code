@@ -2645,6 +2645,23 @@ mod tests {
         panic!("no {wanted} frame arrived");
     }
 
+    /// Read until an `error` frame arrives, failing if a frame of the
+    /// `forbidden` type shows up first. `next_of_type` alone would skip a
+    /// success ack sent ahead of a failure and so could not prove its absence.
+    async fn next_error_before(peer: &mut Peer, forbidden: &str) -> serde_json::Value {
+        for _ in 0..32 {
+            let frame = peer.next().await.unwrap();
+            assert_ne!(
+                frame["type"], forbidden,
+                "a {forbidden} frame must not precede the failure: {frame}"
+            );
+            if frame["type"] == "error" {
+                return frame;
+            }
+        }
+        panic!("no error frame arrived");
+    }
+
     /// Send an upload's chunks after its `upload_ready`, then
     /// `install_end`; returns nothing — the caller reads the outcome.
     async fn upload_chunks(peer: &mut Peer, ready: &serde_json::Value, bytes: &[u8]) {
@@ -2761,9 +2778,9 @@ mod tests {
         let ready = next_of_type(&mut peer, "upload_ready").await;
         upload_chunks(&mut peer, &ready, wasm).await;
 
-        let failed = next_of_type(&mut peer, "error").await;
-        assert_eq!(
-            failed["type"], "error",
+        let failed = next_error_before(&mut peer, "module_installed").await;
+        assert!(
+            failed["message"].is_string(),
             "failed install persistence must be reported, not acknowledged: {failed}"
         );
         assert_eq!(
@@ -3104,7 +3121,7 @@ mod tests {
         moderator_peer
             .say(serde_json::json!({"type": "revoke", "participant_id": victim.id}))
             .await;
-        let failed = next_of_type(&mut moderator_peer, "error").await;
+        let failed = next_error_before(&mut moderator_peer, "revoked").await;
         assert!(
             failed["message"]
                 .as_str()
