@@ -22,11 +22,28 @@
 //!   and restores it on lookups, so a looked-up leg still compares
 //!   equal to the persisted intent leg the recovery scanner checks
 //!   (`super::recovery`).
-//! - Status mapping covers the subset of TigerBeetle result codes the
-//!   PoC types model. Unmodelled statuses become explicit typed errors;
-//!   transport failures from creation requests become per-item backend
-//!   errors, and lookup/query failures propagate through the fallible
-//!   trait methods instead of being mistaken for missing records.
+//! - Status mapping covers every variant of the pinned crate
+//!   explicitly (#6108): `map_account_status` and
+//!   `map_transfer_status` name each status of the pinned
+//!   TigerBeetle crate's enums; the enums are `#[non_exhaustive]`,
+//!   so a wildcard arm remains for future variants only, mapping
+//!   them to `UnmodelledStatus` — and the variant tables in the
+//!   tests are the inventory to extend when the pin moves. Every
+//!   status reachable
+//!   from inputs the PoC types accept maps to a specific typed error;
+//!   the families the binding can never emit (imported events,
+//!   pending transfers, reserved fields/flags, explicit timestamps)
+//!   are enumerated arm-by-arm and map to `UnmodelledStatus` with a
+//!   comment saying why they are unreachable. Transport failures from
+//!   creation requests become per-item backend errors, and
+//!   lookup/query failures propagate through the fallible trait
+//!   methods instead of being mistaken for missing records.
+//! - The in-memory backend (`super::ledger::InMemoryLedger`) rejects
+//!   the same zero/int-max ID shapes with the same typed errors, so
+//!   scenario tests mean the same thing on both backends (#6108).
+//!   Statuses with no in-memory analogue (closed accounts, initial
+//!   balances, flag exclusivity) exist only on this binding: the PoC
+//!   types cannot express the state that produces them.
 //!
 //! The binding is behind the `currency-poc-tb` feature so default
 //! builds of the `id` crate do not link the client's native
@@ -197,6 +214,25 @@ fn from_tb_transfer(transfer: &tb::Transfer, code: u16) -> Transfer {
     }
 }
 
+fn unmodelled_account(status: tb::CreateAccountStatus) -> AccountError {
+    tracing::error!(?status, "TigerBeetle returned an unmodelled account status");
+    AccountError::UnmodelledStatus
+}
+
+fn unmodelled_transfer(status: tb::CreateTransferStatus) -> TransferError {
+    tracing::error!(?status, "TigerBeetle returned an unmodelled transfer status");
+    TransferError::UnmodelledStatus
+}
+
+/// Map a TigerBeetle account-creation status to the PoC's typed
+/// errors. Every variant of the pinned crate is matched explicitly
+/// (#6108); the enum is `#[non_exhaustive]`, so a wildcard arm is
+/// still required — it exists only for variants a future crate bump
+/// adds, maps them to `UnmodelledStatus`, and is inventoried by the
+/// variant table in the tests: when the pin moves, extend the
+/// explicit arms and the table together. Statuses the binding can
+/// never emit are enumerated explicitly and keep the
+/// `UnmodelledStatus` outcome.
 fn map_account_status(status: tb::CreateAccountStatus) -> Result<(), AccountError> {
     use tb::CreateAccountStatus as Status;
     match status {
@@ -209,13 +245,42 @@ fn map_account_status(status: tb::CreateAccountStatus) -> Result<(), AccountErro
         | Status::ExistsWithDifferentLedger
         | Status::ExistsWithDifferentCode => Err(AccountError::ExistsWithDifferentFields),
         Status::LedgerMustNotBeZero => Err(AccountError::LedgerMustNotBeZero),
-        other => {
-            tracing::error!(?other, "TigerBeetle returned an unmodelled account status");
-            Err(AccountError::UnmodelledStatus)
+        Status::LinkedEventFailed => Err(AccountError::LinkedEventFailed),
+        Status::LinkedEventChainOpen => Err(AccountError::LinkedEventChainOpen),
+        Status::IdMustNotBeZero => Err(AccountError::IdMustNotBeZero),
+        Status::IdMustNotBeIntMax => Err(AccountError::IdMustNotBeIntMax),
+        Status::CodeMustNotBeZero => Err(AccountError::CodeMustNotBeZero),
+        Status::FlagsAreMutuallyExclusive => Err(AccountError::FlagsAreMutuallyExclusive),
+        // A created account must start from zero balances.
+        Status::DebitsPendingMustBeZero
+        | Status::DebitsPostedMustBeZero
+        | Status::CreditsPendingMustBeZero
+        | Status::CreditsPostedMustBeZero => Err(AccountError::InitialBalanceMustBeZero),
+        // Imported events: the binding never sets the `imported`
+        // flag or an event timestamp, so a cluster can only return
+        // these for requests this binding did not make.
+        Status::ImportedEventExpected
+        | Status::ImportedEventNotExpected
+        | Status::ImportedEventTimestampOutOfRange
+        | Status::ImportedEventTimestampMustNotAdvance
+        | Status::ImportedEventTimestampMustNotRegress => {
+            Err(unmodelled_account(status))
         }
+        // The binding never sets an account timestamp.
+        Status::TimestampMustBeZero => Err(unmodelled_account(status)),
+        // The binding never sets reserved fields or reserved flags.
+        Status::ReservedField | Status::ReservedFlag => Err(unmodelled_account(status)),
+        // `#[non_exhaustive]`: variants a future crate bump adds.
+        // They keep the UnmodelledStatus outcome (and log) until
+        // they are enumerated above — see the variant table test.
+        _ => Err(unmodelled_account(status)),
     }
 }
 
+/// Map a TigerBeetle transfer-creation status to the PoC's typed
+/// errors. Every variant of the pinned crate is matched explicitly
+/// (#6108), like [`map_account_status`]; the wildcard arm is the
+/// `#[non_exhaustive]` contract for future variants only.
 fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferError> {
     use tb::CreateTransferStatus as Status;
     match status {
@@ -238,8 +303,28 @@ fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferE
         // TigerBeetle; resubmitting it (recovery) is a regular
         // rejection, not a panic-worthy unmodelled status.
         Status::IdAlreadyFailed => Err(TransferError::IdAlreadyFailed),
+        Status::IdMustNotBeZero => Err(TransferError::IdMustNotBeZero),
+        Status::IdMustNotBeIntMax => Err(TransferError::IdMustNotBeIntMax),
+        Status::DebitAccountIdMustNotBeZero => {
+            Err(TransferError::DebitAccountIdMustNotBeZero)
+        }
+        Status::DebitAccountIdMustNotBeIntMax => {
+            Err(TransferError::DebitAccountIdMustNotBeIntMax)
+        }
+        Status::CreditAccountIdMustNotBeZero => {
+            Err(TransferError::CreditAccountIdMustNotBeZero)
+        }
+        Status::CreditAccountIdMustNotBeIntMax => {
+            Err(TransferError::CreditAccountIdMustNotBeIntMax)
+        }
+        Status::FlagsAreMutuallyExclusive => Err(TransferError::FlagsAreMutuallyExclusive),
+        Status::CodeMustNotBeZero => Err(TransferError::CodeMustNotBeZero),
         Status::DebitAccountNotFound => Err(TransferError::DebitAccountNotFound),
         Status::CreditAccountNotFound => Err(TransferError::CreditAccountNotFound),
+        Status::DebitAccountAlreadyClosed => Err(TransferError::DebitAccountAlreadyClosed),
+        Status::CreditAccountAlreadyClosed => {
+            Err(TransferError::CreditAccountAlreadyClosed)
+        }
         Status::AccountsMustBeDifferent => Err(TransferError::AccountsMustBeDifferent),
         Status::AccountsMustHaveTheSameLedger
         | Status::TransferMustHaveTheSameLedgerAsAccounts
@@ -255,10 +340,46 @@ fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferE
         Status::OverflowsCreditsPending
         | Status::OverflowsCreditsPosted
         | Status::OverflowsCredits => Err(TransferError::CreditsMustNotExceedDebits),
-        other => {
-            tracing::error!(?other, "TigerBeetle returned an unmodelled transfer status");
-            Err(TransferError::UnmodelledStatus)
-        }
+        Status::OverflowsTimeout => Err(TransferError::OverflowsTimeout),
+        // Pending transfers: the PoC `Transfer` type has no
+        // `pending_id` and the binding never sets the pending,
+        // post-pending, or void-pending flags, so it cannot emit a
+        // transfer these statuses describe.
+        Status::PendingIdMustBeZero
+        | Status::PendingIdMustNotBeZero
+        | Status::PendingIdMustNotBeIntMax
+        | Status::PendingIdMustBeDifferent
+        | Status::TimeoutReservedForPendingTransfer
+        | Status::ClosingTransferMustBePending
+        | Status::PendingTransferNotFound
+        | Status::PendingTransferNotPending
+        | Status::PendingTransferHasDifferentDebitAccountId
+        | Status::PendingTransferHasDifferentCreditAccountId
+        | Status::PendingTransferHasDifferentLedger
+        | Status::PendingTransferHasDifferentCode
+        | Status::ExceedsPendingTransferAmount
+        | Status::PendingTransferHasDifferentAmount
+        | Status::PendingTransferAlreadyPosted
+        | Status::PendingTransferAlreadyVoided
+        | Status::PendingTransferExpired => Err(unmodelled_transfer(status)),
+        // Imported events: the binding never sets the `imported`
+        // flag or an event timestamp.
+        Status::ImportedEventExpected
+        | Status::ImportedEventNotExpected
+        | Status::ImportedEventTimestampOutOfRange
+        | Status::ImportedEventTimestampMustNotAdvance
+        | Status::ImportedEventTimestampMustNotRegress
+        | Status::ImportedEventTimestampMustPostdateDebitAccount
+        | Status::ImportedEventTimestampMustPostdateCreditAccount
+        | Status::ImportedEventTimeoutMustBeZero => Err(unmodelled_transfer(status)),
+        // The binding never sets a transfer timestamp.
+        Status::TimestampMustBeZero => Err(unmodelled_transfer(status)),
+        // The binding never sets reserved flags.
+        Status::ReservedFlag => Err(unmodelled_transfer(status)),
+        // `#[non_exhaustive]`: variants a future crate bump adds.
+        // They keep the UnmodelledStatus outcome (and log) until
+        // they are enumerated above — see the variant table test.
+        _ => Err(unmodelled_transfer(status)),
     }
 }
 
@@ -478,7 +599,11 @@ impl LedgerBackend for TigerBeetleLedger {
 
 #[cfg(test)]
 mod tests {
-    use super::{poc_code, wire_code};
+    use super::{
+        map_account_status, map_transfer_status, poc_code, wire_code,
+    };
+    use crate::currency_poc::ledger::{AccountError, TransferError};
+    use tigerbeetle as tb;
 
     #[test]
     fn wire_code_rejects_the_unrepresentable_maximum() {
@@ -489,5 +614,283 @@ mod tests {
     #[test]
     fn zero_wire_code_is_reported_as_an_error() {
         assert!(poc_code(0).is_err());
+    }
+
+    /// Oracle (#6108 acceptance): every `CreateAccountStatus`
+    /// variant of the pinned tigerbeetle crate maps to its specific
+    /// typed error, except the enumerated unreachable families
+    /// (imported events, explicit timestamps, reserved fields/flags)
+    /// which map to `UnmodelledStatus` — and no variant panics. The
+    /// table lists every variant by name; it is the inventory a
+    /// crate bump must extend (the enums are `#[non_exhaustive]`,
+    /// so a new variant cannot break compilation — it lands in the
+    /// mapper's commented wildcard until it is recorded here).
+    #[test]
+    fn account_status_mapping_covers_every_variant() {
+        use tb::CreateAccountStatus as S;
+        let expected: &[(S, Result<(), AccountError>)] = &[
+            (S::Created, Ok(())),
+            (S::Exists, Err(AccountError::Exists)),
+            (
+                S::ExistsWithDifferentFlags,
+                Err(AccountError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentUserData128,
+                Err(AccountError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentUserData64,
+                Err(AccountError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentUserData32,
+                Err(AccountError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentLedger,
+                Err(AccountError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentCode,
+                Err(AccountError::ExistsWithDifferentFields),
+            ),
+            (S::LedgerMustNotBeZero, Err(AccountError::LedgerMustNotBeZero)),
+            (S::LinkedEventFailed, Err(AccountError::LinkedEventFailed)),
+            (
+                S::LinkedEventChainOpen,
+                Err(AccountError::LinkedEventChainOpen),
+            ),
+            (S::IdMustNotBeZero, Err(AccountError::IdMustNotBeZero)),
+            (S::IdMustNotBeIntMax, Err(AccountError::IdMustNotBeIntMax)),
+            (S::CodeMustNotBeZero, Err(AccountError::CodeMustNotBeZero)),
+            (
+                S::FlagsAreMutuallyExclusive,
+                Err(AccountError::FlagsAreMutuallyExclusive),
+            ),
+            (
+                S::DebitsPendingMustBeZero,
+                Err(AccountError::InitialBalanceMustBeZero),
+            ),
+            (
+                S::DebitsPostedMustBeZero,
+                Err(AccountError::InitialBalanceMustBeZero),
+            ),
+            (
+                S::CreditsPendingMustBeZero,
+                Err(AccountError::InitialBalanceMustBeZero),
+            ),
+            (
+                S::CreditsPostedMustBeZero,
+                Err(AccountError::InitialBalanceMustBeZero),
+            ),
+            // Unreachable families: enumerated in the mapper with
+            // their reasons; the outcome stays UnmodelledStatus.
+            (S::ImportedEventExpected, Err(AccountError::UnmodelledStatus)),
+            (
+                S::ImportedEventNotExpected,
+                Err(AccountError::UnmodelledStatus),
+            ),
+            (
+                S::ImportedEventTimestampOutOfRange,
+                Err(AccountError::UnmodelledStatus),
+            ),
+            (
+                S::ImportedEventTimestampMustNotAdvance,
+                Err(AccountError::UnmodelledStatus),
+            ),
+            (
+                S::ImportedEventTimestampMustNotRegress,
+                Err(AccountError::UnmodelledStatus),
+            ),
+            (S::TimestampMustBeZero, Err(AccountError::UnmodelledStatus)),
+            (S::ReservedField, Err(AccountError::UnmodelledStatus)),
+            (S::ReservedFlag, Err(AccountError::UnmodelledStatus)),
+        ];
+        for (status, want) in expected {
+            assert_eq!(&map_account_status(*status), want, "status {status:?}");
+        }
+    }
+
+    /// Oracle (#6108 acceptance): the transfer-side twin of
+    /// `account_status_mapping_covers_every_variant` — every
+    /// `CreateTransferStatus` variant of the pinned crate is listed
+    /// with its expected outcome, the pending-transfer and
+    /// imported-event families being the enumerated
+    /// `UnmodelledStatus` set, and no variant panics.
+    #[test]
+    fn transfer_status_mapping_covers_every_variant() {
+        use tb::CreateTransferStatus as S;
+        let typed: &[(S, Result<(), TransferError>)] = &[
+            (S::Created, Ok(())),
+            (S::Exists, Err(TransferError::Exists)),
+            (
+                S::ExistsWithDifferentFlags,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentPendingId,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentTimeout,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentDebitAccountId,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentCreditAccountId,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentAmount,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentUserData128,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentUserData64,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentUserData32,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentLedger,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (
+                S::ExistsWithDifferentCode,
+                Err(TransferError::ExistsWithDifferentFields),
+            ),
+            (S::LinkedEventFailed, Err(TransferError::LinkedEventFailed)),
+            (
+                S::LinkedEventChainOpen,
+                Err(TransferError::LinkedEventChainOpen),
+            ),
+            (S::IdAlreadyFailed, Err(TransferError::IdAlreadyFailed)),
+            (S::IdMustNotBeZero, Err(TransferError::IdMustNotBeZero)),
+            (S::IdMustNotBeIntMax, Err(TransferError::IdMustNotBeIntMax)),
+            (
+                S::DebitAccountIdMustNotBeZero,
+                Err(TransferError::DebitAccountIdMustNotBeZero),
+            ),
+            (
+                S::DebitAccountIdMustNotBeIntMax,
+                Err(TransferError::DebitAccountIdMustNotBeIntMax),
+            ),
+            (
+                S::CreditAccountIdMustNotBeZero,
+                Err(TransferError::CreditAccountIdMustNotBeZero),
+            ),
+            (
+                S::CreditAccountIdMustNotBeIntMax,
+                Err(TransferError::CreditAccountIdMustNotBeIntMax),
+            ),
+            (
+                S::FlagsAreMutuallyExclusive,
+                Err(TransferError::FlagsAreMutuallyExclusive),
+            ),
+            (S::CodeMustNotBeZero, Err(TransferError::CodeMustNotBeZero)),
+            (
+                S::DebitAccountNotFound,
+                Err(TransferError::DebitAccountNotFound),
+            ),
+            (
+                S::CreditAccountNotFound,
+                Err(TransferError::CreditAccountNotFound),
+            ),
+            (
+                S::DebitAccountAlreadyClosed,
+                Err(TransferError::DebitAccountAlreadyClosed),
+            ),
+            (
+                S::CreditAccountAlreadyClosed,
+                Err(TransferError::CreditAccountAlreadyClosed),
+            ),
+            (
+                S::AccountsMustBeDifferent,
+                Err(TransferError::AccountsMustBeDifferent),
+            ),
+            (
+                S::AccountsMustHaveTheSameLedger,
+                Err(TransferError::LedgerMismatch),
+            ),
+            (
+                S::TransferMustHaveTheSameLedgerAsAccounts,
+                Err(TransferError::LedgerMismatch),
+            ),
+            (S::LedgerMustNotBeZero, Err(TransferError::LedgerMismatch)),
+            (S::ExceedsCredits, Err(TransferError::DebitsMustNotExceedCredits)),
+            (S::ExceedsDebits, Err(TransferError::CreditsMustNotExceedDebits)),
+            (
+                S::OverflowsDebitsPending,
+                Err(TransferError::DebitsMustNotExceedCredits),
+            ),
+            (
+                S::OverflowsDebitsPosted,
+                Err(TransferError::DebitsMustNotExceedCredits),
+            ),
+            (S::OverflowsDebits, Err(TransferError::DebitsMustNotExceedCredits)),
+            (
+                S::OverflowsCreditsPending,
+                Err(TransferError::CreditsMustNotExceedDebits),
+            ),
+            (
+                S::OverflowsCreditsPosted,
+                Err(TransferError::CreditsMustNotExceedDebits),
+            ),
+            (
+                S::OverflowsCredits,
+                Err(TransferError::CreditsMustNotExceedDebits),
+            ),
+            (S::OverflowsTimeout, Err(TransferError::OverflowsTimeout)),
+        ];
+        for (status, want) in typed {
+            assert_eq!(&map_transfer_status(*status), want, "status {status:?}");
+        }
+        // Unreachable families: enumerated in the mapper with their
+        // reasons; the outcome stays UnmodelledStatus.
+        let unmodelled: &[S] = &[
+            S::PendingIdMustBeZero,
+            S::PendingIdMustNotBeZero,
+            S::PendingIdMustNotBeIntMax,
+            S::PendingIdMustBeDifferent,
+            S::TimeoutReservedForPendingTransfer,
+            S::ClosingTransferMustBePending,
+            S::PendingTransferNotFound,
+            S::PendingTransferNotPending,
+            S::PendingTransferHasDifferentDebitAccountId,
+            S::PendingTransferHasDifferentCreditAccountId,
+            S::PendingTransferHasDifferentLedger,
+            S::PendingTransferHasDifferentCode,
+            S::ExceedsPendingTransferAmount,
+            S::PendingTransferHasDifferentAmount,
+            S::PendingTransferAlreadyPosted,
+            S::PendingTransferAlreadyVoided,
+            S::PendingTransferExpired,
+            S::ImportedEventExpected,
+            S::ImportedEventNotExpected,
+            S::ImportedEventTimestampOutOfRange,
+            S::ImportedEventTimestampMustNotAdvance,
+            S::ImportedEventTimestampMustNotRegress,
+            S::ImportedEventTimestampMustPostdateDebitAccount,
+            S::ImportedEventTimestampMustPostdateCreditAccount,
+            S::ImportedEventTimeoutMustBeZero,
+            S::TimestampMustBeZero,
+            S::ReservedFlag,
+        ];
+        for status in unmodelled {
+            assert_eq!(
+                map_transfer_status(*status),
+                Err(TransferError::UnmodelledStatus),
+                "status {status:?}"
+            );
+        }
     }
 }
