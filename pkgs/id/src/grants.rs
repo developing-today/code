@@ -117,7 +117,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 /// Lifecycle state of a registered key (§2.2 `key_state`). Updated by
 /// attestations; a row is never deleted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum KeyState {
     Granted,
     RevokedByPublisher,
@@ -125,7 +125,7 @@ pub enum KeyState {
 }
 
 /// One append-only registry row (§2.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RegistryEntry {
     /// Every fingerprint this key has across its storefront family
     /// (one per namespace, as computed at registration). Any of them
@@ -355,6 +355,32 @@ impl KeyRegistry {
         }
     }
 
+    /// Snapshot the registry for persistence (families + rows, in
+    /// registration order). The service layer's store snapshot is
+    /// built on this; the fingerprint index is derived state and is
+    /// rebuilt by [`KeyRegistry::restore`], never stored.
+    pub fn snapshot(&self) -> (HashMap<String, String>, Vec<RegistryEntry>) {
+        (self.families.clone(), self.rows.clone())
+    }
+
+    /// Rebuild a registry from a [`KeyRegistry::snapshot`] pair,
+    /// re-deriving the fingerprint index from the rows. Rows keep
+    /// their registration order, so first-wins state is identical
+    /// to the snapshotted registry.
+    pub fn restore(families: HashMap<String, String>, rows: Vec<RegistryEntry>) -> Self {
+        let mut by_fingerprint = HashMap::new();
+        for (idx, row) in rows.iter().enumerate() {
+            for fp in &row.fingerprints {
+                by_fingerprint.insert(fp.clone(), idx);
+            }
+        }
+        Self {
+            families,
+            rows,
+            by_fingerprint,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.rows.len()
     }
@@ -368,7 +394,7 @@ impl KeyRegistry {
 /// record at registration, so later configuration changes never move
 /// an existing grant's window. Values are operator configuration —
 /// this type carries them, it does not choose them (§9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WindowSnapshot {
     /// PendingHold length for the grant's source, seconds.
     pub refund_window_secs: u64,
@@ -388,7 +414,7 @@ impl WindowSnapshot {
 /// Grant states (§7). Every state in the #2042 diagram has exactly
 /// one implementing mechanism in the spec; the transition table in
 /// [`GrantState::can_transition`] is the whole machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GrantState {
     /// §2.3 registration in flight.
     Presented,

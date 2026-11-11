@@ -197,6 +197,7 @@ pub mod event_sync;
 pub mod fileops;
 pub mod foreign_libsql;
 pub mod frames;
+pub mod grant_service;
 pub mod grants;
 pub mod groups;
 pub mod helpers;
