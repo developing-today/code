@@ -6,7 +6,25 @@ set -euo pipefail
 
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d /tmp/opencode/pm-aggregator-install.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+# The legacy-store seed below writes through the INSTALL_SRC symlink
+# into the real package dir, so a pre-existing real store is copied
+# aside first and restored on every exit path (Codex P1 on PR #8765):
+# the rehearsal must never truncate or lose the checkout's own
+# roadmap-annotations.json. (A package copy is not used for the
+# fixture because install.sh derives its build version from
+# `git rev-parse` at $SRC, which only resolves inside the real repo.)
+LEGACY_REAL="$PKG/roadmap-annotations.json"
+LEGACY_BACKUP="$TMP/real-roadmap-annotations.json"
+SEEDED_LEGACY=0
+cleanup() {
+  if [ -f "$LEGACY_BACKUP" ]; then
+    cp -a "$LEGACY_BACKUP" "$LEGACY_REAL"
+  elif [ "$SEEDED_LEGACY" = 1 ]; then
+    rm -f "$LEGACY_REAL"
+  fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 BIN="$TMP/bin"
 HOME_TEST="$TMP/home"
 STATE="$HOME_TEST/.local/state/pm-aggregator"
@@ -80,7 +98,9 @@ if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" HOME="$HOME
   echo 'install unexpectedly accepted a non-primary checkout' >&2
   exit 1
 fi
+if [ -f "$LEGACY_REAL" ]; then cp -a "$LEGACY_REAL" "$LEGACY_BACKUP"; fi
 printf '%s\n' '{"kept":"legacy annotations"}' >"$INSTALL_SRC/roadmap-annotations.json"
+SEEDED_LEGACY=1
 TEST_LOG="$LOG" \
   TEST_UNIT_DST="$UNIT_DST" \
   TEST_REAL_CP="$REAL_CP" \

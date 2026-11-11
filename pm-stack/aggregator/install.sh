@@ -137,6 +137,13 @@ if [ "$CHANGED" -eq 1 ]; then
     if [ -e "${STATE_DIR}/roadmap-annotations.json" ]; then
       echo "WARNING: legacy roadmap annotations at $LEGACY_ANNOTATIONS and an existing ${STATE_DIR}/roadmap-annotations.json both exist; leaving both untouched -- merge them manually" >&2
     else
+      # Stop the legacy writer before the move (Codex P2 on PR #8765):
+      # the running old process caches the store, and its persist()
+      # would recreate the legacy file after the move while the new
+      # service reads only the destination -- an acknowledged write in
+      # that window would silently vanish. The restart below starts
+      # the service again on the new configuration.
+      systemctl --user stop pm-aggregator.service || true
       mv "$LEGACY_ANNOTATIONS" "${STATE_DIR}/roadmap-annotations.json"
       echo "migrated legacy roadmap annotations from $LEGACY_ANNOTATIONS to ${STATE_DIR}/roadmap-annotations.json"
     fi
