@@ -306,11 +306,48 @@ impl WorldHandle {
     /// Capture a durable journal image and subscribe atomically to later
     /// appends and reset snapshots. The returned receiver is live before the
     /// snapshot is taken, preventing a write from being missed between them.
+    ///
+    /// A journal large enough to hold an over-bound entry is probed for a
+    /// legacy oversized entry HERE, outside the actor (#8095): the scan is a
+    /// full journal read, and awaiting it inside the actor would suspend all
+    /// command processing until it finishes. When the probe finds one, the
+    /// compaction itself is still a serialized actor operation
+    /// ([`WorldCommand::ReplicationCompact`]); the feed is then rebuilt from
+    /// the compacted image (the compaction publishes a reset to the first
+    /// subscription, so it is replaced, exactly as the in-actor flow did).
     pub(crate) async fn replication_feed(
         &self,
     ) -> Result<(
         String,
         JournalSnapshotSource,
+        broadcast::Receiver<ReplicationUpdate>,
+    )> {
+        let (world_id, snapshot_source, probe_source, updates) =
+            self.replication_feed_snapshot().await?;
+        let Some(probe) = probe_source else {
+            return Ok((world_id, snapshot_source, updates));
+        };
+        let oversized = tokio::task::spawn_blocking(move || probe.first_oversized_entry())
+            .await
+            .context("scan replication journal for oversized entries")??;
+        let Some((ordinal, encoded_size)) = oversized else {
+            return Ok((world_id, snapshot_source, updates));
+        };
+        self.replication_compact(ordinal, encoded_size).await?;
+        let (world_id, snapshot_source, _probe_source, updates) =
+            self.replication_feed_snapshot().await?;
+        Ok((world_id, snapshot_source, updates))
+    }
+
+    /// One actor round trip: subscribe, capture the journal image, and —
+    /// for a journal above the per-entry payload bound — capture a second
+    /// source for the caller to probe outside the actor (#8095).
+    async fn replication_feed_snapshot(
+        &self,
+    ) -> Result<(
+        String,
+        JournalSnapshotSource,
+        Option<JournalSnapshotSource>,
         broadcast::Receiver<ReplicationUpdate>,
     )> {
         let (reply, response) = oneshot::channel();
@@ -321,6 +358,24 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped replication feed response")?
+    }
+
+    /// Ask the actor to force-compact a journal whose out-of-actor probe
+    /// found an oversized legacy entry. Serialized in the actor, like every
+    /// other journal mutation.
+    async fn replication_compact(&self, ordinal: usize, encoded_size: usize) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ReplicationCompact {
+                ordinal,
+                encoded_size,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped replication compact response")?
     }
 
     /// The latest `(sequence, records)` published by the world program.
