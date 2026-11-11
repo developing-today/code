@@ -251,7 +251,14 @@ func (r *Registry) DiagnoseTools() []diagnose.Tool {
 		p := r.pools[name]
 		view := r.views[name]
 		all, _, at := p.CachedSchemas()
-		if at.IsZero() {
+		if view.Virtual() {
+			// A virtual namespace's own cache is never stamped;
+			// its readiness is its mount sources', as in
+			// Namespaces (Codex P2 on PR #8632).
+			if !r.virtualCached(view) {
+				continue
+			}
+		} else if at.IsZero() {
 			// Nothing has been read from this server yet. Reporting no tools
 			// would let the history record every one of them as removed.
 			continue

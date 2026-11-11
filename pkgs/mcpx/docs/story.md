@@ -489,7 +489,11 @@ that there is none, and the same tool may be mounted twice under two keys. A
 call through a mount is a call to the tool on its home server: the mount's
 pins merge over the caller's arguments first, and the home server's own
 views, policies and process then see the call as if it had been addressed
-there, so history records the home server and the real tool name. A mount
+there, so history records the home server and the real tool name. The
+mounting namespace's own argument rules, keyed by the qualified name, are
+checked against the merged arguments before the call leaves -- they are
+part of the schema the mount advertises -- and the home server's rules
+apply on the far side as usual. A mount
 target must be a server with a process of its own (an alias of one counts);
 mounting a virtual namespace from another is refused at load, so a call is
 never more than one hop from a real server. Script-backed views may sit

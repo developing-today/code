@@ -1468,6 +1468,30 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 					deferred[tv.MountServer] = true
 				}
 			}
+			// Existence is judged against each source's raw
+			// catalogue, not the assembled one: a source whose
+			// tools are presently gated (a required secret not
+			// yet supplied, its own view's exclusions) contributes
+			// nothing to the assembly, but its mounts are not
+			// unknown -- they are blocked until the gate lifts,
+			// and failing registry creation would outlast the
+			// gate (Codex P2 on PR #8632).
+			for vn, tv := range view.ToolViews {
+				if tv.MountServer == "" || deferred[tv.MountServer] {
+					continue
+				}
+				stools, _, _ := pools[tv.MountServer].CachedSchemas()
+				found := false
+				for _, t := range stools {
+					if t.Name == tv.MountTool {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
+				}
+			}
 			all = virtualCatalogue(view, views, pools)
 			if len(all) == 0 {
 				continue
@@ -1494,6 +1518,9 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 			}
 			t, ok := byName[tv.From]
 			if !ok {
+				if tv.MountServer != "" {
+					continue // judged against the source's raw catalogue above
+				}
 				return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
 			}
 			props := schemaProps(t.InputSchema)
@@ -1769,21 +1796,7 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			// it is cached exactly when every mount source is,
 			// so a cold source never lets a partial assembly
 			// present as authoritative.
-			cached = true
-			for _, tv := range view.ToolViews {
-				if tv.MountServer == "" {
-					continue
-				}
-				sp, ok := r.pools[tv.MountServer]
-				if !ok || sp == nil {
-					cached = false
-					break
-				}
-				if _, _, sat := sp.CachedSchemas(); sat.IsZero() {
-					cached = false
-					break
-				}
-			}
+			cached = r.virtualCached(view)
 		}
 		out = append(out, NamespaceInfo{
 			Namespace:       view.Namespace,
@@ -2414,8 +2427,11 @@ func failureStatus(err error) int {
 // mount the namespace hides is not callable by name either; the
 // home server's views, policies and process then see the call
 // exactly as if it had been addressed there, so history and the
-// write ledger record the home server and the real tool name, and
-// the target's argument rules are the ones that apply. Every call
+// write ledger record the home server and the real tool name.
+// Argument rules apply at both levels, matching the advertised
+// schema: the mounting namespace's (keyed by the qualified From)
+// are checked here, and the home view's apply on the far side.
+// Every call
 // entry point (Call, CallAsk, CallReporting) routes through here,
 // so a mount behaves the same however it is invoked.
 func (r *Registry) mountCall(server, tool string, cc config.CallContext, args any) (string, string, any, bool, error) {
@@ -2435,7 +2451,38 @@ func (r *Registry) mountCall(server, tool string, cc config.CallContext, args an
 		}
 		return "", "", nil, false, HiddenTool{Server: server, Tool: tool}
 	}
-	return tv.MountServer, tv.MountTool, mergePinnedArgs(args, tv.Pin), true, nil
+	merged := mergePinnedArgs(args, tv.Pin)
+	// The mounting namespace's own argument rules are advertised
+	// on the mount (keyed by the qualified From, as
+	// effectiveViewSchema generates them), so they are enforced
+	// here, against the pin-merged arguments the home server
+	// will receive; the home view's rules then apply there as
+	// usual (Codex P2 on PR #8632).
+	if !view.ArgumentRules.Empty() {
+		if v := view.ArgumentRules.Check(ruleToolName(view, tool), merged); v != nil {
+			return "", "", nil, false, ErrArgumentRuleDenied{Tool: server + "." + tool, Violation: v}
+		}
+	}
+	return tv.MountServer, tv.MountTool, merged, true, nil
+}
+
+// virtualCached reports whether every mount source of a virtual
+// namespace has a cached catalogue. A virtual namespace has no
+// catalogue of its own to be ready; its readiness is its sources'.
+func (r *Registry) virtualCached(view *config.Resolved) bool {
+	for _, tv := range view.ToolViews {
+		if tv.MountServer == "" {
+			continue
+		}
+		sp, ok := r.pools[tv.MountServer]
+		if !ok || sp == nil {
+			return false
+		}
+		if _, _, sat := sp.CachedSchemas(); sat.IsZero() {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Registry) Call(ctx context.Context, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {

@@ -324,3 +324,89 @@ func TestVirtualNamespaceCachedFollowsSources(t *testing.T) {
 		t.Fatal("with every source cached, the virtual namespace must report cached")
 	}
 }
+
+// A mount whose source presently gates the tool out of its own
+// visible catalogue (here the source's excludeTools; a missing
+// secret gates the same way) is blocked, not unknown: validation
+// judges existence against the source's raw catalogue, so
+// registry creation does not fail for a transient gate
+// (Codex P2 on PR #8632).
+func TestVirtualValidationToleratesGatedSourceTool(t *testing.T) {
+	tools := []mcpclient.Tool{echoTool(), searchTool()}
+	alpha := newEchoUpstream(t, "alpha", tools)
+	beta := newEchoUpstream(t, "beta", tools)
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"alpha": {Name: "alpha", URL: alpha.URL, Mcpx: &config.Extras{ExcludeTools: []string{"echo"}}},
+		"beta":  {Name: "beta", URL: beta.URL},
+		"combo": {Name: "combo", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"alphaEcho": {From: "alpha.echo"},
+			"betaEcho":  {From: "beta.echo"},
+		}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, srv := range []string{"alpha", "beta"} {
+		r.pools[srv].SetSchemas(tools, nil, nil, "", now, now.Add(10*time.Minute), false)
+	}
+	if err := r.validateViews(); err != nil {
+		t.Fatalf("a gated mount target must not fail validation: %v", err)
+	}
+}
+
+// DiagnoseTools derives a virtual namespace's readiness from its
+// mount sources: unready sources omit the mounts, ready sources
+// report them (Codex P2 on PR #8632).
+func TestVirtualDiagnoseToolsFollowsSources(t *testing.T) {
+	r, _, _ := virtualRegistry(t)
+	comboTools := func() int {
+		n := 0
+		for _, dt := range r.DiagnoseTools() {
+			if dt.Namespace == "combo" {
+				n++
+			}
+		}
+		return n
+	}
+	if got := comboTools(); got != 0 {
+		t.Fatalf("with sources uncached, DiagnoseTools must omit the mounts, got %d", got)
+	}
+	now := time.Now()
+	for _, srv := range []string{"alpha", "beta"} {
+		r.pools[srv].SetSchemas([]mcpclient.Tool{echoTool(), searchTool()}, nil, nil, "",
+			now, now.Add(10*time.Minute), false)
+	}
+	if got := comboTools(); got != 5 {
+		t.Fatalf("with sources cached, DiagnoseTools must report all 5 mounts, got %d", got)
+	}
+}
+
+// The mounting namespace's own argument rules, keyed by the
+// qualified From as the advertised schema carries them, are
+// enforced before delegation (Codex P2 on PR #8632).
+func TestVirtualMountingViewRulesAreEnforced(t *testing.T) {
+	r, _, _ := virtualRegistry(t)
+	set, err := config.CompileArgumentRules([]config.ArgumentRuleSource{
+		{Key: "alpha.echo", Origin: "test config", Schema: json.RawMessage(`{"properties":{"q":{"maxLength":3}}}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.views["combo"].ArgumentRules = set
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cc := config.CallContext{}
+	if _, err := r.Call(ctx, "combo", "alphaEcho", cc, map[string]any{"q": "toolong"}); err == nil {
+		t.Fatal("a call violating the mounting view's rule must be refused before delegation")
+	}
+	if _, err := r.Call(ctx, "combo", "alphaEcho", cc, map[string]any{"q": "ok"}); err != nil {
+		t.Fatalf("a call within the mounting view's rule must pass: %v", err)
+	}
+	// The rule is keyed to alpha.echo only; beta's mount is free of it.
+	if _, err := r.Call(ctx, "combo", "betaEcho", cc, map[string]any{"q": "toolong"}); err != nil {
+		t.Fatalf("the alpha.echo rule must not govern beta's mount: %v", err)
+	}
+}
