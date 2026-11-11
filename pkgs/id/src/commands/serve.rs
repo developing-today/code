@@ -1098,12 +1098,16 @@ pub fn start_server_config_persisted(
         .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
     let directory = crate::directory::Directory::open(&server_config_directory_path(groups_log))?;
     let mut log = crate::groups::log::GroupLog::open(groups_log)?;
+    let already = log.events().len();
     let mut provisioned =
         crate::server_config::Provisioned::from_parts(directory, log.events().to_vec());
     let report = provisioned
         .apply(&config)
         .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
-    for event in provisioned.events() {
+    // Seed only the events this start added: the rest are the
+    // from_parts state itself, and re-checking them on every
+    // restart would rescan the whole log history.
+    for event in &provisioned.events()[already..] {
         log.record_preformed(event)?;
     }
     Ok(StartedServerConfig {
@@ -1536,9 +1540,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // The world protocol instance is shared between its ALPN registration and
     // the meta protocol, which exposes its abuse counters (#4918).
     #[cfg(feature = "world")]
-    let world_protocol = world_hub
-        .as_ref()
-        .map(|hub| world_protocol_for(hub.clone(), *node_id.as_bytes(), started_server_config.as_ref()));
+    let world_protocol = world_hub.as_ref().map(|hub| {
+        world_protocol_for(
+            hub.clone(),
+            *node_id.as_bytes(),
+            started_server_config.as_ref(),
+        )
+    });
 
     #[cfg(feature = "world")]
     let abuse_handle = world_protocol
