@@ -45,6 +45,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Build web assets if needed (for web and assets variants)
 # ─────────────────────────────────────────────────────────────────────────────
+needs_frontend=false
 if [[ $VARIANT == "web" || $VARIANT == "assets" ]]; then
   needs_frontend=false
 

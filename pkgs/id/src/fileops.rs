@@ -27,7 +27,7 @@ use futures_lite::StreamExt;
 use iroh_blobs::{Hash, api::Store};
 use thiserror::Error;
 
-use crate::tags::{TagStore, now_unix};
+use crate::tags::{TagStore, TagValue, now_unix};
 
 const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
     b"name",
@@ -51,6 +51,9 @@ pub enum FileOpError {
     /// The name is rooted or contains a traversal component.
     #[error("name must be a safe relative path: {0}")]
     InvalidName(String),
+    /// The name collides with the namespace used for system archives.
+    #[error("name is reserved for archives: {0}")]
+    ReservedArchiveName(String),
     /// Source and destination are the same name.
     #[error("new name must differ from the current name")]
     SameName,
@@ -179,6 +182,36 @@ pub(crate) async fn claim_archive_name(
     Ok(candidate)
 }
 
+/// Provenance metadata keys recorded at a file's first write (#4973):
+/// the origin node and the upload (`created`) timestamp. Listings read
+/// a file's origin and upload time from these tags on its own name.
+pub(crate) const PROVENANCE_TAG_KEYS: [&[u8]; 2] = [b"origin", b"created"];
+
+/// Snapshot `from`'s recorded provenance tags onto `to` (#5383).
+///
+/// An archive alias points at the same blob as its source but lives
+/// under a new name, so without this copy a listing reports the
+/// archive's origin as unknown and origin filtering misses it. Tags
+/// are copied by content hash so the recorded values are preserved
+/// exactly; a source with no recorded provenance leaves `to` with
+/// none — unknown stays unknown, provenance is never invented.
+pub(crate) async fn snapshot_provenance_tags(tags: &TagStore, from: &str, to: &str) -> Result<()> {
+    for key in PROVENANCE_TAG_KEYS {
+        for tag in tags.get_by_key(&tags.global, from.as_bytes(), key).await? {
+            tags.set_tag_hash(
+                &tags.global,
+                to.as_bytes(),
+                &tag.key,
+                tag.value.as_ref().map(TagValue::as_bytes),
+                tag.hash,
+                tag.len,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 impl<'a> FileOps<'a> {
     /// Create file operations over the given stores.
     pub const fn new(store: &'a Store, tags: &'a TagStore) -> Self {
@@ -257,6 +290,9 @@ impl<'a> FileOps<'a> {
                 .any(|component| component.is_empty() || matches!(component, "." | ".."))
         {
             return Err(FileOpError::InvalidName(name.to_owned()));
+        }
+        if is_archive_tag_name(name) {
+            return Err(FileOpError::ReservedArchiveName(name.to_owned()));
         }
         Ok(())
     }
@@ -439,6 +475,15 @@ impl<'a> FileOps<'a> {
             None
         };
 
+        // The archive alias keeps the source's recorded provenance
+        // (#5383): snapshot it now, before the transfer below moves
+        // (and deletes) the source name's tags onto `to`.
+        if let Some(archive_name) = &archived_original
+            && let Err(e) = snapshot_provenance_tags(self.tags, from, archive_name).await
+        {
+            tracing::warn!("failed to snapshot provenance {from} -> {archive_name}: {e:#}");
+        }
+
         self.store
             .tags()
             .delete(from)
@@ -510,7 +555,12 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         if let Err(e) = self
             .tags
-            .copy_all_tags(ns, from.as_bytes(), to.as_bytes())
+            .copy_all_tags_except(
+                ns,
+                from.as_bytes(),
+                to.as_bytes(),
+                &[b"archive.rename", b"archive.replace"],
+            )
             .await
         {
             tracing::warn!("failed to copy tags {from} -> {to}: {e:#}");
@@ -644,6 +694,24 @@ mod archive_name_tests {
 
     fn hash(byte: u8) -> Hash {
         Hash::from([byte; 32])
+    }
+
+    #[test]
+    fn fileops_rejects_archive_shaped_names_but_allows_lookalikes() {
+        for name in [
+            "report.archive.0",
+            "report.archive.1700000000",
+            "report.archive.18446744073709551616",
+        ] {
+            assert!(matches!(
+                FileOps::validate_name(name),
+                Err(FileOpError::ReservedArchiveName(found)) if found == name
+            ));
+        }
+
+        for name in ["a.archive.notes", "a.archive.+1", "a.archive.١"] {
+            assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
+        }
     }
 
     /// Two replaces of one name within the same second must not share an
@@ -869,6 +937,39 @@ mod replacement_metadata_tests {
     }
 
     #[tokio::test]
+    async fn rename_with_archive_preserves_source_provenance_on_archive_alias() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "before.txt", b"original").await;
+        set_singleton(&node, "before.txt", "origin", "node-alpha").await;
+        set_singleton(&node, "before.txt", "created", "1700000000").await;
+
+        // The source's recorded provenance, exactly as stored.
+        let source_tags = tags_of(&node, "before.txt").await;
+        assert_single_value(&source_tags, "origin", "node-alpha");
+        let source_created = values(&source_tags, "created");
+        assert!(!source_created.is_empty(), "{source_tags:?}");
+
+        let rename = node
+            .ops()
+            .rename("before.txt", "after.txt", true)
+            .await
+            .unwrap();
+        let archive = rename.archived_original.unwrap();
+
+        // #5383: the archive alias carries the source's recorded
+        // provenance, not an unknown origin.
+        let archive_tags = tags_of(&node, &archive).await;
+        assert_single_value(&archive_tags, "origin", "node-alpha");
+        assert_eq!(values(&archive_tags, "created"), source_created);
+
+        // The live name keeps its provenance too (tags move with it).
+        let live_tags = tags_of(&node, "after.txt").await;
+        assert_single_value(&live_tags, "origin", "node-alpha");
+        assert_eq!(values(&live_tags, "created"), source_created);
+
+        node.shutdown().await.unwrap();
+    }
+
     async fn rename_onto_existing_moves_replaced_metadata_and_refreshes_archive_identity() {
         let node = LocalNode::open(true).await.unwrap();
         seed_replacement_pair(&node).await;
@@ -974,6 +1075,74 @@ mod replacement_metadata_tests {
         assert!(
             has_tag(&source, "source-only", "source-metadata"),
             "{source:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    /// A copy must not become a second owner of the source's archives
+    /// (#4761): deleting the copy must leave the source's archives intact.
+    #[tokio::test]
+    async fn copy_does_not_inherit_source_archive_refs() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source.txt", b"source content").await;
+        put(&node, "other.txt", b"other content").await;
+        // Renaming onto source.txt with archiving enabled adds both
+        // archive.rename and archive.replace refs to the live source.
+        let rename_outcome = node
+            .ops()
+            .rename("other.txt", "source.txt", true)
+            .await
+            .unwrap();
+        let source_archives = [
+            rename_outcome
+                .archived_original
+                .expect("original source archived"),
+            rename_outcome
+                .archived_replaced
+                .expect("replaced source archived"),
+        ];
+        let source_before = tags_of(&node, "source.txt").await;
+        assert!(
+            has_tag(&source_before, "archive.rename", &source_archives[0]),
+            "{source_before:?}"
+        );
+        assert!(
+            has_tag(&source_before, "archive.replace", &source_archives[1]),
+            "{source_before:?}"
+        );
+
+        node.ops().copy("source.txt", "copy.txt").await.unwrap();
+        let copy_tags = tags_of(&node, "copy.txt").await;
+        assert!(
+            values(&copy_tags, "archive.rename").is_empty(),
+            "copy inherited archive.rename refs: {copy_tags:?}"
+        );
+        assert!(
+            values(&copy_tags, "archive.replace").is_empty(),
+            "copy inherited archive.replace refs: {copy_tags:?}"
+        );
+
+        // Deleting the copy must not touch the source's archive.
+        let delete_outcome = node.ops().delete("copy.txt").await.unwrap();
+        assert_eq!(
+            delete_outcome.archives_removed, 0,
+            "copy delete removed archives"
+        );
+        for archive in &source_archives {
+            assert!(
+                !tags_of(&node, archive).await.is_empty(),
+                "source archive {archive} removed by copy delete"
+            );
+        }
+        let source_after = tags_of(&node, "source.txt").await;
+        assert!(
+            has_tag(&source_after, "archive.rename", &source_archives[0]),
+            "source lost its archive.rename ref: {source_after:?}"
+        );
+        assert!(
+            has_tag(&source_after, "archive.replace", &source_archives[1]),
+            "source lost its archive ref: {source_after:?}"
         );
 
         node.shutdown().await.unwrap();

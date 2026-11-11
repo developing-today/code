@@ -88,7 +88,7 @@ describe("buildHealth checkout surfacing", () => {
   function inputs(feed: FleetFeed | null): HealthInputs {
     return {
       mode: "live",
-      cfg: loadConfig({}),
+      cfg: loadConfig({ PM_AGG_DEV: "1" }),
       feed,
       feedFileMtimeMs: null,
     };

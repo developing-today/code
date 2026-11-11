@@ -12,31 +12,31 @@
       "projectPath": "developing-today/code"
     },
     {
-      "cloneUrl": "https://github.com/developing-today/opencode.git",
+      "cloneUrl": "https://github.com/developing-today-forks/opencode.git",
       "defaultModel": "opencode-go/kimi-k3.1-pro",
       "includeAllIssueAuthors": true,
       "localDir": "opencode",
       "mergePolicy": "OFF",
       "paused": false,
-      "projectPath": "developing-today/opencode"
+      "projectPath": "developing-today-forks/opencode"
     },
     {
-      "cloneUrl": "https://github.com/developing-today/openchamber.git",
+      "cloneUrl": "https://github.com/developing-today-forks/openchamber.git",
       "defaultModel": "opencode-go/kimi-k3.1-pro",
       "includeAllIssueAuthors": true,
       "localDir": "openchamber",
       "mergePolicy": "OFF",
       "paused": false,
-      "projectPath": "developing-today/openchamber"
+      "projectPath": "developing-today-forks/openchamber"
     },
     {
-      "cloneUrl": "https://github.com/dezren39/nix.git",
+      "cloneUrl": "https://github.com/dezren39/darwin-nix.git",
       "defaultModel": "opencode-go/kimi-k3.1-pro",
       "includeAllIssueAuthors": true,
       "localDir": "nix",
       "mergePolicy": "OFF",
       "paused": false,
-      "projectPath": "dezren39/nix"
+      "projectPath": "dezren39/darwin-nix"
     }
   ],
   "version": 1

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import type { FleetFeed, SectionDiagnosis } from "../src/feed.ts";
+import { feedSectionStatus, type FleetFeed, type SectionDiagnosis } from "../src/feed.ts";
 import {
   buildHealth,
   createProbeCache,
@@ -24,7 +24,7 @@ import type { RfaState } from "../src/sources/ready-for-agent.ts";
 // fake fetchers; no service is ever killed on the laptop for a test.
 
 const NOW = Date.parse("2026-10-27T06:00:00Z");
-const cfg = loadConfig({});
+const cfg = loadConfig({ PM_AGG_DEV: "1" });
 
 function feedAt(ageMs: number): FleetFeed {
   const generatedAt = new Date(NOW - ageMs).toISOString();
@@ -335,6 +335,27 @@ describe("buildHealth probes", () => {
     expect(html).toContain("error");
     expect(html).toContain("register parse failed");
     expect(html).toContain("skipped");
+  });
+
+  // #3979: a zero-item Project read omits the section but the collector
+  // marks it error (Project #4 is never legitimately empty). The health
+  // view must surface that as an absent errored section and degrade —
+  // previously the collector marked ok and nothing degraded.
+  test("a zero-item projects outcome surfaces as error and degrades health", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const feed = feedAt(5 * 60_000);
+    delete feed.projects;
+    feed.meta = {
+      sections: {
+        projects: feedSectionStatus("error", new Date(NOW - 2 * 60_000).toISOString(), "GitHub Project read returned zero items"),
+      },
+    };
+    const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
+    const projects = view.feed.sections.find((section) => section.key === "projects");
+    expect(projects?.present).toBe(false);
+    expect(projects?.status).toBe("error");
+    expect(projects?.note).toContain("zero items");
+    expect(view.degraded).toBe(true);
   });
 
   test("legacy feeds keep presence reporting without inventing collection status", async () => {

@@ -60,12 +60,12 @@ func newOldSSEServer(t *testing.T) *oldSSEServer {
 		}()
 		w.Header().Set("Content-Type", "text/event-stream")
 		f := w.(http.Flusher)
-		fmt.Fprintf(w, "event: endpoint\ndata: /message?session=%s\n\n", id)
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: /message?session=%s\n\n", id)
 		f.Flush()
 		for {
 			select {
 			case b := <-out:
-				fmt.Fprintf(w, "event: message\ndata: %s\n\n", b)
+				_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", b)
 				f.Flush()
 			case <-r.Context().Done():
 				return

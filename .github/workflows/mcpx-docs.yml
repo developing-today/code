@@ -19,13 +19,6 @@ name: mcpx docs
 # differ only in that one value (#1941).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/mcpx-docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -108,6 +101,10 @@ jobs:
       # argument (#1941).
       - name: Nix build (deploy variant, siteUrl /code/)
         run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
           nix build --impure --print-build-logs --expr \
             '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.mcpx-docs.override { siteUrl = "/code/"; }'
 
@@ -117,7 +114,7 @@ jobs:
           cp -rL result site
           test -f site/index.html
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -63,8 +63,20 @@ use serde::{Deserialize, Serialize};
 /// with a fresher list can pass their own — this constant is the
 /// fallback for the boot path, which runs before any router exists.
 pub const KNOWN_EXPLORER_ROUTES: &[&str] = &[
-    "/", "/api", "/assets", "/blob", "/edit", "/explore", "/files", "/hash", "/invite", "/peers", "/settings",
-    "/view", "/world", "/ws",
+    "/",
+    "/api",
+    "/assets",
+    "/blob",
+    "/edit",
+    "/explore",
+    "/files",
+    "/hash",
+    "/invite",
+    "/peers",
+    "/settings",
+    "/view",
+    "/world",
+    "/ws",
 ];
 
 /// Where a published program is placed.
@@ -325,10 +337,8 @@ impl Registry {
         }
         let json = serde_json::to_string_pretty(self).context("serialising publications")?;
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, json)
-            .with_context(|| format!("writing {}", temp.display()))?;
-        std::fs::rename(&temp, path)
-            .with_context(|| format!("replacing {}", path.display()))?;
+        std::fs::write(&temp, json).with_context(|| format!("writing {}", temp.display()))?;
+        std::fs::rename(&temp, path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     }
 
@@ -355,9 +365,8 @@ impl Registry {
                 return Ok(Self::default());
             }
             Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("reading publications from {}", path.display())
-                });
+                return Err(error)
+                    .with_context(|| format!("reading publications from {}", path.display()));
             }
         };
         let registry: Self = serde_json::from_str(&text)
@@ -461,10 +470,7 @@ mod tests {
             shadowed_explorer_route("/world", routes).as_deref(),
             Some("/world")
         );
-        assert_eq!(
-            shadowed_explorer_route("/", routes).as_deref(),
-            Some("/")
-        );
+        assert_eq!(shadowed_explorer_route("/", routes).as_deref(), Some("/"));
         assert_eq!(
             shadowed_explorer_route("/api", routes).as_deref(),
             Some("/api")
@@ -525,11 +531,7 @@ mod tests {
             .unwrap();
         let mut other = mount("/arena", false);
         other.world = "other".to_string();
-        assert!(
-            registry
-                .publish(other, KNOWN_EXPLORER_ROUTES)
-                .is_err()
-        );
+        assert!(registry.publish(other, KNOWN_EXPLORER_ROUTES).is_err());
         assert_eq!(registry.publications.len(), 1);
     }
 
@@ -557,10 +559,7 @@ mod tests {
 
     #[test]
     fn save_load_round_trips_and_missing_file_is_empty() {
-        let dir = std::env::temp_dir().join(format!(
-            "id-publications-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("id-publications-test-{}", std::process::id()));
         let file = dir.join("publications.json");
         let missing = Registry::load(&file).unwrap();
         assert!(missing.publications.is_empty());
@@ -665,6 +664,76 @@ mod tests {
                 "stored spelling {spelling} must not load"
             );
         }
+    }
+
+    fn write_raw_registry_file(name: &str, raw: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "id-publications-test-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("publications.json");
+        std::fs::write(&file, raw).unwrap();
+        file
+    }
+
+    #[test]
+    fn load_refuses_duplicate_json_keys_naming_the_file() {
+        // #6504: a key spelled twice must be refused outright, never
+        // collapsed (last wins) before `validate_persisted` runs — an
+        // invalid first spelling would otherwise be silently restored
+        // as the valid second one. Each case hides an invalid value
+        // first; the controls below prove each shape loads or fails on
+        // its own merits.
+        let cases: [(&str, &str, &str); 3] = [
+            (
+                "dup-publications",
+                "publications",
+                r#"{"publications":[{"world":"","placement":{"kind":"path_mount","path":"//bad"}}],
+                    "publications":[{"world":"arena","placement":{"kind":"path_mount","path":"/arena"}}]}"#,
+            ),
+            (
+                "dup-world",
+                "world",
+                r#"{"publications":[{"world":"","world":"arena",
+                    "placement":{"kind":"path_mount","path":"/arena"}}]}"#,
+            ),
+            (
+                "dup-path",
+                "path",
+                r#"{"publications":[{"world":"arena",
+                    "placement":{"kind":"path_mount","path":"//bad","path":"/good"}}]}"#,
+            ),
+        ];
+        for (name, key, raw) in cases {
+            let file = write_raw_registry_file(name, raw);
+            let err = Registry::load(&file)
+                .expect_err(&format!("duplicate `{key}` must be refused ({name})"));
+            let text = format!("{err:#}");
+            assert!(
+                text.contains("duplicate field"),
+                "{name}: error must say duplicate field: {text}"
+            );
+            assert!(
+                text.contains(&format!("`{key}`")),
+                "{name}: error must name the key `{key}`: {text}"
+            );
+            assert!(
+                text.contains(&file.display().to_string()),
+                "{name}: error must name the file: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_accepts_the_single_spelling_of_each_duplicate_key_case() {
+        // Controls for the duplicate-key test: the same records with
+        // each key spelled once (the valid spelling) load.
+        let raw = r#"{"publications":[{"world":"arena",
+            "placement":{"kind":"path_mount","path":"/arena"}}]}"#;
+        let file = write_raw_registry_file("single-spelling", raw);
+        let loaded = Registry::load(&file).unwrap();
+        assert_eq!(loaded.publications, vec![mount("/arena", false)]);
     }
 
     #[test]

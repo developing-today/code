@@ -26,12 +26,11 @@
 //   Project's single writer (#910), so it performs the Status write
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
-// - kind "session" — routed by the action's sessionSource: the Jules
-//   keeper (jules-review) consumes source "jules" (answer only —
-//   poke/stop render disabled on Jules cards); the orchestration pass
-//   consumes the OpenCode sources ("opencode-sandbox",
-//   "opencode-laptop") for poke/answer/stop. Sources with no live
-//   control channel (claude-code, cron) render no enabled controls.
+// - kind "session" — routed by the action's sessionSource: the
+//   orchestration pass consumes the OpenCode sources
+//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
+//   Sources with no live control channel (claude-code, cron) render
+//   no enabled controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
@@ -137,7 +136,7 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
 };
 
 const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
-const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
+export const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
 
 function actionRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "record must be an object";
@@ -285,12 +284,25 @@ function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[
   return [...ids];
 }
 
-const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "jules", "claude-code", "cron"]);
+const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "claude-code", "cron"]);
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7694, mirroring the #3178 guard in pm-dispatch
+// validate.ts): an astral character straddling the cap is dropped whole.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
 
 function cleanText(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined;
   const t = v.trim();
-  return t === "" ? undefined : t.slice(0, max);
+  if (t === "") return undefined;
+  return capUnits(t, max);
 }
 
 /** Validate an untrusted POST body into a NewAction, or explain why not. */
@@ -786,8 +798,11 @@ export class ActionsStore {
     if (a.state !== "new") return { action: a, transitioned: false };
     a.state = result.outcome;
     a.appliedAt = new Date().toISOString();
-    a.appliedByRun = result.byRun.slice(0, 200);
-    if (result.note) a.resultNote = result.note.slice(0, 2_000);
+    // Same surrogate-safe cap as cleanText (#7711): a raw slice here stored
+    // a lone high surrogate in appliedByRun/resultNote whenever an astral
+    // character straddled the cap.
+    a.appliedByRun = capUnits(result.byRun, 200);
+    if (result.note) a.resultNote = capUnits(result.note, 2_000);
     await this.persist();
     return { action: a, transitioned: true };
   }

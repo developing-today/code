@@ -20,7 +20,9 @@
 //!
 //! This is a config setting, not a protocol rule. The policy belongs with the world's policy. The
 //! server config's `[policy]` table parses it ([`crate::server_config::ServerConfig::pull_policy`]),
-//! but `id serve` does not read it yet, and no session builds a gate from config. Blobs are not
+//! and `id serve` builds its live event-sync gate from that value
+//! ([`crate::event_sync::gate`]); the node's own event store is not a world and has no membership
+//! source, so `members` there refuses every pull rather than serving open. Blobs are not
 //! governed here. The blob gate ([`crate::blob_gate`]) still requires membership to fetch, whatever
 //! this policy says. Authorized pull is advisory: it stops an honest server from serving a
 //! non-member. It does not stop re-serving, recall copies, or hide metadata.
@@ -372,9 +374,18 @@ mod tests {
             WORLD,
             live(docs_world(key(1).public(), key(2).public(), false)),
         )
-        .with_blocks(super::testing::stub_blocks(&[*key(9).public().as_bytes()], &[]));
-        assert!(!gate.admits(&key(9).public()), "the blocked peer is refused");
-        assert!(gate.admits(&key(2).public()), "an unblocked peer still pulls");
+        .with_blocks(super::testing::stub_blocks(
+            &[*key(9).public().as_bytes()],
+            &[],
+        ));
+        assert!(
+            !gate.admits(&key(9).public()),
+            "the blocked peer is refused"
+        );
+        assert!(
+            gate.admits(&key(2).public()),
+            "an unblocked peer still pulls"
+        );
     }
 
     /// #2245: a blocked topic tag is not pulled — a gate whose world is a
@@ -387,8 +398,14 @@ mod tests {
             live(docs_world(key(1).public(), key(2).public(), false)),
         )
         .with_blocks(super::testing::stub_blocks(&[], &[WORLD]));
-        assert!(!gate.admits(&key(2).public()), "a member of a blocked topic");
-        assert!(!gate.admits(&key(1).public()), "the founder of a blocked topic");
+        assert!(
+            !gate.admits(&key(2).public()),
+            "a member of a blocked topic"
+        );
+        assert!(
+            !gate.admits(&key(1).public()),
+            "the founder of a blocked topic"
+        );
     }
 
     /// #2245, against the real store-backed list: a permanent block
