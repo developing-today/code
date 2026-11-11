@@ -2252,7 +2252,7 @@ pub trait WorldProgram: Send + 'static {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct EmptyWorldProgram;
+pub struct EmptyWorldProgram;
 
 impl WorldProgram for EmptyWorldProgram {}
 

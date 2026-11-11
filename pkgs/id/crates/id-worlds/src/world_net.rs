@@ -223,7 +223,7 @@ impl WorldProtocol {
     /// the aggregate snapshot: the meta protocol's `AbuseCounters`
     /// request reads the per-direction split and the policy from it.
     #[must_use]
-    pub(crate) fn abuse_handle(&self) -> Arc<Mutex<AbuseEvaluator>> {
+    pub fn abuse_handle(&self) -> Arc<Mutex<AbuseEvaluator>> {
         Arc::clone(&self.abuse)
     }
 
@@ -3651,7 +3651,7 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn roc_guest_updates_authoritative_state_over_iroh() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let sandbox =
             crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
                 .unwrap();
@@ -3724,8 +3724,8 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn apply_hash_path_sequences_fresh_sessions_on_one_connection() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
-        let wasm2 = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
+        let wasm2 = include_bytes!("../../../examples/roc-chat/roc-chat.wasm");
         let ep = endpoint().await;
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
@@ -3792,7 +3792,7 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn peers_install_then_download_the_active_module_by_hash() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let ep = endpoint().await;
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
@@ -3869,7 +3869,7 @@ mod tests {
         // participant download then refuses it, but an admin can still fetch
         // the stored bytes by hash - the path `id world apply` uses to
         // install the module a manifest names.
-        let wasm2 = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let wasm2 = include_bytes!("../../../examples/roc-chat/roc-chat.wasm");
         let mut admin2 = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();

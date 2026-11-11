@@ -761,7 +761,7 @@ mod tests {
     fn counter_path() -> Option<PathBuf> {
         let path = PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-counter/counter-native"
+            "/../../examples/roc-counter/counter-native"
         ));
         path.is_file().then_some(path)
     }

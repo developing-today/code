@@ -41,6 +41,9 @@ mod unicode;
 pub use unicode::is_format_char;
 pub mod waiting;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_forgeries;
+
 #[cfg(feature = "world")]
 pub mod petname;
 #[cfg(feature = "world")]
