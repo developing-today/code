@@ -304,8 +304,12 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 			// protocol-errors list's -32600: that list is for
 			// request types with no tool-level rule, and for
 			// tools/call the MUST wins (#1974 headline 13,
-			// section C item C10).
-			if s.legacyTaskSupport(ctx, req.Params) == supportRequired {
+			// section C item C10). The refusal binds only a
+			// 2025-11-25 peer: an earlier legacy revision defines
+			// no tasks, never saw the requirement (downgradeItems
+			// strips `execution` from its listings), and its plain
+			// call runs as it always did (PR #8652 review).
+			if AtLeast(peer.Version, "2025-11-25") && s.legacyTaskSupport(ctx, req.Params) == supportRequired {
 				return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeMethodNotFound,
 					Message: "this tool requires task-augmented execution (execution.taskSupport is required)"}}
 			}
