@@ -103,6 +103,22 @@ describe("flow charts (#4830)", () => {
     expect(html).not.toContain(`data-cutoff="${W2}"`);
   });
 
+  test("wide history: the chart grows per week and keeps every week (Codex P2)", () => {
+    const base = Date.parse(W1);
+    const cutoffs = Array.from({ length: 60 }, (_, i) =>
+      cutoff(new Date(base + i * 7 * 86_400_000).toISOString(), [item(1, { parentRef: EPIC })]),
+    );
+    const twin = computeFlowAnalytics(cutoffs);
+    const html = flowChartsHtml(twin);
+    const epic = twin.groups.find((g) => g.groupRef === EPIC)!;
+    // 60 cutoffs bound 59 weekly intervals in the twin; the chart
+    // draws every one of them, at a full slot per week.
+    expect(epic.throughput.length).toBe(59);
+    expect((html.match(/data-cutoff=/g) ?? []).length).toBe(59);
+    expect(html).toContain('viewBox="0 0 3304 110"');
+    expect(html).toContain('class="flow-scroll"');
+  });
+
   test("empty history: the section states the empty window, no charts invented", () => {
     const html = flowChartsHtml(computeFlowAnalytics([]));
     expect(html).toContain("no item history stored yet");

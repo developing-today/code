@@ -50,14 +50,21 @@ export function flowWindowHtml(window: FlowWindow): string {
   return `<div class="flow-window" data-from="${esc(window.fromCutoff)}" data-to="${esc(window.toCutoff)}"><p class="muted">Computation window: ${esc(window.fromCutoff)} → ${esc(window.toCutoff)} · ${window.completeCutoffs} of ${window.cutoffCount} cutoffs complete. Source: <a href="/api/flow-analytics.json">/api/flow-analytics.json</a> — the charts below render that JSON twin and nothing else.</p>${gaps}</div>`;
 }
 
-/** Weekly throughput bar chart for one group, from the twin series. */
+const TP_SLOT = 56;
+
+/** Weekly throughput bar chart for one group, from the twin series.
+ * The chart grows with the retained history (a full store holds a
+ * year or more of weekly cutoffs): every week keeps a full slot and
+ * its date label, and the container scrolls horizontally instead of
+ * squeezing labels together. No week is ever dropped or merged. */
 export function throughputChartHtml(group: FlowGroup): string {
   const weeks = group.throughput;
   if (weeks.length === 0) {
     return `<p class="muted">Throughput: no complete weeks in this window.</p>`;
   }
   const max = Math.max(1, ...weeks.map((w) => w.completed));
-  const slot = TP_WIDTH / weeks.length;
+  const width = Math.max(TP_WIDTH, weeks.length * TP_SLOT);
+  const slot = width / weeks.length;
   const barWidth = Math.max(6, slot * 0.62);
   const bars = weeks
     .map((w, i) => {
@@ -67,7 +74,7 @@ export function throughputChartHtml(group: FlowGroup): string {
       return `<g class="flow-tp-week" data-cutoff="${esc(w.cutoffAt)}" data-completed="${w.completed}"><rect x="${x.toFixed(1)}" y="${y}" width="${barWidth.toFixed(1)}" height="${h}" class="flow-tp-bar"></rect><text x="${(i * slot + slot / 2).toFixed(1)}" y="${y - 4}" text-anchor="middle" class="flow-tp-value">${w.completed}</text><text x="${(i * slot + slot / 2).toFixed(1)}" y="${TP_BASELINE + 13}" text-anchor="middle" class="flow-tp-week-label">${esc(w.cutoffAt.slice(0, 10))}</text></g>`;
     })
     .join("");
-  return `<div class="flow-chart"><h4>Weekly throughput (issues completed)</h4><svg viewBox="0 0 ${TP_WIDTH} ${TP_HEIGHT}" width="100%" role="img" aria-label="Weekly throughput">${bars}<line x1="0" y1="${TP_BASELINE}" x2="${TP_WIDTH}" y2="${TP_BASELINE}" class="flow-axis"></line></svg></div>`;
+  return `<div class="flow-chart"><h4>Weekly throughput (issues completed)</h4><div class="flow-scroll"><svg viewBox="0 0 ${width} ${TP_HEIGHT}" width="${width}" height="${TP_HEIGHT}" role="img" aria-label="Weekly throughput">${bars}<line x1="0" y1="${TP_BASELINE}" x2="${width}" y2="${TP_BASELINE}" class="flow-axis"></line></svg></div></div>`;
 }
 
 const TIS_WIDTH = 560;
