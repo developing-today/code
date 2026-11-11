@@ -23,7 +23,7 @@ use std::process::Command;
 #[path = "src/derived_version.rs"]
 mod derived_version;
 
-use derived_version::{branch_class, derive, parse_describe};
+use derived_version::{ReleaseVersion, branch_class, derive, parse_app_tag, parse_describe};
 
 /// The app's short name — its tag prefix and deploy name (#5790:
 /// one short-name policy for all apps).
@@ -39,6 +39,55 @@ fn git(root: &std::path::Path, args: &[&str]) -> Option<String> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Fallback tag selection (PR #8630 Codex finding): `git describe`
+/// considers every tag matching `fleet/v*`, including malformed
+/// ones (`fleet/v0.4.3-rc.1`, `fleet/v01.2.3`) that parse_describe
+/// rightly rejects — and a rejected NEAREST tag must not hide an
+/// older valid release tag behind it. Scan the reachable tags,
+/// keep only the ones that validate as `<app>/vX.Y.Z`, and pick
+/// the nearest (smallest commit distance; ties go to the highest
+/// version).
+fn from_validated_tags(root: &std::path::Path, branch: Option<&str>) -> Option<String> {
+    let tags = git(
+        root,
+        &[
+            "tag",
+            "--list",
+            &format!("{APP_NAME}/v*"),
+            "--merged",
+            "HEAD",
+        ],
+    )?;
+    let hash = git(root, &["rev-parse", "--short=7", "HEAD"]);
+    let mut best: Option<(u64, ReleaseVersion)> = None;
+    for line in tags.lines() {
+        let tag = line.trim();
+        let Some(version) = parse_app_tag(APP_NAME, tag) else {
+            continue;
+        };
+        let Some(distance) = git(root, &["rev-list", "--count", &format!("{tag}..HEAD")])
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let wins = match best {
+            None => true,
+            Some((bd, bv)) => {
+                distance < bd
+                    || (distance == bd
+                        && (version.major, version.minor, version.patch)
+                            > (bv.major, bv.minor, bv.patch))
+            }
+        };
+        if wins {
+            best = Some((distance, version));
+        }
+    }
+    let (distance, version) = best?;
+    let class = branch_class(branch, distance == 0);
+    Some(derive(Some(version), distance, hash.as_deref(), &class))
 }
 
 fn derived_version(root: &std::path::Path) -> String {
@@ -69,6 +118,9 @@ fn derived_version(root: &std::path::Path) -> String {
             &class,
         );
     }
+    if let Some(v) = from_validated_tags(root, branch.as_deref()) {
+        return v;
+    }
     // No `<app>/v*` tag yet: the 0.1.0-dev fallback family, with the
     // repo-wide commit count as the (monotonic) distance and the
     // HEAD hash as the uniqueness suffix, when git can prove them.
@@ -80,11 +132,37 @@ fn derived_version(root: &std::path::Path) -> String {
     derive(None, distance, hash.as_deref(), &class)
 }
 
+/// Register the git state the bake reads as build-script inputs
+/// (PR #8630 Codex finding): without this, cutting a tag on an
+/// already-built tree changes no env var and no source file, and
+/// cargo keeps the stale baked version. Tag refs live in the
+/// common git dir (shared across worktrees); HEAD is per-git-dir.
+fn rerun_on_git_refs(root: &std::path::Path) {
+    for (args, leaf) in [
+        (vec!["rev-parse", "--git-common-dir"], "refs/tags"),
+        (vec!["rev-parse", "--git-common-dir"], "packed-refs"),
+        (vec!["rev-parse", "--git-dir"], "HEAD"),
+    ] {
+        if let Some(dir) = git(root, &args) {
+            let base = if std::path::Path::new(&dir).is_absolute() {
+                std::path::PathBuf::from(dir)
+            } else {
+                root.join(dir)
+            };
+            let watched = base.join(leaf);
+            if watched.exists() {
+                println!("cargo:rerun-if-changed={}", watched.display());
+            }
+        }
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=FLEET_SOURCE_REV");
     println!("cargo:rerun-if-env-changed=FLEET_DERIVED_VERSION");
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let root = std::path::Path::new(&manifest).join("../../..");
+    rerun_on_git_refs(&root);
     let rev = std::env::var("FLEET_SOURCE_REV")
         .ok()
         .filter(|s| !s.is_empty())

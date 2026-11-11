@@ -136,7 +136,7 @@ the app is this workspace's short name, `fleet`):
 | --- | --- |
 | exactly on the tag | `X.Y.Z` |
 | on `main`, N commits after the tag | `X.Y.(Z+1)-dev.N+g<shorthash>` |
-| on a feature branch, N commits after | `X.Y.(Z+1)-dev.N+g<shorthash>+<branch-slug>` |
+| on a feature branch, N commits after | `X.Y.(Z+1)-dev.N+g<shorthash>.<branch-slug>` |
 | no `<app>/v*` tag yet | `0.1.0-dev.N+g<shorthash>` (bare `0.1.0-dev` if no history is available) |
 
 The `+g<hash>` suffix is what guarantees no two distinct commits ever
@@ -159,7 +159,13 @@ own release.
 3. **Releases are tag builds only.** Build the release artifact
    from the tagged commit and verify the artifact itself reports
    the clean version: `./result/bin/fleet version` must show
-   `Derived version: X.Y.Z`. Builds deployed from `main` are
+   `Derived version: X.Y.Z`. A packaged (nix) release build takes
+   the version through the package's `derivedVersion` argument —
+   the build source carries no `.git`, so the release tooling
+   computes the version where the history exists and passes it in;
+   a packaged build without one reports the rev-derived prerelease
+   form `0.1.0-dev+g<rev>`, never a clean release string. Builds
+   deployed from `main` are
    **prereleases** (their `-dev.N` strings say so) — deploying one
    never makes it a release.
 4. **Repo tags.** At every release point (not every commit, not

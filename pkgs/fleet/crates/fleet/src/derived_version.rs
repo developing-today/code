@@ -8,8 +8,12 @@
 //!
 //!   * exactly on tag `<app>/vX.Y.Z`        -> `X.Y.Z`
 //!   * on `main`, N commits after that tag  -> `X.Y.(Z+1)-dev.N+g<shorthash>`
-//!   * on a feature branch, N commits after -> the same, plus
-//!     `+<branch-slug>` build metadata
+//!   * on a feature branch, N commits after -> the same, with the
+//!     branch slug dot-joined into the ONE build-metadata section:
+//!     `X.Y.(Z+1)-dev.N+g<shorthash>.<branch-slug>` (the #5790 text
+//!     spells the slug with a second `+`; SemVer permits only one
+//!     `+` separator, so the identifiers are dot-joined instead —
+//!     Codex finding on PR #8630)
 //!   * no `<app>/v*` tag yet (pre-first-tag) -> the `0.1.0-dev`
 //!     fallback family: `0.1.0-dev.N+g<shorthash>` when the commit
 //!     count and hash are known, bare `0.1.0-dev` when they are not
@@ -196,13 +200,19 @@ pub fn derive(
     hash: Option<&str>,
     branch: &BranchClass,
 ) -> String {
-    let hash_part = hash
-        .filter(|h| !h.is_empty())
-        .map(|h| format!("+g{h}"))
-        .unwrap_or_default();
-    let slug_part = match branch {
-        BranchClass::Feature(slug) => format!("+{slug}"),
-        _ => String::new(),
+    // Build metadata is ONE `+` section; its identifiers are
+    // dot-joined (SemVer permits a single `+` separator).
+    let mut metadata: Vec<String> = Vec::new();
+    if let Some(h) = hash.filter(|h| !h.is_empty()) {
+        metadata.push(format!("g{h}"));
+    }
+    if let BranchClass::Feature(slug) = branch {
+        metadata.push(slug.clone());
+    }
+    let metadata_part = if metadata.is_empty() {
+        String::new()
+    } else {
+        format!("+{}", metadata.join("."))
     };
     match tag {
         Some(version) if distance == 0 => format!("{version}"),
@@ -215,16 +225,20 @@ pub fn derive(
                 patch: version.patch + 1,
                 ..version
             };
-            format!("{next}-dev.{distance}{hash_part}{slug_part}")
+            format!("{next}-dev.{distance}{metadata_part}")
         }
         None => {
             // Pre-first-tag fallback (#8566 acceptance): the
             // 0.1.0-dev form. Bare `0.1.0-dev` only when neither a
             // distance nor a hash is known (history-less build).
-            if distance == 0 && hash_part.is_empty() {
-                format!("{FIRST_VERSION}-dev{slug_part}")
+            if distance == 0 && metadata.is_empty() {
+                format!("{FIRST_VERSION}-dev")
+            } else if distance == 0 && hash.is_none() {
+                // A slug with no distance and no hash: keep the
+                // metadata, drop the meaningless `.0` counter.
+                format!("{FIRST_VERSION}-dev{metadata_part}")
             } else {
-                format!("{FIRST_VERSION}-dev.{distance}{hash_part}{slug_part}")
+                format!("{FIRST_VERSION}-dev.{distance}{metadata_part}")
             }
         }
     }
@@ -265,12 +279,40 @@ mod tests {
 
     #[test]
     fn feature_branch_adds_slug_metadata() {
-        // Oracle: #5790 §1 — feature branch adds +<branch-slug>.
+        // Oracle: #5790 §1 — a feature branch adds its slug as
+        // build metadata; the identifiers dot-join inside the ONE
+        // `+` section SemVer allows (PR #8630 Codex finding: the
+        // policy text's second `+` is not parseable SemVer).
         let class = branch_class(Some("ws-h-versioning"), false);
         assert_eq!(
             derive(Some(v(0, 4, 2)), 7, Some("1a2b3c4"), &class),
-            "0.4.3-dev.7+g1a2b3c4+ws-h-versioning"
+            "0.4.3-dev.7+g1a2b3c4.ws-h-versioning"
         );
+    }
+
+    #[test]
+    fn derived_versions_have_at_most_one_plus() {
+        // Oracle: SemVer grammar — build metadata follows a single
+        // `+`; every derived form must stay parseable.
+        for derived in [
+            derive(Some(v(0, 4, 2)), 0, Some("1a2b3c4"), &BranchClass::Tag),
+            derive(Some(v(0, 4, 2)), 7, Some("1a2b3c4"), &BranchClass::Main),
+            derive(
+                Some(v(0, 4, 2)),
+                7,
+                Some("1a2b3c4"),
+                &branch_class(Some("feat/x"), false),
+            ),
+            derive(
+                None,
+                3,
+                Some("1a2b3c4"),
+                &branch_class(Some("feat/x"), false),
+            ),
+            derive(None, 0, None, &branch_class(Some("feat/x"), false)),
+        ] {
+            assert!(derived.matches('+').count() <= 1, "invalid: {derived}");
+        }
     }
 
     #[test]
