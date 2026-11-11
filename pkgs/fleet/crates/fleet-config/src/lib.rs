@@ -1095,6 +1095,42 @@ impl Config {
         .collect()
     }
 
+    /// Port-to-socket resolution beside [`Config::services`]
+    /// (#6219, from the #5699 design): the Unix socket a colocated
+    /// caller dials for the service routed on `port`, when that
+    /// service is a broker role with a socket. `None` when the
+    /// port is unrouted or its service has no socket -- the caller
+    /// keeps its TCP route. The hello/services wire contract is
+    /// untouched: this is a local dial decision only, derived
+    /// from the same port-keyed table `services()` returns.
+    pub fn service_socket(&self, port: u16) -> Option<PathBuf> {
+        let name = self.services().into_iter().find(|s| s.port == port)?.name;
+        self.role_socket(&name)
+    }
+
+    /// The transport choice for the service routed on `port`
+    /// (#6219): port -> service name (via [`Config::services`])
+    /// -> [`Config::role_transport_choice`]. `None` when the port
+    /// is unrouted or its service is not a broker role (the
+    /// caller keeps whatever route it already had).
+    pub fn service_transport_choice(&self, port: u16) -> Option<RoleTransport> {
+        let name = self.services().into_iter().find(|s| s.port == port)?.name;
+        self.role_transport_choice(&name)
+    }
+
+    /// The socket and configured transport preference for the
+    /// service routed on `port` (#6219), WITHOUT probing: the
+    /// dial itself is the probe on the proxy's dial path, and it
+    /// must stay inside the caller's setup deadline (a probe
+    /// connect here could block unboundedly on a wedged listener
+    /// whose backlog is full). `None` when the port is unrouted
+    /// or its service has no socket.
+    pub fn service_socket_resolution(&self, port: u16) -> Option<(PathBuf, Option<String>)> {
+        let name = self.services().into_iter().find(|s| s.port == port)?.name;
+        let socket = self.role_socket(&name)?;
+        Some((socket, self.role_transport(&name)))
+    }
+
     /// The token file the session broker reads when a request names
     /// none (see [`DEFAULT_BROKER_TOKEN_FILE`]).
     pub fn default_token_file(&self) -> PathBuf {
@@ -1327,6 +1363,36 @@ mod tests {
         assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
         assert_eq!(cfg.egress_proxy_port(), DEFAULT_EGRESS_PROXY_PORT);
         assert!(!cfg.proxy_direct());
+    }
+
+    #[test]
+    fn service_socket_resolves_broker_ports_only() {
+        // #6219: the port-to-socket map beside services() resolves
+        // the two broker-role ports to their role sockets; the
+        // laptop-agent port (no role socket) and unrouted ports
+        // resolve to None, so their callers keep TCP.
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.service_socket(PORT_QUEUE_BROKER),
+            Some(cfg.queue_broker_socket())
+        );
+        assert_eq!(
+            cfg.service_socket(PORT_SECRETS_BROKER),
+            Some(cfg.secrets_broker_socket())
+        );
+        assert_eq!(cfg.service_socket(PORT_LAPTOP_AGENT), None);
+        assert_eq!(cfg.service_socket(9999), None);
+        // The transport choice follows the same mapping: a broker
+        // port yields a choice, an unrouted port yields None.
+        assert!(cfg.service_transport_choice(PORT_QUEUE_BROKER).is_some());
+        assert!(cfg.service_transport_choice(PORT_LAPTOP_AGENT).is_none());
+        assert!(cfg.service_transport_choice(9999).is_none());
+        // The probe-free resolution pairs each broker port with
+        // its socket; unrouted / socket-less ports give None.
+        let (sock, _pref) = cfg.service_socket_resolution(PORT_QUEUE_BROKER).unwrap();
+        assert_eq!(sock, cfg.queue_broker_socket());
+        assert!(cfg.service_socket_resolution(PORT_LAPTOP_AGENT).is_none());
+        assert!(cfg.service_socket_resolution(9999).is_none());
     }
 
     #[test]

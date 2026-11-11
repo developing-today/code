@@ -24,7 +24,7 @@ import {
   refsInText,
   refUrl,
 } from "../model.ts";
-import { buildAttentionFlags } from "../derive.ts";
+import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { gristDocUrl } from "../service-links.ts";
 import { recordFromSessionEntry } from "../registry.ts";
@@ -1393,7 +1393,13 @@ export function fixtureSource(): Source {
       return [...byRef.values()];
     },
     quota: async () => FIXTURE_QUOTA,
-    usage: async () => ({ ...FIXTURE_USAGE, attention: buildAttentionFlags(FIXTURE_QUOTA, FIXTURE_USAGE) }),
+    usage: async () => ({
+      ...FIXTURE_USAGE,
+      attention: [
+        ...buildAttentionFlags(FIXTURE_QUOTA, FIXTURE_USAGE),
+        ...quotaActionFlags(buildQuotaActions(FIXTURE_QUOTA)),
+      ],
+    }),
     attention: async () => FIXTURE_ATTENTION,
     // Fixtures carry no orchestration section: "not measured" is the
     // honest fixture state for a job that only runs live (#899).

@@ -588,7 +588,7 @@ pub async fn open_world(
         },
     };
     report.sequence = restored.core.current_sequence();
-    let handle = WorldHandle::spawn_durable_with_device_manifest(
+    let handle = WorldHandle::spawn_restored(
         restored.core,
         program,
         Some(Box::new(journal)),

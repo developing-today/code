@@ -3586,6 +3586,170 @@ mod tests {
         assert_eq!(usage.denied, 0, "a tick was refused for a participant");
     }
 
+    /// A program whose wanted request id flips from `say-stale` to `say-fresh`
+    /// once it hears the first result: one `after_change` run proves both
+    /// halves of the restart rule, with every delivered result recorded in
+    /// `heard` for the test to inspect.
+    struct ReopenSay {
+        heard: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for ReopenSay {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.heard.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let (id, text) = if self.heard.lock().unwrap().is_empty() {
+                ("say-stale", "before-restart")
+            } else {
+                ("say-fresh", "after-restart")
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": id,
+                        "cap": "chat.say",
+                        "args": {"text": text},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    /// A program that always wants the same `chat.say` request.
+    struct FixedSay;
+
+    impl WorldProgram for FixedSay {
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": "say-open",
+                        "cap": "chat.say",
+                        "args": {"text": "at-open"},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    fn core_chat_texts(core: &WorldCore) -> Vec<String> {
+        chat_texts(&core.events.iter().cloned().collect::<Vec<_>>())
+    }
+
+    /// Restart semantics (#839): requests the program already listed when a
+    /// restored world opened are refused with `actor_denied` / `restarted`,
+    /// never re-executed — `handled_requests` is memory-only, so the actor
+    /// cannot tell done from never-run, and a repeat would run unattributed
+    /// with world authority.
+    #[tokio::test]
+    async fn reopened_wants_are_refused_not_reexecuted() {
+        let mut core = world(16);
+        core.ledger
+            .set_granted(BTreeSet::from(["chat.say".to_owned()]));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(ReopenSay {
+                heard: heard.clone(),
+            }),
+            None,
+        );
+        // What `WorldHandle::spawn_restored` captures at a restored open: the
+        // program's current wants predate the restart.
+        actor.stale_wants_at_open = BTreeSet::from(["say-stale".to_owned()]);
+
+        actor.after_change().await;
+
+        // The pre-existing request never ran: its side effect is absent ...
+        let texts = core_chat_texts(&actor.core);
+        assert!(
+            texts.iter().all(|text| !text.contains("before-restart")),
+            "stale request re-executed: {texts:?}"
+        );
+        // ... while the request the program issued after the open did.
+        assert!(
+            texts.iter().any(|text| text.contains("after-restart")),
+            "fresh request did not execute: {texts:?}"
+        );
+        // The refusal never reached the ledger: exactly one execution was
+        // counted, the fresh one.
+        assert_eq!(actor.core.ledger.usage()["chat.say"].allowed, 1);
+        // The stale id is settled: it stays in `handled_requests`, so a later
+        // pass with the same wants cannot execute it.
+        assert!(actor.handled_requests.contains("say-stale"));
+        // The program heard the refusal first, with the restart reason, then
+        // the fresh result.
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.len(), 2, "unexpected deliveries: {heard:?}");
+        let refusal: serde_json::Value = serde_json::from_str(&heard[0]).unwrap();
+        assert_eq!(refusal["cap"], "result");
+        assert_eq!(refusal["id"], "say-stale");
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["error"], "actor_denied");
+        assert_eq!(refusal["reason"], "restarted");
+        let fresh: serde_json::Value = serde_json::from_str(&heard[1]).unwrap();
+        assert_eq!(fresh["id"], "say-fresh");
+        assert_eq!(fresh["ok"], true);
+    }
+
+    /// The capture half of the restart rule: `spawn_restored` refuses the
+    /// requests present in `wants` at open, while a fresh spawn executes the
+    /// same wants.
+    #[tokio::test]
+    async fn spawn_restored_refuses_open_time_wants() {
+        for restored in [false, true] {
+            let mut core = world(16);
+            core.ledger
+                .set_granted(BTreeSet::from(["chat.say".to_owned()]));
+            let world = if restored {
+                WorldHandle::spawn_restored(core, Box::new(FixedSay), None, None)
+            } else {
+                WorldHandle::spawn_with_program(core, Box::new(FixedSay))
+            };
+            let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let seen = loop {
+                let snapshot = world.snapshot(token.clone()).await.unwrap();
+                let seen = snapshot.events.iter().any(|event| {
+                    matches!(&event.kind, WorldEventKind::Chat(text) if text.contains("at-open"))
+                });
+                if seen || Instant::now() >= deadline {
+                    break seen;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            let usage = world.caps_report().await.unwrap().usage;
+            if restored {
+                assert!(!seen, "restored world re-executed its open-time wants");
+                assert!(
+                    usage.get("chat.say").is_none_or(|use_| use_.allowed == 0),
+                    "restored world executed its open-time wants: {usage:?}"
+                );
+            } else {
+                assert!(seen, "fresh world did not execute its wants");
+            }
+            world.shutdown().await.unwrap();
+        }
+    }
+
+    #[test]
+    fn stale_wants_capture_reads_the_current_wants() {
+        let mut program = FixedSay;
+        assert_eq!(
+            WorldHandle::stale_wants_from(&mut program),
+            BTreeSet::from(["say-open".to_owned()])
+        );
+    }
+
     #[tokio::test]
     async fn revoking_a_grant_applies_to_capabilities_already_issued() {
         let core = WorldCore::new("ceiling", WorldLimits::default()).unwrap();

@@ -44,7 +44,7 @@ build_tree() { # build_tree <root>: the current-main shape
   wf "$root" proxy-port-fallbacks.yml pull_request
   wf "$root" fleet-search-parity-guard.yml pull_request workflow_dispatch
   wf "$root" opencode-config-guard.yml pull_request workflow_dispatch
-  wf "$root" mcpx-fix-test-guard.yml workflow_dispatch
+  wf "$root" mcpx-fix-test-guard.yml pull_request push workflow_dispatch
   wf "$root" production-line-guard.yml workflow_dispatch
   wf "$root" go-modules-build.yml workflow_dispatch
   wf "$root" identity-build.yml workflow_dispatch
@@ -58,7 +58,6 @@ build_tree() { # build_tree <root>: the current-main shape
 build_tree "$TMP/ok"
 bash "$SCRIPT" "$TMP/ok" >"$TMP/ok.out"
 grep -q "ci-policy-agreement: OK" "$TMP/ok.out"
-grep -q "WAIVED mcpx-fix-test-guard.yml: pr tier" "$TMP/ok.out"
 grep -q "WAIVED go-modules-build.yml: main tier" "$TMP/ok.out"
 grep -q "issue #6981" "$TMP/ok.out"
 echo "pass: tree with exactly the waived disagreement set passes"

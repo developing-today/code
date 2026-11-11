@@ -209,9 +209,15 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
+      # Select the workspace default members, not `-p id` (#3923). The
+      # #3447 crate split moved test targets into id-core, and `-p id`
+      # silently skipped building that crate's lib test target — which is
+      # how a missing id-core dev-dependency went unnoticed. The name
+      # filter below still runs only the determinism test; id-core's lib
+      # test target is compiled as part of the same invocation.
       - name: Run the checked-in session snapshot test natively
         run: >-
-          nix develop ./pkgs/id --command cargo test -p id
+          nix develop ./pkgs/id --command cargo test
           --manifest-path pkgs/id/Cargo.toml --lib
           world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable
           -- --exact

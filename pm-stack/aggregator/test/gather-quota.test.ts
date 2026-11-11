@@ -149,6 +149,118 @@ test("an ok-but-null provider result retains the last good quota row", async () 
   }
 });
 
+test("a lapsed Meta session retains the last good windows and reports lapsed, not error (#8294)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-meta-lapsed-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const outboxPath = join(dir, "snapshots.outbox.jsonl");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const previousAt = "2026-11-06T04:00:00.000Z";
+    const lapsedResult = {
+      providerId: "meta",
+      providerName: "Meta",
+      ok: false,
+      configured: true,
+      fetchedAt: Date.parse("2026-11-06T04:30:00.000Z"),
+      failureClass: "unauthorized",
+      error: "unauthorized",
+      usage: null,
+    };
+
+    await writeFile(
+      currentPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: previousAt,
+          source: "opencode-quota",
+          heartbeat: {
+            tickAt: previousAt,
+            ok: true,
+            durationMs: 1,
+            perProvider: { meta: { state: "ok", ms: 1, rows: 1 } },
+          },
+          providers: [
+            {
+              providerId: "meta",
+              providerName: "Meta",
+              serviceId: "meta",
+              state: "ok",
+              measuredAt: previousAt,
+              source: "opencode-quota",
+              windows: [
+                {
+                  name: "weekly",
+                  value: 42,
+                  pctOfLimit: 42,
+                  valueLabel: null,
+                  windowSeconds: 604800,
+                  resetsAt: "2026-11-13T04:00:00.000Z",
+                  measuredAt: previousAt,
+                  source: "opencode-quota",
+                  state: "ok",
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([lapsedResult]))});\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        USAGE_SNAPSHOT_OUTBOX_PATH: outboxPath,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+
+    const output = JSON.parse(await readFile(currentPath, "utf8"));
+    // The run classifies as lapsed — distinctly from a provider error.
+    expect(output.heartbeat.perProvider.meta.state).toBe("lapsed");
+    expect(output.heartbeat.perProvider.meta.error).toContain("re-auth");
+    const metaRows = output.providers.filter((entry: { serviceId: string }) => entry.serviceId === "meta");
+    // The lapsed row itself is present and names the remedy.
+    const lapsedRow = metaRows.find((entry: { state: string }) => entry.state === "lapsed");
+    expect(lapsedRow).toBeDefined();
+    expect(lapsedRow.error).toContain("re-auth");
+    // The last good windows stay visible as a retained stale row
+    // instead of the pool dropping to a bare error.
+    const retainedRow = metaRows.find((entry: { retainedFromFailedTick?: string }) => entry.retainedFromFailedTick);
+    expect(retainedRow).toBeDefined();
+    expect(retainedRow.windows.map((w: { name: string; pctOfLimit: number }) => [w.name, w.pctOfLimit])).toEqual([
+      ["weekly", 42],
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a lapsed Go workspace survives ingest instead of being replaced by last-known retention", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gather-quota-lapsed-"));
 

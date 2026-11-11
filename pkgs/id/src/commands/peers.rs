@@ -622,7 +622,7 @@ async fn discover_via_gossip(
         options.replace_defaults,
         options.no_default_bootstrap,
         options.no_default_topic,
-    );
+    )?;
 
     let dtt_topic_id = TopicId::new(config.topic);
 
