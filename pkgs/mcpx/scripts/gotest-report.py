@@ -31,6 +31,62 @@ import sys
 from urllib.parse import urlsplit
 
 
+class StoredRecordError(ValueError):
+    """The stored skip record is the wrong shape; message names record + field."""
+
+
+def validate_stored(stored):
+    """Validate the stored record before decide() uses it.
+
+    Returns the record unchanged when well-formed. Raises StoredRecordError
+    naming the record and the offending field for: a non-object top level
+    (an empty list included -- it must not silently reset the ratchet),
+    a missing or non-integer skipped_count, a skipped field that is not a
+    list of strings, or a non-string run field.
+    """
+    if not isinstance(stored, dict):
+        raise StoredRecordError(
+            f"stored record: top level must be a JSON object, got {type(stored).__name__}"
+        )
+    if "skipped_count" not in stored:
+        raise StoredRecordError("stored record: field 'skipped_count' is missing")
+    count = stored["skipped_count"]
+    if isinstance(count, bool) or not isinstance(count, int):
+        raise StoredRecordError(
+            f"stored record: field 'skipped_count' must be an int, got {type(count).__name__}"
+        )
+    if "skipped" in stored:
+        skipped = stored["skipped"]
+        if not isinstance(skipped, list) or not all(
+            isinstance(item, str) for item in skipped
+        ):
+            raise StoredRecordError(
+                "stored record: field 'skipped' must be a list of strings"
+            )
+    if "run" in stored and not isinstance(stored["run"], str):
+        raise StoredRecordError("stored record: field 'run' must be a string")
+    return stored
+
+
+def parse_stored(raw):
+    """Parse + validate the stored-record argument; empty means no record yet."""
+    if not raw.strip():
+        return None
+    try:
+        stored = json.loads(raw)
+    except ValueError as exc:
+        raise StoredRecordError(f"stored record: invalid JSON ({exc})") from exc
+    return validate_stored(stored)
+
+
+# Event-line rule: an event is used only when it is a JSON object and every
+# field this reporter reads (Package, Test, Action, Output) is a string when
+# present. Anything else -- a non-object line, or a non-string field such as
+# a null Package or an integer Output -- is skipped as one malformed event
+# and counted in counts["malformed"], never coerced and never crashed on.
+_EVENT_STRING_FIELDS = ("Package", "Test", "Action", "Output")
+
+
 QUARANTINE_NOTICE = re.compile(
     r"quarantined until (?P<expiry>\d{4}-\d{2}-\d{2}) "
     r"\((?P<issue>[^()\s]+)\)"
@@ -84,6 +140,12 @@ def read(path, today):
             e = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(e, dict) or any(
+            field in e and not isinstance(e[field], str)
+            for field in _EVENT_STRING_FIELDS
+        ):
+            counts["malformed"] += 1
+            continue
         test = e.get("Test")
         act = e.get("Action")
         if not test:
@@ -136,6 +198,8 @@ def decide(skipped, passed, failed_n, stored, run, now):
         "skipped_count": len(skipped),
         "skipped": skipped,
     }
+    if stored is not None:
+        validate_stored(stored)
     # Never let an incomplete or failing run lower the main-branch ceiling.
     if failed_n:
         return None, False, [], []
@@ -155,7 +219,11 @@ def main(path, stored_raw, run, now, summary, new_file):
     counts, skipped, failed, reasons, quarantined, all_skipped, package_failed = read(
         path, utc_date(now)
     )
-    stored = json.loads(stored_raw) if stored_raw.strip() else None
+    try:
+        stored = parse_stored(stored_raw)
+    except StoredRecordError as exc:
+        print(f"::error::{exc}")
+        return 2
     failed_n = counts["fail"] + len(package_failed)
     new, rose, new_names, gone = decide(
         skipped, counts["pass"], failed_n, stored, run, now
@@ -169,7 +237,7 @@ def main(path, stored_raw, run, now, summary, new_file):
         f.write(
             f"| {counts['pass']} | {failed_n} | **{len(skipped)}** | "
             f"{ceiling if ceiling is not None else 'none yet'}"
-            f"{' (run ' + stored['run'] + ')' if stored else ''} |\n\n"
+            f"{' (run ' + stored.get('run', '(unknown run)') + ')' if stored else ''} |\n\n"
         )
         if failed:
             f.write(
@@ -218,6 +286,8 @@ def main(path, stored_raw, run, now, summary, new_file):
                 f.write(f"| `{k}` | {reasons[k].replace('|', chr(92) + '|')} |\n")
             f.write("\n</details>\n")
 
+    if counts["malformed"]:
+        print(f"skipped {counts['malformed']} malformed event line(s)")
     print(
         f"go tests: {counts['pass']} passed, {failed_n} failed, {len(skipped)} skipped "
         f"(record: {ceiling if ceiling is not None else 'none yet'})"

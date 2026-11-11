@@ -255,5 +255,69 @@ class GoTestReportTests(unittest.TestCase):
                 self.assertIsNone(record)
 
 
+    def run_report_raw(self, event_lines, stored=STORED):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            event_file = root / "events.json"
+            summary = root / "summary.md"
+            record = root / "record.json"
+            event_file.write_text("".join(line + "\n" for line in event_lines))
+            result = subprocess.run(
+                ["python3", str(REPORTER), str(event_file), stored, "run/1",
+                 "2026-11-02T00:00:00Z", str(summary), str(record)],
+                capture_output=True, text=True, check=False,
+            )
+            return result
+
+    def test_non_object_event_lines_are_skipped_and_counted(self):
+        result = self.run_report_raw(
+            ["123", '"hello"', "[1, 2]",
+             json.dumps({"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"})],
+            stored="",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("3 malformed event line(s)", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_non_string_event_fields_are_skipped_never_crash(self):
+        result = self.run_report_raw(
+            [json.dumps({"Action": "pass", "Package": None, "Test": "TestX"}),
+             json.dumps({"Action": "output", "Package": "example.test/mcpx/widgets", "Test": "TestY", "Output": 42}),
+             json.dumps({"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"})],
+            stored="",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("2 malformed event line(s)", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_stored_record_wrong_shapes_are_named_errors(self):
+        good_event = json.dumps({"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"})
+        cases = [
+            ("[]", "top level"),
+            ('"hello"', "top level"),
+            ("{not json", "invalid JSON"),
+            (json.dumps({"skipped": []}), "skipped_count"),
+            (json.dumps({"skipped_count": "2", "skipped": []}), "skipped_count"),
+            (json.dumps({"skipped_count": True, "skipped": []}), "skipped_count"),
+            (json.dumps({"skipped_count": 0, "skipped": 3}), "skipped"),
+            (json.dumps({"skipped_count": 0, "skipped": ["a", 1]}), "skipped"),
+        ]
+        for stored, field in cases:
+            with self.subTest(stored=stored):
+                result = self.run_report_raw([good_event], stored=stored)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("stored record", result.stdout)
+                self.assertIn(field, result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_first_run_empty_stored_still_works(self):
+        result, _, record = self.run_report(
+            [{"Action": "pass", "Package": "example.test/mcpx/widgets", "Test": "TestGood"}],
+            stored="",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(record["skipped_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

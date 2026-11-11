@@ -1,6 +1,15 @@
 import { Packr, Unpackr } from "msgpackr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, buildCollabWsUrl, initCollab, stepBatch } from "./collab";
+import {
+  MAX_STEPS_MESSAGE_BYTES,
+  MAX_STEPS_PER_MESSAGE,
+  type StatusCallback,
+  buildCollabWsUrl,
+  initCollab,
+  stepBatch,
+  stepWireSize,
+} from "./collab";
+import { getSendableSteps, getVersion } from "./editor";
 
 // Same MessagePack configuration as collab.ts
 const packr = new Packr({ useRecords: false, structuredClone: true });
@@ -80,7 +89,7 @@ function track<T extends { disconnect: () => void }>(conn: T): T {
   return conn;
 }
 
-function openCollab(onEditorReady = vi.fn()) {
+function openCollab(onEditorReady = vi.fn(), onStatus?: StatusCallback) {
   const conn = track(
     initCollab(
       "ws://example.test/collab",
@@ -89,7 +98,7 @@ function openCollab(onEditorReady = vi.fn()) {
       "notes.md",
       null,
       undefined,
-      undefined,
+      onStatus,
       onEditorReady,
     ),
   );
@@ -347,6 +356,177 @@ describe("stepBatch (client side of the server step cap, #1965)", () => {
     const steps = ["exact", "later"];
     const batch = stepBatch(steps, (s) => (s === "exact" ? MAX_STEPS_MESSAGE_BYTES : 1));
     expect(batch).toEqual(["exact"]);
+  });
+});
+
+describe("step chunking over a live connection (#4324)", () => {
+  const MSG_STEPS = 1;
+  const MSG_UPDATE = 2;
+  // Server frame cap (pkgs/id/src/frames.rs), enforced as max_message_size.
+  const SERVER_FRAME_BUDGET = 1024 * 1024;
+
+  const frame = (socket: FakeWebSocket, index: number): unknown[] =>
+    unpackr.unpack(socket.sent[index] as Uint8Array) as unknown[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    while (liveConnections.length > 0) {
+      liveConnections.pop()?.disconnect();
+    }
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  it("surfaces a withheld single-oversized step as a user-visible error, keeping the edit local", () => {
+    const onStatus = vi.fn();
+    const { conn, socket } = openCollab(vi.fn(), onStatus);
+    socket.deliver(validInit());
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const view = conn.editor!.view;
+    const huge = "x".repeat(MAX_STEPS_MESSAGE_BYTES + 1024);
+    // Since #4119 the editor splitter chunks a plain oversized text
+    // insertion into bounded steps before the collab plugin sees it, so a
+    // plain single-step dispatch no longer reaches this wedge. The
+    // splitter only rewrites single-step transactions: a two-step
+    // transaction whose head step alone exceeds the budget passes through
+    // intact, which is the remaining wedge case (any un-splittable
+    // oversized head step behaves the same way).
+    const tr = view.state.tr.insertText(huge, 1);
+    tr.insertText("z", huge.length + 1);
+    view.dispatch(tr);
+
+    // The step alone exceeds the per-message byte budget: nothing is sent,
+    // so the server never refuses the frame and the reconnect path never
+    // re-initializes the editor over the edit.
+    expect(socket.sent).toHaveLength(0);
+    // The wedge is visible to the UI, and the detail stays in the console.
+    expect(onStatus).toHaveBeenLastCalledWith("error");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[collab] Pending step exceeds the",
+      MAX_STEPS_MESSAGE_BYTES,
+      "byte message budget and cannot be synced; edit kept locally only.",
+    );
+    // The edit is kept in the local document rather than discarded.
+    expect(view.state.doc.textContent).toBe(huge + "z");
+    consoleError.mockRestore();
+  });
+
+  it("sends the next batch only after the UPDATE ACK, in order and without loss", () => {
+    const { conn, socket } = openCollab();
+    socket.deliver(validInit());
+    const view = conn.editor!.view;
+
+    // One editor change whose steps cannot fit a single capped message:
+    // 1,200 steps of ~1.1 KB each encode to more than the byte budget.
+    const CHUNK = 1100;
+    const TOTAL = 1200;
+    const tr = view.state.tr;
+    for (let i = 0; i < TOTAL; i++) {
+      tr.insertText("y".repeat(CHUNK), tr.doc.content.size - 1);
+    }
+    const expected = tr.steps.map((step) => step.toJSON());
+    expect(expected).toHaveLength(TOTAL);
+    view.dispatch(tr);
+
+    // First message: one capped batch, respecting both server caps.
+    expect(socket.sent).toHaveLength(1);
+    const first = frame(socket, 0);
+    expect(first[0]).toBe(MSG_STEPS);
+    const firstBatch = first[2] as unknown[];
+    const clientID = first[3] as number;
+    expect(firstBatch.length).toBeGreaterThan(0);
+    expect(firstBatch.length).toBeLessThan(TOTAL);
+    // With ~1.1 KB steps the byte budget binds before the count cap, so
+    // this proves the size cap is exercised rather than the count cap.
+    expect(firstBatch.length).toBeLessThan(MAX_STEPS_PER_MESSAGE);
+    expect(packr.pack(firstBatch).byteLength).toBeLessThanOrEqual(SERVER_FRAME_BUDGET);
+    expect(firstBatch).toEqual(expected.slice(0, firstBatch.length));
+
+    // The remainder stays pending until the server confirms the first batch.
+    expect(socket.sent).toHaveLength(1);
+    socket.deliver([MSG_UPDATE, firstBatch, firstBatch.map(() => clientID)]);
+
+    // Only now is the second batch sent, and it continues in order.
+    expect(socket.sent).toHaveLength(2);
+    const second = frame(socket, 1);
+    expect(second[0]).toBe(MSG_STEPS);
+    const secondBatch = second[2] as unknown[];
+    expect(secondBatch.length).toBeGreaterThan(0);
+    expect(secondBatch).toEqual(expected.slice(firstBatch.length));
+    // Every step exactly once: none dropped, none duplicated.
+    expect([...firstBatch, ...secondBatch]).toEqual(expected);
+
+    // Confirming the last batch leaves nothing pending.
+    socket.deliver([MSG_UPDATE, secondBatch, secondBatch.map(() => clientID)]);
+    expect(socket.sent).toHaveLength(2);
+  });
+});
+
+describe("large text insertion collaboration (#4119)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    while (liveConnections.length > 0) liveConnections.pop()?.disconnect();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  it("sends and confirms all bounded steps from a single oversized paste", () => {
+    const { conn, socket } = openCollab();
+    socket.deliver([MSG_INIT, 0, { type: "doc", content: [{ type: "code_block" }] }, "raw"]);
+    expect(conn.editor).not.toBeNull();
+
+    const view = conn.editor!.view;
+    const text = "x".repeat(1_100_000);
+    view.dispatch(view.state.tr.insertText(text, 1));
+
+    let confirmed = 0;
+    for (let frameIndex = 0; frameIndex < 100; frameIndex++) {
+      const frames = socket.sent.map((data) => unpackr.unpack(data as Uint8Array) as unknown[]);
+      const stepFrames = frames.filter((frame) => frame[0] === 1);
+      const frame = stepFrames[frameIndex];
+      if (!frame) break;
+
+      const steps = frame[2] as unknown[];
+      const clientID = frame[3] as number;
+      expect(steps.length).toBeGreaterThan(0);
+      expect(steps.length).toBeLessThanOrEqual(MAX_STEPS_PER_MESSAGE);
+      expect(steps.every((step) => stepWireSize(step) <= MAX_STEPS_MESSAGE_BYTES)).toBe(true);
+
+      confirmed += steps.length;
+      socket.deliver([2, steps, steps.map(() => clientID)]);
+    }
+
+    const allFrames = socket.sent.map((data) => unpackr.unpack(data as Uint8Array) as unknown[]);
+    const stepFrameData = socket.sent.filter((data) => (unpackr.unpack(data as Uint8Array) as unknown[])[0] === 1);
+    const sentSteps = allFrames.filter((frame) => frame[0] === 1).flatMap((frame) => frame[2] as unknown[]);
+    expect(stepFrameData.every((data) => (data as Uint8Array).byteLength <= 1024 * 1024)).toBe(true);
+    expect(sentSteps.length).toBeGreaterThan(1);
+    expect(
+      sentSteps
+        .map((step) =>
+          (step as { slice: { content: Array<{ text?: string }> } }).slice.content
+            .map((node) => node.text ?? "")
+            .join(""),
+        )
+        .join(""),
+    ).toBe(text);
+    expect(confirmed).toBe(sentSteps.length);
+    expect(getSendableSteps(view)).toBeNull();
+    expect(getVersion(view.state)).toBe(confirmed);
+    expect(view.state.doc.textContent).toBe(text);
   });
 });
 

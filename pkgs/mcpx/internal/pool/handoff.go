@@ -178,29 +178,29 @@ func (p *Pool) restore(handed []*Instance) {
 // describe is the instance's record without its pipes. p.mu is held; the
 // executable identity is read under p.execMu, which guards it everywhere
 // else (see Pool).
-func (in *Instance) describe(p *Pool) InstanceHandoff {
-	in.subMu.Lock()
-	subs := make([]string, 0, len(in.subscribed))
-	for uri := range in.subscribed {
+func (i *Instance) describe(p *Pool) InstanceHandoff {
+	i.subMu.Lock()
+	subs := make([]string, 0, len(i.subscribed))
+	for uri := range i.subscribed {
 		subs = append(subs, uri)
 	}
-	in.subMu.Unlock()
+	i.subMu.Unlock()
 	p.execMu.Lock()
-	execStamp, execIdentity := in.execStamp, in.execIdentity
+	execStamp, execIdentity := i.execStamp, i.execIdentity
 	p.execMu.Unlock()
 	return InstanceHandoff{
-		ID:           in.ID,
-		Trace:        in.trace,
-		Key:          in.key,
-		Root:         in.root,
-		Cwd:          in.cwd,
+		ID:           i.ID,
+		Trace:        i.trace,
+		Key:          i.key,
+		Root:         i.root,
+		Cwd:          i.cwd,
 		ExecStamp:    execStamp,
 		ExecIdentity: execIdentity,
-		StartedAt:    in.startedAt,
-		LastUsed:     in.lastUsed,
-		Calls:        in.calls.Load(),
-		EraSource:    in.eraSource,
-		LegacyLane:   in.legacyLane,
+		StartedAt:    i.startedAt,
+		LastUsed:     i.lastUsed,
+		Calls:        i.calls.Load(),
+		EraSource:    i.eraSource,
+		LegacyLane:   i.legacyLane,
 		Subscribed:   subs,
 	}
 }

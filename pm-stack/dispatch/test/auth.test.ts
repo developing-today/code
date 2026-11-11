@@ -7,6 +7,9 @@ import {
   parseJwt,
   timingSafeStringEqual,
   verifyOidcToken,
+  parseJwks,
+  fetchGithubJwks,
+  resetJwksCacheForTests,
   GITHUB_JWKS_URL,
   type Jwks,
 } from "../src/auth.ts";
@@ -191,5 +194,67 @@ describe("GitHub JWKS URL (code#4886)", () => {
   // document (/.well-known/openid-configuration on the issuer).
   test("matches the discovery document jwks_uri (no .json suffix)", () => {
     expect(GITHUB_JWKS_URL).toBe("https://token.actions.githubusercontent.com/.well-known/jwks");
+  });
+});
+
+describe("JWKS body shape (#7565)", () => {
+  const malformed: Array<[string, unknown]> = [
+    ["null body", null],
+    ["empty object", {}],
+    ["string body", "x"],
+    ["keys is a string", { keys: "x" }],
+    ["keys is a number", { keys: 42 }],
+    ["keys contains null", { keys: [null] }],
+    ["keys contains a number", { keys: [42] }],
+  ];
+
+  for (const [name, value] of malformed) {
+    test(`verifyOidcToken rejects a malformed JWKS (${name}) as AuthError, not a raw TypeError`, async () => {
+      const token = signJwt(baseClaims);
+      const badSource = async () => value as Jwks;
+      await expect(verifyOidcToken(token, { ...oidcOpts, jwksSource: badSource })).rejects.toBeInstanceOf(AuthError);
+    });
+    test(`parseJwks rejects ${name}`, () => {
+      expect(() => parseJwks(value)).toThrow(AuthError);
+    });
+  }
+
+  test("parseJwks accepts a well-formed JWKS", () => {
+    expect(parseJwks(jwks)).toEqual(jwks);
+  });
+
+  test("fetchGithubJwks rejects a non-JSON 200 body as AuthError and does not cache it", async () => {
+    resetJwksCacheForTests();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return {
+        ok: true,
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON");
+        },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    try {
+      await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
+      await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
+      expect(calls).toBe(2); // a failed fetch is never cached: each call re-fetches
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetJwksCacheForTests();
+    }
+  });
+
+  test("fetchGithubJwks rejects a wrong-shape 200 body as AuthError", async () => {
+    resetJwksCacheForTests();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({}) }) as unknown as Response) as unknown as typeof fetch;
+    try {
+      await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetJwksCacheForTests();
+    }
   });
 });

@@ -487,6 +487,7 @@ pub fn decode_frame(frame: &[u8]) -> Option<PresenceHeartbeat> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

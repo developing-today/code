@@ -25,17 +25,27 @@ describe("providerDisplayNames (#6125)", () => {
     expect(providerDisplayName("openai-direct", ["openai-direct", "openai"])).toBe("openai-direct");
   });
 
+  test("strips the leading-underscore ownership marker (#1823, Drew 2026-11-07)", () => {
+    const names = providerDisplayNames(["_claude", "_antigravity.gemini", "_antigravity.claude-gpt", "meta"]);
+    expect(names.get("_claude")).toBe("claude");
+    expect(names.get("_antigravity.gemini")).toBe("antigravity.gemini");
+    expect(names.get("_antigravity.claude-gpt")).toBe("antigravity.claude-gpt");
+    expect(names.get("meta")).toBe("meta");
+    // Keys stay the exact canonical input strings — ids are never rewritten.
+    expect([...names.keys()].sort()).toEqual(["_antigravity.claude-gpt", "_antigravity.gemini", "_claude", "meta"]);
+  });
+
   test("non-direct names are untouched", () => {
-    const names = providerDisplayNames(["mistral", "openai.main", "cline-pass", "direct"]);
+    const names = providerDisplayNames(["mistral", "_openai.main", "cline-pass", "direct"]);
     expect(names.get("mistral")).toBe("mistral");
-    expect(names.get("openai.main")).toBe("openai.main");
+    expect(names.get("_openai.main")).toBe("openai.main"); // Rule 0 (#1823): display strips the leading underscore
     expect(names.get("cline-pass")).toBe("cline-pass");
     expect(names.get("direct")).toBe("direct");
   });
 
   test("a base provider present only as a dotted sibling still blocks stripping", () => {
-    // "openai.main" is a non-direct openai provider in the set.
-    const names = providerDisplayNames(["openai.main", "openai-direct"]);
+    // "_openai.main" is a non-direct openai provider in the set.
+    const names = providerDisplayNames(["_openai.main", "openai-direct"]);
     expect(names.get("openai-direct")).toBe("openai-direct");
   });
 

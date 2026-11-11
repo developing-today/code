@@ -189,7 +189,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
         let check_account = |id: AccountId, ledger: u32, role: &str| -> Result<()> {
             let account = self
                 .backend
-                .lookup_account(id)
+                .try_lookup_account(id)?
                 .with_context(|| format!("preflight: {role} account {id} does not exist"))?;
             if account.ledger != ledger {
                 bail!(
@@ -209,7 +209,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
 
         let user_balance = self
             .backend
-            .account_balance(request.user_source)
+            .try_account_balance(request.user_source)?
             .context("preflight: user source balance missing")?;
         let needed = request
             .amount_in
@@ -223,7 +223,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
         }
         let lp_balance = self
             .backend
-            .account_balance(request.lp_dest)
+            .try_account_balance(request.lp_dest)?
             .context("preflight: LP destination balance missing")?;
         if lp_balance.spendable() < amount_out {
             bail!(
@@ -313,6 +313,19 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
             .put(record)
             .context("intent state persist (Submitted) failed")?;
         let results = self.backend.create_transfers(&record.legs);
+        // #4669: the trait contract is one result per leg. zip()
+        // stops at the shorter side, so a short vector would leave
+        // legs unexamined and still advance to Posted — refuse here,
+        // before any per-leg verdict, and stay Submitted for the
+        // recovery scanner.
+        if results.len() != record.legs.len() {
+            bail!(
+                "conversion {}: backend returned {} results for {} legs \u{2014} refusing to mark Posted on a short result vector",
+                record.conversion_id,
+                results.len(),
+                record.legs.len()
+            );
+        }
         for (leg, result) in record.legs.iter().zip(results.iter()) {
             match result {
                 Ok(()) | Err(TransferError::Exists) => {}

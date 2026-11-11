@@ -346,11 +346,13 @@ async fn metrics_handler(
         metrics.sessions,
     );
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
-        .body(axum::body::Body::from(out))
-        .unwrap())
+    let mut response = Response::new(axum::body::Body::from(out));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/plain; version=0.0.4"),
+    );
+    Ok(response)
 }
 
 async fn directory_read_handler(
@@ -1007,7 +1009,8 @@ mod tests {
             body.as_bytes(),
             at,
             nonce,
-        );
+        )
+        .unwrap();
         Request::builder()
             .method("POST")
             .uri("/api/world/directory")
@@ -1292,6 +1295,25 @@ mod tests {
                     .contains(&format!("count={count}"))
             }),
             "no screen row shows count={count}: {screen}"
+        );
+    }
+
+    /// Read one presentation frame from a legacy-text world: the view is plain
+    /// UTF-8 (`count=N`), so the host sends it as-is in `data` and
+    /// `parse_surface` yields no surface at all. Assert on that real shape.
+    #[cfg(feature = "sandbox")]
+    async fn assert_text_data(client: &mut Client, count: u8) {
+        let frame = next_frame(client).await.unwrap();
+        assert_eq!(frame["type"], "view", "{frame}");
+        let data = frame["data"].as_str().unwrap();
+        assert_eq!(data, format!("count={count}"), "{frame}");
+        // `surface` is skipped when absent: no screen document is attached.
+        assert!(frame.get("surface").is_none(), "{frame}");
+        assert!(
+            crate::world_presentation::parse_surface(data)
+                .unwrap()
+                .is_none(),
+            "legacy text must not parse as a screen document: {frame}"
         );
     }
 
@@ -1600,6 +1622,175 @@ mod tests {
             .unwrap();
         assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
         assert_screen_data(&mut player, 1).await;
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn browser_websocket_can_upload_and_run_a_text_only_roc_module() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs.clone());
+        let addr = serve(world_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(service)),
+            cookie_secure: false,
+        }))
+        .await;
+        let wasm = include_bytes!("../../examples/roc-text-counter/text-counter.wasm");
+        let (mut uploader, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+            .await
+            .unwrap();
+        uploader
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "type": "install_begin",
+                    "admin_token": "admin",
+                    "total_bytes": wasm.len(),
+                    "module_hash": null,
+                    "seed": 99,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let ready = next_frame(&mut uploader).await.unwrap();
+        assert_eq!(ready["type"], "upload_ready");
+        let chunk_bytes = ready["chunk_bytes"].as_u64().unwrap() as usize;
+        for (index, chunk) in wasm.chunks(chunk_bytes).enumerate() {
+            uploader
+                .send(ClientMessage::Text(
+                    serde_json::json!({
+                        "type": "install_chunk",
+                        "offset": index * chunk_bytes,
+                        "data_hex": encode_hex(chunk),
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        }
+        uploader
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "install_end"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let installed = next_frame(&mut uploader).await.unwrap();
+        assert_eq!(installed["type"], "module_installed");
+        let hash: iroh_blobs::Hash = installed["module_hash"].as_str().unwrap().parse().unwrap();
+        assert!(blobs.blobs().has(hash).await.unwrap());
+
+        let (_, capability) = world
+            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut player = connect(addr, join(&capability, None)).await;
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "snapshot");
+        assert_text_data(&mut player, 0).await;
+        player
+            .send(ClientMessage::Text(
+                r#"{"type":"input","data_hex":"696e63"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
+        assert_text_data(&mut player, 1).await;
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn browser_websocket_can_compile_install_and_run_text_only_roc_sources() {
+        use iroh_blobs::store::mem::MemStore;
+        use std::path::PathBuf;
+
+        let roc_bin = std::env::var("ID_ROC_BIN").ok().or_else(|| {
+            std::process::Command::new("roc")
+                .arg("version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|_| "roc".to_owned())
+        });
+        let Some(roc_bin) = roc_bin else {
+            eprintln!("skipping: no Roc compiler available (set ID_ROC_BIN or install roc)");
+            return;
+        };
+        let platform_dir =
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/roc-world"));
+        if !platform_dir.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: Roc world platform assets unavailable (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
+        let compiler = crate::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-text-counter/main.roc"
+        ))
+        .unwrap();
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        // roc-text-counter's main.roc imports no platform modules, so it needs
+        // no grant. Admit everything the default ceiling admits except
+        // `Screen`: a text-only world must compile without it.
+        let ceiling: Vec<String> = crate::world_caps::default_ceiling_names()
+            .into_iter()
+            .filter(|name| name != "Screen")
+            .collect();
+        world.set_caps_ceiling(ceiling).await.unwrap();
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs.clone())
+            .with_compiler(compiler)
+            .with_source_only(true);
+        let addr = serve(world_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(service)),
+            cookie_secure: false,
+        }))
+        .await;
+        let (mut uploader, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+            .await
+            .unwrap();
+        uploader
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "type": "compile",
+                    "admin_token": "admin",
+                    "files": [{ "name": "main.roc", "content": source }],
+                    "seed": 99,
+                    "native": false,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let compiled = next_frame(&mut uploader).await.unwrap();
+        assert_eq!(compiled["type"], "compiled", "{compiled}");
+        let hash: iroh_blobs::Hash = compiled["module_hash"].as_str().unwrap().parse().unwrap();
+        assert!(blobs.blobs().has(hash).await.unwrap());
+
+        let (_, capability) = world
+            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut player = connect(addr, join(&capability, None)).await;
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "snapshot");
+        assert_text_data(&mut player, 0).await;
+        player
+            .send(ClientMessage::Text(
+                r#"{"type":"input","data_hex":"696e63"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
+        assert_text_data(&mut player, 1).await;
     }
 
     #[cfg(feature = "sandbox")]

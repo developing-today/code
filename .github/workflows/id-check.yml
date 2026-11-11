@@ -49,8 +49,14 @@ on:
       - "pkgs/id/**"
       - ".github/workflows/id-check.yml"
       - ".github/scripts/id-pr-checks.txt"
+      - ".github/scripts/id-pr-checks-matrix.sh"
+      - ".github/scripts/id-pr-checks-matrix.test.sh"
       - ".github/scripts/check-id-pr-checks.sh"
+      - ".github/scripts/check-id-pr-checks.test.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
+      - ".github/scripts/check-id-source-snapshot.sh"
+      - ".github/scripts/check-id-source-snapshot.test.sh"
+      - ".github/scripts/check-crash-gate-coverage.test.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -84,6 +90,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Test matrix normalization
+        run: bash .github/scripts/id-pr-checks-matrix.test.sh
+
+      - name: Test source-snapshot guard behavior
+        run: bash .github/scripts/check-id-source-snapshot.test.sh
+
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           extra-conf: |
@@ -92,6 +104,12 @@ jobs:
       # The PR list is enumerated, so guard it against the flake (#300):
       # a new flake check that is neither listed nor excluded fails here
       # by name instead of silently getting no PR coverage.
+      # The guard's own contract tests (#6881) run first (#7628):
+      # its misdiagnosis pins (duplicates, whitespace/CRLF) were
+      # verified nowhere — no workflow ran the .test.sh suite.
+      - name: Contract tests for the PR check list guard
+        run: bash .github/scripts/check-id-pr-checks.test.sh
+
       - name: Guard PR check list against flake drift
         run: .github/scripts/check-id-pr-checks.sh
 
@@ -101,10 +119,13 @@ jobs:
       - name: Guard crash-gate PR partition coverage
         run: .github/scripts/check-crash-gate-coverage.sh
 
+      - name: Test the crash-gate coverage guard enumeration
+        run: .github/scripts/check-crash-gate-coverage.test.sh
+
       - name: Emit PR check list for the matrix
         id: list
         run: |
-          checks=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' .github/scripts/id-pr-checks.txt | jq -R . | jq -cs .)
+          checks=$(bash .github/scripts/id-pr-checks-matrix.sh)
           echo "checks=$checks" >> "$GITHUB_OUTPUT"
           echo "PR checks: $checks"
 
@@ -193,9 +214,15 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
+      # Select the workspace default members, not `-p id` (#3923). The
+      # #3447 crate split moved test targets into id-core, and `-p id`
+      # silently skipped building that crate's lib test target — which is
+      # how a missing id-core dev-dependency went unnoticed. The name
+      # filter below still runs only the determinism test; id-core's lib
+      # test target is compiled as part of the same invocation.
       - name: Run the checked-in session snapshot test natively
         run: >-
-          nix develop ./pkgs/id --command cargo test -p id
+          nix develop ./pkgs/id --command cargo test
           --manifest-path pkgs/id/Cargo.toml --lib
           world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable
           -- --exact

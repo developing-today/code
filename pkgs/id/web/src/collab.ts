@@ -41,6 +41,9 @@ import { Step } from "prosemirror-transform";
 import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
 import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
 import { closeImageBrowser } from "./image-browser";
+import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
+
+export { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
 
 // Message type tags
 const MSG = {
@@ -59,28 +62,6 @@ const MSG = {
 // MessagePack encoder/decoder configured for array format
 const packr = new Packr({ useRecords: false, structuredClone: true });
 const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
-
-/** Per-message step bound, mirroring the server MAX_STEPS_PER_MESSAGE
- * (pkgs/id/src/web/collab.rs). A single editor transaction can legitimately
- * exceed it - indenting N lines produces N steps (web/src/indent.ts) - so
- * the client sends at most this many steps per Steps message and flushes
- * the remainder as the server confirms each batch (see the Update handler),
- * instead of wedging the session on a rejected oversized batch. */
-export const MAX_STEPS_PER_MESSAGE = 1000;
-
-/** Wire-size budget for one Steps message, mirroring the server frame cap
- * MAX_FRAME_BYTES (1 MiB, pkgs/id/src/frames.rs) minus a reserve for the
- * MessagePack envelope ([tag, version, steps, clientID]). The step-count
- * cap alone cannot bound the wire size: 1,000 medium steps encode to far
- * more than 1 MiB, and the server refuses an over-limit message before
- * applying any of it (Codex P2 on PR #4051). */
-export const MAX_STEPS_MESSAGE_BYTES = 1024 * 1024 - 4096;
-
-/** Encoded size of one step on the wire (MessagePack, same Packr config
- * as the send path). */
-export function stepWireSize(step: unknown): number {
-  return packr.pack(step).byteLength;
-}
 
 /** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE
  * steps and at most MAX_STEPS_MESSAGE_BYTES of encoded steps, in order.
@@ -286,6 +267,10 @@ export function initCollab(
           MAX_STEPS_MESSAGE_BYTES,
           "byte message budget and cannot be synced; edit kept locally only.",
         );
+        // The console line alone leaves the wedge invisible in the UI: sync
+        // has silently stopped for this document while the local document
+        // keeps the edit. Surface it through the status callback too.
+        updateStatus("error");
         return;
       }
       console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
