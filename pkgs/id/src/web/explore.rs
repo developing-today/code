@@ -139,7 +139,7 @@ async fn act_handler(
         credential: credential.filter(|_| sends),
         ..Caller::default()
     };
-    let outcome = match run(&hub, caller, action).await {
+    let outcome = match run(&hub, state.pinned_world.as_deref(), caller, action).await {
         Ok(outcome) => outcome,
         Err(error) => return failure(&error, secure),
     };
@@ -152,6 +152,7 @@ async fn act_handler(
         notes.push(format!("Credential, shown once: {credential}"));
         if let Ok(signed_in) = run(
             &hub,
+            state.pinned_world.as_deref(),
             Caller::from_secret(credential),
             DirectoryAction::OpenSession,
         )

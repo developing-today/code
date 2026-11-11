@@ -137,7 +137,7 @@ async fn host_view_handler(
     headers: HeaderMap,
     Query(query): Query<HostViewQuery>,
 ) -> Response {
-    let Some(hub) = state.hub else {
+    let Some(hub) = state.hub.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let Some(token) = headers
@@ -439,7 +439,7 @@ async fn directory_respond(
     world: Option<String>,
     action: DirectoryAction,
 ) -> Response {
-    let Some(hub) = state.hub else {
+    let Some(hub) = state.hub.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     if !state.serves(world.as_deref(), hub.default_world()) {
@@ -560,7 +560,7 @@ async fn invite_handler(
     headers: HeaderMap,
     Json(request): Json<InviteRequest>,
 ) -> Response {
-    let Some(hub) = state.hub else {
+    let Some(hub) = state.hub.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let supplied = headers
@@ -1982,7 +1982,9 @@ mod tests {
             cookie_secure: false,
             pinned_world: None,
         });
-        let invite = |router: axum::Router, world: &str| async move {
+        let invite = |router: axum::Router, world: &str| {
+            let world = world.to_owned();
+            async move {
             let response = router
                 .oneshot(
                     Request::builder()
@@ -2002,6 +2004,7 @@ mod tests {
                 .await
                 .unwrap();
             (status, body)
+            }
         };
         // Both worlds exist, with a join capability each.
         let (status, body) = invite(open.clone(), "arena").await;

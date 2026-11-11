@@ -2190,7 +2190,7 @@ mod upload_router_tests {
         (router, dir, endpoint, docs)
     }
 
-    async fn router_with_state() -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
+    pub(super) async fn router_with_state() -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
         let endpoint = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
             .bind()
@@ -4497,6 +4497,10 @@ mod collab_route_tests {
     };
     use tower::ServiceExt as _;
 
+    use super::create_program_router;
+    use super::upload_router_tests::router_with_state;
+    use crate::web::WebSecurity;
+
     async fn echo_doc_id(Path(doc_id): Path<String>) -> String {
         doc_id
     }
@@ -4560,7 +4564,7 @@ mod collab_route_tests {
         );
         // Create "arena" and "other" through an unpinned bridge on
         // the same hub, as the main router would serve them.
-        let open = super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
+        let open = crate::web::world_ws::world_routes().with_state(crate::web::world_ws::WorldWebState {
             hub: Some(hub.clone()),
             cookie_secure: false,
             pinned_world: None,
