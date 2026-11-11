@@ -6,6 +6,8 @@ import { describe, expect, test } from "bun:test";
 import type { PoolWindowObservation } from "../src/burn-history.ts";
 import type { QuotaPool } from "../src/model.ts";
 import { deriveExhaustionForecasts } from "../src/quota-exhaustion.ts";
+import { overlayQuotaCurrent } from "../src/quota-current.ts";
+import type { QuotaCurrentFile, QuotaView } from "../src/model.ts";
 
 const NOW = new Date("2026-11-01T02:00:00Z");
 const RESET = "2026-11-01T12:00:00Z"; // 10h after NOW
@@ -117,5 +119,83 @@ describe("deriveExhaustionForecasts (#3983)", () => {
     deriveExhaustionForecasts([p], clean, NOW);
     expect(p.exhaustion).toHaveLength(1);
     expect(p.exhaustion?.[0].state).toBe("forecast");
+  });
+
+  test("stale or errored source at the limit is unknown, never exhausted (Codex P2, PR #8522)", () => {
+    for (const state of ["stale", "error"] as const) {
+      const p = pool({}, { used: 10000 });
+      p.freshness = { measuredAt: "2026-11-01T00:00:00Z", source: "test-gatherer", state };
+      const [f] = deriveExhaustionForecasts([p], clean, NOW);
+      expect(f).toMatchObject({ state: "unknown", reason: "stale_source", remaining: 0 });
+    }
+  });
+
+  test("overlay replacing windows drops forecasts derived from the old windows (Codex P2, PR #8522)", () => {
+    const p = pool();
+    deriveExhaustionForecasts([p], clean, NOW);
+    expect(p.exhaustion).toHaveLength(1);
+    const view: QuotaView = {
+      pools: [{ ...p, id: "p1svc" }],
+      burn: [],
+      choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+    };
+    const file: QuotaCurrentFile = {
+      version: 1,
+      generatedAt: NOW.toISOString(),
+      source: "test-gatherer",
+      heartbeat: { tickAt: NOW.toISOString(), ok: true, durationMs: 1, perProvider: {} },
+      providers: [
+        {
+          providerId: "meta",
+          providerName: "Meta",
+          serviceId: "p1svc",
+          state: "ok",
+          measuredAt: NOW.toISOString(),
+          source: "test-gatherer",
+          windows: [{ name: "5h", pctOfLimit: 10, resetsAt: RESET }],
+        },
+      ],
+    };
+    const out = overlayQuotaCurrent(view, file, NOW);
+    expect(out.pools[0].windows[0].used).toBe(10);
+    expect(out.pools[0].exhaustion).toBeUndefined();
+  });
+
+  // Property coverage (Codex P1, PR #8522). Oracle: the invariants
+  // themselves over generated histories from a seeded PRNG (no new
+  // dependency; the seed makes every failure reproducible).
+  test("properties: P80 never exhausts later than P50; foreign/reset-straddling obs never change a forecast", () => {
+    let seed = 0x3983;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    for (let iter = 0; iter < 200; iter++) {
+      const n = 3 + Math.floor(rnd() * 6); // 3..8 observations -> 2..7 pair rates
+      const series: PoolWindowObservation[] = [];
+      let used = Math.floor(rnd() * 2000);
+      let t = Date.parse("2026-11-01T00:30:00Z");
+      for (let i = 0; i < n; i++) {
+        series.push(obs(used, new Date(t).toISOString()));
+        used += Math.floor(rnd() * 900);
+        t += (5 + Math.floor(rnd() * 10)) * 60000;
+      }
+      const newestMs = Date.parse(series[series.length - 1].at);
+      const now = new Date(newestMs + 30 * 60000);
+      const mkPool = () => pool({}, { used: Math.min(used, 9000) });
+      const [f] = deriveExhaustionForecasts([mkPool()], series, now);
+      if (f.state === "forecast") {
+        expect(f.ratesPerMin!.p80).toBeGreaterThanOrEqual(f.ratesPerMin!.p50);
+        expect(Date.parse(f.p80ExhaustsAt!)).toBeLessThanOrEqual(Date.parse(f.p50ExhaustsAt!));
+      }
+      // Foreign-pool observations and previous-reset observations are noise:
+      const noisy = [
+        ...series,
+        { pool: "other", provider: "meta", window: "5h", unit: "tokens", used: 99999, resetsAt: RESET, at: series[0].at },
+        obs(99999, series[0].at, "2026-10-31T12:00:00Z"),
+      ];
+      const [g] = deriveExhaustionForecasts([mkPool()], noisy, now);
+      expect(g).toEqual(f);
+    }
   });
 });

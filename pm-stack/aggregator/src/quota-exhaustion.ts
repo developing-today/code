@@ -68,6 +68,16 @@ export function deriveExhaustionForecasts(
         continue;
       }
       const remaining = w.limit - w.used;
+      // Freshness BEFORE the exhausted shortcut (Codex P2 on PR #8522):
+      // a stale/errored pool can retain a last-known window at its
+      // limit (quota-current.ts preserves dated windows for stale
+      // reads and adopts retained windows on errors); if the quota
+      // has since reset, that retained reading asserts nothing about
+      // current exhaustion. Stale source = explicit unknown, always.
+      if (pool.freshness && pool.freshness.state !== "ok") {
+        unknown("stale_source", remaining);
+        continue;
+      }
       if (remaining <= 0) {
         forecasts.push({ ...base, state: "exhausted", remaining, exhaustsAt: now.toISOString() });
         continue;
@@ -76,17 +86,17 @@ export function deriveExhaustionForecasts(
         unknown("missing_reset", remaining);
         continue;
       }
-      if (pool.freshness && pool.freshness.state !== "ok") {
-        unknown("stale_source", remaining);
-        continue;
-      }
 
       // Measured pair rates for the CURRENT period only: both sides
       // carry this window's resetsAt, are strictly ordered, and are
       // at most RATE_WINDOW_MS apart with a non-negative delta.
-      const series = [...(byWindow.get(`${pool.id}${w.name}`) ?? [])].sort(
-        (a, b) => Date.parse(a.at) - Date.parse(b.at),
-      );
+      // Filter to the current period BEFORE pairing: a previous-
+      // reset observation interleaved in time must not break the
+      // adjacency of consecutive current-period pairs (property
+      // coverage, Codex P1 on PR #8522).
+      const series = [...(byWindow.get(`${pool.id}${w.name}`) ?? [])]
+        .filter((o) => o.resetsAt === w.resetsAt)
+        .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
       const newest = series[series.length - 1];
       if (!newest || nowMs - Date.parse(newest.at) > RATE_WINDOW_MS) {
         unknown("no_measured_burn", remaining);
