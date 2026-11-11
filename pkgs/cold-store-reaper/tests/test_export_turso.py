@@ -359,6 +359,26 @@ class TestDumpRepairFilter(unittest.TestCase):
         expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
         self.assertEqual(self.run_filter_capped(data, 4096), expected)
 
+    def test_over_cap_valid_candidate_end_recognised_before_blank_line(self):
+        # Codex P2 on PR #8415 (second round): a correctly escaped
+        # candidate that crosses the cap BEFORE its terminating line
+        # enters pass-through; when a blank line follows the
+        # terminating line, ends_statement() applied to the lone
+        # terminating line cannot recognise the end (no statement
+        # head for its valid-literal path, and a blank lookahead
+        # fails the top-level fallback), so pass-through leaked into
+        # the following statement, which streamed through unrepaired.
+        # The pass-through literal tracker recognises the end from
+        # the statement's own bytes.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 100  # 10 KB, no terminator line
+        data = opener + filler + b"');\n" + b"\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + b"\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
     def test_over_cap_candidate_emits_before_eof(self):
         # #6525, the streaming half of the oracle: with stdin held
         # open, output from an over-cap candidate must already be
