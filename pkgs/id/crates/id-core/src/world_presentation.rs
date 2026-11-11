@@ -510,17 +510,23 @@ fn top_level_kind_is_duplicated(data: &str) -> bool {
         where
             A: MapAccess<'de>,
         {
+            // No early return on the duplicate: serde_json calls
+            // end_map() after the visitor returns, so leaving the map
+            // unconsumed turns the remaining entries into a trailing
+            // error that the caller maps to a negative verdict (Codex
+            // P2 on PR #8424). Record the flag and consume the rest.
             let mut seen_kind = false;
+            let mut duplicated = false;
             while let Some(key) = map.next_key::<String>()? {
                 let _ignored = map.next_value::<IgnoredAny>()?;
                 if key == "kind" {
                     if seen_kind {
-                        return Ok(true);
+                        duplicated = true;
                     }
                     seen_kind = true;
                 }
             }
-            Ok(false)
+            Ok(duplicated)
         }
     }
 
@@ -1420,6 +1426,11 @@ mod tests {
             r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["toolong"],"rows":["hi"]}"#,
             // Duplicate kind: the dispatch itself must not be last-wins.
             r#"{"kind":"screen","kind":"text","version":1,"lines":["hi"]}"#,
+            // Duplicate kind whose survivor is NOT a surface kind, with
+            // further fields after the duplicate: the top-level scan
+            // must consume the whole map or its verdict is lost to a
+            // trailing-content error (Codex P2 on PR #8424).
+            r#"{"kind":"screen","kind":"other","version":1}"#,
             // Duplicate key at a nested level the parser inspects (a
             // style span object).
             r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["hi"],"styles":[[{"x":0,"x":0,"length":1,"fg":0,"bg":0,"bold":false}]]}"#,
