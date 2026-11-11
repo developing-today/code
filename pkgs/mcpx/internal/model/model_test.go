@@ -180,9 +180,49 @@ func TestResolveAuto(t *testing.T) {
 	}
 }
 
+func TestResolvePluginWithInstalledPath(t *testing.T) {
+	// #1925 (task 13246): with the plugin sampler binding installed,
+	// model.provider=plugin resolves to the plugin backend and
+	// generates through that path.
+	sampler := func(_ context.Context, req Request) (Response, error) {
+		return Response{Text: "from the plugin answerer", Model: req.Model}, nil
+	}
+	p, err := Resolve(Config{Provider: "plugin", PluginSampler: sampler})
+	if err != nil {
+		t.Fatalf("Resolve(plugin with path): %v", err)
+	}
+	if p == nil || p.Name() != "plugin" {
+		t.Fatalf("Resolve(plugin with path) = %v, want the plugin provider", p)
+	}
+	resp, err := p.Generate(context.Background(), Request{Model: "some-model"})
+	if err != nil {
+		t.Fatalf("plugin Generate: %v", err)
+	}
+	if resp.Text != "from the plugin answerer" || resp.Provider != "plugin" {
+		t.Errorf("plugin Generate = %+v, want the sampler's text stamped provider=plugin", resp)
+	}
+	// The bare provider with no function installed is unavailable,
+	// never a panic.
+	if _, err := NewPluginProvider(nil).Generate(context.Background(), Request{}); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil plugin provider: err = %v, want ErrUnavailable", err)
+	}
+	// A profile chain can also name the plugin backend.
+	p, err = Resolve(Config{
+		ProfilesJSON:  `{"p":{"models":["plugin/answerer"]}}`,
+		PluginSampler: sampler,
+	})
+	if err != nil {
+		t.Fatalf("Resolve(profile naming plugin): %v", err)
+	}
+	resp, err = p.Generate(context.Background(), Request{Model: "p"})
+	if err != nil || resp.Text != "from the plugin answerer" {
+		t.Errorf("profile plugin Generate = %+v, %v; want the plugin answerer's text", resp, err)
+	}
+}
+
 func TestResolvePluginAndSamplingWithoutPath(t *testing.T) {
 	if _, err := Resolve(Config{Provider: "plugin"}); !errors.Is(err, ErrUnavailable) {
-		t.Errorf("plugin: err = %v, want ErrUnavailable (backend is a later slice, #47)", err)
+		t.Errorf("plugin without a plugin sampler: err = %v, want ErrUnavailable (no plugin answerer path installed)", err)
 	}
 	if _, err := Resolve(Config{Provider: "sampling"}); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("sampling without a sampler: err = %v, want ErrUnavailable", err)
