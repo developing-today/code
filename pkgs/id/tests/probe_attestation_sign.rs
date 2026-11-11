@@ -1,15 +1,8 @@
-//! Probe (creator-b, 2026-11-04): does `sign_genesis` / `sign_claim` refuse a
-//! signer who is not one of the agreement's two players?
-//!
-//! Pins the observed behaviour: neither sign function checks seat membership,
-//! so a stranger's events sign cleanly. `compute_state` ignores non-player
-//! genesis and claims entirely, so such events are dead on arrival; the
-//! sign-time refusal that does exist is the duplicate-seat viewer invariant
-//! (#2863 precedent).
+//! Regression probe: signing an attestation requires the signer to be one
+//! of the agreement's two players; valid player signatures remain accepted.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use id::attestation::{
-    GenesisAgreement, MatchState, ResultClaim, author_id, compute_state, player_id, sign_claim,
-    sign_genesis,
+    GenesisAgreement, ResultClaim, SignError, player_id, sign_claim, sign_genesis,
 };
 use p2panda_core::{Hash, SigningKey};
 
@@ -20,7 +13,7 @@ fn key(seed: u8) -> SigningKey {
 }
 
 #[test]
-fn probe_nonplayer_signers() {
+fn probe_nonplayer_signers_are_refused() {
     let x = key(0);
     let o = key(100);
     let stranger = key(200);
@@ -31,49 +24,30 @@ fn probe_nonplayer_signers() {
         witness: None,
         objection_window_secs: 3600,
     };
-    // 1. A non-player signs the genesis agreement.
-    let g_stranger = sign_genesis(&stranger, 0, None, &agreement, vec![]);
-    assert!(
-        g_stranger.is_ok(),
-        "sign_genesis does not refuse a non-player signer"
-    );
-    // 2. A non-player signs a result claim answering the agreement.
     let claim = ResultClaim {
         agreement: agreement.agreement_hash().unwrap(),
         outcome: "draw".to_owned(),
         final_state_hash: Hash::digest(b"final"),
         frontiers: vec![],
     };
-    let c_stranger = sign_claim(&stranger, 0, None, &claim, vec![]);
+
+    let stranger_genesis = sign_genesis(&stranger, 0, None, &agreement, vec![]);
     assert!(
-        c_stranger.is_ok(),
-        "sign_claim does not refuse a non-player signer"
+        matches!(stranger_genesis, Err(SignError::NotAPlayer)),
+        "expected NotAPlayer, got {stranger_genesis:?}"
     );
-    // 3. Viewer side: even with both players' genuine genesis events,
-    //    the stranger's claim cannot move the state (still Proposed,
-    //    since only one player -- none -- has claimed; the stranger
-    //    claim is ignored).
-    let gx = sign_genesis(&x, 0, None, &agreement, vec![]).unwrap();
-    let go = sign_genesis(&o, 0, None, &agreement, vec![]).unwrap();
-    let genesis = vec![
-        (author_id(&gx), agreement.clone()),
-        (author_id(&go), agreement.clone()),
-        (author_id(&g_stranger.unwrap()), agreement.clone()),
-    ];
-    let claims = vec![(author_id(&c_stranger.unwrap()), claim.clone())];
-    let state = compute_state(&agreement, &genesis, &claims);
-    assert_eq!(
-        state,
-        MatchState::Proposed,
-        "compute_state ignores a stranger's claim"
+    let stranger_claim = sign_claim(&stranger, 0, None, &agreement, &claim, vec![]);
+    assert!(
+        matches!(stranger_claim, Err(SignError::NotAPlayer)),
+        "expected NotAPlayer, got {stranger_claim:?}"
     );
-    // Controls: player-signed genesis/claim work as documented.
+
+    // Controls: valid player signatures work, and duplicate seats are refused.
     assert!(sign_genesis(&x, 0, None, &agreement, vec![]).is_ok());
-    assert!(sign_claim(&x, 0, None, &claim, vec![]).is_ok());
-    // And the duplicate-seat refusal (the existing sign-time check):
-    let dup = GenesisAgreement {
+    assert!(sign_claim(&x, 0, None, &agreement, &claim, vec![]).is_ok());
+    let duplicate_seat = GenesisAgreement {
         players: [player_id(&x), player_id(&x)],
-        ..agreement.clone()
+        ..agreement
     };
-    assert!(sign_genesis(&x, 0, None, &dup, vec![]).is_err());
+    assert!(sign_genesis(&x, 0, None, &duplicate_seat, vec![]).is_err());
 }
