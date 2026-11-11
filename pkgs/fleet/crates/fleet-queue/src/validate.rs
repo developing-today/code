@@ -105,11 +105,16 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         }
         _ => errs.push("payload.risk.level: must be low|medium|high".to_string()),
     }
-    for f in ["timebox_minutes", "max_attempts"] {
+    for f in ["timebox_minutes"] {
         let ok =
             matches!(get(f), Some(Value::Number(n)) if n.as_i64().map(|v| v >= 1).unwrap_or(false));
         if !ok {
             errs.push(format!("payload.{f}: must be a positive integer"));
+        }
+    }
+    if let Some(value) = get("max_attempts") {
+        if !valid_max_attempts(value) {
+            errs.push("payload.max_attempts: must be an integer between 1 and 100".to_string());
         }
     }
     let ded_ok = matches!(get("dedupe"), Some(Value::Object(d))
@@ -482,6 +487,10 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
 }
 
 /// validate_packet: returns (errors, warnings).
+fn valid_max_attempts(value: &Value) -> bool {
+    value.as_u64().is_some_and(|n| (1..=100).contains(&n))
+}
+
 pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -495,6 +504,16 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
         );
     };
     errors.extend(manual_schema_errors(payload));
+
+    if let Some(value) = obj.get("max_attempts") {
+        if !valid_max_attempts(value) {
+            errors.push("packet.max_attempts: must be an integer between 1 and 100".to_string());
+        } else if let Some(other) = payload.get("max_attempts") {
+            if valid_max_attempts(other) && value != other {
+                errors.push("packet.max_attempts: must match payload.max_attempts".to_string());
+            }
+        }
+    }
 
     match obj.get("title") {
         Some(Value::String(t)) if !t.trim().is_empty() => {}
@@ -582,6 +601,38 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packet_max_attempts_validation_and_selection() {
+        let payload = payload_with(json!({"issue": {"number": 6423}}));
+        let base = json!({"title": "test", "priority": 30, "payload": payload});
+        for bad in [json!(0), json!(-1), json!(101), json!(1.5), json!("4"), json!(null)] {
+            for top in [true, false] {
+                let mut packet = base.clone();
+                if top { packet["max_attempts"] = bad.clone(); }
+                else { packet["payload"]["max_attempts"] = bad.clone(); }
+                let field = if top { "packet.max_attempts" } else { "payload.max_attempts" };
+                assert!(validate_packet(&packet).0.iter().any(|e| e.contains(field)), "{packet}");
+            }
+        }
+        let mut packet = base.clone();
+        packet["max_attempts"] = json!(5);
+        assert!(validate_packet(&packet).0.iter().any(|e| e.contains("must match")));
+        for n in [1, 4, 100] {
+            packet["max_attempts"] = json!(n);
+            packet["payload"]["max_attempts"] = json!(n);
+            assert!(!validate_packet(&packet).0.iter().any(|e| e.contains("max_attempts")));
+            assert_eq!(task_from_packet(&packet, "q")["max_attempts"], n);
+        }
+        packet["payload"].as_object_mut().unwrap().remove("max_attempts");
+        assert!(!validate_packet(&packet).0.iter().any(|e| e.contains("max_attempts")));
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 100);
+        packet.as_object_mut().unwrap().remove("max_attempts");
+        assert!(!validate_packet(&packet).0.iter().any(|e| e.contains("max_attempts")));
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 4);
+        packet["payload"]["max_attempts"] = json!(7);
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
 
     fn payload_with(identity: serde_json::Value) -> Value {
         let mut payload = json!({
