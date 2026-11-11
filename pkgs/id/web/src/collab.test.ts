@@ -391,7 +391,16 @@ describe("step chunking over a live connection (#4324)", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const view = conn.editor!.view;
     const huge = "x".repeat(MAX_STEPS_MESSAGE_BYTES + 1024);
-    view.dispatch(view.state.tr.insertText(huge, 1));
+    // Since #4119 the editor splitter chunks a plain oversized text
+    // insertion into bounded steps before the collab plugin sees it, so a
+    // plain single-step dispatch no longer reaches this wedge. The
+    // splitter only rewrites single-step transactions: a two-step
+    // transaction whose head step alone exceeds the budget passes through
+    // intact, which is the remaining wedge case (any un-splittable
+    // oversized head step behaves the same way).
+    const tr = view.state.tr.insertText(huge, 1);
+    tr.insertText("z", huge.length + 1);
+    view.dispatch(tr);
 
     // The step alone exceeds the per-message byte budget: nothing is sent,
     // so the server never refuses the frame and the reconnect path never
@@ -405,7 +414,7 @@ describe("step chunking over a live connection (#4324)", () => {
       "byte message budget and cannot be synced; edit kept locally only.",
     );
     // The edit is kept in the local document rather than discarded.
-    expect(view.state.doc.textContent).toBe(huge);
+    expect(view.state.doc.textContent).toBe(huge + "z");
     consoleError.mockRestore();
   });
 
