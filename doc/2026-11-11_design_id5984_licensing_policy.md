@@ -141,10 +141,11 @@ licensing {
 
 ### 4.3 Evaluation semantics
 
-1. **Admission test for (artifact, kind, principal):** collect the policies whose kind scope matches the artifact's kind and whose principal scope contains the uploader. Evaluate in order: a matching **deny** refuses; else a matching **allow** admits (allows are exceptions *within* a ceiling — an allow names entries the ceiling would otherwise refuse); else the **ceiling** decides (level ≤ ceiling admits); a server whose matched policy has an allowlist admits only its entries (the allowlist replaces the ceiling test for that scope).
-2. **Principal-group exceptions are first-class**, per the issue's requirement — they are the same primitives with a narrower `principals=` scope, not an afterthought bolted onto a global policy.
-3. **Refusals are explained**: the upload response names the rule that refused (policy scope, primitive, and the artifact's classified level/family) — an unexplained license refusal is a support ticket, an explained one is the policy working.
-4. **Unclassified artifacts** (`LicenseRef-Unknown`, #5977 §2.6) fail the ceiling test above level 0 by construction and are refused for public distribution until classified — detection (#6008) is expected to shrink this set; a human admin override is itself a policy rule (an `allow` for a named principal), so overrides are auditable in the same language.
+0. **Hard denies first.** A top-level `deny` (outside any `policy` block) is a server-wide constraint: it refuses before any scoped policy is consulted, and no `allow` in any policy overrides it. The shipped NC deny (§5) lives at this tier. Scoped denies, by contrast, are rules of their policy only (step 2).
+1. **The unknown gate.** An artifact classified `LicenseRef-Unknown` (#5977 §2.6) is refused for public distribution **before** any ceiling test — explicitly, not by ladder arithmetic: the taxonomy assigns `LicenseRef-Unknown` level 2 (`warning`), so the shipped ceiling of 2 would otherwise *admit* unidentified licenses, which is never intended. The only way past the gate is an explicit `allow "LicenseRef-Unknown"` in a matching policy (an auditable admin decision, e.g. for a named principal migrating legacy content), and passing the gate subjects the artifact to the rest of the test normally.
+2. **Scope precedence: the narrowest matching policy decides.** Among policies whose kind scope matches the artifact's kind and whose principal scope contains the uploader, the most specific one decides alone: a principal-named scope beats `principals="all"`, and a kind-named scope beats `kind="all"` (a policy narrow on both axes beats one narrow on either). Broader matching policies do not also apply — this is what lets a group policy *relax* a global allowlist for its members (§4.4, policy 4) instead of merely adding to it. Within the deciding policy: a matching **deny** refuses; else a matching **allow** admits (allows are exceptions *within* a ceiling — an allow names entries the ceiling would otherwise refuse); else the **ceiling** decides (level ≤ ceiling admits); a deciding policy with an allowlist admits only its entries (the allowlist replaces the ceiling test for that policy).
+3. **Principal-group exceptions are first-class**, per the issue's requirement — they are the same primitives with a narrower `principals=` scope, not an afterthought bolted onto a global policy.
+4. **Refusals are explained**: the upload response names the rule that refused (policy scope, primitive, and the artifact's classified level/family) — an unexplained license refusal is a support ticket, an explained one is the policy working.
 
 ### 4.4 The four example policies, expressed
 
@@ -177,14 +178,17 @@ licensing {
 ```kdl
 licensing {
     policy kind="all" principals="all" {
-        ceiling 4                       // everything else is admissible
-        deny family="strong-copyleft"   // GPL-2, GPL-3, LGPL…
-        deny family="network-copyleft"  // AGPL, SSPL
+        ceiling 4                        // everything else is admissible
+        deny family="strong-copyleft"    // GPL-2, GPL-3
+        deny family="network-copyleft"   // AGPL, SSPL
+        deny "LGPL-2.1-only" "LGPL-2.1-or-later" "LGPL-3.0-only" "LGPL-3.0-or-later"
     }
 }
 ```
 
-This is the case that proves names are the wrong substrate: "GPL in the name" as a substring rule would miss `SSPL-1.0`'s network-copyleft facts and wrongly catch nothing about `LGPL`'s trait profile, while a family match expresses the admin's actual intent — no copyleft-by-name licenses — completely, and stays correct as the taxonomy appends entries (#5977 §6: entries are append-only, and new copyleft entries arrive *with* their family, so this policy covers licenses that do not exist yet).
+The LGPL line is explicit because the taxonomy files LGPL under `weak-copyleft` (§2.3 of the taxonomy) alongside MPL and EPL — a family deny there would refuse licenses this admin never named. The four entry ids are the whole LGPL population of the enumerated set, so the enumeration is complete, not a sample.
+
+This is the case that proves names are the wrong substrate: "GPL in the name" as a substring rule would miss `SSPL-1.0`'s network-copyleft facts, while family/entry matching expresses the admin's actual intent — no copyleft-by-name licenses — completely, and stays correct as the taxonomy appends entries (#5977 §6: entries are append-only, and new copyleft entries arrive *with* their family, so the family denies cover licenses that do not exist yet; a future LGPL-shaped entry would arrive as a named entry to add to the explicit line, visible in exactly the way a new license entering the set should be).
 
 **Policy 4 — "I only accept MIT or CC0 unless it's code written by these groups or admins."**
 
@@ -202,7 +206,7 @@ licensing {
 }
 ```
 
-The default scope is the two-entry allowlist; the exception is two group-scoped policies (one per group, or one policy naming both — the scopes are lists) that admit code from those principals up to the MPL ceiling. Non-code from the same groups stays under the default allowlist, because the issue's exception is about *code written by* those principals.
+The default scope is the two-entry allowlist; the exception is two group-scoped policies (one per group, or one policy naming both — the scopes are lists) that admit code from those principals up to the MPL ceiling. By §4.3's scope precedence, a worldsmith uploading Apache-2.0 code is decided by the group policy alone — the global allowlist does not also apply — so the exception genuinely relaxes the default for code. Non-code from the same groups stays under the default allowlist (their group policies are scoped `kind="code"`), because the issue's exception is about *code written by* those principals.
 
 ## 5. Defaults we ship
 
@@ -211,7 +215,7 @@ Out of the box, a server running our software ships:
 | Setting | Shipped default |
 | --- | --- |
 | Ladder ceiling | **2 (MPL)** — #5977 levels 0–2 supported; 3–4 flagged and not admitted for public distribution unless the admin's policy allows them |
-| Noncommercial | **Refused on our servers** — `deny trait="noncommercial"` in the default policy (§6 for the full treatment; self-hosted servers may choose otherwise) |
+| Noncommercial | **Refused on our servers** — top-level `deny trait="noncommercial"` (a §4.3 hard deny, so no group policy can allow it back in on our servers; §6 for the full treatment; self-hosted servers may choose otherwise) |
 | Unlicensed | Admitted **only** via §1.1 route 2: the §2 ToS grant **plus** the ownership attestation made at upload (the attestation checkbox is a separate act from having agreed to the ToS at signup — it is per-artifact, because it is per-artifact facts that make it true or false) |
 | Account defaults offered | §3 exactly: code MIT/Apache-2.0 pick; non-code CC0-1.0 |
 
