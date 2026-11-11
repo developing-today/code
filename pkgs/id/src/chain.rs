@@ -22,7 +22,9 @@ use p2panda_core::{AnyHeader, Hash, Header, HeaderError, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
+use crate::chat::{ChatLink, ChatMessage, is_chat_message_kind};
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
+use crate::issuer_rotation::{IssuerRotation, check_rotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
 use crate::notes::{NoteOp, check_note_op, is_note_kind};
 use crate::session_checkpoint::{SessionCheckpoint, check_session_checkpoint, is_checkpoint_kind};
@@ -46,6 +48,10 @@ const LENGTH_LIMIT: u64 = 512;
 
 /// Byte budget for speculative pre-allocation. Matches p2panda's decoder.
 const OOM_MITIGATION: usize = 64;
+
+/// p2panda's header decoder caps each CBOR text string at 512 bytes. Longer chat
+/// text is represented as chunks so the message shape's 2,048-byte limit remains usable.
+const CHAT_TEXT_CHUNK_BYTES: usize = 512;
 
 /// Why an event header, or the extension it carries, was refused.
 #[derive(Debug, thiserror::Error)]
@@ -131,6 +137,101 @@ pub struct ChainExt {
     /// the segment this checkpoint closes, signed with the header, so an
     /// event carries its whole checkpoint, and sync needs no separate body.
     pub checkpoint: Option<SessionCheckpoint>,
+    /// The issuer rotation of an `issuer.rotation` event, and `None` for every
+    /// other kind. It is the rotation record (#5526, design #2804 section 3.2): signed
+    /// with the header and persisted with it, because the event store keeps the
+    /// header but not an event body, so an event carries its whole rotation.
+    pub rotation: Option<IssuerRotation>,
+    /// The chat message of a `chat.message.v1`, and `None` for every other kind. It is the
+    /// message's body (#3799): it is signed with the header, so an event carries its
+    /// message, and sync needs no separate body.
+    pub chat: Option<ChatMessage>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ChatTextWireRef<'a> {
+    Plain(&'a str),
+    Chunks(Vec<&'a str>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ChatTextWire {
+    Plain(String),
+    Chunks(Vec<String>),
+}
+
+#[derive(Serialize)]
+struct ChatMessageWireRef<'a> {
+    text: ChatTextWireRef<'a>,
+    links: &'a [ChatLink],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatMessageWire {
+    text: ChatTextWire,
+    #[serde(default)]
+    links: Vec<ChatLink>,
+}
+
+/// A chat message's header-only wire representation. Keeping chunking here
+/// leaves the general `ChatMessage` serde shape unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HeaderChatMessage(ChatMessage);
+
+impl Serialize for HeaderChatMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let message = &self.0;
+        let text = if message.text.len() <= CHAT_TEXT_CHUNK_BYTES {
+            ChatTextWireRef::Plain(&message.text)
+        } else {
+            ChatTextWireRef::Chunks(chat_text_chunks(&message.text))
+        };
+        ChatMessageWireRef {
+            text,
+            links: &message.links,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HeaderChatMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ChatMessageWire::deserialize(deserializer)?;
+        let text = match wire.text {
+            ChatTextWire::Plain(text) => text,
+            ChatTextWire::Chunks(chunks) => chunks.concat(),
+        };
+        Ok(Self(ChatMessage {
+            text,
+            links: wire.links,
+        }))
+    }
+}
+
+/// Splits only at UTF-8 character boundaries, keeping each CBOR text string
+/// inside the header decoder's declared length limit.
+fn chat_text_chunks(text: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    for (index, character) in text.char_indices() {
+        if index > start && index + character.len_utf8() - start > CHAT_TEXT_CHUNK_BYTES {
+            chunks.push(&text[start..index]);
+            start = index;
+        }
+    }
+    if start < text.len() {
+        chunks.push(&text[start..]);
+    }
+    chunks
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
@@ -155,6 +256,10 @@ struct Wire {
     link: Option<NoteLinkOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<SessionCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rotation: Option<IssuerRotation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat: Option<HeaderChatMessage>,
 }
 
 impl From<ChainExt> for Wire {
@@ -170,6 +275,8 @@ impl From<ChainExt> for Wire {
             note: ext.note,
             link: ext.link,
             checkpoint: ext.checkpoint,
+            rotation: ext.rotation,
+            chat: ext.chat.map(HeaderChatMessage),
         }
     }
 }
@@ -191,6 +298,8 @@ impl TryFrom<Wire> for ChainExt {
             note: wire.note,
             link: wire.link,
             checkpoint: wire.checkpoint,
+            rotation: wire.rotation,
+            chat: wire.chat.map(|message| message.0),
         };
         ext.validate()?;
         Ok(ext)
@@ -213,6 +322,8 @@ impl ChainExt {
     /// any kind that is not a tag or a document kind must not.
     /// A session checkpoint kind must carry a session checkpoint that passes
     /// [`check_session_checkpoint`], and any other kind must carry none.
+    /// A rotation kind must carry an issuer rotation that passes
+    /// [`check_rotation`], and any other kind must carry none.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -336,6 +447,45 @@ impl ChainExt {
             }
             (true, Some(checkpoint)) => {
                 check_session_checkpoint(&self.kind, checkpoint)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_rotation_kind(&self.kind), &self.rotation) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries an issuer rotation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its issuer rotation",
+                    self.kind
+                )));
+            }
+            (true, Some(rotation)) => {
+                check_rotation(&self.kind, rotation)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_chat_message_kind(&self.kind), &self.chat) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a chat message",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its chat message",
+                    self.kind
+                )));
+            }
+            (true, Some(message)) => {
+                message
+                    .check()
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
@@ -473,6 +623,8 @@ mod tests {
     use p2panda_core::Extensions;
 
     use super::*;
+    use crate::currency::issuer_id;
+    use crate::issuer_rotation::{ISSUER_ROTATION_KIND, RotationMode};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.
     fn key() -> SigningKey {
@@ -494,6 +646,8 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
+            chat: None,
         }
     }
 
@@ -561,6 +715,143 @@ mod tests {
     /// Signs any extension as sequence 0 with no body, the way `sign` would.
     fn sign_raw<E: Extensions>(ext: E) -> Vec<u8> {
         Header::<E>::builder().build(&key(), ext).encode()
+    }
+
+    /// The successor key for the rotation tests: the 32 bytes of 9s.
+    fn successor_key() -> SigningKey {
+        SigningKey::from_bytes(&[9; 32])
+    }
+
+    /// A rotation extension carrying `rotation` on the rotation kind.
+    fn rotation_ext(rotation: IssuerRotation) -> ChainExt {
+        ChainExt {
+            rotation: Some(rotation),
+            ..ext(ISSUER_ROTATION_KIND, None, vec![])
+        }
+    }
+
+    /// A well-formed routine rotation out of generation 0, proven by
+    /// its successor. `key()` authors it; the successor is
+    /// [`successor_key`].
+    fn proven_rotation() -> IssuerRotation {
+        let successor = successor_key();
+        let mut rotation = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+        rotation
+            .prove_successor(&successor)
+            .expect("prove successor");
+        rotation
+    }
+
+    #[test]
+    fn test_rotation_well_formed_signs_and_decodes() {
+        let rotation = proven_rotation();
+        let event = sign(&key(), 0, None, None, rotation_ext(rotation.clone()))
+            .expect("a well-formed rotation is signed");
+        assert_eq!(decode(&event.bytes).unwrap(), event);
+        assert_eq!(event.header.extensions.rotation, Some(rotation));
+    }
+
+    #[test]
+    fn test_rotation_malformed_bodies_are_refused_at_sign_and_decode() {
+        // Non-consecutive generations: 0 -> 2, proven as built, so only
+        // the generation rule can refuse it.
+        let successor = successor_key();
+        let mut skipped = proven_rotation();
+        skipped.to_generation = 2;
+        skipped
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A generation-0 predecessor: the initial transition names a
+        // previous rotation.
+        let mut predecessor = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            Some(hash(1)),
+            issuer_id(&successor),
+            None,
+        );
+        predecessor
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A later transition naming no predecessor.
+        let mut missing_predecessor = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            1,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+        missing_predecessor
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A routine rotation asserting a compromise start, which only
+        // recovery rotations may carry.
+        let mut asserted = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            Some(hash(2)),
+        );
+        asserted
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A zeroed successor proof, never countersigned.
+        let zeroed = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+
+        // A successor proof made by a key that is not the successor.
+        let mut forged_proof = proven_rotation();
+        forged_proof
+            .prove_successor(&key())
+            .expect("prove with the wrong key");
+
+        for (name, rotation) in [
+            ("non-consecutive generation", skipped),
+            ("generation-0 predecessor", predecessor),
+            ("missing predecessor", missing_predecessor),
+            ("routine asserted compromise", asserted),
+            ("zeroed successor proof", zeroed),
+            ("forged successor proof", forged_proof),
+        ] {
+            let ext = rotation_ext(rotation);
+            assert!(
+                matches!(
+                    sign(&key(), 0, None, None, ext.clone()),
+                    Err(ChainError::Extension(_))
+                ),
+                "{name}: sign refuses the malformed rotation"
+            );
+            // A header signed outside `sign` with the same body is
+            // refused at decode too.
+            let forged = sign_raw(ext);
+            assert!(decode(&forged).is_err(), "{name}: decode refuses it");
+        }
     }
 
     #[test]
@@ -836,6 +1127,9 @@ mod tests {
                         audit_blob: Some(hash(5)),
                     },
                 }),
+                rotation: None,
+
+                chat: None,
             },
         )
         .unwrap()
@@ -1064,6 +1358,8 @@ mod golden {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
+                chat: None,
             },
         )
         .unwrap();
@@ -1083,6 +1379,8 @@ mod golden {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
+                chat: None,
             },
         )
         .unwrap();

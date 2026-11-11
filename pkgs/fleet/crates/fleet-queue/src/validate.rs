@@ -9,11 +9,18 @@ use serde_json::{Value, json};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 pub const KINDS: [&str; 4] = ["pr_shepherd", "triage", "small_fix", "ci_investigation"];
-pub const FLEET_REPOS: [&str; 6] = [
+// Both the old and the current names of the two repos that moved to the
+// developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
+// tasks carry dedupe keys with the old names and must keep validating,
+// while new tasks use the developing-today-forks names. The same applies to dezren39/nix, renamed to dezren39/darwin-nix.
+pub const FLEET_REPOS: [&str; 9] = [
     "developing-today/code",
     "developing-today/opencode",
     "developing-today/openchamber",
+    "developing-today-forks/opencode",
+    "developing-today-forks/openchamber",
     "dezren39/nix",
+    "dezren39/darwin-nix",
     "developing-today/zettel",
     "dezren39/dezren39",
 ];
@@ -368,22 +375,55 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
+    // A pre-filing source identity (#6446): {pr, finding} naming the PR
+    // the finding came from. It can stand in for the prs identity only
+    // when it is the packet's ONLY identity (source-only).
+    let source_pr = payload
+        .get("source")
+        .and_then(|s| s.get("pr"))
+        .and_then(|n| n.as_i64());
+    let has_set = payload
+        .get("set")
+        .and_then(|s| s.as_object())
+        .is_some_and(|o| !o.is_empty());
+    let source_only =
+        source_pr.is_some() && issue_no.is_none() && pr_numbers.is_empty() && !has_set;
     match m.family.as_str() {
         "fix" | "triage" => {
             let n = m.num.unwrap_or(0);
-            if let Some(ino) = issue_no {
-                if n != ino {
+            match issue_no {
+                Some(ino) if n != ino => {
                     errors.push(format!(
                         "packet.dedupe_key: issue {n} in key does not match payload.issue.number {ino}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family '{}' requires payload.issue.number {n} matching the key issue, but the payload carries no issue.number (#6446)",
+                        m.family
                     ));
                 }
             }
         }
         "pr" => {
             let n = m.num.unwrap_or(0);
-            if !pr_numbers.is_empty() && !pr_numbers.contains(&n) {
+            if !pr_numbers.is_empty() {
+                if !pr_numbers.contains(&n) {
+                    errors.push(format!(
+                        "packet.dedupe_key: PR {n} in key is not in payload.prs {pr_numbers:?}"
+                    ));
+                }
+            } else if source_only {
+                let spr = source_pr.unwrap_or(0);
+                if spr != n {
+                    errors.push(format!(
+                        "packet.dedupe_key: PR {n} in key does not match payload.source.pr {spr}"
+                    ));
+                }
+            } else {
                 errors.push(format!(
-                    "packet.dedupe_key: PR {n} in key is not in payload.prs {pr_numbers:?}"
+                    "packet.dedupe_key: family 'pr' requires a non-empty payload.prs containing PR {n} or a source-only payload.source.pr {n}, but neither is present (#6446)"
                 ));
             }
         }
@@ -403,17 +443,36 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
                         "packet.dedupe_key: pr-set {nums:?} does not match payload.prs {sp:?}"
                     ));
                 }
+            } else if source_only {
+                let spr = source_pr.unwrap_or(0);
+                if !nums.contains(&spr) {
+                    errors.push(format!(
+                        "packet.dedupe_key: pr-set {nums:?} in key does not contain payload.source.pr {spr}"
+                    ));
+                }
+            } else {
+                errors.push(format!(
+                    "packet.dedupe_key: family 'pr-set' requires a non-empty payload.prs matching pr-set {nums:?} or a source-only payload.source.pr in {nums:?}, but neither is present (#6446)"
+                ));
             }
         }
         "set" => {
             let origin = m.origin.unwrap_or(0);
-            if let Some(st) = payload.get("set").and_then(|s| s.as_object()) {
-                if let Some(oi) = st.get("origin_issue").and_then(|v| v.as_i64()) {
-                    if oi != origin {
-                        errors.push(format!(
-                            "packet.dedupe_key: origin issue {origin} does not match payload.set.origin_issue {oi}"
-                        ));
-                    }
+            let set_origin = payload
+                .get("set")
+                .and_then(|s| s.get("origin_issue"))
+                .and_then(|v| v.as_i64());
+            match set_origin {
+                Some(oi) if oi != origin => {
+                    errors.push(format!(
+                        "packet.dedupe_key: origin issue {origin} does not match payload.set.origin_issue {oi}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family 'set' requires payload.set.origin_issue {origin} matching the key origin, but the payload carries no set.origin_issue (#6446)"
+                    ));
                 }
             }
         }
@@ -613,6 +672,13 @@ mod tests {
         assert!(match_dedupe("repo-health:v1:pr:developing-today/code:pr:0").is_none());
         assert!(match_dedupe("repo-health:v1:set:0:owed:developing-today/code").is_none());
         // Canonical spellings are untouched.
+        assert!(
+            match_dedupe("repo-health:v1:fix:developing-today-forks/opencode:issue:5424").is_some()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:triage:developing-today-forks/openchamber:issue:5424")
+                .is_some()
+        );
         let m = match_dedupe("repo-health:v1:fix:developing-today/code:issue:5424")
             .expect("canonical fix key matches");
         assert_eq!(m.num, Some(5424));
@@ -643,6 +709,156 @@ mod tests {
         assert!(
             match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W00")
                 .is_none()
+        );
+    }
+    fn dedupe_errs(key: &str, kind: &str, identity: serde_json::Value) -> Vec<String> {
+        let mut payload = payload_with(identity);
+        payload
+            .as_object_mut()
+            .expect("payload object")
+            .insert("kind".to_string(), json!(kind));
+        let packet = json!({"dedupe_key": key});
+        dedupe_errors(&packet, &payload)
+    }
+
+    #[test]
+    fn dedupe_cross_check_requires_the_family_identity() {
+        // #6446 controls: the matching identity present and agreeing
+        // validates, for every family.
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:222",
+                "small_fix",
+                json!({"issue": {"number": 222}}),
+            )
+            .is_empty()
+        );
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:pr:developing-today/code:pr:222",
+                "pr_shepherd",
+                json!({"prs": [{"number": 222}]}),
+            )
+            .is_empty()
+        );
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:pr-set:developing-today/code:111-222",
+                "pr_shepherd",
+                json!({"prs": [{"number": 222}, {"number": 111}]}),
+            )
+            .is_empty()
+        );
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:set:9999:owed:developing-today/code",
+                "pr_shepherd",
+                json!({"set": {"origin_issue": 9999}}),
+            )
+            .is_empty()
+        );
+        // Source-only controls: a pre-filing source identity whose pr
+        // agrees with the key validates for the pr families.
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:pr:developing-today/code:pr:588",
+                "pr_shepherd",
+                json!({"source": {"pr": 588, "finding": "f"}}),
+            )
+            .is_empty()
+        );
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:pr-set:developing-today/code:111-588",
+                "pr_shepherd",
+                json!({"source": {"pr": 588, "finding": "f"}}),
+            )
+            .is_empty()
+        );
+        // Existing mismatch controls still error.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:8888",
+                "small_fix",
+                json!({"issue": {"number": 9999}}),
+            )
+            .is_empty()
+        );
+
+        // The 7 escape cases from #6446: identity via a different field
+        // than the family names used to validate with errors=[].
+        // 1. fix key vs prs-only identity.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:222",
+                "small_fix",
+                json!({"prs": [{"number": 111}]}),
+            )
+            .is_empty()
+        );
+        // 2. triage key vs prs-only identity.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:triage:developing-today/code:issue:222",
+                "triage",
+                json!({"prs": [{"number": 111}]}),
+            )
+            .is_empty()
+        );
+        // 3. pr key vs issue-only identity.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:pr:developing-today/code:pr:222",
+                "pr_shepherd",
+                json!({"issue": {"number": 111}}),
+            )
+            .is_empty()
+        );
+        // 4. pr-set key vs issue-only identity.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:pr-set:developing-today/code:111-222",
+                "pr_shepherd",
+                json!({"issue": {"number": 9999}}),
+            )
+            .is_empty()
+        );
+        // 5. set key vs a set object without origin_issue.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:set:9999:owed:developing-today/code",
+                "pr_shepherd",
+                json!({"set": {"prs": [605, 620]}}),
+            )
+            .is_empty()
+        );
+        // 6. fix key vs source-only identity.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:777",
+                "small_fix",
+                json!({"source": {"pr": 588, "finding": "f"}}),
+            )
+            .is_empty()
+        );
+        // 7. pr key vs source-only identity naming a different PR.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:pr:developing-today/code:pr:777",
+                "pr_shepherd",
+                json!({"source": {"pr": 588, "finding": "f"}}),
+            )
+            .is_empty()
+        );
+        // A set packet whose identity is an issue object has no
+        // set.origin_issue to check the key against: rejected.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:set:9999:owed:developing-today/code",
+                "pr_shepherd",
+                json!({"issue": {"number": 9999}}),
+            )
+            .is_empty()
         );
     }
 }

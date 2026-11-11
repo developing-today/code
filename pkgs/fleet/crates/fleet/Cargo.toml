@@ -15,6 +15,9 @@ fleet-registry = { workspace = true }
 fleet-config = { workspace = true }
 fleet-proxy-proto = { workspace = true }
 fleet-queue = { workspace = true, optional = true }
+fleet-dispatch = { workspace = true, optional = true }
+fleet-dispatch-test = { workspace = true, optional = true }
+fleet-search = { workspace = true, optional = true }
 # The proxy CLIENT is part of every variant's registry (the
 # connect capability ships in all three builds); only the broker
 # half (fleet-proxy's `serve` feature) is variant-gated, through
@@ -24,6 +27,10 @@ fleet-proxy = { workspace = true, default-features = false }
 # the connect variant must not carry it (§2: "nothing else").
 fleet-secrets = { workspace = true, optional = true }
 serde_json = { workspace = true }
+# Direct dep for the SIGPIPE disposition reset in main (#5569);
+# already in the workspace lockfile as a transitive dependency.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Capability features (§2). The shipped variants are feature sets:
 #   fleet         = default (full)
@@ -40,15 +47,40 @@ full = [
   "search",
   "search-serve",
   "dispatch",
+  "dispatch-test",
   "laptop-agent",
+  "secrets",
 ]
 # The serve variant's set, as one feature for the nix build.
-serve = ["proxy-serve", "queue-broker", "secrets-broker", "search-serve"]
+serve = [
+  "proxy-serve",
+  "queue-broker",
+  "secrets-broker",
+  "search-serve",
+  "secrets",
+]
 proxy-serve = ["fleet-proxy/serve"]
 queue = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client"]
-queue-broker = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/queue-broker"]
-secrets-broker = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/secrets-broker"]
-search = ["dep:fleet-secrets"]
-search-serve = ["dep:fleet-secrets"]
-dispatch = ["dep:fleet-secrets"]
+queue-broker = [
+  "dep:fleet-secrets",
+  "dep:fleet-queue",
+  "fleet-queue/queue-broker",
+]
+secrets-broker = [
+  "dep:fleet-secrets",
+  "dep:fleet-queue",
+  "fleet-queue/secrets-broker",
+]
+# The search domain (step 5, #5433): the client crate carries its
+# own token chain (atlas's client.json), so no fleet-secrets link.
+search = ["dep:fleet-search", "fleet-search/client"]
+# The search serve role (#5604): the Atlas service, from
+# fleet-search's `serve` feature (atlas-core/embed/proto by path). Its
+# Turso token chain is atlas-core's own read-only one, so no fleet-secrets.
+search-serve = ["dep:fleet-search", "fleet-search/serve"]
+dispatch = ["dep:fleet-dispatch"]
+dispatch-test = ["dep:fleet-dispatch-test"]
+# The secrets verb (step 6, #5554): in full and serve (§2 puts the
+# secrets platform in both), never in connect ("nothing else").
+secrets = ["dep:fleet-secrets"]
 laptop-agent = ["dep:fleet-secrets"]

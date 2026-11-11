@@ -34,6 +34,16 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - **CI-first verification:** Review the checks actually triggered on the PR and use [`.github/ci-policy.md`](.github/ci-policy.md) to distinguish the basic merge-gating PR tier from the full main tier; formatting is not a merge gate. Run targeted local checks on the laptop when useful; sandboxed workers use CI and must not run builds or tests in the sandbox. If a policy-listed check is missing from the PR, inspect the workflow trigger and report the coverage gap instead of assuming it ran.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
 
+## Testing doctrine
+
+Three tools, used where they fit:
+
+- **PBT (property-based testing):** state invariants that must always hold, then let a generator hammer the code with thousands of random inputs to find counterexamples. Where code has meaningful invariants — parsers, serializers, state machines, replication, ID/crypto formats — state the invariants and cover them with property tests. In Rust here that is `proptest` (already a dev-dependency of `pkgs/id`).
+- **MBT (model-based testing):** where a system's behavior has a spec or design model, build the model and generate tests — and their expected results — from it, instead of hand-writing cases only.
+- **Oracles:** the decision procedure that tells you whether actual output matches expected — the hard part of automated testing. Every automated test names its oracle: a reference implementation, the model, an invariant check, or a golden corpus. A test with no decidable oracle is a smell to fix, not ship.
+
+Example-based tests remain fine for smoke and acceptance coverage; they do not replace PBT/MBT where those fit.
+
 ## Worker Git preflight
 
 At the start of each task, before relying on Git names such as `origin/main`, run `bash "$(git rev-parse --show-toplevel)/scripts/worker-preflight.sh"`. If it reports `refs/heads/origin/main`, stop and escalate; do not delete the branch or alter refs as part of task work. That local branch shadows the remote-tracking ref.
@@ -46,6 +56,28 @@ Muse cron, OpenCode/OpenChamber scheduled tasks or laptop systemd
 timers — updates that registry in the same pass (same PR /
 same run). A schedule that exists on a surface but not in the registry
 is a defect.
+
+## Filing an issue outside a creator run
+
+**File and enqueue in the same pass.** Any lane that files a GitHub issue
+outside a creator run — a work lane filing a blocker mid-task, an audit
+lane, a hand filing — enqueues that issue's triage packet in the same
+pass, or records in the filing comment why it is deliberately not
+queued. An issue filed without a queue item is invisible to every worker
+lane: nothing dispositions it, and it sits open until someone notices by
+hand (#7016).
+
+```bash
+repo-queue enqueue <packet.json> --queue repo-health-<repo>-pilot
+```
+
+The standing backstop is the coverage reconciliation
+(`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
+must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
+in its own pilot queue. A `done` task is not coverage, and neither is a
+task in a `*-shadow` queue. When the reconciliation reports uncovered
+issues, the rule above was missed somewhere; fix the filing path, not
+just the import.
 
 ## Research, design and delivery workflow
 
@@ -71,3 +103,41 @@ These apply whenever other agents may share the repository. Reasons and detail: 
 - **Never** `git stash` (all worktrees share it; use a WIP commit), force push, rebase, `git add .` (stage explicit paths), `gc`/`prune` or `sudo`. Merge commits only; merge the base in before opening or landing a PR.
 - **Final message:** branch, PR URL, last pushed SHA, what was verified and what was not.
 - **A merged branch is dead** (GitHub deletes it). Follow-up work goes on a new branch and PR.
+
+### Subsession working pattern
+
+How a session works through subsessions. Mechanics verified against the
+production server on 2026-11-06; the review flow is the standing
+design-mill protocol.
+
+- **Worktrees always, directory explicit.** Every session works in a
+  worktree on its own branch, never the primary checkout. A subsession
+  inherits its parent's directory and, unless a model is passed, its
+  parent's route: launch children from the directory their work belongs
+  in, and state the directory and route in the launch prompt anyway, so
+  the record shows intent.
+- **Scope the task to the context it needs.** A child gets a crisp spec
+  and only the context that task requires; the parent keeps the whole
+  picture. Independent tasks launch in parallel. Follow up with a finished
+  subsession by its session id instead of relaunching cold.
+- **Foreground waits; background notifies.** A foreground `subagent` call
+  returns the child's final output inline. A background launch returns at
+  once and its completion arrives as its own turn: do not poll in a hot
+  loop, sleep, or duplicate the running child's work.
+- **Own reviewer before return.** Work that launches reviewer/judge
+  subsessions returns to its parent only when the worker and the reviewer
+  agree it is complete and correct; disagreement loops through gap-fill
+  sessions and re-review. Orchestrators run their own reviewers for total
+  scope, cohesion, completeness, and end-to-end correctness, guiding
+  implementer sessions to fill gaps — orchestrators do not implement.
+- **Verify what a child did.** For anything that writes, read its diff and
+  artifacts, not just its final message; the final message is enough for
+  pure lookups.
+- **Detached sessions never call the `question` tool.** There is no user
+  watching: the call blocks the child and its foreground parent, nobody is
+  notified, and the fleet retry can re-ask the same question in a loop.
+  Record the question with the default you chose and continue.
+- **A session cannot change its own model.** The route ref set at creation
+  is what it runs (the serving leaf inside a route varies per step). If a
+  task needs a different head, launch a subsession on that head; switching
+  models mid-session also discards the prompt cache.

@@ -53,26 +53,29 @@ impl GroupLog {
     ///
     /// Fails if the file cannot be read, or a complete line is not an event.
     pub fn open(path: &Path) -> Result<Self> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
         };
         let mut events = Vec::new();
         let mut kept = 0;
-        for (number, line) in text.split_inclusive('\n').enumerate() {
-            if !line.ends_with('\n') {
+        for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if !line.ends_with(b"\n") {
                 tracing::warn!(
                     "group log {}: dropping torn final entry at byte {kept}",
                     path.display()
                 );
                 break;
             }
-            if line.trim().is_empty() {
+            let text = std::str::from_utf8(line).with_context(|| {
+                format!("{}: line {} is not an event", path.display(), number + 1)
+            })?;
+            if text.trim().is_empty() {
                 kept += line.len();
                 continue;
             }
-            match serde_json::from_str::<Event>(line.trim_end()) {
+            match serde_json::from_str::<Event>(text.trim_end()) {
                 Ok(event) => {
                     events.push(event);
                     kept += line.len();
@@ -84,7 +87,7 @@ impl GroupLog {
                 }
             }
         }
-        if kept < text.len() {
+        if kept < bytes.len() {
             OpenOptions::new()
                 .write(true)
                 .open(path)
@@ -142,6 +145,34 @@ impl GroupLog {
         }
         self.events = next;
         Ok(Recorded { event: id, outcome })
+    }
+
+    /// Records an event that was already formed elsewhere, keeping its
+    /// ID and its place in its own chain: the seeding path for events a
+    /// config provisioned (#5119 slice 3). An event whose ID the log
+    /// already holds is skipped and changes nothing, so seeding the
+    /// same events on every start is a no-op after the first.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the events cannot be folded, or the file cannot be
+    /// written. Nothing is written when the fold fails.
+    pub fn record_preformed(&mut self, event: &Event) -> Result<Option<Recorded>> {
+        if self.events.iter().any(|held| held.id == event.id) {
+            return Ok(None);
+        }
+        let mut next = self.events.clone();
+        next.push(event.clone());
+        let outcome = fold(&next)?
+            .outcome(&event.id)
+            .cloned()
+            .context("the fold did not decide the event")?;
+        self.append(event)?;
+        self.events = next;
+        Ok(Some(Recorded {
+            event: event.id,
+            outcome,
+        }))
     }
 
     /// The IDs no event names in its `after`. A new event names these, so it comes after all of them.
@@ -374,6 +405,36 @@ mod tests {
     }
 
     #[test]
+    fn test_record_preformed_seeds_once_and_then_skips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        // Form the event in a scratch log, as provisioning forms it
+        // away from the log it will seed.
+        let scratch = dir.path().join("scratch.jsonl");
+        let mut formed = GroupLog::open(&scratch).unwrap();
+        let recorded = formed.record(OWNER, None, create_body()).unwrap();
+        let event = formed.events()[0].clone();
+
+        let mut log = GroupLog::open(&path).unwrap();
+        let seeded = log.record_preformed(&event).unwrap().unwrap();
+        assert_eq!(seeded.event, recorded.event);
+        assert_eq!(seeded.outcome, Outcome::Applied);
+        // Seeding the same event again changes nothing.
+        assert!(log.record_preformed(&event).unwrap().is_none());
+        assert_eq!(log.events().len(), 1);
+        // And the seeded event is what a reopen reads back.
+        let reopened = GroupLog::open(&path).unwrap();
+        assert_eq!(reopened.events(), log.events());
+        assert!(
+            reopened
+                .projection()
+                .unwrap()
+                .group(&recorded.event)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn test_a_recorded_event_is_read_back_and_folds_the_same() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(FILE_NAME);
@@ -544,19 +605,24 @@ mod tests {
         let mut log = GroupLog::open(&path).unwrap();
         let created = log.record(OWNER, None, create_body()).unwrap();
         drop(log);
-        let good = std::fs::read_to_string(&path).unwrap();
-        // A crash mid-append leaves a partial event, no trailing newline.
+        let good = std::fs::read(&path).unwrap();
+        // A crash after the first byte of a multibyte name leaves invalid
+        // UTF-8 in the unterminated final event.
         let mut torn = good.clone();
-        torn.push_str("{\"id\":\"f00");
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
         std::fs::write(&path, torn).unwrap();
 
-        let reopened = GroupLog::open(&path).unwrap();
+        let mut reopened = GroupLog::open(&path).unwrap();
         assert_eq!(reopened.events().len(), 1);
         let projection = reopened.projection().unwrap();
         assert!(projection.group(&created.event).is_some());
         // The torn bytes are truncated, so the next append is not glued
         // onto them and replays cleanly on the next open.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        assert_eq!(std::fs::read(&path).unwrap(), good);
+        reopened.record(OWNER, None, create_body()).unwrap();
+        drop(reopened);
+        assert_eq!(GroupLog::open(&path).unwrap().events().len(), 2);
     }
 
     #[test]

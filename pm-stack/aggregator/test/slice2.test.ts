@@ -192,7 +192,6 @@ describe("session hierarchy (#898 §5)", () => {
   });
 });
 
-
 describe("roadmap grains (#898 §3)", () => {
   test("month timeline places dated rows by month and keeps quarter grain", () => {
     const tl = monthTimeline(FIXTURE_ROADMAP);
@@ -267,9 +266,9 @@ describe("roadmap grains (#898 §3)", () => {
       links: [],
     };
     const html = renderRoadmap([...FIXTURE_ROADMAP, row], await src.items([]), src.provenance(), "today");
-    expect(html).toContain("Next 3 days");
-    expect(html).toContain("Dated today row");
-    expect(html).toContain("no calendar date");
+      expect(html).toContain("Next 3 days");
+      expect(html).toContain("Dated today row");
+      expect(html).toContain("Undated or coarse horizons");
   });
 });
 

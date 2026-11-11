@@ -147,7 +147,11 @@ export function buildDigest(inputs: DigestInputs): Digest {
   const poolFreshBase = facetStale(inputs.provenanceDetail, "items", staleAgeMs, inputs.sourceKind);
   const poolFresh =
     inputs.poolAvailable === false
-      ? { stale: true, note: "fleet feed carried no projects section — the pool is unavailable, not empty; pool sections are unverified", ageMs: poolFreshBase.ageMs }
+      ? {
+          stale: true,
+          note: "fleet feed carried no projects section — the pool is unavailable, not empty; pool sections are unverified",
+          ageMs: poolFreshBase.ageMs,
+        }
       : poolFreshBase;
   const byRef = new Map(inputs.pool.map((i) => [i.ref, i] as const));
   const byUpdatedDesc = (a: ProjectPoolItem, b: ProjectPoolItem) =>
@@ -221,8 +225,7 @@ export function buildDigest(inputs: DigestInputs): Digest {
     };
   } else {
     const censusAgeMs = now.getTime() - Date.parse(inputs.needsDrew.fetchedAt);
-    const censusStale =
-      !inputs.needsDrew.complete || !Number.isFinite(censusAgeMs) || censusAgeMs > staleAgeMs;
+    const censusStale = !inputs.needsDrew.complete || !Number.isFinite(censusAgeMs) || censusAgeMs > staleAgeMs;
     const items = cap(
       inputs.needsDrew.items.map(
         (i): DigestItem => ({
@@ -271,7 +274,11 @@ export function buildDigest(inputs: DigestInputs): Digest {
     }
     const cappedQ = cap(items);
     const degradedProviders = inputs.quota.pools
-      .filter((p) => (p.freshness?.state ?? p.state) === "error" || (p.freshness?.state ?? p.state) === "stale")
+      .filter(
+        (p) =>
+          (p.freshness?.state ?? p.state) === "error" ||
+          (p.freshness?.state ?? p.state) === "stale",
+      )
       .map((p) => p.provider);
     quotaSection = {
       id: "quota",
@@ -334,14 +341,18 @@ function quotaPoolNote(pool: QuotaPool, now: Date): string | null {
   const worst = pool.windows.reduce((m, w) => Math.max(m, windowPercent(w)), 0);
   const parts: string[] = [];
   // Provider freshness (#5279 Codex): quota-current marks a pool
-  // error/stale while retaining its historical windows, but poolState()
+  // error/stale/lapsed while retaining its historical windows, but poolState()
   // derives only utilization — without this, a failed pool with low
   // windows would vanish from the outlook and a stale high reading
   // would read as a current forecast.
-  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" ? pool.state : null);
+  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed" ? pool.state : null);
   if (degraded === "error") {
     parts.push(
       `provider read error${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — current readings unavailable; any figures below are the last successful read`,
+    );
+  } else if (degraded === "lapsed") {
+    parts.push(
+      `provider lapsed${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — plan cancelled; no current readings`,
     );
   } else if (degraded === "stale") {
     parts.push(
@@ -412,11 +423,7 @@ export async function writeDigestArchive(dir: string, digest: Digest): Promise<s
   return file;
 }
 
-export async function readDigestArchive(
-  dir: string,
-  date: string,
-  kind: DigestKind = "daily",
-): Promise<Digest | null> {
+export async function readDigestArchive(dir: string, date: string, kind: DigestKind = "daily"): Promise<Digest | null> {
   try {
     const raw = await readFile(join(dir, digestArchiveName(kind, date)), "utf8");
     const parsed = JSON.parse(raw) as Digest;
@@ -426,9 +433,7 @@ export async function readDigestArchive(
   }
 }
 
-export async function listDigestArchives(
-  dir: string,
-): Promise<{ kind: DigestKind; date: string; route: string }[]> {
+export async function listDigestArchives(dir: string): Promise<{ kind: DigestKind; date: string; route: string }[]> {
   let names: string[];
   try {
     names = await readdir(dir);

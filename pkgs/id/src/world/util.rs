@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) use crate::text::sanitize_chat;
+
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -135,17 +137,6 @@ pub(crate) fn is_pre_fix_mint_display_name(name: &str) -> bool {
     }
     let count = name.chars().count();
     count == 48 || (count < 48 && name.trim() == name)
-}
-
-pub(crate) fn sanitize_chat(text: &str) -> String {
-    text.chars()
-        .filter(|ch| {
-            (!ch.is_control() || *ch == '\n' || *ch == '\t')
-                && (!crate::petname::is_format_char(*ch) || *ch == '\u{200c}' || *ch == '\u{200d}')
-        })
-        .collect::<String>()
-        .trim()
-        .to_owned()
 }
 
 #[cfg(test)]

@@ -36,6 +36,7 @@ cache default below). The script fails loudly if any invariant breaks
 (long probe not >512 tokens, tokenizer disagreement between batched
 and per-probe calls, runtime nondeterminism on a repeat embed).
 """
+
 import hashlib
 import json
 import os
@@ -151,10 +152,16 @@ def main():
             break
     long_pick = long_pick or fallback
     assert long_pick, "no corpus chunk with >512 tokens found"
-    print(f"long probe: chunk {long_pick[0]} = {long_pick[2]} tokens (scanned {scanned})")
-    probes.append(("corpus_long", "atlas v3 chunk, >512 tokens", long_pick[0], long_pick[1]))
+    print(
+        f"long probe: chunk {long_pick[0]} = {long_pick[2]} tokens (scanned {scanned})"
+    )
+    probes.append(
+        ("corpus_long", "atlas v3 chunk, >512 tokens", long_pick[0], long_pick[1])
+    )
     con.close()
-    probes.append(("query_style", "synthetic query-shaped text", None, QUERY_STYLE_TEXT))
+    probes.append(
+        ("query_style", "synthetic query-shaped text", None, QUERY_STYLE_TEXT)
+    )
 
     # ---- tokenize ---------------------------------------------------------
     all_texts = [p[3] for p in probes]
@@ -173,7 +180,9 @@ def main():
     batch1 = run_batch(id_lists, pad_id=1)
 
     out_probes = []
-    print(f"{'probe':<20} {'tokens':>6}  single-vs-batch0 max|d|   batch pad0-vs-pad1 max|d|")
+    print(
+        f"{'probe':<20} {'tokens':>6}  single-vs-batch0 max|d|   batch pad0-vs-pad1 max|d|"
+    )
     for i, (name, source, cid, text) in enumerate(probes):
         d_sb = float(np.max(np.abs(singles[i] - batch0[i])))
         d_pp = float(np.max(np.abs(batch0[i] - batch1[i])))
@@ -201,8 +210,12 @@ def main():
             "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
             "model_rev": MODEL_REV,
             "onnx_file": "onnx/model.onnx (fp32 graph)",
-            "model_onnx_sha256": sha256_file(os.path.join(model_dir, "onnx", "model.onnx")),
-            "tokenizer_json_sha256": sha256_file(os.path.join(model_dir, "tokenizer.json")),
+            "model_onnx_sha256": sha256_file(
+                os.path.join(model_dir, "onnx", "model.onnx")
+            ),
+            "tokenizer_json_sha256": sha256_file(
+                os.path.join(model_dir, "tokenizer.json")
+            ),
             "onnxruntime_version": ort.__version__,
             "transformers_version": transformers.__version__,
             "python_tokenizers_version": tokenizers_rs.__version__,
@@ -219,10 +232,14 @@ def main():
         },
         "probes": out_probes,
     }
-    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed-probes.json")
+    out_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "embed-probes.json"
+    )
     with open(out_path, "w") as f:
         json.dump(fixture, f, indent=1, ensure_ascii=False)
-    print(f"wrote {out_path} ({os.path.getsize(out_path)} bytes, {len(out_probes)} probes)")
+    print(
+        f"wrote {out_path} ({os.path.getsize(out_path)} bytes, {len(out_probes)} probes)"
+    )
 
 
 if __name__ == "__main__":

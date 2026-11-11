@@ -73,6 +73,8 @@ impl Chains {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
+            chat: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -133,6 +135,9 @@ impl Chains {
             note: Some(NoteOp::Create { content: doc }),
             link: None,
             checkpoint: None,
+            rotation: None,
+
+            chat: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -170,6 +175,9 @@ impl Chains {
             }),
             link: None,
             checkpoint: None,
+            rotation: None,
+
+            chat: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -205,6 +213,9 @@ impl Chains {
                 pin,
             }),
             checkpoint: None,
+            rotation: None,
+
+            chat: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));

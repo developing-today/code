@@ -1,4 +1,8 @@
 //! Serve mode (design sections 2-3; developing-today/code#5354).
+//! Source of the verbatim copy in pkgs/fleet's fleet-search crate,
+//! rehomed in #5604 (`fleet serve search`): the Atlas service must
+//! behave identically under either name, so mirror every change
+//! there. Drift guard: .github/scripts/check-fleet-search-parity.sh.
 //!
 //! One process holds the shared query embedder, a Turso backend
 //! carrying a read-only token, a bounded job scheduler, and an
@@ -30,9 +34,9 @@ use atlas_core::{
     VectorBackend as CoreVectorBackend, run_get_chunk, run_search_with_executor,
 };
 use atlas_proto::{
-    BranchState, BranchStates, ErrorResponse, HealthResponse, JobCreated, JobDeleted,
-    JobListResponse, JobStatus, JobStatusResponse, JobSummary, SearchMode as ProtoSearchMode,
-    SearchPage, SearchRequest, Sensitivity as ProtoSensitivity,
+    BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
+    JobCreated, JobDeleted, JobListResponse, JobStatus, JobStatusResponse, JobSummary,
+    SearchMode as ProtoSearchMode, SearchPage, SearchRequest, Sensitivity as ProtoSensitivity,
     VectorBackend as ProtoVectorBackend,
 };
 use serde::Deserialize;
@@ -127,7 +131,7 @@ impl Default for RuntimeLimits {
 }
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct RuntimeLimitsFile {
     job_ttl_ms: Option<u64>,
     hard_ttl_ms: Option<u64>,
@@ -175,6 +179,7 @@ pub struct ClientConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawClientConfig {
     name: String,
     token: String,
@@ -182,7 +187,7 @@ struct RawClientConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ServiceConfigFile {
     listen: Option<String>,
     vec_table: Option<String>,
@@ -198,11 +203,19 @@ pub struct ServeSettings {
     pub limits: RuntimeLimits,
 }
 
+fn home_dir() -> PathBuf {
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!("HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+    }
+}
+
 pub fn default_service_config_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".local/state/atlas-search/service.json")
+    home_dir().join(".local/state/atlas-search/service.json")
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
@@ -321,6 +334,12 @@ fn validate_limits(limits: &RuntimeLimits) -> Result<(), String> {
     }
     if limits.max_concurrent_jobs_per_client == 0 {
         return Err("max_concurrent_jobs_per_client must be at least 1".to_string());
+    }
+    if limits.max_queued_jobs == 0 {
+        return Err("max_queued_jobs must be at least 1".to_string());
+    }
+    if limits.max_queued_jobs_per_client == 0 {
+        return Err("max_queued_jobs_per_client must be at least 1".to_string());
     }
     if limits.job_ttl.is_zero() || limits.hard_ttl.is_zero() {
         return Err("job TTLs must be positive".to_string());
@@ -515,6 +534,9 @@ fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
     if req.k == 0 {
         return Err(ServerError::bad_request("k must be at least 1"));
     }
+    req.parameters
+        .validate(req.expand)
+        .map_err(ServerError::bad_request)?;
     if let Some(limit) = req.page_limit
         && limit == 0
     {
@@ -546,6 +568,19 @@ pub trait SearchEngine: Send + Sync {
         neighbors: usize,
         ceiling: ProtoSensitivity,
     ) -> Result<Json, ServerError>;
+
+    /// Embed one query text into the production query-vector
+    /// space (#6788): the Cloudflare search Worker's miss path
+    /// stores this vector in the query's Durable Object before
+    /// searching. The default refuses; engines with a resident
+    /// embedder override it.
+    fn embed_query(&self, _text: &str, _trunc: usize) -> Result<Vec<f32>, ServerError> {
+        Err(ServerError::new(
+            501,
+            "embed_unavailable",
+            "this engine does not serve embeddings",
+        ))
+    }
 
     fn embedder_state(&self) -> String;
 }
@@ -595,6 +630,7 @@ where
             embedder_label: request.embedder.clone(),
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
+            parameters: request.parameters.clone(),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -640,6 +676,12 @@ where
             return Err(not_found());
         }
         run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
+            .map_err(|e| ServerError::from_core(&e))
+    }
+
+    fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
+        self.embedder
+            .embed_query(text, trunc)
             .map_err(|e| ServerError::from_core(&e))
     }
 
@@ -771,12 +813,16 @@ where
             match_expr: query.match_expr.clone(),
             query_vector: None,
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         let vector_query = BranchQuery {
             match_expr: None,
             query_vector: query.query_vector.clone(),
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         // Fast path (Drew's usage profile, 2026-11-04): the
@@ -850,6 +896,7 @@ struct CacheKey {
     pool: usize,
     group_by_session: bool,
     expand: usize,
+    parameters: String,
     with_message: bool,
     model: String,
     embedder: String,
@@ -873,6 +920,8 @@ impl CacheKey {
             pool: req.pool,
             group_by_session: req.group_by_session,
             expand: req.expand,
+            parameters: serde_json::to_string(&req.parameters)
+                .expect("query parameters are serializable"),
             with_message: req.with_message,
             model: req.model.clone(),
             embedder: req.embedder.clone(),
@@ -1670,6 +1719,14 @@ impl JobManager {
             .chunk(chunk_id, neighbors, job.computation.effective_ceiling)
     }
 
+    /// Embed one query through the engine's shared embedder
+    /// (#6788). No job is created: the vector is a pure function
+    /// of the text under the pinned model, and the caller (the
+    /// search Worker) owns its retention.
+    pub fn embed(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
+        self.engine.embed_query(text, trunc)
+    }
+
     pub fn embedder_state(&self) -> String {
         self.engine.embedder_state()
     }
@@ -1683,6 +1740,18 @@ fn format_cursor(offset: usize) -> String {
 }
 
 fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
+    // Every byte must be an ASCII hex digit and the length even (#7761,
+    // the #2517 gate the sibling hex parsers already carry): slicing the
+    // string at byte offsets without this gate panics on an odd-length
+    // cursor (final pair out of range) or on a multi-byte character at a
+    // misaligned offset, killing the per-connection thread instead of
+    // returning the malformed-cursor 400 below. u8::from_str_radix also
+    // accepts a leading plus sign, so the gate is what makes a pair two
+    // hex digits and nothing else.
+    let raw = cursor.as_bytes();
+    if raw.len() % 2 != 0 || !raw.iter().all(u8::is_ascii_hexdigit) {
+        return Err(ServerError::bad_request("malformed cursor"));
+    }
     let bytes: Result<Vec<u8>, _> = (0..cursor.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&cursor[i..i + 2], 16))
@@ -2014,6 +2083,29 @@ impl ServerInner {
                     .unwrap(),
                 ))
             }
+            ("POST", ["v1", "embed"]) => {
+                // Authenticated like every /v1 route. The vector
+                // carries no corpus data, so any valid client may
+                // embed; ceilings govern search, not embedding
+                // (#6788).
+                self.require_client(req)?;
+                let request: EmbedRequest = req.json()?;
+                if request.query.trim().is_empty() {
+                    return Err(ServerError::bad_request("query must not be empty"));
+                }
+                let vector = self
+                    .manager
+                    .embed(&request.query, request.trunc.unwrap_or(0))?;
+                Ok(HttpResponse::json(
+                    200,
+                    serde_json::to_value(EmbedResponse {
+                        model: atlas_core::DEFAULT_MODEL.to_string(),
+                        dims: vector.len(),
+                        vector,
+                    })
+                    .unwrap(),
+                ))
+            }
             ("POST", ["v1", "search"]) => {
                 let client = self.require_client(req)?;
                 let request: SearchRequest = req.json()?;
@@ -2269,6 +2361,83 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validate_limits_rejects_zero_queue_caps() {
+        // #5630: the admission check is `queued >= cap`, so a zero
+        // queue cap rejects every submission on an empty queue --
+        // the service serves nothing but 429s. Both queue caps get
+        // the same at-least-1 guard as the concurrency caps.
+        let d = RuntimeLimits::default();
+        assert!(validate_limits(&d).is_ok());
+        assert_eq!(
+            validate_limits(&RuntimeLimits {
+                max_queued_jobs: 0,
+                ..d
+            })
+            .unwrap_err(),
+            "max_queued_jobs must be at least 1"
+        );
+        assert_eq!(
+            validate_limits(&RuntimeLimits {
+                max_queued_jobs_per_client: 0,
+                ..d
+            })
+            .unwrap_err(),
+            "max_queued_jobs_per_client must be at least 1"
+        );
+    }
+
+    #[test]
+    fn service_config_rejects_unknown_keys() {
+        // #5632: a misspelled key in service.json must be a loud
+        // parse error, never a silent fall back to defaults -- the
+        // file carries client tokens, sensitivity ceilings, the
+        // listen address, and the runtime limits. Mirrors the
+        // fleet-config deny_unknown_fields fix (#5460).
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("atlas-service-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        // A fully-spelled config loads.
+        let good = write(
+            "good.json",
+            &format!(
+                r#"{{"listen": "127.0.0.1:18799", "vec_table": "vec_chunks", "limits": {{"max_queued_jobs": 3}}, "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&good, ServeOverrides::default()).unwrap();
+        assert_eq!(settings.limits.max_queued_jobs, 3);
+        // Typo'd top-level key: the limits block must not vanish.
+        let typo_top = write(
+            "typo-top.json",
+            &format!(r#"{{"limts": {{"max_queued_jobs": 0}}, "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&typo_top, ServeOverrides::default()).unwrap_err();
+        assert!(err.contains("unknown field `limts`"), "got: {err}");
+        // Typo'd key inside limits: the cap must not vanish.
+        let typo_inner = write(
+            "typo-inner.json",
+            &format!(r#"{{"limits": {{"max_queued_job": 0}}, "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&typo_inner, ServeOverrides::default()).unwrap_err();
+        assert!(err.contains("unknown field `max_queued_job`"), "got: {err}");
+        // Typo'd key inside a client row.
+        let typo_client = write(
+            "typo-client.json",
+            r#"{"clients": [{"name": "probe", "token": "tok", "ceiling_capp": "personal"}]}"#,
+        );
+        let err = load_service_settings(&typo_client, ServeOverrides::default()).unwrap_err();
+        assert!(err.contains("unknown field"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn start(
         limits: RuntimeLimits,
         gate: Option<Arc<Gate>>,
@@ -2337,6 +2506,46 @@ mod tests {
             headers,
             body: serde_json::from_str(body).unwrap_or(Json::Null),
         }
+    }
+
+    #[test]
+    fn embed_route_serves_the_shared_embedder_vector() {
+        // #6788: the Worker miss path embeds through the service
+        // so the stored vector lives in the corpus's own space.
+        // Oracle: the harness embedder is FixedEmbedder raw
+        // [1, 0], which the shared finish step leaves as the unit
+        // vector [1, 0]; dims and model must name that space.
+        let (handle, _calls) = start(RuntimeLimits::default(), None);
+        let addr = handle.addr;
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/embed",
+            Some(PERSONAL_TOKEN),
+            Some(json!({"query": "alpha"})),
+        );
+        assert_eq!(resp.status, 200, "body: {}", resp.body);
+        assert_eq!(resp.body["model"], json!(atlas_core::DEFAULT_MODEL));
+        assert_eq!(resp.body["dims"], json!(2));
+        assert_eq!(resp.body["vector"], json!([1.0, 0.0]));
+        // Unauthenticated embedding is refused like every /v1 route.
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/embed",
+            None,
+            Some(json!({"query": "alpha"})),
+        );
+        assert_eq!(resp.status, 401);
+        // An empty query is a client error, never an embedding.
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/embed",
+            Some(PERSONAL_TOKEN),
+            Some(json!({"query": "  "})),
+        );
+        assert_eq!(resp.status, 400);
     }
 
     fn submit(addr: SocketAddr, token: &str, body: Json) -> TestResponse {
@@ -3149,5 +3358,19 @@ mod tests {
             None,
         );
         assert_eq!(result_ids(&pq.body), vec![2]);
+    }
+    #[test]
+    fn parse_cursor_refuses_malformed_input_without_panicking() {
+        // #7761: odd-length, single-char, and multibyte cursors used to
+        // panic on byte-offset slicing; every malformed shape must be
+        // the malformed-cursor error instead.
+        let valid = format_cursor(42);
+        assert_eq!(parse_cursor(&valid).ok(), Some(42));
+        assert!(parse_cursor("").is_err());
+        assert!(parse_cursor("zzzz").is_err());
+        assert!(parse_cursor("a").is_err());
+        assert!(parse_cursor(&valid[..valid.len() - 1]).is_err());
+        assert!(parse_cursor("6162aé").is_err());
+        assert!(parse_cursor("+a").is_err());
     }
 }

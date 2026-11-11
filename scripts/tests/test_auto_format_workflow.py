@@ -3,17 +3,26 @@
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/auto-format.yml"
+TEST_COMMIT_DATE = time.strftime("%Y-%m-%dT%H:00:00Z", time.gmtime())
 
 
 class AutoFormatWorkflowTest(unittest.TestCase):
     def _run_scheduled_pass(
-        self, files, last_success_sha=None, base_files=None, formatter_edits=None
+        self,
+        files,
+        last_success_sha=None,
+        base_files=None,
+        formatter_edits=None,
+        formatter_script=None,
+        race_files=None,
     ):
         # Run the workflow's real run block against a repo whose history
         # contains exactly the given files. `gh` and `nix` are stubbed so
@@ -52,7 +61,16 @@ class AutoFormatWorkflowTest(unittest.TestCase):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(content)
                 git("add", ".")
-                git("commit", "-qm", message)
+                git(
+                    "commit",
+                    "-qm",
+                    message,
+                    env={
+                        **os.environ,
+                        "GIT_AUTHOR_DATE": TEST_COMMIT_DATE,
+                        "GIT_COMMITTER_DATE": TEST_COMMIT_DATE,
+                    },
+                )
                 return subprocess.run(
                     ["git", "rev-parse", "HEAD"],
                     cwd=repo,
@@ -69,9 +87,7 @@ class AutoFormatWorkflowTest(unittest.TestCase):
             # A bare origin so the write pass can really push, and the
             # test can inspect the pushed commit afterwards.
             origin = root / "origin.git"
-            subprocess.run(
-                ["git", "init", "-q", "--bare", str(origin)], check=True
-            )
+            subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
             git("remote", "add", "origin", str(origin))
             git("push", "-q", "origin", "HEAD:main")
 
@@ -80,7 +96,7 @@ class AutoFormatWorkflowTest(unittest.TestCase):
             nix = bindir / "nix"
             nix_lines = [
                 "#!/bin/sh\n",
-                'printf "%s\\n" "$@" > "$NIX_ARGS"\n',
+                'printf "%s\\n" "$@" >> "$NIX_ARGS"\n',
             ]
             for name, content in (formatter_edits or {}).items():
                 parent = str(Path(name).parent)
@@ -89,6 +105,10 @@ class AutoFormatWorkflowTest(unittest.TestCase):
                 nix_lines.append(
                     f"printf '%s' {shlex.quote(content)} > {shlex.quote(name)}\n"
                 )
+            if formatter_script:
+                nix_lines.append(formatter_script)
+                if not formatter_script.endswith("\n"):
+                    nix_lines.append("\n")
             nix.write_text("".join(nix_lines))
             nix.chmod(0o755)
             args = root / "nix-args"
@@ -109,6 +129,46 @@ class AutoFormatWorkflowTest(unittest.TestCase):
                 "exit 0\n"
             )
             gh.chmod(0o755)
+            race_env = {}
+            if race_files:
+                real_git = shutil.which("git")
+                self.assertIsNotNone(real_git)
+                race_repo = root / "race-repo"
+                marker = root / "race-injected"
+                git_lines = [
+                    "#!/bin/sh\n",
+                    'if [ "$1" = "push" ] && [ ! -e "$GIT_RACE_MARKER" ]; then\n',
+                    '  : > "$GIT_RACE_MARKER"\n',
+                    f'  {shlex.quote(real_git)} clone -q -b main "$GIT_RACE_ORIGIN" "$GIT_RACE_REPO"\n',
+                    f'  {shlex.quote(real_git)} -C "$GIT_RACE_REPO" config user.name "Concurrent writer"\n',
+                    f'  {shlex.quote(real_git)} -C "$GIT_RACE_REPO" config user.email concurrent@example.com\n',
+                ]
+                for name, content in race_files.items():
+                    parent = str(Path(name).parent)
+                    if parent != ".":
+                        git_lines.append(
+                            f'  mkdir -p "$GIT_RACE_REPO/{shlex.quote(parent)}"\n'
+                        )
+                    git_lines.append(
+                        f"  printf '%s' {shlex.quote(content)} > \"$GIT_RACE_REPO/{shlex.quote(name)}\"\n"
+                    )
+                git_lines.extend(
+                    [
+                        f'  {shlex.quote(real_git)} -C "$GIT_RACE_REPO" add -A\n',
+                        f"  {shlex.quote(real_git)} -C \"$GIT_RACE_REPO\" commit -qm 'concurrent main update'\n",
+                        f'  {shlex.quote(real_git)} -C "$GIT_RACE_REPO" push -q origin main\n',
+                        "fi\n",
+                        f'exec {shlex.quote(real_git)} "$@"\n',
+                    ]
+                )
+                git_wrapper = bindir / "git"
+                git_wrapper.write_text("".join(git_lines))
+                git_wrapper.chmod(0o755)
+                race_env = {
+                    "GIT_RACE_ORIGIN": str(origin),
+                    "GIT_RACE_REPO": str(race_repo),
+                    "GIT_RACE_MARKER": str(marker),
+                }
             env = {
                 **os.environ,
                 "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -119,6 +179,7 @@ class AutoFormatWorkflowTest(unittest.TestCase):
                 "NIX_ARGS": str(args),
                 "GH_RECORD_FILE": str(recorded),
                 "GH_RECORD_VALUE": head,
+                **race_env,
             }
             if last_success_sha == "base":
                 last_success_sha = base_head
@@ -141,7 +202,15 @@ class AutoFormatWorkflowTest(unittest.TestCase):
             ).stdout.strip()
             pushed_tree = {}
             names = subprocess.run(
-                ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "main"],
+                [
+                    "git",
+                    "--git-dir",
+                    str(origin),
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    "main",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -248,10 +317,32 @@ class AutoFormatWorkflowTest(unittest.TestCase):
         self.assertEqual(nix_args, ["run", ".#format", "--", "parent.rs"])
         self.assertNotEqual(pushed_head, head)
         self.assertEqual(pushed_tree["child.rs"], "pub fn child() {}\n")
-        self.assertEqual(
-            pushed_tree["parent.rs"], "mod child;\n\npub fn parent() {}\n"
-        )
+        self.assertEqual(pushed_tree["parent.rs"], "mod child;\n\npub fn parent() {}\n")
         self.assertEqual(recorded_sha, pushed_head)
+
+    def test_push_race_restarts_formatting_from_new_main(self):
+        readme = "pm-stack/aggregator/README.md"
+        result, nix_args, recorded_sha, _, pushed_tree, pushed_head = (
+            self._run_scheduled_pass(
+                {readme: "Before race   \n"},
+                last_success_sha="base",
+                base_files={readme: "Base\n"},
+                race_files={readme: "Concurrent main edit   \n"},
+                formatter_script=(
+                    'for file in "$@"; do\n'
+                    '  if [ "$file" = "pm-stack/aggregator/README.md" ]; then\n'
+                    '    sed -i "s/[[:blank:]]*$//" "$file"\n'
+                    "  fi\n"
+                    "done\n"
+                ),
+            )
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(nix_args, ["run", ".#format", "--", readme] * 2)
+        self.assertEqual(pushed_tree[readme], "Concurrent main edit\n")
+        self.assertEqual(recorded_sha, pushed_head)
+        self.assertIn("main advanced during the format pass", result.stdout)
 
 
 if __name__ == "__main__":

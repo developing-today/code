@@ -43,8 +43,13 @@ pub enum Capability {
     SearchServe,
     /// `fleet dispatch …` — thin client over pm-stack dispatch.
     Dispatch,
+    /// `fleet dispatch-test …` — explicit-dispatch CI test surface.
+    DispatchTest,
     /// `fleet laptop-agent …` — client for the (Python) laptop-agent daemon.
     LaptopAgent,
+    /// `fleet secrets …` — resolve secrets by name (step 6, #5554):
+    /// the fleet-secrets chain as a verb — broker first, `bws` fallback.
+    Secrets,
 }
 
 impl Capability {
@@ -60,7 +65,9 @@ impl Capability {
             Capability::Search => "search",
             Capability::SearchServe => "search-serve",
             Capability::Dispatch => "dispatch",
+            Capability::DispatchTest => "dispatch-test",
             Capability::LaptopAgent => "laptop-agent",
+            Capability::Secrets => "secrets",
         }
     }
 
@@ -75,7 +82,9 @@ impl Capability {
         Capability::Search,
         Capability::SearchServe,
         Capability::Dispatch,
+        Capability::DispatchTest,
         Capability::LaptopAgent,
+        Capability::Secrets,
     ];
 }
 
@@ -108,6 +117,7 @@ pub fn serve_capabilities() -> CapabilitySet {
         Capability::QueueBroker,
         Capability::SecretsBroker,
         Capability::SearchServe,
+        Capability::Secrets,
     ])
 }
 
@@ -213,35 +223,53 @@ pub const DOMAINS: &[Domain] = &[
             "complete",
             "health",
             "signal",
+            "fallback",
         ],
     },
     Domain {
         name: "serve",
-        summary: "Run a fleet daemon role (queue-broker, secrets-broker, search) in the foreground.",
+        summary: "Run a fleet daemon role (queue-broker, secrets-broker, search, proxy) in the foreground.",
         capabilities: &[
             Capability::QueueBroker,
             Capability::SecretsBroker,
             Capability::SearchServe,
+            Capability::ProxyServe,
         ],
         primary: Capability::QueueBroker,
         aliases: &["queue-broker", "secrets-broker"],
-        subcommands: &["queue-broker", "secrets-broker", "search"],
+        subcommands: &["queue-broker", "secrets-broker", "search", "proxy"],
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, or connect and init a client through it.",
+        summary: "The session proxy: serve the broker socket, connect or init through it, or run recovery SSH.",
         capabilities: &[Capability::ProxyServe, Capability::ProxyConnect],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init"],
+        subcommands: &["serve", "connect", "init", "ssh"],
     },
     Domain {
         name: "dispatch",
-        summary: "Thin client over the pm-stack dispatch services (status and launch verbs).",
+        summary: "Thin client over pm-stack dispatch: status, launch, and enqueue verbs.",
         capabilities: &[Capability::Dispatch],
         primary: Capability::Dispatch,
         aliases: &[],
-        subcommands: &["status", "launch"],
+        subcommands: &["status", "launch", "enqueue"],
+    },
+    Domain {
+        name: "dispatch-test",
+        summary: "Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.",
+        capabilities: &[Capability::DispatchTest],
+        primary: Capability::DispatchTest,
+        aliases: &[],
+        subcommands: &["scan", "submit", "status"],
+    },
+    Domain {
+        name: "secrets",
+        summary: "Resolve secrets by name: the laptop secrets-broker first, Bitwarden as fallback.",
+        capabilities: &[Capability::Secrets],
+        primary: Capability::Secrets,
+        aliases: &[],
+        subcommands: &["get", "list"],
     },
     Domain {
         name: "search",

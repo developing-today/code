@@ -94,7 +94,7 @@ describe("quota extractors", () => {
         extraWindows: 0,
       },
       {
-        id: "commandcode",
+        id: "_commandcode",
         view: (reset: string) =>
           `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${reset}, 18:01 UTC.\n`,
         window: { name: "monthly credits", unit: "usd", limit: 10, used: 6.57, percent: 65.7 },
@@ -115,7 +115,7 @@ describe("quota extractors", () => {
         expect(pool.windows).toHaveLength(1 + consumer.extraWindows);
         expect(pool.windows[0]).toMatchObject(consumer.window);
         expect(pool.windows[0].resetsAt).toBe(reset.expected);
-        if (consumer.id === "commandcode") {
+        if (consumer.id === "_commandcode") {
           expect(pool.windows.slice(1).map((window) => window.percent)).toEqual([1.2, 8.8]);
         }
       }
@@ -134,7 +134,7 @@ describe("quota extractors", () => {
         view: `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${pastDate}, 18:01 UTC.\n`,
       },
       {
-        id: "commandcode",
+        id: "_commandcode",
         view: `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${pastDate}, 18:01 UTC.\n`,
       },
     ];
@@ -152,6 +152,16 @@ describe("quota extractors", () => {
     // the pool renders as a shell; the gatherer overlay supplies the
     // live windows (see quota-current.test.ts).
     expect(p.windows).toEqual([]);
+  });
+
+  test("main and alternate ChatGPT sections never cross-read, in either order (#8005)", () => {
+    const mainSection = "### ChatGPT — main account plans\n- 7-day 11% used, resets Oct 30, 18:01 UTC.\n";
+    const altSection = "### ChatGPT (Alternate)\n- 7-day 42% used.\n";
+    for (const view of ["\n" + altSection + "\n" + mainSection, "\n" + mainSection + "\n" + altSection]) {
+      const m = new Map(extractQuotaPools(view, NOW).map((p) => [p.id, p]));
+      expect(m.get("openai.main")!.windows[0].percent).toBe(11);
+      expect(m.get("openai.alternate")!.windows[0].percent).toBe(42);
+    }
   });
 
   test("meta is walled until the weekly reset — and it is the only Meta pool", () => {
@@ -238,7 +248,7 @@ describe("quota extractors", () => {
   });
 
   test("command code credits + short windows", () => {
-    const p = byId.get("commandcode")!;
+    const p = byId.get("_commandcode")!;
     expect(p.windows[0]).toMatchObject({ unit: "usd", used: 6.57, limit: 10 });
     expect(p.windows[1].percent).toBe(1.2);
     expect(p.windows[2].percent).toBe(8.8);
@@ -249,7 +259,7 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Newer dated read (model-efficiency plan, freshest reads 2026-10-25 morning): $6.57 of $10 used ($3.43 left); 5h 1.2%, weekly 8.8%; period ends Nov 2, 23:04 UTC.** **Freshest dated read (console, 2026-10-27 10:05 CDT, commandcode.ai Settings): monthly limit 69% used, resets Nov 2; weekly limit 14% (resets in 4d); 5-hour limit 0% ("No usage in this window yet"); extra/top-up credits $0.00 balance.**
 `;
-    const p = extractQuotaPools(multi, NOW).find((x) => x.id === "commandcode")!;
+    const p = extractQuotaPools(multi, NOW).find((x) => x.id === "_commandcode")!;
     expect(p.windows.map((w) => [w.name, w.percent])).toEqual([
       ["monthly", 69],
       ["weekly", 14],
@@ -264,7 +274,7 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Dated read (2026-10-25): $6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends Nov 2, 23:04 UTC.** **Freshest dated read (2026-10-30): monthly limit 55 percent used (the console printed the figure in words this cycle).**
 `;
-    const p = extractQuotaPools(stale, NOW).find((x) => x.id === "commandcode")!;
+    const p = extractQuotaPools(stale, NOW).find((x) => x.id === "_commandcode")!;
     expect(p.windows).toEqual([]);
   });
 
@@ -273,7 +283,7 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Dated read (2026-10-30 09:00 CDT): monthly limit 55% used; weekly limit 20%; 5-hour limit 3%.** **Dated update (2026-10-30 12:00 CDT): monthly limit 100 percent used (the console printed the figure in words).**
 `;
-    const p = extractQuotaPools(sameDay, NOW).find((x) => x.id === "commandcode")!;
+    const p = extractQuotaPools(sameDay, NOW).find((x) => x.id === "_commandcode")!;
     expect(p.windows).toEqual([]);
   });
 
@@ -282,13 +292,13 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Dated read (2026-10-30): extra/top-up credits $0.10 balance; hub credits 0.1 flat.**
 `;
-    const p = extractQuotaPools(balanceOnly, NOW).find((x) => x.id === "commandcode")!;
+    const p = extractQuotaPools(balanceOnly, NOW).find((x) => x.id === "_commandcode")!;
     expect(p.windows).toEqual([]);
   });
 
   test("antigravity pools are independent, remaining -> used", () => {
-    expect(byId.get("antigravity-direct.gemini")!.windows[0].percent).toBeCloseTo(0.9);
-    expect(byId.get("antigravity-direct.claude-gpt")!.windows[0].percent).toBe(0);
+    expect(byId.get("_antigravity.gemini")!.windows[0].percent).toBeCloseTo(0.9);
+    expect(byId.get("_antigravity.claude-gpt")!.windows[0].percent).toBe(0);
   });
 
   test("unreadable doc fails soft: identity + note, no invented numbers", () => {
@@ -392,9 +402,9 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
       "cline-pass",
-      "commandcode",
-      "antigravity-direct.gemini",
-      "antigravity-direct.claude-gpt",
+      "_commandcode",
+      "_antigravity.gemini",
+      "_antigravity.claude-gpt",
       "opendesign",
       "deepseek",
     ]);

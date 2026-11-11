@@ -9,7 +9,7 @@ this record land in the same PR.
 
 `id` initialized tracing as plain text to stderr with level resolution
 only (`--log-level` / `RUST_LOG` / `LOG_LEVEL` / `DEBUG`, #2322). The
-remaining #1791 scope asked for app-wide *operational* log hygiene —
+remaining #1791 scope asked for app-wide _operational_ log hygiene —
 explicitly distinct from the F12.6 world audit/telemetry records of
 #1063:
 
@@ -27,12 +27,12 @@ explicitly distinct from the F12.6 world audit/telemetry records of
 Configuration is environment-only, extending the existing env-driven
 level resolution rather than adding CLI flags (rationale below):
 
-| Variable | Values | Default |
-|---|---|---|
-| `ID_LOG_FORMAT` | `text` \| `json` | `text` |
-| `ID_LOG_FILE` | filesystem path | unset (no file destination) |
+| Variable            | Values                                                     | Default                       |
+| ------------------- | ---------------------------------------------------------- | ----------------------------- |
+| `ID_LOG_FORMAT`     | `text` \| `json`                                           | `text`                        |
+| `ID_LOG_FILE`       | filesystem path                                            | unset (no file destination)   |
 | `ID_LOG_FILE_LEVEL` | any `EnvFilter` string, e.g. `debug`, `id=trace,iroh=info` | the console's resolved filter |
-| `ID_LOG_TZ` | IANA name, `UTC`, `local`, fixed offset `+05:30` / `-0400` | `local` |
+| `ID_LOG_TZ`         | IANA name, `UTC`, `local`, fixed offset `+05:30` / `-0400` | `local`                       |
 
 Resolution lives in the library as pure functions
 (`id::structured_logging::LogConfig::resolve`, `resolve_zone`) that
@@ -94,7 +94,7 @@ Logging must never kill the node it observes:
 
 Timestamps are rendered in the host-local zone with nanosecond
 precision by default, replacing the fmt layer's previous UTC default.
-This is the #1791 ask ("host tz default"), and it is the *only*
+This is the #1791 ask ("host tz default"), and it is the _only_
 default-output change: format, destination, levels, and filter
 resolution are unchanged when no `ID_LOG_*` variable is set.
 
@@ -150,7 +150,7 @@ all accepted and fixed in the same PR:
    described above.
 3. **ANSI escape leak into the file destination (P2).**
    `tracing_subscriber` caches each span's formatted fields in the
-   span's extensions, keyed by the field formatter's *type*. Both
+   span's extensions, keyed by the field formatter's _type_. Both
    layers used `DefaultFields`, so the console layer — formatting
    first, with ANSI enabled — populated the shared cache with styled
    fields (`marker` rendered with italic/dim escapes) and the file
