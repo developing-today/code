@@ -644,6 +644,15 @@ impl WorldHandle {
             .context("world actor dropped participant lookup response")?
     }
 
+    /// Check a live capability before accepting work; mutation APIs must
+    /// still authorize again at the actor's effect boundary.
+    pub async fn authorize_scope(&self, token: JoinCapability, scope: WorldScopes) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands.send(WorldCommand::AuthorizeScope { token, scope, reply }).await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response.await.context("world actor dropped authorization response")?
+    }
+
     /// Issue a scoped participant capability.
     pub async fn issue(
         &self,
@@ -1063,6 +1072,18 @@ impl WorldHandle {
         provenance: Option<ModuleProvenance>,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
+        self.install_program_authorized_with_trust(token, module_hash, seed, provenance, None, program).await
+    }
+
+    pub async fn install_program_authorized_with_trust(
+        &self,
+        token: JoinCapability,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        trust: Option<crate::world::TrustDecision>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgramAuthorized {
@@ -1070,7 +1091,7 @@ impl WorldHandle {
                 module_hash,
                 seed,
                 provenance,
-                trust: None,
+                trust,
                 program,
                 reply,
             })

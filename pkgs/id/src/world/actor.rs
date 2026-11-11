@@ -49,6 +49,7 @@ impl WorldCommand {
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
+            Self::AuthorizeScope { .. } => "AuthorizeScope",
             Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
@@ -136,6 +137,11 @@ pub(crate) enum WorldCommand {
     },
     ParticipantId {
         token: JoinCapability,
+        reply: oneshot::Sender<Result<u64>>,
+    },
+    AuthorizeScope {
+        token: JoinCapability,
+        scope: WorldScopes,
         reply: oneshot::Sender<Result<u64>>,
     },
     Chat {
@@ -1542,6 +1548,9 @@ impl WorldActor {
             }
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
+            }
+            WorldCommand::AuthorizeScope { token, scope, reply } => {
+                let _ = reply.send(self.core.authorize(&token, scope));
             }
             WorldCommand::BindAuthorKey {
                 token,

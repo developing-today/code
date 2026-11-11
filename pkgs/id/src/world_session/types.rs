@@ -273,7 +273,8 @@ pub(crate) enum ClientFrame {
         text: String,
     },
     InstallBegin {
-        admin_token: String,
+        #[serde(default)]
+        admin_token: Option<String>,
         total_bytes: usize,
         /// Expected BLAKE3 hash. Optional for browser uploads, whose `WebCrypto`
         /// API does not provide BLAKE3; the host still computes and returns it.
@@ -288,6 +289,7 @@ pub(crate) enum ClientFrame {
         data_hex: String,
     },
     InstallEnd,
+    Revoke { participant_id: u64 },
 }
 
 /// Signer metadata supplied with an uploaded module. Public keys and
@@ -437,7 +439,10 @@ pub(crate) enum ServerFrame<'a> {
     },
     Error {
         message: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<&'a str>,
     },
+    Revoked { participant_id: u64, changed: bool },
 }
 
 /// A freshly minted guest capability.

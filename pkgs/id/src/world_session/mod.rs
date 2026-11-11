@@ -347,6 +347,7 @@ impl WorldService {
                 true,
                 Some(provenance),
                 None,
+                None,
             )
             .await
             .map_err(|error| format!("install failed: {error:?}"))?;
@@ -535,6 +536,7 @@ impl WorldService {
             false,
             None,
             signature,
+            None,
         )
         .await
     }
@@ -550,15 +552,16 @@ impl WorldService {
         compiled_from_source: bool,
         provenance: Option<crate::world::ModuleProvenance>,
         signature: Option<&ModuleSignature>,
+        builder: Option<&JoinCapability>,
     ) -> Result<(String, u64), InstallError> {
         let _profile_operation = self.profile_operation.lock().await;
-        self.authorize_admin(supplied_admin)
+        if builder.is_none() { self.authorize_admin(supplied_admin)
             .map_err(|error| match error {
                 InviteError::Disabled => InstallError::Disabled,
                 InviteError::Unauthorized => InstallError::Unauthorized,
                 InviteError::Unavailable => InstallError::Unavailable,
                 InviteError::InvalidBounds(_) => InstallError::InvalidUpload,
-            })?;
+            })?; }
         if self.source_only && !compiled_from_source {
             return Err(InstallError::RawModuleDisabled);
         }
@@ -598,7 +601,7 @@ impl WorldService {
             }
         };
         let is_native = crate::world_native::is_native_module(&wasm);
-        if is_native && !self.native {
+        if is_native && (!self.native || builder.is_some()) {
             return Err(InstallError::InvalidModule);
         }
         let guest: Box<dyn crate::world::WorldProgram> = if is_native {
@@ -700,17 +703,22 @@ impl WorldService {
             }
             None => None,
         };
-        let installed = self
-            .world
-            .install_program_with_trust(
+        let provenance = Some(provenance.unwrap_or(crate::world::ModuleProvenance::Artifact));
+        let installed = if let Some(token) = builder {
+            self.world.install_program_authorized_with_trust(
+                token.clone(), module_hash.clone(), seed, provenance, Some(trust_decision), guest,
+            ).await
+        } else {
+            self.world.install_program_with_trust(
                 module_hash.clone(),
                 seed,
-                Some(provenance.unwrap_or(crate::world::ModuleProvenance::Artifact)),
+                provenance,
                 None,
                 Some(trust_decision),
                 guest,
             )
             .await
+        }
             .map_err(|_| InstallError::Unavailable)?;
         if !matches!(
             installed.kind,
@@ -864,10 +872,10 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
 pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     match frame {
         ClientFrame::Invite { admin_token, .. }
-        | ClientFrame::InstallBegin { admin_token, .. }
         | ClientFrame::Compile { admin_token, .. }
         | ClientFrame::CreateWorld { admin_token }
         | ClientFrame::ListWorlds { admin_token } => Some(admin_token),
+        ClientFrame::InstallBegin { admin_token, .. } => admin_token.as_deref(),
         ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
         _ => None,
@@ -1294,7 +1302,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             seed,
         } => {
             if service.source_only() {
-                if service.authorize_admin(Some(&admin_token)).is_err() {
+                if service.authorize_admin(admin_token.as_deref()).is_err() {
                     let _ = send_error(service.frame_meter(), io, "module install denied").await;
                     return;
                 }
@@ -1309,7 +1317,8 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             if let Err(message) = install_module_session(
                 service,
                 io,
-                &admin_token,
+                admin_token.as_deref(),
+                None,
                 total_bytes,
                 module_hash.as_deref(),
                 signature.as_ref(),
@@ -1561,6 +1570,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         }
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd
+        | ClientFrame::Revoke { .. }
         | ClientFrame::Directory { .. }
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
@@ -1914,7 +1924,8 @@ async fn records_session<I: SessionIo>(
 async fn event_history_admin_session<I: SessionIo>(
     service: &WorldService,
     io: &mut I,
-    admin_token: &str,
+    admin_token: Option<&str>,
+    builder: Option<&JoinCapability>,
 ) -> Result<(), &'static str> {
     service
         .authorize_admin(Some(admin_token))
@@ -2021,9 +2032,7 @@ async fn download_module_admin_session<I: SessionIo>(
     admin_token: &str,
     requested_hash: &str,
 ) -> Result<(), &'static str> {
-    if admin_token.len() > MAX_ADMIN_TOKEN_BYTES
-        || service.authorize_admin(Some(admin_token)).is_err()
-    {
+    if builder.is_none() && service.authorize_admin(admin_token).is_err() {
         return Err("admin denied");
     }
     // The admin credential validated: this session is authorized, so its
@@ -2164,7 +2173,7 @@ async fn install_module_session<I: SessionIo>(
         }
         let (module_hash, sequence) = service
             .install_wasm_reserved(
-                Some(admin_token),
+                admin_token,
                 bytes,
                 seed,
                 &actual_hash,
@@ -2172,6 +2181,7 @@ async fn install_module_session<I: SessionIo>(
                 false,
                 None,
                 signature,
+                builder,
             )
             .await
             .map_err(|error| match error {
@@ -2939,6 +2949,36 @@ async fn handle_client_frame<I: SessionIo>(
                 }
             }
         }
+        ClientFrame::Revoke { participant_id } => {
+            if world.authorize_scope(token.clone(), crate::world::WorldScopes::MODERATOR).await.is_err() {
+                return send_actor_denied(service.frame_meter(), io).await;
+            }
+            return match world.revoke_authorized(token.clone(), participant_id).await {
+                Ok(changed) => send_json(service.frame_meter(), io, &ServerFrame::Revoked { participant_id, changed }).await,
+                Err(_) => {
+                    if world.authorize_scope(token.clone(), crate::world::WorldScopes::MODERATOR).await.is_err() {
+                        send_actor_denied(service.frame_meter(), io).await
+                    } else {
+                        send_error(service.frame_meter(), io, "world could not persist revocation").await
+                    }
+                }
+            };
+        }
+        ClientFrame::InstallBegin { admin_token, total_bytes, module_hash, signature, seed } => {
+            if admin_token.is_some() {
+                return send_error(service.frame_meter(), io, "joined install cannot use an admin token").await;
+            }
+            if world.authorize_scope(token.clone(), crate::world::WorldScopes::BUILDER).await.is_err() {
+                return send_actor_denied(service.frame_meter(), io).await;
+            }
+            if let Err(message) = install_module_session(service, io, None, Some(token), total_bytes, module_hash.as_deref(), signature.as_ref(), seed).await {
+                if world.authorize_scope(token.clone(), crate::world::WorldScopes::BUILDER).await.is_err() {
+                    return send_actor_denied(service.frame_meter(), io).await;
+                }
+                return send_error(service.frame_meter(), io, message).await;
+            }
+            return true;
+        }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
         | ClientFrame::Directory { .. }
@@ -2952,7 +2992,6 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::DownloadModuleAdmin { .. }
         | ClientFrame::EventHistoryAdmin { .. }
-        | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd => {
             return send_error(service.frame_meter(), io, "already joined").await;
@@ -2993,7 +3032,11 @@ async fn send_json<I: SessionIo>(meter: &WorldMetrics, io: &mut I, frame: &impl 
 }
 
 async fn send_error<I: SessionIo>(meter: &WorldMetrics, io: &mut I, message: &str) -> bool {
-    send_json(meter, io, &ServerFrame::Error { message }).await
+    send_json(meter, io, &ServerFrame::Error { message, code: None }).await
+}
+
+async fn send_actor_denied<I: SessionIo>(meter: &WorldMetrics, io: &mut I) -> bool {
+    send_json(meter, io, &ServerFrame::Error { message: "actor denied", code: Some("actor_denied") }).await
 }
 
 async fn send_delegation<I: SessionIo>(

@@ -1984,6 +1984,34 @@ mod tests {
 
     #[cfg(feature = "sandbox")]
     #[tokio::test]
+    async fn builder_session_installs_and_revoked_upload_cannot_activate() {
+        use iroh_blobs::store::mem::MemStore;
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        for revoke in [false, true] {
+            let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+            let svc = WorldService::new(world.clone(), Some("admin".to_owned()))
+                .with_blob_store(MemStore::new().into());
+            let (builder, token) = world.issue("builder", WorldScopes::from_role("builder").unwrap()).await.unwrap();
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({"type":"join","capability":token.expose()})).await;
+            assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+            peer.say(serde_json::json!({"type":"install_begin","total_bytes":wasm.len(),"seed":12})).await;
+            let ready = peer.next().await.unwrap();
+            assert_eq!(ready["type"], "upload_ready");
+            if revoke { world.revoke(builder.id).await.unwrap(); }
+            let chunk_bytes = ready["chunk_bytes"].as_u64().unwrap() as usize;
+            for (index, chunk) in wasm.chunks(chunk_bytes).enumerate() {
+                peer.say(serde_json::json!({"type":"install_chunk","offset":index * chunk_bytes,"data_hex":encode_hex(chunk)})).await;
+            }
+            peer.say(serde_json::json!({"type":"install_end"})).await;
+            let reply = peer.next().await.unwrap();
+            if revoke { assert_eq!(reply["code"], "actor_denied"); }
+            else { assert_eq!(reply["type"], "module_installed"); }
+        }
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
     async fn admin_upload_pins_validates_and_activates_a_roc_program() {
         use iroh_blobs::store::mem::MemStore;
 
@@ -2343,6 +2371,34 @@ mod tests {
                 .as_deref()
                 .is_some_and(|view| view.contains("count=1"))
         );
+    }
+
+    #[tokio::test]
+    async fn guest_session_cannot_install_or_revoke() {
+        let svc = service(None);
+        let (_, guest) = svc.world().issue("guest", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":guest.expose()})).await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({"type":"install_begin","total_bytes":8,"seed":0})).await;
+        assert_eq!(peer.next().await.unwrap()["code"], "actor_denied");
+        peer.say(serde_json::json!({"type":"revoke","participant_id":1})).await;
+        assert_eq!(peer.next().await.unwrap()["code"], "actor_denied");
+    }
+
+    #[tokio::test]
+    async fn moderator_session_revokes_guest() {
+        let svc = service(None);
+        let (target, target_token) = svc.world().issue("guest", WorldScopes::GUEST).await.unwrap();
+        let (_, moderator) = svc.world().issue("moderator", WorldScopes::from_role("moderator").unwrap()).await.unwrap();
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":moderator.expose()})).await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({"type":"revoke","participant_id":target.id})).await;
+        let reply = peer.next().await.unwrap();
+        assert_eq!(reply["type"], "revoked");
+        assert_eq!(reply["changed"], true);
+        assert!(svc.world().participant_id(target_token).await.is_err());
     }
 
     #[tokio::test]
