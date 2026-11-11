@@ -46,6 +46,7 @@
 //! Later phases (latency benchmark + authoring docs) build on
 //! [`DevSession`] and [`run_dev_watch`].
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -1334,9 +1335,11 @@ pub enum FuzzInvariant {
         /// The record key checked.
         key: String,
         /// Inclusive lower bound, if any.
-        min: Option<f64>,
-        /// Inclusive upper bound, if any.
-        max: Option<f64>,
+        min: Option<serde_json::Number>,
+        /// Inclusive upper bound, if any. Bounds keep their declared
+        /// JSON form so an integer bound above 2^53 is not rounded
+        /// before it is compared (issue #8752).
+        max: Option<serde_json::Number>,
     },
     /// Both named keys are numeric and `first <= second` holds.
     NumericOrder {
@@ -1379,12 +1382,12 @@ impl FuzzInvariant {
             Self::NumericBounds { key, min, max } => {
                 let value = numeric(records, key)?;
                 if let Some(min) = min
-                    && value < *min
+                    && value.cmp_exact(&NumericValue::from_number(min)) == Ordering::Less
                 {
                     return Err(format!("{key} = {value} is below the declared min {min}"));
                 }
                 if let Some(max) = max
-                    && value > *max
+                    && value.cmp_exact(&NumericValue::from_number(max)) == Ordering::Greater
                 {
                     return Err(format!("{key} = {value} exceeds the declared max {max}"));
                 }
@@ -1393,7 +1396,7 @@ impl FuzzInvariant {
             Self::NumericOrder { first, second } => {
                 let a = numeric(records, first)?;
                 let b = numeric(records, second)?;
-                if a > b {
+                if a.cmp_exact(&b) == Ordering::Greater {
                     return Err(format!(
                         "declared order violated: {first} = {a} > {second} = {b}"
                     ));
@@ -1404,12 +1407,88 @@ impl FuzzInvariant {
     }
 }
 
+/// A numeric value for invariant checks, kept exact.
+///
+/// Record values and declared bounds are `serde_json` numbers: an
+/// integer above 2^53 is stored exactly there, but `as_f64()` rounds
+/// it, so comparing through `f64` can read two different integers as
+/// equal and let a violated invariant pass (issue #8752). Integers
+/// are therefore compared as `i128` (every `serde_json` integer --
+/// `i64` or `u64` -- fits), and a float is compared against an
+/// integer exactly: an integral float converts to `i128`, and a
+/// fractional float has magnitude below 2^52 (floats at or above
+/// 2^52 are all integral), so the integer's relation to the float's
+/// ceiling decides the order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum NumericValue {
+    Int(i128),
+    Float(f64),
+}
+
+impl NumericValue {
+    fn from_number(number: &serde_json::Number) -> Self {
+        if let Some(value) = number.as_i64() {
+            Self::Int(i128::from(value))
+        } else if let Some(value) = number.as_u64() {
+            Self::Int(i128::from(value))
+        } else {
+            // A serde_json number that is not an integer is a float.
+            Self::Float(number.as_f64().unwrap_or(f64::NAN))
+        }
+    }
+
+    fn cmp_exact(&self, other: &Self) -> Ordering {
+        match (*self, *other) {
+            (Self::Int(a), Self::Int(b)) => a.cmp(&b),
+            (Self::Float(a), Self::Float(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+            (Self::Int(a), Self::Float(b)) => cmp_int_float(a, b),
+            (Self::Float(a), Self::Int(b)) => cmp_int_float(b, a).reverse(),
+        }
+    }
+}
+
+impl std::fmt::Display for NumericValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int(value) => write!(f, "{value}"),
+            Self::Float(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// Exact ordering of an integer against a float (see [`NumericValue`]).
+fn cmp_int_float(int: i128, float: f64) -> Ordering {
+    if float.is_nan() {
+        // Unreachable for serde_json numbers; never let an
+        // unorderable value pass silently as equal-or-less.
+        return Ordering::Greater;
+    }
+    if float.trunc() == float {
+        // Integral float: exact in i128 when in range; far outside
+        // the i128 range the float's sign alone decides the order.
+        if (-1.7e38..1.7e38).contains(&float) {
+            int.cmp(&(float as i128))
+        } else if float > 0.0 {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    } else if int < float.ceil() as i128 {
+        // Fractional float (|float| < 2^52, so the ceiling is exact):
+        // int < float iff int < ceil(float); equality is impossible.
+        Ordering::Less
+    } else {
+        Ordering::Greater
+    }
+}
+
 /// The numeric value of a declared record key, for invariant checks.
-fn numeric(records: &Records, key: &str) -> std::result::Result<f64, String> {
+fn numeric(records: &Records, key: &str) -> std::result::Result<NumericValue, String> {
     match records.get(key) {
         None => Err(format!("declared key {key:?} is absent from the records")),
         Some(value) => value
-            .as_f64()
+            .as_number()
+            .map(NumericValue::from_number)
             .ok_or_else(|| format!("declared key {key:?} is not numeric: {value}")),
     }
 }
@@ -1494,7 +1573,8 @@ pub fn parse_fuzz_decl(text: &str) -> Result<FuzzDecl> {
             && let (Some(min), Some(max)) = (min, max)
         {
             ensure!(
-                min <= max,
+                NumericValue::from_number(min).cmp_exact(&NumericValue::from_number(max))
+                    != Ordering::Greater,
                 "a numeric_bounds invariant has min {min} above max {max}"
             );
         }
@@ -2004,6 +2084,71 @@ mod fuzz_tests {
     }
 
     #[test]
+    fn numeric_invariants_compare_integers_above_2_to_the_53_exactly() {
+        // Oracle: issue #8752 -- 9007199254740993 (2^53 + 1) and
+        // 9007199254740992 (2^53) are equal as f64 but different
+        // integers; the invariants must see the difference.
+        let records: Records = [
+            ("a".to_owned(), serde_json::json!(9_007_199_254_740_993_i64)),
+            ("b".to_owned(), serde_json::json!(9_007_199_254_740_992_i64)),
+        ]
+        .into_iter()
+        .collect();
+        let order = FuzzInvariant::NumericOrder {
+            first: "a".to_owned(),
+            second: "b".to_owned(),
+        };
+        assert!(
+            order.check(&records).is_err(),
+            "numeric_order must report a > b above 2^53"
+        );
+        let order_ok = FuzzInvariant::NumericOrder {
+            first: "b".to_owned(),
+            second: "a".to_owned(),
+        };
+        assert!(order_ok.check(&records).is_ok());
+        let bounds = FuzzInvariant::NumericBounds {
+            key: "a".to_owned(),
+            min: None,
+            max: Some(serde_json::Number::from(9_007_199_254_740_992_i64)),
+        };
+        assert!(
+            bounds.check(&records).is_err(),
+            "numeric_bounds max 2^53 must reject the record value 2^53 + 1"
+        );
+        let bounds_ok = FuzzInvariant::NumericBounds {
+            key: "a".to_owned(),
+            min: Some(serde_json::Number::from(9_007_199_254_740_992_i64)),
+            max: Some(serde_json::Number::from(9_007_199_254_740_993_i64)),
+        };
+        assert!(bounds_ok.check(&records).is_ok());
+        // A bound declared in JSON text keeps its exact integer form
+        // through parsing (it is not rounded to f64 at parse time).
+        let decl = parse_fuzz_decl(
+            r#"{"version": 1, "inputs": ["inc"], "invariants": [{"kind": "numeric_bounds", "key": "a", "max": 9007199254740992}]}"#,
+        )
+        .unwrap();
+        assert!(decl.invariants[0].check(&records).is_err());
+        // Ordinary float values and bounds still compare as before.
+        let float_records: Records = [
+            ("x".to_owned(), serde_json::json!(1.5)),
+            ("y".to_owned(), serde_json::json!(2)),
+        ]
+        .into_iter()
+        .collect();
+        let float_order = FuzzInvariant::NumericOrder {
+            first: "x".to_owned(),
+            second: "y".to_owned(),
+        };
+        assert!(float_order.check(&float_records).is_ok());
+        let float_order_bad = FuzzInvariant::NumericOrder {
+            first: "y".to_owned(),
+            second: "x".to_owned(),
+        };
+        assert!(float_order_bad.check(&float_records).is_err());
+    }
+
+    #[test]
     fn fuzz_case_inputs_are_deterministic_and_budget_independent() {
         // Oracle: invariant 6 — the same (decl, seed, case) yields
         // the same sequence regardless of anything else, and two
@@ -2034,8 +2179,8 @@ mod fuzz_tests {
             },
             FuzzInvariant::NumericBounds {
                 key: "count".to_owned(),
-                min: Some(0.0),
-                max: Some(1000.0),
+                min: Some(serde_json::Number::from(0)),
+                max: Some(serde_json::Number::from(1000)),
             },
         ]);
         let report = fuzz_candidate(wasm, 7, &decl, 42, 8).await.unwrap();
@@ -2104,8 +2249,8 @@ mod fuzz_tests {
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
         let decl = counter_decl(vec![FuzzInvariant::NumericBounds {
             key: "count".to_owned(),
-            min: Some(0.0),
-            max: Some(2.0),
+            min: Some(serde_json::Number::from(0)),
+            max: Some(serde_json::Number::from(2)),
         }]);
         let report = fuzz_candidate(wasm, 7, &decl, 42, 200).await.unwrap();
         let failure = report
