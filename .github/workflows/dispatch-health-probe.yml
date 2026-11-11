@@ -1,0 +1,87 @@
+name: dispatch health probe
+
+# Outside health probe for pm-dispatch (issue #6992).
+#
+# The Nov 2026 outage pattern: pm-dispatch healthy on the laptop, but
+# the Cloudflare tunnel connector down, so the edge answered 502 to
+# POST /v1/sessions and /v1/tasks — and nobody noticed until the next
+# scheduled consumer run read its own failure in its logs, a day
+# later. This probe runs on GitHub's network (genuinely outside the
+# laptop) every 30 minutes and checks the two things consumers need:
+# GET /health answers 200, and the write path answers like the app
+# (an unauthenticated POST /v1/sessions gets the app's own 401, not
+# an edge 502). A failure opens (or updates) one alert issue; the
+# next green probe comments the recovery and closes it.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: dispatch-health-probe
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+
+jobs:
+  probe:
+    name: probe dispatch.security.cab from outside
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe health and write path (3 attempts, ~2 minutes)
+        id: probe
+        run: |
+          set -u
+          ok=1
+          detail="no attempt completed"
+          for attempt in 1 2 3; do
+            health=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://dispatch.security.cab/health || echo 000)
+            post=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST https://dispatch.security.cab/v1/sessions -H 'content-type: application/json' -d '{}' || echo 000)
+            detail="attempt $attempt: GET /health=$health, POST /v1/sessions=$post"
+            echo "$detail"
+            if [ "$health" = "200" ] && [ "$post" = "401" ]; then
+              ok=0
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then sleep 40; fi
+          done
+          {
+            echo "ok=$ok"
+            echo "detail=$detail"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Alert or recover on the probe issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PROBE_OK: ${{ steps.probe.outputs.ok }}
+          PROBE_DETAIL: ${{ steps.probe.outputs.detail }}
+        run: |
+          set -eu
+          gh label create meta/dispatch-probe --force --color B60205 \
+            --description "dispatch.security.cab outside-probe alerts (#6992)" >/dev/null 2>&1 || true
+          open_alert=$(gh issue list --label meta/dispatch-probe --state open \
+            --json number --jq '.[0].number // empty')
+          run_url="https://github.com/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "$PROBE_OK" != "0" ]; then
+            body="The outside probe for https://dispatch.security.cab failed 3 attempts over ~2 minutes: ${PROBE_DETAIL}. Expected GET /health=200 and POST /v1/sessions=401 (the app's own auth refusal). An edge 502 or 000 means the public path is down while the laptop may look healthy — see issue #6992. Probe run: ${run_url}"
+            if [ -n "$open_alert" ]; then
+              gh issue comment "$open_alert" --body "Still down: $body"
+            else
+              gh issue create \
+                --title "dispatch probe: dispatch.security.cab public path DOWN" \
+                --label meta/dispatch-probe \
+                --body "$body"
+            fi
+            echo "::error::dispatch probe failed: $PROBE_DETAIL"
+            exit 1
+          fi
+          if [ -n "$open_alert" ]; then
+            gh issue comment "$open_alert" \
+              --body "Recovered: the outside probe is green again (${PROBE_DETAIL}). Probe run: ${run_url}"
+            gh issue close "$open_alert"
+          fi
+          echo "dispatch probe green: $PROBE_DETAIL"
