@@ -154,9 +154,19 @@ allowlist/denylist input: exceptions are expressed by the rules of
    document a definition constructs — including inside platform
    helper builders (`RocCap.chat_request`'s `"cap": "chat.say"`),
    which is why helper bodies are closure code, not leaves;
-   (c) an element of a subscription list, with one optional
-   `:<args>` suffix stripped (`time.tick:5000` names `time.tick`),
-   matching how `parse_wants` treats subscription entries; and
+   (c) an element of a subscription list, normalized by the
+   runtime's own subscription parsing — the equivalent of
+   `Subscription::parse(spec).cap()` in `world_caps.rs`, never by
+   stripping an arbitrary `:<args>` suffix. The parser recognizes
+   exactly two parameterized/plain forms: `players` (capability
+   `players`) and `time.tick:<ms>` with `<ms>` a positive `u64`
+   (capability `time.tick`). Every other spec — `players:extra`,
+   `time.tick:0`, `time.tick:soon` — is an unknown subscription
+   whose capability string is the *whole* spec, so in a capability
+   position it takes the §3 version-skew error like any other
+   non-catalog name; it must never be suffix-stripped into a known
+   name and certified. This is how `parse_wants` itself reads
+   subscription entries; and
    (d) a *serialized* document a definition returns as a single
    string (a whole wants document carried as escaped JSON):
    extraction parses the embedded document with the same field
@@ -452,7 +462,10 @@ in the fixture, never the tool's own output:
     its whole wants document as one escaped JSON string of the
     territory shape, `{"v":1,"subscribe":["players"],"requests":[]}`;
     expect `players` present, certified (§4 step 4d — subscription
-    entries are bare strings, extracted per (c)).
+    entries are bare strings, extracted per (c)). A variant with
+    `"subscribe":["time.tick:soon"]` expects the §3 version-skew
+    error naming the whole spec, never a certified `time.tick`
+    (§4 step 4c).
 
 ## 10. References
 
