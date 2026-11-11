@@ -745,6 +745,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 seed,
                 inputs,
                 fixtures,
+                fuzz,
+                fuzz_seed,
+                fuzz_cases,
             } = args;
             let mut fixture_inputs = Vec::with_capacity(fixtures.len());
             for fixture_path in &fixtures {
@@ -756,6 +759,30 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 .context("the fixture is not UTF-8")?;
                 let fixture = crate::world_fixture::decode(&text)?;
                 fixture_inputs.push((fixture_path.display().to_string(), fixture));
+            }
+            if let Some(fuzz_path) = &fuzz {
+                let text = String::from_utf8(read_bounded(
+                    fuzz_path,
+                    crate::world_dev::MAX_FUZZ_DECL_BYTES as u64,
+                    "fuzz declaration",
+                )?)
+                .context("the fuzz declaration is not UTF-8")?;
+                let decl = crate::world_dev::parse_fuzz_decl(&text)?;
+                let report = crate::world_dev::run_dev_fuzz(
+                    &dir,
+                    platform.as_deref(),
+                    roc.as_deref(),
+                    seed,
+                    &decl,
+                    fuzz_seed,
+                    fuzz_cases,
+                )
+                .await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                if let Some(summary) = report.failure_summary() {
+                    anyhow::bail!("{summary}");
+                }
+                return Ok(());
             }
             let report = crate::world_dev::run_dev_once(
                 &dir,
