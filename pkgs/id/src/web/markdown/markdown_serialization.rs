@@ -974,6 +974,11 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
     // restore_github_alert_markers does: each is owned by the quote
     // depth that opened it, and leaving that container ends it with
     // no closing delimiter. Lines inside either are never stripped.
+    // The indentation restriction applies to OPENING detection only:
+    // an already-active block's lines are fed however deeply they are
+    // indented, because the htmlBlock path preserves indentation and
+    // an indented terminator still ends the block (Codex P2s on
+    // PR #8678).
     let mut fence = FenceTracker::default();
     let mut fence_depth: Option<usize> = None;
     let mut html = HtmlBlockTracker::default();
@@ -984,13 +989,14 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
         let line = lines[i];
         let indent = line.bytes().take_while(|&b| b == b' ').count();
         let mut block_boundary = line.trim().is_empty();
-        if indent <= 3 {
-            let (depth, rest) = split_quote_prefix(&line[indent..]);
+        if html_depth.is_some() || fence_depth.is_some() {
+            let trimmed = line.trim_start_matches(' ');
+            let (depth, _) = split_quote_prefix(trimmed);
             if let Some(opened_at) = html_depth {
                 if depth < opened_at {
                     html.reset();
                     html_depth = None;
-                } else if let Some(body) = strip_quote_depth(&line[indent..], opened_at) {
+                } else if let Some(body) = strip_quote_depth(trimmed, opened_at) {
                     html.feed(fence_feed_line(body), at_block_start);
                     if !html.in_html() {
                         html_depth = None;
@@ -1007,7 +1013,7 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
                 if depth < opened_at {
                     fence.reset();
                     fence_depth = None;
-                } else if let Some(body) = strip_quote_depth(&line[indent..], opened_at) {
+                } else if let Some(body) = strip_quote_depth(trimmed, opened_at) {
                     fence.feed(fence_feed_line(body));
                     if !fence.in_fence() {
                         fence_depth = None;
@@ -1020,6 +1026,9 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
                     continue;
                 }
             }
+        }
+        if indent <= 3 {
+            let (depth, rest) = split_quote_prefix(&line[indent..]);
             if html_depth.is_none()
                 && fence_depth.is_none()
                 && html.feed(fence_feed_line(fence_open_body(rest)), at_block_start)

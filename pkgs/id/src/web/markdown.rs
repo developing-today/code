@@ -1976,6 +1976,27 @@ mod tests {
     }
 
     #[test]
+    fn test_indented_html_comment_terminator_releases_cleanup() {
+        // PR #8678 Codex P2, third round: the htmlBlock serialization
+        // path preserves indentation, so a comment terminator can be
+        // indented four spaces. The scan's indent limit applies to
+        // opening detection, not to an already-active block: the
+        // terminator must still be fed, or html state leaks into the
+        // rest of the document and suppresses the #1002 cleanup for
+        // the rule-first quote below.
+        let original = "<!--\n    -->\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+    }
+
+    #[test]
     fn test_info_less_fence_in_blockquote_trailing_content_round_trips() {
         // #1496 acceptance cases: a no-info fence inside a blockquote
         // followed by each kind of trailing quoted content must reopen
