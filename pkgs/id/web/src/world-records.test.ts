@@ -247,6 +247,50 @@ describe("world page records fetch (#1458)", () => {
     expect(socket.sent("records")).toHaveLength(recordsRequests + 1);
   });
 
+  it("rejects wrong-shape records frames (#7908) without rendering, echoing a cursor, or closing the fetch", () => {
+    const status = q<HTMLOutputElement>("[data-world-status]");
+    const recordsView = q<HTMLElement>("[data-world-records]");
+    const renderedBefore = recordsView.textContent;
+
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const requestsBefore = socket.sent("records").length;
+
+    // records that is not a plain object: string renders per-character
+    // entries pre-fix, an array per-index entries, a scalar an empty
+    // world. A non-string next_after was echoed back as `after`.
+    const malformedFrames: Array<Record<string, unknown>> = [
+      { type: "records", records: "abc", next_after: null },
+      { type: "records", records: [10, 20], next_after: null },
+      { type: "records", records: 42, next_after: null },
+      { type: "records", records: true, next_after: null },
+      { type: "records", records: { x: 1 }, next_after: 123 },
+      { type: "records", records: { x: 1 }, next_after: { k: 1 } },
+    ];
+    for (const frame of malformedFrames) {
+      socket.deliver(frame);
+      expect(status.textContent).toBe("Received an invalid world frame");
+      expect(status.dataset.state).toBe("error");
+      // No follow-up page request (a non-string cursor is never
+      // echoed) and the rendered records are untouched.
+      expect(socket.sent("records")).toHaveLength(requestsBefore);
+      expect(recordsView.textContent).toBe(renderedBefore);
+    }
+
+    // The fetch is still in flight: the next well-formed frame is
+    // accepted and completes it exactly as before. The refresh click
+    // above landed while the snapshot test's fetch was in flight, so
+    // it was coalesced (#1458): completing this fetch runs that one
+    // refetch, as a fresh first-page request with no `after` - never
+    // an echo of a rejected cursor.
+    socket.deliver({ type: "records", records: { z9: 9 }, next_after: null });
+    expect(renderedRecords()).toEqual({ z9: 9 });
+    expect(socket.sent("records")).toHaveLength(requestsBefore + 1);
+    expect(socket.sent("records").at(-1)).not.toHaveProperty("after");
+    socket.deliver({ type: "records", records: { z9: 9 }, next_after: null });
+    expect(renderedRecords()).toEqual({ z9: 9 });
+    expect(socket.sent("records")).toHaveLength(requestsBefore + 1);
+  });
+
   it("rejects malformed events before cursor or log changes and accepts the next valid event", async () => {
     const status = q<HTMLOutputElement>("[data-world-status]");
     const log = q<HTMLOListElement>("[data-world-log]");
