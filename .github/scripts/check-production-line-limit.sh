@@ -28,9 +28,9 @@ ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 # path -> removal issue
 declare -A GRANDFATHERED=(
-  # 2,821 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4717
-  ["pkgs/id/src/world_session/mod.rs"]="https://github.com/developing-today/code/issues/4717"
+  # (empty: the last two entries were removed by their splits --
+  # world_session/mod.rs by its #4717 split on main, web/markdown.rs
+  # by the #4704 split in this branch.)
 )
 
 # Count production lines of one file: every line that is not part of

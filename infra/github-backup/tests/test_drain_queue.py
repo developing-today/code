@@ -440,6 +440,45 @@ summary = json.loads(buf.getvalue().strip().splitlines()[-1])
 check("after-malformed: drop counted in summary", summary.get("dropped_foreign") == 1)
 
 
+# 16b. event shape itself (#6575): a non-dict element first must not
+#      abort the drain — it is DRAIN-DROP logged, counted as
+#      dropped_malformed, never acked (it has no id to ack), and the
+#      valid planned event behind it is still fetched + acked.
+for bad in ("garbage", None, 42):
+    h = Harness([bad, ev("e17", "owner/repo")], ["owner/repo"], {"owner/repo": "ok"})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = h.run()
+    tag = f"non-dict {type(bad).__name__}"
+    check(f"{tag}: exit 0", rc == 0)
+    check(f"{tag}: only valid event acked", h.acked_ids() == ["e17"])
+    check(f"{tag}: valid event fetched", h.fetch_calls == ["owner/repo"])
+    check(f"{tag}: DRAIN-DROP malformed logged", "DRAIN-DROP malformed" in h.fetch_log())
+    summary = json.loads(buf.getvalue().strip().splitlines()[-1])
+    check(f"{tag}: counted dropped_malformed", summary.get("dropped_malformed") == 1)
+
+# 16c. id-less dict events (#6575) in each branch the old code crashed
+#      on — foreign, no-repo, planned — plus a non-string id: same
+#      malformed drop, valid event behind each still drains.
+idless_cases = [
+    ("foreign", {"repo": "stranger/pwned", "event": "push", "ts": iso_age(60)}),
+    ("no-repo", {"event": "push", "ts": iso_age(60)}),
+    ("planned", {"repo": "owner/repo", "event": "push", "ts": iso_age(60)}),
+    ("non-string-id", {"id": 42, "repo": "owner/repo", "event": "push", "ts": iso_age(60)}),
+]
+for name, bad in idless_cases:
+    h = Harness([bad, ev("e18", "owner/repo")], ["owner/repo"], {"owner/repo": "ok"})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = h.run()
+    check(f"id-less {name}: exit 0", rc == 0)
+    check(f"id-less {name}: only valid event acked", h.acked_ids() == ["e18"])
+    check(f"id-less {name}: valid event fetched", h.fetch_calls == ["owner/repo"])
+    check(f"id-less {name}: DRAIN-DROP malformed logged", "DRAIN-DROP malformed" in h.fetch_log())
+    summary = json.loads(buf.getvalue().strip().splitlines()[-1])
+    check(f"id-less {name}: counted dropped_malformed", summary.get("dropped_malformed") == 1)
+
+
 # 17. a page stream that never completes — every page incomplete with a
 #     fresh, never-repeated cursor (#6572) — must raise at the named
 #     pagination bound instead of looping forever, and a Harness-level

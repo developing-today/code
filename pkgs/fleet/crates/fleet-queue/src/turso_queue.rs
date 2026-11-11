@@ -456,6 +456,74 @@ pub struct TursoBackend {
 
 type TErr = String;
 
+/// The canonical fleet lane registry (#6853): every lane id a
+/// fleet worker may claim with, and the worker that owns it. The
+/// queue binding is the one-queue default ("*": the lane may claim
+/// any stream; see lane_queue_binds). Registrations for
+/// session-scoped lanes (UUID ids) are created by their sessions
+/// and are deliberately NOT part of the canonical set.
+fn canonical_lanes() -> Vec<(&'static str, &'static str)> {
+    let mut lanes: Vec<(&'static str, &'static str)> = Vec::new();
+    for c in 'a'..='z' {
+        // Leak-free: the ids are built from a fixed alphabet by a
+        // match on the letter so the strings stay 'static.
+        lanes.push((code_lane_id(c), "repo-worker-code"));
+    }
+    lanes.push(("opencode-a", "repo-worker-opencode"));
+    lanes.push(("opencode-b", "repo-worker-opencode"));
+    lanes.push(("openchamber-a", "repo-worker-openchamber"));
+    lanes.push(("openchamber-b", "repo-worker-openchamber"));
+    lanes.push(("nix-a", "repo-worker-nix"));
+    lanes.push(("nix-b", "repo-worker-nix"));
+    lanes
+}
+
+fn code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "code-a",
+        'b' => "code-b",
+        'c' => "code-c",
+        'd' => "code-d",
+        'e' => "code-e",
+        'f' => "code-f",
+        'g' => "code-g",
+        'h' => "code-h",
+        'i' => "code-i",
+        'j' => "code-j",
+        'k' => "code-k",
+        'l' => "code-l",
+        'm' => "code-m",
+        'n' => "code-n",
+        'o' => "code-o",
+        'p' => "code-p",
+        'q' => "code-q",
+        'r' => "code-r",
+        's' => "code-s",
+        't' => "code-t",
+        'u' => "code-u",
+        'v' => "code-v",
+        'w' => "code-w",
+        'x' => "code-x",
+        'y' => "code-y",
+        'z' => "code-z",
+        _ => unreachable!("code lane letters are a..=z"),
+    }
+}
+
+/// The registry seed statement (#6853): INSERT OR IGNORE, so it
+/// restores a missing registration and can never resurrect or
+/// re-enable a lane whose row already exists in any state.
+fn lane_seed_sql() -> String {
+    let values: Vec<String> = canonical_lanes()
+        .iter()
+        .map(|(id, worker)| format!("('{id}', '{worker}', '*', 1)"))
+        .collect();
+    format!(
+        "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
+        values.join(", ")
+    )
+}
+
 impl TursoBackend {
     pub fn new(url: String, token: String, agent: ureq::Agent) -> Self {
         Self {
@@ -631,6 +699,15 @@ impl TursoBackend {
     pub fn ensure_schema(&self) -> Result<(), TErr> {
         let stmts: Vec<(&str, Vec<Arg>)> = SCHEMA.iter().map(|s| (*s, Vec::new())).collect();
         self.pipeline(&stmts)?;
+        // #6853: seed the canonical lane registry. Registrations
+        // used to be hand-inserted rows with no code-owned seed, so
+        // a store rebuild/restore silently dropped lanes that were
+        // not in whoever's seed set — openchamber-a/b were disabled
+        // on 2026-11-08 (rows present) and unknown by 2026-11-11
+        // (rows gone). INSERT OR IGNORE fills only MISSING rows: an
+        // existing registration — including a lane Drew disabled
+        // (enabled = 0) — is never overwritten by the seed.
+        self.exec(&lane_seed_sql(), &[])?;
         // Additive task columns land here for databases created
         // before them: #8097 Rule 2's tasks.platform (the optional
         // coarse platform selector — existing rows read NULL: unset,
@@ -1528,10 +1605,38 @@ fn on_binding_cleared(
     )
 }
 
+/// What lease expiry does to one claimed task (#6463): a task with
+/// attempts left returns to queued; a task already at its attempt cap
+/// fails terminally instead. Before #6463 the at-cap task also went
+/// back to queued, where the claim query (attempts < max_attempts)
+/// could never select it again -- it sat in queued forever, invisible
+/// to terminal counts, with no failed event (142 such silent zombies
+/// measured in repo-health-code-pilot on 2026-11-06).
+#[derive(Debug, PartialEq)]
+enum ExpiryDisposition {
+    Requeue,
+    FailAtCap,
+}
+
+fn expiry_disposition(attempts: i64, max_attempts: i64) -> ExpiryDisposition {
+    if attempts >= max_attempts {
+        ExpiryDisposition::FailAtCap
+    } else {
+        ExpiryDisposition::Requeue
+    }
+}
+
 /// expire_leases (migration 0023 §1): claimed rows whose lease has
-/// lapsed return to queued, binding cleared, lease rows dropped.
+/// lapsed return to queued, binding cleared, lease rows dropped --
+/// except rows already at their attempt cap, which transition to
+/// failed with a lease_expired_at_cap event (#6463, mirroring
+/// fail_repo_task's terminal branch). Sink-bound rows (#8234) keep
+/// their sink return regardless of cap: the sink pick serves them
+/// under its own rule, so the at-cap failure applies to the ordinary
+/// claim path only.
 /// Returns how many tasks were returned to queued (PG returned the
 /// count; claim ignores it, the /sweep verb reports it, #6803).
+/// At-cap failures are not counted: they were not returned to queued.
 fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     let now = now_iso();
     let mut expired = 0i64;
@@ -1553,7 +1658,29 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
         let to_sink = expired_claim_returns_to_sink(&progress);
         let (progress, cleared) = clear_binding(&progress, "expire_leases");
-        let upd = if to_sink {
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(4);
+        let at_cap = !to_sink
+            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
+        let upd = if at_cap {
+            t.exec(
+                "UPDATE tasks SET status = 'failed', worker_id = NULL, lease_until = NULL, \
+                   last_error = ?, progress = ?, updated_at = ? \
+                 WHERE id = ? AND status = 'claimed' AND lease_until < ?",
+                &[
+                    Arg::Text(format!(
+                        "lease expired at attempt cap ({attempts}/{max_attempts})"
+                    )),
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Int(id),
+                    Arg::Text(now.clone()),
+                ],
+            )?
+        } else if to_sink {
             // #8234: the sink is its own status now — the return
             // lands in 'handed_off' with NO wait fields at all. The
             // pre-#8234 shape stamped a fresh not_before = +1200s
@@ -1584,15 +1711,30 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         if upd.affected == 0 {
             continue;
         }
-        expired += 1;
-        event(
-            t,
-            Some(&worker),
-            Some(id),
-            "lease_expired",
-            &json!({"via": "expire_leases", "cleared_session_id": cleared,
-                    "return": if to_sink { "handed_off" } else { "queued" }}),
-        )?;
+        if at_cap {
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired_at_cap",
+                &json!({
+                    "via": "expire_leases",
+                    "attempts": attempts,
+                    "max_attempts": max_attempts,
+                    "cleared_session_id": cleared,
+                }),
+            )?;
+        } else {
+            expired += 1;
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired",
+                &json!({"via": "expire_leases", "cleared_session_id": cleared,
+                        "return": if to_sink { "handed_off" } else { "queued" }}),
+            )?;
+        }
         if let Some(old) = cleared {
             on_binding_cleared(t, &worker, id, &old, "expire_leases")?;
         }
@@ -5939,7 +6081,17 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         sql += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
-    sql += &format!(" ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}");
+    // #7871: --task narrows to one task id (the PostgREST /list
+    // path applies the same filter), and the client's paged fetch
+    // advances OFFSET page by page.
+    if let Some(id) = req_i64(req, "task") {
+        sql += " AND id = ?";
+        args.push(Arg::Int(id));
+    }
+    let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
+    sql += &format!(
+        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
+    );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]
     } else {
@@ -6739,6 +6891,43 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn canonical_lanes_cover_every_fleet_lane_6853() {
+        // #6853 oracle: the registry the broker seeds contains every
+        // lane id the fleet runs — code-a..z, opencode-a/b,
+        // openchamber-a/b, nix-a/b — each owned by its worker, with
+        // no duplicates. The 2026-11-11 outage was exactly the two
+        // openchamber ids missing from this set.
+        let lanes = canonical_lanes();
+        assert_eq!(lanes.len(), 32);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _)| *id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 32, "duplicate lane ids in the canonical set");
+        let owner = |id: &str| lanes.iter().find(|(l, _)| *l == id).map(|(_, w)| *w);
+        assert_eq!(owner("openchamber-a"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("openchamber-b"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("opencode-a"), Some("repo-worker-opencode"));
+        assert_eq!(owner("opencode-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("nix-a"), Some("repo-worker-nix"));
+        assert_eq!(owner("nix-b"), Some("repo-worker-nix"));
+        assert_eq!(owner("code-a"), Some("repo-worker-code"));
+        assert_eq!(owner("code-z"), Some("repo-worker-code"));
+    }
+
+    #[test]
+    fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
+        // #6853 oracle: the seed can only fill missing rows — an
+        // existing registration (in particular a lane disabled via
+        // enabled = 0) is never overwritten, so seeding at every
+        // broker start cannot undo a disable.
+        let sql = lane_seed_sql();
+        assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
+        for (id, _) in canonical_lanes() {
+            assert!(sql.contains(&format!("('{id}'")), "seed misses {id}");
+        }
+    }
+
+    #[test]
     fn claim_lease_is_the_requested_lease_not_the_heartbeat_default() {
         // #7617 oracle: a claim's stored lease_until is claimed_at +
         // the lease the caller requested (2700 s for a 45-minute
@@ -7350,6 +7539,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn expiry_disposition_fails_only_at_cap() {
+        // Below cap: the task returns to queued for another attempt.
+        assert_eq!(expiry_disposition(0, 4), ExpiryDisposition::Requeue);
+        assert_eq!(expiry_disposition(3, 4), ExpiryDisposition::Requeue);
+        // At or past cap (#6463): terminal failure, never a silent
+        // return to a queued state the claim query cannot select.
+        assert_eq!(expiry_disposition(4, 4), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(24, 24), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(9, 4), ExpiryDisposition::FailAtCap);
+    }
+
+    #[test]
     fn wait_kind_mapping_matches_pg_park() {
         assert_eq!(wait_kind(&json!({"kind": "triage"})), "triage");
         assert_eq!(wait_kind(&json!({"kind": "time"})), "timer");
@@ -7831,6 +8033,19 @@ mod tests {
         // Oracle: validate_packet, the /enqueue validator — a row
         // enqueue would accept must pass the claim guard unchanged.
         assert_eq!(claim_guard_reason(&claimable_row(valid_payload())), None);
+    }
+
+    #[test]
+    fn claim_guard_accepts_a_body_less_stored_row() {
+        // task_from_packet stores an absent body as SQL NULL, so a
+        // body-less packet's stored row carries body:null. The #6430
+        // body type check must not quarantine it (Codex P1, PR #8477).
+        let mut row = claimable_row(valid_payload());
+        row["body"] = Value::Null;
+        assert_eq!(claim_guard_reason(&row), None);
+        let mut row = claimable_row(valid_payload());
+        row.as_object_mut().unwrap().remove("body");
+        assert_eq!(claim_guard_reason(&row), None);
     }
 
     #[test]
