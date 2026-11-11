@@ -440,6 +440,27 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 // order and each contributes once; a source whose cache is empty
 // contributes nothing yet -- the mount appears when its catalogue
 // does, and load-time validation defers the same way.
+// declaredToolNames is the set of names a view presents its
+// tools under: renames applied and static include/exclude lists
+// honored, but transient precondition gates (a secret not yet
+// supplied, a required server not running) NOT applied -- those
+// block calls, they do not unname tools. Mount validation judges
+// existence against this set, so a mount may name a tool an alias
+// renamed, and a presently gated tool is blocked rather than
+// unknown.
+func declaredToolNames(view *config.Resolved, all []mcpclient.Tool) map[string]bool {
+	if view == nil {
+		return nil
+	}
+	cp := *view
+	cp.Preconditions = nil
+	names := map[string]bool{}
+	for _, t := range visibleTools(&cp, all) {
+		names[t.Name] = true
+	}
+	return names
+}
+
 func virtualCatalogue(view *config.Resolved, views map[string]*config.Resolved, pools map[string]*pool.Pool) []mcpclient.Tool {
 	names := make([]string, 0, len(view.ToolViews))
 	for vn := range view.ToolViews {
@@ -1468,27 +1489,24 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 					deferred[tv.MountServer] = true
 				}
 			}
-			// Existence is judged against each source's raw
-			// catalogue, not the assembled one: a source whose
-			// tools are presently gated (a required secret not
-			// yet supplied, its own view's exclusions) contributes
-			// nothing to the assembly, but its mounts are not
-			// unknown -- they are blocked until the gate lifts,
-			// and failing registry creation would outlast the
-			// gate (Codex P2 on PR #8632).
+			// Existence is judged against each source's
+			// declared presentation, not the assembled
+			// catalogue: the names the source's own view
+			// presents its tools under (renames applied --
+			// a mount may name an alias's renamed tool),
+			// with transient precondition gates (a required
+			// secret not yet supplied, a required server not
+			// running) not applied. A gated tool contributes
+			// nothing to the assembly, but its mount is not
+			// unknown -- it is blocked until the gate lifts,
+			// and failing registry creation would outlast
+			// the gate (Codex P2 on PR #8632).
 			for vn, tv := range view.ToolViews {
 				if tv.MountServer == "" || deferred[tv.MountServer] {
 					continue
 				}
 				stools, _, _ := pools[tv.MountServer].CachedSchemas()
-				found := false
-				for _, t := range stools {
-					if t.Name == tv.MountTool {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !declaredToolNames(views[tv.MountServer], stools)[tv.MountTool] {
 					return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
 				}
 			}

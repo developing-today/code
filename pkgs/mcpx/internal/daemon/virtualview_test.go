@@ -12,6 +12,7 @@ import (
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // #1933 slice 3: a virtual namespace mounts tools from several
@@ -326,19 +327,21 @@ func TestVirtualNamespaceCachedFollowsSources(t *testing.T) {
 }
 
 // A mount whose source presently gates the tool out of its own
-// visible catalogue (here the source's excludeTools; a missing
-// secret gates the same way) is blocked, not unknown: validation
-// judges existence against the source's raw catalogue, so
-// registry creation does not fail for a transient gate
-// (Codex P2 on PR #8632).
+// visible catalogue (here a precondition on a server that is not
+// running; a missing secret gates the same way) is blocked, not
+// unknown: validation judges existence against the source's
+// declared presentation, so registry creation does not fail for
+// a transient gate (Codex P2 on PR #8632).
 func TestVirtualValidationToleratesGatedSourceTool(t *testing.T) {
 	tools := []mcpclient.Tool{echoTool(), searchTool()}
 	alpha := newEchoUpstream(t, "alpha", tools)
 	beta := newEchoUpstream(t, "beta", tools)
 	dir := t.TempDir()
 	cfg := &config.Config{MCPServers: map[string]*config.Server{
-		"alpha": {Name: "alpha", URL: alpha.URL, Mcpx: &config.Extras{ExcludeTools: []string{"echo"}}},
-		"beta":  {Name: "beta", URL: beta.URL},
+		"alpha": {Name: "alpha", URL: alpha.URL, Mcpx: &config.Extras{Preconditions: map[string]config.Precondition{
+			"echo": {RequiresServer: "ghost"},
+		}}},
+		"beta": {Name: "beta", URL: beta.URL},
 		"combo": {Name: "combo", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
 			"alphaEcho": {From: "alpha.echo"},
 			"betaEcho":  {From: "beta.echo"},
@@ -408,5 +411,91 @@ func TestVirtualMountingViewRulesAreEnforced(t *testing.T) {
 	// The rule is keyed to alpha.echo only; beta's mount is free of it.
 	if _, err := r.Call(ctx, "combo", "betaEcho", cc, map[string]any{"q": "toolong"}); err != nil {
 		t.Fatalf("the alpha.echo rule must not govern beta's mount: %v", err)
+	}
+}
+
+// A mount may name a tool as an alias of its source exposes it --
+// renamed. Existence is judged against the source's declared
+// presentation (the renamed name), not the raw upstream name the
+// shared pool caches (Codex P2 on PR #8632).
+func TestVirtualValidationAcceptsAliasRenamedTarget(t *testing.T) {
+	tools := []mcpclient.Tool{echoTool(), searchTool()}
+	alpha := newEchoUpstream(t, "alpha", tools)
+	beta := newEchoUpstream(t, "beta", tools)
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"alpha": {Name: "alpha", URL: alpha.URL},
+		"beta":  {Name: "beta", URL: beta.URL},
+		"alphaView": {Name: "alphaView", AliasOf: "alpha", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"renamed": {From: "echo"},
+		}}},
+		"combo": {Name: "combo", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"viaAlias": {From: "alphaView.renamed"},
+			"betaEcho": {From: "beta.echo"},
+		}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	seeded := map[*pool.Pool]bool{}
+	for _, srv := range []string{"alpha", "beta", "alphaView"} {
+		if pl := r.pools[srv]; pl != nil && !seeded[pl] {
+			seeded[pl] = true
+			pl.SetSchemas(tools, nil, nil, "", now, now.Add(10*time.Minute), false)
+		}
+	}
+	if err := r.validateViews(); err != nil {
+		t.Fatalf("a mount naming an alias's renamed tool must validate: %v", err)
+	}
+	// And the mount is callable through the alias's presentation.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := r.Call(ctx, "combo", "viaAlias", config.CallContext{}, map[string]any{"q": "x"})
+	if err != nil {
+		t.Fatalf("call through the alias mount: %v", err)
+	}
+	if !strings.Contains(string(res), "alpha") {
+		t.Errorf("the alias mount must reach alpha: %s", res)
+	}
+}
+
+// Script preflight sees through a virtual namespace to its mount
+// sources: a source waiting on a secret blocks a script that
+// references only the namespace, and the source's secret request
+// is raised (Codex P2 on PR #8632).
+func TestVirtualPreflightSeesMountedSourcesSecrets(t *testing.T) {
+	tools := []mcpclient.Tool{echoTool(), searchTool()}
+	alpha := newEchoUpstream(t, "alpha", tools)
+	beta := newEchoUpstream(t, "beta", tools)
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"alpha": {Name: "alpha", URL: alpha.URL, Mcpx: &config.Extras{RequiresSecrets: []string{"ALPHA_TOKEN"}}},
+		"beta":  {Name: "beta", URL: beta.URL},
+		"combo": {Name: "combo", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"alphaEcho": {From: "alpha.echo"},
+			"betaEcho":  {From: "beta.echo"},
+		}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := r.Preflight("const x = await tools.combo.alphaEcho({q: 'hi'})")
+	if rep.Ready {
+		t.Fatal("preflight must report not-ready when a mounted source is missing a secret")
+	}
+	found := false
+	for _, m := range rep.Missing {
+		if m.Server == "alpha" && strings.Join(m.Secrets, ",") == "ALPHA_TOKEN" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("preflight must name the mounted source and its secret: %+v", rep.Missing)
+	}
+	if len(rep.Requests) == 0 {
+		t.Error("preflight must raise the source's secret request")
 	}
 }
