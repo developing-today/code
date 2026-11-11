@@ -114,25 +114,46 @@ if [ "$CHANGED" -eq 1 ]; then
   # existing deployment's history can sit at $SRC/roadmap-annotations.json,
   # and the running old process would keep writing there (a first
   # annotation can even create it after any check). Stop the legacy
-  # writer before checking; if it is running and cannot be stopped,
-  # abort rather than strand a store. Never overwrite an existing
-  # destination; the restart after this block starts the service on
-  # the new configuration.
+  # writer unconditionally (when running) before inspecting either
+  # store: stopping only in the migration branch left a window where
+  # the writer could create a checkout store after the check when the
+  # destination already existed, and that file would be orphaned at
+  # restart. If the writer cannot be stopped, abort rather than
+  # strand a store. Never overwrite an existing destination; the
+  # restart after this block starts the service on the new
+  # configuration. A failure after the stop restarts the service on
+  # a consistent configuration via restore_stopped_service below.
   LEGACY_ANNOTATIONS="$SRC/roadmap-annotations.json"
   ANNOTATIONS_DST="${STATE_DIR}/roadmap-annotations.json"
+  STOPPED_FOR_MIGRATION=0
+  MIGRATED_ANNOTATIONS=0
+  ENV_RENDERED=0
+  restore_stopped_service() {
+    local rc="$?"
+    if [ "$STOPPED_FOR_MIGRATION" -eq 1 ]; then
+      echo "WARNING: install failed after stopping pm-aggregator.service; restoring the previous configuration" >&2
+      if [ "$MIGRATED_ANNOTATIONS" -eq 1 ] && [ "$ENV_RENDERED" -eq 0 ]; then
+        mv "$ANNOTATIONS_DST" "$LEGACY_ANNOTATIONS" 2>/dev/null || true
+      fi
+      rm -f "$ENV_FILE.tmp"
+      systemctl --user start pm-aggregator.service || true
+    fi
+    exit "$rc"
+  }
+  trap restore_stopped_service EXIT
+  if systemctl --user is-active --quiet pm-aggregator.service; then
+    if ! systemctl --user stop pm-aggregator.service; then
+      echo "ERROR: could not stop pm-aggregator.service; aborting before the roadmap-annotations migration so no store is stranded" >&2
+      exit 1
+    fi
+    STOPPED_FOR_MIGRATION=1
+  fi
   if [ -f "$LEGACY_ANNOTATIONS" ] && [ -e "$ANNOTATIONS_DST" ]; then
     echo "WARNING: legacy roadmap annotations at $LEGACY_ANNOTATIONS and an existing $ANNOTATIONS_DST both exist; leaving both untouched -- merge them manually" >&2
-  elif [ ! -e "$ANNOTATIONS_DST" ]; then
-    if systemctl --user is-active --quiet pm-aggregator.service; then
-      if ! systemctl --user stop pm-aggregator.service; then
-        echo "ERROR: could not stop pm-aggregator.service; aborting before the roadmap-annotations migration so no store is stranded" >&2
-        exit 1
-      fi
-    fi
-    if [ -f "$LEGACY_ANNOTATIONS" ]; then
-      mv "$LEGACY_ANNOTATIONS" "$ANNOTATIONS_DST"
-      echo "migrated legacy roadmap annotations from $LEGACY_ANNOTATIONS to $ANNOTATIONS_DST"
-    fi
+  elif [ ! -e "$ANNOTATIONS_DST" ] && [ -f "$LEGACY_ANNOTATIONS" ]; then
+    mv "$LEGACY_ANNOTATIONS" "$ANNOTATIONS_DST"
+    MIGRATED_ANNOTATIONS=1
+    echo "migrated legacy roadmap annotations from $LEGACY_ANNOTATIONS to $ANNOTATIONS_DST"
   fi
   {
     echo "PM_AGG_BUILD_VERSION=${BUILD_VERSION}"
@@ -155,7 +176,12 @@ if [ "$CHANGED" -eq 1 ]; then
       value="$(sops -d --extract "[\"${sops_key}\"]" "$SOPS")"
       echo "${env_name}=${value}"
     done
-  } >"$ENV_FILE"
+  } >"$ENV_FILE.tmp"
+  # Render atomically (CodeRabbit on PR #8765): a sops failure mid-render
+  # used to leave a truncated .env behind. The restore trap above only
+  # restarts the service on the new env once this move has landed.
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  ENV_RENDERED=1
   chmod 600 "$ENV_FILE"
 
 
@@ -173,6 +199,7 @@ systemctl --user daemon-reload
 systemctl --user enable pm-aggregator.service
 if [ "$CHANGED" -eq 1 ]; then
   systemctl --user restart pm-aggregator.service
+  STOPPED_FOR_MIGRATION=0
 elif ! systemctl --user is-active --quiet pm-aggregator.service; then
   systemctl --user start pm-aggregator.service
 fi

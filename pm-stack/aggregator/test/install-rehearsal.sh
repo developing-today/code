@@ -78,6 +78,7 @@ STUB
 cat >"$BIN/sops" <<'STUB'
 #!/usr/bin/env bash
 # Test-only stand-in; never reads a real secret file.
+if [ "${TEST_SOPS_FAIL:-0}" = 1 ]; then exit 1; fi
 printf 'test-only-placeholder\n'
 STUB
 
@@ -153,5 +154,26 @@ grep -Fx '{"kept":"existing feed"}' "$STATE/fleet-feed.json" >/dev/null
 test "$(grep -c -Fx "bun-install cwd=$INSTALL_SRC" "$LOG")" = 1
 test "$(grep -c -F 'systemctl --user restart pm-aggregator.service' "$LOG")" = 1
 grep -F 'DEST_DIR="~/.local/state/pm-aggregator"' "$PKG/scripts/push-fleet-feed.sh" >/dev/null
+
+# Failure recovery (CodeRabbit on PR #8765): with the annotations
+# destination already populated, a changed-inputs install must stop
+# the writer before the both-exist warning too, and a sops failure
+# after that stop must restart the service on the previous
+# configuration -- never leave it stopped with a half-rendered env.
+printf '%s\n' '{"kept":"legacy annotations"}' >"$INSTALL_SRC/roadmap-annotations.json"
+SEEDED_LEGACY=1
+mkdir -p "$HOME_TEST/secrets"
+printf 'dummy: not-a-real-secret\n' >"$HOME_TEST/secrets/pm-stack.sops.yaml"
+if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" TEST_SOPS_FAIL=1 TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" HOME="$HOME_TEST" PATH="$BIN:$PATH" bash "$INSTALL_SRC/install.sh" >"$TMP/install-failed.out" 2>&1; then
+  echo 'install unexpectedly succeeded with a failing sops' >&2
+  exit 1
+fi
+test "$(grep -c -F 'systemctl --user stop pm-aggregator.service' "$LOG")" = 2
+test "$(grep -c -F 'systemctl --user start pm-aggregator.service' "$LOG")" = 1
+test "$(grep -c -Fx 'systemctl --user restart pm-aggregator.service' "$LOG")" = 1
+grep -Fx '{"kept":"legacy annotations"}' "$INSTALL_SRC/roadmap-annotations.json" >/dev/null
+grep -Fx '{"kept":"legacy annotations"}' "$STATE/roadmap-annotations.json" >/dev/null
+test ! -e "$STATE/.env.tmp"
+grep -Fx "PM_AGG_ROADMAP_ANNOTATIONS_FILE=$STATE/roadmap-annotations.json" "$STATE/.env" >/dev/null
 
 echo 'install rehearsal passed (isolated HOME; no live service or credentials used)'
