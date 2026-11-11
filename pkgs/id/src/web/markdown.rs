@@ -2509,16 +2509,36 @@ fn collect_used_link_reference_labels<'a>(
         // -- a code span, a neighbouring link -- decide this node's
         // label, so the genuinely unused definition was discarded
         // and the consumed one appended (Codex P2 on PR #5949).
+        // The container levels enclosing the link, derived from
+        // the first line's prefix before the node's own start
+        // column: a multiline label inside a blockquote kept its
+        // continuation lines' `>` in the joined source, so the use
+        // was keyed `long > label` instead of `long label` -- the
+        // consumed definition was re-appended as unused and the
+        // genuinely unused one whose literal label is
+        // `long > label` was discarded as consumed (Codex P2 on
+        // PR #5949, round 4). The end column is a raw-line column,
+        // so it shifts by the stripped prefix length on the
+        // end line.
+        let first_line = lines[start_line - 1];
+        let prefix = first_line.get(..start_col.saturating_sub(1)).unwrap_or("");
+        let levels = container_signature(prefix).chars().count();
         let mut parts = Vec::new();
         for line_no in start_line..=end_line {
-            let line = lines[line_no - 1];
+            let raw = lines[line_no - 1];
+            let (line, stripped) = if line_no > start_line && levels > 0 {
+                let stripped_line = strip_container_levels(raw, levels);
+                (stripped_line, raw.len() - stripped_line.len())
+            } else {
+                (raw, 0)
+            };
             let from = if line_no == start_line {
                 start_col.saturating_sub(1)
             } else {
                 0
             };
             let to = if line_no == end_line {
-                end_col
+                end_col.saturating_sub(stripped)
             } else {
                 line.len()
             };
@@ -2642,6 +2662,51 @@ fn find_balanced_label_close(source: &str) -> Option<usize> {
                 match closed_at {
                     Some(end) => i = end,
                     None => i += run,
+                }
+            }
+            '<' => {
+                // Inline HTML is not link-text structure: a `]`
+                // inside a tag -- notably inside a quoted attribute
+                // value, as in `[<i x="]">label</i>][used]` -- does
+                // not end the link text. Treating it as the boundary
+                // keyed the use as the HTML fragment instead of the
+                // explicit label, so the genuinely unused
+                // definition was discarded as consumed (Codex P2 on
+                // PR #5949, round 4). Skip a well-formed tag,
+                // respecting quoted attribute values; a `<` that
+                // opens no tag is literal text and its brackets
+                // still count.
+                let opens_tag = matches!(chars.get(i + 1), Some((_, c))
+                    if c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
+                if opens_tag {
+                    let mut j = i + 1;
+                    let mut quote = None;
+                    let mut closed_at = None;
+                    while j < chars.len() {
+                        let c = chars[j].1;
+                        match quote {
+                            Some(q) => {
+                                if c == q {
+                                    quote = None;
+                                }
+                            }
+                            None => match c {
+                                '"' | '\'' => quote = Some(c),
+                                '>' => {
+                                    closed_at = Some(j + 1);
+                                    break;
+                                }
+                                _ => {}
+                            },
+                        }
+                        j += 1;
+                    }
+                    match closed_at {
+                        Some(end) => i = end,
+                        None => i += 1,
+                    }
+                } else {
+                    i += 1;
                 }
             }
             '[' => {
@@ -8638,6 +8703,51 @@ mod tests {
             "consumed definition is not appended: {first:?}"
         );
         assert_eq!(first, second, "code-span-bracket round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_quoted_multiline_reference_use_ignores_containers() {
+        // Codex P2 on PR #5949 (round 4): the quoted shortcut link's
+        // label spans two lines; joining the raw source lines kept
+        // the continuation's `>` in the used key, so the use was
+        // keyed `long > label` and the genuinely unused definition
+        // with that literal label was discarded as consumed.
+        let original = "> [long\n> label]\n\n[long label]: /used\n[long > label]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[long > label]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[long label]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "quoted-multiline-use round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_inline_html_bracket_does_not_end_link_text() {
+        // Codex P2 on PR #5949 (round 4): the `]` inside an inline
+        // HTML attribute is not the link-text boundary; the link's
+        // explicit label is `used`, and keying the use as the HTML
+        // fragment made the genuinely unused definition look
+        // consumed.
+        let original =
+            "[<i x=\"]\">label</i>][used]\n\n[used]: /used\n[<i x=\"]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("(/used)"),
+            "explicit reference resolves: {first:?}"
+        );
+        assert!(
+            first.contains("/keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "inline-html-bracket round-trip is a fixpoint");
     }
 
     #[test]
