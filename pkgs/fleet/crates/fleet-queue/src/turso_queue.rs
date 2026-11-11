@@ -7834,6 +7834,19 @@ mod tests {
     }
 
     #[test]
+    fn claim_guard_accepts_a_body_less_stored_row() {
+        // task_from_packet stores an absent body as SQL NULL, so a
+        // body-less packet's stored row carries body:null. The #6430
+        // body type check must not quarantine it (Codex P1, PR #8477).
+        let mut row = claimable_row(valid_payload());
+        row["body"] = Value::Null;
+        assert_eq!(claim_guard_reason(&row), None);
+        let mut row = claimable_row(valid_payload());
+        row.as_object_mut().unwrap().remove("body");
+        assert_eq!(claim_guard_reason(&row), None);
+    }
+
+    #[test]
     fn claim_guard_rejects_payload_less_rows() {
         // The 2026-11-04 incident shapes: no payload field, a null
         // payload, and an empty-object payload must never be handed
