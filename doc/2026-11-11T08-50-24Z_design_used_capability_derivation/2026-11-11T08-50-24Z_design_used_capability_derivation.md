@@ -130,7 +130,14 @@ by which Roc world code can name a capability (§0).
 An `import pf.<Module>` statement in any file of the closure, where
 `<Module>` is a PlatformModule catalog name (`Key`, `Screen`,
 `RocJson`, `RocGrid`, `RocCap`, `RocText` at the verified commit),
-counts as a use of that catalog entry. Granularity is the module:
+counts as a use of that catalog entry. Collection of these
+imports is closure-wide: an import in any file of the source
+closure (§4 step 1) counts, whether or not any definition of the
+importing file is reachable (§4 step 4) — this matches the compile
+gate's `check_imports` (`world_compile.rs`), which checks imports
+in every submitted source file without filtering by definition
+reachability. (Definition-level reachability still governs the
+host-provider references of §3.2.) Granularity is the module:
 importing the module counts the entry whether one function or all
 functions are used, because the catalog itself is module-grained
 (the compile gate checks platform modules as units, per
@@ -176,6 +183,43 @@ the wider rule so the implementer makes no per-position judgements.
 Literals equal to no catalog name are ignored. Literals in
 unreachable definitions are ignored (§4).
 
+Two recognition refinements override the plain exact-equality rule
+above; both exist because real worlds in this codebase already use
+these shapes, and omitting them would leave the result incomplete
+yet certified — the failure §6 exists to prevent.
+
+**Serialized wants documents.** A world may return its wants
+document as one serialized string literal (the territory example
+returns `"{\"v\":1,\"subscribe\":[\"players\"],\"requests\":[]}"`
+as a single literal from `wants`). Such a literal equals no catalog
+name, so exact matching alone misses every name inside it. Rule:
+when a string literal in a §3.2 position parses as a JSON wants
+document (an object carrying `subscribe` and/or `requests`
+arrays), the string entries of those arrays are capability
+positions and are recognised as references, subject to the
+subscription normalisation below for `subscribe` entries. A
+wants-shaped string that does *not* statically parse — built by
+interpolation or concatenation, so its entries may be produced at
+runtime — is not partially guessed at: it triggers the §6
+uncertainty marking instead.
+
+**Subscription specifications are normalised before catalog
+matching.** A `subscribe` entry is a subscription *specification*,
+not a catalog name: the runtime parses it with
+`Subscription::parse` (`world_caps.rs`) and grants the capability
+`Subscription::cap` returns. At the verified commit the mapping is:
+`players` → `players`; `time.tick:<ms>` (a positive u64 interval)
+→ `time.tick`; any other spec is `Unknown` and maps to itself.
+Rule: normalise every subscribe entry through exactly these
+runtime semantics, then apply catalog matching to the *result* —
+so `time.tick:5000` (already used by the lounge example) counts as
+a use of `time.tick` even when no literal `time.tick` appears
+anywhere, and an `Unknown` spec counts only when it is exactly a
+catalog name. The tool replicates the runtime mapping for the
+catalog snapshot's commit; if the runtime's subscription grammar
+grows, this rule grows with it — the snapshot's `catalog_commit`
+(§7.1) pins which grammar was applied.
+
 ## 4. Algorithm
 
 1. **Closure.** Parse the entry file's imports; resolve each import
@@ -196,11 +240,20 @@ unreachable definitions are ignored (§4).
    `restore` — those present), plus any definition exported by the
    entry module. Everything reachable from a seed is *reachable*;
    reachability is a fixpoint over the definition graph.
-4. **Collection.** For every reachable definition, collect references
-   per §3: module imports of the file that defines it (a file's
-   imports are attributed to every definition the scan reaches in
-   that file — module-level granularity again), and catalog-name
-   literals in its body. Union them into the candidate used-set.
+4. **Collection.** Collect references per §3 in two passes with
+   different reachability treatment. (a) *Platform-module imports*
+   (§3.1) are collected from **every file in the closure**,
+   independent of definition reachability: a library that the entry
+   imports but whose definitions are never referenced still belongs
+   to the closure, and its platform imports are uses — the compile
+   gate (`check_imports` in `world_compile.rs`) refuses an
+   ungranted platform import in any submitted file, so the grant is
+   required to compile the unchanged sources whether or not a
+   definition is reached. (b) *Host-provider references* (§3.2) are
+   collected per reachable definition: catalog-name literals in its
+   body, serialized-wants extraction, and subscription
+   normalisation, all per §3.2. Union both passes into the
+   candidate used-set.
    Additionally apply §5 and §6: value-passed definitions contribute
    their references at the passing site (already true under step 2's
    value edges — stated as a rule in §5.1 so no implementer
@@ -279,6 +332,9 @@ reachable code, defeat static derivation for the affected requests:
 - a capability name computed at runtime (`Str.concat`, a variable,
   a value decoded from data or from the model) in any §3.2 position;
 - a request document whose `"cap"` field is set from a non-literal;
+- a wants document in serialized form that does not statically
+  parse (§3.2) — interpolated or concatenated, so its
+  subscribe/requests entries may never appear as literals;
 - code loaded or generated outside the scanned closure (the
   dynamic-loading case whose *policy* belongs to the #5955
   follow-up).
