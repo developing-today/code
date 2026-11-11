@@ -48,7 +48,7 @@ jobs:
         run: |
           python3 - <<'PYEOF2'
           import re, sys
-          path = ".github/workflows/jules-daily-codebase-ideation.yml"
+          path = ".github/workflows/daily-codebase-ideation.yml"
           text = open(path).read()
           block = re.search(r"workflow_dispatch:\n    inputs:\n((?:      .*\n|        .*\n|          .*\n)+)", text)
           names = re.findall(r"^      (\w+):", block.group(1), re.M) if block else []
@@ -93,12 +93,12 @@ jobs:
           retired = ["pkgs/jules", "pkgs/jules-fleet", "pkgs/jules-merge"]
           present = [p for p in retired if os.path.exists(p)]
           if present:
-              sys.exit("retired Jules packages (removed by PR #5376) exist again: " + ", ".join(present))
-          text = open(".github/workflows/jules-daily-codebase-ideation.yml").read()
+              sys.exit("retired packages (removed by PR #5376) exist again: " + ", ".join(present))
+          text = open(".github/workflows/daily-codebase-ideation.yml").read()
           named = [p for p in retired if ("`" + p + "`") in text]
           if named:
               sys.exit("daily review prompt still presents retired packages as audit targets: " + ", ".join(named))
-          print("audit targets exist and retired Jules packages are absent and unnamed:", ", ".join(active))
+          print("audit targets exist and retired packages are absent and unnamed:", ", ".join(active))
           PYEOF3
 
       - name: Run Codebase Innovation & Review Agent via pm-dispatch
@@ -123,7 +123,7 @@ jobs:
             - Review each major package, tool, and subsystem in the repository:
               - **`pkgs/id`**: Distributed identity, cryptographic event log, p2panda synchronization, local event store, group encryption, discovery, and capability delegation.
               - **`pkgs/mcpx`**: Model Context Protocol daemon, multi-server multiplexing, protocol compliance, session leasing, JIT secret prompt vault, and Code Mode projection.
-              - **`pkgs/fleet`**: The Rust multicall fleet tools and queue client — automated multi-agent coding workflows, issue triage, and parallel agent execution (the retired Jules packages were removed by PR #5376; audit the fleet queue automation under `pkgs/fleet` and `.github/workflows`, the dispatch actions `.github/actions/pm-dispatch-start` and `.github/actions/pm-dispatch-task`, the scheduler `.github/workflows/pm-scheduled.yml` and its repo-specific scheduled callers, and the CI-breakage automation).
+              - **`pkgs/fleet`**: The Rust multicall fleet tools and queue client — automated multi-agent coding workflows, issue triage, and parallel agent execution (the retired packages were removed by PR #5376; audit the fleet queue automation under `pkgs/fleet` and `.github/workflows`, the dispatch actions `.github/actions/pm-dispatch-start` and `.github/actions/pm-dispatch-task`, the scheduler `.github/workflows/pm-scheduled.yml` and its repo-specific scheduled callers, and the CI-breakage automation).
               - **NixOS System Infrastructure & Web Services**: Modules, cloud functions, background daemons, and system services.
 
             ### 2. UNRESTRICTED INNOVATION & NEW FEATURE GENERATION
