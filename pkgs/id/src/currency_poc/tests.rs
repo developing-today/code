@@ -791,6 +791,47 @@ fn duplicate_t1_and_t3_transfer_ids_fail_preflight_before_persisting_intent() {
 }
 
 #[test]
+fn reserved_transfer_ids_fail_preflight_before_persisting_intent() {
+    // Oracle: #6194 — real TigerBeetle refuses transfer IDs 0 and
+    // u128::MAX outright, so preflight must reject them in every leg
+    // position (T1, fee, T3), naming the offending ID, before any
+    // intent is persisted or anything is submitted. Pre-fix, the
+    // creator probe executed all of these Ok Posted.
+    for position in 0..3 {
+        for reserved in [0, u128::MAX] {
+            let mut executor = executor();
+            let mut bad = request();
+            bad.transfer_ids[position] = reserved;
+
+            let error = executor
+                .prepare(&bad)
+                .expect_err("a reserved transfer ID must fail preflight");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("transfer ID {reserved} is reserved")),
+                "the error must name the reserved ID, got: {error}"
+            );
+            assert!(executor.store.get(777).unwrap().is_none());
+            assert!(
+                executor
+                    .backend
+                    .transfers_with_user_data_128(777)
+                    .is_empty()
+            );
+        }
+    }
+
+    // The sane-ID control (the probe's 601/602/603) still executes
+    // identically: the rejection did not widen to ordinary IDs.
+    let mut executor = executor();
+    let record = executor
+        .execute(&request())
+        .expect("sane transfer IDs must still post");
+    assert_eq!(record.state, IntentState::Posted);
+}
+
+#[test]
 fn fee_without_account_fails_preflight_before_persisting_intent() {
     let mut executor = executor();
     let mut no_fee_account = request();
