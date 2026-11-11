@@ -2593,10 +2593,22 @@ mod tests {
     /// Reject every write so session tests can exercise effect handling when
     /// durable audit persistence fails.
     #[derive(Clone, Default)]
-    struct FailingJournal;
+    struct FailingJournal(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl FailingJournal {
+        fn attempts(&self) -> usize {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn record_attempt(&self) {
+            self.0
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 
     impl crate::world::WorldJournal for FailingJournal {
         fn append(&mut self, _entry: &crate::world::JournalEntry) -> anyhow::Result<()> {
+            self.record_attempt();
             anyhow::bail!("injected journal append failure")
         }
 
@@ -2604,8 +2616,28 @@ mod tests {
             &mut self,
             _entries: &[crate::world::JournalEntry],
         ) -> anyhow::Result<()> {
+            self.record_attempt();
             anyhow::bail!("injected journal transaction failure")
         }
+    }
+
+    /// A durable session service whose journal fails every write and counts
+    /// attempts, so failure-path tests prove they reached persistence.
+    fn durable_service_with_failing_journal(
+        core: WorldCore,
+    ) -> (WorldHandle, WorldService, FailingJournal) {
+        use iroh_blobs::store::mem::MemStore;
+
+        let journal = FailingJournal::default();
+        let world = WorldHandle::spawn_durable(
+            core,
+            Box::new(NoProgram),
+            Some(Box::new(journal.clone())),
+        );
+        let blobs: Store = MemStore::new().into();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs);
+        (world, service, journal)
     }
 
     /// A durable world behind a session service with a blob store, so
@@ -2649,17 +2681,23 @@ mod tests {
     /// `forbidden` type shows up first. `next_of_type` alone would skip a
     /// success ack sent ahead of a failure and so could not prove its absence.
     async fn next_error_before(peer: &mut Peer, forbidden: &str) -> serde_json::Value {
-        for _ in 0..32 {
-            let frame = peer.next().await.unwrap();
-            assert_ne!(
-                frame["type"], forbidden,
-                "a {forbidden} frame must not precede the failure: {frame}"
-            );
-            if frame["type"] == "error" {
-                return frame;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = peer
+                    .next()
+                    .await
+                    .expect("session closed before an error frame");
+                assert_ne!(
+                    frame["type"], forbidden,
+                    "a {forbidden} frame must not precede the failure: {frame}"
+                );
+                if frame["type"] == "error" {
+                    return frame;
+                }
             }
-        }
-        panic!("no error frame arrived");
+        })
+        .await
+        .expect("timed out waiting for an error frame")
     }
 
     /// Send an upload's chunks after its `upload_ready`, then
@@ -2745,8 +2783,6 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn joined_builder_install_journal_failure_does_not_ack_or_activate() {
-        use iroh_blobs::store::mem::MemStore;
-
         let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
         let (_, builder_token) = core
             .issue_capability(
@@ -2762,12 +2798,9 @@ mod tests {
                 crate::world::CapabilityBounds::default(),
             )
             .unwrap();
-        let world =
-            WorldHandle::spawn_durable(core, Box::new(NoProgram), Some(Box::new(FailingJournal)));
-        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
-            .with_blob_store(MemStore::new().into());
+        let (world, service, journal) = durable_service_with_failing_journal(core);
         let mut peer = join_as(&service, &builder_token).await;
-        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
         peer.say(serde_json::json!({
             "type": "install_begin",
             "total_bytes": wasm.len(),
@@ -2779,9 +2812,14 @@ mod tests {
         upload_chunks(&mut peer, &ready, wasm).await;
 
         let failed = next_error_before(&mut peer, "module_installed").await;
-        assert!(
-            failed["message"].is_string(),
-            "failed install persistence must be reported, not acknowledged: {failed}"
+        assert_eq!(
+            failed["message"], "world could not activate the module",
+            "the error must come from the failed activation transaction: {failed}"
+        );
+        assert_eq!(
+            journal.attempts(),
+            1,
+            "the install journal transaction must be attempted"
         );
         assert_eq!(
             world.view(guest_token).await.unwrap(),
@@ -3112,9 +3150,7 @@ mod tests {
                 crate::world::CapabilityBounds::default(),
             )
             .unwrap();
-        let world =
-            WorldHandle::spawn_durable(core, Box::new(NoProgram), Some(Box::new(FailingJournal)));
-        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let (world, service, journal) = durable_service_with_failing_journal(core);
         let mut victim_peer = join_as(&service, &victim_token).await;
         let mut moderator_peer = join_as(&service, &moderator_token).await;
 
@@ -3127,6 +3163,11 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains("revoke failed")),
             "a failed audit append must not be reported as a successful revoke: {failed}"
+        );
+        assert_eq!(
+            journal.attempts(),
+            1,
+            "the revoke journal append must be attempted"
         );
         assert!(
             world
