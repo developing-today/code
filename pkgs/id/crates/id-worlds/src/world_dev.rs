@@ -605,6 +605,7 @@ pub fn rescan_changed(dir: &Path, known_snapshot_id: &str) -> Result<Option<DevS
 #[derive(Clone, Debug)]
 pub struct Debouncer {
     window_ms: u64,
+    first_event_ms: Option<u64>,
     last_event_ms: Option<u64>,
     pending_events: usize,
     total_coalesced: usize,
@@ -616,6 +617,7 @@ impl Debouncer {
     pub fn new(window_ms: u64) -> Self {
         Self {
             window_ms,
+            first_event_ms: None,
             last_event_ms: None,
             pending_events: 0,
             total_coalesced: 0,
@@ -627,6 +629,8 @@ impl Debouncer {
     pub fn note_event(&mut self, now_ms: u64) {
         if self.pending_events > 0 {
             self.total_coalesced += 1;
+        } else {
+            self.first_event_ms = Some(now_ms);
         }
         self.pending_events += 1;
         self.last_event_ms = Some(now_ms);
@@ -648,11 +652,32 @@ impl Debouncer {
         }
     }
 
+    /// True when [`Debouncer::due`] holds, or when the pending
+    /// change has been waiting at least `max_wait_ms` since the
+    /// FIRST event of its burst. The trailing deadline alone is
+    /// unbounded under continuous changes: every new event pushes
+    /// it out, so a source that keeps changing faster than the
+    /// window would never become due (Codex P2 on PR #8647). The
+    /// max wait bounds the watch loop independently of source
+    /// activity; the caller takes the newest snapshot when it
+    /// fires, so no change is lost, only coalesced less.
+    #[must_use]
+    pub fn due_with_max_wait(&self, now_ms: u64, max_wait_ms: u64) -> bool {
+        if self.due(now_ms) {
+            return true;
+        }
+        match self.first_event_ms {
+            Some(first) => self.pending_events > 0 && now_ms.saturating_sub(first) >= max_wait_ms,
+            None => false,
+        }
+    }
+
     /// Take the pending change, returning how many events it
     /// coalesced (at least 1 when one was pending).
     pub fn take(&mut self) -> usize {
         let taken = self.pending_events;
         self.pending_events = 0;
+        self.first_event_ms = None;
         self.last_event_ms = None;
         taken
     }
@@ -1222,9 +1247,14 @@ pub async fn run_dev_watch(
         changes += 1;
         // Debounce + coalesce: keep rescanning inside the window;
         // the candidate is built from the newest snapshot only.
+        // The wait is capped at one window from the first event of
+        // the burst (due_with_max_wait): under continuous changes
+        // the trailing deadline alone would never fire, and this
+        // loop would run indefinitely inside one cycle, defeating
+        // the max_cycles bound (invariant 7; Codex P2 on PR #8647).
         let mut debouncer = Debouncer::new(debounce_ms);
         debouncer.note_event(now_ms());
-        while !debouncer.due(now_ms()) {
+        while !debouncer.due_with_max_wait(now_ms(), debounce_ms) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             if let Ok(Some(newer)) = rescan_changed(dir, &sources.snapshot_id()) {
                 sources = newer;
@@ -2528,6 +2558,41 @@ mod watch_tests {
         assert!(!debouncer.is_pending());
         assert!(!debouncer.due(9_999));
         assert_eq!(debouncer.take(), 0);
+    }
+
+    #[test]
+    fn debouncer_max_wait_bounds_a_continuous_burst() {
+        // Oracle: invariant 7 (bounded work) and the Codex P2 on
+        // PR #8647 -- events arriving faster than the window keep
+        // resetting the trailing deadline, so due() alone never
+        // fires; the max wait measured from the FIRST event of the
+        // burst must still make the change due, so the watch
+        // session terminates within its budget under continuous
+        // source changes (issue #8780).
+        let mut debouncer = Debouncer::new(150);
+        debouncer.note_event(1_000);
+        // A new event every 50ms, faster than the 150ms window:
+        // the trailing deadline never arrives.
+        for t in [1_050, 1_100] {
+            debouncer.note_event(t);
+            assert!(!debouncer.due(t), "trailing deadline must not fire at {t}");
+            assert!(
+                !debouncer.due_with_max_wait(t, 150),
+                "max wait not yet reached at {t}"
+            );
+        }
+        // One full window after the first event the burst is due
+        // even though the last event is only 50ms old.
+        assert!(!debouncer.due(1_150));
+        assert!(debouncer.due_with_max_wait(1_150, 150));
+        // The whole burst is one coalesced change.
+        assert_eq!(debouncer.take(), 3);
+        // A later burst gets a fresh max wait from its own first
+        // event, not from the earlier burst.
+        debouncer.note_event(5_000);
+        assert!(!debouncer.due_with_max_wait(5_100, 150));
+        assert!(debouncer.due_with_max_wait(5_150, 150));
+        assert_eq!(debouncer.take(), 1);
     }
 
     #[test]
