@@ -10,6 +10,7 @@ import {
   stepBatch,
   stepWireSize,
 } from "./collab";
+import { cursorPluginKey } from "./cursors";
 import { getSendableSteps, getVersion } from "./editor";
 
 // Same MessagePack configuration as collab.ts
@@ -570,6 +571,122 @@ describe("step chunking over a live connection (#4324)", () => {
     // Confirming the last batch leaves nothing pending.
     socket.deliver([MSG_UPDATE, secondBatch, secondBatch.map(() => clientID)]);
     expect(socket.sent).toHaveLength(2);
+  });
+});
+
+describe("UPDATE/CURSOR frame validation (#7873)", () => {
+  const MSG_UPDATE = 2;
+  const MSG_CURSOR = 4;
+  const MSG_CURSOR_REMOVE = 6;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    while (liveConnections.length > 0) {
+      liveConnections.pop()?.disconnect();
+    }
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  function openAndInit() {
+    const { conn, socket } = openCollab();
+    socket.deliver(validInit());
+    return { conn, socket, view: conn.editor!.view };
+  }
+
+  // The session-intact oracle for a dropped frame: socket never
+  // closed (no 4001 teardown), no reconnect socket appears even
+  // after timers run, and the collab version does not move.
+  function expectSessionIntact(
+    socket: FakeWebSocket,
+    view: ReturnType<typeof openAndInit>["view"],
+    version: number,
+  ) {
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    vi.advanceTimersByTime(120_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(getVersion(view.state)).toBe(version);
+  }
+
+  function remoteStepJson(view: ReturnType<typeof openAndInit>["view"]) {
+    return view.state.tr.insertText("x", 1).steps[0].toJSON();
+  }
+
+  it("drops an UPDATE whose steps is not an array, with the session intact", () => {
+    const { socket, view } = openAndInit();
+    const v0 = getVersion(view.state);
+    socket.deliver([MSG_UPDATE, "not-an-array", [1]]);
+    expectSessionIntact(socket, view, v0);
+    // A following valid UPDATE still applies.
+    socket.deliver([MSG_UPDATE, [remoteStepJson(view)], [9999]]);
+    expect(getVersion(view.state)).toBe(v0 + 1);
+    expect(view.state.doc.textContent).toContain("x");
+  });
+
+  it("drops an UPDATE whose clientIDs is not an array or whose lengths differ", () => {
+    const { socket, view } = openAndInit();
+    const v0 = getVersion(view.state);
+    const step = remoteStepJson(view);
+    socket.deliver([MSG_UPDATE, [step], "not-an-array"]);
+    expectSessionIntact(socket, view, v0);
+    socket.deliver([MSG_UPDATE, [step, step], [9999]]);
+    expectSessionIntact(socket, view, v0);
+    socket.deliver([MSG_UPDATE, [], "not-an-array"]);
+    expectSessionIntact(socket, view, v0);
+  });
+
+  it("drops an UPDATE with an unparseable step instead of reconnecting", () => {
+    const { socket, view } = openAndInit();
+    const v0 = getVersion(view.state);
+    socket.deliver([MSG_UPDATE, [123], [999]]);
+    expectSessionIntact(socket, view, v0);
+    socket.deliver([MSG_UPDATE, [{ stepType: "bogus" }], [999]]);
+    expectSessionIntact(socket, view, v0);
+    // A following valid UPDATE still applies.
+    socket.deliver([MSG_UPDATE, [remoteStepJson(view)], [9999]]);
+    expect(getVersion(view.state)).toBe(v0 + 1);
+  });
+
+  it("stores a valid CURSOR and drops malformed CURSOR frames as phantoms", () => {
+    const { socket, view } = openAndInit();
+    const cursors = () => cursorPluginKey.getState(view.state)?.cursors;
+    socket.deliver([MSG_CURSOR, 4242, 1, 1, "bob", 5]);
+    expect(cursors()?.get(4242)?.head).toBe(1);
+    // The probe frame from #7873: object head, string anchor,
+    // object name, string idleSecs - dropped whole, nothing stored.
+    socket.deliver([MSG_CURSOR, 5151, { x: 1 }, "abc", { evil: 1 }, "zzz"]);
+    expect(cursors()?.has(5151)).toBe(false);
+    // Bad clientID and non-string name are dropped too.
+    socket.deliver([MSG_CURSOR, { bad: 1 }, 1, 1, "eve"]);
+    expect(cursors()?.size).toBe(1);
+    socket.deliver([MSG_CURSOR, 6161, 1, 1, 42]);
+    expect(cursors()?.has(6161)).toBe(false);
+    // A string clientID with a null name is a valid cursor.
+    socket.deliver([MSG_CURSOR, "peer-7", 1, 1, null]);
+    expect(cursors()?.has("peer-7")).toBe(true);
+    expect(cursors()?.size).toBe(2);
+  });
+
+  it("CURSOR_REMOVE validates the clientID before removing", () => {
+    const { socket, view } = openAndInit();
+    const cursors = () => cursorPluginKey.getState(view.state)?.cursors;
+    socket.deliver([MSG_CURSOR, 4242, 1, 1, "bob"]);
+    expect(cursors()?.has(4242)).toBe(true);
+    socket.deliver([MSG_CURSOR_REMOVE, { bad: 1 }]);
+    // Not even marked pending removal: still present after timers run.
+    vi.advanceTimersByTime(60_000);
+    expect(cursors()?.has(4242)).toBe(true);
+    socket.deliver([MSG_CURSOR_REMOVE, 4242]);
+    // removeCursor defers: the cursor is fully removed only after
+    // the pending-removal grace period (PENDING_REMOVAL_MS).
+    vi.advanceTimersByTime(60_000);
+    expect(cursors()?.has(4242)).toBe(false);
   });
 });
 
