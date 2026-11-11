@@ -157,10 +157,15 @@ allowlist/denylist input: exceptions are expressed by the rules of
    (c) an element of a subscription list, with one optional
    `:<args>` suffix stripped (`time.tick:5000` names `time.tick`),
    matching how `parse_wants` treats subscription entries; and
-   (d) a `cap` field inside a *serialized* document a definition
-   returns as a single string (a whole wants document carried as
-   escaped JSON): extraction parses embedded documents for `cap`
-   fields rather than treating the string as opaque.
+   (d) a *serialized* document a definition returns as a single
+   string (a whole wants document carried as escaped JSON):
+   extraction parses the embedded document with the same field
+   rules as (b) and (c) — `cap` fields of its `requests` entries,
+   and its `subscribe` entries, which are bare capability strings
+   with no `cap` field (the territory shape:
+   `{"v":1,"subscribe":["players"],"requests":[]}`, read exactly
+   this way by `parse_wants`) — rather than treating the string as
+   opaque.
    String literals in any other position are not uses. References
    inside string interpolations are ordinary references:
    extraction strips literal text, never the interpolated
@@ -444,9 +449,10 @@ in the fixture, never the tool's own output:
     variant with the issuing definition unreachable expects
     `chat.say` absent.
 12. **Serialized wants document:** a reachable definition returns
-    its whole wants document as one escaped JSON string containing
-    a `players` subscription `cap` field; expect that catalog name
-    present, certified (§4 step 4d).
+    its whole wants document as one escaped JSON string of the
+    territory shape, `{"v":1,"subscribe":["players"],"requests":[]}`;
+    expect `players` present, certified (§4 step 4d — subscription
+    entries are bare strings, extracted per (c)).
 
 ## 10. References
 
