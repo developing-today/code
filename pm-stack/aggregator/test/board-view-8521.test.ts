@@ -93,13 +93,20 @@ describe("fragBoardUrl (#8521 view-param propagation)", () => {
     expect(q.get("view")).toBe("vw-1");
     expect(q.get("viewer")).toBe("drew:drew");
     expect(q.get("vf.repo")).toBe("developing-today/code");
-    expect(q.get("done")).toBeNull();
+    // #7937: done=all is board view state and is carried (see below);
+    // unrelated params like full=1 are still dropped.
+    expect(q.get("done")).toBe("all");
     expect(q.get("full")).toBeNull();
   });
 
   test("is the bare fragment path when no view is named", () => {
-    expect(fragBoardUrl(new URLSearchParams("done=all"))).toBe("/frag/board");
+    expect(fragBoardUrl(new URLSearchParams("full=1"))).toBe("/frag/board");
     expect(viewParamsQuery(new URLSearchParams())).toBe("");
+  });
+
+  test("carries done=all on its own, so a fragment refresh keeps the full Done strip (#7937)", () => {
+    expect(fragBoardUrl(new URLSearchParams("done=all"))).toBe("/frag/board?done=all");
+    expect(viewParamsQuery(new URLSearchParams("done=all"))).toBe("done=all");
   });
 });
 
@@ -116,5 +123,9 @@ describe("/frag/board handler wiring (#8521 regression pin)", () => {
 
   test("/board uses the same shared composition, so the twins cannot drift", () => {
     expect(boardBlock).toContain("filterBoardForView");
+  });
+
+  test("the fragment handler renders show-all Done under ?done=all (#7937)", () => {
+    expect(fragBlock).toContain('showAllDone: url.searchParams.get("done") === "all"');
   });
 });

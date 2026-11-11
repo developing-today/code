@@ -68,11 +68,14 @@ export function filterBoardForView(
 
 /** The view-naming query params of a request (view id, viewer, vf.*
  *  filter params), re-encoded — the params a fragment URL must carry
- *  so a refresh re-resolves the same view instead of dropping it. */
+ *  so a refresh re-resolves the same view instead of dropping it.
+ *  `done` rides along too (#7937): ?done=all is board view state the
+ *  same way a saved view is, and a fragment refresh that dropped it
+ *  silently reverted the show-all Done strip to the 100-card cap. */
 export function viewParamsQuery(params: URLSearchParams): string {
   const out = new URLSearchParams();
   for (const [k, v] of params) {
-    if (k === "view" || k === "viewer" || k.startsWith("vf.")) out.set(k, v);
+    if (k === "view" || k === "viewer" || k === "done" || k.startsWith("vf.")) out.set(k, v);
   }
   return out.toString();
 }

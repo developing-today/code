@@ -1753,11 +1753,14 @@ async function handler(req: Request): Promise<Response> {
     const { board, items, counts, act } = await boardRender();
     // #8521: the fragment twin applies the same saved view as /board
     // (PR #4013 missed it), and its refresh URLs re-name the view so
-    // a reload does not silently drop the filter.
+    // a reload does not silently drop the filter. #7937: the same
+    // treatment for ?done=all — the fragment renders the full Done
+    // strip when the flag is present (PR #3855 wired it only into
+    // /board), and fragBoardUrl carries it across refreshes.
     const fragUrl = fragBoardUrl(url.searchParams);
     const resolved = await resolveView(url);
     const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on-dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act)}</div>`;
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on-dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
