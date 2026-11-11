@@ -751,7 +751,26 @@ fn resolve_compiler(
         roc = %compiler.roc_bin,
         "world: on-the-fly compilation enabled"
     );
-    Ok(Some(compiler))
+    // The shared compiled-world cache (design #5965 §2/§4, P1 in
+    // #6235) is opt-in: ID_WORLD_COMPILE_CACHE_DIR names its root,
+    // ID_WORLD_COMPILE_CACHE_LRU_BYTES its tier-1 budget (default
+    // 2 GiB). Unset, compiles behave exactly as before the cache.
+    let Some(cache_dir) = std::env::var("ID_WORLD_COMPILE_CACHE_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
+    else {
+        return Ok(Some(compiler));
+    };
+    let lru_bytes = std::env::var("ID_WORLD_COMPILE_CACHE_LRU_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(crate::world_cache::DEFAULT_LRU_BYTES);
+    let cache = crate::world_cache::WorldCache::open(PathBuf::from(&cache_dir), lru_bytes)?;
+    info!(
+        cache_dir,
+        lru_bytes, "world: shared compiled-world cache enabled"
+    );
+    Ok(Some(compiler.with_cache(std::sync::Arc::new(cache))))
 }
 
 /// Builds this server's worlds: durable under [`WORLDS_DIR`] unless
@@ -1068,6 +1087,130 @@ pub fn start_server_config(path: &Path) -> Result<StartedServerConfig> {
     })
 }
 
+/// The directory journal the server config provisioning persists
+/// its accounts in (#5119 slice 3): `directory.jsonl` beside the
+/// groups log, the same layout a world directory uses.
+#[cfg(feature = "world")]
+fn server_config_directory_path(groups_log: &Path) -> PathBuf {
+    groups_log.with_file_name("directory.jsonl")
+}
+
+/// Load the operator server config at `path` and run startup
+/// provisioning into the live serving state (#5119 slice 3): the
+/// provisioned accounts go into the journaled directory beside the
+/// groups log and the preformed group events into the groups log
+/// itself — the same state live serving folds and replays — so a
+/// restart loads them back, provisioning skips them, and the report
+/// names no new creations.
+///
+/// # Errors
+///
+/// Fails on the same startup contract as [`start_server_config`],
+/// and when the persisted directory or groups log cannot be opened
+/// or written.
+#[cfg(feature = "world")]
+pub fn start_server_config_persisted(
+    path: &Path,
+    groups_log: &Path,
+) -> Result<StartedServerConfig> {
+    let config = crate::server_config::ServerConfig::load(path)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    let directory = crate::directory::Directory::open(&server_config_directory_path(groups_log))?;
+    let mut log = crate::groups::log::GroupLog::open(groups_log)?;
+    let already = log.events().len();
+    let mut provisioned =
+        crate::server_config::Provisioned::from_parts(directory, log.events().to_vec());
+    let report = provisioned
+        .apply(&config)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    // Seed only the events this start added: the rest are the
+    // from_parts state itself, and re-checking them on every
+    // restart would rescan the whole log history.
+    for event in &provisioned.events()[already..] {
+        log.record_preformed(event)?;
+    }
+    Ok(StartedServerConfig {
+        config,
+        provisioned,
+        report,
+    })
+}
+
+/// Seed the serving world's own directory with the accounts the
+/// server config provisions (#5119, PR #8356 review): slice 3
+/// persists provisioning into the directory beside the groups log,
+/// but a durable world loads `.id-worlds/<name>/directory.jsonl`
+/// ([`crate::world_store::open_world`]), so without this seed the
+/// live world's directory view treats configured keys as anonymous
+/// while startup reports them provisioned. The caller names the
+/// default world, the one serve opens at startup. Seeding is the
+/// same idempotent account application provisioning itself runs,
+/// so a restart creates nothing. Group events are not seeded here:
+/// they live in the groups log, which live serving already folds.
+///
+/// # Errors
+///
+/// Fails when the world directory cannot be created or opened, or
+/// when the directory refuses a configured user -- the same
+/// startup-failing contract as the provisioning it mirrors.
+#[cfg(feature = "world")]
+pub fn seed_world_directory(
+    config: &crate::server_config::ServerConfig,
+    dir: &Path,
+) -> Result<crate::server_config::Report> {
+    std::fs::create_dir_all(dir)?;
+    let directory = crate::directory::Directory::open(&dir.join("directory.jsonl"))?;
+    let mut provisioned = crate::server_config::Provisioned::from_parts(directory, Vec::new());
+    provisioned.apply_users(config).map_err(|error| {
+        anyhow::anyhow!("server config world directory {}: {error}", dir.display())
+    })
+}
+
+/// The pull policy the live event-sync gate serves under (#5119): the server
+/// config's `[policy] pull_policy` when a config was loaded, else the code
+/// default ([`crate::pull_policy::PullPolicy::Open`]), so a `serve` without
+/// `--server-config` behaves exactly as before.
+#[cfg(feature = "world")]
+fn serve_pull_policy(started: Option<&StartedServerConfig>) -> crate::pull_policy::PullPolicy {
+    started.map_or(crate::pull_policy::PullPolicy::Open, |started| {
+        started.config.pull_policy()
+    })
+}
+
+/// The freshness window seitan admission serves under (#8487): the loaded
+/// server config's `[policy] freshness_window_seconds`, resolved through
+/// [`crate::server_config::ServerConfig::freshness`], when a config was
+/// loaded, else [`crate::seitan::DEFAULT_WINDOW`] — so a `serve` without
+/// `--server-config` behaves exactly as before.
+#[cfg(feature = "world")]
+fn serve_freshness_window(started: Option<&StartedServerConfig>) -> std::time::Duration {
+    started.map_or(crate::seitan::DEFAULT_WINDOW, |started| {
+        started.config.freshness().window()
+    })
+}
+
+/// The world protocol serve registers for a hub: the loaded operator
+/// config's #2247 budget policy when a server config was given, the
+/// coded defaults when none was. Before this wire, the budgets
+/// table was parsed and held at startup scope but never reached the
+/// protocol, so configured per-counterparty caps were inert in
+/// production.
+#[cfg(feature = "world")]
+fn world_protocol_for(
+    hub: crate::world_hub::WorldHub,
+    local_node: [u8; 32],
+    started: Option<&StartedServerConfig>,
+) -> crate::world_net::WorldProtocol {
+    match started {
+        Some(started) => crate::world_net::WorldProtocol::with_budgets(
+            hub,
+            local_node,
+            started.config.budgets().clone(),
+        ),
+        None => crate::world_net::WorldProtocol::with_local_node(hub, local_node),
+    }
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -1158,9 +1301,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         );
     }
     #[cfg(feature = "world")]
-    let _started_server_config = match &server_config {
+    let started_server_config = match &server_config {
         Some(path) => {
-            let started = start_server_config(path)?;
+            let started = start_server_config_persisted(path, &groups_log)?;
             status!(
                 "server config: loaded {} (provisioned {} user(s), {} group(s), {} member(s))",
                 path.display(),
@@ -1171,6 +1314,38 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             Some(started)
         }
         None => None,
+    };
+    // #5119 (PR #8356 review): a durable world's live directory is
+    // its own `.id-worlds/<name>/directory.jsonl`, not the directory
+    // beside the groups log that slice 3 persists into, so seed the
+    // default world's directory with the configured accounts too;
+    // otherwise the live directory view treats them as anonymous.
+    // Ephemeral worlds hold no directory file to seed: their state
+    // is in-memory and ends with the process, like the world itself.
+    #[cfg(feature = "world")]
+    if let Some(started) = &started_server_config {
+        if world && !ephemeral {
+            let seeded = seed_world_directory(&started.config, &world_dir(&world_name))?;
+            if seeded.users_created > 0 {
+                status!(
+                    "server config: seeded {} configured user(s) into world {world_name}'s directory",
+                    seeded.users_created
+                );
+            }
+        }
+    }
+    // #5119: the pull policy the live event-sync gate uses, resolved once from
+    // the same startup config load. No config keeps the code default (open).
+    #[cfg(feature = "web")]
+    let event_sync_policy = {
+        #[cfg(feature = "world")]
+        {
+            serve_pull_policy(started_server_config.as_ref())
+        }
+        #[cfg(not(feature = "world"))]
+        {
+            crate::pull_policy::PullPolicy::Open
+        }
     };
     // #2145: resolve the web listener set once, before any startup work,
     // so a flag conflict or a malformed [web_bindings] line fails fast.
@@ -1445,9 +1620,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // The world protocol instance is shared between its ALPN registration and
     // the meta protocol, which exposes its abuse counters (#4918).
     #[cfg(feature = "world")]
-    let world_protocol = world_hub
-        .as_ref()
-        .map(|hub| crate::world_net::WorldProtocol::with_local_node(hub.clone(), *node_id.as_bytes()));
+    let world_protocol = world_hub.as_ref().map(|hub| {
+        world_protocol_for(
+            hub.clone(),
+            *node_id.as_bytes(),
+            started_server_config.as_ref(),
+        )
+    });
 
     #[cfg(feature = "world")]
     let abuse_handle = world_protocol
@@ -1476,7 +1655,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let router_builder = match &event_events {
         Some(events) => router_builder.accept(
             crate::event_store::sync::ALPN,
-            crate::event_sync::EventSyncProtocol::new(Arc::clone(events)),
+            crate::event_sync::EventSyncProtocol::with_gate(
+                Arc::clone(events),
+                crate::event_sync::gate(event_sync_policy),
+            ),
         ),
         None => router_builder,
     };
@@ -1517,9 +1699,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let _event_sync_handle = event_events.clone().map(|events| {
         status!("event sync: /id-range-sync/1 enabled (the web event store)");
+        // #5119: the live pull gate reads the operator config's
+        // `[policy] pull_policy`. Without a config the policy is the code
+        // default (open), exactly as before. The local event store is not a
+        // world and has no membership source, so `members` fails closed —
+        // every pull is refused — and says so here rather than silently
+        // serving open.
+        let policy = event_sync_policy;
+        if policy == crate::pull_policy::PullPolicy::Members {
+            status!(
+                "event sync: [policy] pull_policy=members — the local event store has no \
+                 membership source, so every pull is refused (fail closed)"
+            );
+        }
         let endpoint = router.endpoint().clone();
         let discovery = peer_discovery.clone();
-        let gate = crate::event_sync::open_gate();
+        let gate = crate::event_sync::gate(policy);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(crate::event_sync::SYNC_INTERVAL).await;
@@ -1556,7 +1751,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             replace_defaults,
             no_default_bootstrap,
             no_default_topic,
-        );
+        )?;
 
         let dtt_topic_id = TopicId::new(config.topic.clone());
 
@@ -1770,6 +1965,21 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     WebContentTarget::Program(world) => Some(world.clone()),
                 })
                 .collect();
+            // #8487: the seitan admission state the web surface
+            // serves: the freshness window resolved from the loaded
+            // server config (the code default without one), and the
+            // server-config directory journal beside the groups log
+            // opened after provisioning persisted into it, so the
+            // admit path's account check sees the provisioned
+            // accounts and its `AccountVerified` appends land in the
+            // same journal.
+            #[cfg(feature = "world")]
+            let seitan_state = crate::web::SeitanState::new(
+                crate::directory::Directory::open(&server_config_directory_path(&groups_log))?,
+                serve_freshness_window(started_server_config.as_ref()),
+            );
+            #[cfg(not(feature = "world"))]
+            let seitan_state = crate::web::SeitanState::default();
             let web_routers = crate::web::web_routers(
                 store_handle.clone(),
                 Some(peer_discovery.clone()),
@@ -1783,6 +1993,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 event_events.as_ref().map(Arc::clone),
                 surfaces,
                 Some(groups_log.clone()),
+                seitan_state,
             )
             .await?;
             for ((listener_addr, listener, target), web_router) in
@@ -3455,6 +3666,94 @@ mod tests {
 
     #[cfg(feature = "world")]
     #[test]
+    fn start_server_config_persisted_survives_a_restart() {
+        let dir = serve_config_dir("persisted");
+        let path = dir.join("server.toml");
+        let groups_log = dir.join("groups.jsonl");
+        // Real Ed25519 public keys, as in
+        // start_server_config_applies_provisioning.
+        let id = |n: u8| {
+            ed25519_dalek::SigningKey::from_bytes(&[n; 32])
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n\n\
+                 [[groups]]\nkey = \"team\"\nname = \"Team\"\ncreator = \"ann\"\n\n\
+                 [[groups.members]]\nuser = \"bo\"\nrole = \"write\"\n",
+                id(1),
+                id(2)
+            ),
+        )
+        .unwrap();
+        let started = start_server_config_persisted(&path, &groups_log).unwrap();
+        assert_eq!(started.report.users_created, 2);
+        assert_eq!(started.report.groups_created, 1);
+        assert_eq!(started.report.members_added, 1);
+        drop(started);
+        // A restart over the same persisted state loads the accounts
+        // and group events back and creates nothing: no recreations,
+        // no new-creation reports (#5119 slice 3 acceptance).
+        let restarted = start_server_config_persisted(&path, &groups_log).unwrap();
+        assert_eq!(restarted.report, crate::server_config::Report::default());
+        assert!(restarted.provisioned.directory().account(&id(1)).is_some());
+        assert!(restarted.provisioned.directory().account(&id(2)).is_some());
+        // The create event plus the one member add.
+        assert_eq!(restarted.provisioned.events().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #5119 (PR #8356 review): the accounts a server config
+    /// provisions must land in the directory the serving world
+    /// actually loads (`.id-worlds/<name>/directory.jsonl`), not
+    /// only in the directory beside the groups log.
+    #[cfg(feature = "world")]
+    #[test]
+    fn seed_world_directory_provisions_configured_accounts() {
+        let dir = serve_config_dir("world-seed");
+        let path = dir.join("server.toml");
+        // Real Ed25519 public keys, as in
+        // start_server_config_applies_provisioning.
+        let id = |n: u8| {
+            ed25519_dalek::SigningKey::from_bytes(&[n; 32])
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n",
+                id(1),
+                id(2)
+            ),
+        )
+        .unwrap();
+        let config = crate::server_config::ServerConfig::load(&path).unwrap();
+        let world = dir.join("world");
+        let seeded = seed_world_directory(&config, &world).unwrap();
+        assert_eq!(seeded.users_created, 2);
+        // The world's own directory now resolves both configured
+        // accounts, as world_store::open_world would load it.
+        let directory = crate::directory::Directory::open(&world.join("directory.jsonl")).unwrap();
+        assert!(directory.account(&id(1)).is_some());
+        assert!(directory.account(&id(2)).is_some());
+        drop(directory);
+        // A restart seeds nothing again.
+        let again = seed_world_directory(&config, &world).unwrap();
+        assert_eq!(again, crate::server_config::Report::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
     fn start_server_config_fails_startup_on_a_malformed_file() {
         let dir = serve_config_dir("malformed");
         let path = dir.join("server.toml");
@@ -3474,6 +3773,121 @@ mod tests {
         let err = start_server_config(&path).unwrap_err();
         assert!(format!("{err:#}").contains("server config"), "{err:#}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_pull_policy_defaults_to_open_without_a_config() {
+        assert_eq!(
+            serve_pull_policy(None),
+            crate::pull_policy::PullPolicy::Open
+        );
+    }
+
+    /// #5119: the live event-sync gate takes its policy from the loaded
+    /// config's `[policy] pull_policy`, not from the code default.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_pull_policy_reads_the_configured_policy_table() {
+        let dir = serve_config_dir("pull-policy");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[policy]\npull_policy = \"members\"\n").unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(
+            serve_pull_policy(Some(&started)),
+            crate::pull_policy::PullPolicy::Members
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #8487: without a server config, seitan admission serves under
+    /// the code default window (5 minutes), exactly as before.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_freshness_window_defaults_without_a_config() {
+        assert_eq!(
+            serve_freshness_window(None),
+            crate::seitan::DEFAULT_WINDOW
+        );
+    }
+
+    /// #8487: the live admission path takes its window from the
+    /// loaded config's `[policy] freshness_window_seconds`, not from
+    /// the code default.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_freshness_window_reads_the_configured_window() {
+        let dir = serve_config_dir("freshness-window");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[policy]\nfreshness_window_seconds = 60\n").unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(
+            serve_freshness_window(Some(&started)),
+            std::time::Duration::from_secs(60)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // #2247: the loaded [budgets] must reach the world protocol serve
+    // registers, not just the parser.
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_enforces_configured_budgets() {
+        let dir = serve_config_dir("budgets");
+        let path = dir.join("server.toml");
+        let ann = ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+            .verifying_key()
+            .to_bytes();
+        let ann_hex = ann.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{ann_hex}\"\n\n[budgets]\nper_peer_bytes_per_hour = 1000\n\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 500\nwindow_seconds = 60\n"
+            ),
+        )
+        .unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_ne!(
+            *started.config.budgets(),
+            crate::abuse::BudgetPolicy::default()
+        );
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], Some(&started));
+        let handle = protocol.abuse_handle();
+        let mut evaluator = handle.lock().unwrap();
+        // The configured policy — not the default — is the evaluator's.
+        assert_eq!(evaluator.budgets(), Some(started.config.budgets()));
+        // Ann's counterparty row replaced her per-peer limits.
+        let limits = started.config.budgets().limits_for_peer(&ann);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].bytes_per_window, 500);
+        // A charge beyond the configured cap is refused as a budget
+        // refusal (the frame is dropped; the peer is not disconnected).
+        let refusal = evaluator
+            .check_budget(crate::abuse::Direction::Inbound, ann, None, 600, 1_000)
+            .unwrap_err();
+        assert_eq!(refusal.reason, crate::abuse::RefusalReason::BudgetExhausted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[tokio::test]
+    async fn serve_world_protocol_defaults_budgets_without_config() {
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let service = crate::world_session::WorldService::new(world, None);
+        let protocol = world_protocol_for(service.into(), [9; 32], None);
+        let handle = protocol.abuse_handle();
+        let evaluator = handle.lock().unwrap();
+        assert_eq!(
+            evaluator.budgets(),
+            Some(&crate::abuse::BudgetPolicy::default())
+        );
     }
 
     #[test]

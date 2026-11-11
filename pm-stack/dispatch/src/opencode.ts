@@ -7,6 +7,12 @@ import type { ModelRef } from "./validate.ts";
 
 export class OpenCodeError extends Error {
   status = 502;
+  constructor(
+    message: string,
+    readonly httpStatus?: number,
+  ) {
+    super(message);
+  }
 }
 
 export class OpenCodeClient {
@@ -44,17 +50,30 @@ export class OpenCodeClient {
   }
 
   private async api(method: string, path: string, body?: unknown): Promise<unknown> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers: {
-        Authorization: await this.authHeader(),
-        "Content-Type": "application/json",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, {
+        method,
+        headers: {
+          Authorization: await this.authHeader(),
+          "Content-Type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      // A connection failure (server down, refused) is an upstream
+      // failure, not a caller error: surface it as OpenCodeError so
+      // routes answer the documented 502 instead of a raw 500.
+      throw new OpenCodeError(
+        `opencode ${method} ${path} unreachable: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     const text = await res.text();
     if (!res.ok) {
-      throw new OpenCodeError(`opencode ${method} ${path} failed (HTTP ${res.status}): ${text.slice(0, 200)}`);
+      throw new OpenCodeError(
+        `opencode ${method} ${path} failed (HTTP ${res.status}): ${text.slice(0, 200)}`,
+        res.status,
+      );
     }
     if (!text.trim()) return null;
     let parsed: unknown;
@@ -93,5 +112,23 @@ export class OpenCodeClient {
 
   async listSessions(): Promise<unknown> {
     return this.api("GET", "/api/session");
+  }
+
+  /** Read one session's current state (issue #5555): the raw session
+   * object from the OpenCode server, or null when the server says the
+   * session does not exist (HTTP 404). Any other failure (server down,
+   * auth, non-JSON) stays an OpenCodeError so callers can tell "gone"
+   * apart from "unknown". */
+  async getSession(sessionId: string): Promise<unknown> {
+    try {
+      return await this.api("GET", `/api/session/${encodeURIComponent(sessionId)}`);
+    } catch (e) {
+      // The 404 decision rides on the upstream status recorded by
+      // api(), never on message text: a 500 whose body happens to
+      // contain "(HTTP 404)" is a server failure, not a missing
+      // session.
+      if (e instanceof OpenCodeError && e.httpStatus === 404) return null;
+      throw e;
+    }
   }
 }

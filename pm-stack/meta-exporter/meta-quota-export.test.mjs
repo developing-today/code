@@ -1,5 +1,5 @@
 // Tests for the pure parsing core of meta-quota-export.mjs.
-// Run: node --test pm-stack/meta-exporter/
+// Run: node --test pm-stack/meta-exporter/meta-quota-export.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";

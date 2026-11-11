@@ -181,6 +181,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | nix ci                                                         | — (PR proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
 | proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request`                                                          | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
+| atlas-search                                                   | `basic: atlas-search Rust checks` on pull requests touching `pkgs/atlas-search/**`                 | —                                                                                                   | —                                                                |
 | deploy-flake-checks | `basic: deploy flake checks (deploy-list + deploy-list-malformed)` on `pull_request` (paths `pkgs/deploy/**`, `lib/default.nix`, the workflow itself) | full flake check in nix ci | — |
 | workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) | — | — |
 | id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
@@ -255,9 +256,7 @@ stale waiver whose leg now agrees.
 | workflow                                          | missing leg(s)                                          | phase issue |
 | ------------------------------------------------- | ------------------------------------------------------- | ----------- |
 | opencode-config-guard                             | main tier (`push`); venue `disabled_manually`           | Phase 2 — #6953 |
-| mcpx-fix-test-guard                               | PR tier (`pull_request`) and main tier (`push`)         | Phase 2 — #6929 |
 | production-line-guard                             | PR tier (`pull_request`)                                | Phase 3 — #6959 |
-| go-modules-build, identity-build, map-build, mcpx-nixbuild | PR tier (`pull_request`) and main tier (`push`); venues `disabled_manually` | Phase 3 — #6981 |
 
 ## Coverage rule
 

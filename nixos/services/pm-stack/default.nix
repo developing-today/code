@@ -18,16 +18,21 @@
 # The Kaneo docker stack had no hand unit at all: it only ran when
 # someone ran pm-stack/deploy.sh by hand, and stayed down otherwise.
 #
-# Code source: the services run the aggregator/projector/dispatch
-# straight out of the primary code checkout (~/git/code,
-# pm-stack/aggregator, pm-stack/projector, pm-stack/dispatch) at latest
-# origin/main — the keep-primaries-clean model. pm-git-sync (below)
-# keeps that checkout on a clean, current main and restarts a service
-# when its subtree changes, so code updates land by git pull while unit
-# definitions, environment, and lifecycle land by switch. (mcpx-style
-# store-pinned packages were the alternative; the PM stack has no
-# package.nix and iterates daily, and the checkout model is what the
-# fleet standardized on 2026-10-27.)
+# Code source (2026-11-10, code#8171 — Drew: "each thing should be
+# built from code into a nix app"): the projector, aggregator,
+# dispatch, and git-sync are Nix packages built from this repo
+# (pkgs/pm-projector, pkgs/pm-aggregator, pkgs/pm-dispatch,
+# pkgs/pm-git-sync) and the units below run their store wrappers.
+# Code updates deploy by merge -> nixos-rebuild switch, like
+# everything else on this machine. The checkout-run model this
+# replaces (units `bun run`ning straight out of ~/git/code, pm-git-sync
+# restarting services when a subtree pull landed, dependency steps
+# improvised at deploy time) is retired: it is what left pm-projector
+# crash-looping on a missing node_modules when a restart landed
+# without an install (#8171). pm-git-sync remains, but only as clone
+# hygiene — it keeps the primary checkout on a clean, current main
+# for the tooling that still works in the tree, and for the one unit
+# that stays checkout-coupled by design (fleet-feed-collector, below).
 #
 # Runtime state + secrets stay on the machine, never in this repo:
 # ~/.local/state/pm-aggregator/.env and ~/.local/state/pm-projector/.env
@@ -78,11 +83,78 @@ let
   projState = "${home}/.local/state/pm-projector";
   stackDir = "${home}/pm-stack";
 
+  pmProjector = pkgs.callPackage ../../../pkgs/pm-projector/package.nix { };
+  pmAggregator = pkgs.callPackage ../../../pkgs/pm-aggregator/package.nix { };
+  pmDispatch = pkgs.callPackage ../../../pkgs/pm-dispatch/package.nix { };
+  pmGitSync = pkgs.callPackage ../../../pkgs/pm-git-sync/package.nix { };
+
   projectorReconcile = pkgs.writeShellScript "pm-projector-reconcile" ''
     # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
     exec ${pkgs.curl}/bin/curl -fsS -X POST \
       -H "Authorization: Bearer $PM_PROJECTOR_API_TOKEN" \
       http://127.0.0.1:${toString cfg.projectorPort}/reconcile
+  '';
+
+  # The port cloudflared serves its metrics + /ready endpoint on
+  # (loopback only). The watchdog below reads /ready from it (#6992).
+  tunnelMetricsPort = 20242;
+
+  waitForTailnet = pkgs.writeShellScript "pm-wait-for-tailnet" ''
+    # pm-dispatch binds the tailnet address (DISPATCH_HOSTS); at boot
+    # that address does not exist until tailscaled assigns it, and the
+    # server dies EADDRNOTAVAIL (#6992). Wait for tailscale0 to carry
+    # an IPv4 address instead of crash-looping on Restart=. On timeout
+    # start anyway: the loopback bind (what the tunnel uses) does not
+    # need the tailnet, and Restart=on-failure stays the backstop.
+    for i in $(seq 1 90); do
+      if ${pkgs.iproute2}/bin/ip -4 addr show tailscale0 2>/dev/null | grep -q 'inet '; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "pm-wait-for-tailnet: tailscale0 has no IPv4 address after 180s; starting anyway" >&2
+  '';
+
+  waitForDns = pkgs.writeShellScript "pm-wait-for-dns" ''
+    # cloudflared discovers the edge through DNS at start; when the
+    # local stub resolver is not ready yet it cannot register and the
+    # edge answers 502 for every ingress (#6992). Wait until the edge
+    # hostname resolves. On timeout start anyway (cloudflared keeps
+    # retrying internally; the watchdog below covers the rest).
+    for i in $(seq 1 90); do
+      if ${pkgs.glibc.getent}/bin/getent hosts region1.v2.argotunnel.com >/dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "pm-wait-for-dns: region1.v2.argotunnel.com unresolvable after 180s; starting anyway" >&2
+  '';
+
+  tunnelWatchdog = pkgs.writeShellScript "pm-tunnel-watchdog" ''
+    # pm-tunnel can stay process-alive with no live edge connections:
+    # exactly the state in which the edge answered 502 for days while
+    # pm-dispatch was healthy (#6992). cloudflared's own /ready
+    # endpoint is the truth (200 = at least one live edge connection).
+    # Three consecutive failures (the timer runs every 2 minutes)
+    # restart pm-tunnel; any success resets the counter.
+    stateDir="$HOME/.local/state/pm-tunnel-watchdog"
+    mkdir -p "$stateDir"
+    countFile="$stateDir/consecutive-failures"
+    count=0
+    if [ -f "$countFile" ]; then
+      count=$(cat "$countFile")
+    fi
+    if ${pkgs.curl}/bin/curl -fsS -m 10 "http://127.0.0.1:${toString tunnelMetricsPort}/ready" >/dev/null 2>&1; then
+      echo 0 > "$countFile"
+      exit 0
+    fi
+    count=$((count + 1))
+    echo "$count" > "$countFile"
+    echo "pm-tunnel-watchdog: /ready failed ($count consecutive)" >&2
+    if [ "$count" -ge 3 ]; then
+      echo 0 > "$countFile"
+      exec /run/current-system/sw/bin/systemctl --user restart pm-tunnel.service
+    fi
   '';
 in
 {
@@ -107,13 +179,16 @@ in
       systemd.user.services = {
         pm-projector = {
           Unit = {
-            Description = "PM projector + link registry — GitHub projection for the aggregator (NixOS; runs from ~/git/code checkout)";
+            Description = "PM projector + link registry — GitHub projection for the aggregator (NixOS; packaged, pkgs/pm-projector)";
             After = [ "network-online.target" ];
           };
           Service = {
             Type = "simple";
-            WorkingDirectory = "${repo}/pm-stack/projector";
-            ExecStart = "${bun} run src/index.ts";
+            # The DB is pinned by DATABASE_URL in the env file; the
+            # state dir as cwd also keeps the code's cwd-relative
+            # fallback (file:data/projector.db) out of any checkout.
+            WorkingDirectory = projState;
+            ExecStart = "${pmProjector}/bin/pm-projector";
             EnvironmentFile = "${projState}/.env";
             Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ];
             Restart = "on-failure";
@@ -124,14 +199,18 @@ in
 
         pm-aggregator = {
           Unit = {
-            Description = "PM aggregator — board / roadmap / quota / needs-you (NixOS; runs from ~/git/code checkout)";
+            Description = "PM aggregator — board / roadmap / quota / needs-you (NixOS; packaged, pkgs/pm-aggregator)";
             After = [ "pm-projector.service" ];
             Wants = [ "pm-projector.service" ];
           };
           Service = {
             Type = "simple";
-            WorkingDirectory = "${repo}/pm-stack/aggregator";
-            ExecStart = "${bun} run src/server.ts";
+            # Every state file is env-pinned below or in the .env
+            # file; the state dir as cwd makes any unpinned cwd
+            # default in the config land in state too, never in a
+            # checkout or the (read-only) store.
+            WorkingDirectory = aggState;
+            ExecStart = "${pmAggregator}/bin/pm-aggregator";
             EnvironmentFile = "${aggState}/.env";
             # The projector is a deployed service of this stack — never
             # render it off (see the header note). The coverage snapshot
@@ -142,6 +221,11 @@ in
             # PM_AGG_COVERAGE_SNAPSHOT_FILE for exactly this).
             Environment = [
               "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}"
+              # The Kaneo projects registry used to be reached through
+              # the checkout working directory (../kaneo-projects.json
+              # from pm-stack/aggregator); the package bundles the
+              # file, and this pins the reader at the bundled copy.
+              "PM_KANEO_PROJECTS_FILE=${pmAggregator}/libexec/pm-aggregator/kaneo-projects.json"
               "PM_AGG_COVERAGE_SNAPSHOT_FILE=${aggState}/coverage-snapshot.json"
               # Roadmap annotations (#1284) are runtime state too: the
               # first annotation would otherwise create
@@ -179,14 +263,25 @@ in
 
         pm-dispatch = {
           Unit = {
-            Description = "pm-dispatch — authenticated intake: launch/track OpenCode sessions + queue intake (NixOS; runs from ~/git/code checkout)";
-            After = [ "network-online.target" ];
+            Description = "pm-dispatch — authenticated intake: launch/track OpenCode sessions + queue intake (NixOS; packaged, pkgs/pm-dispatch)";
+            After = [
+              "network-online.target"
+              "tailscaled.service"
+            ];
             Wants = [ "network-online.target" ];
           };
           Service = {
             Type = "simple";
-            WorkingDirectory = "${repo}/pm-stack/dispatch";
-            ExecStart = "${bun} run src/server.ts";
+            # The app has no cwd-relative access of its own (its
+            # paths come from the env files below); the deployment
+            # dir stays as cwd because that is where its rendered
+            # .env lives and where an operator expects to find it.
+            WorkingDirectory = "${stackDir}/dispatch";
+            # Wait for the tailnet bind address to exist (#6992); the
+            # 180s wait needs room beyond the 90s default start limit.
+            TimeoutStartSec = 300;
+            ExecStartPre = "${waitForTailnet}";
+            ExecStart = "${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
             # (GitHub App + Supabase config), and the operator file is
@@ -207,12 +302,12 @@ in
 
         pm-git-sync = {
           Unit = {
-            Description = "pm-git-sync — keep ~/git/code on clean main; redeploy PM services on subtree changes";
+            Description = "pm-git-sync — keep ~/git/code on clean main (PM services deploy by merge -> switch, #8171)";
             After = [ "network-online.target" ];
           };
           Service = {
             Type = "oneshot";
-            ExecStart = "${repo}/pm-stack/scripts/pm-git-sync.sh";
+            ExecStart = "${pmGitSync}/bin/pm-git-sync";
           };
         };
 
@@ -230,13 +325,13 @@ in
 
         quota-gatherer = {
           Unit = {
-            Description = "Quota gatherer — provider quotas every ~15 minutes (NixOS; runs from ~/git/code checkout, #1151)";
+            Description = "Quota gatherer — provider quotas every ~15 minutes (NixOS; packaged pm-aggregator, #1151)";
             After = [ "network-online.target" ];
           };
           Service = {
             Type = "oneshot";
             TimeoutStartSec = 300;
-            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            WorkingDirectory = aggState;
             # ANTIGRAVITY_OAUTH_CLIENT_SECRET for the quota subcommand's Antigravity token refresh (code#8086);
             # the file is materialized by the opencode unit's ExecStartPre (home/common).
             EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
@@ -246,13 +341,13 @@ in
               "QUOTA_GATHERER_STATE_PATH=${aggState}/quota-gatherer-state.json"
               "QUOTA_SNAPSHOTS_DIR=${aggState}/snapshots"
             ];
-            ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/gather-quota.ts";
+            ExecStart = "${pmAggregator}/bin/pm-aggregator-gather-quota";
           };
         };
 
         pm-digest-daily = {
           Unit = {
-            Description = "PM daily digest — generate + archive + deliver the day's digest (NixOS; runs from ~/git/code checkout, #1278)";
+            Description = "PM daily digest — generate + archive + deliver the day's digest (NixOS; packaged pm-aggregator, #1278)";
             After = [
               "network-online.target"
               "pm-aggregator.service"
@@ -261,19 +356,19 @@ in
           Service = {
             Type = "oneshot";
             TimeoutStartSec = 300;
-            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            WorkingDirectory = aggState;
             EnvironmentFile = "${aggState}/.env";
             Environment = [
               "PM_AGG_SOURCE=live"
               "PM_AGG_DIGESTS_DIR=${aggState}/digests"
             ];
-            ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/generate-digest.ts --kind daily";
+            ExecStart = "${pmAggregator}/bin/pm-aggregator-generate-digest --kind daily";
           };
         };
 
         pm-digest-weekly = {
           Unit = {
-            Description = "PM weekly digest — generate + archive + deliver the week's roll-up (NixOS; runs from ~/git/code checkout, #1278)";
+            Description = "PM weekly digest — generate + archive + deliver the week's roll-up (NixOS; packaged pm-aggregator, #1278)";
             After = [
               "network-online.target"
               "pm-aggregator.service"
@@ -282,16 +377,25 @@ in
           Service = {
             Type = "oneshot";
             TimeoutStartSec = 300;
-            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            WorkingDirectory = aggState;
             EnvironmentFile = "${aggState}/.env";
             Environment = [
               "PM_AGG_SOURCE=live"
               "PM_AGG_DIGESTS_DIR=${aggState}/digests"
             ];
-            ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/generate-digest.ts --kind weekly";
+            ExecStart = "${pmAggregator}/bin/pm-aggregator-generate-digest --kind weekly";
           };
         };
 
+        # fleet-feed-collector is the one unit still running from
+        # the checkout, deliberately (code#8171 follow-up): its script
+        # derives repo-root paths from its own file location — it
+        # reads the checkout's .opencode/opencode.jsonc and inspects
+        # the checkout itself for drift (collect-fleet-feed.ts:
+        # AA_OPENCODE_CONFIG_PATH default, computeCheckoutDrift) — so
+        # a store copy would inspect the wrong tree. Packaging it
+        # first needs a code change to take the checkout root from
+        # the environment.
         fleet-feed-collector = {
           Unit = {
             Description = "Fleet feed collector for the PM aggregator — collect the fleet feed every ~5 minutes (NixOS; runs from ~/git/code checkout, #3363)";
@@ -345,6 +449,9 @@ in
             # EnvironmentFile in ExecStart, exactly as the hand-written
             # unit relied on.
             EnvironmentFile = "${stackDir}/tunnel.env";
+            # Wait until the edge hostname resolves (#6992).
+            TimeoutStartSec = 300;
+            ExecStartPre = "${waitForDns}";
             # --protocol http2 (#5647): the default QUIC transport kept
             # dropping on this host's network path - cloudflared logged
             # "failed to accept QUIC stream: timeout: no recent network
@@ -353,11 +460,22 @@ in
             # pm-dispatch callers with 502 ("error code: 502") even
             # though pm-dispatch itself was healthy. HTTP/2 runs over
             # TCP and does not depend on the UDP path QUIC needs.
-            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 run --token \${TUNNEL_TOKEN}";
+            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:${toString tunnelMetricsPort} run --token \${TUNNEL_TOKEN}";
             Restart = "on-failure";
             RestartSec = 5;
           };
           Install.WantedBy = [ "default.target" ];
+        };
+
+        pm-tunnel-watchdog = {
+          Unit = {
+            Description = "pm-tunnel watchdog — restart pm-tunnel when its edge connections stay down (#6992)";
+            After = [ "pm-tunnel.service" ];
+          };
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${tunnelWatchdog}";
+          };
         };
 
         # The Kaneo stack is a oneshot, not a daemon: deploy.sh renders
@@ -465,6 +583,16 @@ in
             OnBootSec = "1min";
             OnUnitActiveSec = "30min";
             Unit = "pm-kaneo.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-tunnel-watchdog = {
+          Unit.Description = "Check pm-tunnel edge readiness every 2 minutes (#6992)";
+          Timer = {
+            OnBootSec = "2min";
+            OnUnitActiveSec = "2min";
+            Unit = "pm-tunnel-watchdog.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };

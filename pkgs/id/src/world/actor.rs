@@ -3,7 +3,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -49,9 +49,12 @@ impl WorldCommand {
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
+            Self::AuthorizeScope { .. } => "AuthorizeScope",
             Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
+            Self::EntityInput { .. } => "EntityInput",
+            Self::ExportEntity { .. } => "ExportEntity",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -138,6 +141,16 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         reply: oneshot::Sender<Result<u64>>,
     },
+    /// Authorize a live capability for a scope set without performing
+    /// the operation (design #835 phase 3): session paths check this
+    /// before receiving upload bytes, while the operation commands
+    /// (`InstallProgramAuthorized`, `RevokeAuthorized`) still re-check
+    /// at the effect boundary. Replies with the derived participant ID.
+    AuthorizeScope {
+        token: JoinCapability,
+        required: WorldScopes,
+        reply: oneshot::Sender<Result<u64>>,
+    },
     Chat {
         token: JoinCapability,
         text: String,
@@ -158,6 +171,20 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         author_key: [u8; 32],
         reply: oneshot::Sender<Result<u64>>,
+    },
+    EntityInput {
+        token: JoinCapability,
+        entity_ref: String,
+        input: Vec<u8>,
+        reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    ExportEntity {
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+        reply: oneshot::Sender<Result<HandoffTransferState>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -383,6 +410,17 @@ pub(crate) struct WorldActor {
     /// device re-enumeration. `None` when the host cannot describe
     /// its device — `device.info` then refuses with `unknown_cap`.
     pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
+    /// Request ids the restored program already listed in `wants` when the
+    /// world opened. Restart semantics: a reopen is not a fresh world. The
+    /// requests may have executed before the restart, and
+    /// [`handled_requests`](Self::handled_requests) is memory-only, so the
+    /// actor cannot tell done from never-run. The first `after_change`
+    /// passes therefore refuse these ids with `actor_denied` / `restarted`
+    /// instead of executing them, then drop them from this set; ids the
+    /// program issues after the open execute normally. Only
+    /// [`spawn_restored`](WorldHandle::spawn_restored)
+    /// seeds this set; every other constructor leaves it empty.
+    pub(crate) stale_wants_at_open: BTreeSet<String>,
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
@@ -629,6 +667,172 @@ impl WorldActor {
         Ok(())
     }
 
+    fn export_entity(
+        &mut self,
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+    ) -> Result<HandoffTransferState> {
+        self.check_storage()?;
+        ensure!(self.program_healthy, "world program is unavailable");
+        ensure!(
+            self.journal.is_some(),
+            "entity export requires a durable world journal"
+        );
+        ensure!(
+            self.core.limits.region_sharded,
+            "entity export requires a region-sharded world"
+        );
+        ensure!(
+            handoff_id.len() == 32 && handoff_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "handoff ID must be 128-bit hexadecimal"
+        );
+        core::validate_entity_ref(&entity_ref)?;
+        for (name, value) in [
+            ("source region", source_region.as_str()),
+            ("target region", target_region.as_str()),
+        ] {
+            ensure!(!value.trim().is_empty(), "{name} must not be empty");
+            ensure!(value.len() <= 256, "{name} exceeds 256 bytes");
+            ensure!(
+                !value.chars().any(char::is_control),
+                "{name} contains a control character"
+            );
+        }
+        ensure!(
+            source_region != target_region,
+            "source and target regions match"
+        );
+        let program_module_hash = self
+            .core
+            .active_module_hash
+            .clone()
+            .context("world has no installed program for entity export")?;
+        // Exact-retry recovery: if this export already committed (its reply
+        // was lost, or the actor restarted and replayed it), return the
+        // stored receipt instead of preparing a duplicate the core would
+        // refuse. A stored export whose fields differ from the request is
+        // not a retry — it falls through and validate_entity_export
+        // rejects the conflicting handoff ID / entity.
+        if let Some(existing) = self.core.handoff_transfers.iter().find(|transfer| {
+            transfer.direction == HandoffDirection::Export && transfer.handoff_id == handoff_id
+        }) && existing.entity_ref == entity_ref
+            && existing.source_region == source_region
+            && existing.target_region == target_region
+            && existing.prior_owner_epoch == prior_owner_epoch
+            && existing.program_module_hash == program_module_hash
+        {
+            return Ok(existing.clone());
+        }
+        let request = EntityTransferRequest::Export {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            prior_owner_epoch,
+            program_module_hash: program_module_hash.clone(),
+        };
+        let EntityTransferPlan::Export {
+            payload_schema,
+            payload,
+            app_event,
+        } = self.program.prepare_entity_transfer(&request)?
+        else {
+            bail!("world program returned an import plan for an export request");
+        };
+        ensure!(
+            !payload_schema.trim().is_empty() && payload_schema.len() <= 128,
+            "entity transfer payload schema must be 1..=128 bytes"
+        );
+        ensure!(
+            !payload_schema.chars().any(char::is_control),
+            "entity transfer payload schema contains a control character"
+        );
+        ensure!(
+            payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+        );
+        let payload_digest = hex_encode(blake3::hash(&payload).as_bytes());
+        let event_text = serde_json::json!({
+            "protocol": "world.entity-transfer.v1",
+            "direction": "export",
+            "handoff_id": handoff_id,
+            "entity_ref": entity_ref,
+            "source_region": source_region,
+            "target_region": target_region,
+            "prior_owner_epoch": prior_owner_epoch,
+            "module_hash": program_module_hash,
+            "payload_schema": payload_schema,
+            "payload_digest": payload_digest,
+            "app_event": app_event,
+        })
+        .to_string();
+        ensure!(
+            event_text.len() <= crate::world_caps::MAX_EVENT_BYTES,
+            "entity transfer event exceeds {} bytes",
+            crate::world_caps::MAX_EVENT_BYTES
+        );
+        let source_event = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: event_text },
+        };
+        let transfer = HandoffTransferState {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            direction: HandoffDirection::Export,
+            prior_owner_epoch,
+            new_owner_epoch: None,
+            program_module_hash: program_module_hash.clone(),
+            payload_schema: payload_schema.clone(),
+            payload_digest: payload_digest.clone(),
+            payload: Some(payload.clone()),
+            event: source_event.clone(),
+        };
+        self.core.validate_entity_export(&transfer)?;
+
+        // The durable entry is the source-side fence. Install it before
+        // applying the prepared event so no subsequent command can mutate
+        // this entity, even when the program rejects the post-append update.
+        self.persist(JournalEntry::EntityExported {
+            handoff_id,
+            entity_ref,
+            source_region,
+            target_region,
+            prior_owner_epoch,
+            source_event: source_event.clone(),
+            payload_schema,
+            program_module_hash,
+            payload,
+            payload_digest,
+        })?;
+        self.core.record_entity_export(transfer.clone());
+        if let Err(error) = self.program.update(&source_event) {
+            self.program_healthy = false;
+            tracing::error!("world program rejected a durable entity export: {error:#}");
+            return Err(
+                error.context("world program rejected a durable entity export; replay required")
+            );
+        }
+        let records = match program_records(self.program.as_mut()) {
+            Ok(records) => records.unwrap_or_default(),
+            Err(error) => {
+                self.program_healthy = false;
+                tracing::error!("world program records failed after entity export: {error:#}");
+                return Err(error.context(
+                    "world program failed after a durable entity export; replay required",
+                ));
+            }
+        };
+        self.republished(records, self.core.sequence);
+        let _ = self.view_changed.send(self.core.sequence);
+        Ok(transfer)
+    }
+
     /// Publish freshly recomputed records. Participant events push their own
     /// view frame right after the event; host events signal the views watch.
     fn republished(&mut self, records: Records, sequence: u64) {
@@ -691,7 +895,9 @@ impl WorldActor {
     /// repeat while the program reacts to delivered results, so a chain of
     /// asks settles inside one change. A read-only replica never runs this:
     /// program requests are side effects (chat.say, schedule.at) that must
-    /// not originate from a replica.
+    /// not originate from a replica. Requests the program already listed
+    /// at a restored open are refused, not executed (see
+    /// [`stale_wants_at_open`](Self::stale_wants_at_open)).
     pub(crate) async fn after_change(&mut self) {
         if self.read_only {
             return;
@@ -740,6 +946,22 @@ impl WorldActor {
                 self.handled_requests.retain(|id| current.contains(id));
             }
             for request in fresh {
+                // Pre-restart intent is never re-executed with world
+                // authority: the side effect may already have happened, and
+                // there is no acting participant to attribute a repeat to.
+                // Refusing (rather than executing) keeps non-idempotent
+                // providers (chat.say today; kv / http.fetch / notify as
+                // they land) to at-most-once per id across a reopen; the
+                // program re-issues the id afterwards if it still wants the
+                // effect, and that new intent executes normally.
+                if self.stale_wants_at_open.remove(&request.id) {
+                    let refusal = crate::world_caps::result_event(
+                        &request.id,
+                        Err(CapError::actor_denied_with("restarted")),
+                    );
+                    self.deliver(refusal).await;
+                    continue;
+                }
                 let outcome = self.execute(&request);
                 self.deliver(crate::world_caps::result_event(&request.id, outcome))
                     .await;
@@ -767,7 +989,7 @@ impl WorldActor {
                         "time.tick interval {ms}ms is below the world minimum {}ms",
                         self.core.limits.min_tick_ms
                     ));
-                    self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                    self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                         .await;
                 }
                 continue;
@@ -784,7 +1006,7 @@ impl WorldActor {
                 Decision::Deny(error) => {
                     let spec = sub.spec();
                     if self.denied_subs.insert(spec.clone()) {
-                        self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                        self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                             .await;
                     }
                 }
@@ -1514,6 +1736,13 @@ impl WorldActor {
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
             }
+            WorldCommand::AuthorizeScope {
+                token,
+                required,
+                reply,
+            } => {
+                let _ = reply.send(self.core.authorize(&token, required));
+            }
             WorldCommand::BindAuthorKey {
                 token,
                 author_key,
@@ -1616,6 +1845,70 @@ impl WorldActor {
                 if let Ok(event) = &result {
                     let _ = self.event_sender.send(event.clone());
                 }
+                let _ = reply.send(result);
+            }
+            WorldCommand::EntityInput {
+                token,
+                entity_ref,
+                input,
+                reply,
+            } => {
+                // Refuse before touching the program: a replica must not
+                // run entity inputs through its program instance.
+                if let Err(error) = self.check_writable() {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+                let result = match self.core.prepare_entity_input(&token, &entity_ref, &input) {
+                    Ok(_) if self.storage_failed => Err(anyhow::anyhow!(
+                        "world storage failed; the world is read-only"
+                    )),
+                    Ok(candidate) if self.program_healthy => {
+                        self.acting = Some(candidate.participant_id);
+                        match self
+                            .program
+                            .update(&candidate)
+                            .and_then(|()| program_records(self.program.as_mut()))
+                        {
+                            Ok(records) => self
+                                .persist(JournalEntry::Committed {
+                                    event: candidate.clone(),
+                                })
+                                .and_then(|()| self.core.commit_prepared(candidate))
+                                .inspect(|event| {
+                                    self.republished(records.unwrap_or_default(), event.sequence);
+                                }),
+                            Err(error) => {
+                                self.program_healthy = false;
+                                Err(error.context("world program rejected entity input"))
+                            }
+                        }
+                    }
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                if let Ok(event) = &result {
+                    let _ = self.event_sender.send(event.clone());
+                }
+                let _ = reply.send(result);
+            }
+            WorldCommand::ExportEntity {
+                handoff_id,
+                entity_ref,
+                source_region,
+                target_region,
+                prior_owner_epoch,
+                reply,
+            } => {
+                let result = self.export_entity(
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::Snapshot { token, reply } => {
@@ -2461,6 +2754,7 @@ mod replication_feed_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_info_tests {
     use super::*;
     use crate::world_caps::{CapError, DeviceManifest};
@@ -2586,6 +2880,7 @@ impl WorldActor {
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
+            stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
             device_manifest: None,

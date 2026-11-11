@@ -319,6 +319,20 @@
       "reason": "The registered mcpx-test workflow is disabled_manually."
     },
     {
+      "id": "mcpx.scripts.affected-embeds",
+      "paths": ["pkgs/mcpx/scripts/tests/test_affected_embeds.py"],
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run mcpx embed-selector regression tests (#6866)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6866],
+      "reason": "The active scripts-test PR workflow explicitly checks for this file before running the selector regressions; mcpx-test includes a separate dispatch-only step too."
+    },
+    {
       "id": "mcpx.plugin.v1",
       "paths": ["pkgs/mcpx/plugin/opencode/mcpx/*.test.ts"],
       "invocation": "bun test plugin/opencode/mcpx/",
@@ -697,10 +711,15 @@
       "id": "pm-stack.meta-exporter",
       "paths": ["pm-stack/meta-exporter/meta-quota-export.test.mjs"],
       "invocation": "node --test pm-stack/meta-exporter/meta-quota-export.test.mjs",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 6185,
-      "reason": "Added to current main after the initial inventory; no workflow invokes it. Phase 2 follow-up must be filed."
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test meta-exporter suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6344],
+      "notes": "Wired by #6344: pm-stack-tests.yml gains pm-stack/meta-exporter/** in both push and pull_request path filters and a guarded step running the explicit test file under Node 24; the registry records configuration, not an automatic coverage claim."
     },
     {
       "id": "github-backup.python",
@@ -713,7 +732,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "related_issues": [5937]
+      "related_issues": [5937, 7777]
     },
     {
       "id": "repo-universe.python",

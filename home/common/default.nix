@@ -129,6 +129,7 @@ let
   # flake's own packages.<system>.opencode). Named once here: the
   # wrapper below execs it, and the wrapped package joins over it.
   opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
+
   # Drew's opencode wrapper -- formerly a standalone home.packages
   # entry (writeShellScriptBin "opencode"), logic unchanged:
   # Cloudflare env top-up and the stamp-gated sync-models
@@ -1102,6 +1103,8 @@ in
     # ~/.config/environment.d/50-cloudflare.conf, and every user unit
     # inherits them — the mcpx daemon receives them the same way.)
   };
+
+
 
   services.opencode = {
     # enable comes from the cascade (mkDefault at each layer).

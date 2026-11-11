@@ -32,6 +32,7 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
   - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
   - **CI-first verification:** Review the checks actually triggered on the PR and use [`.github/ci-policy.md`](.github/ci-policy.md) to distinguish the basic merge-gating PR tier from the full main tier; formatting is not a merge gate. Run targeted local checks on the laptop when useful; sandboxed workers use CI and must not run builds or tests in the sandbox. If a policy-listed check is missing from the PR, inspect the workflow trigger and report the coverage gap instead of assuming it ran.
+  - **Build discipline on the laptop (2026-11-10):** Heavy builds/tests (cargo, nix) on the laptop go through `~/tools/fleet-build-lock` (max 2 heavy builds fleet-wide; it also defaults CARGO_BUILD_JOBS to half the cores). Never set `RUSTC_WRAPPER=` empty — that bypasses the shared sccache cache every other lane benefits from. `fleet-build-lock` defaults CARGO_TARGET_DIR to a shared per-package dir (`~/build-cache/<pkg>`, e.g. `~/build-cache/id` for pkgs/id) for cargo builds, instead of a per-worktree target dir: lanes then reuse each other's dependency builds instead of each paying a full ~17-minute compile (measured 2026-11-10: a second source tree on a shared target dir verified in 1s; re-measured 2026-11-11 through the lock, pkgs/atlas-search: 35s isolated target dir -> 1s shared). Set CARGO_TARGET_DIR yourself only to override that default. For Rust verification, run the narrowest build that proves the change: `cargo check` for type-only changes; `cargo test --lib` without `--features web` when the change does not touch web code; named test filters always. The full `--features web` test build of a package like `pkgs/id` costs many minutes of fleet-wide compile and must be justified by the change actually touching that surface.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
 
 ## Testing doctrine
@@ -78,6 +79,47 @@ in its own pilot queue. A `done` task is not coverage, and neither is a
 task in a `*-shadow` queue. When the reconciliation reports uncovered
 issues, the rule above was missed somewhere; fix the filing path, not
 just the import.
+
+## The one queue: claiming work
+
+There is ONE fleet queue (one broker, one tasks table); the per-repo
+values in the `queue` column are stream labels inside it, not separate
+queues. The matching model (Drew, 2026-11-10; #8097):
+
+- **Default claim is unfiltered.** A lane claims with no stream and no
+  filter and receives the highest-priority available item it is
+  eligible for, across all repos:
+  `repo-queue claim --worker <worker> --lane <lane>`.
+- **Matching is a union of two sides' requirements, empty by default
+  on both.** A task's requirements filter claimers; a claimer's filter
+  filters tasks. A task carries requirements only when there is a
+  reason — repo targeting is the normal case (the payload's `repo`),
+  plus rare declared requirements (the payload `requires` object:
+  platform / lane / pool / model; the lane ledger's platform
+  limitation). Those are honored automatically inside the claim; an
+  ineligible claimer simply is not offered the item.
+- **Filters are claim-time expressions, never registry bindings.**
+  `--filter '<expr>'` takes a boolean expression over task metadata
+  (repo, queue, pool, platform, label, kind, priority, lane, model)
+  with AND / OR / NOT / IN and parentheses, e.g.
+  `--filter 'repo != code'`. Nothing ties an item to a specific lane,
+  worker, pool or platform by default; a task may carry a unique name
+  and other descriptive metadata, which is not a binding.
+- **Designated filtered lanes are the only exceptions**, and their
+  designation is the filter expression their claim passes: on each
+  surface (Muse and OpenChamber) 3 lanes claim with `repo != code`
+  (never code) and 5 lanes claim with `repo = code` (code only).
+  Every other lane claims unfiltered. The designated sets are
+  recorded on #8097.
+- **Claimer identity is recorded, not a filter.** Every claim
+  identifies who is claiming (worker, lane, platform family, pool,
+  model — the claim stamps). Identity decides nothing by itself; it
+  only satisfies a task's own declared requirement of that kind.
+- The #8097 rules stand alongside: lanes do not claim by task ID by
+  default (by-id and transfer claims are explicit special cases); no
+  item names a platform beyond the optional coarse family mark; Muse
+  lanes work their own fixes and triage is a separate step; lanes do
+  the work rather than handing off, and a handoff records its reason.
 
 ## Research, design and delivery workflow
 

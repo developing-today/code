@@ -36,6 +36,30 @@ impl WorldHandle {
         Self::spawn_durable(core, program, None)
     }
 
+    /// Spawn a world actor for a world restored from durable state (see
+    /// [`crate::world_store::open_world`]). Request ids the restored program
+    /// already lists in `wants` are refused with `actor_denied` / `restarted`
+    /// instead of re-executed: they may have run before the restart, and
+    /// `handled_requests` is memory-only, so the actor cannot tell done from
+    /// never-run. Requests the program issues after the open execute
+    /// normally.
+    pub fn spawn_restored(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        device_manifest: Option<DeviceManifest>,
+    ) -> Self {
+        Self::spawn_durable_inner(
+            core,
+            program,
+            journal,
+            false,
+            HashMap::new(),
+            device_manifest,
+            true,
+        )
+    }
+
     /// Spawn a world actor that journals every mutation before acknowledging
     /// it. `program` must already reflect the journal (see
     /// [`WorldCore::restore`]); the actor only appends.
@@ -128,6 +152,45 @@ impl WorldHandle {
         presence: HashMap<u64, usize>,
         device_manifest: Option<DeviceManifest>,
     ) -> Self {
+        Self::spawn_durable_inner(
+            core,
+            program,
+            journal,
+            read_only,
+            presence,
+            device_manifest,
+            false,
+        )
+    }
+
+    /// Request ids the program lists in `wants` right now. A restored open
+    /// captures these so the actor can refuse (rather than re-execute) the
+    /// pre-restart intent; see
+    /// [`WorldActor::stale_wants_at_open`](super::WorldActor::stale_wants_at_open).
+    pub(crate) fn stale_wants_from(program: &mut dyn WorldProgram) -> BTreeSet<String> {
+        match program.wants() {
+            Ok(Some(text)) => crate::world_caps::parse_wants(&text)
+                .map(|wants| {
+                    wants
+                        .requests
+                        .iter()
+                        .map(|request| request.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => BTreeSet::new(),
+        }
+    }
+
+    fn spawn_durable_inner(
+        core: WorldCore,
+        mut program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        read_only: bool,
+        presence: HashMap<u64, usize>,
+        device_manifest: Option<DeviceManifest>,
+        restored: bool,
+    ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
         let (revocations, _) = broadcast::channel(256);
@@ -154,6 +217,15 @@ impl WorldHandle {
             .map(|(id, _)| id.clone())
             .collect();
         let metrics = WorldMetrics::default();
+        // A restored program's current `wants` predates the restart: its
+        // request ids are captured now so the first `after_change` passes
+        // refuse rather than re-execute them (see
+        // [`WorldActor::stale_wants_at_open`]). Fresh worlds start empty.
+        let stale_wants_at_open: BTreeSet<String> = if restored {
+            Self::stale_wants_from(program.as_mut())
+        } else {
+            BTreeSet::new()
+        };
         let actor = WorldActor {
             core,
             program,
@@ -175,6 +247,7 @@ impl WorldHandle {
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
+            stale_wants_at_open,
             acting: None,
             acting_session: None,
             device_manifest,
@@ -571,6 +644,33 @@ impl WorldHandle {
             .context("world actor dropped participant lookup response")?
     }
 
+    /// Authorize a live capability for `required` scopes, returning the
+    /// derived participant ID (design #835 phase 3). The world actor
+    /// performs the check against the capability's current scope,
+    /// revocation state, and expiry; the error is the actor's
+    /// non-oracular "invalid, revoked, or insufficient world
+    /// capability" for every denial cause. Session paths use this as
+    /// the early check before receiving upload bytes — the authorized
+    /// operation commands still re-check at the effect boundary.
+    pub async fn authorize(
+        &self,
+        token: JoinCapability,
+        required: WorldScopes,
+    ) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AuthorizeScope {
+                token,
+                required,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped authorization response")?
+    }
+
     /// Issue a scoped participant capability.
     pub async fn issue(
         &self,
@@ -840,6 +940,56 @@ impl WorldHandle {
             .context("world actor dropped input response")?
     }
 
+    /// Submit bounded input addressed to one application-owned entity.
+    pub async fn entity_input(
+        &self,
+        token: JoinCapability,
+        entity_ref: impl Into<String>,
+        input: Vec<u8>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::EntityInput {
+                token,
+                entity_ref: entity_ref.into(),
+                input,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped entity input response")?
+    }
+
+    /// Export an entity from this source shard. The actor journals the
+    /// complete bounded payload and source event before applying the event and
+    /// returns the durable source receipt only after application succeeds.
+    pub async fn export_entity(
+        &self,
+        handoff_id: impl Into<String>,
+        entity_ref: impl Into<String>,
+        source_region: impl Into<String>,
+        target_region: impl Into<String>,
+        prior_owner_epoch: u64,
+    ) -> Result<HandoffTransferState> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ExportEntity {
+                handoff_id: handoff_id.into(),
+                entity_ref: entity_ref.into(),
+                source_region: source_region.into(),
+                target_region: target_region.into(),
+                prior_owner_epoch,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped entity export response")?
+    }
+
     /// Read a world snapshot.
     pub async fn snapshot(&self, token: JoinCapability) -> Result<WorldSnapshot> {
         let (reply, response) = oneshot::channel();
@@ -981,13 +1131,17 @@ impl WorldHandle {
     /// Install a program on the authority of a joined builder's live
     /// capability (design #835 phase 2). The world actor authorizes the
     /// capability itself at the mutation boundary and derives the audit
-    /// actor (`BuilderInstalled { by }`) from it.
+    /// actor (`BuilderInstalled { by }`) from it. The caller's module
+    /// trust decision is carried through to the durable install event,
+    /// exactly as on the admin path (#1069): a verified publisher must
+    /// stay attributable in the journal.
     pub async fn install_program_authorized(
         &self,
         token: JoinCapability,
         module_hash: String,
         seed: u64,
         provenance: Option<ModuleProvenance>,
+        trust: Option<TrustDecision>,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
@@ -997,7 +1151,7 @@ impl WorldHandle {
                 module_hash,
                 seed,
                 provenance,
-                trust: None,
+                trust,
                 program,
                 reply,
             })
