@@ -100,7 +100,40 @@ if [ "$CHANGED" -eq 1 ]; then
   # deployments can keep using it until their update and delivery are
   # verified.
   umask 077
+  # Dependencies first, while the old service is still running
+  # (CodeRabbit on PR #8765): the migration gate below stops the
+  # service, and a failure here must not leave it stopped.
+  cd "$SRC"
+  bun install --silent
   ENV_FILE="$STATE_DIR/.env"
+
+  # Migration gate for the roadmap-annotations store (#8763; Codex P2
+  # and CodeRabbit on PR #8765), BEFORE the env below points the
+  # service at the state-dir path: config.ts used to default the
+  # store to the service working directory -- this checkout -- so an
+  # existing deployment's history can sit at $SRC/roadmap-annotations.json,
+  # and the running old process would keep writing there (a first
+  # annotation can even create it after any check). Stop the legacy
+  # writer before checking; if it is running and cannot be stopped,
+  # abort rather than strand a store. Never overwrite an existing
+  # destination; the restart after this block starts the service on
+  # the new configuration.
+  LEGACY_ANNOTATIONS="$SRC/roadmap-annotations.json"
+  ANNOTATIONS_DST="${STATE_DIR}/roadmap-annotations.json"
+  if [ -f "$LEGACY_ANNOTATIONS" ] && [ -e "$ANNOTATIONS_DST" ]; then
+    echo "WARNING: legacy roadmap annotations at $LEGACY_ANNOTATIONS and an existing $ANNOTATIONS_DST both exist; leaving both untouched -- merge them manually" >&2
+  elif [ ! -e "$ANNOTATIONS_DST" ]; then
+    if systemctl --user is-active --quiet pm-aggregator.service; then
+      if ! systemctl --user stop pm-aggregator.service; then
+        echo "ERROR: could not stop pm-aggregator.service; aborting before the roadmap-annotations migration so no store is stranded" >&2
+        exit 1
+      fi
+    fi
+    if [ -f "$LEGACY_ANNOTATIONS" ]; then
+      mv "$LEGACY_ANNOTATIONS" "$ANNOTATIONS_DST"
+      echo "migrated legacy roadmap annotations from $LEGACY_ANNOTATIONS to $ANNOTATIONS_DST"
+    fi
+  fi
   {
     echo "PM_AGG_BUILD_VERSION=${BUILD_VERSION}"
     echo "PM_AGG_SOURCE=live"
@@ -125,29 +158,6 @@ if [ "$CHANGED" -eq 1 ]; then
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
-  # Migrate a legacy roadmap-annotations store out of the checkout
-  # (#8763; Codex P2 on PR #8765): before the env above rendered
-  # PM_AGG_ROADMAP_ANNOTATIONS_FILE, config.ts defaulted the store to
-  # the service working directory -- this checkout -- so an existing
-  # deployment's history can sit at $SRC/roadmap-annotations.json.
-  # Move it to the state-dir path instead of silently starting empty
-  # at the new path; never overwrite an existing destination.
-  LEGACY_ANNOTATIONS="$SRC/roadmap-annotations.json"
-  if [ -f "$LEGACY_ANNOTATIONS" ]; then
-    if [ -e "${STATE_DIR}/roadmap-annotations.json" ]; then
-      echo "WARNING: legacy roadmap annotations at $LEGACY_ANNOTATIONS and an existing ${STATE_DIR}/roadmap-annotations.json both exist; leaving both untouched -- merge them manually" >&2
-    else
-      # Stop the legacy writer before the move (Codex P2 on PR #8765):
-      # the running old process caches the store, and its persist()
-      # would recreate the legacy file after the move while the new
-      # service reads only the destination -- an acknowledged write in
-      # that window would silently vanish. The restart below starts
-      # the service again on the new configuration.
-      systemctl --user stop pm-aggregator.service || true
-      mv "$LEGACY_ANNOTATIONS" "${STATE_DIR}/roadmap-annotations.json"
-      echo "migrated legacy roadmap annotations from $LEGACY_ANNOTATIONS to ${STATE_DIR}/roadmap-annotations.json"
-    fi
-  fi
 
   if [ -L "$UNIT_DST" ]; then
     echo "pm-aggregator.service is symlink-managed at $UNIT_DST; skipping unit copy"
@@ -155,8 +165,6 @@ if [ "$CHANGED" -eq 1 ]; then
     cp "$UNIT_SRC" "$UNIT_DST"
   fi
 
-  cd "$SRC"
-  bun install --silent
   echo "$SRC_HASH" >"$STATE_DIR/.deploy-tree-hash"
   echo "$SRC_INPUTS" >"$STATE_DIR/.deploy-inputs-hash"
 fi
