@@ -101,3 +101,18 @@ jobs:
       - name: Vet
         working-directory: pkgs/${{ matrix.module }}
         run: go vet ./...
+
+      - name: Test (chat only)
+        if: matrix.module == 'chat'
+        working-directory: pkgs/chat
+        run: |
+          # pkgs/chat is the one matrix module with a test suite
+          # (#6099): five-plus tests pinning broadcast and registry
+          # concurrency. Guard on the suite existing so a missing
+          # main_test.go fails loudly instead of `go test` reporting
+          # a false green for a package with no test files.
+          if [[ ! -f main_test.go ]]; then
+            echo "pkgs/chat/main_test.go is missing; refusing to report a test pass with no tests."
+            exit 1
+          fi
+          go test ./...
