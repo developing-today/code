@@ -117,6 +117,7 @@ import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./project
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
+import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
@@ -1665,7 +1666,7 @@ export function forecastSummaryHtml(contracts: ForecastContract[] | undefined): 
   return `<div class="forecast">${lines}</div>`;
 }
 
-function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>): string {
+function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<RefKey, ForecastContract[]>, spend?: SpendCardsView | null): string {
   const parts: string[] = [];
   if (!drill.epic) {
     parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
@@ -1697,6 +1698,10 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow, forecasts?: Map<
     const fc = forecastSummaryHtml(forecasts?.get(drill.epic.ref));
     if (fc) parts.push(fc);
   }
+  if (drill.epic) {
+    const card = spend?.byScope.get(drill.epic.ref);
+    if (card) parts.push(spendCardHtml(card));
+  }
   if (row.notes.trim()) parts.push(`<p class="notes">${esc(row.notes)}</p>`);
   return `<details class="roadmap-drill"><summary>Epic &amp; issues</summary>${parts.join("")}</details>`;
 }
@@ -1709,6 +1714,7 @@ function roadmapCard(
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1718,7 +1724,7 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
-  const expansion = drill ? roadmapDrilldown(drill, row, forecasts) : "";
+  const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
@@ -1742,6 +1748,7 @@ function timelineTable(
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1751,7 +1758,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -1774,6 +1781,7 @@ export function renderRoadmap(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   flowAnalytics?: FlowAnalytics,
+  spend?: SpendCardsView | null,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1794,9 +1802,9 @@ export function renderRoadmap(
     : "";
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const byTheme = new Map<string, RoadmapRow[]>();
@@ -1809,7 +1817,7 @@ export function renderRoadmap(
           .map(([theme, themeRows]) => {
             const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
             const cards = (laneRows: RoadmapRow[]) =>
-              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts)).join("");
+              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend)).join("");
             const lanes = dg.lanes
               .map((lane) => {
                 const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
@@ -6415,6 +6423,9 @@ export function projectsBodyHtml(
     /** Shared forecast contracts by item ref (#3984): the same objects
      * /api/forecasts.json serves, rendered as one-line summaries. */
     forecasts?: Map<RefKey, ForecastContract[]>;
+    /** Spend beside progress (#4824): the #4823 rollup store's
+     * reader view. Absent/null: cards render exactly as before. */
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -6477,9 +6488,11 @@ export function projectsBodyHtml(
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
+      const spendCard = opts.spend?.byScope.get(p.ref);
+      const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
       const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
@@ -6491,7 +6504,7 @@ ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()
     .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
     .join(" · ")}</p>
-${cards || '<p class="muted">No items in this area.</p>'}`;
+${cards || '<p class="muted">No items in this area.</p>'}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}`;
   return body;
 }
 
@@ -6508,6 +6521,7 @@ export function renderProjects(
     basePath?: string;
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   return layout(
@@ -6610,12 +6624,14 @@ export function renderProgram(
     forecasts?: Map<RefKey, ForecastContract[]>;
     /** The #4829 flow twin the #4830 charts render on this page. */
     flowAnalytics?: FlowAnalytics;
+    /** Spend beside progress (#4824) for the pool section. */
+    spend?: SpendCardsView | null;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
