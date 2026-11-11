@@ -2590,6 +2590,24 @@ mod tests {
         }
     }
 
+    /// Reject every write so session tests can exercise effect handling when
+    /// durable audit persistence fails.
+    #[derive(Clone, Default)]
+    struct FailingJournal;
+
+    impl crate::world::WorldJournal for FailingJournal {
+        fn append(&mut self, _entry: &crate::world::JournalEntry) -> anyhow::Result<()> {
+            anyhow::bail!("injected journal append failure")
+        }
+
+        fn append_transaction(
+            &mut self,
+            _entries: &[crate::world::JournalEntry],
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("injected journal transaction failure")
+        }
+    }
+
     /// A durable world behind a session service with a blob store, so
     /// joined installs can pin their module and journal their audit.
     fn durable_service() -> (WorldHandle, WorldService, CapturingJournal) {
@@ -2704,6 +2722,54 @@ mod tests {
                 .as_deref()
                 .is_some_and(|view| view.contains("count=0")),
             "the builder-installed program must serve views"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_install_journal_failure_does_not_ack_or_activate() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let (_, builder_token) = core
+            .issue_capability(
+                "builder",
+                WorldScopes::from_role("builder").unwrap(),
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (_, guest_token) = core
+            .issue_capability(
+                "guest",
+                WorldScopes::GUEST,
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let world =
+            WorldHandle::spawn_durable(core, Box::new(NoProgram), Some(Box::new(FailingJournal)));
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into());
+        let mut peer = join_as(&service, &builder_token).await;
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": wasm.len(),
+            "module_hash": module_hash(wasm),
+            "seed": 12,
+        }))
+        .await;
+        let ready = next_of_type(&mut peer, "upload_ready").await;
+        upload_chunks(&mut peer, &ready, wasm).await;
+
+        let failed = next_of_type(&mut peer, "error").await;
+        assert_eq!(
+            failed["type"], "error",
+            "failed install persistence must be reported, not acknowledged: {failed}"
+        );
+        assert_eq!(
+            world.view(guest_token).await.unwrap(),
+            None,
+            "the old program must remain active when the install transaction fails"
         );
     }
 
@@ -2896,6 +2962,7 @@ mod tests {
     #[tokio::test]
     async fn joined_builder_native_upload_is_refused() {
         let (world, service, journal) = durable_service();
+        let service = service.with_native_enabled();
         let (_, builder_token) = world
             .issue(
                 "builder".to_owned(),
@@ -3009,6 +3076,50 @@ mod tests {
             1,
             "a no-op revoke must not journal"
         );
+    }
+
+    #[tokio::test]
+    async fn joined_moderator_revoke_journal_failure_reports_error_but_still_revokes() {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let (victim, victim_token) = core
+            .issue_capability(
+                "victim",
+                WorldScopes::GUEST,
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (_, moderator_token) = core
+            .issue_capability(
+                "moderator",
+                WorldScopes::from_role("moderator").unwrap(),
+                crate::world::CapabilityBounds::default(),
+            )
+            .unwrap();
+        let world =
+            WorldHandle::spawn_durable(core, Box::new(NoProgram), Some(Box::new(FailingJournal)));
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let mut victim_peer = join_as(&service, &victim_token).await;
+        let mut moderator_peer = join_as(&service, &moderator_token).await;
+
+        moderator_peer
+            .say(serde_json::json!({"type": "revoke", "participant_id": victim.id}))
+            .await;
+        let failed = next_of_type(&mut moderator_peer, "error").await;
+        assert!(
+            failed["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("revoke failed")),
+            "a failed audit append must not be reported as a successful revoke: {failed}"
+        );
+        assert!(
+            world
+                .authorize(victim_token, WorldScopes::JOIN)
+                .await
+                .is_err(),
+            "the in-memory revocation must remain effective after persistence fails"
+        );
+        let victim_closed = next_of_type(&mut victim_peer, "error").await;
+        assert_eq!(victim_closed["message"], "world capability revoked");
     }
 
     #[tokio::test]
