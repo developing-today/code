@@ -2539,6 +2539,14 @@ fn link_reference_definition_label(source: &str) -> Option<String> {
 fn link_reference_use_label(source: &str) -> Option<String> {
     let source = source.trim_start();
     let source = source.strip_prefix('!').unwrap_or(source);
+    // An autolink's span opens with '<', and a bracket inside its
+    // URL is not a reference label: <https://example.com/[r]> uses
+    // no reference definition, and marking `r` used silently dropped
+    // the genuinely unused `[r]` definition on save (Codex P2 on
+    // PR #5949).
+    if source.starts_with('<') {
+        return None;
+    }
     let start = source.find('[')?;
     let candidate = &source[start..];
     let close = find_balanced_label_close(candidate)?;
@@ -2587,30 +2595,19 @@ fn find_balanced_label_close(source: &str) -> Option<usize> {
     None
 }
 
-/// Normalize a link reference label for matching: resolve
-/// backslash escapes of ASCII punctuation, collapse internal
-/// whitespace, and fold case. A backslash before any other
-/// character is literal text in CommonMark and stays in the key,
-/// so `[a\\b]` and `[ab]` remain distinct labels (CodeRabbit
-/// finding on PR #5949).
+/// Normalize a link reference label for matching, mirroring the
+/// parser's own key (comrak `normalize_label`): collapse internal
+/// whitespace and fold case — and nothing else. Backslash escapes
+/// are NOT resolved: comrak matches the raw label text, so `[a\!]`
+/// and `[a!]` are distinct labels (CommonMark example 545) and an
+/// escaped definition the document never used must survive as
+/// unused. Unescaping punctuation here (an earlier CodeRabbit
+/// suggestion on PR #5949) diverged from the parser and silently
+/// dropped those definitions (Codex P2 on PR #5949). A backslash
+/// before a non-punctuation character was literal under both
+/// readings, so `[a\\b]` and `[ab]` stay distinct either way.
 fn normalize_link_reference_label(label: &str) -> String {
-    let mut unescaped = String::with_capacity(label.len());
-    let mut chars = label.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.next() {
-                Some(escaped) if escaped.is_ascii_punctuation() => unescaped.push(escaped),
-                Some(escaped) => {
-                    unescaped.push('\\');
-                    unescaped.push(escaped);
-                }
-                None => unescaped.push('\\'),
-            }
-        } else {
-            unescaped.push(ch);
-        }
-    }
-    unescaped
+    label
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -8549,6 +8546,38 @@ mod tests {
             "multiline title survives verbatim: {first:?}"
         );
         assert_eq!(first, second, "multiline-title round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_autolink_brackets_are_not_a_reference_use() {
+        // Codex P2 on PR #5949: the bracket inside an autolink URL
+        // must not mark the reference definition as used.
+        let original = "<https://example.com/[r]>\n\n[r]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[r]: /keep"),
+            "unused definition beside an autolink is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "autolink round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_escaped_label_definition_stays_unused() {
+        // Codex P2 on PR #5949 (CommonMark example 545): `[a!]`
+        // consumes only the `[a!]` definition; the escaped-label
+        // definition `[a\!]` is a different label and is unused,
+        // so it must be preserved, not dropped as consumed.
+        let original = "[a!]\n\n[a\\!]: /keep\n[a!]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[a\\!](/used-target)"),
+            "unescaped reference resolves to its own definition: {first:?}"
+        );
+        assert!(
+            first.contains("[a\\!]: /keep"),
+            "escaped-label definition is preserved as unused: {first:?}"
+        );
+        assert_eq!(first, second, "escaped-label round-trip is a fixpoint");
     }
 
     #[test]
