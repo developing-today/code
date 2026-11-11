@@ -802,6 +802,7 @@ def main(argv=None):
     summary = {
         "run": ts, "dry_run": bool(args.dry_run), "evaluated": 0, "candidates": 0,
         "reaped": 0, "reaped_bytes": 0, "branch_deleted": 0, "branch_kept": 0,
+        "stale_registrations": 0, "pruned": 0,
         "kept": {}, "errors": [],
     }
 
@@ -836,11 +837,21 @@ def main(argv=None):
             continue
         primary_real = os.path.realpath(primary)
         removed_any = False
+        stale_any = False
         for wt in worktrees:
             if wt["bare"] or os.path.realpath(wt["path"]) == primary_real:
                 continue  # primaries are never reaped
             summary["evaluated"] += 1
             rec = evaluate_tree(primary, wt, cfg, now, cwds)
+            if rec["action"] == "stale-registration":
+                # A registration whose directory is gone is not a kept
+                # tree: it is prune work for this primary (#6547). Count
+                # it as such, and in a dry run say would-prune instead
+                # of folding it into the kept counts.
+                stale_any = True
+                summary["stale_registrations"] += 1
+                if args.dry_run:
+                    rec["action"] = "would-prune"
             if rec["action"] == "candidate":
                 summary["candidates"] += 1
                 if args.dry_run:
@@ -856,16 +867,30 @@ def main(argv=None):
                         summary["branch_deleted"] += 1
                     else:
                         summary["branch_kept"] += 1
-            if rec["action"] not in ("reaped", "would-reap"):
+            if rec["action"] not in ("reaped", "would-reap", "would-prune",
+                                     "stale-registration"):
                 reason = rec.get("reason", rec["action"])
                 summary["kept"][reason] = summary["kept"].get(reason, 0) + 1
             records.append(rec)
-            verb = {"reaped": "REAP", "would-reap": "WOULD-REAP"}.get(rec["action"])
+            verb = {"reaped": "REAP", "would-reap": "WOULD-REAP",
+                    "would-prune": "WOULD-PRUNE"}.get(rec["action"])
             if verb:
                 print(f"{verb} {rec['tree']} branch={rec['branch']} "
                       f"size={rec.get('size_bytes', 0)} pushed={rec['gates'].get('pushed', {}).get('method')}")
-        if removed_any and not args.dry_run:
-            run_git(primary, "worktree", "prune")
+        # Prune whenever this run left the primary's registrations
+        # stale: a tree was reaped, OR a stale registration was found
+        # (#6547 — previously prune ran only as a side effect of a
+        # same-run reap, so a deleted-directory-only primary was never
+        # pruned). Fail-safe: this block is reached only for primaries
+        # successfully inventoried above, and a prune failure is
+        # surfaced in the summary, never swallowed.
+        if (removed_any or stale_any) and not args.dry_run:
+            rc, _, err = run_git(primary, "worktree", "prune")
+            if rc != 0:
+                summary["errors"].append(
+                    f"prune failed in {primary}: {err.strip()}")
+            else:
+                summary["pruned"] += 1
 
     summary["kept_total"] = sum(summary["kept"].values())
     # The log name must be unique per run: ts has only second resolution,

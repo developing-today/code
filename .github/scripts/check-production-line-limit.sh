@@ -14,7 +14,10 @@
 # before their production code (e.g. pkgs/id/src/world_session/mod.rs
 # declares its test modules at the top) — Codex finding on PR #4709.
 # Test files are out of scope entirely: files under a tests/
-# directory and files named tests.rs are skipped.
+# directory and files named tests.rs are skipped. Build output is
+# out of scope too: target/ directories are pruned at any depth
+# under the scanned roots (matching the repo's **/target ignore),
+# so a built tree's generated .rs files are never counted.
 #
 # Grandfather list: files that already exceeded the limit when the
 # guard landed. Each entry names the issue that removes it; when the
@@ -199,7 +202,7 @@ for base in pkgs apps; do
         fail=1
       fi
     fi
-  done < <(find "$ROOT/$base" -name "*.rs" -type f -print0 | sort -z)
+  done < <(find "$ROOT/$base" -type d -name target -prune -o -name "*.rs" -type f -print0 | sort -z)
 done
 
 echo "production-line-guard: checked $checked production .rs files, limit $LIMIT"

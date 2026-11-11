@@ -9,6 +9,8 @@ bookkeeping and no database is needed.
 
 Run: python3 -m unittest test_push_quarantine -v   (from this dir)
 """
+import contextlib
+import io
 import json
 import os
 import random
@@ -190,6 +192,85 @@ class QuarantineRollbackCase(unittest.TestCase):
         with open(mod.QUARANTINE) as f:
             entries = [json.loads(ln) for ln in f if ln.strip()]
         self.assertEqual(entries[-1]["_raw"], TORN)
+
+
+class MidDrainSpillCase(unittest.TestCase):
+    """#6875: a record spilled while the pusher drains must survive the
+    drain. The old do_push() rewrote the outbox from its initial read
+    set alone, so a line appended between the read and the os.replace
+    was never inserted and silently vanished while the pusher reported
+    a clean drain. Driven in-process (the #6875 probe's shape): the
+    transport is stubbed, and inserting record A triggers the real
+    spill() of record B mid-drain."""
+
+    def load_module(self, state):
+        import importlib.machinery
+        import importlib.util
+        os.environ["EXTERNAL_COMMS_STATE_DIR"] = state
+        loader = importlib.machinery.SourceFileLoader(
+            "rec_ext_send_6875", SCRIPT)
+        spec = importlib.util.spec_from_loader("rec_ext_send_6875",
+                                               loader)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.db_config = lambda: ("stub", "stub")
+        return mod
+
+    def run_push(self, mod):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = mod.do_push()
+        self.assertEqual(rc, 0)
+        return json.loads(out.getvalue().strip())
+
+    def outbox_records(self, mod):
+        if not os.path.exists(mod.OUTBOX):
+            return []
+        with open(mod.OUTBOX) as f:
+            return [json.loads(ln) for ln in f if ln.strip()]
+
+    def test_spill_during_drain_survives_the_rewrite(self):
+        state = tempfile.mkdtemp(prefix="extcomms-race-")
+        mod = self.load_module(state)
+        rec_a = dict(VALID, id="record-a")
+        rec_b = dict(VALID, id="record-b")
+        mod.spill(rec_a)
+        landed = []
+
+        def fake_insert(base, key, rec):
+            landed.append(rec["id"])
+            if rec["id"] == "record-a":
+                # Exactly what do_record does after a failed DB insert,
+                # while the pusher is mid-drain.
+                mod.spill(rec_b)
+
+        mod.insert_record = fake_insert
+        summary = self.run_push(mod)
+        # B was not in the pusher's read set: not landed, but still
+        # pending in the outbox, and the run is not a clean drain.
+        self.assertEqual(landed, ["record-a"])
+        self.assertEqual(summary["landed"], 1)
+        self.assertEqual(summary["pending"], 1)
+        self.assertEqual([r["id"] for r in self.outbox_records(mod)],
+                         ["record-b"])
+        with open(mod.HEALTH) as f:
+            health = json.load(f)
+        self.assertEqual(health["pending_count"], 1)
+        self.assertNotIn("last_drain_ok_at", health)
+
+    def test_spill_before_drain_control_both_land(self):
+        state = tempfile.mkdtemp(prefix="extcomms-race-control-")
+        mod = self.load_module(state)
+        mod.spill(dict(VALID, id="record-a"))
+        mod.spill(dict(VALID, id="record-b"))
+        landed = []
+        mod.insert_record = lambda base, key, rec: landed.append(
+            rec["id"])
+        summary = self.run_push(mod)
+        self.assertEqual(sorted(landed), ["record-a", "record-b"])
+        self.assertEqual(summary["landed"], 2)
+        self.assertEqual(summary["pending"], 0)
+        self.assertEqual(self.outbox_records(mod), [])
 
 
 if __name__ == "__main__":

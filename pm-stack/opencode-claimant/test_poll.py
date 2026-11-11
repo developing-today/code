@@ -121,6 +121,67 @@ class TestSummarizeCap(unittest.TestCase):
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
+
+class TestWrongShapeTime(unittest.TestCase):
+    """#6868: a wrong-shaped `time` / timestamp must never raise out of
+    the classifiers, and must fail closed: never counted as a
+    known-inactive root (cap goes unknown), never stuck-bound."""
+
+    BAD_TIMES = ["soon", 123, True, ["x"], {"updated": "soon"},
+                 {"created": "soon"}, {"updated": ["x"]},
+                 {"created": {"at": 1}}, {"updated": True}]
+
+    def test_is_active_root_never_raises_and_never_active(self):
+        for bad in self.BAD_TIMES:
+            s = {"id": "ses_x", "time": bad}
+            self.assertFalse(poll.is_active_root(s, NOW), repr(bad))
+            self.assertFalse(poll.is_active_root(s, NOW, set()), repr(bad))
+
+    def test_active_set_membership_still_authoritative(self):
+        s = {"id": "ses_x", "time": "soon"}
+        self.assertTrue(poll.is_active_root(s, NOW, {"ses_x"}))
+
+    def test_count_active_roots_unknown_on_malformed_entry(self):
+        sessions = [root(), {"id": "ses_bad", "time": "soon"}]
+        self.assertIsNone(poll.count_active_roots(sessions, NOW, set()))
+
+    def test_summarize_cap_unknown_not_manufactured_room(self):
+        live, active, room = poll.summarize_cap(
+            [root(), {"id": "ses_bad", "time": {"updated": "soon"}}],
+            set(), NOW)
+        self.assertEqual(live, 2)
+        self.assertIsNone(active)
+        self.assertIsNone(room)
+
+    def test_is_stuck_bound_never_raises_and_never_stuck(self):
+        row = TestIsStuckBound().row()
+        for bad in self.BAD_TIMES:
+            s = {"id": "ses_x", "time": bad}
+            self.assertFalse(
+                poll.is_stuck_bound(row, s, set(), NOW), repr(bad))
+
+    def test_stuck_entry_session_updated_none_on_malformed(self):
+        row = TestIsStuckBound().row()
+        for bad in self.BAD_TIMES:
+            entry = poll._stuck_entry(row, "q", {"id": "ses_x", "time": bad})
+            self.assertIsNone(entry["session_updated"], repr(bad))
+
+    def test_stuck_entry_keeps_numeric_updated(self):
+        row = TestIsStuckBound().row()
+        s = {"id": "ses_x",
+             "time": {"created": NOW - 90 * MIN, "updated": NOW - 31 * MIN}}
+        entry = poll._stuck_entry(row, "q", s)
+        self.assertEqual(entry["session_updated"], NOW - 31 * MIN)
+
+    def test_get_stuck_bound_over_mixed_list(self):
+        row = TestIsStuckBound().row()
+        good_dead = TestIsStuckBound().dead_session()
+        bad = {"id": "ses_bad", "time": "soon"}
+        by_id = {"ses_x": good_dead, "ses_bad": bad}
+        stuck = poll.get_stuck_bound([row], by_id, set(), NOW)
+        self.assertEqual(stuck, [row])
+
+
 class TestIsCandidate(unittest.TestCase):
     def row(self, **over):
         r = {
