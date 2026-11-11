@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { esc } from "../src/render.ts";
 import {
   decisionSetOpenState,
   decisionSetProgress,
@@ -15,6 +16,8 @@ import {
   recordResolutions,
   requestInfoOpenQuestions,
   validateDecisionSet,
+  decisionsDraftKey,
+  decisionsDraftScript,
   type DecisionSetInput,
 } from "../src/decisions.ts";
 
@@ -380,5 +383,48 @@ describe("bulk default flavor (#8766 follow-up)", () => {
     expect(byQid.get("item-a#1")).toMatchObject({ kind: "deferred", lean: "approve", optionId: "opt-1", comment: "guidance" });
     expect(byQid.get("item-a#2")).toMatchObject({ kind: "answered", freeText: "the answer" });
     expect(byQid.get("item-b#1")).toMatchObject({ kind: "deferred", lean: "skeptical" });
+  });
+});
+
+// --- Crash hardening (#8777) -------------------------------------------
+// The 2026-11-11 incident: the aggregator was killed while Drew was
+// mid-set on the decisions page. Two properties keep that class of
+// failure from ever costing typed work or breaking the page: question
+// text reaches the page only through esc(), and in-progress form state
+// is continuously drafted to localStorage and restored on load.
+describe("decisions page crash hardening (#8777)", () => {
+  test("esc neutralizes script-breaking and attribute-breaking text", () => {
+    const hostile = `</script><script>alert(1)</script> "quoted" & <b onmouseover="x">`;
+    const out = esc(hostile);
+    expect(out).not.toContain("</script>");
+    expect(out).not.toContain("<script");
+    expect(out).not.toContain(`"`);
+    expect(out).toContain("&lt;/script&gt;");
+    expect(out).toContain("&quot;");
+  });
+
+  test("draft key is per-set", () => {
+    expect(decisionsDraftKey("set-a")).toBe("decisions-drafts:set-a");
+    expect(decisionsDraftKey("set-b")).toBe("decisions-drafts:set-b");
+  });
+
+  test("draft script parses as JS and embeds only its own set's key", () => {
+    const js = decisionsDraftScript("set-a");
+    expect(js).toContain(`"decisions-drafts:set-a"`);
+    expect(js).not.toContain("decisions-drafts:set-b");
+    expect(() => new Function(js)).not.toThrow();
+  });
+
+  test("draft script wires save-on-input, restore-on-load and prune-on-remove", () => {
+    const js = decisionsDraftScript("set-a");
+    expect(js).toContain("localStorage.setItem");
+    expect(js).toContain("localStorage.getItem");
+    expect(js).toContain("localStorage.removeItem");
+    expect(js).toContain("addEventListener('input', draftSave)");
+    expect(js).toContain("addEventListener('change', draftSave)");
+    // Recorded questions leave the DOM on submit; the observer re-save
+    // is what prunes their drafts so a stale draft can never resurrect.
+    expect(js).toContain("MutationObserver(draftSave)");
+    expect(js).toContain("draftRestore()");
   });
 });
