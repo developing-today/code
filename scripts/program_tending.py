@@ -60,7 +60,7 @@ FLEET_REPOS = (
     "developing-today/code",
     "developing-today-forks/opencode",
     "developing-today-forks/openchamber",
-    "developing-today/nix",
+    "dezren39/darwin-nix",
 )
 
 # The repo this runner is checked out in when the workflow runs; the
