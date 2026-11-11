@@ -297,6 +297,18 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 	if !peer.Modern {
 		want, ttl := wantsTask(req.Params)
 		if !want {
+			// 2025-11-25 tool-level negotiation: a tool whose
+			// execution.taskSupport is "required" MUST be refused
+			// when the client does not attempt task augmentation.
+			// The code is the tool-level rule's -32601, not the
+			// protocol-errors list's -32600: that list is for
+			// request types with no tool-level rule, and for
+			// tools/call the MUST wins (#1974 headline 13,
+			// section C item C10).
+			if s.legacyTaskSupport(ctx, req.Params) == supportRequired {
+				return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeMethodNotFound,
+					Message: "this tool requires task-augmented execution (execution.taskSupport is required)"}}
+			}
 			return nil
 		}
 		if sup := s.legacyTaskSupport(ctx, req.Params); sup != supportOptional && sup != supportRequired {
