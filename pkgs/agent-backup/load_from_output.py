@@ -13,7 +13,7 @@ import subprocess
 import sys
 import os
 
-LOADER = os.path.expanduser("~/tools/runtime-db-export/load_rows.py")
+LOADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "load_rows.py")
 
 
 def extract_rows(path):

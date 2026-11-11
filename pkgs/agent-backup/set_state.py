@@ -17,8 +17,11 @@ def main():
     table, watermark, count, status = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
     error = sys.argv[5] if len(sys.argv) > 5 else None
     now = datetime.now(timezone.utc).isoformat()
-    with open(STATE) as f:
-        state = json.load(f)
+    if os.path.exists(STATE):
+        with open(STATE) as f:
+            state = json.load(f)
+    else:
+        state = {"tables": {}}
     state["tables"][table] = {"watermark": watermark, "last_run_at": now,
                               "last_row_count": count, "last_status": status,
                               "last_error": error}

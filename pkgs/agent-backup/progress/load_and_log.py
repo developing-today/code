@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import json, shutil, subprocess, sys, os
-HERE = os.path.expanduser("~/tools/runtime-db-export")
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 src, page = sys.argv[1], sys.argv[2]
 size = sys.argv[3] if len(sys.argv) > 3 else "100"
 keep = os.path.join(HERE, "progress", "cur_page.json")

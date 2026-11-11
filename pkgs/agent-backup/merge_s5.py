@@ -20,7 +20,7 @@ spec = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 total = 0
 for i in range(0, len(rows), 200):
     spec["rows"] = rows[i:i + 200]
-    p = subprocess.run([sys.executable, os.path.expanduser("~/tools/runtime-db-export/load_rows.py")],
+    p = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "load_rows.py")],
                        input=json.dumps(spec), text=True, capture_output=True)
     if p.returncode != 0:
         print(p.stdout, p.stderr); sys.exit(1)
