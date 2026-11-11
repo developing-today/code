@@ -76,8 +76,7 @@ function requiredIdentityString(value: unknown, field: string, endpoint: string)
  */
 export function parseIdentityMeResponse(payload: unknown): IdentityMeResponse {
   const record = asIdentityRecord(payload, "/api/identity/me");
-  const token =
-    record.token === undefined ? null : requiredIdentityString(record.token, "token", "/api/identity/me");
+  const token = record.token === undefined ? null : requiredIdentityString(record.token, "token", "/api/identity/me");
   return { token, name: identityNameField(record.name, "/api/identity/me") };
 }
 

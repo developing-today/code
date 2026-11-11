@@ -22,12 +22,7 @@ import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
-import {
-  isCopyFileResponse,
-  isNewFileResponse,
-  isRenameFileResponse,
-  isSaveFileResponse,
-} from "./file-op-responses";
+import { isCopyFileResponse, isNewFileResponse, isRenameFileResponse, isSaveFileResponse } from "./file-op-responses";
 import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
