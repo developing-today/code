@@ -224,11 +224,25 @@ push_targets_main() {
       if (tok != "") out = out " " tok
       return out
     }
+    # Quote discipline for the structural scanners (Codex P2, PR
+    # #8513 round 12): inside a double-quoted scalar a backslash
+    # escapes the next character, so \" does not end the scalar;
+    # inside a single-quoted scalar a doubled '' is an escaped
+    # quote, not the end. The scalar decoder (decode_dq) already
+    # honors the escapes — the scanners that decide where scalars
+    # and structures end must honor them too, or a delimiter inside
+    # a quoted scalar is mistaken for structure.
     function unquoted_close(str,   j, c, q) {
       q = ""
       for (j = 1; j <= length(str); j++) {
         c = substr(str, j, 1)
-        if (q != "") { if (c == q) q = "" }
+        if (q == "\"") {
+          if (c == "\\") j++
+          else if (c == "\"") q = ""
+        } else if (q == "\047") {
+          if (c == "\047" && substr(str, j + 1, 1) == "\047") j++
+          else if (c == "\047") q = ""
+        }
         else if (c == "\047" || c == "\"") q = c
         else if (c == "]") return j
       }
@@ -239,12 +253,34 @@ push_targets_main() {
       open = 0
       for (j = 1; j <= length(str); j++) {
         c = substr(str, j, 1)
-        if (q != "") { if (c == q) q = "" }
+        if (q == "\"") {
+          if (c == "\\") j++
+          else if (c == "\"") q = ""
+        } else if (q == "\047") {
+          if (c == "\047" && substr(str, j + 1, 1) == "\047") j++
+          else if (c == "\047") q = ""
+        }
         else if (c == "\047" || c == "\"") q = c
         else if (c == "[") open = 1
         else if (c == "]" && open) open = 0
       }
       return open
+    }
+    function has_unquoted_brace(str,   j, c, q) {
+      q = ""
+      for (j = 1; j <= length(str); j++) {
+        c = substr(str, j, 1)
+        if (q == "\"") {
+          if (c == "\\") j++
+          else if (c == "\"") q = ""
+        } else if (q == "\047") {
+          if (c == "\047" && substr(str, j + 1, 1) == "\047") j++
+          else if (c == "\047") q = ""
+        }
+        else if (c == "\047" || c == "\"") q = c
+        else if (c == "}") return 1
+      }
+      return 0
     }
     function flow_span(str, key,   i, start, seg, from, prev) {
       from = 1
@@ -361,7 +397,7 @@ push_targets_main() {
         rest = $0
         sub(/^  ["\047]?[a-z_]+["\047]?:[[:space:]]*/, "", rest)
         if (rest ~ /^\{/) {
-          if (rest ~ /\}/) apply_inline_filters(rest)
+          if (has_unquoted_brace(rest)) apply_inline_filters(rest)
           else { inline_collect = 1; inline_buf = rest }
         }
       }
@@ -375,7 +411,7 @@ push_targets_main() {
         inline_collect = 0
       } else {
         inline_buf = inline_buf " " $0
-        if ($0 ~ /\}/) {
+        if (has_unquoted_brace($0)) {
           apply_inline_filters(inline_buf)
           inline_collect = 0
         }

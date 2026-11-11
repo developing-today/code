@@ -721,6 +721,40 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-dq_escape_hex.out"
 echo "pass: double-quoted \x escape in a flow list satisfies the main leg"
 
+# Codex P2 regressions on #8513 round 12: a brace inside a quoted
+# scalar does not end an inline mapping, and an escaped quote does
+# not end a double-quoted scalar for the structural scanners. In
+# both cases branches-ignore: [main] must be seen — main is
+# excluded, so the main leg stays waived.
+build_tree "$TMP/filter-inline_quoted_brace"
+wf_raw "$TMP/filter-inline_quoted_brace" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {paths: ['docs/}file'],
+    branches-ignore: [main]}
+EOF
+bash "$SCRIPT" "$TMP/filter-inline_quoted_brace" >"$TMP/filter-inline_quoted_brace.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_quoted_brace.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-inline_quoted_brace.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_quoted_brace.out"; then
+  echo "FAIL: a quoted brace ended the inline mapping early and hid branches-ignore" >&2
+  exit 1
+fi
+echo "pass: quoted brace inside an inline mapping does not hide the continuation's branches-ignore"
+
+build_tree "$TMP/filter-flow_escaped_quote"
+wf_raw "$TMP/filter-flow_escaped_quote" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches-ignore: ["release\"x", "main"]}
+EOF
+bash "$SCRIPT" "$TMP/filter-flow_escaped_quote" >"$TMP/filter-flow_escaped_quote.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-flow_escaped_quote.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-flow_escaped_quote.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-flow_escaped_quote.out"; then
+  echo "FAIL: an escaped quote broke flow scanning and discarded branches-ignore" >&2
+  exit 1
+fi
+echo "pass: escaped quote in a flow list does not discard the branch filter"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python
