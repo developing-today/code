@@ -167,6 +167,16 @@ FREE="$(python3 -c 'import shutil,sys; print(shutil.disk_usage(sys.argv[1]).free
 STAGE="$HOME/atlas/turso-atlas/data/.backup-staging/$DATE"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
+# Bound the staging tree (darwin-nix#373): the EXIT trap removes
+# today's STAGE on every handled exit, but a SIGKILLed run (OOM,
+# service timeout) leaves its date dir behind and later runs only
+# ever touch their own date. This run holds the instance lock, so
+# remove every OTHER date's staging dir here: a killed run leaves
+# at most one stale dir, reclaimed by the next run.
+for stale in "$HOME/atlas/turso-atlas/data/.backup-staging"/*; do
+  [ -e "$stale" ] || continue
+  [ "$stale" = "$STAGE" ] || rm -rf "$stale"
+done
 SNAP="$STAGE/atlas-$DATE.db"
 sqlite3 "$DB" ".backup '$SNAP'" || early_fail "sqlite3 .backup failed"
 

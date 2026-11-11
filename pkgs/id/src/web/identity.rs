@@ -987,7 +987,7 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
 // =============================================================================
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};

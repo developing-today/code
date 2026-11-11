@@ -21,6 +21,7 @@ import {
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { filterBoardForView, fragBoardUrl, ghItemLike, linkedLike } from "./board-view.ts";
 import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
@@ -1030,18 +1031,6 @@ async function resolveView(url: URL): Promise<ResolvedView | null> {
   return null;
 }
 
-function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewItemLike {
-  return {
-    ref: item.ref,
-    repo: item.ref.replace(/#\d+$/, ""),
-    area: item.projectArea ?? pool?.area ?? null,
-    horizon: item.projectHorizon ?? pool?.horizon ?? null,
-    owner: item.author,
-    state: item.state,
-    epic: pool?.epicRef ?? null,
-  };
-}
-
 function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   return {
     ref: item.ref,
@@ -1079,23 +1068,6 @@ function eventFilterFromUrl(
     search: url.searchParams.get("q") ?? undefined,
     itemContext,
   };
-}
-
-/** A board card / roadmap row matches when its own fields match, or
- *  when any canonical item it links to matches. */
-function linkedLike(
-  own: ViewItemLike,
-  links: readonly { ref: RefKey }[],
-  items: Map<RefKey, GhItem>,
-  poolByRef: Map<RefKey, ProjectPoolItem>,
-  filters: ViewFilters,
-): boolean {
-  if (itemMatchesView(own, filters)) return true;
-  for (const l of links) {
-    const item = items.get(l.ref);
-    if (item && itemMatchesView(ghItemLike(item, poolByRef.get(l.ref)), filters)) return true;
-  }
-  return false;
 }
 
 /** Apply a preference view verb to the views store (#1276). Returns a
@@ -1627,17 +1599,7 @@ async function handler(req: Request): Promise<Response> {
         }),
       );
     }
-    const poolByRef = act.poolByRef;
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
-    );
-    const keptRefs = new Set<string>();
-    for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
+    const { board: keptBoard, items: keptItems } = filterBoardForView(board, items, act.poolByRef, resolved.filters);
     return html(
       renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
         showAllDone: url.searchParams.get("done") === "all",
@@ -1646,7 +1608,13 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')">${renderBoardBody(board, items, counts, act)}</div>`;
+    // #8521: the fragment twin applies the same saved view as /board
+    // (PR #4013 missed it), and its refresh URLs re-name the view so
+    // a reload does not silently drop the filter.
+    const fragUrl = fragBoardUrl(url.searchParams);
+    const resolved = await resolveView(url);
+    const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on-dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act)}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
@@ -1700,6 +1668,9 @@ async function handler(req: Request): Promise<Response> {
       orchestrationStatus,
     });
     const forecasts = (await allForecastContracts(pool)).byRef;
+    // #4830: the same twin /api/flow-analytics.json serves, computed
+    // the same way — the Roadmap charts render exactly this object.
+    const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1731,6 +1702,7 @@ async function handler(req: Request): Promise<Response> {
           viewQuery,
           briefs,
           forecasts,
+          flowAnalytics,
         ),
       );
     }
@@ -1768,6 +1740,7 @@ async function handler(req: Request): Promise<Response> {
         viewQuery,
         briefs,
         forecasts,
+        flowAnalytics,
       ),
     );
   }
@@ -2037,6 +2010,10 @@ async function handler(req: Request): Promise<Response> {
         identities: formOpts.identities,
         briefs,
         forecasts: (await allForecastContracts(viewPool)).byRef,
+        // #4830: the Projects page (merged into /program, #1497)
+        // renders the #4829 twin as charts, computed as the endpoint
+        // computes it.
+        flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
       }),
     );
   }

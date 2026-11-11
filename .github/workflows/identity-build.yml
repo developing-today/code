@@ -12,6 +12,15 @@ name: identity build
 # vets both variants whenever the module changes.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/identity/**"
+      - ".github/workflows/identity-build.yml"
+  pull_request:
+    paths:
+      - "pkgs/identity/**"
+      - ".github/workflows/identity-build.yml"
   workflow_dispatch:
 
 permissions:

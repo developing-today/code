@@ -9,6 +9,10 @@ on:
       - "pm-stack/opencode-usage-export/**"
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
+      - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
   pull_request:
     paths:
@@ -17,6 +21,10 @@ on:
       - "pm-stack/opencode-usage-export/**"
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
+      - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
@@ -148,3 +156,15 @@ jobs:
             exit 1
           fi
           bun test
+
+      # meta-exporter: node --test (suite for #6344; the explicit file
+      # path is required — the directory form fails on Node 24). The
+      # file is asserted to exist first, so a green run cannot be a
+      # silently skipped suite; any failure fails the job.
+      - name: Test meta-exporter suite
+        run: |
+          if [ ! -f pm-stack/meta-exporter/meta-quota-export.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/meta-exporter/meta-quota-export.test.mjs — the meta-exporter suite was not run."
+            exit 1
+          fi
+          node --test pm-stack/meta-exporter/meta-quota-export.test.mjs

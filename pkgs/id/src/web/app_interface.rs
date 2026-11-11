@@ -119,6 +119,7 @@ pub(crate) const HOST_RESERVED_ROUTES: &[&str] = &[
     "/files",
     "/settings",
     "/peers",
+    "/blocks",
     "/groups",
     "/edit/{*name}",
     "/hash/{hash}",
@@ -127,6 +128,8 @@ pub(crate) const HOST_RESERVED_ROUTES: &[&str] = &[
     "/api/files",
     "/api/home/feed",
     "/api/peers",
+    "/api/blocks",
+    "/api/blocks/remove",
     "/api/save",
     "/api/new",
     "/api/rename",
@@ -443,6 +446,7 @@ pub fn web_interface_from_app_toml(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

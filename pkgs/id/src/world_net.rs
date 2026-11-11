@@ -1903,10 +1903,20 @@ impl WorldClient {
                         "invalid records cursor: next_after={next:?} does not match last key {last_key:?}"
                     );
                 } else {
-                    // Empty page should only happen when after is not null
-                    anyhow::ensure!(
-                        after.is_some(),
-                        "empty records page returned on first request"
+                    // Empty page carrying a cursor (#6578): a
+                    // conforming host never sends one — the server
+                    // sets next_after only after including at least
+                    // one record — and the shape is unbounded: zero
+                    // records move the RecordsBudget, so an advancing
+                    // cursor (z000001, z000002, ...) loops forever,
+                    // growing the pages Vec request by request.
+                    // Refuse it, mirroring the admin-history path in
+                    // this file, where the same shape fails the
+                    // last-key and advance checks together. An empty
+                    // page with a null cursor is the legitimate end
+                    // of an empty listing and never reaches here.
+                    anyhow::bail!(
+                        "malformed records reply: empty records page carries next_after cursor {next:?}"
                     );
                 }
 
@@ -3034,6 +3044,50 @@ mod tests {
             format!("{err:?}").contains("next_after"),
             "mistyped cursor error must name next_after: {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_empty_page_with_cursor() {
+        // Issue #6578, Defect E: an empty page carrying an advancing
+        // cursor contributes no records, so the RecordsBudget never
+        // moves and the loop never ends (the rogue host repeats the
+        // last page forever). The client must refuse the first such
+        // page promptly, naming the shape.
+        let pages = vec![
+            records_page(serde_json::json!({"a": 1}), Some("a")),
+            records_page(serde_json::json!({}), Some("z000001")),
+        ];
+        let err = rogue_records(pages).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("empty records page"),
+            "empty page with a cursor must be refused as malformed: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_empty_first_page_with_cursor() {
+        // The same shape on the very first page: no prior cursor
+        // exists, but an empty page with a cursor is malformed
+        // regardless of position (#6578).
+        let page = records_page(serde_json::json!({}), Some("z000001"));
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("empty records page"),
+            "empty first page with a cursor must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_accepts_empty_final_page() {
+        // The legitimate empty-page shape (#6578 control): a final
+        // empty page whose cursor is null terminates the read.
+        let pages = vec![
+            records_page(serde_json::json!({"a": 1}), Some("a")),
+            records_page(serde_json::json!({}), None),
+        ];
+        let records = rogue_records(pages).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records["a"], serde_json::json!(1));
     }
 
     #[tokio::test]

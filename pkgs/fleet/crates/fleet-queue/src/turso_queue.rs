@@ -456,6 +456,140 @@ pub struct TursoBackend {
 
 type TErr = String;
 
+/// The canonical fleet lane registry (#6853, re-based on the
+/// post-rename universe under #8097): every lane id a fleet worker
+/// may claim with, the worker that owns it, and the enabled flag a
+/// missing registration is restored with. The queue binding is the
+/// one-queue default ("*": the lane may claim any stream; see
+/// lane_queue_binds).
+///
+/// The set is EXACTLY the live registry universe left by the
+/// 2026-11-11 lane rename and trims (#8097), plus one lane
+/// added later the same day: 36 lanes — code-a..j,
+/// not-code-a..g, any-a..s — 17 of them enabled. The added
+/// lane is not-code-g, the nix event-hook worker's OWN lane
+/// (Drew, 2026-11-11: the nix worker does not share a lane
+/// row with a Muse shift — it had been parked on
+/// not-code-a, the disabled Muse not-code-a shift's row;
+/// #8097 record, catch #6853). Lane ids Drew
+/// deleted (the code-k..z overhang, nix-a/b, opencode-a/b,
+/// openchamber-a/b) are deliberately ABSENT: the pre-rename seed
+/// still named them, so each schema ensure resurrected
+/// hand-deleted rows from it — openchamber-a/b came back enabled
+/// after being deleted on 2026-11-10. A lane outside this set is
+/// never seeded; a lane inside it that is deleted by hand comes
+/// back with exactly these fields. Registrations for
+/// session-scoped lanes (UUID ids) are created by their sessions
+/// and are not part of the canonical set; the OpenChamber lanes
+/// renamed out of UUID ids on 2026-11-11 are canonical under
+/// their final names below.
+fn canonical_lanes() -> Vec<(&'static str, &'static str, bool)> {
+    let mut lanes: Vec<(&'static str, &'static str, bool)> = Vec::new();
+    // code group: code-a..d (Muse) and code-f..j (OpenChamber),
+    // all owned by repo-worker-code. code-e (Muse) is disabled
+    // per the 2026-11-10 trims; the other nine are enabled.
+    for c in 'a'..='j' {
+        // Leak-free: the ids are built from a fixed alphabet by a
+        // match on the letter so the strings stay 'static.
+        lanes.push((code_lane_id(c), "repo-worker-code", c != 'e'));
+    }
+    // not-code group: not-code-d (OpenChamber) and not-code-g
+    // (the nix event-hook worker's own lane, added 2026-11-11)
+    // are enabled. Worker ids follow each lane's predecessor
+    // row: not-code-a was nix-a, not-code-b was opencode-a, and
+    // not-code-e was the opencode-project OpenChamber task.
+    for c in 'a'..='g' {
+        let worker = match c {
+            'a' | 'g' => "repo-worker-nix",
+            'b' | 'e' => "repo-worker-opencode",
+            'd' => "repo-worker-openchamber",
+            _ => "repo-worker-code",
+        };
+        lanes.push((not_code_lane_id(c), worker, c == 'd' || c == 'g'));
+    }
+    // any group: any-a..d (Muse) and any-n, any-o (OpenChamber)
+    // are enabled; any-e..m and any-p..s are disabled per the
+    // 2026-11-10 trims. All owned by repo-worker-code.
+    for c in 'a'..='s' {
+        let enabled = matches!(c, 'a' | 'b' | 'c' | 'd' | 'n' | 'o');
+        lanes.push((any_lane_id(c), "repo-worker-code", enabled));
+    }
+    lanes
+}
+
+fn code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "code-a",
+        'b' => "code-b",
+        'c' => "code-c",
+        'd' => "code-d",
+        'e' => "code-e",
+        'f' => "code-f",
+        'g' => "code-g",
+        'h' => "code-h",
+        'i' => "code-i",
+        'j' => "code-j",
+        _ => unreachable!("code lane letters are a..=j"),
+    }
+}
+
+fn not_code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "not-code-a",
+        'b' => "not-code-b",
+        'c' => "not-code-c",
+        'd' => "not-code-d",
+        'e' => "not-code-e",
+        'f' => "not-code-f",
+        'g' => "not-code-g",
+        _ => unreachable!("not-code lane letters are a..=g"),
+    }
+}
+
+fn any_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "any-a",
+        'b' => "any-b",
+        'c' => "any-c",
+        'd' => "any-d",
+        'e' => "any-e",
+        'f' => "any-f",
+        'g' => "any-g",
+        'h' => "any-h",
+        'i' => "any-i",
+        'j' => "any-j",
+        'k' => "any-k",
+        'l' => "any-l",
+        'm' => "any-m",
+        'n' => "any-n",
+        'o' => "any-o",
+        'p' => "any-p",
+        'q' => "any-q",
+        'r' => "any-r",
+        's' => "any-s",
+        _ => unreachable!("any lane letters are a..=s"),
+    }
+}
+
+/// The registry seed statement (#6853): INSERT OR IGNORE, so it
+/// restores a missing registration with its canonical fields —
+/// including a disabled lane's enabled = 0 — and can never
+/// resurrect or re-enable a lane whose row already exists in any
+/// state. Lanes outside the canonical set are never seeded at
+/// all (#8097).
+fn lane_seed_sql() -> String {
+    let values: Vec<String> = canonical_lanes()
+        .iter()
+        .map(|(id, worker, enabled)| {
+            format!("('{id}', '{worker}', '*', {})", i32::from(*enabled))
+        })
+        .collect();
+    format!(
+        "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
+        values.join(", ")
+    )
+}
+
 impl TursoBackend {
     pub fn new(url: String, token: String, agent: ureq::Agent) -> Self {
         Self {
@@ -631,6 +765,18 @@ impl TursoBackend {
     pub fn ensure_schema(&self) -> Result<(), TErr> {
         let stmts: Vec<(&str, Vec<Arg>)> = SCHEMA.iter().map(|s| (*s, Vec::new())).collect();
         self.pipeline(&stmts)?;
+        // #6853: seed the canonical lane registry. Registrations
+        // used to be hand-inserted rows with no code-owned seed, so
+        // a store rebuild/restore silently dropped lanes that were
+        // not in whoever's seed set — openchamber-a/b were disabled
+        // on 2026-11-08 (rows present) and unknown by 2026-11-11
+        // (rows gone). INSERT OR IGNORE fills only MISSING rows: an
+        // existing registration — including a lane Drew disabled
+        // (enabled = 0) — is never overwritten by the seed.
+        // #8097: the canonical set is exactly the post-rename
+        // registry universe, so a hand-deleted legacy lane (one
+        // outside the set) is not resurrected either.
+        self.exec(&lane_seed_sql(), &[])?;
         // Additive task columns land here for databases created
         // before them: #8097 Rule 2's tasks.platform (the optional
         // coarse platform selector — existing rows read NULL: unset,
@@ -1528,10 +1674,38 @@ fn on_binding_cleared(
     )
 }
 
+/// What lease expiry does to one claimed task (#6463): a task with
+/// attempts left returns to queued; a task already at its attempt cap
+/// fails terminally instead. Before #6463 the at-cap task also went
+/// back to queued, where the claim query (attempts < max_attempts)
+/// could never select it again -- it sat in queued forever, invisible
+/// to terminal counts, with no failed event (142 such silent zombies
+/// measured in repo-health-code-pilot on 2026-11-06).
+#[derive(Debug, PartialEq)]
+enum ExpiryDisposition {
+    Requeue,
+    FailAtCap,
+}
+
+fn expiry_disposition(attempts: i64, max_attempts: i64) -> ExpiryDisposition {
+    if attempts >= max_attempts {
+        ExpiryDisposition::FailAtCap
+    } else {
+        ExpiryDisposition::Requeue
+    }
+}
+
 /// expire_leases (migration 0023 §1): claimed rows whose lease has
-/// lapsed return to queued, binding cleared, lease rows dropped.
+/// lapsed return to queued, binding cleared, lease rows dropped --
+/// except rows already at their attempt cap, which transition to
+/// failed with a lease_expired_at_cap event (#6463, mirroring
+/// fail_repo_task's terminal branch). Sink-bound rows (#8234) keep
+/// their sink return regardless of cap: the sink pick serves them
+/// under its own rule, so the at-cap failure applies to the ordinary
+/// claim path only.
 /// Returns how many tasks were returned to queued (PG returned the
 /// count; claim ignores it, the /sweep verb reports it, #6803).
+/// At-cap failures are not counted: they were not returned to queued.
 fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     let now = now_iso();
     let mut expired = 0i64;
@@ -1553,7 +1727,29 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
         let to_sink = expired_claim_returns_to_sink(&progress);
         let (progress, cleared) = clear_binding(&progress, "expire_leases");
-        let upd = if to_sink {
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(4);
+        let at_cap = !to_sink
+            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
+        let upd = if at_cap {
+            t.exec(
+                "UPDATE tasks SET status = 'failed', worker_id = NULL, lease_until = NULL, \
+                   last_error = ?, progress = ?, updated_at = ? \
+                 WHERE id = ? AND status = 'claimed' AND lease_until < ?",
+                &[
+                    Arg::Text(format!(
+                        "lease expired at attempt cap ({attempts}/{max_attempts})"
+                    )),
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Int(id),
+                    Arg::Text(now.clone()),
+                ],
+            )?
+        } else if to_sink {
             // #8234: the sink is its own status now — the return
             // lands in 'handed_off' with NO wait fields at all. The
             // pre-#8234 shape stamped a fresh not_before = +1200s
@@ -1584,15 +1780,30 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         if upd.affected == 0 {
             continue;
         }
-        expired += 1;
-        event(
-            t,
-            Some(&worker),
-            Some(id),
-            "lease_expired",
-            &json!({"via": "expire_leases", "cleared_session_id": cleared,
-                    "return": if to_sink { "handed_off" } else { "queued" }}),
-        )?;
+        if at_cap {
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired_at_cap",
+                &json!({
+                    "via": "expire_leases",
+                    "attempts": attempts,
+                    "max_attempts": max_attempts,
+                    "cleared_session_id": cleared,
+                }),
+            )?;
+        } else {
+            expired += 1;
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired",
+                &json!({"via": "expire_leases", "cleared_session_id": cleared,
+                        "return": if to_sink { "handed_off" } else { "queued" }}),
+            )?;
+        }
         if let Some(old) = cleared {
             on_binding_cleared(t, &worker, id, &old, "expire_leases")?;
         }
@@ -2033,6 +2244,28 @@ fn quarantine_payload_missing(t: &TursoBackend, queue: &str) -> Result<(), TErr>
     Ok(())
 }
 
+/// The one-queue form of the #5444 payload guard sweep: an
+/// unscoped claim (no stream named) sweeps every stream's
+/// payload-less rows, exactly as a scoped claim sweeps its own.
+fn quarantine_payload_missing_all(t: &TursoBackend) -> Result<(), TErr> {
+    let rows = t.query_objs(
+        "SELECT id FROM tasks WHERE status IN ('queued', 'parked', 'handed_off') \
+           AND (payload IS NULL OR payload = '' OR payload = '{}')",
+        &[],
+        &[],
+    )?;
+    for r in rows {
+        if let Some(id) = r.get("id").and_then(|v| v.as_i64()) {
+            quarantine_task(
+                t,
+                id,
+                "quarantined by claim path: payload missing/empty (#5444)",
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// #7617: the claim lease default and the heartbeat extension
 /// default are different contracts and must never be conflated: a
 /// claim taken without --lease-seconds lives for
@@ -2323,7 +2556,7 @@ fn by_id_claimable(row: &Value, now: &str) -> bool {
 fn claim_transfer(
     t: &TursoBackend,
     task_id: i64,
-    queue: &str,
+    queue: Option<&str>,
     worker: &str,
     lane: &Option<String>,
     lease_seconds: i64,
@@ -2331,12 +2564,15 @@ fn claim_transfer(
     model: &Option<ClaimModel>,
     from_session: &str,
     new_session: Option<&str>,
+    pool: &Option<String>,
 ) -> Result<Option<Value>, TErr> {
     let Some(row) = get_task(t, task_id)? else {
         return Ok(None);
     };
-    if row.get("queue").and_then(|v| v.as_str()) != Some(queue) {
-        return Ok(None);
+    if let Some(q) = queue {
+        if row.get("queue").and_then(|v| v.as_str()) != Some(q) {
+            return Ok(None);
+        }
     }
     if let Some(reason) = claim_guard_reason(&row) {
         quarantine_task(t, task_id, &reason)?;
@@ -2388,6 +2624,20 @@ fn claim_transfer(
         )?;
         limit_cleared_invalid = true;
     } else if let Some(r) = platform_limit_refusal(limit, limit_reason, family) {
+        return Err(format!("claim_repo_task: transfer refused: {r}"));
+    }
+    // One-queue union matching (#8097, 2026-11-10): the task's
+    // own declared requirements (payload `requires`) bind a
+    // transfer exactly as they bind the pick and the by-id
+    // claim.
+    let transfer_claimer = ClaimerCtx {
+        family: family.map(str::to_string),
+        lane: lane.clone(),
+        worker: worker.to_string(),
+        pool: pool.clone(),
+        model: model.clone(),
+    };
+    if let Some(r) = task_requirements_unmet(&row, &transfer_claimer) {
         return Err(format!("claim_repo_task: transfer refused: {r}"));
     }
     let now_unix = now_unix();
@@ -2517,19 +2767,27 @@ fn claim_transfer(
 fn claim_by_id(
     t: &TursoBackend,
     task_id: i64,
-    queue: &str,
+    queue: Option<&str>,
     worker: &str,
     lane: &Option<String>,
     lease_seconds: i64,
     family: Option<&str>,
     model: &Option<ClaimModel>,
+    pool: &Option<String>,
 ) -> Result<Option<Value>, TErr> {
     let Some(row) = get_task(t, task_id)? else {
         return Ok(None);
     };
-    if row.get("queue").and_then(|v| v.as_str()) != Some(queue) {
-        return Ok(None);
+    if let Some(q) = queue {
+        if row.get("queue").and_then(|v| v.as_str()) != Some(q) {
+            return Ok(None);
+        }
     }
+    let row_queue = row
+        .get("queue")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if let Some(reason) = claim_guard_reason(&row) {
         quarantine_task(t, task_id, &reason)?;
         return Ok(None);
@@ -2567,6 +2825,21 @@ fn claim_by_id(
     if !by_id_claimable(&row, &now) {
         return Ok(None);
     }
+    // One-queue union matching (#8097, 2026-11-10): a by-id
+    // claim honors the task's own declared requirements
+    // (payload `requires`) exactly as the pick does — an
+    // ineligible claimer simply reads the row as unclaimable,
+    // with no out-of-band step.
+    let claimer = ClaimerCtx {
+        family: family.map(str::to_string),
+        lane: lane.clone(),
+        worker: worker.to_string(),
+        pool: pool.clone(),
+        model: model.clone(),
+    };
+    if task_requirements_unmet(&row, &claimer).is_some() {
+        return Ok(None);
+    }
     let lease_until = claim_lease_until(now_unix, lease_seconds);
     let upd = t.exec(
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
@@ -2585,7 +2858,7 @@ fn claim_by_id(
             Arg::Text(now.clone()),
             Arg::Int(task_id),
             Arg::Text(status),
-            Arg::Text(queue.to_string()),
+            Arg::Text(row_queue.clone()),
         ],
     )?;
     if upd.affected == 0 {
@@ -2654,6 +2927,793 @@ fn claim_by_id(
 /// and the caller re-picks — it can never be handed the winner's
 /// row. Extracted as a builder so the regression tests below pin
 /// the statement's shape without a live store.
+/// One-queue claim matching (#8097 one-queue model, Drew
+/// 2026-11-10): there is ONE fleet queue. A claim matches the
+/// UNION of two sides' requirements, each side filtering on the
+/// other's metadata:
+///
+///   * the TASK's requirements filter claimers: the lane-ledger
+///     platform limitation (PLATFORM_LIMIT_PICK_CLAUSE, #8217) and
+///     the payload `requires` object enforced by
+///     TASK_REQUIREMENTS_CLAUSE below — `requires.platform` (a
+///     PLATFORM_FAMILIES family), `requires.lane` (a lane id),
+///     `requires.pool` (a pool name), `requires.model` (a model
+///     id, or "provider/model"). A claimer that does not declare
+///     the required attribute does not meet the requirement.
+///   * the CLAIMER's requirements filter tasks: the optional
+///     stream scope (the request's `queue`) and the boolean
+///     filter expression (the request's `filter`, spelled
+///     --filter on the CLI) compiled by filter_sql below.
+///
+/// By default BOTH sides are empty: a task carries no
+/// requirements and a claim passes no queue and no filter, and
+/// the claim is a pure priority-order pick over every available
+/// row in the one queue. The claimer's identity (worker, lane,
+/// platform family, pool, model) is recorded on every claim —
+/// the claim stamps, unchanged — and is used ONLY to satisfy a
+/// task's own declared requirements, never as a filter in its
+/// own right. The registry's per-lane queue column no longer
+/// scopes what a lane may claim: claim_preamble enforces the
+/// lane<->stream binding only when the claim itself names a
+/// stream AND the lane's registration binds one (a registration
+/// of "*" is the recorded unbound state).
+///
+/// Filter grammar (recursive descent; AND binds tighter than
+/// OR, NOT tightest; parentheses override):
+///   expr       := or
+///   or         := and (OR and)*
+///   and        := unary (AND unary)*
+///   unary      := NOT unary | primary
+///   primary    := '(' expr ')' | comparison
+///   comparison := field (('=' | '!=' | '<' | '<=' | '>' | '>=')
+///                        value
+///                        | [NOT] IN '(' value (',' value)* ')')
+/// Fields (task metadata): repo, queue, pool (the task's stream
+/// — pool names the task's queue, as in the claimed event's
+/// marks), platform (the row's platform mark), label (membership
+/// in the payload's `labels` array), kind (payload `kind`),
+/// priority (the row's integer priority), lane / model (the
+/// task's own declared requires.lane / requires.model). Ordering
+/// comparisons are valid only on priority. A comparison against
+/// an absent value is false for '=' / IN / ordering comparisons
+/// and true for '!=' / NOT IN (the task does not carry that
+/// value).
+///
+/// `repo` matches the task's repo identity: the payload's `repo`
+/// (a full "owner/name") when present, else the stream name with
+/// the repo-health- prefix and -pilot / -shadow suffixes
+/// stripped (repo-health-code-pilot -> code). A filter value
+/// matches the identity exactly or as its final path segment, so
+/// `repo = code` matches payload repo "developing-today/code"
+/// and stream-derived "code" alike, and `repo != code` is the
+/// not-code lanes' claim expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterField {
+    Repo,
+    Queue,
+    Pool,
+    Platform,
+    Label,
+    Kind,
+    Priority,
+    Lane,
+    Model,
+}
+
+impl FilterField {
+    fn parse(name: &str) -> Option<FilterField> {
+        match name.to_ascii_lowercase().as_str() {
+            "repo" => Some(FilterField::Repo),
+            "queue" => Some(FilterField::Queue),
+            "pool" => Some(FilterField::Pool),
+            "platform" => Some(FilterField::Platform),
+            "label" => Some(FilterField::Label),
+            "kind" => Some(FilterField::Kind),
+            "priority" => Some(FilterField::Priority),
+            "lane" => Some(FilterField::Lane),
+            "model" => Some(FilterField::Model),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    In,
+    NotIn,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterExpr {
+    Or(Box<FilterExpr>, Box<FilterExpr>),
+    And(Box<FilterExpr>, Box<FilterExpr>),
+    Not(Box<FilterExpr>),
+    Cmp {
+        field: FilterField,
+        op: CmpOp,
+        values: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum FilterTok {
+    LParen,
+    RParen,
+    Comma,
+    Op(CmpOp),
+    Word(String),
+    Str(String),
+}
+
+fn filter_tokens(src: &str) -> Result<Vec<FilterTok>, String> {
+    let chars: Vec<char> = src.chars().collect();
+    let word_char = |c: char| {
+        c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '#' | '@' | '*')
+    };
+    let mut toks = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            c if c.is_whitespace() => i += 1,
+            '(' => {
+                toks.push(FilterTok::LParen);
+                i += 1;
+            }
+            ')' => {
+                toks.push(FilterTok::RParen);
+                i += 1;
+            }
+            ',' => {
+                toks.push(FilterTok::Comma);
+                i += 1;
+            }
+            '=' => {
+                toks.push(FilterTok::Op(CmpOp::Eq));
+                i += 1;
+            }
+            '!' => {
+                if chars.get(i + 1) == Some(&'=') {
+                    toks.push(FilterTok::Op(CmpOp::Ne));
+                    i += 2;
+                } else {
+                    return Err("filter: '!' is only valid as part of '!='".to_string());
+                }
+            }
+            '<' => {
+                if chars.get(i + 1) == Some(&'=') {
+                    toks.push(FilterTok::Op(CmpOp::Le));
+                    i += 2;
+                } else {
+                    toks.push(FilterTok::Op(CmpOp::Lt));
+                    i += 1;
+                }
+            }
+            '>' => {
+                if chars.get(i + 1) == Some(&'=') {
+                    toks.push(FilterTok::Op(CmpOp::Ge));
+                    i += 2;
+                } else {
+                    toks.push(FilterTok::Op(CmpOp::Gt));
+                    i += 1;
+                }
+            }
+            '\'' | '"' => {
+                let q = c;
+                let mut s = String::new();
+                let mut j = i + 1;
+                while j < chars.len() && chars[j] != q {
+                    s.push(chars[j]);
+                    j += 1;
+                }
+                if j >= chars.len() {
+                    return Err("filter: unterminated quoted value".to_string());
+                }
+                toks.push(FilterTok::Str(s));
+                i = j + 1;
+            }
+            c if word_char(c) => {
+                let mut s = String::new();
+                while i < chars.len() && word_char(chars[i]) {
+                    s.push(chars[i]);
+                    i += 1;
+                }
+                toks.push(FilterTok::Word(s));
+            }
+            other => return Err(format!("filter: unexpected character {other:?}")),
+        }
+    }
+    Ok(toks)
+}
+
+struct FilterParser<'a> {
+    toks: &'a [FilterTok],
+    pos: usize,
+}
+
+impl<'a> FilterParser<'a> {
+    fn peek(&self) -> Option<&'a FilterTok> {
+        self.toks.get(self.pos)
+    }
+
+    fn next(&mut self) -> Option<&'a FilterTok> {
+        let t = self.toks.get(self.pos);
+        if t.is_some() {
+            self.pos += 1;
+        }
+        t
+    }
+
+    fn at_keyword(&self, kw: &str) -> bool {
+        matches!(self.peek(), Some(FilterTok::Word(w)) if w.eq_ignore_ascii_case(kw))
+    }
+
+    fn parse_or(&mut self) -> Result<FilterExpr, String> {
+        let mut lhs = self.parse_and()?;
+        while self.at_keyword("or") {
+            self.next();
+            let rhs = self.parse_and()?;
+            lhs = FilterExpr::Or(Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_and(&mut self) -> Result<FilterExpr, String> {
+        let mut lhs = self.parse_unary()?;
+        while self.at_keyword("and") {
+            self.next();
+            let rhs = self.parse_unary()?;
+            lhs = FilterExpr::And(Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_unary(&mut self) -> Result<FilterExpr, String> {
+        if self.at_keyword("not") {
+            self.next();
+            let inner = self.parse_unary()?;
+            return Ok(FilterExpr::Not(Box::new(inner)));
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Result<FilterExpr, String> {
+        if matches!(self.peek(), Some(FilterTok::LParen)) {
+            self.next();
+            let e = self.parse_or()?;
+            if !matches!(self.next(), Some(FilterTok::RParen)) {
+                return Err("filter: expected ')'".to_string());
+            }
+            return Ok(e);
+        }
+        self.parse_comparison()
+    }
+
+    fn parse_value(&mut self) -> Result<String, String> {
+        match self.next() {
+            Some(FilterTok::Word(w)) => Ok(w.clone()),
+            Some(FilterTok::Str(s)) => Ok(s.clone()),
+            other => Err(format!("filter: expected a value, found {other:?}")),
+        }
+    }
+
+    fn parse_comparison(&mut self) -> Result<FilterExpr, String> {
+        let field_name = match self.next() {
+            Some(FilterTok::Word(w)) => w.clone(),
+            other => {
+                return Err(format!(
+                    "filter: expected a field name, found {other:?}"
+                ))
+            }
+        };
+        let field = FilterField::parse(&field_name).ok_or_else(|| {
+            format!(
+                "filter: unknown field {field_name:?} (fields: repo, queue, pool, \
+                 platform, label, kind, priority, lane, model)"
+            )
+        })?;
+        let negated_in = self.at_keyword("not")
+            && matches!(self.toks.get(self.pos + 1), Some(FilterTok::Word(w)) if w.eq_ignore_ascii_case("in"));
+        if negated_in || self.at_keyword("in") {
+            if negated_in {
+                self.next();
+            }
+            self.next();
+            if !matches!(self.next(), Some(FilterTok::LParen)) {
+                return Err("filter: expected '(' after IN".to_string());
+            }
+            let mut values = vec![self.parse_value()?];
+            while matches!(self.peek(), Some(FilterTok::Comma)) {
+                self.next();
+                values.push(self.parse_value()?);
+            }
+            if !matches!(self.next(), Some(FilterTok::RParen)) {
+                return Err("filter: expected ')' after the IN list".to_string());
+            }
+            return Ok(FilterExpr::Cmp {
+                field,
+                op: if negated_in { CmpOp::NotIn } else { CmpOp::In },
+                values,
+            });
+        }
+        let op = match self.next() {
+            Some(FilterTok::Op(o)) => *o,
+            other => {
+                return Err(format!(
+                    "filter: expected an operator after {field_name}, found {other:?}"
+                ))
+            }
+        };
+        let value = self.parse_value()?;
+        Ok(FilterExpr::Cmp {
+            field,
+            op,
+            values: vec![value],
+        })
+    }
+}
+
+/// Parse a claim's filter expression (the request's `filter`
+/// field, the CLI's --filter). An absent or empty filter is the
+/// default claim — no expression at all — and never reaches
+/// here; a malformed one is a usage error, never a silent
+/// no-op filter.
+pub fn parse_filter(src: &str) -> Result<FilterExpr, String> {
+    let toks = filter_tokens(src)?;
+    if toks.is_empty() {
+        return Err("filter: empty expression".to_string());
+    }
+    let mut p = FilterParser { toks: &toks, pos: 0 };
+    let expr = p.parse_or()?;
+    if p.pos != toks.len() {
+        return Err("filter: unexpected trailing input".to_string());
+    }
+    validate_filter(&expr)?;
+    Ok(expr)
+}
+
+fn validate_filter(expr: &FilterExpr) -> Result<(), String> {
+    match expr {
+        FilterExpr::Or(a, b) | FilterExpr::And(a, b) => {
+            validate_filter(a)?;
+            validate_filter(b)
+        }
+        FilterExpr::Not(a) => validate_filter(a),
+        FilterExpr::Cmp { field, op, values } => {
+            if values.is_empty() {
+                return Err("filter: a comparison needs at least one value".to_string());
+            }
+            if !matches!(op, CmpOp::In | CmpOp::NotIn) && values.len() != 1 {
+                return Err("filter: only IN takes multiple values".to_string());
+            }
+            match field {
+                FilterField::Priority => {
+                    for v in values {
+                        v.parse::<i64>().map_err(|_| {
+                            format!("filter: priority value {v:?} is not an integer")
+                        })?;
+                    }
+                    Ok(())
+                }
+                _ => {
+                    if matches!(op, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) {
+                        return Err(
+                            "filter: ordering comparisons are only valid on priority"
+                                .to_string(),
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// SQL for the task's repo identity (see the section comment):
+/// the payload's declared repo, else the stream-derived repo.
+const REPO_IDENTITY_SQL: &str = "COALESCE(NULLIF(json_extract(payload, '$.repo'), ''), \
+    CASE WHEN queue LIKE 'repo-health-%' \
+         THEN replace(replace(replace(queue, 'repo-health-', ''), '-pilot', ''), '-shadow', '') \
+         ELSE queue END)";
+
+fn repo_eq_sql(v: &str, args: &mut Vec<Arg>) -> String {
+    args.push(Arg::Text(v.to_string()));
+    args.push(Arg::Text(v.to_string()));
+    format!("({REPO_IDENTITY_SQL} = ? OR {REPO_IDENTITY_SQL} LIKE '%/' || ?)")
+}
+
+fn label_eq_sql(v: &str, args: &mut Vec<Arg>) -> String {
+    args.push(Arg::Text(v.to_string()));
+    "EXISTS (SELECT 1 FROM json_each(payload, '$.labels') je WHERE je.value = ?)".to_string()
+}
+
+fn text_subject_sql(field: FilterField) -> &'static str {
+    match field {
+        FilterField::Queue | FilterField::Pool => "queue",
+        FilterField::Platform => "platform",
+        FilterField::Kind => "json_extract(payload, '$.kind')",
+        FilterField::Lane => "json_extract(payload, '$.requires.lane')",
+        FilterField::Model => "json_extract(payload, '$.requires.model')",
+        FilterField::Repo | FilterField::Label | FilterField::Priority => "",
+    }
+}
+
+fn cmp_sql(field: FilterField, op: CmpOp, values: &[String], args: &mut Vec<Arg>) -> String {
+    match field {
+        FilterField::Repo => {
+            let parts: Vec<String> = values.iter().map(|v| repo_eq_sql(v, args)).collect();
+            match op {
+                CmpOp::Eq | CmpOp::In => format!("({})", parts.join(" OR ")),
+                CmpOp::Ne | CmpOp::NotIn => format!("(NOT ({}))", parts.join(" OR ")),
+                _ => unreachable!("validated at parse: no ordering on repo"),
+            }
+        }
+        FilterField::Label => {
+            let parts: Vec<String> = values.iter().map(|v| label_eq_sql(v, args)).collect();
+            match op {
+                CmpOp::Eq | CmpOp::In => format!("({})", parts.join(" OR ")),
+                CmpOp::Ne | CmpOp::NotIn => format!("(NOT ({}))", parts.join(" OR ")),
+                _ => unreachable!("validated at parse: no ordering on label"),
+            }
+        }
+        FilterField::Priority => {
+            let nums: Vec<i64> = values
+                .iter()
+                .map(|v| v.parse::<i64>().unwrap_or(0))
+                .collect();
+            match op {
+                CmpOp::Eq => {
+                    args.push(Arg::Int(nums[0]));
+                    "priority = ?".to_string()
+                }
+                CmpOp::Ne => {
+                    args.push(Arg::Int(nums[0]));
+                    "(priority IS NULL OR priority <> ?)".to_string()
+                }
+                CmpOp::Lt => {
+                    args.push(Arg::Int(nums[0]));
+                    "priority < ?".to_string()
+                }
+                CmpOp::Le => {
+                    args.push(Arg::Int(nums[0]));
+                    "priority <= ?".to_string()
+                }
+                CmpOp::Gt => {
+                    args.push(Arg::Int(nums[0]));
+                    "priority > ?".to_string()
+                }
+                CmpOp::Ge => {
+                    args.push(Arg::Int(nums[0]));
+                    "priority >= ?".to_string()
+                }
+                CmpOp::In => {
+                    let ph: Vec<&str> = nums.iter().map(|_| "?").collect();
+                    for n in &nums {
+                        args.push(Arg::Int(*n));
+                    }
+                    format!("priority IN ({})", ph.join(", "))
+                }
+                CmpOp::NotIn => {
+                    let ph: Vec<&str> = nums.iter().map(|_| "?").collect();
+                    for n in &nums {
+                        args.push(Arg::Int(*n));
+                    }
+                    format!("(priority IS NULL OR priority NOT IN ({}))", ph.join(", "))
+                }
+            }
+        }
+        field => {
+            let subj = text_subject_sql(field);
+            match op {
+                CmpOp::Eq => {
+                    args.push(Arg::Text(values[0].clone()));
+                    format!("{subj} = ?")
+                }
+                CmpOp::Ne => {
+                    args.push(Arg::Text(values[0].clone()));
+                    format!("({subj} IS NULL OR {subj} <> ?)")
+                }
+                CmpOp::In => {
+                    let ph: Vec<&str> = values.iter().map(|_| "?").collect();
+                    for v in values {
+                        args.push(Arg::Text(v.clone()));
+                    }
+                    format!("{subj} IN ({})", ph.join(", "))
+                }
+                CmpOp::NotIn => {
+                    let ph: Vec<&str> = values.iter().map(|_| "?").collect();
+                    for v in values {
+                        args.push(Arg::Text(v.clone()));
+                    }
+                    format!("({subj} IS NULL OR {subj} NOT IN ({}))", ph.join(", "))
+                }
+                _ => unreachable!("validated at parse: no ordering on text fields"),
+            }
+        }
+    }
+}
+
+/// Compile a filter expression to a SQL fragment over the tasks
+/// table, appending its arguments in placeholder order. The
+/// fragment is a single boolean expression; callers parenthesize
+/// it into the pick.
+fn filter_sql(expr: &FilterExpr, args: &mut Vec<Arg>) -> String {
+    match expr {
+        FilterExpr::Or(a, b) => format!("({} OR {})", filter_sql(a, args), filter_sql(b, args)),
+        FilterExpr::And(a, b) => {
+            format!("({} AND {})", filter_sql(a, args), filter_sql(b, args))
+        }
+        FilterExpr::Not(a) => format!("(NOT {})", filter_sql(a, args)),
+        FilterExpr::Cmp { field, op, values } => cmp_sql(*field, *op, values, args),
+    }
+}
+
+/// The task-side half of the union match: a row whose payload
+/// declares `requires` is servable only by a claimer declaring
+/// the required attributes. Five placeholders, bound from the
+/// claimer (family, lane, pool, "provider/model", model id); an
+/// attribute the claimer does not declare binds NULL and meets
+/// no requirement — the same shape as the platform limitation's
+/// family-less rule (#8217).
+const TASK_REQUIREMENTS_CLAUSE: &str =
+    "(json_extract(payload, '$.requires.platform') IS NULL \
+        OR json_extract(payload, '$.requires.platform') = ?) \
+     AND (json_extract(payload, '$.requires.lane') IS NULL \
+        OR json_extract(payload, '$.requires.lane') = ?) \
+     AND (json_extract(payload, '$.requires.pool') IS NULL \
+        OR json_extract(payload, '$.requires.pool') = ?) \
+     AND (json_extract(payload, '$.requires.model') IS NULL \
+        OR json_extract(payload, '$.requires.model') = ? \
+        OR json_extract(payload, '$.requires.model') = ?)";
+
+/// Who is claiming (#8097 one-queue model): the identity every
+/// claim declares and the broker records (the claim stamps —
+/// worker, lane, platform family, pool, model). Identity is
+/// accountability, not eligibility: it enters matching only as
+/// the values a task's own declared requirements are checked
+/// against (requirement_args).
+#[derive(Debug, Clone, Default)]
+pub struct ClaimerCtx {
+    family: Option<String>,
+    lane: Option<String>,
+    worker: String,
+    pool: Option<String>,
+    model: Option<ClaimModel>,
+}
+
+impl ClaimerCtx {
+    /// The five requirement bindings, in TASK_REQUIREMENTS_CLAUSE
+    /// order: family, lane, pool, "provider/model", model id.
+    fn requirement_args(&self) -> Vec<Arg> {
+        let (full, bare) = match &self.model {
+            Some(m) => (
+                m.model.as_ref().map(|id| format!("{}/{}", m.provider, id)),
+                m.model.clone(),
+            ),
+            None => (None, None),
+        };
+        vec![
+            arg_str(self.family.as_deref()),
+            arg_str(self.lane.as_deref()),
+            arg_str(self.pool.as_deref()),
+            arg_str(full.as_deref()),
+            arg_str(bare.as_deref()),
+        ]
+    }
+}
+
+/// Whether a lanes-table registration binds its lane to one
+/// stream under the one-queue model: any recorded queue value
+/// binds EXCEPT the unbound markers ("*", "all", ""), which are
+/// the registry's recorded one-queue default — the lane may
+/// claim any stream, and unscoped claims never consult the
+/// registration at all.
+fn lane_queue_binds(registered: &str) -> bool {
+    !matches!(registered, "*" | "all" | "")
+}
+
+/// A claim's full scope: the compiled claimer-side conditions
+/// (the optional stream scope and filter expression) plus the
+/// task-side requirements clause, with their arguments in SQL
+/// placeholder order. The scope SQL is appended after the pick
+/// predicate and the platform limitation clause in BOTH the
+/// pick SELECT and the claim UPDATE re-check, so a claim can
+/// never be handed a row its own scope excluded or whose
+/// requirements it does not meet — the #7068 discipline,
+/// extended to the union match.
+#[derive(Clone)]
+pub struct ClaimScope {
+    sql: String,
+    args: Vec<Arg>,
+}
+
+pub fn claim_scope(
+    queue: Option<&str>,
+    filter: Option<&FilterExpr>,
+    claimer: &ClaimerCtx,
+) -> ClaimScope {
+    let mut parts: Vec<String> = Vec::new();
+    let mut args: Vec<Arg> = Vec::new();
+    if let Some(q) = queue {
+        parts.push("queue = ?".to_string());
+        args.push(Arg::Text(q.to_string()));
+    }
+    if let Some(f) = filter {
+        parts.push(format!("({})", filter_sql(f, &mut args)));
+    }
+    parts.push(TASK_REQUIREMENTS_CLAUSE.to_string());
+    args.extend(claimer.requirement_args());
+    ClaimScope {
+        sql: format!(" AND {}", parts.join(" AND ")),
+        args,
+    }
+}
+
+/// The task row's payload as a JSON object: query_objs returns
+/// payload already parsed; a raw string is parsed here; anything
+/// else reads as an empty object (no metadata, no requirements).
+fn task_payload(row: &Value) -> Value {
+    match row.get("payload") {
+        Some(v @ Value::Object(_)) => v.clone(),
+        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
+        _ => json!({}),
+    }
+}
+
+/// The task's repo identity (mirrors REPO_IDENTITY_SQL): the
+/// payload's declared repo when present and non-empty, else the
+/// stream name with the repo-health- prefix and -pilot / -shadow
+/// suffixes stripped.
+pub fn task_repo_identity(row: &Value) -> String {
+    let payload = task_payload(row);
+    if let Some(r) = payload.get("repo").and_then(|v| v.as_str()) {
+        if !r.is_empty() {
+            return r.to_string();
+        }
+    }
+    let queue = row.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+    match queue.strip_prefix("repo-health-") {
+        Some(rest) => rest.replace("-pilot", "").replace("-shadow", ""),
+        None => queue.to_string(),
+    }
+}
+
+fn repo_value_matches(identity: &str, value: &str) -> bool {
+    identity == value || identity.ends_with(&format!("/{value}"))
+}
+
+fn filter_subject(field: FilterField, row: &Value, payload: &Value) -> Option<String> {
+    let s = |v: Option<&Value>| v.and_then(|x| x.as_str()).map(str::to_string);
+    match field {
+        FilterField::Queue | FilterField::Pool => s(row.get("queue")),
+        FilterField::Platform => s(row.get("platform")),
+        FilterField::Kind => s(payload.get("kind")),
+        FilterField::Lane => s(payload.get("requires").and_then(|r| r.get("lane"))),
+        FilterField::Model => s(payload.get("requires").and_then(|r| r.get("model"))),
+        FilterField::Repo | FilterField::Label | FilterField::Priority => None,
+    }
+}
+
+fn cmp_matches(field: FilterField, op: CmpOp, values: &[String], row: &Value) -> bool {
+    let payload = task_payload(row);
+    match field {
+        FilterField::Repo => {
+            let identity = task_repo_identity(row);
+            let any = values.iter().any(|v| repo_value_matches(&identity, v));
+            match op {
+                CmpOp::Eq | CmpOp::In => any,
+                CmpOp::Ne | CmpOp::NotIn => !any,
+                _ => false,
+            }
+        }
+        FilterField::Label => {
+            let labels: Vec<&str> = payload
+                .get("labels")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            let any = values.iter().any(|v| labels.contains(&v.as_str()));
+            match op {
+                CmpOp::Eq | CmpOp::In => any,
+                CmpOp::Ne | CmpOp::NotIn => !any,
+                _ => false,
+            }
+        }
+        FilterField::Priority => {
+            let subj = row.get("priority").and_then(|v| v.as_i64());
+            let nums: Vec<i64> = values.iter().filter_map(|v| v.parse().ok()).collect();
+            match op {
+                CmpOp::Eq => subj.is_some() && nums.iter().any(|n| Some(*n) == subj),
+                CmpOp::Ne => subj.map_or(true, |s| nums.iter().all(|n| *n != s)),
+                CmpOp::Lt => matches!((subj, nums.first()), (Some(s), Some(n)) if s < *n),
+                CmpOp::Le => matches!((subj, nums.first()), (Some(s), Some(n)) if s <= *n),
+                CmpOp::Gt => matches!((subj, nums.first()), (Some(s), Some(n)) if s > *n),
+                CmpOp::Ge => matches!((subj, nums.first()), (Some(s), Some(n)) if s >= *n),
+                CmpOp::In => subj.is_some() && nums.contains(&subj.unwrap_or(0)),
+                CmpOp::NotIn => subj.map_or(true, |s| !nums.contains(&s)),
+            }
+        }
+        field => {
+            let subj = filter_subject(field, row, &payload);
+            match op {
+                CmpOp::Eq => subj.is_some() && values.iter().any(|v| subj.as_deref() == Some(v)),
+                CmpOp::Ne => subj
+                    .as_deref()
+                    .map_or(true, |s| values.iter().all(|v| v != s)),
+                CmpOp::In => subj.is_some() && values.iter().any(|v| subj.as_deref() == Some(v)),
+                CmpOp::NotIn => subj
+                    .as_deref()
+                    .map_or(true, |s| values.iter().all(|v| v != s)),
+                _ => false,
+            }
+        }
+    }
+}
+
+/// Evaluate a filter expression against a task row, in memory —
+/// the pure mirror of filter_sql, used by the tests and by any
+/// caller that already holds the row. Semantics match the SQL
+/// exactly, including the absent-value rules.
+pub fn filter_matches(expr: &FilterExpr, row: &Value) -> bool {
+    match expr {
+        FilterExpr::Or(a, b) => filter_matches(a, row) || filter_matches(b, row),
+        FilterExpr::And(a, b) => filter_matches(a, row) && filter_matches(b, row),
+        FilterExpr::Not(a) => !filter_matches(a, row),
+        FilterExpr::Cmp { field, op, values } => cmp_matches(*field, *op, values, row),
+    }
+}
+
+/// The task-side half of the union match, evaluated in memory:
+/// Some(reason) when the task's payload `requires` object names
+/// an attribute this claimer does not declare with the required
+/// value; None when the task declares no requirements or the
+/// claimer meets them all. This is the ONLY place claimer
+/// identity shapes eligibility — a task's own declared
+/// requirements, honored automatically inside the claim.
+pub fn task_requirements_unmet(row: &Value, claimer: &ClaimerCtx) -> Option<String> {
+    let payload = task_payload(row);
+    let req = payload.get("requires")?.as_object()?;
+    if let Some(p) = req.get("platform").and_then(|v| v.as_str()) {
+        if claimer.family.as_deref() != Some(p) {
+            return Some(format!("task requires platform {p}"));
+        }
+    }
+    if let Some(l) = req.get("lane").and_then(|v| v.as_str()) {
+        if claimer.lane.as_deref() != Some(l) {
+            return Some(format!("task requires lane {l}"));
+        }
+    }
+    if let Some(p) = req.get("pool").and_then(|v| v.as_str()) {
+        if claimer.pool.as_deref() != Some(p) {
+            return Some(format!("task requires pool {p}"));
+        }
+    }
+    if let Some(m) = req.get("model").and_then(|v| v.as_str()) {
+        let met = match &claimer.model {
+            Some(cm) => {
+                cm.model.as_deref() == Some(m)
+                    || cm
+                        .model
+                        .as_ref()
+                        .map(|id| format!("{}/{}", cm.provider, id))
+                        .as_deref()
+                        == Some(m)
+            }
+            None => false,
+        };
+        if !met {
+            return Some(format!("task requires model {m}"));
+        }
+    }
+    None
+}
+
 /// The recorded platform limitation, expressed for the claim
 /// pick (#8217, extending #8210's transfer-claim enforcement to
 /// every pick): a row is unservable while its lane-ledger row
@@ -2944,7 +4004,7 @@ fn transfer_update_sql() -> &'static str {
 /// rows in this queue before any pick runs.
 fn claim_preamble(
     t: &TursoBackend,
-    queue: &str,
+    queue: Option<&str>,
     worker: &str,
     lane: &Option<String>,
 ) -> Result<(), TErr> {
@@ -2966,27 +4026,33 @@ fn claim_preamble(
         if l.get("enabled").and_then(|v| v.as_i64()) == Some(0) {
             return Err(format!("claim_repo_task: lane {lane_id} is disabled"));
         }
-        if l.get("queue").and_then(|v| v.as_str()) != Some(queue) {
-            return Err(format!(
-                "claim_repo_task: lane {lane_id} is for queue {}, not {queue}",
-                l.get("queue").and_then(|v| v.as_str()).unwrap_or("")
-            ));
+        // One-queue model (#8097, 2026-11-10): the registration's
+        // queue binding is enforced ONLY when the claim itself is
+        // stream-scoped AND the registration binds a stream. An
+        // unscoped claim (the default) is never refused over the
+        // lane's registration — identity is recorded, never used
+        // to filter — and a registration carrying an unbound
+        // marker ("*", see lane_queue_binds) binds nothing.
+        if let Some(q) = queue {
+            let registered = l.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+            if lane_queue_binds(registered) && registered != q {
+                return Err(format!(
+                    "claim_repo_task: lane {lane_id} is for queue {registered}, not {q}"
+                ));
+            }
         }
     }
     expire_leases(t)?;
-    quarantine_payload_missing(t, queue)?;
+    match queue {
+        Some(q) => quarantine_payload_missing(t, q)?,
+        None => quarantine_payload_missing_all(t)?,
+    }
     Ok(())
 }
 
-/// One pick-path claim: the atomic pick + the post-claim flow
-/// (binding clear, lease row, model stamp, claimed event).
-/// Extracted from verb_claim for #8217 so the batch claim runs
-/// the identical pick N times; a single claim is exactly one
-/// call of this. Returns the claimed row, or None when nothing
-/// is eligible.
 fn claim_pick_once(
     t: &TursoBackend,
-    queue: String,
+    scope: &ClaimScope,
     worker: String,
     lane: &Option<String>,
     lease_seconds: i64,
@@ -3042,24 +4108,28 @@ fn claim_pick_once(
             default_pick_predicate()
         };
         let pick_sql = format!(
-            "SELECT id FROM tasks WHERE queue = ? \
+            "SELECT id FROM tasks WHERE 1=1 \
            AND payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
-           AND ( {pick_predicate} ) {PLATFORM_LIMIT_PICK_CLAUSE} \
-         ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1"
+           AND ( {pick_predicate} ) {PLATFORM_LIMIT_PICK_CLAUSE}{} \
+         ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1",
+            scope.sql
         );
-        let mut pick_args: Vec<Arg> = vec![Arg::Text(queue.clone())];
+        let mut pick_args: Vec<Arg> = Vec::new();
         if !handoff_pick {
             pick_args.push(Arg::Text(now.clone()));
             pick_args.push(Arg::Text(now.clone()));
         }
         pick_args.push(arg_str(family.as_deref()));
         pick_args.push(arg_str(family.as_deref()));
+        for a in &scope.args {
+            pick_args.push(a.clone());
+        }
         let pick = t.query_objs(&pick_sql, &pick_args, &[])?;
         let Some(picked) = pick.into_iter().next() else {
             return Ok(None);
         };
         let pick_id = picked.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let upd_sql = claim_update_sql(&pick_predicate);
+        let upd_sql = format!("{}{}", claim_update_sql(&pick_predicate), scope.sql);
         let mut upd_args: Vec<Arg> = vec![
             Arg::Text(worker.clone()),
             Arg::Text(now.clone()),
@@ -3075,6 +4145,9 @@ fn claim_pick_once(
         }
             upd_args.push(arg_str(family.as_deref()));
             upd_args.push(arg_str(family.as_deref()));
+        for a in &scope.args {
+            upd_args.push(a.clone());
+        }
         let upd = t.exec(&upd_sql, &upd_args)?;
         if upd.affected == 0 {
             // Lost the race for the picked row; re-pick.
@@ -3186,7 +4259,8 @@ fn parse_batch_count(req: &Value) -> Result<i64, String> {
 #[allow(clippy::too_many_arguments)]
 fn verb_claim_batch(
     t: &TursoBackend,
-    queue: &str,
+    queue: Option<&str>,
+    scope: &ClaimScope,
     worker: &str,
     lane: &Option<String>,
     lease_seconds: i64,
@@ -3202,7 +4276,7 @@ fn verb_claim_batch(
         for _ in 0..count {
             let Some(row) = claim_pick_once(
                 t,
-                queue.to_string(),
+                scope,
                 worker.to_string(),
                 lane,
                 lease_seconds,
@@ -3234,7 +4308,29 @@ fn verb_claim_batch(
 
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
-    let queue = req_str(req, "queue").unwrap_or("").to_string();
+    // One-queue model (#8097, 2026-11-10): the request's queue
+    // is OPTIONAL. Absent, empty, "*" or "all" names no stream:
+    // the claim spans the one fleet queue in priority order. A
+    // named stream still scopes the claim exactly as before, so
+    // every existing scoped caller keeps working unchanged.
+    let queue: Option<String> = match req_str(req, "queue") {
+        None | Some("") | Some("*") | Some("all") => None,
+        Some(q) => Some(q.to_string()),
+    };
+    // The claimer-side filter expression (--filter): a boolean
+    // expression over task metadata, evaluated inside the claim
+    // (see parse_filter). Absent is the default: no filtering.
+    let filter_expr = match req_str(req, "filter") {
+        None | Some("") => None,
+        Some(f) => match parse_filter(f) {
+            Ok(e) => Some(e),
+            Err(e) => return fail(2, format!("claim_repo_task: bad filter: {e}")),
+        },
+    };
+    // The claimer's declared pool identity (--pool): recorded
+    // like the other identity marks and used only to satisfy a
+    // task's own requires.pool, never as a filter.
+    let pool = req_str(req, "pool").map(str::to_string);
     let lease_seconds = req_i64(req, "lease_seconds").unwrap_or(CLAIM_DEFAULT_LEASE_SECONDS);
     let lane = req_str(req, "lane").map(str::to_string);
     // #8187 (demoting #8097 Rule 2): the claim's declared platform
@@ -3277,6 +4373,21 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     // times (verb_claim_batch) and returns every claimed row; it
     // never combines with a named task (by-id and transfer claims
     // take exactly one row).
+    // Union matching (#8097 one-queue model): the claim's
+    // scope compiles the claimer's requirements (stream +
+    // filter) together with the task-side requirements clause;
+    // both are evaluated inside the pick and its UPDATE
+    // re-check. The claimer context is this claim's identity —
+    // recorded on the claim, and used only to satisfy tasks'
+    // own declared requirements.
+    let claimer = ClaimerCtx {
+        family: family.clone(),
+        lane: lane.clone(),
+        worker: worker.clone(),
+        pool: pool.clone(),
+        model: model.clone(),
+    };
+    let scope = claim_scope(queue.as_deref(), filter_expr.as_ref(), &claimer);
     let count = match parse_batch_count(req) {
         Ok(c) => c,
         Err(e) => return fail(2, format!("claim_repo_task: {e}")),
@@ -3292,7 +4403,8 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         }
         return verb_claim_batch(
             t,
-            &queue,
+            queue.as_deref(),
+            &scope,
             &worker,
             &lane,
             lease_seconds,
@@ -3305,7 +4417,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     }
 
     let work = (|| -> Result<Option<Value>, TErr> {
-        claim_preamble(t, &queue, &worker, &lane)?;
+        claim_preamble(t, queue.as_deref(), &worker, &lane)?;
         // By-id claim — the SPECIAL CASE (#8097 Rule 1): when the
         // request names a task, take exactly that row (claim_by_id)
         // instead of the pick. Reserved for one-off revivals of a
@@ -3321,7 +4433,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 return claim_transfer(
                     t,
                     want_id,
-                    &queue,
+                    queue.as_deref(),
                     &worker,
                     &lane,
                     lease_seconds,
@@ -3329,22 +4441,24 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                     &model,
                     from_session,
                     claim_session.as_deref(),
+                    &pool,
                 );
             }
             return claim_by_id(
                 t,
                 want_id,
-                &queue,
+                queue.as_deref(),
                 &worker,
                 &lane,
                 lease_seconds,
                 family.as_deref(),
                 &model,
+                &pool,
             );
         }
         claim_pick_once(
             t,
-            queue.clone(),
+            &scope,
             worker.clone(),
             &lane,
             lease_seconds,
@@ -3692,6 +4806,82 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
         Err(e) if e.starts_with("bind_repo_task_lane_session:") => fail(4, e),
         Err(e) => terr(e),
     }
+}
+
+/// Whether a broker envelope reports success.
+fn envelope_is_ok(v: &Value) -> bool {
+    v.get("ok").and_then(|o| o.as_bool()) == Some(true)
+}
+
+/// #5757-A: claim + lane-assign + session-bind in one broker
+/// round trip — the composition of the three verbs, in order,
+/// with the same semantics as calling them in sequence: the
+/// claim step's error envelope, or an empty claim, returns
+/// verbatim and later steps are not attempted. A LANE/BIND
+/// failure is different: the claim has already committed, so it
+/// answers as a partial success (ok envelope + claimed row +
+/// `claim_flow_partial` naming the failed step), never as an
+/// error envelope — a retryable error there would make the
+/// client's call_result replay the WHOLE flow and claim a
+/// second task, leaking this one (Codex P1 on PR #8493; the
+/// PostgREST broker in queue_broker.rs follows the same rule).
+/// The caller finishes the failed step with the single-verb
+/// /lane or /bind call for this task id. The answer carries
+/// every step's row: `row` is the claimed task row (the shape
+/// /claim answers and the client's claim_output consumes);
+/// `lane_row` and `bind_row` are exactly what /lane and /bind
+/// answer in the three-verb flow.
+fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
+    if let Err(e) = crate::client::claim_flow_precheck(req) {
+        return fail(2, e);
+    }
+    let claim = verb_claim(t, req);
+    if !envelope_is_ok(&claim) {
+        return claim;
+    }
+    let row = claim.get("row").cloned().unwrap_or(Value::Null);
+    if row.is_null() {
+        return claim;
+    }
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut lane_req = req.clone();
+    if let Some(obj) = lane_req.as_object_mut() {
+        obj.insert("task_id".to_string(), json!(task_id));
+    }
+    let lane = verb_lane(t, &lane_req);
+    if !envelope_is_ok(&lane) {
+        return ok(json!({
+            "row": row,
+            "claim_flow_partial": {
+                "step": "lane",
+                "exit": lane.get("exit").cloned().unwrap_or(Value::Null),
+                "error": lane.get("error").cloned().unwrap_or(Value::Null),
+            },
+        }));
+    }
+    let bind_req = json!({
+        "task_id": task_id,
+        "worker": req.get("worker"),
+        "session_id": req.get("session_id"),
+        "launched_by": req.get("launched_by"),
+    });
+    let bind = verb_bind(t, &bind_req);
+    if !envelope_is_ok(&bind) {
+        return ok(json!({
+            "row": row,
+            "lane_row": lane.get("row").cloned().unwrap_or(Value::Null),
+            "claim_flow_partial": {
+                "step": "bind",
+                "exit": bind.get("exit").cloned().unwrap_or(Value::Null),
+                "error": bind.get("error").cloned().unwrap_or(Value::Null),
+            },
+        }));
+    }
+    ok(json!({
+        "row": row,
+        "lane_row": lane.get("row").cloned().unwrap_or(Value::Null),
+        "bind_row": bind.get("row").cloned().unwrap_or(Value::Null),
+    }))
 }
 
 /// Shared guard for the claimed-by verbs: returns the task row or
@@ -5036,7 +6226,17 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         sql += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
-    sql += &format!(" ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}");
+    // #7871: --task narrows to one task id (the PostgREST /list
+    // path applies the same filter), and the client's paged fetch
+    // advances OFFSET page by page.
+    if let Some(id) = req_i64(req, "task") {
+        sql += " AND id = ?";
+        args.push(Arg::Int(id));
+    }
+    let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
+    sql += &format!(
+        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
+    );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]
     } else {
@@ -5799,6 +6999,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/enqueue" => verb_enqueue(t, req),
         "/revive" => verb_revive(t, req),
         "/claim" => verb_claim(t, req),
+        "/claim-flow" => verb_claim_flow(t, req),
         "/lane" => verb_lane(t, req),
         "/bind" => verb_bind(t, req),
         "/heartbeat" => verb_heartbeat(t, req),
@@ -5834,6 +7035,119 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
+        // #8097 oracle: after the 2026-11-11 lane rename + trims,
+        // the canonical seed set is exactly the 36-lane registry
+        // (the 35 rename lanes plus not-code-g — the nix worker's
+        // own lane, added later the same day; #8097 record, #6853)
+        // universe with the end-state enabled flags — no more, no
+        // fewer. The pre-rename set named ids that no longer exist
+        // (code-k..z, nix-a/b, opencode-a/b, openchamber-a/b), and
+        // ensure_schema kept resurrecting hand-deleted rows from
+        // it: openchamber-a/b were deleted on 2026-11-10 and came
+        // back enabled at the next seed run. Seeding an empty
+        // lanes table executes lane_seed_sql() — a pure function
+        // of this set — so pinning the set and its per-lane tuples
+        // (next test) pins the seeded database exactly.
+        let lanes = canonical_lanes();
+        assert_eq!(lanes.len(), 36);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| *id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 36, "duplicate lane ids in the canonical set");
+        let expected_ids: Vec<&str> = vec![
+            "any-a", "any-b", "any-c", "any-d", "any-e", "any-f", "any-g", "any-h", "any-i",
+            "any-j", "any-k", "any-l", "any-m", "any-n", "any-o", "any-p", "any-q", "any-r",
+            "any-s", "code-a", "code-b", "code-c", "code-d", "code-e", "code-f", "code-g",
+            "code-h", "code-i", "code-j", "not-code-a", "not-code-b", "not-code-c",
+            "not-code-d", "not-code-e", "not-code-f", "not-code-g",
+        ];
+        assert_eq!(
+            ids, expected_ids,
+            "the canonical set is not the post-rename universe"
+        );
+        // No legacy id may ever be seeded again: the deleted
+        // openchamber pair, the pre-rename stream lanes, the
+        // code-k..z overhang, and the rename's tmp ids.
+        for legacy in [
+            "openchamber-a",
+            "openchamber-b",
+            "nix-a",
+            "nix-b",
+            "opencode-a",
+            "opencode-b",
+        ] {
+            assert!(
+                !ids.contains(&legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        for c in 'k'..='z' {
+            let legacy = format!("code-{c}");
+            assert!(
+                !ids.iter().any(|id| *id == legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        assert!(
+            ids.iter().all(|id| !id.starts_with("tmp-")),
+            "tmp rename ids must not be seeded"
+        );
+        // The enabled set is exactly the 17 working lanes.
+        let mut enabled: Vec<&str> = lanes
+            .iter()
+            .filter(|(_, _, e)| *e)
+            .map(|(id, _, _)| *id)
+            .collect();
+        enabled.sort();
+        assert_eq!(
+            enabled,
+            [
+                "any-a", "any-b", "any-c", "any-d", "any-n", "any-o", "code-a", "code-b",
+                "code-c", "code-d", "code-f", "code-g", "code-h", "code-i", "code-j",
+                "not-code-d", "not-code-g",
+            ]
+        );
+        // Worker ownership: the renamed lanes keep the worker of
+        // the registry row they came from.
+        let owner = |id: &str| lanes.iter().find(|(l, _, _)| *l == id).map(|(_, w, _)| *w);
+        assert_eq!(owner("code-a"), Some("repo-worker-code"));
+        assert_eq!(owner("code-j"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-a"), Some("repo-worker-nix"));
+        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-g"), Some("repo-worker-nix"));
+        assert_eq!(owner("any-s"), Some("repo-worker-code"));
+    }
+
+    #[test]
+    fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
+        // #6853 oracle, extended under #8097: the seed can only
+        // fill missing rows — an existing registration (in
+        // particular a lane disabled via enabled = 0) is never
+        // overwritten, so seeding at every broker start cannot
+        // undo a disable — and every seeded row carries its
+        // canonical fields, so a restored disabled lane comes
+        // back disabled, and a restored enabled lane comes back
+        // with its owning worker and the one-queue binding.
+        let sql = lane_seed_sql();
+        assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
+        for (id, worker, enabled) in canonical_lanes() {
+            let tuple = format!("('{id}', '{worker}', '*', {})", i32::from(enabled));
+            assert!(sql.contains(&tuple), "seed misses {tuple}");
+        }
+        // Nothing outside the canonical set is seeded: a deleted
+        // legacy lane stays deleted across broker restarts.
+        for legacy in ["openchamber-a", "openchamber-b", "nix-a", "opencode-a", "code-z"] {
+            assert!(
+                !sql.contains(&format!("('{legacy}'")),
+                "seed must not name {legacy}"
+            );
+        }
+    }
 
     #[test]
     fn claim_lease_is_the_requested_lease_not_the_heartbeat_default() {
@@ -6447,6 +7761,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn expiry_disposition_fails_only_at_cap() {
+        // Below cap: the task returns to queued for another attempt.
+        assert_eq!(expiry_disposition(0, 4), ExpiryDisposition::Requeue);
+        assert_eq!(expiry_disposition(3, 4), ExpiryDisposition::Requeue);
+        // At or past cap (#6463): terminal failure, never a silent
+        // return to a queued state the claim query cannot select.
+        assert_eq!(expiry_disposition(4, 4), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(24, 24), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(9, 4), ExpiryDisposition::FailAtCap);
+    }
+
+    #[test]
     fn wait_kind_mapping_matches_pg_park() {
         assert_eq!(wait_kind(&json!({"kind": "triage"})), "triage");
         assert_eq!(wait_kind(&json!({"kind": "time"})), "timer");
@@ -6928,6 +8255,19 @@ mod tests {
         // Oracle: validate_packet, the /enqueue validator — a row
         // enqueue would accept must pass the claim guard unchanged.
         assert_eq!(claim_guard_reason(&claimable_row(valid_payload())), None);
+    }
+
+    #[test]
+    fn claim_guard_accepts_a_body_less_stored_row() {
+        // task_from_packet stores an absent body as SQL NULL, so a
+        // body-less packet's stored row carries body:null. The #6430
+        // body type check must not quarantine it (Codex P1, PR #8477).
+        let mut row = claimable_row(valid_payload());
+        row["body"] = Value::Null;
+        assert_eq!(claim_guard_reason(&row), None);
+        let mut row = claimable_row(valid_payload());
+        row.as_object_mut().unwrap().remove("body");
+        assert_eq!(claim_guard_reason(&row), None);
     }
 
     #[test]
@@ -7453,6 +8793,51 @@ mod tests {
     }
 
     #[test]
+    fn claim_flow_composes_claim_lane_bind_in_order_5757() {
+        // #5757-A oracle: /claim-flow is dispatched, prechecks
+        // before any step runs, and composes the three verbs in
+        // claim -> lane -> bind order, answering with all three
+        // rows. (The verbs themselves are covered by their own
+        // tests; this pins the composition and the route.)
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("\"/claim-flow\" => verb_claim_flow(t, req)"),
+            "dispatch routes /claim-flow"
+        );
+        let flow = seg8217(src, "fn verb_claim_flow(", "\nfn claimed_by(");
+        let pre = flow.find("claim_flow_precheck").expect("precheck present");
+        let c = flow.find("verb_claim(").expect("claim step");
+        let l = flow.find("verb_lane(").expect("lane step");
+        let b = flow.find("verb_bind(").expect("bind step");
+        assert!(pre < c && c < l && l < b, "steps run precheck -> claim -> lane -> bind");
+        assert!(flow.contains("\"bind_row\""), "answer carries the bind row");
+        assert!(flow.contains("\"lane_row\""), "answer carries the lane row");
+    }
+
+    #[test]
+    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
+        // #5757-A Codex P1 oracle (PR #8493): once the claim step
+        // has committed, a lane/bind failure must answer as a
+        // partial success carrying the claimed row and a
+        // claim_flow_partial marker for EACH step — never as the
+        // step's error envelope, which the client's retry loop
+        // would replay into a second claim.
+        let src = include_str!("turso_queue.rs");
+        let flow = seg8217(src, "fn verb_claim_flow(", "\nfn claimed_by(");
+        assert_eq!(
+            flow.matches("\"claim_flow_partial\"").count(),
+            2,
+            "lane and bind failures both carry claim_flow_partial"
+        );
+        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
+        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        assert!(
+            !flow.contains("return lane;") && !flow.contains("return bind;"),
+            "post-commit step envelopes are never returned verbatim"
+        );
+    }
+
+    #[test]
     fn batch_claim_runs_the_single_pick_repeatedly_8217() {
         // Oracle: the batch verb is a loop over claim_pick_once
         // (the single claim's pick — same eligibility, same order,
@@ -7539,6 +8924,66 @@ mod tests {
     }
 
     #[test]
+    fn claim_by_id_targets_exactly_the_named_task_7735() {
+        // #7735 oracle: a targeted claim is a claim of one row or
+        // no claim — it can never fall through to the queue's
+        // next-up row (the monitor's Duty 1B footgun: an untargeted
+        // claim fired on whatever was next). The by-id path reads
+        // the named row, flips it with an UPDATE keyed to that id
+        // plus the status it read, and reads the result back by
+        // the same id; it contains no pick at all.
+        let src = include_str!("turso_queue.rs");
+        // Bound the segment at claim_by_id's own closing brace:
+        // seg8217's usual end marker (claim_transfer) is defined
+        // BEFORE claim_by_id in this file, so its segment would
+        // run to EOF and the forbidden-needle checks below would
+        // trip on the pick function further down.
+        let seg = src
+            .split("fn claim_by_id(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n}\n")
+            .next()
+            .unwrap_or("");
+        assert!(
+            seg.contains("get_task(t, task_id)"),
+            "by-id claim reads the named row"
+        );
+        assert!(
+            seg.contains("WHERE id = ? AND status = ? AND queue = ?"),
+            "by-id claim's UPDATE is keyed to the named id and the status it read"
+        );
+        assert!(
+            seg.contains("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
+            "by-id claim reads its result back by the named id"
+        );
+        for forbidden in ["claim_pick_once(", "ORDER BY priority"] {
+            assert!(
+                !seg.contains(forbidden),
+                "by-id claim must never pick a different task: found {forbidden}"
+            );
+        }
+        // Predicate half, in the claim_race idiom: the named row is
+        // claimable while it is queued, and the instant it is
+        // claimed (by anyone) a targeted claim of it refuses —
+        // there is no state in which it silently substitutes the
+        // next queued row, which stays claimable under its own id.
+        let now = "2026-11-11T02:45:00Z";
+        let mut named = json!({
+            "status": "queued", "attempts": 0, "max_attempts": 6,
+            "not_before": null, "platform": null, "lane_id": null,
+        });
+        assert!(by_id_claimable(&named, now));
+        named["status"] = json!("claimed");
+        assert!(!by_id_claimable(&named, now));
+        let next = json!({
+            "status": "queued", "attempts": 0, "max_attempts": 6,
+            "not_before": null, "platform": null, "lane_id": null,
+        });
+        assert!(by_id_claimable(&next, now));
+    }
+
+    #[test]
     fn release_verb_contract_8217() {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
@@ -7559,6 +9004,241 @@ mod tests {
         assert!(
             src.contains("\"/release\" => verb_release(t, req),"),
             "release is dispatched"
+        );
+    }
+
+    #[test]
+    fn one_queue_filter_parse_and_compile_8097() {
+        // The designated lanes' expressions parse and compile:
+        // not-code is `repo != code`; code-only is `repo = code`.
+        let not_code = parse_filter("repo != code").expect("not-code parses");
+        let mut args: Vec<Arg> = Vec::new();
+        let sql = filter_sql(&not_code, &mut args);
+        assert!(sql.contains("NOT"), "negation compiles: {sql}");
+        assert!(sql.contains("json_extract(payload, '$.repo')"), "repo identity: {sql}");
+        assert_eq!(args.len(), 2, "repo equality binds the value twice: {sql}");
+        match (&args[0], &args[1]) {
+            (Arg::Text(a), Arg::Text(b)) => assert_eq!((a.as_str(), b.as_str()), ("code", "code")),
+            _ => panic!("repo binds text values"),
+        }
+        // Boolean composition: AND over OR, NOT tightest.
+        let expr = parse_filter("(repo = nix OR repo = opencode) AND NOT platform = muse")
+            .expect("composed filter parses");
+        let mut args: Vec<Arg> = Vec::new();
+        let sql = filter_sql(&expr, &mut args);
+        assert!(sql.contains(" OR "), "{sql}");
+        assert!(sql.contains(" AND "), "{sql}");
+        assert!(sql.contains("(NOT "), "{sql}");
+        assert_eq!(args.len(), 5, "two repo values x2 + one platform: {sql}");
+        // IN lists and priority ordering.
+        let expr = parse_filter("repo IN (nix, opencode) AND priority <= 3").expect("IN parses");
+        let mut args: Vec<Arg> = Vec::new();
+        let sql = filter_sql(&expr, &mut args);
+        assert!(sql.contains("priority <= ?"), "{sql}");
+        assert!(matches!(args.last(), Some(Arg::Int(3))), "priority binds an integer");
+        // Malformed expressions are usage errors, never silent.
+        for bad in [
+            "",
+            "repo < code",
+            "priority <= soon",
+            "bogus = x",
+            "(repo = code",
+            "repo = ",
+            "repo IN ()",
+            "repo ~ code",
+        ] {
+            assert!(parse_filter(bad).is_err(), "rejects {bad:?}");
+        }
+    }
+
+    #[test]
+    fn one_queue_union_match_is_empty_by_default_8097() {
+        // Drew's model (2026-11-10): the union of the task's
+        // requirements and the claimer's requirements, each
+        // filtering on the other's metadata — and BOTH sides are
+        // empty by default, so matching is pure priority order.
+        let code_task = json!({
+            "queue": "repo-health-code-pilot", "priority": 1,
+            "payload": {"schema": "repo-task/v1", "repo": "developing-today/code", "kind": "small_fix"},
+        });
+        let nix_task = json!({
+            "queue": "repo-health-nix-pilot", "priority": 2,
+            "payload": {"schema": "repo-task/v1", "repo": "dezren39/darwin-nix", "kind": "small_fix"},
+        });
+        let stream_only_task = json!({
+            "queue": "repo-health-code-pilot", "priority": 3,
+            "payload": {"schema": "repo-task/v1", "kind": "triage"},
+        });
+        let meta_task = json!({
+            "queue": "meta", "priority": 4, "payload": {},
+        });
+        // No requirements on any of these tasks: every claimer
+        // meets them, whatever its identity — identity alone
+        // never filters.
+        let claimer = ClaimerCtx {
+            family: Some("openchamber".to_string()),
+            lane: Some("code-z".to_string()),
+            worker: "repo-worker-code".to_string(),
+            pool: None,
+            model: None,
+        };
+        for task in [&code_task, &nix_task, &stream_only_task, &meta_task] {
+            assert_eq!(task_requirements_unmet(task, &claimer), None);
+        }
+        // Claimer-side expressions over task metadata.
+        let not_code = parse_filter("repo != code").unwrap();
+        assert!(!filter_matches(&not_code, &code_task), "code task is code");
+        assert!(filter_matches(&not_code, &nix_task), "nix task is not code");
+        assert!(filter_matches(&not_code, &meta_task), "meta task is not code");
+        let code_only = parse_filter("repo = code").unwrap();
+        assert!(filter_matches(&code_only, &code_task), "payload repo basename matches");
+        assert!(
+            filter_matches(&code_only, &stream_only_task),
+            "stream-derived identity matches a payload without repo"
+        );
+        assert!(!filter_matches(&code_only, &nix_task));
+        let full_name = parse_filter("repo = developing-today/code").unwrap();
+        assert!(filter_matches(&full_name, &code_task), "full owner/name matches");
+        // Priority and kind dimensions.
+        let urgent_code = parse_filter("priority <= 2 AND kind = small_fix").unwrap();
+        assert!(filter_matches(&urgent_code, &code_task));
+        assert!(filter_matches(&urgent_code, &nix_task));
+        assert!(!filter_matches(&urgent_code, &stream_only_task), "priority 3 is not <= 2");
+    }
+
+    #[test]
+    fn one_queue_task_requirements_match_claimers_automatically_8097() {
+        // A task's own declared requirements are honored inside
+        // the claim: an ineligible claimer simply does not get
+        // the item; no out-of-band step exists.
+        let muse_only = json!({
+            "queue": "meta", "priority": 1,
+            "payload": {"requires": {"platform": "muse"}},
+        });
+        let oc_claimer = ClaimerCtx {
+            family: Some("openchamber".to_string()),
+            ..Default::default()
+        };
+        let muse_claimer = ClaimerCtx {
+            family: Some("muse".to_string()),
+            ..Default::default()
+        };
+        let anon_claimer = ClaimerCtx::default();
+        assert!(task_requirements_unmet(&muse_only, &oc_claimer).is_some());
+        assert!(task_requirements_unmet(&muse_only, &anon_claimer).is_some());
+        assert_eq!(task_requirements_unmet(&muse_only, &muse_claimer), None);
+        // Lane requirement: only the named lane.
+        let lane_task = json!({
+            "queue": "meta", "priority": 1,
+            "payload": {"requires": {"lane": "code-b"}},
+        });
+        let lane_b = ClaimerCtx {
+            lane: Some("code-b".to_string()),
+            ..Default::default()
+        };
+        let lane_c = ClaimerCtx {
+            lane: Some("code-c".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(task_requirements_unmet(&lane_task, &lane_b), None);
+        assert!(task_requirements_unmet(&lane_task, &lane_c).is_some());
+        assert!(task_requirements_unmet(&lane_task, &anon_claimer).is_some());
+        // Pool and model requirements.
+        let pooled = json!({
+            "queue": "meta", "priority": 1,
+            "payload": {"requires": {"pool": "summit", "model": "claude-sonnet-5-5"}},
+        });
+        let summit = ClaimerCtx {
+            pool: Some("summit".to_string()),
+            model: Some(ClaimModel {
+                provider: "_claude".to_string(),
+                model: Some("claude-sonnet-5-5".to_string()),
+                variant: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(task_requirements_unmet(&pooled, &summit), None);
+        let wrong_pool = ClaimerCtx {
+            pool: Some("workhorse".to_string()),
+            ..summit.clone()
+        };
+        assert!(task_requirements_unmet(&pooled, &wrong_pool).is_some());
+        // The full "provider/model" spelling also meets a model
+        // requirement, and a model-less claimer meets none.
+        let full_model_task = json!({
+            "queue": "meta", "priority": 1,
+            "payload": {"requires": {"model": "_claude/claude-sonnet-5-5"}},
+        });
+        assert_eq!(task_requirements_unmet(&full_model_task, &summit), None);
+        assert!(task_requirements_unmet(&full_model_task, &anon_claimer).is_some());
+    }
+
+    #[test]
+    fn one_queue_scope_sql_shape_8097() {
+        let claimer = ClaimerCtx {
+            family: Some("muse".to_string()),
+            lane: Some("nix-a".to_string()),
+            worker: "repo-worker-nix".to_string(),
+            pool: None,
+            model: None,
+        };
+        // The default claim: no stream, no filter — the scope is
+        // exactly the task-requirements clause (5 bindings), so
+        // the pick spans the whole queue in priority order.
+        let scope = claim_scope(None, None, &claimer);
+        assert!(!scope.sql.contains("queue = ?"), "unscoped: {}", scope.sql);
+        assert!(scope.sql.contains("requires.platform"), "requirements always bind");
+        assert_eq!(scope.args.len(), 5);
+        // A stream-scoped claim keeps the old shape: queue first.
+        let scope = claim_scope(Some("repo-health-code-pilot"), None, &claimer);
+        assert!(scope.sql.starts_with(" AND queue = ?"), "{}", scope.sql);
+        match &scope.args[0] {
+            Arg::Text(q) => assert_eq!(q, "repo-health-code-pilot"),
+            _ => panic!("stream binds first"),
+        }
+        assert_eq!(scope.args.len(), 6);
+        // A filtered claim: filter args follow the stream arg and
+        // precede the requirement bindings.
+        let expr = parse_filter("repo != code").unwrap();
+        let scope = claim_scope(None, Some(&expr), &claimer);
+        assert_eq!(scope.args.len(), 7);
+        match (&scope.args[0], &scope.args[1]) {
+            (Arg::Text(a), Arg::Text(b)) => {
+                assert_eq!((a.as_str(), b.as_str()), ("code", "code"))
+            }
+            _ => panic!("filter binds before requirements"),
+        }
+        // The registry's unbound markers.
+        assert!(!lane_queue_binds("*"));
+        assert!(!lane_queue_binds("all"));
+        assert!(!lane_queue_binds(""));
+        assert!(lane_queue_binds("repo-health-code-pilot"));
+    }
+
+    #[test]
+    fn one_queue_claim_wiring_8097() {
+        // Source oracle: the claim verb parses the filter, builds
+        // the union scope, and the single pick applies it in both
+        // statements; the registry binding is consulted only for
+        // stream-scoped claims.
+        let src = include_str!("turso_queue.rs");
+        let single = seg8217(src, "fn verb_claim(", "\nfn verb_bind(");
+        assert!(single.contains("parse_filter("), "claim parses --filter");
+        assert!(single.contains("claim_scope("), "claim builds the union scope");
+        assert!(single.contains("\"filter\""), "claim reads the filter field");
+        assert!(single.contains("\"pool\""), "claim reads the pool identity");
+        let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
+        assert!(pick.contains("scope.sql"), "pick SELECT applies the scope");
+        assert!(pick.contains("scope.args"), "pick binds the scope arguments");
+        let preamble = seg8217(src, "fn claim_preamble(", "\nfn claim_pick_once(");
+        assert!(
+            preamble.contains("lane_queue_binds("),
+            "preamble honors the unbound registration marker"
+        );
+        let by_id = seg8217(src, "fn claim_by_id(", "\nfn claim_transfer(");
+        assert!(
+            by_id.contains("task_requirements_unmet("),
+            "by-id claim honors the task's requirements"
         );
     }
 }

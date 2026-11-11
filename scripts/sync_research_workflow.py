@@ -57,6 +57,17 @@ def load_profile(path, *, lifecycle_skills=False):
         raise ValueError(
             f"{path}: workflow_docs must name a directory inside the repository"
         )
+    # The profile lives at <root>/.agents/research-workflow.json, so the
+    # repository root is two levels up. A value that merely *resolves* to
+    # that root -- "docs/.." and its spellings, or a symlink naming the
+    # root itself -- reaches the same place "" and "." do, and is rejected
+    # with the same diagnostic instead of failing later inside() with a
+    # generic path error (#7083).
+    repo_root = path.parent.parent.resolve()
+    if (path.parent.parent / workflow_docs).resolve() == repo_root:
+        raise ValueError(
+            f"{path}: workflow_docs must name a directory inside the repository"
+        )
     skills = profile.get("lifecycle_skills", SKILLS)
     if (
         lifecycle_skills

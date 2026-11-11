@@ -49,6 +49,8 @@ on:
       - "pkgs/id/**"
       - ".github/workflows/id-check.yml"
       - ".github/scripts/id-pr-checks.txt"
+      - ".github/scripts/id-pr-checks-matrix.sh"
+      - ".github/scripts/id-pr-checks-matrix.test.sh"
       - ".github/scripts/check-id-pr-checks.sh"
       - ".github/scripts/check-id-pr-checks.test.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
@@ -88,6 +90,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Test matrix normalization
+        run: bash .github/scripts/id-pr-checks-matrix.test.sh
+
       - name: Test source-snapshot guard behavior
         run: bash .github/scripts/check-id-source-snapshot.test.sh
 
@@ -120,7 +125,7 @@ jobs:
       - name: Emit PR check list for the matrix
         id: list
         run: |
-          checks=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' .github/scripts/id-pr-checks.txt | jq -R . | jq -cs .)
+          checks=$(bash .github/scripts/id-pr-checks-matrix.sh)
           echo "checks=$checks" >> "$GITHUB_OUTPUT"
           echo "PR checks: $checks"
 

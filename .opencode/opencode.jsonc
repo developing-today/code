@@ -717,6 +717,49 @@
       "instanceOf": "openai",
       "name": "OpenAI Alternate (Student - popesdrew)"
     },
+    // _openai.alt (2026-11-10, Drew direct order): the popesdrew account
+    // as an _openai-pattern instance - the second of the two self-contained
+    // OpenAI doors (with _openai.main below). Same pattern as _openai.main:
+    // its credential is its own, seeded without the externalRefresh stamp
+    // and refreshed in-process by the provider; no Muse, no
+    // ~/.codex/auth.json read, no codex-sync in its path. Seeded from the
+    // popesdrew account credential openai.alternate already serves with -
+    // the credential-store seeding is tracked with the #8163 follow-up;
+    // this definition is the config side. openai.alternate keeps its
+    // definition above, unseated, while the pool sits on this id.
+    "_openai.alt": {
+      "instanceOf": "openai",
+      "name": "OpenAI Self-Contained Alt (popesdrew, no Codex)",
+      // Catalog pinned HERE (2026-11-10, self-containment): the exact model
+      // ids the fleet routes through openai-plan, with the limits the
+      // runtime overlay's sync-models section carries for them today. An
+      // instance's own "models" merge over its base's catalog, so the doors
+      // keep serving these ids even if the upstream "openai" definition and
+      // its sync-owned overlay section are removed (Drew's end state: the
+      // _openai doors stand on their own). Same block on _openai.main.
+      "models": {
+        "gpt-6.1-terra": {
+          "name": "GPT-6.1 Terra (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-5.5": {
+          "name": "GPT-5.5 (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-5.3-codex-spark": {
+          "name": "GPT-5.3 Codex Spark (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        }
+      }
+    },
     "openai.main": {
       "instanceOf": "openai",
       "name": "OpenAI Main (drewrypope)"
@@ -729,9 +772,40 @@
     // read, no codex-sync in its path (the fork's CodexSync explicitly
     // never targets it). Seated in openai-plan by the stage-2 change once
     // proven with real route traffic; until then openai.main keeps the seat.
-    "_openai": {
+    // 2026-11-10 (Drew, direct order): this door's id is now _openai.main -
+    // the provider id IS the credential key, so the rename pairs with the
+    // credential-store move re-keying this door's credential from _openai
+    // to _openai.main (tracked with the #8163 follow-up; store moves are
+    // not config). The bare _openai id is retired by this rename.
+    "_openai.main": {
       "instanceOf": "openai",
-      "name": "OpenAI Self-Contained (drewrypope, no Codex)"
+      "name": "OpenAI Self-Contained (drewrypope, no Codex)",
+      // Catalog pinned HERE (2026-11-10, self-containment): same block as
+      // _openai.alt above - the fleet-routed openai-plan model ids with the
+      // overlay's current limits, declared on the door itself so removing
+      // the upstream "openai" definition cannot strip the door's catalog.
+      "models": {
+        "gpt-6.1-terra": {
+          "name": "GPT-6.1 Terra (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-5.5": {
+          "name": "GPT-5.5 (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        },
+        "gpt-5.3-codex-spark": {
+          "name": "GPT-5.3 Codex Spark (ChatGPT)",
+          "limit": { "context": 1050000, "output": 128000 }
+        }
+      }
     },
     "opendesign": {
       "npm": "@ai-sdk/openai-compatible",
@@ -2017,6 +2091,16 @@
       // 2026-11-03 (Drew, direct order): WEIGHTED 2:1 main:alternate,
       // replacing the ordered alternate-first arrangement above - main
       // (fresh weekly window) carries the pair, alternate backs it.
+      // 2026-11-10 (Drew, direct orders): the pair is re-seated on the two
+      // self-contained doors - _openai.alt (popesdrew) and _openai.main
+      // (drewrypope, the renamed _openai) - listed alt-then-main, and the
+      // selection is ROUND-ROBIN for now: no weights key, both members at
+      // the default tier, so dispatches rotate evenly between the two
+      // accounts. Drew's stated later step, on his call only: switch this
+      // pool to ORDERED in the same listed order (alt first, main the
+      // failover leg). The weighted 2:1 over [_openai, openai.alternate]
+      // is superseded; openai.main and openai.alternate keep their
+      // definitions above, unseated.
       "openai-plan": {
         // 2026-11-10 (#8163, stage 2): the main seat moves from openai.main
         // to _openai — the self-contained door that holds and refreshes its
@@ -2027,9 +2111,14 @@
         // real route traffic under provider id _openai (auth accepted,
         // QuotaExceeded only while the weekly wall lasts) plus an observed
         // in-process refresh cycle — see #8163.
-        "providers": ["_openai", "openai.alternate"],
-        "selection": "weighted",
-        "weights": { "_openai": 2, "openai.alternate": 1 }
+        // 2026-11-10 (Drew, direct orders): stage 3 - the members are now
+        // the two _openai-pattern instances by their final ids:
+        // _openai.alt (popesdrew, new instance) listed first, _openai.main
+        // (drewrypope, _openai renamed) second; selection round-robin,
+        // weights removed. Ordered selection in this same listed order is
+        // the planned later step, on Drew's call.
+        "providers": ["_openai.alt", "_openai.main"],
+        "selection": "round-robin"
       },
       // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
       // provider route — vibe-direct attempted first on every dispatch

@@ -5,11 +5,11 @@
 // return Ok(null)/Ok(verbatim); a "world_state" reply mistyping `seed`
 // must Err, not collapse to the legitimate capability-only None.
 use id::frames::{read_frame, write_frame};
-use id::world_net::{WorldClient, WORLD_ALPN};
+use id::world_net::{WORLD_ALPN, WorldClient};
 use iroh::{
-    endpoint::{presets, RelayMode},
-    protocol::{AcceptError, ProtocolHandler, Router},
     Endpoint, EndpointAddr,
+    endpoint::{RelayMode, presets},
+    protocol::{AcceptError, ProtocolHandler, Router},
 };
 
 #[derive(Debug, Clone)]
@@ -18,6 +18,7 @@ struct ScriptedHost {
 }
 
 impl ProtocolHandler for ScriptedHost {
+    #[allow(clippy::unwrap_used)]
     async fn accept(&self, conn: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         let reply = self.reply.clone();
         tokio::spawn(async move {
@@ -35,6 +36,7 @@ impl ProtocolHandler for ScriptedHost {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 async fn endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
@@ -43,6 +45,7 @@ async fn endpoint() -> Endpoint {
         .unwrap()
 }
 
+#[allow(clippy::unwrap_used)]
 async fn client_for(reply: serde_json::Value) -> (WorldClient, Endpoint, iroh::protocol::Router) {
     let server_ep = endpoint().await;
     let router = Router::builder(server_ep.clone())
@@ -65,6 +68,7 @@ async fn client_for(reply: serde_json::Value) -> (WorldClient, Endpoint, iroh::p
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn probe_policy_reply_shapes() {
     // Control: well-formed policy reply returns the policy object.
     let (mut c, ep, r) = client_for(serde_json::json!({
@@ -114,6 +118,7 @@ async fn probe_policy_reply_shapes() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn probe_manifest_state_seed_shapes() {
     let (mut c, ep, r) = client_for(serde_json::json!({
         "type": "world_state", "seed": 42, "schedules": {"a": 1}
@@ -121,7 +126,11 @@ async fn probe_manifest_state_seed_shapes() {
     .await;
     let control = c.manifest_state(Some("admin"), None).await;
     println!("CONTROL seed=42 -> {control:?}");
-    assert_eq!(control.unwrap().0, Some(42), "control: numeric seed reads back");
+    assert_eq!(
+        control.unwrap().0,
+        Some(42),
+        "control: numeric seed reads back"
+    );
     c.close();
     ep.close().await;
     r.shutdown().await.unwrap();

@@ -539,6 +539,93 @@ fn list_limit(req: &Value) -> Result<i64, String> {
     crate::client::list_limit_or_default(raw)
 }
 
+/// One duration field of a request, validated before the RPC
+/// (#6420): the broker is the trust boundary for non-CLI callers, so
+/// an out-of-range value is rejected with the same usage error the
+/// client itself raises (design #6448 Phase 3: reject, not clamp).
+/// An absent or null field stays absent — the SQL defaults apply,
+/// exactly as before. A field that is PRESENT but not an i64 (a
+/// float, a string, an integer beyond i64) is rejected, never
+/// treated as absent: before this guard it reached the SQL integer
+/// parameter and failed there, and silently defaulting it would
+/// mutate the task on a value the caller never chose (Codex
+/// finding on PR #8425).
+fn duration_field(req: &Value, field: &str, flag: &str, max: i64) -> Result<Option<i64>, String> {
+    let raw = match req.get(field) {
+        None => return Ok(None),
+        Some(v) if v.is_null() => return Ok(None),
+        Some(v) => v,
+    };
+    match raw.as_i64() {
+        Some(v) => crate::client::validate_duration(flag, v, max).map(Some),
+        None => Err(format!(
+            "argument --{flag}: value {raw} out of range 1..={max}"
+        )),
+    }
+}
+
+/// The `/claim` lease, validated before the RPC (#6420).
+fn lease_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "lease_seconds",
+        "lease-seconds",
+        crate::client::LEASE_SECONDS_MAX,
+    )
+}
+
+/// The `/heartbeat` extend, validated before the RPC (#6420).
+fn extend_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "extend_seconds",
+        "extend-seconds",
+        crate::client::EXTEND_SECONDS_MAX,
+    )
+}
+
+/// The `/park` delay, validated before the RPC (#6420).
+fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "delay_seconds",
+        "delay-seconds",
+        crate::client::DELAY_SECONDS_MAX,
+    )
+}
+
+/// The duration guard for one request path (#6420), run at the top
+/// of `dispatch` BEFORE backend selection: the Turso backend
+/// dispatches verbatim, so validating only inside the PostgREST
+/// handlers would leave the trust boundary open on that backend
+/// (Codex finding on PR #8425). The PostgREST handlers keep their
+/// own checks as defense in depth.
+fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
+    match path {
+        "/claim" | "/claim-flow" => lease_seconds(req).map(|_| ()),
+        "/heartbeat" => extend_seconds(req).map(|_| ()),
+        "/park" => delay_seconds(req).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
+/// The not_before gate (#6426): /park and /revive carry a raw
+/// not_before that dispatch forwards to the RPC (or the turso
+/// backend) — validate it BEFORE either, with the same rule the
+/// packet validator applies on /enqueue (validate_packet runs
+/// inside both /enqueue handlers ahead of their RPC call). An
+/// absent or null not_before is untouched; a present one must be a
+/// non-empty RFC 3339 timestamp no more than 366 days out.
+fn validate_request_not_before(path: &str, req: &Value) -> Result<(), String> {
+    if !matches!(path, "/park" | "/revive") {
+        return Ok(());
+    }
+    match req.get("not_before").filter(|v| !v.is_null()) {
+        Some(nb) => crate::validate::validate_not_before(nb, "not_before"),
+        None => Ok(()),
+    }
+}
+
 fn ok(fields: Value) -> Value {
     let mut m = json!({"ok": true});
     if let (Some(dst), Some(src)) = (m.as_object_mut(), fields.as_object()) {
@@ -593,7 +680,6 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
         Err(e) => fail(e.exit, e.msg),
     }
 }
-
 
 /// The GitHub token the dep rechecker authenticates with,
 /// resolved by name through the secrets broker like every other
@@ -700,10 +786,7 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
         use crate::turso_queue::DepObs;
         match self.get_json(&format!("/repos/{repo}/pulls/{number}")) {
             Ok(v) => {
-                let merged = v
-                    .get("merged")
-                    .and_then(|m| m.as_bool())
-                    .unwrap_or(false);
+                let merged = v.get("merged").and_then(|m| m.as_bool()).unwrap_or(false);
                 let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
                 if merged {
                     DepObs::Cleared("pr merged".to_string())
@@ -738,6 +821,12 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
 }
 
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
+    if let Err(e) = validate_durations(path, req) {
+        return fail(2, e);
+    }
+    if let Err(e) = validate_request_not_before(path, req) {
+        return fail(2, e);
+    }
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
             return crate::turso_queue::dispatch(t, path, req);
@@ -801,15 +890,107 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
         }
         "/claim" => {
+            let lease = match lease_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
             let mut args = json!({
                 "p_worker": req.get("worker"),
                 "p_queue": req.get("queue"),
-                "p_lease_seconds": req.get("lease_seconds"),
+                "p_lease_seconds": lease,
             });
             if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
                 args["p_lane_id"] = lane.clone();
             }
             simple_rpc(st, "claim_repo_task", args)
+        }
+        "/claim-flow" => {
+            // #5757-A: claim + lane-assign + session-bind in one
+            // broker round trip. Each step is the corresponding
+            // single-verb RPC with the same arguments the three
+            // verbs pass. A claim-step failure — or an empty claim —
+            // returns that step's answer verbatim and later steps
+            // are not attempted (the three-verb flow's semantics,
+            // one trip). A LANE/BIND failure is different: the claim
+            // RPC has already COMMITTED, so it answers as a partial
+            // success (ok envelope + claimed row +
+            // `claim_flow_partial`), never as an error — a retryable
+            // error here (57014 / PGRST002) would make the client's
+            // call_result replay the WHOLE flow and claim a second
+            // task, leaking this one (Codex P1 on PR #8493). The
+            // caller finishes the failed step with the single-verb
+            // /lane or /bind call for this task id. The answer
+            // carries every step's row:
+            // `row` is the claimed task row (the shape /claim
+            // answers and the client's claim_output consumes);
+            // `lane_row` / `bind_row` are what /lane and /bind
+            // answer in the three-verb flow.
+            let lease = match lease_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
+            if let Err(e) = crate::client::claim_flow_precheck(req) {
+                return fail(2, e);
+            }
+            let mut args = json!({
+                "p_worker": req.get("worker"),
+                "p_queue": req.get("queue"),
+                "p_lease_seconds": lease,
+            });
+            if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
+                args["p_lane_id"] = lane.clone();
+            }
+            let row = match st.rpc("claim_repo_task", args) {
+                Ok(row) => row,
+                Err(e) => return fail(e.exit, e.msg),
+            };
+            if row.is_null() {
+                return ok(json!({"row": row}));
+            }
+            let task_id = row.get("id").cloned().unwrap_or(Value::Null);
+            let lane_row = match st.rpc(
+                "assign_repo_task_lane",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_exclusion_reason": req.get("exclusion_reason"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "claim_flow_partial": {
+                            "step": "lane",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            let bind_row = match st.rpc(
+                "bind_repo_task_lane_session",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_session_id": req.get("session_id"),
+                    "p_launched_by": req.get("launched_by"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "lane_row": lane_row,
+                        "claim_flow_partial": {
+                            "step": "bind",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            ok(json!({"row": row, "lane_row": lane_row, "bind_row": bind_row}))
         }
         "/lane" => simple_rpc(
             st,
@@ -830,16 +1011,22 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 "p_launched_by": req.get("launched_by"),
             }),
         ),
-        "/heartbeat" => simple_rpc(
-            st,
-            "heartbeat_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_extend_seconds": req.get("extend_seconds"),
-                "p_progress": req.get("progress"),
-            }),
-        ),
+        "/heartbeat" => {
+            let extend = match extend_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
+            simple_rpc(
+                st,
+                "heartbeat_task",
+                json!({
+                    "p_task_id": req.get("task_id"),
+                    "p_worker": req.get("worker"),
+                    "p_extend_seconds": extend,
+                    "p_progress": req.get("progress"),
+                }),
+            )
+        }
         "/checkpoint" => simple_rpc(
             st,
             "checkpoint_task",
@@ -851,6 +1038,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }),
         ),
         "/park" => {
+            let delay = match delay_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
             let mut args = json!({
                 "p_task_id": req.get("task_id"),
                 "p_worker": req.get("worker"),
@@ -859,8 +1050,8 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             });
             if let Some(nb) = req.get("not_before").filter(|v| !v.is_null()) {
                 args["p_not_before"] = nb.clone();
-            } else if let Some(d) = req.get("delay_seconds").filter(|v| !v.is_null()) {
-                args["p_delay_seconds"] = d.clone();
+            } else if let Some(d) = delay {
+                args["p_delay_seconds"] = json!(d);
             }
             if let Some(rc) = req.get("ready_condition").filter(|v| !v.is_null()) {
                 args["p_ready_condition"] = rc.clone();
@@ -923,10 +1114,18 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             } else {
                 "id,queue,title,priority,status,dedupe_key,created_at,not_before"
             };
+            let offset =
+                crate::client::list_offset_or_default(req.get("offset").and_then(|o| o.as_i64()));
             let mut path = format!(
-                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc&limit={limit}",
+                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}",
                 quote(queue, "")
             );
+            // #7871: --task narrows to one task id, so a worker can
+            // verify a single recent completion from list output
+            // regardless of the done list's size or ordering.
+            if let Some(t) = req.get("task").and_then(|t| t.as_i64()) {
+                path += &format!("&id=eq.{t}");
+            }
             if let Some(s) = req.get("status").and_then(|s| s.as_str()) {
                 path += &format!("&status=eq.{}", quote(s, ""));
             }
@@ -1342,6 +1541,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
+        // #5757-A Codex P1 oracle (PR #8493): in the PostgREST
+        // broker's /claim-flow handler, the lane and bind RPC
+        // failures answer with claim_flow_partial inside an ok
+        // envelope — never `return fail(...)`, whose retryable
+        // error text the client would replay into a second claim
+        // after the first claim already committed.
+        let src = include_str!("queue_broker.rs");
+        let start = src.find("\"/claim-flow\" => {").expect("claim-flow handler");
+        let end = src[start..].find("\"/lane\" =>").expect("lane handler follows") + start;
+        let flow = &src[start..end];
+        assert_eq!(
+            flow.matches("\"claim_flow_partial\"").count(),
+            2,
+            "lane and bind failures both carry claim_flow_partial"
+        );
+        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
+        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        // The claim RPC's own `return fail(...)` is pre-commit and
+        // legitimate; the invariant binds everything from the lane
+        // RPC onward (post-commit).
+        let lane_at = flow.find("assign_repo_task_lane").expect("lane RPC present");
+        assert!(
+            !flow[lane_at..].contains("return fail(e.exit, e.msg)"),
+            "no post-claim step returns the raw retryable error"
+        );
+    }
+
+    #[test]
+    fn park_and_revive_not_before_are_gated_before_the_rpc() {
+        // #6426: /park and /revive forwarded a raw not_before to the
+        // RPC unchecked. The dispatch gate rejects garbage and
+        // far-future values; absent/null and valid values pass, and
+        // other verbs are untouched by the gate.
+        for path in ["/park", "/revive"] {
+            for bad in [
+                json!("banana"),
+                json!(""),
+                json!(42),
+                json!("9999-01-01T00:00:00Z"),
+            ] {
+                let req = json!({"not_before": bad});
+                let err = validate_request_not_before(path, &req)
+                    .err()
+                    .expect("invalid not_before must be rejected");
+                assert!(err.contains("not_before"), "error names the field: {err}");
+            }
+            assert!(validate_request_not_before(path, &json!({})).is_ok());
+            assert!(validate_request_not_before(path, &json!({"not_before": Value::Null})).is_ok());
+            assert!(
+                validate_request_not_before(path, &json!({"not_before": "2020-01-01T00:00:00Z"}))
+                    .is_ok()
+            );
+        }
+        // A verb without a not_before surface is not gated.
+        assert!(validate_request_not_before("/claim", &json!({"not_before": "banana"})).is_ok());
+    }
+
+    #[test]
     fn pre_body_refusal_decides_from_headers_alone() {
         // #6515 oracle (thread 4492609604): the gate's answer
         // depends only on method/target/token/declared length —
@@ -1468,5 +1726,96 @@ mod tests {
         assert_eq!(list_limit(&json!({"limit": 500})), Ok(500));
         // Absent limit keeps the existing default of 20.
         assert_eq!(list_limit(&json!({})), Ok(20));
+    }
+
+    #[test]
+    fn duration_fields_reject_out_of_range_before_the_rpc() {
+        // #6420: a raw caller could send a born-expired lease, a
+        // self-lapsing heartbeat extend, or a park delay in the past
+        // straight to the RPC. The broker rejects all three with the
+        // client's usage error before any RPC is built.
+        for bad in [0, -1, 86_401, i64::MAX] {
+            let err = lease_seconds(&json!({"lease_seconds": bad}))
+                .err()
+                .expect("out-of-range lease_seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = extend_seconds(&json!({"extend_seconds": bad}))
+                .err()
+                .expect("out-of-range extend_seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, 604_801, i64::MAX] {
+            let err = delay_seconds(&json!({"delay_seconds": bad}))
+                .err()
+                .expect("out-of-range delay_seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        assert_eq!(
+            lease_seconds(&json!({"lease_seconds": 2700})),
+            Ok(Some(2700))
+        );
+        assert_eq!(
+            extend_seconds(&json!({"extend_seconds": 900})),
+            Ok(Some(900))
+        );
+        assert_eq!(
+            delay_seconds(&json!({"delay_seconds": 1200})),
+            Ok(Some(1200))
+        );
+        // Absent fields stay absent (SQL defaults apply, as before).
+        assert_eq!(lease_seconds(&json!({})), Ok(None));
+        assert_eq!(extend_seconds(&json!({})), Ok(None));
+        assert_eq!(delay_seconds(&json!({})), Ok(None));
+        // Present but not an i64 (beyond-i64 integer, float, string)
+        // is rejected, never silently defaulted (Codex finding on
+        // PR #8425): before this guard such a value failed at the
+        // SQL integer parameter instead.
+        for bad in [json!(9223372036854775808u64), json!(1.5), json!("2700")] {
+            let err = lease_seconds(&json!({"lease_seconds": bad}))
+                .err()
+                .expect("present-but-invalid lease_seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = extend_seconds(&json!({"extend_seconds": bad}))
+                .err()
+                .expect("present-but-invalid extend_seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = delay_seconds(&json!({"delay_seconds": bad}))
+                .err()
+                .expect("present-but-invalid delay_seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        // The dispatch-level guard covers both backends: it fires
+        // per path before backend selection (Codex finding on
+        // PR #8425), and leaves unrelated paths alone.
+        assert!(validate_durations("/claim", &json!({"lease_seconds": 0})).is_err());
+        assert!(validate_durations("/heartbeat", &json!({"extend_seconds": -1})).is_err());
+        assert!(validate_durations("/park", &json!({"delay_seconds": 604_801})).is_err());
+        assert_eq!(
+            validate_durations("/claim", &json!({"lease_seconds": 2700})),
+            Ok(())
+        );
+        assert_eq!(validate_durations("/heartbeat", &json!({})), Ok(()));
+        assert_eq!(
+            validate_durations("/list", &json!({"lease_seconds": 0})),
+            Ok(())
+        );
     }
 }

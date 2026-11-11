@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # id-bench-compare.test.sh — tests for id-bench-compare.sh (#1619).
 #
-# Covers the three defects fixed for #1619 — unit-mismatched rows and
+# Covers the three defects fixed for #1619 and the three malformed-line
+# shapes fixed for #6876 (non-numeric median, missing median, duplicate
+# bench lines) — unit-mismatched rows and
 # zero-baseline rows are reported as incomparable (no percent, no
 # verdict), and a non-numeric BENCH_REGRESSION_THRESHOLD_PCT is a
 # config error (non-zero exit) — plus the unchanged behaviour:
@@ -96,6 +98,35 @@ printf 'bench epsilon unit=us_per_event median=5.000 min=4.000 reps=5\n' >> "$tm
 out="$("$compare" "$tmp/cur-ok.txt" "$tmp/base-ok.txt")"
 assert_contains "missing current row is not run" "$out" "not run"
 assert_contains "missing baseline row is no baseline" "$out" "no baseline"
+
+# --- malformed current lines are loud, never results (#6876) -----------
+printf 'bench alpha unit=ns median=100\nbench beta unit=ns median=200\nbench gamma unit=ns median=50\n' > "$tmp/base-mal.txt"
+printf 'bench alpha unit=ns median=abc\nbench beta unit=ns median=260\nbench gamma unit=ns\n' > "$tmp/cur-mal.txt"
+out="$("$compare" "$tmp/cur-mal.txt" "$tmp/base-mal.txt")"
+code=$?
+assert_exit "malformed lines exit 0" 0 "$code"
+assert_contains "non-numeric median is malformed" "$out" "alpha"
+assert_contains "non-numeric median named in summary" "$out" "non-numeric median"
+assert_contains "missing median is malformed" "$out" "missing median field"
+assert_contains "malformed rows are incomparable" "$out" "incomparable (malformed bench line)"
+assert_not_contains "non-numeric median never coerces to -100%" "$out" "-100.0%"
+assert_not_contains "missing median never reads as not run" "$out" "not run"
+assert_contains "well-formed row in same run still flags" "$out" "+30.0%"
+
+# --- malformed baseline line: incomparable, not a number ---------------
+printf 'bench delta unit=ns median=xyz\n' > "$tmp/base-bad.txt"
+printf 'bench delta unit=ns median=60\n' > "$tmp/cur-bad.txt"
+out="$("$compare" "$tmp/cur-bad.txt" "$tmp/base-bad.txt")"
+assert_contains "baseline malformed is incomparable" "$out" "incomparable (malformed bench line)"
+assert_contains "baseline malformed names the side" "$out" "baseline: non-numeric median"
+
+# --- duplicate bench lines are surfaced, never a silent overwrite -------
+printf 'bench alpha unit=ns median=100\n' > "$tmp/base-dup.txt"
+printf 'bench alpha unit=ns median=200\nbench alpha unit=ns median=100\n' > "$tmp/cur-dup.txt"
+out="$("$compare" "$tmp/cur-dup.txt" "$tmp/base-dup.txt")"
+assert_contains "duplicate is malformed" "$out" "duplicate bench line"
+assert_contains "duplicate row is incomparable" "$out" "incomparable (malformed bench line)"
+assert_not_contains "duplicate never reports the overwritten +0.0% ok" "$out" "+0.0%"
 
 # --- missing files still exit 0 ----------------------------------------
 out="$("$compare" "$tmp/does-not-exist.txt" "$tmp/base-ok.txt")"

@@ -94,6 +94,68 @@ let
       -H "Authorization: Bearer $PM_PROJECTOR_API_TOKEN" \
       http://127.0.0.1:${toString cfg.projectorPort}/reconcile
   '';
+
+  # The port cloudflared serves its metrics + /ready endpoint on
+  # (loopback only). The watchdog below reads /ready from it (#6992).
+  tunnelMetricsPort = 20242;
+
+  waitForTailnet = pkgs.writeShellScript "pm-wait-for-tailnet" ''
+    # pm-dispatch binds the tailnet address (DISPATCH_HOSTS); at boot
+    # that address does not exist until tailscaled assigns it, and the
+    # server dies EADDRNOTAVAIL (#6992). Wait for tailscale0 to carry
+    # an IPv4 address instead of crash-looping on Restart=. On timeout
+    # start anyway: the loopback bind (what the tunnel uses) does not
+    # need the tailnet, and Restart=on-failure stays the backstop.
+    for i in $(seq 1 90); do
+      if ${pkgs.iproute2}/bin/ip -4 addr show tailscale0 2>/dev/null | grep -q 'inet '; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "pm-wait-for-tailnet: tailscale0 has no IPv4 address after 180s; starting anyway" >&2
+  '';
+
+  waitForDns = pkgs.writeShellScript "pm-wait-for-dns" ''
+    # cloudflared discovers the edge through DNS at start; when the
+    # local stub resolver is not ready yet it cannot register and the
+    # edge answers 502 for every ingress (#6992). Wait until the edge
+    # hostname resolves. On timeout start anyway (cloudflared keeps
+    # retrying internally; the watchdog below covers the rest).
+    for i in $(seq 1 90); do
+      if ${pkgs.glibc.getent}/bin/getent hosts region1.v2.argotunnel.com >/dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "pm-wait-for-dns: region1.v2.argotunnel.com unresolvable after 180s; starting anyway" >&2
+  '';
+
+  tunnelWatchdog = pkgs.writeShellScript "pm-tunnel-watchdog" ''
+    # pm-tunnel can stay process-alive with no live edge connections:
+    # exactly the state in which the edge answered 502 for days while
+    # pm-dispatch was healthy (#6992). cloudflared's own /ready
+    # endpoint is the truth (200 = at least one live edge connection).
+    # Three consecutive failures (the timer runs every 2 minutes)
+    # restart pm-tunnel; any success resets the counter.
+    stateDir="$HOME/.local/state/pm-tunnel-watchdog"
+    mkdir -p "$stateDir"
+    countFile="$stateDir/consecutive-failures"
+    count=0
+    if [ -f "$countFile" ]; then
+      count=$(cat "$countFile")
+    fi
+    if ${pkgs.curl}/bin/curl -fsS -m 10 "http://127.0.0.1:${toString tunnelMetricsPort}/ready" >/dev/null 2>&1; then
+      echo 0 > "$countFile"
+      exit 0
+    fi
+    count=$((count + 1))
+    echo "$count" > "$countFile"
+    echo "pm-tunnel-watchdog: /ready failed ($count consecutive)" >&2
+    if [ "$count" -ge 3 ]; then
+      echo 0 > "$countFile"
+      exec /run/current-system/sw/bin/systemctl --user restart pm-tunnel.service
+    fi
+  '';
 in
 {
   options.services.pm-stack = {
@@ -202,7 +264,10 @@ in
         pm-dispatch = {
           Unit = {
             Description = "pm-dispatch — authenticated intake: launch/track OpenCode sessions + queue intake (NixOS; packaged, pkgs/pm-dispatch)";
-            After = [ "network-online.target" ];
+            After = [
+              "network-online.target"
+              "tailscaled.service"
+            ];
             Wants = [ "network-online.target" ];
           };
           Service = {
@@ -212,6 +277,10 @@ in
             # dir stays as cwd because that is where its rendered
             # .env lives and where an operator expects to find it.
             WorkingDirectory = "${stackDir}/dispatch";
+            # Wait for the tailnet bind address to exist (#6992); the
+            # 180s wait needs room beyond the 90s default start limit.
+            TimeoutStartSec = 300;
+            ExecStartPre = "${waitForTailnet}";
             ExecStart = "${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
@@ -380,6 +449,9 @@ in
             # EnvironmentFile in ExecStart, exactly as the hand-written
             # unit relied on.
             EnvironmentFile = "${stackDir}/tunnel.env";
+            # Wait until the edge hostname resolves (#6992).
+            TimeoutStartSec = 300;
+            ExecStartPre = "${waitForDns}";
             # --protocol http2 (#5647): the default QUIC transport kept
             # dropping on this host's network path - cloudflared logged
             # "failed to accept QUIC stream: timeout: no recent network
@@ -388,11 +460,22 @@ in
             # pm-dispatch callers with 502 ("error code: 502") even
             # though pm-dispatch itself was healthy. HTTP/2 runs over
             # TCP and does not depend on the UDP path QUIC needs.
-            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 run --token \${TUNNEL_TOKEN}";
+            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:${toString tunnelMetricsPort} run --token \${TUNNEL_TOKEN}";
             Restart = "on-failure";
             RestartSec = 5;
           };
           Install.WantedBy = [ "default.target" ];
+        };
+
+        pm-tunnel-watchdog = {
+          Unit = {
+            Description = "pm-tunnel watchdog — restart pm-tunnel when its edge connections stay down (#6992)";
+            After = [ "pm-tunnel.service" ];
+          };
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${tunnelWatchdog}";
+          };
         };
 
         # The Kaneo stack is a oneshot, not a daemon: deploy.sh renders
@@ -500,6 +583,16 @@ in
             OnBootSec = "1min";
             OnUnitActiveSec = "30min";
             Unit = "pm-kaneo.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-tunnel-watchdog = {
+          Unit.Description = "Check pm-tunnel edge readiness every 2 minutes (#6992)";
+          Timer = {
+            OnBootSec = "2min";
+            OnUnitActiveSec = "2min";
+            Unit = "pm-tunnel-watchdog.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };

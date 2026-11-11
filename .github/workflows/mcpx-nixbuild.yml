@@ -18,6 +18,15 @@ name: mcpx nix build
 # changes to this workflow are exercised by it, like mcpx.yml does.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      - ".github/workflows/mcpx-nixbuild.yml"
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - ".github/workflows/mcpx-nixbuild.yml"
   workflow_dispatch:
 
 permissions:

@@ -142,6 +142,71 @@ def run_git(repo, *args, timeout=GIT_TIMEOUT):
         return 127, b"", str(exc)
 
 
+class ConfigError(Exception):
+    """A config file is unreadable, malformed, or fails validation.
+
+    The message always names the file. `main` turns this into the
+    clean `worktree-reaper: cannot load config ...` error instead of
+    a traceback (#6394).
+    """
+
+
+def _load_json_object(path):
+    """Read `path` as JSON and require a top-level object (#6394)."""
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        raise ConfigError(f"{path}: cannot read file: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(
+            f"{path}: top level must be a JSON object, "
+            f"got {type(data).__name__}"
+        )
+    return data
+
+
+def validate_config(data, path):
+    """Validate one config file's contents against DEFAULT_CONFIG (#6394).
+
+    Unknown keys are refused: a typo'd `deny_*` key must never load
+    silently, because for a deletion tool that turns an explicit
+    "never reap this" into no protection at all. Types are taken
+    from the defaults: strings stay strings, the list keys stay
+    lists of strings, `fetch` stays a bool, and the numeric keys
+    stay numbers (never bools, never strings that explode mid-run).
+    """
+    for key, val in data.items():
+        if key not in DEFAULT_CONFIG:
+            raise ConfigError(
+                f"{path}: unknown key {key!r} "
+                f"(valid keys: {', '.join(sorted(DEFAULT_CONFIG))})"
+            )
+        default = DEFAULT_CONFIG[key]
+        if isinstance(default, bool):
+            ok = isinstance(val, bool)
+            want = "a boolean"
+        elif isinstance(default, list):
+            ok = isinstance(val, list) and all(
+                isinstance(item, str) for item in val
+            )
+            want = "a list of strings"
+        elif isinstance(default, str):
+            ok = isinstance(val, str)
+            want = "a string"
+        else:  # numeric defaults: quiet_hours, max_removals
+            ok = isinstance(val, (int, float)) and not isinstance(val, bool)
+            want = "a number"
+        if not ok:
+            raise ConfigError(
+                f"{path}: key {key!r} must be {want}, got {val!r}"
+            )
+        if key in ("quiet_hours", "max_removals") and val < 0:
+            raise ConfigError(f"{path}: key {key!r} must be >= 0, got {val!r}")
+
+
 def load_config(script_dir, args):
     cfg = dict(DEFAULT_CONFIG)
     cfg_path = None
@@ -158,14 +223,15 @@ def load_config(script_dir, args):
                 cfg_path = cand
                 break
     if cfg_path:
-        with open(cfg_path) as fh:
-            cfg.update(json.load(fh))
+        data = _load_json_object(cfg_path)
+        validate_config(data, cfg_path)
+        cfg.update(data)
         cfg["_config_path"] = os.path.abspath(cfg_path)
     state_dir = expand(args.state_dir or cfg["state_dir"])
     overlay = os.path.join(state_dir, "config.local.json")
     if os.path.isfile(overlay):
-        with open(overlay) as fh:
-            local = json.load(fh)
+        local = _load_json_object(overlay)
+        validate_config(local, overlay)
         for key, val in local.items():
             if key in ("deny_paths", "deny_prefixes", "deny_names") and isinstance(val, list):
                 cfg[key] = list(cfg.get(key, [])) + val
@@ -713,7 +779,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    cfg = load_config(script_dir, args)
+    try:
+        cfg = load_config(script_dir, args)
+    except ConfigError as exc:
+        print(f"worktree-reaper: cannot load config: {exc}")
+        return 2
     state_dir = cfg["state_dir"]
 
     if os.path.exists(os.path.join(state_dir, "DISABLED")):

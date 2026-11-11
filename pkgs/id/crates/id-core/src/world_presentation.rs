@@ -13,6 +13,21 @@
 //! escape-free text projection via [`WorldSurface::text_projection`]; the
 //! match there is exhaustive, so adding a variant without a projection is a
 //! compile-time error.
+//!
+//! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
+//! | token | terminal | 1-bit | text |
+//! |---|---|---|---|
+//! | emphasis | default, bold | on | plain |
+//! | muted | 8, normal | dither | plain |
+//! | heading | default, bold | on | plain |
+//! | code | 14, normal | on | plain |
+//! | warning | 11, bold | on | plain |
+//! | success | 10, normal | on | plain |
+//! | link | 12, normal | dither | plain |
+//! Adapters resolve every token; unknown future tokens fall back to plain,
+//! while guest documents reject unknown tokens. Tokens override foreground
+//! and bold of overlapping style spans and retain their background. Text
+//! strips styling. Rendering and dithering are trusted adapter operations.
 
 use std::fmt::Write as _;
 
@@ -264,6 +279,7 @@ impl ScreenSurface {
                         bg: 0,
                         bold: false,
                         columns: 1,
+                        token: None,
                     };
                 }
             }
@@ -379,6 +395,34 @@ impl ScreenPatch {
     }
 }
 
+/// Semantic intent retained for adapters, not guest-supplied markup.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleToken {
+    Emphasis,
+    Muted,
+    Heading,
+    Code,
+    Warning,
+    Success,
+    Link,
+}
+
+impl StyleToken {
+    /// Xterm-256 foreground (zero is default) and bold projection.
+    #[must_use]
+    pub const fn ansi_style(self) -> (u8, bool) {
+        match self {
+            Self::Emphasis | Self::Heading => (0, true),
+            Self::Muted => (8, false),
+            Self::Code => (14, false),
+            Self::Warning => (11, true),
+            Self::Success => (10, false),
+            Self::Link => (12, false),
+        }
+    }
+}
+
 /// One normalized cell. `columns == 0` marks the continuation of a two-column glyph.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -393,6 +437,9 @@ pub struct ScreenCell {
     pub bold: bool,
     /// Terminal columns occupied by this grapheme (zero for continuation cells).
     pub columns: u8,
+    /// Semantic intent, if supplied by the guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<StyleToken>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,6 +462,8 @@ struct ScreenPayload {
     rows: Vec<String>,
     #[serde(default)]
     styles: Vec<Vec<StyleSpan>>,
+    #[serde(default)]
+    tokens: Vec<Vec<TokenSpan>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -425,6 +474,14 @@ struct StyleSpan {
     fg: u8,
     bg: u8,
     bold: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenSpan {
+    x: usize,
+    length: usize,
+    token: StyleToken,
 }
 
 /// Parse the opt-in screen contract; untagged program views remain legacy text.
@@ -489,7 +546,12 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
         "world screen style rows do not match height"
     );
     ensure!(
-        payload.styles.iter().map(Vec::len).sum::<usize>() <= MAX_SCREEN_STYLE_SPANS,
+        payload.tokens.is_empty() || payload.tokens.len() == payload.height,
+        "world screen token rows do not match height"
+    );
+    ensure!(
+        payload.styles.iter().map(Vec::len).sum::<usize>()
+            + payload.tokens.iter().map(Vec::len).sum::<usize>() <= MAX_SCREEN_STYLE_SPANS,
         "world screen has too many style spans"
     );
 
@@ -499,6 +561,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
         bg: 0,
         bold: false,
         columns: 1,
+        token: None,
     };
     let mut cells = vec![default_cell; cell_count];
 
@@ -533,6 +596,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 bold: false,
                 columns: u8::try_from(columns)
                     .context("screen glyph width is not representable")?,
+                token: None,
             };
             if columns == 2 {
                 cells[row_start + column + 1] = ScreenCell {
@@ -541,6 +605,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     bg: 0,
                     bold: false,
                     columns: 0,
+                    token: None,
                 };
             }
             column = end;
@@ -582,6 +647,23 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 previous_end = end;
             }
         }
+        if let Some(spans) = payload.tokens.get(row_index) {
+            let mut previous_end = 0;
+            for span in spans {
+                ensure!(span.length > 0, "world screen token span must not be empty");
+                let end = span.x.checked_add(span.length).context("world screen token span overflows")?;
+                ensure!(end <= payload.width, "world screen token span exceeds its row");
+                ensure!(span.x >= previous_end, "world screen token spans overlap or are unsorted");
+                ensure!(boundaries[span.x] && boundaries[end], "world screen token span splits a wide glyph");
+                let (fg, bold) = span.token.ansi_style();
+                for cell in &mut cells[row_start + span.x..row_start + end] {
+                    cell.token = Some(span.token);
+                    cell.fg = fg;
+                    cell.bold = bold;
+                }
+                previous_end = end;
+            }
+        }
     }
 
     for row in 0..payload.height {
@@ -595,7 +677,8 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     leading.columns == 2
                         && leading.fg == cell.fg
                         && leading.bg == cell.bg
-                        && leading.bold == cell.bold,
+                        && leading.bold == cell.bold
+                        && leading.token == cell.token,
                     "world screen continuation does not match its wide glyph"
                 );
             }
@@ -742,6 +825,7 @@ impl ScreenSurface {
                     || previous.fg != cell.fg
                     || previous.bg != cell.bg
                     || previous.bold != cell.bold
+                    || previous.token != cell.token
                     || !cell.symbol.is_empty()
                 {
                     return false;
@@ -765,6 +849,7 @@ impl ScreenSurface {
                         || continuation.fg != cell.fg
                         || continuation.bg != cell.bg
                         || continuation.bold != cell.bold
+                        || continuation.token != cell.token
                         || !continuation.symbol.is_empty()
                     {
                         return false;
@@ -799,6 +884,18 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
 
+    #[test]
+    fn semantic_tokens_validate_and_project() {
+        let mut doc = json!({"kind":"screen", "version":1, "width":1, "height":1,
+            "rows":["x"], "tokens":[[{"x":0,"length":1,"token":"warning"}]]});
+        let screen = parsed_screen(doc.clone());
+        assert_eq!(screen.cells[0].token, Some(StyleToken::Warning));
+        assert_eq!(screen.render_ansi().unwrap(), "\x1b[H\x1b[2J\x1b[0;1;38;5;11mx\x1b[0m");
+        assert_eq!(screen.text_projection(), "x");
+        doc["tokens"][0][0]["token"] = json!("<script>");
+        assert!(parse_surface(&doc.to_string()).is_err());
+    }
+
     #[derive(Deserialize)]
     struct ScreenCellParityCorpus {
         cases: Vec<ScreenCellParityCase>,
@@ -831,6 +928,7 @@ mod tests {
             bg: 0,
             bold: false,
             columns: 1,
+            token: None,
         }
     }
 
@@ -945,6 +1043,7 @@ mod tests {
                     ScreenCell {
                         symbol: "界".to_owned(),
                         columns: 2,
+                        token: None,
                         ..cell("界")
                     },
                     cell("x"),
@@ -980,11 +1079,13 @@ mod tests {
                 ScreenCell {
                     symbol: "界".to_owned(),
                     columns: 2,
+                    token: None,
                     ..cell("界")
                 },
                 ScreenCell {
                     symbol: String::new(),
                     columns: 0,
+                    token: None,
                     ..cell("")
                 },
             ],
@@ -1014,6 +1115,7 @@ mod tests {
                 start: 0,
                 cells: vec![ScreenCell {
                     columns: 3,
+                    token: None,
                     ..cell("x")
                 }],
             }],
@@ -1034,6 +1136,7 @@ mod tests {
                 cells: vec![ScreenCell {
                     symbol: "界".to_owned(),
                     columns: 2,
+                    token: None,
                     ..cell("界")
                 }],
             }],
@@ -1274,6 +1377,7 @@ mod tests {
                 bg: 0,
                 bold: true,
                 columns: 2,
+                token: None,
             },
             ScreenCell {
                 symbol: String::new(),
@@ -1281,6 +1385,7 @@ mod tests {
                 bg: 0,
                 bold: true,
                 columns: 0,
+                token: None,
             },
         ];
         let captured = ScreenSurface::from_cells(2, 1, cells).unwrap();
@@ -1300,6 +1405,7 @@ mod tests {
                         bg: 0,
                         bold: false,
                         columns: 1,
+                        token: None,
                     };
                     121
                 ]
@@ -1366,6 +1472,7 @@ mod tests {
                 bg: 0,
                 bold: false,
                 columns: 1,
+                token: None,
             }],
         };
         assert_eq!(screen.render_ansi(), None);
