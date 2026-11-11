@@ -1176,6 +1176,28 @@ async fn compile_sources(
     Ok((module, diagnostics, provenance))
 }
 
+/// Decide the watch loop's known snapshot after a candidate has
+/// been compiled: it stays the candidate, never the freshest rescan.
+///
+/// A snapshot becomes known only by being compiled as a candidate
+/// itself. If the sources moved while the candidate compiled
+/// (candidate B, current C), marking C known would strand it: the
+/// promotion discards B as stale, and every later poll compares C
+/// against itself, so C is never compiled and the old program keeps
+/// running until another edit (issue #8779). Keeping the candidate
+/// known means the next poll sees C as a change and compiles it; if
+/// that compile fails, C is by then the candidate of its own cycle
+/// and is marked known at that attempt — invariant 7 (a failing
+/// snapshot is never rebuilt in a loop) still holds, per candidate.
+#[must_use]
+pub fn known_snapshot_after_candidate(
+    candidate_snapshot_id: &str,
+    current_snapshot_id: &str,
+) -> String {
+    let _ = current_snapshot_id;
+    candidate_snapshot_id.to_owned()
+}
+
 /// Run a bounded watch session (Phase 2): launch the initial
 /// candidate (behind the Phase 3 fixture gates), apply `inputs`,
 /// then poll the declared inputs for changes. Each detected change
@@ -1330,9 +1352,14 @@ pub async fn run_dev_watch(
                 continue;
             }
         };
-        if current_snapshot_id != candidate_snapshot_id {
-            known_snapshot_id = current_snapshot_id.clone();
-        }
+        // The freshest snapshot becomes known only by being
+        // compiled as a candidate itself (#8779): if the sources
+        // moved past the candidate during its compile, promotion
+        // discards the candidate as stale — leaving known at the
+        // candidate here is what makes the next poll compile the
+        // freshest snapshot instead of comparing it against itself.
+        known_snapshot_id =
+            known_snapshot_after_candidate(&candidate_snapshot_id, &current_snapshot_id);
         let promotion = session
             .promote(
                 &module,
@@ -2679,6 +2706,44 @@ mod watch_tests {
                 panic!("a failed discovery must not report a current snapshot, got {id}")
             }
         }
+    }
+
+    #[test]
+    fn snapshot_saved_during_a_stale_compile_is_the_next_change() {
+        // Oracle: issue #8779 — snapshot C is saved while candidate
+        // B compiles, and B is then discarded as stale. The watch
+        // loop's known snapshot after B's compile must not be C:
+        // the next poll's rescan over a directory still at C must
+        // report C as a change, so C is compiled with no further
+        // edit. (Before the fix the loop set known to C, the rescan
+        // compared C against itself, and the old program kept
+        // running until another edit.)
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n").unwrap();
+        let snapshot_a = discover_sources(dir.path()).unwrap().snapshot_id();
+        // Edit to B — the candidate the loop compiles.
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n\nx = 1\n").unwrap();
+        let candidate_b = discover_sources(dir.path()).unwrap().snapshot_id();
+        assert_ne!(candidate_b, snapshot_a);
+        // Edit to C while B compiles; the freshest rescan is C.
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n\nx = 2\n").unwrap();
+        let current_c = discover_sources(dir.path()).unwrap().snapshot_id();
+        assert_ne!(current_c, candidate_b);
+        let known = known_snapshot_after_candidate(&candidate_b, &current_c);
+        assert_eq!(known, candidate_b);
+        let next = rescan_changed(dir.path(), &known)
+            .unwrap()
+            .expect("snapshot C must rescan as the next change");
+        assert_eq!(next.snapshot_id(), current_c);
+        // Once C itself has been the candidate, it is known: a
+        // further rescan finds nothing, so no snapshot is rebuilt
+        // in a loop (invariant 7).
+        let known_after_c = known_snapshot_after_candidate(&current_c, &current_c);
+        assert!(
+            rescan_changed(dir.path(), &known_after_c)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
