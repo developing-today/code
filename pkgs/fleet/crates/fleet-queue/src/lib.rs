@@ -21,6 +21,7 @@
 //! migration's standing rollback inventory (design note §7).
 
 pub mod backoff;
+pub mod merge_intent;
 pub mod bin_args;
 pub mod creation_outbox;
 mod home;
