@@ -177,34 +177,68 @@ def load_flake_lock(repo_dir):
         return json.load(f)
 
 
+# --- flake.lock shape discipline (#6847) -----------------------------------
+# flake.lock is normally nix-generated, but it is also hand-edited,
+# hand-pinned (pin_input below writes it), merged, and occasionally
+# truncated or conflicted — exactly the states this repair tool is
+# re-run against. Every reader below is therefore a TOTAL function
+# over any JSON shape: a non-object node, a null/non-object
+# "original"/"locked", a non-string type/ref/rev, and a missing
+# node/root are all treated the way discover_inputs has always
+# treated a missing node — the input is skipped / reported unknown —
+# never a raw AttributeError/TypeError/KeyError. The planning pass
+# (discover_inputs over the pristine lock) decides what runs, and
+# because the execution loop's readers share the same discipline, a
+# malformed lock cannot crash the run after earlier inputs have
+# already been updated.
+
+
+def _as_dict(value):
+    """`value` if it is a JSON object, else an empty dict."""
+    return value if isinstance(value, dict) else {}
+
+
+def _as_str(value):
+    """`value` if it is a string, else None."""
+    return value if isinstance(value, str) else None
+
+
+def _lock_nodes(lock_data):
+    """The lock's "nodes" object ({} for any wrong shape)."""
+    return _as_dict(_as_dict(lock_data).get("nodes"))
+
+
+def _root_inputs(lock_data):
+    """The root node's "inputs" object ({} for any wrong shape)."""
+    return _as_dict(_as_dict(_lock_nodes(lock_data).get("root")).get("inputs"))
+
+
 def get_input_info(lock_data, input_name):
     """Extract rev, source URL, and ref for an input from parsed flake.lock.
 
-    Returns: (short_rev, source_url, ref_display)
+    Returns: (short_rev, source_url, ref_display) — "unknown" fields
+    for a missing or wrong-shape node, mirroring discover's skip.
     """
-    root_inputs = lock_data["nodes"]["root"]["inputs"]
-    node_name = root_inputs.get(input_name)
-
-    if not isinstance(node_name, str):
+    node = get_input_node(lock_data, input_name)
+    if node is None:
         return ("unknown", "unknown", "unknown")
 
-    node = lock_data["nodes"][node_name]
-    original = node.get("original", {})
-    locked = node.get("locked", {})
+    original = _as_dict(node.get("original"))
+    locked = _as_dict(node.get("locked"))
 
-    type_ = (original.get("type") or locked.get("type") or "").lower()
-    full_rev = locked.get("rev", "unknown")
+    type_ = (_as_str(original.get("type")) or _as_str(locked.get("type")) or "").lower()
+    full_rev = _as_str(locked.get("rev")) or "unknown"
     rev = full_rev[:12] if len(full_rev) > 12 else full_rev
-    branch = original.get("ref")
+    branch = _as_str(original.get("ref"))
     ref_display = branch if branch else "(default)"
 
     if type_ == "github":
-        owner = original.get("owner") or locked.get("owner") or "?"
-        repo = original.get("repo") or locked.get("repo") or "?"
+        owner = _as_str(original.get("owner")) or _as_str(locked.get("owner")) or "?"
+        repo = _as_str(original.get("repo")) or _as_str(locked.get("repo")) or "?"
         slug = f"{owner}/{repo}"
         url = f"github:{slug}/{branch}" if branch else f"github:{slug}"
     elif type_ == "tarball":
-        url = original.get("url") or locked.get("url") or "?"
+        url = _as_str(original.get("url")) or _as_str(locked.get("url")) or "?"
     else:
         url = f"{type_}:{json.dumps(original or locked)}"
 
@@ -212,28 +246,34 @@ def get_input_info(lock_data, input_name):
 
 
 def get_input_node(lock_data, input_name):
-    """Return the lock node for a root input name, or None."""
-    root_inputs = lock_data.get("nodes", {}).get("root", {}).get("inputs", {})
-    node_name = root_inputs.get(input_name)
+    """Return the lock node for a root input name, or None.
+
+    None covers every "not usable" shape uniformly: input not in the
+    root inputs, a non-string node reference (follows), a node
+    missing from "nodes", and a node that is not an object.
+    """
+    node_name = _root_inputs(lock_data).get(input_name)
     if not isinstance(node_name, str):
         return None
-    return lock_data.get("nodes", {}).get(node_name)
+    return _as_dict(_lock_nodes(lock_data).get(node_name)) or None
 
 
 def get_input_ref(lock_data, input_name):
-    """Return the input's original.ref (None when unset / not found)."""
+    """Return the input's original.ref (None when unset / not found /
+    not a string)."""
     node = get_input_node(lock_data, input_name)
     if not node:
         return None
-    return node.get("original", {}).get("ref")
+    return _as_str(_as_dict(node.get("original")).get("ref"))
 
 
 def get_locked_rev(lock_data, input_name):
-    """Return the input's full locked revision (None when not locked)."""
+    """Return the input's full locked revision (None when not locked /
+    not a string)."""
     node = get_input_node(lock_data, input_name)
     if not node:
         return None
-    return node.get("locked", {}).get("rev")
+    return _as_str(_as_dict(node.get("locked")).get("rev"))
 
 
 def discover_inputs(lock_data, ref):
@@ -248,7 +288,8 @@ def discover_inputs(lock_data, ref):
       ref="master" → inputs with ref="master" or no ref (default branch)
       ref=<other>  → inputs with that exact ref
     """
-    root_inputs = lock_data.get("nodes", {}).get("root", {}).get("inputs", {})
+    root_inputs = _root_inputs(lock_data)
+    nodes = _lock_nodes(lock_data)
     results = []
 
     for name, node_ref in root_inputs.items():
@@ -256,14 +297,14 @@ def discover_inputs(lock_data, ref):
         if not isinstance(node_ref, str):
             continue
 
-        node = lock_data["nodes"].get(node_ref)
-        if not node:
+        node = nodes.get(node_ref)
+        if not isinstance(node, dict):
             continue
 
-        original = node.get("original", {})
+        original = _as_dict(node.get("original"))
 
         # Match by URL: github:NixOS/nixpkgs
-        if original.get("type", "").lower() != "github":
+        if (_as_str(original.get("type")) or "").lower() != "github":
             continue
         owner = original.get("owner")
         if not isinstance(owner, str) or owner.lower() != "nixos":
@@ -271,8 +312,12 @@ def discover_inputs(lock_data, ref):
         if original.get("repo", "") != "nixpkgs":
             continue
 
-        # Filter by ref
+        # Filter by ref. A ref that is present but not a string is a
+        # poison entry (#6847): the input cannot be classified, so it
+        # is skipped in every pass rather than read as no ref.
         input_ref = original.get("ref")
+        if input_ref is not None and not isinstance(input_ref, str):
+            continue
         if ref is not None:
             if ref == "master":
                 # master matches explicit "master" or no ref (github default)
