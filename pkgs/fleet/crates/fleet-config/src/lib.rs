@@ -729,6 +729,58 @@ impl Config {
                     .to_string(),
             });
         }
+        // [[proxy.services]] rows (#6397): the routing table is
+        // collected into a port-keyed map downstream (fleet-proxy's
+        // services_map), so a duplicate port silently collapses
+        // last-wins, a duplicate name makes the advertised hello map
+        // ambiguous, and port 0 or an empty name can never be routed
+        // to. All four are misspelling-class errors: loud at load,
+        // naming the offending row. The built-in default table is
+        // not validated here — only rows the operator declared.
+        let mut port_rows: BTreeMap<u16, usize> = BTreeMap::new();
+        let mut name_rows: BTreeMap<&str, usize> = BTreeMap::new();
+        for (index, row) in self.proxy.services.iter().enumerate() {
+            let human_row = index + 1;
+            if row.port == 0 {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} (name {:?}) has port 0; a service port must be between 1 and 65535",
+                        row.name
+                    ),
+                });
+            }
+            if row.name.trim().is_empty() {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} (port {}) has an empty name; every routed service needs a name",
+                        row.port
+                    ),
+                });
+            }
+            if let Some(first) = port_rows.insert(row.port, index) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} (name {:?}) duplicates port {} already used by row {}; duplicate ports collapse last-wins in the routing map",
+                        row.name,
+                        row.port,
+                        first + 1
+                    ),
+                });
+            }
+            if let Some(first) = name_rows.insert(row.name.as_str(), index) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} duplicates service name {:?} already used by row {}",
+                        row.name,
+                        first + 1
+                    ),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -1402,6 +1454,145 @@ mod tests {
         let services = cfg.services();
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "laptop-agent");
+    }
+
+    #[test]
+    fn services_row_with_port_zero_is_a_loud_error() {
+        let (_dir, path) = write_temp("[[proxy.services]]\nport = 0\nname = \"laptop-agent\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("port 0"), "{message}");
+                assert!(message.contains("laptop-agent"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_row_with_empty_name_is_a_loud_error() {
+        let (_dir, path) = write_temp("[[proxy.services]]\nport = 4799\nname = \"\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("empty name"), "{message}");
+                assert!(message.contains("4799"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_rows_with_duplicate_port_are_a_loud_error() {
+        // The triage probe's impostor case (#6397): two rows on one
+        // port used to load fine and collapse last-wins downstream.
+        let (_dir, path) = write_temp(
+            "[[proxy.services]]\nport = 4801\nname = \"queue-broker\"\n[[proxy.services]]\nport = 4801\nname = \"impostor\"\n",
+        );
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("4801"), "{message}");
+                assert!(message.contains("impostor"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_rows_with_duplicate_name_are_a_loud_error() {
+        let (_dir, path) = write_temp(
+            "[[proxy.services]]\nport = 4800\nname = \"secrets-broker\"\n[[proxy.services]]\nport = 4801\nname = \"secrets-broker\"\n",
+        );
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("secrets-broker"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_rows_valid_table_loads_verbatim() {
+        let (_dir, path) = write_temp(
+            "[[proxy.services]]\nport = 4799\nname = \"laptop-agent\"\n[[proxy.services]]\nport = 4801\nname = \"queue-broker\"\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        let services = cfg.services();
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].name, "laptop-agent");
+        assert_eq!(services[1].port, 4801);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// PBT (#6397, testing doctrine): load acceptance for a
+        /// generated [[proxy.services]] table is decided by an
+        /// independent predicate over the four invariants — every
+        /// port nonzero, every name nonblank after trimming, ports
+        /// unique, names unique — never by the loader's own say-so.
+        /// The generators draw ports and names from small pools so
+        /// collisions, zeroes, and blank/whitespace names occur in
+        /// arbitrary row orders; a table the predicate accepts must
+        /// load verbatim, and one it rejects must fail with a Parse
+        /// error.
+        #[test]
+        fn services_tables_load_exactly_when_the_invariants_hold(
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![
+                        Just(0_u16),
+                        Just(4799_u16),
+                        Just(4800_u16),
+                        Just(4801_u16),
+                        any::<u16>(),
+                    ],
+                    prop_oneof![
+                        Just(String::new()),
+                        Just(" ".to_string()),
+                        Just("laptop-agent".to_string()),
+                        Just("queue-broker".to_string()),
+                        "[a-z]{1,6}",
+                    ],
+                ),
+                0..6,
+            )
+        ) {
+            let mut text = String::new();
+            for (port, name) in &rows {
+                text.push_str(&format!(
+                    "[[proxy.services]]\nport = {port}\nname = \"{name}\"\n"
+                ));
+            }
+            let valid = rows.iter().all(|(port, name)| *port != 0 && !name.trim().is_empty())
+                && rows.iter().map(|(port, _)| *port).collect::<std::collections::HashSet<_>>().len() == rows.len()
+                && rows.iter().map(|(_, name)| name.as_str()).collect::<std::collections::HashSet<_>>().len() == rows.len();
+            let (_dir, path) = write_temp(&text);
+            match (valid, Config::load_from(&path)) {
+                (true, Ok(cfg)) => {
+                    let services = cfg.services();
+                    if rows.is_empty() {
+                        // No declared rows is the documented "empty
+                        // means the built-in table" case (see the
+                        // services field doc), not a verbatim load.
+                        prop_assert_eq!(services.len(), Config::default().services().len());
+                    } else {
+                        prop_assert_eq!(services.len(), rows.len());
+                        for (service, (port, name)) in services.iter().zip(&rows) {
+                            prop_assert_eq!(service.port, *port);
+                            prop_assert_eq!(&service.name, name);
+                        }
+                    }
+                }
+                (true, Err(e)) => {
+                    prop_assert!(false, "predicate-valid table rejected: {e}");
+                }
+                (false, Err(ConfigError::Parse { .. })) => {}
+                (false, other) => {
+                    prop_assert!(false, "predicate-invalid table not rejected with Parse: {other:?}");
+                }
+            }
+        }
     }
 
     #[test]
