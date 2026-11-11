@@ -958,6 +958,38 @@ if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-quoted_hash_anchor.out"
 fi
 echo "pass: a quoted hash in an anchored branches-ignore does not discard the main exclusion"
 
+# Round-16 (Codex P2): a doubled '' inside a single-quoted
+# scalar is one literal apostrophe — 'ma''in' targets ma'in,
+# not main. Dropping both apostrophes rewrites the pattern as
+# main and certifies coverage that does not exist.
+build_tree "$TMP/filter-doubled_apostrophe"
+wf_raw "$TMP/filter-doubled_apostrophe" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ['ma''in']
+EOF
+bash "$SCRIPT" "$TMP/filter-doubled_apostrophe" >"$TMP/filter-doubled_apostrophe.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-doubled_apostrophe.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-doubled_apostrophe.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-doubled_apostrophe.out"; then
+  echo "FAIL: a doubled apostrophe in branches was rewritten as main" >&2
+  exit 1
+fi
+echo "pass: a doubled apostrophe in branches is a literal apostrophe, not main"
+
+build_tree "$TMP/filter-doubled_apostrophe_ignore"
+wf_raw "$TMP/filter-doubled_apostrophe_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: ['ma''in']
+EOF
+if bash "$SCRIPT" "$TMP/filter-doubled_apostrophe_ignore" >"$TMP/filter-doubled_apostrophe_ignore.out" 2>&1; then
+  echo "FAIL: checker treated 'ma''in' in branches-ignore as excluding main" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-doubled_apostrophe_ignore.out"
+echo "pass: a doubled apostrophe in branches-ignore does not exclude main"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python

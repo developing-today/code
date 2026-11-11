@@ -192,7 +192,7 @@ push_targets_main() {
       sub(/^[[:space:]]+/, "", tok)
       sub(/[[:space:]]+$/, "", tok)
       if (length(tok) >= 2) {
-        if (substr(tok, 1, 1) == "\047" && substr(tok, length(tok), 1) == "\047") tok = substr(tok, 2, length(tok) - 2)
+        if (substr(tok, 1, 1) == "\047" && substr(tok, length(tok), 1) == "\047") { tok = substr(tok, 2, length(tok) - 2); gsub(/\047\047/, "\047", tok) }
         else if (substr(tok, 1, 1) == "\"" && substr(tok, length(tok), 1) == "\"") tok = decode_dq(substr(tok, 2, length(tok) - 2))
       }
       return tok
@@ -211,7 +211,11 @@ push_targets_main() {
           else if (c == "\\" && i < length(str)) { seg = seg c substr(str, i + 1, 1); i++ }
           else seg = seg c
         } else if (q != "") {
-          if (c == q) q = ""
+          # Single-quoted scalar: a doubled '' is one literal
+          # apostrophe (Codex P2, PR #8513 round 16); dropping
+          # both rewrites an apostrophe pattern as plain main.
+          if (c == q && substr(str, i + 1, 1) == q) { tok = tok q; i++ }
+          else if (c == q) q = ""
           else tok = tok c
         } else if (c == "\047" || c == "\"") {
           q = c
