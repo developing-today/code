@@ -71,40 +71,41 @@ class WatchdogRenameTests(unittest.TestCase):
             os.unlink(path)
 
     def test_providers_are_the_renamed_identities(self):
-        self.assertEqual(watchdog.PROVIDERS, ("openai.main", "openai.alternate"))
+        self.assertEqual(watchdog.PROVIDERS, ("_openai.main", "_openai.alt"))
 
     def test_healthy_renamed_store_passes(self):
         violations = self.check_rows(
             [
-                ("openai.main", True, "chatgpt-browser"),
-                ("openai.alternate", True, "chatgpt-headless"),
+                ("_openai.main", True, "chatgpt-browser"),
+                ("_openai.alt", True, "chatgpt-headless"),
             ]
         )
         self.assertEqual(violations, [])
 
-    def test_banned_method_on_openai_main_is_flagged(self):
+    def test_banned_method_on_renamed_main_is_flagged(self):
         violations = self.check_rows(
             [
-                ("openai.main", True, "chatgpt-browser"),
-                ("openai.main", False, "chatgpt-token-sharing"),
-                ("openai.alternate", True, "chatgpt-headless"),
+                ("_openai.main", True, "chatgpt-browser"),
+                ("_openai.main", False, "chatgpt-token-sharing"),
+                ("_openai.alt", True, "chatgpt-headless"),
             ]
         )
         self.assertTrue(
             any(
-                v.startswith("openai.main:") and "banned" in v for v in violations
+                v.startswith("_openai.main:") and "banned" in v for v in violations
             ),
-            f"expected a banned-method violation for openai.main, got {violations}",
+            f"expected a banned-method violation for _openai.main, got {violations}",
         )
 
-    def test_retired_openai_only_store_does_not_pass(self):
+    def test_retired_ids_only_store_does_not_pass(self):
         violations = self.check_rows(
             [
                 ("openai", True, "chatgpt-browser"),
                 ("openai.alternate", True, "chatgpt-headless"),
             ]
         )
-        self.assertIn("openai.main: no credential rows found", violations)
+        self.assertIn("_openai.main: no credential rows found", violations)
+        self.assertIn("_openai.alt: no credential rows found", violations)
 
 
 if __name__ == "__main__":
