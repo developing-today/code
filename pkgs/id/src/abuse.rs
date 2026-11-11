@@ -15,7 +15,14 @@
 //!   connection cap per peer.
 //! - [`Refusal`] — the one structured refusal contract: a reason and
 //!   a bounded `retry_after_ms` (1 s floor / 60 s cap for temporary
-//!   refusals; absent for permanent blocks). Local `Refusal` enums in
+//!   refusals; absent for permanent blocks). A request whose cost
+//!   exceeds its bucket's burst capacity is a permanent block of
+//!   its own kind ([`RefusalReason::RequestTooLarge`]): refill caps
+//!   the bucket at capacity, so the cost is unreachable at any
+//!   future time and no retry is offered — wiring surfaces map it
+//!   to a permanent client error (e.g. HTTP 413), never to
+//!   429/`Retry-After` (the #3882 wiring consumes this distinction).
+//!   Local `Refusal` enums in
 //!   `event_store` / `directory` are ingest- and directory-specific
 //!   and are not this contract.
 //! - [`BudgetPolicy`] — the #2247 rolling-window budgets:
@@ -43,6 +50,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::Arc;
+
+use crate::event_store::BlockList;
 
 /// A remote endpoint identity: the 32 bytes of its verifying key,
 /// the same bytes the event store uses as an author key.
@@ -63,6 +73,10 @@ pub enum RefusalReason {
     RateLimited,
     /// The byte budget is exhausted; retry after it refills.
     BudgetExhausted,
+    /// The request's cost exceeds the bucket's burst capacity, so
+    /// it can never be admitted at any future time (refill caps the
+    /// bucket at capacity). Permanent: no retry is offered.
+    RequestTooLarge,
     /// An operator block: permanent, no retry is offered.
     BlockedByOperator,
     /// The subject is not (or not yet) authorized for this surface.
@@ -77,7 +91,8 @@ pub struct Refusal {
     pub reason: RefusalReason,
     /// When to retry, in milliseconds. Temporary refusals are
     /// clamped to [`RETRY_FLOOR_MS`]..=[`RETRY_CAP_MS`]; permanent
-    /// blocks ([`RefusalReason::BlockedByOperator`]) carry `None`.
+    /// blocks ([`RefusalReason::BlockedByOperator`],
+    /// [`RefusalReason::RequestTooLarge`]) carry `None`.
     pub retry_after_ms: Option<u64>,
 }
 
@@ -93,7 +108,10 @@ impl Refusal {
     /// carry `None`.
     #[must_use]
     pub fn new(reason: RefusalReason, retry_after_ms: u64) -> Self {
-        if reason == RefusalReason::BlockedByOperator {
+        if matches!(
+            reason,
+            RefusalReason::BlockedByOperator | RefusalReason::RequestTooLarge
+        ) {
             return Self {
                 reason,
                 retry_after_ms: None,
@@ -117,6 +135,17 @@ impl Refusal {
     pub fn blocked_by_operator() -> Self {
         Self {
             reason: RefusalReason::BlockedByOperator,
+            retry_after_ms: None,
+        }
+    }
+
+    /// A permanent oversize refusal (#3927): the request's cost
+    /// exceeds the bucket's burst capacity and can never be
+    /// admitted, so no retry is offered.
+    #[must_use]
+    pub fn request_too_large() -> Self {
+        Self {
+            reason: RefusalReason::RequestTooLarge,
             retry_after_ms: None,
         }
     }
@@ -205,6 +234,13 @@ impl TokenBucket {
         self.tokens_milli >= cost.saturating_mul(1_000)
     }
 
+    /// Whether `cost` exceeds the bucket's capacity. Refill caps
+    /// `tokens_milli` at `capacity_milli`, so such a cost is
+    /// unreachable at any future time (#3927).
+    fn exceeds_capacity(&self, cost: u64) -> bool {
+        cost.saturating_mul(1_000) > self.capacity_milli
+    }
+
     /// Milliseconds until `cost` tokens are available (0 if now).
     fn retry_after_ms(&mut self, cost: u64, now_ms: u64) -> u64 {
         self.refill(now_ms);
@@ -264,7 +300,6 @@ impl Default for AbusePolicy {
         }
     }
 }
-
 
 /// Which way traffic crosses a budget scope (#2247).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -444,14 +479,31 @@ impl WindowCounter {
         u64::try_from(weighted).unwrap_or(u64::MAX)
     }
 
+    /// This counter as it would look after `roll(now_ms)`, without
+    /// mutating: the stored counter only rolls on the mutating charge
+    /// paths, so an estimate taken from the unrolled state keeps
+    /// reporting the last charged window in full forever (#4683).
+    /// Rolling a copy keeps the read path `&self`; a second roll at
+    /// the same `now_ms` is a no-op, so `can_admit` results on an
+    /// already-rolled counter are unchanged.
+    fn rolled(&self, now_ms: u64) -> Self {
+        let mut rolled = *self;
+        rolled.roll(now_ms);
+        rolled
+    }
+
     fn estimate_bytes(&self, now_ms: u64) -> u64 {
-        self.cur_bytes
-            .saturating_add(self.prev_weighted(self.prev_bytes, now_ms))
+        let rolled = self.rolled(now_ms);
+        rolled
+            .cur_bytes
+            .saturating_add(rolled.prev_weighted(rolled.prev_bytes, now_ms))
     }
 
     fn estimate_messages(&self, now_ms: u64) -> u64 {
-        self.cur_messages
-            .saturating_add(self.prev_weighted(self.prev_messages, now_ms))
+        let rolled = self.rolled(now_ms);
+        rolled
+            .cur_messages
+            .saturating_add(rolled.prev_weighted(rolled.prev_messages, now_ms))
     }
 
     /// Whether admitting `bytes` more bytes / one more message
@@ -479,7 +531,10 @@ impl WindowCounter {
     /// True when both fixed windows are empty, so the state carries
     /// no information and may be dropped.
     fn is_empty(&self) -> bool {
-        self.cur_bytes == 0 && self.cur_messages == 0 && self.prev_bytes == 0 && self.prev_messages == 0
+        self.cur_bytes == 0
+            && self.cur_messages == 0
+            && self.prev_bytes == 0
+            && self.prev_messages == 0
     }
 
     /// True when, rolled to `now_ms`, this counter would be empty:
@@ -516,12 +571,55 @@ pub struct Counters {
     pub bytes: u64,
 }
 
-/// One registry row: the counters plus the last time traffic was
-/// recorded for the pair, which is what [`CounterRegistry::prune`]
-/// ages out on.
+/// Counters split by the direction traffic crossed the evaluator in.
+///
+/// Traffic admitted through a check that knows its direction lands in
+/// `inbound` or `outbound`; traffic admitted through a check that does
+/// not (the pre-#4918 surfaces) lands in `unattributed` rather than
+/// being guessed at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirectionalCounters {
+    /// Frames and bytes admitted in the inbound direction.
+    pub inbound: Counters,
+    /// Frames and bytes admitted in the outbound direction.
+    pub outbound: Counters,
+    /// Frames and bytes admitted without a known direction.
+    pub unattributed: Counters,
+}
+
+impl DirectionalCounters {
+    /// The aggregate counters across every direction.
+    #[must_use]
+    pub fn total(&self) -> Counters {
+        Counters {
+            frames: self
+                .inbound
+                .frames
+                .saturating_add(self.outbound.frames)
+                .saturating_add(self.unattributed.frames),
+            bytes: self
+                .inbound
+                .bytes
+                .saturating_add(self.outbound.bytes)
+                .saturating_add(self.unattributed.bytes),
+        }
+    }
+
+    fn for_direction(&mut self, direction: Option<Direction>) -> &mut Counters {
+        match direction {
+            Some(Direction::Inbound) => &mut self.inbound,
+            Some(Direction::Outbound) => &mut self.outbound,
+            None => &mut self.unattributed,
+        }
+    }
+}
+
+/// One registry row: the per-direction counters plus the last time
+/// traffic was recorded for the pair, which is what
+/// [`CounterRegistry::prune`] ages out on.
 #[derive(Clone, Copy, Debug, Default)]
 struct CounterEntry {
-    counters: Counters,
+    counters: DirectionalCounters,
     last_seen_ms: u64,
 }
 
@@ -540,36 +638,65 @@ impl CounterRegistry {
 
     /// Records `frames` admitted frames and `bytes` admitted bytes
     /// for traffic between `local` and `remote`, stamped at
-    /// `now_ms` for pruning.
+    /// `now_ms` for pruning. `direction` names the direction the
+    /// traffic crossed in, or `None` when the admitting check cannot
+    /// tell; those charges are kept as `unattributed`.
     pub fn record(
         &mut self,
         local: NodeId,
         remote: EndpointId,
         frames: u64,
         bytes: u64,
+        direction: Option<Direction>,
         now_ms: u64,
     ) {
         let entry = self.counters.entry((local, remote)).or_default();
-        entry.counters.frames = entry.counters.frames.saturating_add(frames);
-        entry.counters.bytes = entry.counters.bytes.saturating_add(bytes);
+        let counters = entry.counters.for_direction(direction);
+        counters.frames = counters.frames.saturating_add(frames);
+        counters.bytes = counters.bytes.saturating_add(bytes);
         entry.last_seen_ms = entry.last_seen_ms.max(now_ms);
     }
 
-    /// The counters for one pair, if any traffic was recorded.
+    /// The aggregate counters for one pair — every direction summed —
+    /// if any traffic was recorded.
     #[must_use]
     pub fn get(&self, local: &NodeId, remote: &EndpointId) -> Option<Counters> {
-        self.counters.get(&(*local, *remote)).map(|e| e.counters)
+        self.counters
+            .get(&(*local, *remote))
+            .map(|e| e.counters.total())
     }
 
-    /// All counters, sorted by (local node, remote endpoint) so
-    /// snapshots are deterministic.
+    /// All counters aggregated across directions, sorted by (local
+    /// node, remote endpoint) so snapshots are deterministic.
     #[must_use]
     pub fn snapshot(&self) -> Vec<((NodeId, EndpointId), Counters)> {
         let mut rows: Vec<_> = self
             .counters
             .iter()
-            .map(|(k, e)| (*k, e.counters))
+            .map(|(k, e)| (*k, e.counters.total()))
             .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    }
+
+    /// All counters split by direction, copied without sorting.
+    ///
+    /// For callers holding a lock on the registry's owner who must keep
+    /// the hold short: copy under the lock, then sort the copy after
+    /// release (see [`CounterRegistry::snapshot_directional`]).
+    #[must_use]
+    pub fn copied_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
+        self.counters
+            .iter()
+            .map(|(k, e)| (*k, e.counters))
+            .collect()
+    }
+
+    /// All counters split by direction, sorted by (local node, remote
+    /// endpoint) so snapshots are deterministic.
+    #[must_use]
+    pub fn snapshot_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
+        let mut rows = self.copied_directional();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows
     }
@@ -656,6 +783,11 @@ pub struct AbuseEvaluator {
     /// exactly: token buckets only, no budget scopes charged.
     budgets: Option<BudgetPolicy>,
     budget_state: HashMap<BudgetKey, Vec<WindowCounter>>,
+    /// The operator block list (#2245), when the evaluator's owner
+    /// attached one: [`AbuseEvaluator::open_connection`] refuses a
+    /// blocked endpoint before any bucket or cap is consulted. `None`
+    /// keeps the pre-#2245 behaviour exactly.
+    blocks: Option<Arc<dyn BlockList>>,
 }
 
 impl AbuseEvaluator {
@@ -669,7 +801,24 @@ impl AbuseEvaluator {
             registry: CounterRegistry::new(),
             budgets: None,
             budget_state: HashMap::new(),
+            blocks: None,
         }
+    }
+
+    /// Like [`AbuseEvaluator::new`], with the operator block list
+    /// (#2245) attached: a new connection from an endpoint blocked by
+    /// key is refused with [`Refusal::blocked_by_operator`], and so is
+    /// a connection whose directly observed IP is blocked, when the
+    /// listener supplies one to
+    /// [`AbuseEvaluator::open_connection_with_direct_ip`]. The list
+    /// is consulted live on every open, so a block or an unblock lands
+    /// on the next connection. Frame and byte checks are unchanged —
+    /// a block refuses new sessions; it does not retroactively charge
+    /// or drop a session that is already open.
+    #[must_use]
+    pub fn with_block_list(mut self, blocks: Arc<dyn BlockList>) -> Self {
+        self.blocks = Some(blocks);
+        self
     }
 
     /// Like [`AbuseEvaluator::new`], with the #2247 rolling-window
@@ -679,11 +828,7 @@ impl AbuseEvaluator {
     /// the app-wide, per-endpoint (or per-counterparty override),
     /// and direct-IP scopes in addition to the token buckets.
     #[must_use]
-    pub fn with_budgets(
-        policy: AbusePolicy,
-        local_node: NodeId,
-        budgets: BudgetPolicy,
-    ) -> Self {
+    pub fn with_budgets(policy: AbusePolicy, local_node: NodeId, budgets: BudgetPolicy) -> Self {
         let mut evaluator = Self::new(policy, local_node);
         evaluator.budgets = Some(budgets);
         evaluator
@@ -730,7 +875,11 @@ impl AbuseEvaluator {
             ),
         ];
         if let Some(ip) = direct_ip {
-            scopes.push((BudgetKey::Ip(ip), BudgetScope::Ip(ip), policy.per_ip.clone()));
+            scopes.push((
+                BudgetKey::Ip(ip),
+                BudgetScope::Ip(ip),
+                policy.per_ip.clone(),
+            ));
         }
         scopes
     }
@@ -751,10 +900,12 @@ impl AbuseEvaluator {
         let mut retry_ms = 0_u64;
         let mut refused = false;
         for (key, _scope, limits) in &scopes {
-            let counters = self
-                .budget_state
-                .entry(*key)
-                .or_insert_with(|| limits.iter().map(|l| WindowCounter::new(l, now_ms)).collect());
+            let counters = self.budget_state.entry(*key).or_insert_with(|| {
+                limits
+                    .iter()
+                    .map(|l| WindowCounter::new(l, now_ms))
+                    .collect()
+            });
             for (counter, limit) in counters.iter_mut().zip(limits.iter()) {
                 counter.roll(now_ms);
                 if !counter.can_admit(limit, bytes, now_ms) {
@@ -777,10 +928,12 @@ impl AbuseEvaluator {
     ) {
         let scopes = self.budget_scopes(direction, endpoint, direct_ip);
         for (key, _scope, limits) in &scopes {
-            let counters = self
-                .budget_state
-                .entry(*key)
-                .or_insert_with(|| limits.iter().map(|l| WindowCounter::new(l, now_ms)).collect());
+            let counters = self.budget_state.entry(*key).or_insert_with(|| {
+                limits
+                    .iter()
+                    .map(|l| WindowCounter::new(l, now_ms))
+                    .collect()
+            });
             for counter in counters.iter_mut() {
                 counter.roll(now_ms);
                 counter.record(bytes);
@@ -837,19 +990,25 @@ impl AbuseEvaluator {
         direct_ip: Option<IpAddr>,
         now_ms: u64,
     ) -> Result<(), Refusal> {
-        let (frame_retry, byte_retry) = {
+        let (frame_oversize, byte_oversize, frame_retry, byte_retry) = {
             let state = self.state(endpoint, now_ms);
             let (frames, byte_bucket) = if authorized {
                 (&mut state.authorized_frames, &mut state.authorized_bytes)
             } else {
                 (&mut state.preauth_frames, &mut state.preauth_bytes)
             };
+            let frame_oversize = frames.exceeds_capacity(1);
+            let byte_oversize = byte_bucket.exceeds_capacity(bytes);
             let frame_retry =
                 (!frames.can_take(1, now_ms)).then(|| frames.retry_after_ms(1, now_ms));
             let byte_retry = (!byte_bucket.can_take(bytes, now_ms))
                 .then(|| byte_bucket.retry_after_ms(bytes, now_ms));
-            (frame_retry, byte_retry)
+            (frame_oversize, byte_oversize, frame_retry, byte_retry)
         };
+
+        if frame_oversize || byte_oversize {
+            return Err(Refusal::request_too_large());
+        }
         if let Some(retry) = frame_retry {
             return Err(Refusal::new(RefusalReason::RateLimited, retry));
         }
@@ -872,7 +1031,7 @@ impl AbuseEvaluator {
         }
         self.record_budget(direction, endpoint, direct_ip, bytes, now_ms);
         self.registry
-            .record(self.local_node, endpoint, 1, bytes, now_ms);
+            .record(self.local_node, endpoint, 1, bytes, Some(direction), now_ms);
         Ok(())
     }
 
@@ -891,9 +1050,10 @@ impl AbuseEvaluator {
             let (scope, limits): (BudgetScope, &[BudgetLimit]) = match key {
                 BudgetKey::AppInbound => (BudgetScope::AppInbound, &policy.app_inbound),
                 BudgetKey::AppOutbound => (BudgetScope::AppOutbound, &policy.app_outbound),
-                BudgetKey::Peer(endpoint) => {
-                    (BudgetScope::Peer(*endpoint), policy.limits_for_peer(endpoint))
-                }
+                BudgetKey::Peer(endpoint) => (
+                    BudgetScope::Peer(*endpoint),
+                    policy.limits_for_peer(endpoint),
+                ),
                 BudgetKey::Ip(ip) => (BudgetScope::Ip(*ip), &policy.per_ip),
             };
             for (counter, limit) in counters.iter().zip(limits.iter()) {
@@ -934,13 +1094,62 @@ impl AbuseEvaluator {
     ///
     /// # Errors
     ///
-    /// Returns a [`RefusalReason::RateLimited`] refusal when the
-    /// endpoint already holds the policy's maximum connections.
+    /// Returns a [`RefusalReason::BlockedByOperator`] refusal when the
+    /// operator block list attached with
+    /// [`AbuseEvaluator::with_block_list`] blocks `endpoint`, and a
+    /// [`RefusalReason::RateLimited`] refusal when the endpoint already
+    /// holds the policy's maximum connections.
     pub fn open_connection(
         &mut self,
         endpoint: EndpointId,
         now_ms: u64,
     ) -> Result<ConnectionId, Refusal> {
+        self.open_connection_inner(endpoint, None, now_ms)
+    }
+
+    /// Like [`AbuseEvaluator::open_connection`], for a listener that
+    /// directly observed the connection's remote IP (#2245): when
+    /// `direct_ip` is `Some` and the attached block list blocks that
+    /// IP, the connection is refused with
+    /// [`Refusal::blocked_by_operator`] before any bucket or cap is
+    /// consulted — the listener-only, best-effort IP enforcement the
+    /// issue asks for. A relayed or otherwise obscured connection
+    /// passes `None` and is judged exactly as by
+    /// [`AbuseEvaluator::open_connection`]: an IP block never refuses
+    /// a peer whose IP was not directly observed.
+    ///
+    /// # Errors
+    ///
+    /// The same refusals as [`AbuseEvaluator::open_connection`], plus
+    /// a [`RefusalReason::BlockedByOperator`] refusal when `direct_ip`
+    /// names a blocked IP.
+    pub fn open_connection_with_direct_ip(
+        &mut self,
+        endpoint: EndpointId,
+        direct_ip: Option<IpAddr>,
+        now_ms: u64,
+    ) -> Result<ConnectionId, Refusal> {
+        self.open_connection_inner(endpoint, direct_ip, now_ms)
+    }
+
+    fn open_connection_inner(
+        &mut self,
+        endpoint: EndpointId,
+        direct_ip: Option<IpAddr>,
+        now_ms: u64,
+    ) -> Result<ConnectionId, Refusal> {
+        if self
+            .blocks
+            .as_ref()
+            .is_some_and(|blocks| blocks.peer_blocked(&endpoint))
+        {
+            return Err(Refusal::blocked_by_operator());
+        }
+        if let (Some(blocks), Some(ip)) = (&self.blocks, direct_ip) {
+            if blocks.ip_blocked(&ip) {
+                return Err(Refusal::blocked_by_operator());
+            }
+        }
         let cap = self.policy.max_connections_per_peer;
         // Ids are unique and never reused; a refused open may skip
         // an id, which is harmless.
@@ -978,7 +1187,9 @@ impl AbuseEvaluator {
     ///
     /// Returns a [`RefusalReason::RateLimited`] refusal, with the
     /// bounded retry delay the bucket implies, when the bucket is
-    /// empty.
+    /// empty; returns a permanent [`RefusalReason::RequestTooLarge`]
+    /// refusal when the frame bucket's burst capacity is 0 (the
+    /// frame cost can then never be admitted).
     pub fn check_frame(
         &mut self,
         endpoint: EndpointId,
@@ -991,9 +1202,12 @@ impl AbuseEvaluator {
         } else {
             &mut state.preauth_frames
         };
+        if bucket.exceeds_capacity(1) {
+            return Err(Refusal::request_too_large());
+        }
         if bucket.try_take(1, now_ms) {
             self.registry
-                .record(self.local_node, endpoint, 1, 0, now_ms);
+                .record(self.local_node, endpoint, 1, 0, None, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(1, now_ms);
@@ -1009,7 +1223,10 @@ impl AbuseEvaluator {
     ///
     /// Returns a [`RefusalReason::BudgetExhausted`] refusal, with
     /// the bounded retry delay the bucket implies, when the bucket
-    /// cannot cover `bytes`.
+    /// cannot cover `bytes`; returns a permanent
+    /// [`RefusalReason::RequestTooLarge`] refusal when `bytes`
+    /// exceeds the bucket's burst capacity (no wait can ever admit
+    /// it).
     pub fn check_bytes(
         &mut self,
         endpoint: EndpointId,
@@ -1023,9 +1240,12 @@ impl AbuseEvaluator {
         } else {
             &mut state.preauth_bytes
         };
+        if bucket.exceeds_capacity(bytes) {
+            return Err(Refusal::request_too_large());
+        }
         if bucket.try_take(bytes, now_ms) {
             self.registry
-                .record(self.local_node, endpoint, 0, bytes, now_ms);
+                .record(self.local_node, endpoint, 0, bytes, None, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(bytes, now_ms);
@@ -1048,19 +1268,25 @@ impl AbuseEvaluator {
         bytes: u64,
         now_ms: u64,
     ) -> Result<(), Refusal> {
-        let (frame_retry, byte_retry) = {
+        let (frame_oversize, byte_oversize, frame_retry, byte_retry) = {
             let state = self.state(endpoint, now_ms);
             let (frames, byte_bucket) = if authorized {
                 (&mut state.authorized_frames, &mut state.authorized_bytes)
             } else {
                 (&mut state.preauth_frames, &mut state.preauth_bytes)
             };
+            let frame_oversize = frames.exceeds_capacity(1);
+            let byte_oversize = byte_bucket.exceeds_capacity(bytes);
             let frame_retry =
                 (!frames.can_take(1, now_ms)).then(|| frames.retry_after_ms(1, now_ms));
             let byte_retry = (!byte_bucket.can_take(bytes, now_ms))
                 .then(|| byte_bucket.retry_after_ms(bytes, now_ms));
-            (frame_retry, byte_retry)
+            (frame_oversize, byte_oversize, frame_retry, byte_retry)
         };
+
+        if frame_oversize || byte_oversize {
+            return Err(Refusal::request_too_large());
+        }
 
         if let Some(retry) = frame_retry {
             return Err(Refusal::new(RefusalReason::RateLimited, retry));
@@ -1084,8 +1310,16 @@ impl AbuseEvaluator {
             debug_assert!(frame_taken && bytes_taken);
         }
         self.registry
-            .record(self.local_node, endpoint, 1, bytes, now_ms);
+            .record(self.local_node, endpoint, 1, bytes, None, now_ms);
         Ok(())
+    }
+
+    /// The configured abuse policy — the rate and burst the token
+    /// buckets enforce, shown alongside the counters on the operator
+    /// surface.
+    #[must_use]
+    pub fn policy(&self) -> &AbusePolicy {
+        &self.policy
     }
 
     /// The counter registry this evaluator records into.
@@ -1184,6 +1418,50 @@ mod tests {
     }
 
     #[test]
+    fn a_blocked_endpoint_is_refused_a_new_connection() {
+        // #2245 session admission: with a block list attached, a blocked
+        // endpoint's new connection is refused as an operator block —
+        // permanent, no retry offered, and no connection registered.
+        let blocks = crate::pull_policy::testing::stub_blocks(&[endpoint(7)], &[]);
+        let mut eval = evaluator().with_block_list(blocks);
+        let refused = eval
+            .open_connection(endpoint(7), 0)
+            .expect_err("a blocked endpoint was admitted");
+        assert_eq!(refused, Refusal::blocked_by_operator());
+        assert_eq!(refused.reason, RefusalReason::BlockedByOperator);
+        assert_eq!(refused.retry_after_ms, None);
+        assert_eq!(eval.active_connection_count(&endpoint(7)), 0);
+        eval.open_connection(endpoint(8), 0)
+            .expect("an unblocked endpoint still connects");
+    }
+
+    #[test]
+    fn a_blocked_direct_ip_is_refused_a_new_connection() {
+        // #2245 listener seam: with a block list attached, a connection
+        // whose directly observed IP is blocked is refused as an
+        // operator block — and no connection is registered. An
+        // unblocked direct IP still connects, and a relayed
+        // connection (no IP observed) is unaffected by the IP block.
+        let blocked_ip: IpAddr = "203.0.113.7".parse().expect("test ip");
+        let other_ip: IpAddr = "203.0.113.8".parse().expect("test ip");
+        let blocks = crate::pull_policy::testing::stub_blocks_with_ips(&[], &[], &[blocked_ip]);
+        let mut eval = evaluator().with_block_list(blocks);
+        let refused = eval
+            .open_connection_with_direct_ip(endpoint(7), Some(blocked_ip), 0)
+            .expect_err("a blocked direct IP was admitted");
+        assert_eq!(refused, Refusal::blocked_by_operator());
+        assert_eq!(refused.reason, RefusalReason::BlockedByOperator);
+        assert_eq!(refused.retry_after_ms, None);
+        assert_eq!(eval.active_connection_count(&endpoint(7)), 0);
+        eval.open_connection_with_direct_ip(endpoint(7), Some(other_ip), 0)
+            .expect("an unblocked direct IP still connects");
+        eval.open_connection_with_direct_ip(endpoint(8), None, 0)
+            .expect("a relayed connection is unaffected by IP blocks");
+        eval.open_connection(endpoint(9), 0)
+            .expect("the pre-#2245 entry point is unchanged");
+    }
+
+    #[test]
     fn connection_cap_is_per_peer() {
         let mut eval = evaluator();
         let ep = endpoint(10);
@@ -1230,6 +1508,99 @@ mod tests {
         assert_eq!(Refusal::blocked_by_operator().retry_after_ms, None);
         assert_eq!(
             Refusal::new(RefusalReason::BlockedByOperator, 5_000).retry_after_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn oversize_byte_request_is_refused_permanently() {
+        // #3927 oracle: a byte cost above the bucket's burst
+        // capacity (4 MiB by default) can never be admitted —
+        // refill caps tokens at capacity — so the refusal is
+        // permanent at t=0 and at a far-future time, while the
+        // exact-burst control is still admitted.
+        let mut eval = evaluator();
+        let ep = endpoint(21);
+        eval.check_bytes(ep, true, 4 * 1024 * 1024, 0)
+            .expect("exact burst is admitted");
+        let mut eval = evaluator();
+        for now in [0, 1_000_000_000] {
+            let refused = eval
+                .check_bytes(ep, true, 4 * 1024 * 1024 + 1, now)
+                .expect_err("oversize is refused");
+            assert_eq!(refused, Refusal::request_too_large());
+            assert_eq!(refused.reason, RefusalReason::RequestTooLarge);
+            assert_eq!(refused.retry_after_ms, None);
+        }
+    }
+
+    #[test]
+    fn zero_burst_frame_policy_refuses_frames_permanently() {
+        // #3927 oracle: with frame_burst = 0 the frame cost (1)
+        // exceeds capacity (0), so every frame is a permanent
+        // oversize refusal, not a temporary rate limit.
+        let limits = BucketLimits {
+            frames_per_sec: 10,
+            frame_burst: 0,
+            bytes_per_sec: 1024,
+            byte_burst: 1024,
+        };
+        let policy = AbusePolicy {
+            authorized: limits,
+            pre_authorization: limits,
+            max_connections_per_peer: 4,
+        };
+        let mut eval = AbuseEvaluator::new(policy, [1; 32]);
+        let ep = endpoint(22);
+        for now in [0, 1_000_000_000] {
+            let refused = eval
+                .check_frame(ep, true, now)
+                .expect_err("zero-burst frame is refused");
+            assert_eq!(refused.reason, RefusalReason::RequestTooLarge);
+            assert_eq!(refused.retry_after_ms, None);
+        }
+    }
+
+    #[test]
+    fn within_capacity_over_a_drained_bucket_still_retries_temporarily() {
+        // #3927 control oracle: permanent oversize must not swallow
+        // the temporary case — a within-capacity request against a
+        // drained bucket still gets BudgetExhausted with a bounded
+        // retry delay.
+        let mut eval = evaluator();
+        let ep = endpoint(23);
+        eval.check_bytes(ep, true, 4 * 1024 * 1024, 0)
+            .expect("drain the bucket");
+        let refused = eval
+            .check_bytes(ep, true, 1, 0)
+            .expect_err("drained bucket refuses");
+        assert_eq!(refused.reason, RefusalReason::BudgetExhausted);
+        let retry = refused
+            .retry_after_ms
+            .expect("temporary refusal offers a retry");
+        assert!((RETRY_FLOOR_MS..=RETRY_CAP_MS).contains(&retry));
+    }
+
+    #[test]
+    fn combined_check_refuses_oversize_permanently() {
+        // #3927 oracle for the atomic path: check_frame_and_bytes
+        // applies the same permanent-oversize rule to its byte leg.
+        let mut eval = evaluator();
+        let ep = endpoint(24);
+        let refused = eval
+            .check_frame_and_bytes(ep, true, 4 * 1024 * 1024 + 1, 0)
+            .expect_err("oversize combined is refused");
+        assert_eq!(refused.reason, RefusalReason::RequestTooLarge);
+        assert_eq!(refused.retry_after_ms, None);
+    }
+
+    #[test]
+    fn request_too_large_refusal_never_carries_a_retry() {
+        // #3927 oracle: the permanent shape holds through the
+        // general constructor too, like BlockedByOperator.
+        assert_eq!(Refusal::request_too_large().retry_after_ms, None);
+        assert_eq!(
+            Refusal::new(RefusalReason::RequestTooLarge, 5_000).retry_after_ms,
             None
         );
     }
@@ -1310,6 +1681,51 @@ mod tests {
         );
         // Nothing left to drop on a repeat prune at the same time.
         assert_eq!(eval.prune_counters(10_000, 5_000), 0);
+    }
+
+    #[test]
+    fn directional_counters_split_by_direction_and_aggregate() {
+        let mut eval = evaluator();
+        let ep = endpoint(25);
+        eval.registry
+            .record([1; 32], ep, 1, 100, Some(Direction::Inbound), 0);
+        eval.registry
+            .record([1; 32], ep, 2, 300, Some(Direction::Outbound), 0);
+        eval.registry.record([1; 32], ep, 3, 500, None, 0);
+
+        let rows = eval.counters().snapshot_directional();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, ([1; 32], ep));
+        assert_eq!(
+            rows[0].1,
+            DirectionalCounters {
+                inbound: Counters {
+                    frames: 1,
+                    bytes: 100,
+                },
+                outbound: Counters {
+                    frames: 2,
+                    bytes: 300,
+                },
+                unattributed: Counters {
+                    frames: 3,
+                    bytes: 500,
+                },
+            }
+        );
+
+        let aggregate = Counters {
+            frames: 6,
+            bytes: 900,
+        };
+        assert_eq!(eval.counters().get(&[1; 32], &ep), Some(aggregate));
+        assert_eq!(eval.counters().snapshot(), vec![(([1; 32], ep), aggregate)]);
+    }
+
+    #[test]
+    fn directional_snapshot_is_empty_without_traffic() {
+        let eval = evaluator();
+        assert!(eval.counters().snapshot_directional().is_empty());
     }
 }
 
@@ -1416,9 +1832,10 @@ mod budget_tests {
         // 1_000-byte default.
         eval.check_budget(Direction::Inbound, capped, None, 100, 0)
             .expect("at override cap");
-        assert!(eval
-            .check_budget(Direction::Inbound, capped, None, 1, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, capped, None, 1, 0)
+                .is_err()
+        );
         // The raised peer may exceed the default per-peer budget.
         eval.check_budget(Direction::Inbound, raised, None, 3_000, 0)
             .expect("override raises the cap");
@@ -1456,9 +1873,10 @@ mod budget_tests {
         eval.check_budget(Direction::Inbound, endpoint(1), Some(ip), 700, 0)
             .expect("first endpoint on the ip");
         // A second endpoint behind the same direct IP shares its budget.
-        assert!(eval
-            .check_budget(Direction::Inbound, endpoint(2), Some(ip), 400, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, endpoint(2), Some(ip), 400, 0)
+                .is_err()
+        );
         // Relayed traffic (no directly observed IP) charges no IP scope.
         eval.check_budget(Direction::Inbound, endpoint(2), None, 400, 0)
             .expect("no ip observed, no ip scope");
@@ -1477,9 +1895,10 @@ mod budget_tests {
         let mut eval = budgeted(policy);
         eval.check_budget(Direction::Inbound, endpoint(1), None, 800, 0)
             .expect("first peer inbound");
-        assert!(eval
-            .check_budget(Direction::Inbound, endpoint(2), None, 300, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, endpoint(2), None, 300, 0)
+                .is_err()
+        );
         // Outbound has its own app-wide scope.
         eval.check_budget(Direction::Outbound, endpoint(2), None, 300, 0)
             .expect("outbound separate");
@@ -1493,14 +1912,54 @@ mod budget_tests {
         let ep = endpoint(3);
         eval.check_budget(Direction::Inbound, ep, None, 100, 0)
             .expect("full window");
-        assert!(eval
-            .check_budget(Direction::Inbound, ep, None, 1, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, ep, None, 1, 0)
+                .is_err()
+        );
         // Two windows later the usage has fully aged out.
         eval.check_budget(Direction::Inbound, ep, None, 100, 2_000)
             .expect("recovered after roll");
         // Aged-out scopes prune away.
         assert!(eval.prune_budget_state(10_000) >= 1);
+    }
+
+    #[test]
+    fn budget_usage_rolls_the_estimate_on_the_read_path() {
+        // #4683: with no intervening charge, budget_usage must report
+        // the rolled sliding-window estimate, not the last charged
+        // window in full forever.
+        let mut policy = policy_with(0);
+        policy.per_peer = vec![BudgetLimit {
+            window_ms: 1_000,
+            bytes_per_window: 1_000,
+            messages_per_window: 10,
+        }];
+        let mut eval = budgeted(policy);
+        let ep = endpoint(11);
+        eval.check_budget(Direction::Inbound, ep, None, 100, 0)
+            .expect("first charge in the window");
+        eval.check_budget(Direction::Inbound, ep, None, 100, 0)
+            .expect("second charge in the window");
+        let usage_at = |eval: &AbuseEvaluator, now_ms: u64| {
+            let usage = eval.budget_usage(now_ms);
+            let row = usage
+                .iter()
+                .find(|(scope, _, _)| *scope == BudgetScope::Peer(ep))
+                .expect("peer usage row");
+            (row.2.bytes, row.2.messages)
+        };
+        // In-window: the full charges count.
+        assert_eq!(usage_at(&eval, 0), (200, 2));
+        // A window and a half later, still with no intervening
+        // charge: the charges are the previous window now, weighted
+        // by the half of it still inside the rolling span.
+        assert_eq!(usage_at(&eval, 1_500), (100, 1));
+        // Two or more windows later they have fully aged out, and
+        // admission at the same instant agrees with the report.
+        assert_eq!(usage_at(&eval, 2_000), (0, 0));
+        assert_eq!(usage_at(&eval, 100_000), (0, 0));
+        eval.check_budget(Direction::Inbound, ep, None, 100, 100_000)
+            .expect("admission agrees with the aged-out usage");
     }
 
     #[test]

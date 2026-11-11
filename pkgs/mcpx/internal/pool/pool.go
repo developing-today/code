@@ -18,12 +18,12 @@ package pool
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -59,11 +59,11 @@ const ownServerName = "mcpx"
 // falls back to convicting on the aggregate surface alone.
 var OwnInstanceID string
 
-// Trace, when set, receives a line per tool call naming the instance that
-// served it. The daemon wires this to its logger when MCPX_TRACE is set.
+// Trace receives a line per tool call naming the instance that
+// served it, when set. The daemon wires this to its logger when MCPX_TRACE is set.
 var Trace func(string, ...any)
 
-// Lifecycle, when set, receives structured lifecycle events: a server
+// Lifecycle receives structured lifecycle events when set: a server
 // starting, stopping or being reaped. Reported here rather than inferred from
 // logs so that a consumer sees the same events the pool acted on.
 var Lifecycle func(event string, attrs map[string]any)
@@ -88,6 +88,13 @@ type Instance struct {
 	// config cwd, read from the instance at every (re)start and never
 	// re-resolved at redial. "" when the scope has no root.
 	root string
+	// cwd is the creating caller's working directory stored at
+	// creation alongside root, for the same reason: a definition
+	// referencing ${mcpx.cwd} can only be re-substituted at (re)start
+	// from the caller that created the instance, and a replacement
+	// started by the pool itself (restart, exec watch, subscription
+	// monitor) has no caller to re-resolve it from.
+	cwd string
 	// execStamp and execIdentity identify the executable actually used by
 	// this instance. Scope-rooted relative commands can differ per instance,
 	// so their exec watch cannot use one pool-wide identity.
@@ -185,6 +192,13 @@ type Pool struct {
 	// draining counts the children a lazy restart is closing in the
 	// background. See WaitDrained.
 	draining sync.WaitGroup
+	// sessionMu orders a persistence save against a pool retirement. A
+	// configuration reload clears records before publishing the replacement
+	// pool, so it cannot resume a session the retiring client will DELETE.
+	sessionMu sync.Mutex
+	// sessionsClosing is set before a reload removes persisted records. It is
+	// atomic because session-save callbacks can run while p.mu is held.
+	sessionsClosing atomic.Bool
 
 	// reqLimiter is this pool's one per-server rate-limit budget for
 	// sampling and elicitation (#2192), built lazily from the hooks'
@@ -236,6 +250,7 @@ type Pool struct {
 	watched   map[string]int
 	watchKey  string
 	watchRoot string
+	watchCwd  string
 
 	// noLegacy is set once a legacy-only start failed under protocol:
 	// follow; legacy callers then share the modern session.
@@ -355,7 +370,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 			if dup := p.findLaneLocked(key, legacy); dup != nil {
 				p.cond.Broadcast()
 				p.mu.Unlock()
-				go in.Client.Close()
+				go func() { _ = in.Client.Close() }()
 				p.mu.Lock()
 				continue
 			}
@@ -375,6 +390,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 		if in := p.evictableLocked(legacy); in != nil {
 			p.removeLocked(in)
 			p.mu.Unlock()
+			p.forgetUpstreamSession(in)
 			_ = in.Client.Close()
 			p.mu.Lock()
 			continue
@@ -521,6 +537,7 @@ func (p *Pool) ReleaseKey(key string) int {
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	p.stopped(in, "released")
+	p.forgetUpstreamSession(in)
 	_ = in.Client.Close()
 	return 1
 }
@@ -535,13 +552,9 @@ func (p *Pool) reapDeadLocked() {
 		if p.lastErr == nil {
 			p.lastErr = in.Client.Err()
 		}
-		go in.Client.Close()
+		go func() { _ = in.Client.Close() }()
 	}
 	p.instances = kept
-}
-
-func (p *Pool) start(ctx context.Context) (*Instance, error) {
-	return p.startLane(ctx, false, config.ResolvedScope{})
 }
 
 // installServerHooks wires what a server may ask of mcpx into the options its
@@ -614,15 +627,24 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	defer cancel()
 	launched := time.Now()
 
-	spawnCwd, cwdSource := SpawnCwd(p.cfg.Cwd, rs.Root)
+	// The effective spawn definition (decision 0004 §4, #960): the
+	// stored config with ${mcpx.root}/${mcpx.cwd} substituted for this
+	// instance. A definition referencing a root or caller cwd the
+	// instance does not have fails the spawn here, loudly, before
+	// anything starts; the stored config keeps its placeholders.
+	eff, err := p.cfg.Effective(rs.Root, rs.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	spawnCwd, cwdSource := SpawnCwd(eff.Cwd, rs.Root)
 	if !p.cfg.Stdio() {
 		// No process, no cwd: the root is recorded, but nothing spawns
 		// anywhere, so the daemon-cwd source is the honest one.
 		spawnCwd, cwdSource = "", "daemon"
 	}
-	execStamp, execIdentity, _ := p.cfg.ExecStateAt(spawnCwd)
+	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dial(sctx, rs.Root)
+	tr, err := p.dial(sctx, eff, rs.Root)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -640,10 +662,13 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	case pref == mcpclient.PreferFollow:
 		pref = mcpclient.PreferModern
 	}
-	opts := mcpclient.Options{ClientName: "mcpx", ClientVersion: Version, Preference: pref}
+	opts := mcpclient.Options{ClientName: "mcpx", ClientVersion: Version, Preference: pref, Root: rs.Root}
 	ref := &instanceRef{p: p}
 	p.installServerHooks(&opts, ref)
-	eraKey := Identity(p.cfg)
+	// The era identity hashes the effective (substituted) definition,
+	// so instances differing only by substituted root never share an
+	// era entry (decision 0004 §4).
+	eraKey := Identity(eff)
 	var cached EraRecord
 	var eras EraStore
 	if h := p.Hooks; h != nil {
@@ -657,13 +682,28 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		}
 	}
 	var cl *mcpclient.Client
+	var resumedSession bool
 	if cached.Transport == TransportHTTPSSE && !p.cfg.Stdio() {
 		// Last time this endpoint spoke only the deprecated HTTP+SSE
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(sctx, rs.Root); err != nil {
+		} else if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
+		}
+	}
+	if cl == nil {
+		// A cold restart may find this instance's previous session
+		// persisted (#1415): resume it through the same calls the
+		// takeover path makes instead of initialising again.
+		var resumed *mcpclient.Client
+		resumed, tr, err = p.resumeUpstreamSession(sctx, tr, eff, rs, legacy, opts)
+		if err != nil {
+			_ = tr.Close()
+			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
+		}
+		if resumed != nil {
+			cl, source, resumedSession = resumed, mcpclient.SourceCache, true
 		}
 	}
 	if cl == nil {
@@ -693,7 +733,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(sctx, rs.Root); err != nil {
+		if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -748,6 +788,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		transport:    tr,
 		key:          rs.Key,
 		root:         rs.Root,
+		cwd:          rs.Cwd,
 		execStamp:    execStamp,
 		execIdentity: execIdentity,
 		trace:        newTraceID("srv"),
@@ -777,6 +818,17 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// take a call.
 		"readyMs": float64(time.Since(launched).Microseconds()) / 1000,
 	})
+	// Persist the upstream session for a cold restart (#1415): save the
+	// session this start established, and keep saving whenever the
+	// transport adopts a new session id mid-flight. Installed on the
+	// final transport, after every redial path above has settled.
+	p.installSessionPersistence(eff, rs.Key, legacy, ref, cl, tr)
+	if resumedSession {
+		// Startup-only probes and configuration notifications are complete;
+		// the next request is the first one exposed to the caller.
+		cl.MarkResumedSession()
+	}
+	p.saveUpstreamSession(eff, rs.Key, legacy, ref)
 	return in, nil
 }
 
@@ -941,28 +993,31 @@ func SpawnCwd(configCwd, root string) (cwd, source string) {
 // so a slow build cannot outlive the startup budget that owns it. root
 // is the spawning instance's resolved scope root, stored on the
 // instance at creation -- never re-resolved here (decision 0004 §2).
-func (p *Pool) dial(ctx context.Context, root string) (mcpclient.Transport, error) {
-	spawnCwd, _ := SpawnCwd(p.cfg.Cwd, root)
+// eff is the instance's effective (substituted) spawn definition; for
+// callers with no instance being spawned (HTTP session adoption) it is
+// simply the pool's stored config.
+func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcpclient.Transport, error) {
+	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
 	}
-	if p.cfg.Stdio() && p.cfg.Mcpx != nil && p.cfg.Mcpx.Supervised {
+	if eff.Stdio() && eff.Mcpx != nil && eff.Mcpx.Supervised {
 		return mcpclient.NewSupervised(mcpclient.SupervisedOptions{
-			Name:       p.cfg.Name,
-			Command:    p.cfg.Command,
-			Args:       p.cfg.Args,
-			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
+			Name:       eff.Name,
+			Command:    eff.Command,
+			Args:       eff.Args,
+			Env:        overlay(overlay(eff.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
 		})
 	}
-	if p.cfg.Stdio() {
+	if eff.Stdio() {
 		return mcpclient.NewStdio(mcpclient.StdioOptions{
-			Command:    p.cfg.Command,
-			Args:       p.cfg.Args,
-			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
+			Command:    eff.Command,
+			Args:       eff.Args,
+			Env:        overlay(overlay(eff.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
@@ -1013,6 +1068,31 @@ func (p *Pool) runtimeEnv() map[string]string {
 // parameters and environment a connection carries. A credential that names an
 // unset variable fails here, before a request, rather than as a 401 later.
 func (p *Pool) resolveAuth() (*mcpauth.Resolved, error) {
+	// Identity failover (#7948): a server whose auth block carries a
+	// failover list resolves the CURRENT identity's credential instead
+	// of a single stored one. Rotation state persists at the list's
+	// StatePath, so a (re)start after a rotation resumes on the rotated
+	// identity. Servers without a failover block are untouched.
+	if p.cfg.Auth != nil && p.cfg.Auth.Failover != nil && len(p.cfg.Auth.Failover.Identities) > 0 {
+		fo := p.cfg.Auth.Failover
+		rot := mcpauth.NewRotator(fo, nil)
+		secrets := func(name string) (string, error) {
+			if v := p.variable(name); v != "" {
+				return v, nil
+			}
+			return "", fmt.Errorf("secret %s not set in the daemon's environment", name)
+		}
+		envNames := make([]string, 0, len(p.cfg.Auth.Env))
+		for name := range p.cfg.Auth.Env {
+			envNames = append(envNames, name)
+		}
+		minter := &mcpauth.Minter{HTTP: &http.Client{Timeout: 15 * time.Second}}
+		_, r, err := rot.ResolveCurrent(context.Background(), envNames, secrets, minter)
+		if err != nil {
+			return nil, fmt.Errorf("%s: auth: failover: %w", p.cfg.Name, err)
+		}
+		return r, nil
+	}
 	r, err := p.cfg.Auth.ResolveWith(p.variable)
 	if err != nil {
 		return nil, fmt.Errorf("%s: auth: %w", p.cfg.Name, err)
@@ -1097,6 +1177,28 @@ func (p *Pool) RefreshSchemas(ctx context.Context) ([]mcpclient.Tool, []mcpclien
 	return p.refreshSchemas(ctx, nil)
 }
 
+// RefreshSchemasFor is RefreshSchemas on the caller's own scope: the
+// catalogue is listed from an instance resolved with the caller's root
+// and cwd, so a definition referencing ${mcpx.root}/${mcpx.cwd} can
+// actually start. The unscoped RefreshSchemas borrows the synthetic
+// schema key, whose rootless start fails for such definitions even
+// when the foreground caller has a perfectly good workspace
+// (Codex review, PR #5135).
+func (p *Pool) RefreshSchemasFor(ctx context.Context, rs config.ResolvedScope) ([]mcpclient.Tool, []mcpclient.Resource, error) {
+	return p.refreshSchemasScoped(ctx, &rs, nil)
+}
+
+// CallerScoped reports whether this pool's definition cannot be
+// started without a caller's scope (it references a root or caller
+// cwd that an empty scope does not supply). Background work with no
+// caller — registry warming — defers such servers to the first
+// caller-backed refresh instead of manufacturing a rootless start
+// that is guaranteed to fail.
+func (p *Pool) CallerScoped() bool {
+	_, err := p.cfg.Effective("", "")
+	return err != nil
+}
+
 // refreshSchemas does the re-list. When staleGen is non-nil it names the
 // cache generation the caller found stale: if another goroutine already
 // refreshed past that generation while this one waited on refreshMu, its
@@ -1104,6 +1206,10 @@ func (p *Pool) RefreshSchemas(ctx context.Context) ([]mcpclient.Tool, []mcpclien
 // expired cache collapse into a single refresh. A nil staleGen is an
 // explicit refresh and always re-lists.
 func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpclient.Tool, []mcpclient.Resource, error) {
+	return p.refreshSchemasScoped(ctx, nil, staleGen)
+}
+
+func (p *Pool) refreshSchemasScoped(ctx context.Context, scoped *config.ResolvedScope, staleGen *time.Time) ([]mcpclient.Tool, []mcpclient.Resource, error) {
 	p.refreshMu.Lock()
 	defer p.refreshMu.Unlock()
 	if staleGen != nil {
@@ -1119,8 +1225,21 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	// own key. For a global scope that is the shared instance everyone uses;
 	// for anything narrower it is a throwaway, stopped again below so a
 	// per-session server does not keep a process nobody asked for.
+	// A caller-scoped refresh (scoped != nil) instead acquires under the
+	// caller's own resolved scope: the instance it lists from is the
+	// caller's, started with the caller's root and cwd.
 	key := p.schemaKey()
-	lease, err := p.Acquire(ctx, config.ResolvedScope{Key: key})
+	acquireScope := config.ResolvedScope{Key: key}
+	if scoped != nil {
+		key = scoped.Key
+		acquireScope = *scoped
+	} else if p.CallerScoped() {
+		// No caller and a definition that needs one: defer to the first
+		// caller-backed refresh rather than starting rootless and
+		// recording a guaranteed failure as the server's state.
+		return p.refreshFailed(staleGen, fmt.Errorf("server %q: schema refresh deferred: definition requires a caller scope", p.cfg.Name))
+	}
+	lease, err := p.Acquire(ctx, acquireScope)
 	if err != nil {
 		return p.refreshFailed(staleGen, err)
 	}
@@ -1210,7 +1329,10 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 
 	lease.Release()
 	lease.done = true // Release is idempotent, but be explicit before ReleaseKey
-	if p.cfg.Scope != config.ScopeGlobal {
+	// The throwaway stop is only for the borrowed schema instance: a
+	// caller-scoped refresh listed from the caller's own instance,
+	// which stays for the caller's next call.
+	if scoped == nil && p.cfg.Scope != config.ScopeGlobal {
 		p.ReleaseKey(key)
 	}
 	return tools, resources, nil
@@ -1393,6 +1515,9 @@ type Hooks struct {
 	// Eras remembers each server configuration's era across starts. Nil
 	// means every start probes.
 	Eras EraStore
+	// Sessions persists legacy HTTP upstream sessions across daemon
+	// restarts (#1415). Nil means every cold start re-initialises.
+	Sessions SessionStore
 	// RequestLimits bounds each server's sampling and elicitation
 	// requests (#2192). The zero value means mcpclient's defaults,
 	// unless RequestLimitsSet marks it explicitly supplied.
@@ -1532,6 +1657,7 @@ func (p *Pool) ReapIdle(now time.Time) int {
 
 	for _, in := range stop {
 		p.stopped(in, "idle")
+		p.forgetUpstreamSession(in)
 		_ = in.Client.Close()
 	}
 	return len(stop)
@@ -1719,12 +1845,14 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 	}
 	var keys []string
 	roots := map[string]string{}
+	cwds := map[string]string{}
 	seen := map[string]bool{}
 	for _, in := range stop {
 		if !seen[in.key] {
 			seen[in.key] = true
 			keys = append(keys, in.key)
 			roots[in.key] = in.root
+			cwds[in.key] = in.cwd
 		}
 	}
 	for _, in := range retiring {
@@ -1751,7 +1879,7 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 			res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "owning process has exited"})
 			continue
 		}
-		id, err := p.startFor(ctx, config.ResolvedScope{Key: key, Root: roots[key]})
+		id, err := p.startFor(ctx, config.ResolvedScope{Key: key, Root: roots[key], Cwd: cwds[key]})
 		if err != nil {
 			res.Failed = append(res.Failed, RestartFailure{Key: key, Error: err.Error()})
 			continue
@@ -1831,7 +1959,7 @@ func (p *Pool) CloseGraceful(timeout time.Duration) {
 // tuning change or a removed server cut a call that ran past that grace.
 // WaitDrained covers this as well as a lazy restart.
 func (p *Pool) CloseDrained() {
-	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change")
+	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change", true)
 }
 
 // CloseDrainedWithin is CloseDrained for a daemon that is shutting down. drain
@@ -1839,10 +1967,10 @@ func (p *Pool) CloseDrained() {
 // its drain window once the HTTP server has stopped taking calls. The window
 // is ExecDrainTimeout, the same as a reload's, so a stop is bounded by it.
 func (p *Pool) CloseDrainedWithin(drain time.Duration) {
-	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down")
+	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down", false)
 }
 
-func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
+func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, forgetSessions bool) {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
@@ -1853,8 +1981,16 @@ func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
 	for _, in := range stop {
 		in.retiring = true
 	}
+	if forgetSessions {
+		p.sessionsClosing.Store(true)
+	}
 	p.cond.Broadcast()
 	p.mu.Unlock()
+	if forgetSessions {
+		for _, in := range stop {
+			p.forgetUpstreamSession(in)
+		}
+	}
 	for _, in := range stop {
 		p.draining.Add(1)
 		go func(in *Instance) {
@@ -1868,7 +2004,7 @@ func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
 // does not depend on the logging package.
 func newTraceID(prefix string) string {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		return prefix + "-0000000000000000"
 	}
 	return prefix + "-" + hex.EncodeToString(b[:])

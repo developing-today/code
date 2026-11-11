@@ -3,7 +3,8 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { todayFromSection } from "../src/derive.ts";
+import { validateStreamEvent } from "../src/events.ts";
+import { buildAttention, todayFromSection } from "../src/derive.ts";
 import {
   ageMsText,
   diagnoseOrchestrationSection,
@@ -13,7 +14,8 @@ import {
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
 } from "../src/feed.ts";
-import type { OrchestrationSection } from "../src/model.ts";
+import type { LinedUpTask, OrchestrationSection, QuotaView } from "../src/model.ts";
+import { renderTodayBody } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
 // #899: the orchestration section rides the fleet feed. The collector
@@ -151,6 +153,82 @@ describe("orchestration section validation", () => {
     }
     const nullGoal = { ...SECTION, goals: [null] };
     expect(isOrchestrationSection(nullGoal)).toBe(false);
+  });
+
+  // #3897: the per-goal gate checked array presence (and, after #2417,
+  // record-ness) only — goal/momentum/summary/goalId and the element
+  // fields todayFromSection dereferences were never validated, so
+  // drifted goals rendered falsified state or threw downstream.
+  test("rejects goals with malformed scalar fields and elements", () => {
+    const goal = SECTION.goals[0]!;
+    const badGoals: unknown[] = [
+      { ...goal, goal: undefined },
+      { ...goal, goal: "" },
+      { ...goal, momentum: "flying" },
+      { ...goal, momentum: undefined },
+      { ...goal, summary: undefined },
+      { ...goal, goalId: 42 },
+      { ...goal, linedUp: [{ title: "Task A" }] },
+      { ...goal, linedUp: [{ title: "Task A", horizon: "someday" }] },
+      { ...goal, linedUp: [{ title: "Task A", horizon: "today", status: "bogus" }] },
+      { ...goal, linedUp: ["Task A"] },
+      { ...goal, stalled: [{ title: "Stuck" }] },
+      { ...goal, stalled: [{ title: "Stuck", since: "2026-10-25", blocker: 42 }] },
+      { ...goal, gaps: [{ finding: "x" }] },
+      { ...goal, progressedSinceLastRun: ["ok", 42] },
+    ];
+    for (const bad of badGoals) {
+      const malformed = { ...SECTION, goals: [bad] };
+      expect(isOrchestrationSection(malformed)).toBe(false);
+      expect(orchestrationSectionProblem(malformed)).toBe("goals (per-goal shape)");
+      expect(normalizeOrchestrationSection(malformed)).toBeNull();
+    }
+  });
+
+  test("accepts a goal with fully shaped elements", () => {
+    const rich = {
+      ...SECTION,
+      goals: [
+        {
+          ...SECTION.goals[0]!,
+          linedUp: [{ title: "Task A", status: "in-progress", horizon: "today", horizonWhy: "due" }],
+          stalled: [{ title: "Stuck", since: "2026-10-25", blocker: "waiting" }],
+          gaps: ["goal has no tasks lined up"],
+        },
+      ],
+    };
+    expect(isOrchestrationSection(rich)).toBe(true);
+    expect(() => todayFromSection(rich as OrchestrationSection)).not.toThrow();
+  });
+
+  test("rejects a lined-up task with a malformed blockedBy, accepts a shaped one (#4316)", () => {
+    const base = SECTION;
+    const goal = base.goals[0]!;
+    const task = { title: "Task A", status: "in-progress", horizon: "today", horizonWhy: "due" };
+    for (const blockedBy of [
+      "code#123",
+      [null],
+      [{ task: "Other" }],
+      [{ task: "Other", status: "bogus" }],
+      [{ task: "Other", status: "queued", ref: 42 }],
+      [{ status: "queued" }],
+    ]) {
+      const section = { ...base, goals: [{ ...goal, linedUp: [{ ...task, blockedBy }] }] };
+      expect(isOrchestrationSection(section)).toBe(false);
+    }
+    const shaped = {
+      ...base,
+      goals: [
+        {
+          ...goal,
+          linedUp: [
+            { ...task, blockedBy: [{ task: "Other", status: "queued", ref: "code#123" }] },
+            { ...task, title: "Task B", blockedBy: [] },
+          ],
+        },
+      ],
+    };
+    expect(isOrchestrationSection(shaped)).toBe(true);
   });
 
   test("rejects poisoned dependency elements and bad dependency shapes", () => {
@@ -364,6 +442,143 @@ describe("live source orchestration states (#1140)", () => {
     expect(section?.provenance.sources.length).toBe(3);
     expect(src.provenance().orchestration).toContain("live (orchestration section orch-2026-10-27T03:14:56Z");
   });
+
+  test("departed orchestration items emit a tier-change event", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-orch-events-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
+    const events: Array<{ kind: string; ref: string; summary: string }> = [];
+    const src = liveSource(cfg, { onEvent: (event) => events.push(event) });
+    const writeSection = async (section: any) =>
+      writeFile(
+        feedFile,
+        JSON.stringify({
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+          attention: [],
+          orchestration: section,
+        }),
+      );
+    await writeSection(LIVE_SHAPE);
+    await src.orchestration();
+    const next = {
+      ...LIVE_SHAPE,
+      runId: "orch-next",
+      generatedAt: new Date().toISOString(),
+      provenance: { ...LIVE_SHAPE.provenance, runId: "orch-next" },
+      tiers: { needsDrew: [], needsOrchestrator: [] },
+    };
+    await writeSection(next);
+    await src.orchestration();
+    expect(
+      events.find((event) => event.kind === "tier-change" && event.ref === "developing-today/code#812")?.summary,
+    ).toContain("needs-user → —");
+  });
+
+  test("an orchestration action with a free-text target is preserved as a valid event (#4489 Codex P2)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-orch-action-ref-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
+    const events: Array<{ at?: string; actor: string; kind: string; ref: string; summary: string }> = [];
+    const src = liveSource(cfg, { onEvent: (event) => events.push(event) });
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        orchestration: LIVE_SHAPE,
+      }),
+    );
+    await src.orchestration();
+    // LIVE_SHAPE's published action targets "fleet queues" (free text
+    // with a space). Its event must survive validation with a
+    // whitespace-free ref instead of being dropped by emitEvent.
+    const action = events.find((event) => event.kind === "verify");
+    expect(action).toBeDefined();
+    expect(action?.ref).toBe("fleet-queues");
+    expect(validateStreamEvent({ at: new Date().toISOString(), ...action }).ok).toBe(true);
+  });
+
+  test("a durable publication identity prevents replay after source restart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-orch-restart-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        orchestration: LIVE_SHAPE,
+      }),
+    );
+    const persisted = new Set<string>();
+    const events: Array<{ kind: string; ref: string }> = [];
+    const opts = {
+      onEvent: (event: { kind: string; ref: string }) => {
+        events.push(event);
+        if (event.kind === "orchestration-published") persisted.add(`${event.kind}:${event.ref}`);
+      },
+      hasEvent: async (kind: string, ref: string) => persisted.has(`${kind}:${ref}`),
+    };
+    await liveSource(cfg, opts).orchestration();
+    const firstRunCount = events.length;
+    await liveSource(cfg, opts).orchestration();
+    expect(events).toHaveLength(firstRunCount);
+  });
+
+  test("registry merge emits events for every newly merged session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-registry-events-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const registry = Array.from({ length: 60 }, (_, i) => ({
+      id: `session-${i}`,
+      source: "opencode-sandbox",
+      label: `Session ${i}`,
+      agentId: "opencode:test",
+      agentLabel: "test",
+      parentId: null,
+      status: "complete",
+      taskRefs: [],
+    }));
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        registry,
+      }),
+    );
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
+    const events: unknown[] = [];
+    await liveSource(cfg, { onEvent: (event) => events.push(event) }).registry();
+    expect(events).toHaveLength(60);
+  });
 });
 
 describe("orchestration diagnosis (#1139)", () => {
@@ -495,7 +710,17 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
   test("registry facet counts the MERGED total, with its noun (#1138)", async () => {
     const src = await sourceWithFeed({
       orchestration: liveSection(),
-      registry: [{ id: "ses-diag-1", source: "opencode-sandbox", label: "Diag session", taskRefs: [] }],
+      registry: [
+        {
+          id: "ses-diag-1",
+          source: "opencode-sandbox",
+          label: "Diag session",
+          status: "idle",
+          agentId: "opencode:main",
+          agentLabel: "OpenCode · main (sandbox)",
+          taskRefs: [],
+        },
+      ],
     });
     const records = await src.registry();
     expect(records.length).toBe(1);
@@ -521,13 +746,87 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
 
     const clean = await sourceWithFeed({
       registry: [
-        { id: "ses-muse-1", source: "claude-code", label: "Muse launch", taskRefs: [] },
-        { id: "ses-opencode-1", source: "opencode-sandbox", label: "OpenCode session", taskRefs: [] },
+        {
+          id: "ses-muse-1",
+          source: "claude-code",
+          label: "Muse launch",
+          status: "launched",
+          agentId: "claude-code",
+          agentLabel: "Muse",
+          taskRefs: [],
+        },
+        {
+          id: "ses-opencode-1",
+          source: "opencode-sandbox",
+          label: "OpenCode session",
+          status: "idle",
+          agentId: "opencode:main",
+          agentLabel: "OpenCode · main (sandbox)",
+          taskRefs: [],
+        },
       ],
     });
     expect(await clean.registry()).toHaveLength(2);
     const muse = (await clean.coverage()).find((row) => row.source === "claude-code");
     expect(muse?.wired).toBe(true);
     expect(muse?.detail).toContain("1 recorded");
+  });
+});
+
+// #6174: the Today-page sibling of the #6149 Needs-you fix. A lined-up
+// task whose ref is not a GitHub ref (a tracked goal id is the live-data
+// shape) passed the section gate unchecked and reached refUrl unguarded
+// in the objectives render, 500ing /today and /frag/today.
+describe("#6174: lined-up refs on the Today objectives path", () => {
+  const QUOTA = {
+    pools: [],
+    burn: [],
+    choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+  } satisfies QuotaView;
+
+  function sectionWithRef(ref: unknown): OrchestrationSection {
+    return {
+      ...SECTION,
+      goals: [
+        {
+          ...SECTION.goals[0]!,
+          linedUp: [
+            {
+              title: "Link the Citi accounts in Plaid",
+              ref: ref as LinedUpTask["ref"],
+              status: "queued",
+              horizon: "today",
+              horizonWhy: "due today",
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function renderObjectives(section: OrchestrationSection): string {
+    const today = todayFromSection(section);
+    return renderTodayBody(today, buildAttention([], section), QUOTA, []);
+  }
+
+  test("a goal-id lined-up ref passes the gate and renders as plain code, never a link", () => {
+    const section = sectionWithRef("goal_b647ff5c92f5");
+    expect(isOrchestrationSection(section)).toBe(true);
+    const html = renderObjectives(section);
+    expect(html).toContain("Link the Citi accounts in Plaid");
+    expect(html).toContain("<code>goal_b647ff5c92f5</code>");
+    expect(html).not.toContain("github.com/goal_b647ff5c92f5");
+  });
+
+  test("a valid GitHub lined-up ref still renders as a link on the objective", () => {
+    const section = sectionWithRef("developing-today/code#812");
+    expect(isOrchestrationSection(section)).toBe(true);
+    const html = renderObjectives(section);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/812"');
+    expect(html).toContain("developing-today/code#812");
+  });
+
+  test("a non-string lined-up ref fails the gate (designed fallback, no render throw)", () => {
+    expect(isOrchestrationSection(sectionWithRef(12345))).toBe(false);
   });
 });

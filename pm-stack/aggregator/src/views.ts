@@ -28,6 +28,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 /** The cross-cutting filter dimensions a saved view pins (#1276). */
 export interface ViewFilters {
@@ -96,11 +97,48 @@ function isSavedView(value: unknown): value is SavedView {
     view.owner.length > 0 &&
     validateViewFilters(view.filters).ok &&
     typeof view.isDefault === "boolean" &&
-    typeof view.createdAt === "string" &&
-    Number.isFinite(Date.parse(view.createdAt)) &&
-    typeof view.updatedAt === "string" &&
-    Number.isFinite(Date.parse(view.updatedAt))
+    isIsoDate(view.createdAt) &&
+    isIsoDate(view.updatedAt)
   );
+}
+
+/** Uniqueness key for view names: action input trims names before
+ *  they reach the store (validateViewName), so every uniqueness
+ *  comparison — load validator, save, rename — must compare the
+ *  trimmed, case-insensitive form, or a persisted file can carry
+ *  "Alpha" and " Alpha" for one owner past the load gate
+ *  (CodeRabbit finding, PR #4536). */
+function normalizedViewName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function crossRowInvariantError(views: readonly SavedView[]): string | null {
+  const ids = new Set<string>();
+  const namesByOwner = new Map<string, Set<string>>();
+  const ownersWithDefault = new Set<string>();
+
+  for (const [index, view] of views.entries()) {
+    if (ids.has(view.id)) return `view row ${index} duplicates id "${view.id}"`;
+    ids.add(view.id);
+
+    let names = namesByOwner.get(view.owner);
+    if (!names) {
+      names = new Set<string>();
+      namesByOwner.set(view.owner, names);
+    }
+    const normalizedName = normalizedViewName(view.name);
+    if (names.has(normalizedName)) {
+      return `view row ${index} duplicates name "${view.name}" for owner "${view.owner}"`;
+    }
+    names.add(normalizedName);
+
+    if (view.isDefault) {
+      if (ownersWithDefault.has(view.owner)) return `view row ${index} adds a second default for owner "${view.owner}"`;
+      ownersWithDefault.add(view.owner);
+    }
+  }
+
+  return null;
 }
 
 let counter = 0;
@@ -218,7 +256,10 @@ export class ViewsStore {
       if (malformedIndex !== -1) {
         throw new Error(`view row ${malformedIndex} does not have the expected SavedView shape`);
       }
-      this.views = rows.filter(isSavedView);
+      const views = rows.filter(isSavedView);
+      const invariantError = crossRowInvariantError(views);
+      if (invariantError) throw new Error(invariantError);
+      this.views = views;
     } catch (err) {
       this.views = [];
       await this.quarantine(`is unparseable (${err instanceof Error ? err.message : String(err)})`);
@@ -275,7 +316,7 @@ export class ViewsStore {
   /** Create a view for the owner. Names are unique per owner. */
   async save(input: { owner: string; name: string; filters: ViewFilters }): Promise<SavedView> {
     await this.load();
-    if (this.views.some((v) => v.owner === input.owner && v.name.toLowerCase() === input.name.toLowerCase())) {
+    if (this.views.some((v) => v.owner === input.owner && normalizedViewName(v.name) === normalizedViewName(input.name))) {
       throw new Error(`a view named "${input.name}" already exists for this owner`);
     }
     const now = new Date().toISOString();
@@ -297,7 +338,7 @@ export class ViewsStore {
     await this.load();
     const v = this.views.find((x) => x.id === id && x.owner === owner);
     if (!v) return null;
-    if (this.views.some((x) => x.owner === owner && x.id !== id && x.name.toLowerCase() === name.toLowerCase())) {
+    if (this.views.some((x) => x.owner === owner && x.id !== id && normalizedViewName(x.name) === normalizedViewName(name))) {
       throw new Error(`a view named "${name}" already exists for this owner`);
     }
     v.name = name;

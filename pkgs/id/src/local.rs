@@ -124,6 +124,7 @@ impl LocalNode {
                 Arc::clone(&tags),
                 AccessPolicy::open(),
                 node_id,
+                None,
             );
             // Nothing is in flight for an in-process node: a missing blob is missing.
             if let Some(inner) = Arc::get_mut(&mut m) {
@@ -156,8 +157,11 @@ impl LocalNode {
     }
 
     /// File operations (put/rename/copy/delete) over this node's stores.
+    ///
+    /// Writes through this handle stamp this node as the file's origin
+    /// (#4973).
     pub fn ops(&self) -> FileOps<'_> {
-        FileOps::new(&self.blobs, &self.tags)
+        FileOps::new(&self.blobs, &self.tags).with_origin(self.node_id.to_string())
     }
 
     /// Answer a meta-protocol request in-process, exactly as a server would.
@@ -197,6 +201,7 @@ impl LocalNode {
             Arc::clone(&self.tags),
             access.clone(),
             self.node_id,
+            None,
         );
         let blobs = BlobsProtocol::new(&self.blobs, Some(blobs_events(access)));
         Router::builder(self.endpoint.clone())

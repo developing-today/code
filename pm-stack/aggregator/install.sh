@@ -27,7 +27,11 @@ if [ "$SRC" != "$EXPECTED_SRC" ]; then
 fi
 STATE_DIR="$HOME/.local/state/pm-aggregator"
 SOPS="$HOME/secrets/pm-stack.sops.yaml"
-UNIT_SRC="$SRC/../systemd/pm-aggregator.service"
+# Resolve the unit against the checkout root via the logical parent of
+# $SRC: "$SRC/../systemd" would be resolved by the kernel through the
+# package dir itself, so a symlinked package dir (smoke fixture, legacy
+# ~/pm-stack bridge) lands in the symlink target's parent instead.
+UNIT_SRC="$(dirname "$SRC")/systemd/pm-aggregator.service"
 UNIT_DST="$HOME/.config/systemd/user/pm-aggregator.service"
 TAILNET_IP="${TAILNET_IP:-100.99.113.103}"
 
@@ -103,6 +107,8 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_HOSTS=127.0.0.1,${TAILNET_IP}"
     echo "PM_AGG_FEED_FILE=${STATE_DIR}/fleet-feed.json"
     echo "PM_AGG_COMMENTS_FILE=${STATE_DIR}/comments.json"
+    echo "PM_AGG_EVENTS_FILE=${STATE_DIR}/events.json"
+    echo "PM_AGG_ACTIVITY_FILE=${STATE_DIR}/activity-ingestion.json"
     echo "PM_AGG_ACTIONS_FILE=${STATE_DIR}/actions.json"
     echo "PM_AGG_REGISTRY_FILE=${STATE_DIR}/registry.json"
     echo "PM_AGG_SNAPSHOTS_DIR=${STATE_DIR}/snapshots"
@@ -118,7 +124,11 @@ if [ "$CHANGED" -eq 1 ]; then
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
-  cp "$UNIT_SRC" "$UNIT_DST"
+  if [ -L "$UNIT_DST" ]; then
+    echo "pm-aggregator.service is symlink-managed at $UNIT_DST; skipping unit copy"
+  else
+    cp "$UNIT_SRC" "$UNIT_DST"
+  fi
 
   cd "$SRC"
   bun install --silent

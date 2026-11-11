@@ -178,3 +178,88 @@ test('rejects a PAYG provider in a provider group named providers', () => {
   assert.match(issues[0], /provider-route/);
   assert.ok(issues[0].includes('$.experimental.provider_routes.providers.providers[0]'));
 });
+
+// #4694: the entry-point check must run main() when the guard is invoked
+// through a symlink (file or directory). Before the realpath fix both
+// invocations silently exited 0 without checking anything.
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const guardPath = fileURLToPath(new URL('./check-opencode-metered-providers.mjs', import.meta.url));
+const meteredConfig = '{ "model": "deepseek/deepseek-chat" }';
+const cleanCliConfig = '{ "model": "openai/gpt-6" }';
+
+function runGuard(scriptPath, configSource) {
+  const dir = mkdtempSync(join(tmpdir(), 'metered-guard-'));
+  const configPath = join(dir, 'config.jsonc');
+  writeFileSync(configPath, configSource);
+  return spawnSync(process.execPath, [scriptPath, configPath], { encoding: 'utf8' });
+}
+
+test('guard runs when invoked through a file symlink (metered config fails)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'metered-guard-link-'));
+  const linkPath = join(dir, 'guard-link.mjs');
+  symlinkSync(guardPath, linkPath);
+  const res = runGuard(linkPath, meteredConfig);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /Metered-provider config guard failed/);
+  assert.match(res.stderr, /deepseek/);
+});
+
+test('guard runs when invoked through a file symlink (clean config passes)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'metered-guard-link-'));
+  const linkPath = join(dir, 'guard-link.mjs');
+  symlinkSync(guardPath, linkPath);
+  const res = runGuard(linkPath, cleanCliConfig);
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /Metered-provider config guard passed/);
+});
+
+test('guard runs when invoked through a symlinked directory (metered config fails)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'metered-guard-dirlink-'));
+  const linkDir = join(dir, 'bin-link');
+  symlinkSync(dirname(guardPath), linkDir, 'dir');
+  const res = runGuard(join(linkDir, 'check-opencode-metered-providers.mjs'), meteredConfig);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /Metered-provider config guard failed/);
+});
+
+test('extra arguments are a usage error, not silently ignored (#7751)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'metered-guard-argv-'));
+  const goodPath = join(dir, 'good.jsonc');
+  const badPath = join(dir, 'bad.jsonc');
+  writeFileSync(goodPath, cleanCliConfig);
+  writeFileSync(badPath, meteredConfig);
+  const run = (argv) => spawnSync(process.execPath, [guardPath, ...argv], { encoding: 'utf8' });
+
+  // Controls: a single config is checked exactly as before.
+  assert.equal(run([goodPath]).status, 0);
+  const badOnly = run([badPath]);
+  assert.equal(badOnly.status, 1);
+  assert.match(badOnly.stderr, /deepseek/);
+
+  // A second positional is never silently dropped: the failing config
+  // can no longer hide behind a passing first argument.
+  const extra = run([goodPath, badPath]);
+  assert.equal(extra.status, 2);
+  assert.match(extra.stderr, /unexpected extra argument/);
+  assert.match(extra.stderr, /bad\.jsonc/);
+
+  // An unknown flag is rejected the same way, before any file is read.
+  const flag = run([goodPath, '--bogus']);
+  assert.equal(flag.status, 2);
+  assert.match(flag.stderr, /--bogus/);
+});
+
+test('importing the guard module does not run main()', () => {
+  const res = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', `import ${JSON.stringify(pathToFileURL(guardPath).href)};`],
+    { encoding: 'utf8' },
+  );
+  assert.equal(res.status, 0);
+  assert.doesNotMatch(res.stdout + res.stderr, /Metered-provider config guard/);
+});

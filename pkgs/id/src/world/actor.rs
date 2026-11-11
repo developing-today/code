@@ -9,6 +9,35 @@ use tracing::Instrument;
 
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 
+/// Reserved tracing target for structured administrative and provider-use audit records.
+pub(crate) const AUDIT_TRACE_TARGET: &str = "id::audit";
+
+/// One structured audit event. `parameters` contains only non-secret action data.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct AuditRecord {
+    /// Independent audit-record schema version.
+    pub(crate) schema_version: u8,
+    /// Unix timestamp in milliseconds.
+    pub(crate) timestamp_ms: u64,
+    /// World that processed the action.
+    pub(crate) world_id: String,
+    /// Public authority or non-secret actor identity.
+    pub(crate) actor: String,
+    /// Stable command or provider-use name.
+    pub(crate) action: String,
+    /// Safe, essential parameters for replay or review.
+    pub(crate) parameters: serde_json::Value,
+    /// `accepted`, `refused`, or a provider-use decision.
+    pub(crate) outcome: String,
+}
+
+fn authority_identity(authority: &Authority) -> String {
+    match authority {
+        Authority::Admin => "admin".to_owned(),
+        Authority::Signed(public_key) => format!("signed:{public_key}"),
+    }
+}
+
 impl WorldCommand {
     pub(crate) fn name(&self) -> &'static str {
         match self {
@@ -18,6 +47,7 @@ impl WorldCommand {
             Self::Directory { .. } => "Directory",
             Self::ApplyDirectory { .. } => "ApplyDirectory",
             Self::Revoke { .. } => "Revoke",
+            Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
             Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
@@ -29,6 +59,7 @@ impl WorldCommand {
             Self::View { .. } => "View",
             Self::ViewAt { .. } => "ViewAt",
             Self::InstallProgram { .. } => "InstallProgram",
+            Self::InstallProgramAuthorized { .. } => "InstallProgramAuthorized",
             Self::Presence { .. } => "Presence",
             Self::UpdateCaps { .. } => "UpdateCaps",
             Self::SetCapsCeiling { .. } => "SetCapsCeiling",
@@ -45,6 +76,7 @@ impl WorldCommand {
             Self::SetFileScope { .. } => "SetFileScope",
             Self::PolicyInfo { .. } => "PolicyInfo",
             Self::Metrics { .. } => "Metrics",
+            Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
             Self::Shutdown { .. } => "Shutdown",
         }
@@ -91,6 +123,17 @@ pub(crate) enum WorldCommand {
         by: Option<u64>,
         reply: oneshot::Sender<bool>,
     },
+    /// Revoke ordered by a joined moderator (design #835 phase 2): the
+    /// actor authorizes the live capability itself and derives the audit
+    /// actor from it; no caller-supplied actor ID is trusted. The reply is
+    /// a `Result` so a journal failure is surfaced instead of being
+    /// reported as an audited success; the in-memory revocation stands
+    /// either way (fail-closed).
+    RevokeAuthorized {
+        token: JoinCapability,
+        participant_id: u64,
+        reply: oneshot::Sender<Result<bool>>,
+    },
     ParticipantId {
         token: JoinCapability,
         reply: oneshot::Sender<Result<u64>>,
@@ -103,6 +146,7 @@ pub(crate) enum WorldCommand {
     Input {
         token: JoinCapability,
         input: Vec<u8>,
+        session_id: Option<SessionId>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
         /// which refuses participants with a bound author key.
@@ -154,6 +198,18 @@ pub(crate) enum WorldCommand {
         installed_by: Option<u64>,
         /// The trust decision that admitted the module, for the audit
         /// journal (#1069). `None` records no decision.
+        trust: Option<crate::world::TrustDecision>,
+        program: Box<dyn WorldProgram>,
+        reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    /// Install ordered by a joined builder (design #835 phase 2): the
+    /// actor authorizes the live capability itself at the mutation
+    /// boundary and derives `installed_by` from it.
+    InstallProgramAuthorized {
+        token: JoinCapability,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
         trust: Option<crate::world::TrustDecision>,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
@@ -241,12 +297,16 @@ pub(crate) enum WorldCommand {
     Metrics {
         reply: oneshot::Sender<MetricsSnapshot>,
     },
+    /// Admin-only consistent snapshot for replayable fixture export.
+    AdminEventHistory {
+        reply: oneshot::Sender<Result<AdminEventHistory>>,
+    },
     /// Atomically capture the journal and subscribe to subsequent durable changes.
     ReplicationFeed {
         reply: oneshot::Sender<
             Result<(
                 String,
-                JournalSnapshot,
+                JournalSnapshotSource,
                 broadcast::Receiver<ReplicationUpdate>,
             )>,
         >,
@@ -289,6 +349,10 @@ pub(crate) struct WorldActor {
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
     pub(crate) storage_failed: bool,
+    /// F12.13 replica mode: the world serves spectators from a verified
+    /// journal and refuses every local mutation and side effect. Set only
+    /// by the replica open path; a writer never runs this way.
+    pub(crate) read_only: bool,
     pub(crate) program_healthy: bool,
     /// Times a `view` or `layout` call trapped. Counted for `id world stats`
     /// (F11.17): a trapping view degrades to an error screen, not a poisoned
@@ -313,12 +377,73 @@ pub(crate) struct WorldActor {
     /// Restored schedules already overdue when the world opened. Their first
     /// fire is marked `late`; a cancel or fire removes the id.
     pub(crate) overdue_at_open: BTreeSet<String>,
+    /// The hosting device's capability manifest (#2338), enumerated
+    /// once by the adapter boundary and cached here: `device.info`
+    /// serves this copy, so repeated program requests never trigger
+    /// device re-enumeration. `None` when the host cannot describe
+    /// its device — `device.info` then refuses with `unknown_cap`.
+    pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
+    /// The connection whose input is being processed. Ephemeral actor context;
+    /// it is deliberately absent from `WorldEvent` and the journal.
+    pub(crate) acting_session: Option<SessionId>,
 }
 
 impl WorldActor {
+    fn audit_record(
+        &self,
+        actor: impl Into<String>,
+        action: &str,
+        parameters: serde_json::Value,
+        outcome: &str,
+    ) {
+        let record = AuditRecord {
+            schema_version: 1,
+            timestamp_ms: self.core.clock().now_ms(),
+            world_id: self.core.world_id().to_owned(),
+            actor: actor.into(),
+            action: action.to_owned(),
+            parameters,
+            outcome: outcome.to_owned(),
+        };
+        if let Ok(json) = serde_json::to_string(&record) {
+            tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
+        } else {
+            tracing::error!(target: AUDIT_TRACE_TARGET, action, "could not serialize audit record");
+        }
+    }
+
+    fn audit_admin_result(
+        &self,
+        actor: impl Into<String>,
+        action: &str,
+        parameters: serde_json::Value,
+        accepted: bool,
+    ) {
+        self.audit_record(
+            actor,
+            action,
+            parameters,
+            if accepted { "accepted" } else { "refused" },
+        );
+    }
+
+    fn audit_provider_decision(&self, capability: &str, decision: &Decision, actor: String) {
+        let outcome = match decision {
+            Decision::Allow => "allowed",
+            Decision::AllowAndGrant => "first_use_grant",
+            Decision::Deny(_) => "denied",
+        };
+        self.audit_record(
+            actor,
+            "provider_use",
+            serde_json::json!({"capability": capability}),
+            outcome,
+        );
+    }
+
     pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>) {
         self.after_change().await;
         loop {
@@ -354,6 +479,7 @@ impl WorldActor {
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
+            self.acting_session = None;
         }
     }
 
@@ -368,7 +494,12 @@ impl WorldActor {
 
     /// The earliest moment the loop must wake: the soonest armed tick or
     /// pending schedule. Schedules wait only while the program can take them.
+    /// A read-only replica never wakes for ticks or schedules: it serves
+    /// spectators from its verified journal and fires nothing locally.
     pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
+        if self.read_only {
+            return None;
+        }
         let deliverable = self.program_healthy && !self.storage_failed;
         let clock = self.core.clock();
         self.ticks
@@ -393,6 +524,22 @@ impl WorldActor {
         Ok(())
     }
 
+    /// Refuse a local mutation on a read-only replica (F12.13), or when
+    /// storage failed on a writer. Replicas carry no journal to append to
+    /// and must never originate authoritative events.
+    fn check_not_replica(&self) -> Result<()> {
+        ensure!(
+            !self.read_only,
+            "world is read-only (replica); local mutations are refused"
+        );
+        Ok(())
+    }
+
+    fn check_writable(&self) -> Result<()> {
+        self.check_not_replica()?;
+        self.check_storage()
+    }
+
     fn record_issued(
         &mut self,
         issued: (Participant, JoinCapability),
@@ -408,6 +555,10 @@ impl WorldActor {
     /// Durably record `entry`, or turn the world read-only.
     fn persist(&mut self, entry: JournalEntry) -> Result<()> {
         ensure!(
+            !self.read_only,
+            "world is read-only (replica); local mutations are refused"
+        );
+        ensure!(
             !self.storage_failed,
             "world storage failed; the world is read-only"
         );
@@ -421,9 +572,20 @@ impl WorldActor {
             if let Err(error) = journal.append(&entry) {
                 self.storage_failed = true;
                 tracing::error!("world journal append failed: {error:#}");
+                if version_before != journal.replication_header_version() {
+                    let _ = replication_sender.send(ReplicationUpdate::ResetFailed);
+                }
                 return Err(error.context("world storage failed; the world is read-only"));
             }
             self.metrics.record_journal_append(started.elapsed());
+            // Write locality (#2275): an entity-addressed input is a
+            // region-scoped write, so it lands in the locality table
+            // under its entity reference.
+            if let JournalEntry::Committed { event } | JournalEntry::System { event } = &entry {
+                if let WorldEventKind::EntityInput { entity_ref, .. } = &event.kind {
+                    self.metrics.record_write_locality(entity_ref);
+                }
+            }
             if let Some(header_version) = journal.replication_header_version() {
                 if version_before != Some(header_version) {
                     let update = journal
@@ -447,6 +609,26 @@ impl WorldActor {
         Ok(())
     }
 
+    /// Durably record related entries as one transaction, or turn the world
+    /// read-only. Builder install events and their audit attribution must never
+    /// be split across a crash.
+    fn persist_transaction(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.storage_failed,
+            "world storage failed; the world is read-only"
+        );
+        if let Some(journal) = self.journal.as_mut() {
+            let started = std::time::Instant::now();
+            if let Err(error) = journal.append_transaction(entries) {
+                self.storage_failed = true;
+                tracing::error!("world journal transaction failed: {error:#}");
+                return Err(error.context("world storage failed; the world is read-only"));
+            }
+            self.metrics.record_journal_append(started.elapsed());
+        }
+        Ok(())
+    }
+
     /// Publish freshly recomputed records. Participant events push their own
     /// view frame right after the event; host events signal the views watch.
     fn republished(&mut self, records: Records, sequence: u64) {
@@ -457,7 +639,12 @@ impl WorldActor {
     /// impossible (the program must accept it for the journal to be true), so
     /// the order is update, then journal, exactly like participant input.
     /// Returns whether the program accepted the event and it was journaled.
+    /// A read-only replica never delivers: host events are authoritative
+    /// program effects and must not originate from a replica.
     async fn deliver(&mut self, text: String) -> bool {
+        if self.read_only {
+            return false;
+        }
         if !self.program_healthy || self.storage_failed {
             return false;
         }
@@ -486,8 +673,13 @@ impl WorldActor {
                 return false;
             }
         }
-        let journaled = self.persist(JournalEntry::System { event }).is_ok();
+        let journaled = self
+            .persist(JournalEntry::System {
+                event: event.clone(),
+            })
+            .is_ok();
         if journaled {
+            self.core.record_admin_history(event);
             self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         }
         let _ = self.view_changed.send(self.core.sequence);
@@ -497,8 +689,13 @@ impl WorldActor {
     /// Recompute the program's `wants` and serve the delta: new subscriptions
     /// (armed or refused), new requests (executed, result delivered). Passes
     /// repeat while the program reacts to delivered results, so a chain of
-    /// asks settles inside one change.
+    /// asks settles inside one change. A read-only replica never runs this:
+    /// program requests are side effects (chat.say, schedule.at) that must
+    /// not originate from a replica.
     pub(crate) async fn after_change(&mut self) {
+        if self.read_only {
+            return;
+        }
         for _ in 0..64 {
             if !self.program_healthy || self.storage_failed {
                 break;
@@ -575,7 +772,9 @@ impl WorldActor {
                 }
                 continue;
             }
-            match self.core.ledger.decide(sub.cap()) {
+            let decision = self.core.ledger.decide(sub.cap());
+            self.audit_provider_decision(sub.cap(), &decision, "program".to_owned());
+            match decision {
                 Decision::Allow => self.arm(sub),
                 Decision::AllowAndGrant => {
                     let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
@@ -617,6 +816,9 @@ impl WorldActor {
 
     /// Deliver one tick event per due interval and re-arm.
     pub(crate) async fn fire_ticks(&mut self) {
+        if self.read_only {
+            return;
+        }
         let now = self.core.clock().now_instant();
         let due: Vec<u64> = self
             .ticks
@@ -643,7 +845,11 @@ impl WorldActor {
     /// fire is delivered as a tick is, and its schedule is consumed only after
     /// that delivery is journaled. A refused fire, or one that could not be
     /// journaled, leaves its schedule pending, so the next run delivers it.
+    /// A read-only replica never fires: schedules are writer authority.
     pub(crate) async fn fire_schedules(&mut self) {
+        if self.read_only {
+            return;
+        }
         let now = self.core.clock().now_ms();
         let mut due: Vec<(u64, String)> = self
             .core
@@ -680,7 +886,12 @@ impl WorldActor {
                 .effective_scopes(participant)
                 .is_some_and(|scopes| scopes.allows_effect(&request.cap)),
         };
-        match self.core.ledger.decide_for(&request.cap, actor_permits) {
+        let decision = self.core.ledger.decide_for(&request.cap, actor_permits);
+        let actor = self
+            .acting
+            .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
+        self.audit_provider_decision(&request.cap, &decision, actor);
+        match decision {
             Decision::Allow => {}
             Decision::AllowAndGrant => {
                 let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
@@ -696,6 +907,7 @@ impl WorldActor {
                 "world": self.core.world_id,
                 "sequence": self.core.sequence,
             })),
+            "device.info" => self.execute_device_info(&request.args),
             "chat.say" => self.execute_chat(&request.args),
             "chat.history" => Ok(serde_json::json!({
                 "lines": chat_history(
@@ -715,6 +927,21 @@ impl WorldActor {
         }
     }
 
+    /// `device.info` (#2338): the hosting device's capability
+    /// manifest, in the v1 shape the taxonomy specifies. The manifest
+    /// comes from the adapter boundary's cached copy — this provider
+    /// never enumerates the device itself. A host that cannot
+    /// describe its device refuses with `unknown_cap`, and a request
+    /// naming a manifest version this host does not speak is refused
+    /// rather than silently interpreted.
+    fn execute_device_info(&self, args: &serde_json::Value) -> Result<serde_json::Value, CapError> {
+        crate::world_caps::DeviceManifest::requested_version(args)?;
+        let Some(manifest) = &self.device_manifest else {
+            return Err(CapError::unknown());
+        };
+        Ok(manifest.to_json())
+    }
+
     fn players_list(&self) -> Vec<serde_json::Value> {
         self.core
             .participants()
@@ -732,6 +959,10 @@ impl WorldActor {
     /// `records.read`: a byte-bounded, prefix-scoped page of the world's
     /// published records, key-ordered with the same exclusive `after` cursor
     /// the session protocol uses. Follow `next_after` while it is non-empty.
+    /// The page is bounded by the cap-result budget
+    /// (world_caps::MAX_RECORDS_RESULT_PAGE_BYTES), not the session
+    /// protocol's larger page budget, so an admitted page always fits
+    /// the result event that delivers it (#4888).
     fn execute_records_read(
         &self,
         args: &serde_json::Value,
@@ -754,8 +985,12 @@ impl WorldActor {
             {
                 continue;
             }
-            let size = key.len() + serde_json::to_vec(value).map_or(0, |v| v.len()) + 8;
-            if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+            // Count the entry as it will actually be serialized in
+            // the result value, plus one byte for its array comma.
+            let size = serde_json::to_vec(&serde_json::json!({"key": key, "value": value}))
+                .map_or(usize::MAX, |entry| entry.len())
+                + 1;
+            if used + size > crate::world_caps::MAX_RECORDS_RESULT_PAGE_BYTES {
                 if page.is_empty() {
                     return Err(CapError::bad_args());
                 }
@@ -777,7 +1012,7 @@ impl WorldActor {
         let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
             return Err(CapError::bad_args());
         };
-        match self.core.system_chat(text) {
+        match self.core.prepare_system_chat(text) {
             Ok(event) => {
                 if self
                     .persist(JournalEntry::Committed {
@@ -785,6 +1020,9 @@ impl WorldActor {
                     })
                     .is_err()
                 {
+                    return Err(CapError::failed());
+                }
+                if self.core.commit_prepared(event.clone()).is_err() {
                     return Err(CapError::failed());
                 }
                 let _ = self.event_sender.send(event.clone());
@@ -928,6 +1166,7 @@ impl WorldActor {
     }
 
     fn set_isolation(&mut self, authority: &Authority, isolation: Isolation) -> Result<Isolation> {
+        self.check_writable()?;
         self.require_moderation(authority, "changes isolation")?;
         self.persist(JournalEntry::Isolation { isolation })?;
         self.core.isolation = isolation;
@@ -939,6 +1178,7 @@ impl WorldActor {
         authority: &Authority,
         enabled: bool,
     ) -> Result<WorldPolicy> {
+        self.check_writable()?;
         self.require_moderation(authority, "changes cross-world writes")?;
         if !enabled && self.core.cross_world_forced && *authority != Authority::Admin {
             return Err(crate::directory::Refusal::Forbidden(
@@ -956,6 +1196,7 @@ impl WorldActor {
     }
 
     fn force_cross_world_write(&mut self, authority: &Authority) -> Result<WorldPolicy> {
+        self.check_writable()?;
         if *authority != Authority::Admin {
             return Err(crate::directory::Refusal::Forbidden(
                 "only the admin forces cross-world writes".to_owned(),
@@ -981,6 +1222,7 @@ impl WorldActor {
         scope: FileScope,
         write_override: Option<bool>,
     ) -> Result<WorldPolicy> {
+        self.check_writable()?;
         self.require_moderation(authority, "changes the file scope")?;
         if write_override.is_some() && *authority != Authority::Admin {
             return Err(crate::directory::Refusal::Forbidden(
@@ -1001,6 +1243,7 @@ impl WorldActor {
     /// subscriptions the ceiling excludes are refused from here on. Grants are
     /// kept, so lifting the ceiling again restores them.
     fn set_caps_ceiling(&mut self, ceiling: Vec<String>) -> Result<CapsReport> {
+        self.check_writable()?;
         crate::world_caps::validate_ceiling_names(&ceiling)?;
         let ceiling: BTreeSet<String> = ceiling.into_iter().collect();
         self.persist(JournalEntry::CapsCeiling {
@@ -1054,9 +1297,10 @@ impl WorldActor {
                 "deny"
             }
             .to_owned(),
-            catalog: crate::world_caps::CATALOG
-                .iter()
-                .map(|name| (*name).to_owned())
+            catalog: crate::world_caps::PROVIDER_REGISTRY
+                .ordered_names()
+                .into_iter()
+                .map(str::to_owned)
                 .collect(),
             ceiling: self.core.caps_ceiling.iter().cloned().collect(),
             effective,
@@ -1072,10 +1316,28 @@ impl WorldActor {
                 bounds,
                 reply,
             } => {
-                let result = self.check_storage().and_then(|()| {
+                let result = self.check_writable().and_then(|()| {
                     let issued = self.core.issue_capability(&name, scopes, bounds)?;
                     self.record_issued(issued)
                 });
+                // Issuance grants participant access, so it belongs in the
+                // audit trail alongside Revoke: record the non-secret
+                // identity, scopes, bounds, and outcome. The capability
+                // token itself is a secret and is never recorded.
+                let parameters = match &result {
+                    Ok((participant, _)) => serde_json::json!({
+                        "participant_id": participant.id,
+                        "name": participant.display_name,
+                        "scopes": format!("{scopes:?}"),
+                        "bounds": format!("{bounds:?}"),
+                    }),
+                    Err(_) => serde_json::json!({
+                        "name": name,
+                        "scopes": format!("{scopes:?}"),
+                        "bounds": format!("{bounds:?}"),
+                    }),
+                };
+                self.audit_admin_result("admin", "Issue", parameters, result.is_ok());
                 let _ = reply.send(result);
             }
             WorldCommand::Attenuate {
@@ -1085,7 +1347,7 @@ impl WorldActor {
                 bounds,
                 reply,
             } => {
-                let result = self.check_storage().and_then(|()| {
+                let result = self.check_writable().and_then(|()| {
                     let issued = self.core.attenuate(&token, scopes, bounds, &name)?;
                     self.record_issued(issued)
                 });
@@ -1099,7 +1361,7 @@ impl WorldActor {
                 bounds,
                 reply,
             } => {
-                let result = self.check_storage().and_then(|()| {
+                let result = self.check_writable().and_then(|()| {
                     let issued = self
                         .core
                         .delegate_to_friend(&token, &friend, scopes, bounds, &name)?;
@@ -1113,6 +1375,21 @@ impl WorldActor {
                 outbox,
                 reply,
             } => {
+                // Directory facts are replica state: refuse local changes,
+                // but keep the directory's read-only views and artifact
+                // reads available through the same service.
+                if self.read_only
+                    && !matches!(
+                        &action,
+                        crate::directory_view::DirectoryAction::View
+                            | crate::directory_view::DirectoryAction::ReadArtifacts { .. }
+                    )
+                {
+                    let _ = reply.send(Err(anyhow::anyhow!(
+                        "world is read-only (replica); local mutations are refused"
+                    )));
+                    return;
+                }
                 let world = self.core.world_id().to_owned();
                 let now = unix_ms();
                 let (directory, petnames) = self.core.directory_and_petnames_mut();
@@ -1138,15 +1415,36 @@ impl WorldActor {
                 let _ = reply.send(result);
             }
             WorldCommand::ApplyDirectory { entry, reply } => {
-                let _ = reply.send(self.core.directory_mut().apply(&entry));
+                // See `Directory` above: replicas never apply local entries.
+                let result = self
+                    .check_not_replica()
+                    .and_then(|()| self.core.directory_mut().apply(&entry));
+                let _ = reply.send(result);
             }
             WorldCommand::Revoke {
                 participant_id,
                 by,
                 reply,
             } => {
-                // Revocation takes effect in memory even if storage failed:
-                // denying access is always the safe side.
+                // Revocation takes effect in memory even if storage failed on
+                // a writer: denying access is always the safe side. A
+                // read-only replica still refuses: revocations arrive through
+                // the verified journal, never as local commands. Report
+                // nothing revoked, like an unknown participant.
+                if self.read_only {
+                    // The replica refusal is a processed administrative
+                    // outcome and belongs in the audit trail, like the
+                    // writability refusals: emit exactly one refused
+                    // record before returning (Codex finding on PR #4017).
+                    self.audit_admin_result(
+                        by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "Revoke",
+                        serde_json::json!({"participant_id": participant_id, "changed": false}),
+                        false,
+                    );
+                    let _ = reply.send(false);
+                    return;
+                }
                 let revoked = self.core.revoke_tree(participant_id);
                 let was_active = !revoked.is_empty();
                 if was_active {
@@ -1155,7 +1453,63 @@ impl WorldActor {
                         let _ = self.revocation_sender.send(id);
                     }
                 }
+                self.audit_admin_result(
+                    by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                    "Revoke",
+                    serde_json::json!({"participant_id": participant_id, "changed": was_active}),
+                    true,
+                );
                 let _ = reply.send(was_active);
+            }
+            WorldCommand::RevokeAuthorized {
+                token,
+                participant_id,
+                reply,
+            } => {
+                let result = match self.core.authorize(&token, WorldScopes::MODERATOR) {
+                    Err(error) => Err(error),
+                    Ok(by) => {
+                        if self.read_only {
+                            self.audit_admin_result(
+                                format!("participant:{by}"),
+                                "RevokeAuthorized",
+                                serde_json::json!({"participant_id": participant_id, "changed": false}),
+                                false,
+                            );
+                            Ok(false)
+                        } else {
+                            let revoked = self.core.revoke_tree(participant_id);
+                            let was_active = !revoked.is_empty();
+                            if was_active {
+                                // Fail-closed: the in-memory revocation and
+                                // the disconnects stand even if the journal
+                                // append fails, but the failure is surfaced
+                                // rather than reported as an audited success
+                                // (design #835 phase 2).
+                                let persisted = self.persist(JournalEntry::Revoked {
+                                    participant_id,
+                                    by: Some(by),
+                                });
+                                for id in revoked {
+                                    let _ = self.revocation_sender.send(id);
+                                }
+                                self.audit_admin_result(
+                                    format!("participant:{by}"),
+                                    "RevokeAuthorized",
+                                    serde_json::json!({"participant_id": participant_id, "changed": was_active}),
+                                    persisted.is_ok(),
+                                );
+                                match persisted {
+                                    Ok(()) => Ok(true),
+                                    Err(error) => Err(error),
+                                }
+                            } else {
+                                Ok(false)
+                            }
+                        }
+                    }
+                };
+                let _ = reply.send(result);
             }
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
@@ -1165,7 +1519,12 @@ impl WorldActor {
                 author_key,
                 reply,
             } => {
-                let _ = reply.send(self.core.bind_author_key(&token, author_key));
+                // Author-key bindings change what later inputs the world
+                // accepts; a replica takes no such local state.
+                let result = self
+                    .check_writable()
+                    .and_then(|()| self.core.bind_author_key(&token, author_key));
+                let _ = reply.send(result);
             }
             WorldCommand::Presence {
                 participant,
@@ -1179,11 +1538,13 @@ impl WorldActor {
                         "world storage failed; the world is read-only"
                     ))
                 } else {
-                    self.core.chat(&token, &text).and_then(|event| {
-                        self.persist(JournalEntry::Committed {
-                            event: event.clone(),
-                        })?;
-                        Ok(event)
+                    self.check_writable().and_then(|()| {
+                        self.core.prepare_chat(&token, &text).and_then(|event| {
+                            self.persist(JournalEntry::Committed {
+                                event: event.clone(),
+                            })?;
+                            self.core.commit_prepared(event)
+                        })
                     })
                 };
                 if let Ok(event) = &result {
@@ -1194,9 +1555,16 @@ impl WorldActor {
             WorldCommand::Input {
                 token,
                 input,
+                session_id,
                 signed_move,
                 reply,
             } => {
+                // Refuse before touching the program: a replica must not
+                // run participant inputs through its program instance.
+                if let Err(error) = self.check_writable() {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
                 let prepared = match &signed_move {
                     Some(bytes) => self
                         .core
@@ -1213,6 +1581,7 @@ impl WorldActor {
                     )),
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
+                        self.acting_session = session_id;
                         match self
                             .program
                             .update(&candidate)
@@ -1343,11 +1712,36 @@ impl WorldActor {
                                         match self.program.view(&viewer) {
                                             Ok(fallback_view) => {
                                                 if let Some(fallback_text) = fallback_view {
-                                                    if let Ok(Some(crate::world_presentation::WorldSurface::Screen(surface))) = crate::world_presentation::parse_surface(&fallback_text) {
+                                                    // #942: the fallback result is bound by the
+                                                    // same presentation_bytes limit that sent us
+                                                    // here. A cropped screen is checked after
+                                                    // serialization; a serialization failure
+                                                    // never returns the unchecked original text.
+                                                    let bounded = if let Ok(Some(crate::world_presentation::WorldSurface::Screen(surface))) = crate::world_presentation::parse_surface(&fallback_text) {
                                                         let cropped = surface.fit(usize::from(width), usize::from(height));
-                                                        Ok(Some(serde_json::to_string(&cropped).unwrap_or(fallback_text)))
+                                                        serde_json::to_string(&cropped).ok()
                                                     } else {
-                                                        Ok(Some(fallback_text))
+                                                        Some(fallback_text)
+                                                    };
+                                                    match bounded {
+                                                        Some(text)
+                                                            if text.len()
+                                                                <= self
+                                                                    .core
+                                                                    .limits
+                                                                    .presentation_bytes =>
+                                                        {
+                                                            Ok(Some(text))
+                                                        }
+                                                        _ => {
+                                                            self.view_failures = self
+                                                                .view_failures
+                                                                .saturating_add(1);
+                                                            Err(anyhow::anyhow!(
+                                                                "world presentation exceeds {} bytes",
+                                                                self.core.limits.presentation_bytes
+                                                            ))
+                                                        }
                                                     }
                                                 } else {
                                                     Ok(None)
@@ -1389,11 +1783,33 @@ impl WorldActor {
                 program: mut replacement,
                 reply,
             } => {
+                // Refuse before touching the replacement program: installs
+                // are writer authority.
+                if let Err(error) = self.check_writable() {
+                    // The writability refusal is a processed administrative
+                    // outcome and belongs in the audit trail, like the
+                    // refusals whose writability checks run inside the
+                    // recorded result below: emit exactly one record for it.
+                    self.audit_admin_result(
+                        installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "InstallProgram",
+                        serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                        false,
+                    );
+                    let _ = reply.send(Err(error));
+                    return;
+                }
                 // A program whose initial records are invalid is refused
                 // before anything is journaled.
                 let new_records = match program_records(replacement.as_mut()) {
                     Ok(records) => records.unwrap_or_default(),
                     Err(error) => {
+                        self.audit_admin_result(
+                            installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                            "InstallProgram",
+                            serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                            false,
+                        );
                         let _ = reply.send(Err(error.context("new world program records failed")));
                         return;
                     }
@@ -1410,23 +1826,24 @@ impl WorldActor {
                         trust: trust.clone(),
                     },
                 };
-                let result = self
-                    .persist(JournalEntry::Committed {
-                        event: candidate.clone(),
-                    })
-                    .and_then(|()| {
-                        // The builder authority leaves a journal-only audit
-                        // record, alongside the install event.
-                        if let Some(by) = installed_by {
-                            return self.persist(JournalEntry::BuilderInstalled {
-                                by,
-                                module_hash: module_hash.clone(),
-                                seed,
-                            });
-                        }
-                        Ok(())
-                    })
-                    .and_then(|()| self.core.commit_prepared(candidate));
+                let install_event = JournalEntry::Committed {
+                    event: candidate.clone(),
+                };
+                let persisted = if let Some(by) = installed_by {
+                    // The builder authority leaves a journal-only audit
+                    // record. Persist it atomically with the install event.
+                    self.persist_transaction(&[
+                        install_event,
+                        JournalEntry::BuilderInstalled {
+                            by,
+                            module_hash: module_hash.clone(),
+                            seed,
+                        },
+                    ])
+                } else {
+                    self.persist(install_event)
+                };
+                let result = persisted.and_then(|()| self.core.commit_prepared(candidate));
                 let result = match result {
                     Ok(event) => {
                         if let WorldEventKind::ProgramInstalled { module_hash, .. } = &event.kind {
@@ -1448,14 +1865,64 @@ impl WorldActor {
                     }
                     Err(error) => Err(error),
                 };
+                self.audit_admin_result(
+                    installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                    "InstallProgram",
+                    serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
+            }
+            WorldCommand::InstallProgramAuthorized {
+                token,
+                module_hash,
+                seed,
+                provenance,
+                trust,
+                program,
+                reply,
+            } => {
+                // The actor authorizes the live capability at the mutation
+                // boundary and derives the audit actor from it; no
+                // caller-supplied participant ID is trusted (design #835
+                // phase 2). On success the install runs through the exact
+                // admin install path with `installed_by` set, so the
+                // Committed + BuilderInstalled transaction is unchanged.
+                match self.core.authorize(&token, WorldScopes::BUILDER) {
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                    Ok(by) => {
+                        let (inner_reply, inner_result) = oneshot::channel();
+                        Box::pin(self.handle(WorldCommand::InstallProgram {
+                            module_hash,
+                            seed,
+                            provenance,
+                            installed_by: Some(by),
+                            trust,
+                            program,
+                            reply: inner_reply,
+                        }))
+                        .await;
+                        let result = match inner_result.await {
+                            Ok(result) => result,
+                            Err(_) => Err(anyhow::anyhow!("world actor dropped install response")),
+                        };
+                        let _ = reply.send(result);
+                    }
+                }
             }
             WorldCommand::UpdateCaps {
                 grant,
                 revoke,
                 reply,
             } => {
+                let audit_parameters = serde_json::json!({
+                    "grant": grant.clone(),
+                    "revoke": revoke.clone(),
+                });
                 let result = (|| -> Result<CapsReport> {
+                    self.check_writable()?;
                     crate::world_caps::validate_grant_names(&grant)?;
                     crate::world_caps::validate_grant_names(&revoke)?;
                     let mut granted: BTreeSet<String> =
@@ -1471,15 +1938,25 @@ impl WorldActor {
                     self.reconcile_subscriptions();
                     self.caps_report()
                 })();
+                self.audit_admin_result("admin", "UpdateCaps", audit_parameters, result.is_ok());
                 let _ = reply.send(result);
             }
             WorldCommand::SetCapsCeiling { ceiling, reply } => {
+                let audit_parameters = serde_json::json!({"ceiling": ceiling.clone()});
                 let result = self.set_caps_ceiling(ceiling);
+                self.audit_admin_result(
+                    "admin",
+                    "SetCapsCeiling",
+                    audit_parameters,
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::SetExecutionProfile { profile, reply } => {
+                let audit_parameters = serde_json::json!({"profile": format!("{profile:?}")});
                 let result = self
-                    .persist(JournalEntry::ExecutionProfile { profile })
+                    .check_writable()
+                    .and_then(|()| self.persist(JournalEntry::ExecutionProfile { profile }))
                     .map(|()| {
                         self.core.execution_profile = profile;
                         ExecutionProfileUpdate {
@@ -1487,16 +1964,36 @@ impl WorldActor {
                             applies_on_next_program_install_or_process_restart: true,
                         }
                     });
+                self.audit_admin_result(
+                    "admin",
+                    "SetExecutionProfile",
+                    audit_parameters,
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::ExecutionProfileInfo { reply } => {
-                let _ = reply.send(self.core.execution_profile);
+                let profile = self.core.execution_profile;
+                // No audit record, for the same reason as Metrics below:
+                // the execution profile is readable by any joined
+                // participant holding a capability (the session layer's
+                // ExecutionProfileInfo frame), so an admin audit record
+                // would misattribute a participant read.
+                let _ = reply.send(profile);
             }
             WorldCommand::ManifestState { reply } => {
-                let _ = reply.send((self.core.active_seed, self.core.schedules.clone()));
+                let state = (self.core.active_seed, self.core.schedules.clone());
+                // No audit record, for the same reason as Metrics below:
+                // the session layer's WorldState frame accepts a
+                // participant capability (only the seed is withheld from
+                // non-admin callers there), so an admin audit record
+                // would misattribute a participant read.
+                let _ = reply.send(state);
             }
             WorldCommand::AdminScheduleAt { id, at_ms, reply } => {
+                let audit_id = id.clone();
                 let result = (|| -> Result<BTreeMap<String, u64>> {
+                    self.check_writable()?;
                     if self.core.schedules.get(&id) == Some(&at_ms) {
                         return Ok(self.core.schedules.clone());
                     }
@@ -1521,10 +2018,17 @@ impl WorldActor {
                     self.core.schedules.insert(id, at_ms);
                     Ok(self.core.schedules.clone())
                 })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminScheduleAt",
+                    serde_json::json!({"id": audit_id, "at_ms": at_ms}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::AdminCancelSchedule { id, reply } => {
                 let result = (|| -> Result<BTreeMap<String, u64>> {
+                    self.check_writable()?;
                     crate::world_caps::validate_schedule_id(&id)?;
                     if self.core.schedules.contains_key(&id) {
                         self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
@@ -1533,6 +2037,12 @@ impl WorldActor {
                     }
                     Ok(self.core.schedules.clone())
                 })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminCancelSchedule",
+                    serde_json::json!({"id": id.clone()}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::SetIsolation {
@@ -1541,10 +2051,21 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.set_isolation(&authority, isolation);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "SetIsolation",
+                    serde_json::json!({"isolation": format!("{isolation:?}")}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::IsolationInfo { reply } => {
-                let _ = reply.send(self.core.isolation());
+                let isolation = self.core.isolation();
+                // No audit record, for the same reason as Metrics below:
+                // the isolation is readable without any caller identity
+                // (the handle's isolation() takes no authority), so an
+                // admin audit record would falsify the audit actor.
+                let _ = reply.send(isolation);
             }
             WorldCommand::SetCrossWorldWrite {
                 authority,
@@ -1552,10 +2073,22 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.set_cross_world_write(&authority, enabled);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "SetCrossWorldWrite",
+                    serde_json::json!({"enabled": enabled}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::ForceCrossWorldWrite { authority, reply } => {
                 let result = self.force_cross_world_write(&authority);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "ForceCrossWorldWrite",
+                    serde_json::json!({}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::SetFileScope {
@@ -1565,31 +2098,80 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.set_file_scope(&authority, scope, write_override);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "SetFileScope",
+                    serde_json::json!({
+                        "scope": format!("{scope:?}"),
+                        "write_override": write_override,
+                    }),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::PolicyInfo { reply } => {
-                let _ = reply.send(self.core.policy());
+                let policy = self.core.policy();
+                // No audit record, for the same reason as Metrics below:
+                // the policy is read by the cross-world gate on every
+                // access check and by any handle holder, with no caller
+                // identity, so an admin audit record would falsify the
+                // audit actor and flood the trail.
+                let _ = reply.send(policy);
             }
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
-                let _ = reply.send(self.metrics.snapshot(sessions));
+                let metrics = self.metrics.snapshot(sessions);
+                // No audit record: metrics are readable by any joined
+                // participant holding a capability (the session layer's
+                // Metrics frame), so recording the read as admin would
+                // falsify the audit actor. Participant-readable queries are
+                // not administrative actions and stay out of the audit trail.
+                let _ = reply.send(metrics);
+            }
+            WorldCommand::AdminEventHistory { reply } => {
+                let result = (|| -> Result<AdminEventHistory> {
+                    ensure!(
+                        !self.storage_failed,
+                        "world storage failed; admin history is unavailable"
+                    );
+                    let records = self.records_sender.borrow().1.as_ref().clone();
+                    Ok(AdminEventHistory {
+                        world_id: self.core.world_id.clone(),
+                        module_hash: self.core.active_module_hash.clone(),
+                        current_sequence: self.core.sequence,
+                        complete: self.core.admin_history_complete,
+                        events: self.core.admin_history.iter().cloned().collect(),
+                        records,
+                    })
+                })();
+                let _ = reply.send(result);
             }
             WorldCommand::ReplicationFeed { reply } => {
-                // Subscribe before capturing the image. The actor is the only
-                // journal owner and processes commands serially, so no durable
-                // append can fall between these two operations.
-                let updates = self.replication_sender.subscribe();
-                let world_id = self.core.world_id().to_owned();
-                let result = self
-                    .journal
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
-                    .and_then(|journal| journal.replication_snapshot())
-                    .map(|snapshot| (world_id, snapshot, updates));
+                let result = if self.storage_failed {
+                    Err(anyhow::anyhow!(
+                        "world storage failed; replication feed is unavailable"
+                    ))
+                } else {
+                    // Subscribe before capturing the image. The actor is the
+                    // only journal owner and processes commands serially, so
+                    // no durable append can fall between these two operations.
+                    let updates = self.replication_sender.subscribe();
+                    let world_id = self.core.world_id().to_owned();
+                    self.journal
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
+                        .and_then(|journal| journal.replication_snapshot_source())
+                        .map(|snapshot_source| (world_id, snapshot_source, updates))
+                };
                 let _ = reply.send(result);
             }
             WorldCommand::CapsInfo { reply } => {
-                let _ = reply.send(self.caps_report());
+                let report = self.caps_report();
+                // No audit record, for the same reason as Metrics above:
+                // the capability report is readable by joined participants
+                // (the session layer's Caps frame), so an admin audit
+                // record would misattribute a participant read.
+                let _ = reply.send(report);
             }
             WorldCommand::Shutdown { .. } => unreachable!("handled by run"),
         }
@@ -1598,7 +2180,8 @@ impl WorldActor {
     /// Trim the journal behind a verified snapshot, at most once per run of
     /// commits and never while the program cannot snapshot.
     async fn compact_if_due(&mut self) {
-        if self.compaction_off
+        if self.read_only
+            || self.compaction_off
             || self.storage_failed
             || !self.program_healthy
             || !self.core.checkpoint_due()
@@ -1686,6 +2269,75 @@ mod replication_feed_tests {
         }
     }
 
+    /// Write a complete journal entry, then fail as though `sync_data`
+    /// returned an error. The bytes remain visible to readers but are not
+    /// confirmed durable, matching the failure window in `FileJournal`.
+    struct SyncDataFailingJournal {
+        path: std::path::PathBuf,
+        version: u32,
+        entries: Vec<JournalEntry>,
+    }
+
+    impl SyncDataFailingJournal {
+        fn new(path: &std::path::Path) -> Self {
+            let entries = vec![JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            }];
+            std::fs::write(
+                path,
+                entries
+                    .iter()
+                    .flat_map(journal_entry_line)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+            Self {
+                path: path.to_owned(),
+                version: 1,
+                entries,
+            }
+        }
+    }
+
+    impl WorldJournal for SyncDataFailingJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            let required_version = journal_version_required_by(entry);
+            if required_version > self.version {
+                self.version = required_version;
+                if let Some(JournalEntry::Created { version, .. }) = self.entries.first_mut() {
+                    *version = required_version;
+                }
+            }
+            self.entries.push(entry.clone());
+
+            // This succeeds like `write_all`, leaving a complete newline-
+            // terminated entry; the error models `sync_data` failing after
+            // that write.
+            std::fs::write(
+                &self.path,
+                self.entries
+                    .iter()
+                    .flat_map(journal_entry_line)
+                    .collect::<Vec<_>>(),
+            )?;
+            Err(anyhow::anyhow!(
+                "simulated sync_data failure after complete write"
+            ))
+        }
+
+        fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+            Ok(JournalSnapshot {
+                header_version: self.version,
+                bytes: std::fs::read(&self.path)?,
+            })
+        }
+
+        fn replication_header_version(&self) -> Option<u32> {
+            Some(self.version)
+        }
+    }
+
     #[test]
     fn header_bump_publishes_a_reset_instead_of_a_tail() {
         let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
@@ -1725,6 +2377,66 @@ mod replication_feed_tests {
     }
 
     #[tokio::test]
+    async fn new_replication_feed_refuses_complete_unconfirmed_entry_after_sync_failure() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let journal = SyncDataFailingJournal::new(&path);
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let mut actor =
+            WorldActor::for_test(core, Box::new(SnapshotProgram), Some(Box::new(journal)));
+
+        let unconfirmed = JournalEntry::Isolation {
+            isolation: Isolation::Unisolated,
+        };
+        assert!(actor.persist(unconfirmed.clone()).is_err());
+        assert!(actor.storage_failed);
+
+        let bytes = std::fs::read(path).unwrap();
+        assert!(
+            bytes.ends_with(b"\n"),
+            "the failed append wrote a complete line"
+        );
+        let written: Vec<JournalEntry> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(written.last(), Some(&unconfirmed));
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let feed = response.await.unwrap();
+        assert!(
+            feed.is_err(),
+            "a new feed must not receive a snapshot containing the failed append"
+        );
+    }
+
+    #[test]
+    fn sync_failure_after_header_bump_publishes_reset_failed() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let journal = SyncDataFailingJournal::new(&path);
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let mut actor =
+            WorldActor::for_test(core, Box::new(SnapshotProgram), Some(Box::new(journal)));
+        let mut updates = actor.replication_sender.subscribe();
+        let profile = actor.core.execution_profile();
+
+        let result = actor.persist(JournalEntry::ExecutionProfile { profile });
+
+        assert!(result.is_err());
+        assert_eq!(
+            actor.journal.as_ref().unwrap().replication_header_version(),
+            Some(2)
+        );
+        assert!(matches!(
+            updates.try_recv().unwrap(),
+            ReplicationUpdate::ResetFailed
+        ));
+    }
+
+    #[tokio::test]
     async fn journal_compaction_publishes_a_reset_snapshot() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("journal.jsonl");
@@ -1745,6 +2457,81 @@ mod replication_feed_tests {
         };
         assert_eq!(snapshot.bytes, std::fs::read(path).unwrap());
         assert!(snapshot.bytes.ends_with(b"\n"));
+    }
+}
+
+#[cfg(test)]
+mod device_info_tests {
+    use super::*;
+    use crate::world_caps::{CapError, DeviceManifest};
+
+    struct DeviceInfoProgram;
+
+    impl WorldProgram for DeviceInfoProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            Ok(Some("{}".to_owned()))
+        }
+    }
+
+    fn granted_actor() -> WorldActor {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["device.info".to_owned()]));
+        WorldActor::for_test(core, Box::new(DeviceInfoProgram), None)
+    }
+
+    fn sample_manifest() -> DeviceManifest {
+        DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        }
+    }
+
+    fn request(args: serde_json::Value) -> Request {
+        Request {
+            id: "d1".to_owned(),
+            cap: "device.info".to_owned(),
+            args,
+        }
+    }
+
+    #[test]
+    fn device_info_result_round_trips_through_the_result_event() {
+        // Oracle: the declared v1 manifest contract (taxonomy §3.1) —
+        // the value delivered in the normal result event is the
+        // manifest the adapter boundary supplied.
+        let mut actor = granted_actor();
+        actor.device_manifest = Some(sample_manifest());
+        let outcome = actor.execute(&request(serde_json::json!({})));
+        let event = crate::world_caps::result_event("d1", outcome);
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["cap"], "result");
+        assert_eq!(event["id"], "d1");
+        assert_eq!(event["ok"], true);
+        assert_eq!(event["value"], sample_manifest().to_json());
+        assert_eq!(event["value"]["manifest"]["v"], 1);
+    }
+
+    #[test]
+    fn device_info_refuses_an_unsupported_manifest_version() {
+        // Oracle: the declared v1 manifest contract — a request for
+        // any other version is refused, never silently interpreted.
+        let mut actor = granted_actor();
+        actor.device_manifest = Some(sample_manifest());
+        let error = actor
+            .execute(&request(serde_json::json!({"v": 2})))
+            .unwrap_err();
+        assert_eq!(error.code(), CapError::bad_args().code());
+    }
+
+    #[test]
+    fn device_info_is_unknown_cap_when_the_host_cannot_describe_itself() {
+        let mut actor = granted_actor();
+        let error = actor.execute(&request(serde_json::json!({}))).unwrap_err();
+        assert_eq!(error.code(), CapError::unknown().code());
     }
 }
 
@@ -1784,6 +2571,7 @@ impl WorldActor {
             program,
             journal,
             storage_failed: false,
+            read_only: false,
             program_healthy,
             view_failures: 0,
             compaction_off: false,
@@ -1799,6 +2587,8 @@ impl WorldActor {
             ticks: BTreeMap::new(),
             overdue_at_open,
             acting: None,
+            acting_session: None,
+            device_manifest: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }

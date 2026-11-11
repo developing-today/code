@@ -39,12 +39,20 @@
 set -euo pipefail
 
 CONFIG="${OPENCODE_CONFIG:-$HOME/.config/opencode/opencode.jsonc}"
+if [ -L "$CONFIG" ]; then
+  printf 'opencode-config-normalize: refusing symlinked config %s\n' "$CONFIG" >&2
+  exit 1
+fi
 [ -r "$CONFIG" ] || exit 0
 
 python3 - "$CONFIG" <<'PY'
-import json, re, sys, pathlib
+import json, os, pathlib, re, stat, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
+if path.is_symlink():
+    print(f'opencode-config-normalize: refusing symlinked config {path}', file=sys.stderr)
+    sys.exit(1)
+original_mode = stat.S_IMODE(path.stat().st_mode)
 raw = path.read_text()
 
 
@@ -273,6 +281,61 @@ def _line_comment_start(text, start, end):
     return -1
 
 
+def _block_comment_start_ending_at(text, k):
+    # Index of the '/*' opening the block comment whose closing '*/'
+    # ends exactly at k (text[k-2:k] == '*/'), found by a forward
+    # lexical scan so a literal /* inside the comment body is never
+    # mistaken for the opener (#4770): a plain backward rfind('/*')
+    # selects the inner literal in e.g. /* example syntax: /* text */
+    # and the separator scan then fails closed on a previously
+    # supported layout. String contents and // line comments never
+    # open a block comment. Returns -1 when no comment closes
+    # exactly at k.
+    opener = -1
+    cur_open = -1
+    in_str = False
+    in_line = False
+    i, n = 0, len(text)
+    while i < k:
+        c = text[i]
+        if in_line:
+            if c == '\n':
+                in_line = False
+            i += 1
+            continue
+        if cur_open >= 0:
+            if c == '*' and text[i + 1:i + 2] == '/':
+                if i + 2 == k:
+                    opener = cur_open
+                cur_open = -1
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '/':
+            in_line = True
+            i += 2
+            continue
+        if c == '/' and text[i + 1:i + 2] == '*':
+            cur_open = i
+            i += 2
+            continue
+        i += 1
+    return opener
+
+
 def delete_top_level_entry(text, key):
     # Remove the live top-level "key": value entry, with its comma.
     # Returns the new text, or None when the entry cannot be located.
@@ -310,7 +373,7 @@ def delete_top_level_entry(text, key):
         if k > 0 and text[k - 1] == ',':
             return text[:k - 1] + text[k:at] + text[ve:]
         if k >= 2 and text[k - 2:k] == '*/':
-            start = text.rfind('/*', 0, k - 2)
+            start = _block_comment_start_ending_at(text, k)
             if start < 0:
                 return None
             k = start
@@ -322,11 +385,198 @@ def delete_top_level_entry(text, key):
         k = comment_at
 
 
+def line_comment_at_end(fragment):
+    # True when fragment ends inside a // line comment: a joining
+    # comma appended after it would be swallowed by the comment.
+    # String- and block-comment-aware so // inside a string value or a
+    # /* */ comment does not misfire (#3179). The whole fragment is
+    # scanned while tracking block-comment state (Codex P2 on PR
+    # #4644): a multiline block comment whose final line holds a URL
+    # (e.g. "a" /* note\nhttps://example.com */) must not have its
+    # // mistaken for a live line comment.
+    in_str = False
+    in_block = False
+    in_line = False
+    i, n = 0, len(fragment)
+    while i < n:
+        c = fragment[i]
+        if in_line:
+            if c == '\n':
+                in_line = False
+            i += 1
+            continue
+        if in_block:
+            if c == '*' and fragment[i + 1:i + 2] == '/':
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == '/' and fragment[i + 1:i + 2] == '/':
+            in_line = True
+            i += 2
+            continue
+        elif c == '/' and fragment[i + 1:i + 2] == '*':
+            in_block = True
+            i += 2
+            continue
+        i += 1
+    if in_block:
+        return True  # unterminated block comment: fail closed
+    return in_line
+
+
+def strip_trailing_element_comma(fragment):
+    # Remove the trailing element-separator comma (the one before the
+    # closing bracket), skipping over trailing comments, so a legacy
+    # array like ["a", /* keep */] splices without a doubled comma
+    # (Codex P2 on PR #4644: the naive endswith(',') check missed the
+    # comma hidden behind the block comment and the merge wrongly
+    # failed closed on input the old code repaired). Only a comma
+    # followed solely by whitespace/comments is removed; a comma inside
+    # a string, a comment, or a nested array/object is never touched.
+    # Returns the fragment unchanged when there is no trailing comma.
+    last_comma = -1
+    i = 0
+    n = len(fragment)
+    depth = 0
+    in_str = False
+    in_line = False
+    in_block = False
+    while i < n:
+        c = fragment[i]
+        if in_line:
+            if c == '\n':
+                in_line = False
+            i += 1
+            continue
+        if in_block:
+            if c == '*' and fragment[i + 1:i + 2] == '/':
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == '/' and fragment[i + 1:i + 2] == '/':
+            in_line = True
+            i += 2
+            continue
+        elif c == '/' and fragment[i + 1:i + 2] == '*':
+            in_block = True
+            i += 2
+            continue
+        elif c in '[{':
+            depth += 1
+        elif c in ']}':
+            depth -= 1
+        elif c == ',' and depth == 0:
+            last_comma = i
+        i += 1
+    if last_comma < 0:
+        return fragment
+    tail = fragment[last_comma + 1:]
+    k = 0
+    m = len(tail)
+    while k < m:
+        if tail[k] in ' \t\r\n':
+            k += 1
+            continue
+        if tail.startswith('//', k):
+            nl = tail.find('\n', k)
+            k = m if nl < 0 else nl + 1
+            continue
+        if tail.startswith('/*', k):
+            end = tail.find('*/', k + 2)
+            if end < 0:
+                return fragment  # unterminated: leave alone, fail closed
+            k = end + 2
+            continue
+        return fragment  # real content after the comma: not trailing
+    return fragment[:last_comma] + tail
+
+
+def splice_plugin_merge(text, legacy_has_elements=True):
+    # Both-present plugin+plugins merge (#4639) as a textual element
+    # splice: the legacy elements move into the `plugins` array (legacy
+    # first, native appended — the fork's encoded.plugins order) and the
+    # v1 `plugin` entry is dropped, all without re-serialising, so
+    # comments inside both arrays survive byte-identical. Returns the new
+    # text, or None when the splice cannot be done comment-safely (e.g. a
+    # // line comment trailing the last legacy element would swallow the
+    # joining comma); the caller then exits 1 with the file
+    # byte-identical — a repair tool must never be a data-loss path
+    # (#2364). legacy_has_elements reports whether the legacy array
+    # holds actual elements (vs comments only): a comment-only legacy
+    # array needs no joining comma, and emitting one would be a leading
+    # syntax error (Codex P2 on PR #4644: [/* disabled */] + ["b"]
+    # wrongly failed closed on input the old code repaired).
+    legacy_span = find_value_span(text, 'plugin')
+    native_span = find_value_span(text, 'plugins')
+    if legacy_span is None or native_span is None:
+        return None
+    lvs, lve = legacy_span
+    nvs, nve = native_span
+    legacy_text = text[lvs:lve]
+    native_text = text[nvs:nve]
+    if not (legacy_text.startswith('[') and legacy_text.endswith(']')):
+        return None
+    if not (native_text.startswith('[') and native_text.endswith(']')):
+        return None
+    legacy_inner = legacy_text[1:-1].strip()
+    native_inner = native_text[1:-1].strip()
+    if legacy_inner and native_inner:
+        if legacy_has_elements:
+            core = strip_trailing_element_comma(legacy_inner).rstrip()
+            if line_comment_at_end(core):
+                return None
+            inner = core + ',\n' + native_inner
+        else:
+            inner = legacy_inner + '\n' + native_inner
+    elif legacy_inner:
+        inner = legacy_inner
+    else:
+        inner = None
+    if inner is None:
+        merged = native_text  # nothing to move: keep native bytes verbatim
+    elif line_comment_at_end(inner):
+        # A // comment runs to end of line: the closing bracket goes on
+        # its own line so it is not swallowed by the comment.
+        merged = '[' + inner + '\n]'
+    else:
+        merged = '[' + inner + ']'
+    text = text[:nvs] + merged + text[nve:]
+    return delete_top_level_entry(text, 'plugin')
+
+
 # plugin -> plugins. When `plugins` is absent this is a bare key rename
 # (array contents are byte-preserved, comments included). When both
 # spellings are present, merge the way the fork does — legacy entries
 # first, native entries appended (normalize.ts: encoded.plugins =
-# [...legacyPlugins, ...nativePlugins]) — then drop the v1 entry. A raw
+# [...legacyPlugins, ...nativePlugins]) — then drop the v1 entry. The
+# merge is a textual element splice, not a re-serialise, so comments
+# inside both arrays survive; shapes that cannot be spliced
+# comment-safely fail closed with exit 1 and the file byte-identical
+# (#4639). A raw
 # text search can hit "plugin": inside an earlier comment and leave the
 # live key unrepaired (PR #4312 review), so all splices go through the
 # string/comment-aware locators, and any splice that cannot be done
@@ -344,14 +594,9 @@ if 'plugin' in doc:
         native = doc.get('plugins')
         if not isinstance(legacy, list) or not isinstance(native, list):
             sys.exit(1)  # unmergeable shapes: leave the file untouched
-        span = find_value_span(out, 'plugins')
-        if span is None:
-            sys.exit(1)
-        vs, ve = span
-        out = out[:vs] + json.dumps(legacy + native) + out[ve:]
-        out = delete_top_level_entry(out, 'plugin')
+        out = splice_plugin_merge(out, bool(legacy))
         if out is None:
-            sys.exit(1)
+            sys.exit(1)  # not spliceable comment-safely: fail closed
         changed = True
 
 # agent -> agents: fold the v1 `agent` map into `agents` (existing
@@ -437,8 +682,22 @@ if 'agent' in expected:
 if parsed != expected:
     sys.exit(1)
 
-tmp = path.with_suffix(path.suffix + '.normalize-tmp')
-tmp.write_text(out)
-tmp.replace(path)
+fd, tmp_name = tempfile.mkstemp(prefix=f'.{path.name}.normalize-', dir=path.parent)
+tmp = pathlib.Path(tmp_name)
+try:
+    with os.fdopen(fd, 'w') as f:
+        fd = -1  # ownership transferred to the file object
+        f.write(out)
+        f.flush()
+        os.fchmod(f.fileno(), original_mode)
+        os.fsync(f.fileno())
+    tmp.replace(path)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
 print(f"opencode-config-normalize: repaired {path}", file=sys.stderr)
 PY

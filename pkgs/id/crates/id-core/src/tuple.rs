@@ -551,6 +551,15 @@ fn decode_one(
             // keys decode to floats that compare unequal to everything,
             // including themselves. Infinities stay decodable: they encode.
             ensure!(!v.is_nan(), "decoded float64 is NaN");
+            // The encoder canonicalizes either zero sign to +0.0, so the
+            // transformed -0.0 payload is not a form any encoder produces.
+            // Admitting it would give two distinct keys that decode to values
+            // comparing equal, with the phantom key sorting in the negative
+            // range.
+            ensure!(
+                v != 0.0 || !v.is_sign_negative(),
+                "decoded float64 is non-canonical negative zero"
+            );
             Ok(Some(TupleValue::Float(v)))
         }
 
@@ -1233,6 +1242,39 @@ mod tests {
             decode(&key).unwrap(),
             vec![TupleValue::Float(f64::INFINITY)]
         );
+    }
+
+    #[test]
+    fn test_decode_noncanonical_negative_zero_rejected() {
+        // The encoder canonicalizes -0.0 to +0.0 (push_f64), so this
+        // transformed negative-zero payload is not a form it can emit: bits of
+        // -0.0 are [0x80, 0x00 x7] and the negative branch flips every bit.
+        assert!(decode(&[FLOAT64, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]).is_err());
+
+        // Both zero signs still encode identically and decode to +0.0.
+        let negative_zero = TupleEncoder::new().float(-0.0).unwrap().build();
+        let positive_zero = TupleEncoder::new().float(0.0).unwrap().build();
+        assert_eq!(negative_zero, positive_zero);
+        assert_eq!(
+            decode(&negative_zero).unwrap(),
+            vec![TupleValue::Float(0.0)]
+        );
+        // The decoded zero is canonical: the guard must not fire on it.
+        let decoded = decode(&negative_zero).unwrap();
+        assert!(!decoded[0].as_float().unwrap().is_sign_negative());
+    }
+
+    #[test]
+    fn test_decode_float_boundaries_stay_decodable() {
+        // Values adjacent to the rejected payload keep decoding.
+        for value in [-f64::from_bits(1), -1.5, f64::INFINITY, f64::NEG_INFINITY] {
+            let key = TupleEncoder::new().float(value).unwrap().build();
+            assert_eq!(
+                decode(&key).unwrap(),
+                vec![TupleValue::Float(value)],
+                "roundtrip failed for {value}"
+            );
+        }
     }
 
     #[test]

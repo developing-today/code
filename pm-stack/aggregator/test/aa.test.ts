@@ -4,7 +4,7 @@
 // render + HTTP routes. Follows test/slice3.test.ts / program.test.ts.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
   aaPoints,
   caiFamily,
   num,
+  aaApplyPriceOverlay,
   aaSectionFromSupabase,
   computeAaCoverage,
   effortRank,
@@ -81,7 +82,7 @@ const CONFIG_SNIPPET = `{
   "provider": {
     "openai": { "models": { "gpt-6-luna": {}, "gpt-6.1-sol": {} } },
     "commandcode": { "models": { "reflection/beam:free": {}, "deepseek/deepseek-v4-pro": {} } },
-    "opencode-go.personal": { "instanceOf": "opencode-go" },
+    "opencode-go.drewrypope": { "instanceOf": "opencode-go" },
   },
   "experimental": {
     "model_routes": {
@@ -97,7 +98,7 @@ describe("opencode coverage inputs", () => {
     expect(inputs).not.toBeNull();
     expect(inputs!.catalog).toContain("openai/gpt-6-luna");
     expect(inputs!.catalog).toContain("commandcode/reflection/beam:free");
-    expect(inputs!.catalog.some((id) => id.startsWith("opencode-go.personal"))).toBe(false);
+    expect(inputs!.catalog.some((id) => id.startsWith("opencode-go.drewrypope"))).toBe(false);
     expect(inputs!.pooled).toContain("openai/gpt-6-luna");
     expect(inputs!.pooled).toContain("deepseek/deepseek-v4-flash");
     expect(inputs!.pooled.some((id) => id.includes("#"))).toBe(false);
@@ -446,8 +447,8 @@ describe("fleet catalog (Model Explorer)", () => {
       "claude-code": { "name": "Claude Code (CLI proxy)", "models": {
         "claude-haiku-5-5": { "name": "Haiku 5.5 (Claude Code)" },
       } },
-      "opencode-go.personal": { "instanceOf": "opencode-go" },
-      "opencode-go.lab": { "name": "OpenCode Go — Lab", "models": {
+      "opencode-go.drewrypope": { "instanceOf": "opencode-go" },
+      "opencode-go.popesdrew": { "name": "OpenCode Go — popesdrew", "models": {
         "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
         "muse-spark-1.3-contributor": { "name": "Muse Spark 1.3 Contributor" },
         "gemini-4-argon-contributor": { "name": "Gemini 4 Argon Contributor" },
@@ -488,12 +489,12 @@ describe("fleet catalog (Model Explorer)", () => {
     expect(haiku.disabled).toBe(true);
     expect(haiku.routes).toEqual(["outer"]);
     expect(haiku.aaScore).toBeNull();
-    const dsFlash = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
+    const dsFlash = catalog!.find((e) => e.id === "opencode-go.popesdrew/deepseek-v4.1-flash")!;
     expect(dsFlash.goCapUsd).toBe(80); // published Go cap (docs reading)
-    expect(dsFlash.plan).toBe("OpenCode Go — Lab");
-    const muse = catalog!.find((e) => e.id === "opencode-go.lab/muse-spark-1.3-contributor")!;
+    expect(dsFlash.plan).toBe("OpenCode Go — popesdrew");
+    const muse = catalog!.find((e) => e.id === "opencode-go.popesdrew/muse-spark-1.3-contributor")!;
     expect(muse.goCapUsd).toBe(12);
-    const gemini = catalog!.find((e) => e.id === "opencode-go.lab/gemini-4-argon-contributor")!;
+    const gemini = catalog!.find((e) => e.id === "opencode-go.popesdrew/gemini-4-argon-contributor")!;
     expect(gemini.goCapUsd).toBe(12);
   });
 
@@ -601,6 +602,62 @@ describe("Coding Agent Index points (Coding agents perspective)", () => {
   });
 });
 
+describe("price overlay re-derivation (#8211)", () => {
+  const price = (input: number, output: number): AaPrice[] => [
+    {
+      modelName: "openai/gpt-6-luna",
+      inputPer1M: input,
+      outputPer1M: output,
+      cacheReadPer1M: null,
+      cacheWritePer1M: null,
+      contextMinTokens: null,
+      contextMaxTokens: null,
+      windowKind: "flat",
+    },
+  ];
+  const sectionWith = (batch: string, prices: AaPrice[]) => {
+    const raw = rawPayload();
+    raw.batch = batch;
+    raw.prices = prices;
+    return aaSectionFromSupabase(raw, CONFIG_SNIPPET, "2026-10-26T18:05:00Z")!;
+  };
+
+  test("two cached batches with differing prices both report the refreshed overlay's rates", () => {
+    const oldPrices = price(1.0, 4.0);
+    const midPrices = price(2.0, 8.0);
+    const newPrices = price(3.5, 14.0);
+    const latest = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1b", midPrices);
+    const historical = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1c", oldPrices);
+    // Sanity: before the refresh, each section serves its own frozen rates.
+    expect(historical.prices).toEqual(oldPrices);
+    expect(historical.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate?.bands[0].input).toBe(1.0);
+
+    const refreshedLatest = aaApplyPriceOverlay(latest, newPrices);
+    const refreshedHistorical = aaApplyPriceOverlay(historical, newPrices);
+    for (const served of [refreshedLatest, refreshedHistorical]) {
+      expect(served.prices).toEqual(newPrices);
+      const luna = served.catalog?.find((e) => e.id === "openai/gpt-6-luna");
+      expect(luna?.rate?.bands).toHaveLength(1);
+      expect(luna?.rate?.bands[0].input).toBe(3.5);
+      expect(luna?.rate?.bands[0].output).toBe(14.0);
+    }
+    // Batch-bound data is untouched and the inputs are not mutated.
+    expect(refreshedHistorical.batch).toBe(historical.batch);
+    expect(refreshedHistorical.rankings).toEqual(historical.rankings);
+    expect(refreshedHistorical.configs).toEqual(historical.configs);
+    expect(historical.prices).toEqual(oldPrices);
+    expect(historical.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate?.bands[0].input).toBe(1.0);
+    expect(isAaSection(refreshedHistorical)).toBe(true);
+  });
+
+  test("an empty overlay clears prices and nulls catalog rates, like a fresh build", () => {
+    const section = sectionWith("8152e746-4805-4a11-9664-317b44ca9f1b", price(1.0, 4.0));
+    const cleared = aaApplyPriceOverlay(section, []);
+    expect(cleared.prices).toBeUndefined();
+    expect(cleared.catalog?.find((e) => e.id === "openai/gpt-6-luna")?.rate).toBeNull();
+  });
+});
+
 describe("aa-explorer manifest + render", () => {
   test("PAGES carries the aa-explorer page with unique routes", () => {
     const page = PAGES.find((p) => p.id === "aa-explorer");
@@ -655,6 +712,8 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
     expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
+    expect(html).toContain("const pointY = py.toFixed(1)"); // do not shadow the lane's cy before computing py
+    expect(html).not.toContain("const cy = py.toFixed(1)");
     expect(html).toContain('class="xpl-band-lanes"');
     expect(html).toContain('bandGroup("Fastest within each score band"');
     expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
@@ -777,6 +836,18 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(section.catalog?.some((e) => e.id === "commandcode/reflection/beam:free")).toBe(true);
     expect(section.catalog?.find((e) => e.id === "claude-code/claude-haiku-5-5")?.disabled).toBe(true);
   });
+
+  test("/aa loads the same browser computation module imported by Bun tests", async () => {
+    const page = await (await fetch(`http://127.0.0.1:${port}/aa`)).text();
+    expect(page).toContain('<script type="module">');
+    expect(page).toContain('from "/assets/aa-explorer-computations.js"');
+    const response = await fetch(`http://127.0.0.1:${port}/assets/aa-explorer-computations.js`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/javascript");
+    const asset = await response.text();
+    expect(asset).toContain("export function computeRecommendations");
+    expect(asset).toContain("export function projectTask");
+  });
 });
 
 describe("aa chart expand + zoom/pan (#3298)", () => {
@@ -804,7 +875,13 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     expect(html).toContain("setPointerCapture(drag.id)");
     expect(html).toContain("Recommendation inputs redraw #xpl-recs directly");
     expect(html).toContain("data-zbound");
-    expect(html).toContain(".chart-expanded { position: fixed");
+    // Phase C (#6153): page CSS is the external /assets/app.css build; the
+    // expanded-chart rule lives in its source (src/ui.css), not in page HTML
+    // (same pattern as render.test.ts / epic-graph.test.ts).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain(
+      ".chart-expanded { position: fixed",
+    );
     // the emitted script still parses (same check as #1215)
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
     expect(scripts.length).toBeGreaterThan(0);
@@ -856,7 +933,7 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
   test("catalog: prototype-named provider gets no plan facts; prototype-named Go model gets no cap", () => {
     const cfg = `{ "provider": {
       "constructor": { "name": "Constructor Provider", "models": { "some-model": { "name": "Some Model" } } },
-      "opencode-go.lab": { "name": "OpenCode Go \u2014 Lab", "models": {
+      "opencode-go.popesdrew": { "name": "OpenCode Go \u2014 Lab", "models": {
         "constructor": { "name": "Constructor" },
         "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
       } },
@@ -867,9 +944,9 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
     expect(proto.plan).toBeNull();
     expect(proto.multiplier).toBeNull();
     expect(proto.planNote).toBeNull();
-    const ctor = catalog!.find((e) => e.id === "opencode-go.lab/constructor")!;
+    const ctor = catalog!.find((e) => e.id === "opencode-go.popesdrew/constructor")!;
     expect(ctor.goCapUsd).toBeNull();
-    const ds = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
+    const ds = catalog!.find((e) => e.id === "opencode-go.popesdrew/deepseek-v4.1-flash")!;
     expect(ds.goCapUsd).toBe(80); // known Go cap unchanged
   });
 

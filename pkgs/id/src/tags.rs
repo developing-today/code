@@ -1077,9 +1077,26 @@ impl TagStore {
     ///
     /// Returns the number of tags copied.
     pub async fn copy_all_tags(&self, ns: &NamespacePair, from: &[u8], to: &[u8]) -> Result<usize> {
+        self.copy_all_tags_except(ns, from, to, &[]).await
+    }
+
+    /// Copy tags to another subject, omitting tags whose keys are excluded.
+    ///
+    /// Excluded tags remain on the original subject. Returns the number of
+    /// tags copied.
+    pub async fn copy_all_tags_except(
+        &self,
+        ns: &NamespacePair,
+        from: &[u8],
+        to: &[u8],
+        excluded_keys: &[&[u8]],
+    ) -> Result<usize> {
         let tags = self.get_tags(ns, from).await?;
-        let count = tags.len();
+        let mut count = 0;
         for tag in &tags {
+            if excluded_keys.iter().any(|key| *key == tag.key.as_bytes()) {
+                continue;
+            }
             self.set_tag_hash(
                 ns,
                 to,
@@ -1089,6 +1106,7 @@ impl TagStore {
                 tag.len,
             )
             .await?;
+            count += 1;
         }
         Ok(count)
     }
@@ -1651,9 +1669,7 @@ fn parse_single_term(s: &str) -> Result<SearchTerm, SearchQueryError> {
         // silently widening the search (unquoted `name:` / `:value`
         // keep their key-only / value-only meaning).
         if left == "\"\"" || right == "\"\"" {
-            return Err(SearchQueryError::EmptyQuotedComponent {
-                term: s.to_owned(),
-            });
+            return Err(SearchQueryError::EmptyQuotedComponent { term: s.to_owned() });
         }
         let key = strip_quotes(&left);
         let value = strip_quotes(&right);
@@ -2738,7 +2754,11 @@ mod tests {
         ];
         for sep in [" ", "\t", "\n", "\r\n", "\u{00A0}"] {
             let query = format!("name:foo{sep}bar{sep}baz:");
-            assert_eq!(parse_search_query(&query).unwrap(), expected, "separator {sep:?}");
+            assert_eq!(
+                parse_search_query(&query).unwrap(),
+                expected,
+                "separator {sep:?}"
+            );
         }
     }
 

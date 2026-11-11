@@ -132,7 +132,8 @@ for d in "${REPOS[@]}"; do
     elif [ -n "$residue" ]; then
       residue_list="$(printf '%s' "$residue" | tr '\n' ' ')"
       say "- $name: TRACKED RESIDUE NOT committed — move these paths to a dated residue directory first: $residue_list"
-    elif g status --porcelain | grep -v '^??' | grep -Eiq "$SECRET_RE"; then
+    # Expand untracked directories so nested secret-shaped paths are checked.
+    elif g status --porcelain --untracked-files=all | grep -Eiq "$SECRET_RE"; then
       say "- $name: DIRTY ($dirty tracked entries) NOT committed — secret-shaped path present"
     elif g add -u && g commit -q -m "repo-keeper: snapshot $name $TS"; then
       say "- $name: committed $dirty tracked entries on $db"

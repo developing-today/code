@@ -30,16 +30,23 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseArgs } from "./deploy-args.mjs";
+import { probeWorkerExists } from "./deploy-probe.mjs";
+import { verifyDeployment } from "./deploy-verification.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "pkarr";
 const WORKER_URL = "https://pkarr.developing-today.workers.dev";
 
-const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run");
-const deployVersionAt = args.indexOf("--deploy-version");
-const deployVersion = deployVersionAt >= 0 ? args[deployVersionAt + 1] : null;
-if (deployVersionAt >= 0 && !deployVersion) {
-  throw new Error("--deploy-version needs a version id");
+// Fail closed on anything we do not understand, before any bws/cf call: a
+// typo'd --dry-run or --dry-version must not turn into a live deploy (#3264).
+let dryRun;
+let deployVersion;
+try {
+  ({ dryRun, deployVersion } = parseArgs(process.argv.slice(2)));
+} catch (error) {
+  console.error(`deploy.mjs: ${error.message}`);
+  process.exit(2);
 }
 
 const accountId = requireEnv("CLOUDFLARE_ACCOUNT_ID");
@@ -68,7 +75,8 @@ if (!existsSync(join(here, "node_modules"))) {
 
 if (deployVersion !== null) {
   createDeployment(deployVersion);
-  reportLive();
+  await reportLive(deployVersion);
+  console.log(`live: ${WORKER_URL} at version ${deployVersion}`);
   process.exit(0);
 }
 
@@ -124,21 +132,25 @@ if (bootstrapping) {
 } else {
   createDeployment(version.id);
 }
-reportLive();
+await reportLive(version.id);
 console.log(`live: ${WORKER_URL} at version ${version.id} (${tag})`);
 
+// Only the genuine not-found response means "does not exist" (#4865):
+// any other probe failure (auth, network, broken cf) aborts the deploy
+// with the cf error visible, instead of silently rerouting a standard
+// deploy into the bootstrap `cf deploy` path. Classification lives in
+// deploy-probe.mjs so it is tested without running this script.
 function workerExists() {
-  try {
-    execFileSync("cf", ["-q", "workers", "get", WORKER], {
-      cwd: here,
-      env,
-      encoding: "utf8",
-      stdio: ["inherit", "pipe", "pipe"],
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  return probeWorkerExists(
+    () =>
+      execFileSync("cf", ["-q", "workers", "get", WORKER], {
+        cwd: here,
+        env,
+        encoding: "utf8",
+        stdio: ["inherit", "pipe", "pipe"],
+      }),
+    WORKER,
+  );
 }
 
 function createDeployment(versionId) {
@@ -158,8 +170,9 @@ async function assertDeployable(versionId) {
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER}/versions?deployable=true`;
   const response = await fetch(url, { headers: { authorization: `Bearer ${apiToken}` } });
   if (!response.ok) {
-    console.log(`warning: deployable pre-check returned HTTP ${response.status}; continuing`);
-    return;
+    throw new Error(
+      `deployable pre-check failed with HTTP ${response.status}; refusing to deploy version ${versionId}`
+    );
   }
   const body = await response.json();
   // The versions endpoint paginates: result is { items: [...] }, not a
@@ -186,9 +199,26 @@ function listVersions() {
   throw new Error(`unexpected versions list output: ${out.slice(0, 200)}`);
 }
 
-function reportLive() {
+async function reportLive(versionId) {
   const out = runCf(["workers", "deployments", "list", "--worker", WORKER], { capture: true });
+  const deployments = deploymentItems(parseJsonOutput(out), out);
+  const healthUrl = `${WORKER_URL}/healthz`;
+  await verifyDeployment({
+    versionId,
+    deployments,
+    healthUrl,
+    fetchHealth: (url) => fetch(url, { signal: AbortSignal.timeout(15_000) }),
+  });
+  console.log(`verified: version ${versionId} is serving and ${healthUrl} returned ok`);
   console.log(`deployments:\n${out.trim()}`);
+}
+
+function deploymentItems(parsed, out) {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.result)) return parsed.result;
+  if (Array.isArray(parsed?.result?.items)) return parsed.result.items;
+  if (Array.isArray(parsed?.deployments)) return parsed.deployments;
+  throw new Error(`unexpected deployments list output: ${out.slice(0, 200)}`);
 }
 
 function runCf(cfArgs, { capture = false, stdio } = {}) {

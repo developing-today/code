@@ -12,12 +12,13 @@
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
 // exactly TWO ChatGPT pools — the main account (drewrypope) reached
-// through the `codex` gatherer door (pool openai:codex) and the
+// through the `codex` gatherer door (pool openai.main) and the
 // alternate account (popesdrew) through the `openai.alternate` door
 // (pool openai.alternate). Separate accounts, separate allowances:
 // never collapse them into one pool.
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const MONTHS: Record<string, number> = {
   Jan: 0,
@@ -164,6 +165,10 @@ function dateTimeCentral(date: string, hhmm: string): string {
  * flow through the shared conversion unchanged.
  */
 function resetDateTimeCentral(date: string, hhmm: string): string | null {
+  // Gate the calendar date and clock time with the shared primitive FIRST:
+  // dateTimeCentral supplies the Central-time offset conversion, but the
+  // ingest contract's real-date check belongs to validate.ts (#2470).
+  if (parseIsoDate(`${date}T${hhmm}`) === null) return null;
   try {
     return dateTimeCentral(date, hhmm);
   } catch {
@@ -262,21 +267,15 @@ const extractChatGptAlternate: Extractor = (s) => {
 };
 
 const extractMeta: Extractor = (s, now) => {
-  // A dated billing-blocked read (402 billing_not_configured — the
-  // billing-verification wall) outranks every window/reset read: the
-  // pool is blocked at the account level, whatever the windows say.
-  // The 100% weekly window is the fleet's blocked-status mapping (it
-  // drives poolState → walled), NOT a measured consumption percentage;
-  // the note says so, and no reset is invented for when it lifts.
-  const blocked =
-    /(\d{4}-\d{2}-\d{2})[^\n]{0,200}?billing_not_configured/i.exec(s) ??
-    /billing_not_configured[^\n]{0,200}?(\d{4}-\d{2}-\d{2})/i.exec(s);
-  if (blocked) {
-    return {
-      windows: [pctWindow("weekly", 100, null)],
-      note: `BLOCKED ${blocked[1]} — API returns 402 billing_not_configured (billing-verification wall); laptop meta-provider probes all walled, stewardship measurement gate closed. The 100% weekly window is a blocked-status mapping, not measured consumption.`,
-    };
-  }
+  // Dated-read fallback only (Drew, 2026-11-03 — the dashboard is a
+  // straight display of the OpenCode quota read and must not interpose
+  // interpretations of its own): this extractor reports the newest
+  // DATED percentage/reset read in the steward's view and nothing
+  // more. The former billing_not_configured branch PROMOTED a dated
+  // prose mention into a fabricated walled 100% window + BLOCKED note
+  // that outranked the live read for days after the account
+  // recovered; a billing wall now arrives as the quota read's own
+  // error state (overlayQuotaCurrent), never as promoted prose.
   const reset = first(s, /[Ww]eekly reset (?:today )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/);
   const resetIso = reset ? resetDateTimeCentral(reset[1], reset[2]) : null;
   const burned = /burned to empty/i.test(s);
@@ -298,7 +297,7 @@ const extractMeta: Extractor = (s, now) => {
   return { windows: [pctWindow("weekly", Number(pct[1]), resetIso)] };
 };
 
-function goWorkspace(name: "Personal" | "Lab"): Extractor {
+function goWorkspace(name: "drewrypope" | "popesdrew" | "developing-today-0"): Extractor {
   return (s, now) => {
     const m = first(
       s,
@@ -321,12 +320,16 @@ function goWorkspace(name: "Personal" | "Lab"): Extractor {
     return {
       windows,
       note:
-        name === "Personal"
-          ? "Personal workspace (monthly read). Cancelled, paid through Nov 2 — burn before Lab per rotation order."
-          : "Lab workspace (monthly read); the active workspace on the laptop.",
+        name === "drewrypope"
+          ? "drewrypope workspace (monthly read). Renamed from Personal 2026-11-03."
+          : "popesdrew workspace (monthly read). New Go account registered 2026-11-03, replacing Lab.",
     };
   };
 }
+
+/** ClinePass has 5-hour, weekly, and monthly windows; an offset beyond a
+ * year is not a plausible reset for any of them (#2383). */
+const MAX_CLINEPASS_RESET_OFFSET_DAYS = 366;
 
 const extractClinePass: Extractor = (s) => {
   const measured = first(s, /Measured (\d{4}-\d{2}-\d{2}) ~(\d{2}:\d{2}) CDT/i);
@@ -335,8 +338,41 @@ const extractClinePass: Extractor = (s) => {
     /5-hour \*\*(\d+(?:\.\d+)?)%\*\* used; weekly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\); monthly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\)/i,
   );
   if (!measured || !m) return null;
-  const base = Date.parse(dateTimeCentral(measured[1], measured[2]));
-  const rel = (d: string, h: string) => new Date(base + (Number(d) * 24 + Number(h)) * 3_600_000).toISOString();
+  // The measured capture is the anchor for both relative resets (#2383).
+  // The measured capture anchors reset dates, not the percentages. If it
+  // is an impossible calendar/wall time, retain the matched windows and
+  // mark only their resets unknown (#2383). The shared primitive owns
+  // date validity; dateTimeCentral owns the Central-time offset conversion.
+  let base: number | null = null;
+  if (parseIsoDate(`${measured[1]}T${measured[2]}`) !== null) {
+    try {
+      const anchor = dateTimeCentral(measured[1], measured[2]);
+      base = parseIsoDate(anchor)?.getTime() ?? null;
+    } catch {
+      // Nonexistent Central wall time: keep the read, with no reset anchor.
+    }
+  }
+  const rel = (d: string, h: string): string | null => {
+    const days = Number(d);
+    const hours = Number(h);
+    if (
+      base === null ||
+      !Number.isInteger(days) ||
+      !Number.isInteger(hours) ||
+      days < 0 ||
+      hours < 0 ||
+      hours > 23 ||
+      days > MAX_CLINEPASS_RESET_OFFSET_DAYS
+    ) {
+      return null;
+    }
+    const resetMs = base + (days * 24 + hours) * 3_600_000;
+    if (!Number.isFinite(resetMs)) return null;
+    const reset = new Date(resetMs);
+    if (!Number.isFinite(reset.getTime())) return null;
+    const iso = reset.toISOString();
+    return parseIsoDate(iso) === null ? null : iso;
+  };
   return {
     windows: [
       pctWindow("5-hour", Number(m[1]), null),
@@ -467,9 +503,39 @@ interface PoolSpec {
   shellNote: string;
 }
 
+// POOL NAMING (2026-11-03, Drew): a pool's id is its OpenCode config
+// provider id whenever the config defines one — meta, openai.main,
+// openai.alternate, opencode-go.drewrypope, opencode-go.popesdrew,
+// opencode-go.developing-today-0, cline-pass,
+// opendesign, deepseek, commandcode. The colon-suffixed spellings these
+// replaced (meta:high-usage, openai:codex, opencode-go:drewrypope, ...)
+// survive only in the historical snapshot series and the one-shot
+// backfill seed (scripts/backfill-usage-snapshots.ts), which keep the
+// ids in use on their observation dates. The two Antigravity pools
+// are the quota module's model-family splits of the one Antigravity
+// account; they ride under the config's surviving antigravity
+// provider, antigravity-direct, with the family as a dot suffix —
+// antigravity-direct.gemini / antigravity-direct.claude-gpt — the
+// opencode-go.<workspace> pattern (Drew, 2026-11-03: "why are you not
+// including antigravity in the board?"). Ground truth for the
+// RENAMED 2026-11-07 (#1823, Drew): fleet-built providers carry a
+// leading underscore — the commandcode pool is now _commandcode and
+// the Antigravity pools ride under _antigravity.gemini /
+// _antigravity.claude-gpt. Per the rule above, each starts a NEW
+// snapshot series; the pre-rename series stay in the store under
+// their old ids, unrewritten.
+// choice: the deployed config defines antigravity-agy,
+// antigravity-direct and antigravity-ls (ls/agy are the disabled
+// legacy doors; no antigravity-local provider exists), and
+// antigravity-direct is the in-fork door the account's traffic was
+// consolidated onto. One pool keeps a colon id because the config
+// defines no provider with its name: anthropic:claude-pro (burned
+// through the claude-code provider; the pool is the Claude Pro
+// subscription that door spends, and the colon id keeps that
+// attribution honest).
 export const POOL_SPECS: PoolSpec[] = [
   {
-    id: "meta:high-usage",
+    id: "meta",
     provider: "Meta Model API",
     plan: "Muse API High Usage",
     heading: /^### Meta Model API/,
@@ -485,10 +551,10 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (console-only usage).",
   },
   {
-    id: "openai:codex",
+    id: "openai.main",
     provider: "OpenAI",
-    plan: "ChatGPT (Codex pool)",
-    heading: /^### ChatGPT/,
+    plan: "ChatGPT (Main — drewrypope)",
+    heading: /^### ChatGPT(?! \(Alternate\))/,
     extract: extractCodex,
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
   },
@@ -499,26 +565,34 @@ export const POOL_SPECS: PoolSpec[] = [
     heading: /^### ChatGPT \(Alternate\)/,
     extract: extractChatGptAlternate,
     shellNote:
-      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai:codex); the two are never combined.",
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai.main); the two are never combined.",
   },
   {
-    id: "opencode-go:personal",
+    id: "opencode-go.drewrypope",
     provider: "OpenCode Go",
-    plan: "Personal workspace",
+    plan: "drewrypope account",
     heading: /^### OpenCode Go/,
-    extract: goWorkspace("Personal"),
+    extract: goWorkspace("drewrypope"),
     shellNote: "No current read.",
   },
   {
-    id: "opencode-go:lab",
+    id: "opencode-go.popesdrew",
     provider: "OpenCode Go",
-    plan: "Lab workspace",
+    plan: "popesdrew account",
     heading: /^### OpenCode Go/,
-    extract: goWorkspace("Lab"),
+    extract: goWorkspace("popesdrew"),
     shellNote: "No current read.",
   },
   {
-    id: "cline-pass:cline-pass",
+    id: "opencode-go.developing-today-0",
+    provider: "OpenCode Go",
+    plan: "developing-today-0 account",
+    heading: /^### OpenCode Go/,
+    extract: goWorkspace("developing-today-0"),
+    shellNote: "No current read.",
+  },
+  {
+    id: "cline-pass",
     provider: "ClinePass",
     plan: "Cline Pass (Annual)",
     heading: /^### ClinePass/,
@@ -526,7 +600,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (dashboard-only source).",
   },
   {
-    id: "commandcode:go",
+    id: "_commandcode",
     provider: "Command Code",
     plan: "GO",
     heading: /^### Command Code/,
@@ -534,7 +608,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity:gemini",
+    id: "_antigravity.gemini",
     provider: "Antigravity",
     plan: "Gemini pool",
     heading: /^### Gemini/,
@@ -542,7 +616,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity:claude-gpt",
+    id: "_antigravity.claude-gpt",
     provider: "Antigravity",
     plan: "Claude+GPT pool",
     heading: /^### Gemini/,
@@ -554,15 +628,15 @@ export const POOL_SPECS: PoolSpec[] = [
 /** Pools that render with identity only (no dated-read extractor). */
 const SHELL_POOLS: QuotaPool[] = [
   {
-    id: "opendesign:go",
+    id: "opendesign",
     provider: "Open Design",
     plan: "Go",
     state: "healthy",
     windows: [],
-    note: "Usage uninstrumented — no current read. API route verified; a manual dashboard read is required for a percentage.",
+    note: "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
   },
   {
-    id: "deepseek:api",
+    id: "deepseek",
     provider: "DeepSeek",
     plan: "API (PAYG)",
     state: "healthy",
@@ -572,82 +646,38 @@ const SHELL_POOLS: QuotaPool[] = [
 ];
 
 /**
- * Pools whose consuming opencode provider ("door") is NOT the pool-id
- * prefix. Source of truth: `poolFor` in scripts/collect-fleet-feed.ts,
- * which attributes sessions to pools by door provider — the Claude Pro
- * pool is burned exclusively through the `claude-code` provider (there
- * is no `anthropic` provider in the deployed config), so disabling
- * `claude-code` must filter `anthropic:claude-pro`. Every other pool's
- * door is its prefix.
+ * REMOVED 2026-11-03 (Drew: "the dashboard should not be doing any of
+ * that"): the #1114 disabled-door filter family — poolProviderId,
+ * poolProviderIds, poolFilteredByDisabled and the FILTER_EXEMPT_POOL_IDS
+ * exemption hack that had to be bolted on when the filter ate the
+ * meta pool — used to drop pools from the board whenever their
+ * OpenCode config door sat in disabled_providers. That hid live,
+ * measured pools whose traffic runs through model routes rather than
+ * the disabled direct door: at removal time the deployed board was
+ * missing anthropic:claude-pro, _commandcode, deepseek and BOTH
+ * Antigravity pools even though the OpenCode quota read reported
+ * them. Pool assembly no longer consults disabled_providers at all;
+ * extractQuotaPools returns every pool it knows, and the serve-time
+ * overlay renders every pool the read reports (see
+ * overlayQuotaCurrent's unmapped-pool synthesis in quota-current.ts).
  */
-const POOL_DOOR_PROVIDER_ID: Record<string, string> = {
-  "anthropic:claude-pro": "claude-code",
-};
-
-/**
- * The opencode provider id whose disablement filters a pool: the pool's
- * door provider ("openai" in "openai:codex"; "claude-code" for
- * "anthropic:claude-pro").
- */
-export function poolProviderId(poolId: string): string {
-  return POOL_DOOR_PROVIDER_ID[poolId] ?? poolId.split(":")[0];
-}
-
-/**
- * Pools consumed through SEVERAL door providers, none of which is the
- * pool-id prefix: there is no `antigravity` provider in the deployed
- * config — the two Antigravity pools are burned through the
- * `antigravity-ls`, `antigravity-agy` and `google` providers (the same
- * three doors `poolFor` in scripts/collect-fleet-feed.ts attributes to
- * them). Such a pool is filtered only when EVERY door is disabled; one
- * usable door remaining keeps it, because sessions can still burn it.
- */
-const POOL_DOOR_PROVIDER_IDS: Record<string, string[]> = {
-  "antigravity:gemini": ["antigravity-ls", "antigravity-agy", "google"],
-  "antigravity:claude-gpt": ["antigravity-ls", "antigravity-agy", "google"],
-};
-
-/** Every opencode provider id that can burn a pool (its doors). */
-export function poolProviderIds(poolId: string): string[] {
-  return POOL_DOOR_PROVIDER_IDS[poolId] ?? [poolProviderId(poolId)];
-}
-
-/**
- * True when a pool must be filtered for the given disabled set: single-
- * door pools when their door is disabled, multi-door pools only when
- * every door is disabled.
- */
-export function poolFilteredByDisabled(poolId: string, disabledProviderIds: ReadonlySet<string>): boolean {
-  return poolProviderIds(poolId).every((id) => disabledProviderIds.has(id));
-}
 
 /**
  * Extract every pool's freshest dated read from the quota view text.
  *
- * #1114: a pool whose provider id is in the deployed opencode config's
- * disabled_providers set is filtered out HERE, at pool assembly — never
- * at render time — so quota.json and the guidance derived from these
- * pools can never name a disabled provider. Matching is exact provider-id
- * equality against the pool's DOOR provider(s) (poolProviderIds): "openai" is
- * not "openai-codex", "opendesign" is not "open-design", "opencode-go" is
- * not "opencode" — "anthropic:claude-pro" answers to "claude-code",
- * its only door, and the antigravity pools answer to antigravity-ls /
- * antigravity-agy / google jointly (filtered only when all three are
- * disabled). A filtered pool is
- * reported through onFiltered (visibly noted, never silently dropped).
+ * PASS-THROUGH (Drew, 2026-11-03): every spec pool and shell pool is
+ * returned, unconditionally. The dated reads here are only the
+ * FAIL-SOFT FALLBACK for pools the live OpenCode quota read cannot
+ * currently measure (console-only pools, a read in error); the live
+ * read overlays them at serve time (overlayQuotaCurrent) and wins
+ * wherever it reports. No disabled_providers filter applies — a
+ * disabled direct door says nothing about whether the pool is burned
+ * through model routes or measured by OpenCode, and filtering on it
+ * is what made live pools vanish from the board (#1114, reversed).
  */
-export function extractQuotaPools(
-  quotaViewText: string,
-  now = new Date(),
-  disabledProviderIds: ReadonlySet<string> = new Set(),
-  onFiltered?: (poolId: string, providerId: string) => void,
-): QuotaPool[] {
+export function extractQuotaPools(quotaViewText: string, now = new Date()): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
-    if (poolFilteredByDisabled(spec.id, disabledProviderIds)) {
-      onFiltered?.(spec.id, poolProviderIds(spec.id).join(","));
-      continue;
-    }
     const section = sectionOf(quotaViewText, spec.heading);
     let raw: Raw | null = null;
     try {
@@ -682,10 +712,5 @@ export function extractQuotaPools(
     }
     pools.push(pool);
   }
-  const shells = SHELL_POOLS.filter((p) => {
-    if (!poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
-    onFiltered?.(p.id, poolProviderIds(p.id).join(","));
-    return false;
-  });
-  return [...pools, ...shells.map((p) => ({ ...p }))];
+  return [...pools, ...SHELL_POOLS.map((p) => ({ ...p }))];
 }

@@ -135,12 +135,49 @@ runs:
            + (if $model != "" then {model: $model} else {} end)
            + (if $priority != "" then {priority: $priority} else {} end)
            + (if $kind != "" then {kind: $kind} else {} end)')"
-        response="$(curl -sS -w $'\n%{http_code}' -X POST "https://dispatch.security.cab/v1/sessions" \
-          -H "Authorization: Bearer $oidc_token" \
-          -H "Content-Type: application/json" \
-          -d "$payload")"
-        http_code="${response##*$'\n'}"
-        body="${response%$'\n'*}"
+        # POST /v1/sessions with bounded retries on transient gateway
+        # failures. dispatch.security.cab sits behind a gateway that
+        # intermittently answers 502/503/504 (or drops the connection)
+        # while the service itself is healthy: run 42225301529 failed a
+        # daily workflow on a single 502 with no retry (issue #6650),
+        # while interleaved runs on the identical config succeeded.
+        # Only transient statuses retry; any other non-2xx fails fast,
+        # exactly as before, and the final failure keeps the original
+        # error shape below.
+        http_code=""
+        body=""
+        attempt=1
+        max_attempts=4
+        while :; do
+          curl_rc=0
+          response="$(curl -sS -w $'\n%{http_code}' -X POST "https://dispatch.security.cab/v1/sessions" \
+            -H "Authorization: Bearer $oidc_token" \
+            -H "Content-Type: application/json" \
+            -d "$payload")" || curl_rc=$?
+          if [ "$curl_rc" -ne 0 ]; then
+            http_code="000"
+            body="curl transport error (exit $curl_rc)"
+          else
+            http_code="${response##*$'\n'}"
+            body="${response%$'\n'*}"
+          fi
+          if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+            break
+          fi
+          case "$http_code" in
+            000|429|502|503|504) ;;
+            *) break ;;
+          esac
+          if [ "$attempt" -ge "$max_attempts" ]; then
+            break
+          fi
+          delay=5
+          if [ "$attempt" -eq 2 ]; then delay=15; fi
+          if [ "$attempt" -ge 3 ]; then delay=30; fi
+          echo "::warning::pm-dispatch-start: pm-dispatch POST /v1/sessions attempt $attempt/$max_attempts failed (HTTP $http_code); retrying in ${delay}s" >&2
+          sleep "$delay"
+          attempt=$(( attempt + 1 ))
+        done
         if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
           echo "::error::pm-dispatch-start: pm-dispatch POST /v1/sessions failed (HTTP $http_code):" >&2
           echo "$body" >&2

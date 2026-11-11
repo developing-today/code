@@ -14,14 +14,82 @@ let
   # apart and a new device that applies this config gets consistent ports
   # automatically. The bin/*.mjs proxies keep the same numbers as fallback
   # defaults when the env var is absent.
-  clefProxyPort = 18742;
-  codexProxyPort = 18744;
-  designCodeProxyPort = 18746;
-  museProxyPort = 18747;
-  commandcodeProxyPort = 18748;
-  opencodeRouteProxyPort = 18750;
-  claudeCodeProxyPort = 18749;
-  antigravityDirectProxyPort = 18751;
+  # clefProxyPort (18742) retired 2026-11-04 (opencode#1410):
+  # the OpenChamber classifier rides the in-fork facade's
+  # /v1/systemone (127.0.0.1:13420); the port is free.
+  # codexProxyPort (18744) retired 2026-11-06 (Drew, proxy-infra
+  # decommission): the fork's native openai provider replaced the
+  # Codex CLI bridge, so the proxy had no consumers left; its let,
+  # units, session variable, bin program, launcher and guard row
+  # were removed in one change. The port is free.
+  # museProxyPort (18747) retired 2026-11-06 (Drew, muse-direct
+  # order): the fork's native muse-direct provider replaced the
+  # proxy, so it had no consumers left; its let, unit, session
+  # variable, bin program, launcher and guard row were removed in
+  # one change. The port is free.
+  # commandcodeProxyPort (18748) and claudeCodeProxyPort (18749)
+  # retired 2026-11-06 (Drew, proxy-infra decommission): both
+  # providers were repointed to the fork's native wire-emulation
+  # providers on 2026-11-05 (code#6117, opencode#1749), so the CLI
+  # proxies had no consumers left; their lets, units, session
+  # variables, bin programs and guard rows were removed in one
+  # change. Both ports are free.
+  # opencodeRouteProxyPort (18750) retired 2026-11-04
+  # (opencode#1153): OpenClaw repointed to the server facade
+  # (127.0.0.1:13420/v1); the port is free.
+  # antigravityDirectProxyPort (18751) retired 2026-11-04 (opencode#1414):
+  # the in-fork native provider replaced the door; the port is free.
+  # Atlas search service port (code#5350 step 5, #5355): the fleet
+  # inventory entry for 18760. Unlike the proxy lets above, this
+  # value is NOT plumbed into a unit's Environment — it lives in
+  # the service's own config (~/.local/state/atlas-search/
+  # service.json, written by `atlas-search init`) and in the Rust
+  # defaults (server listen, CLI service URL), all 18760. The let
+  # exists so the reservation is recorded where the fleet looks
+  # for one; verified free against this file, the proxy-port
+  # guard (.github/scripts/check-proxy-port-fallbacks.sh), and
+  # the live listener table on 2026-11-04.
+  atlasSearchPort = 18760;
+  # The atlas-search package (pkgs/atlas-search), built with the
+  # toolchain pinned by its own rust-toolchain.toml (channel
+  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # pattern (cf. rustToolchain in nixos/environment/default.nix).
+  # Used as the atlas-search unit's ExecStart below and, since
+  # the step-6 cutover (#5356), as a home package below so the
+  # Rust binary is the resolved `atlas-search` CLI (the Python
+  # CLI is kept alongside as `atlas-search-py`). It was kept
+  # out of home.packages through step 5 so the Python CLI
+  # stayed resolved until the cutover said otherwise.
+  atlasSearchToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/atlas-search/rust-toolchain.toml;
+  atlasSearch = pkgs.callPackage ../../pkgs/atlas-search {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = atlasSearchToolchain;
+      rustc = atlasSearchToolchain;
+    };
+  };
+  # Which artifact the atlas-search user unit runs (#5604, fleet
+  # step 5 residual). true: `fleet serve search`, the Atlas service
+  # rehomed into the fleet multicall binary. false: the standalone
+  # atlas-search artifact's `serve` — the kept rollback, one flag
+  # flip. Same config (service.json), same wire, same port either way.
+  # Flipping this only changes what the NEXT home-manager activation
+  # installs; it never restarts the live unit by itself.
+  atlasSearchServeViaFleet = true;
+  # The fleet multicall package (pkgs/fleet), built with the
+  # toolchain pinned by its own rust-toolchain.toml — the
+  # atlas-search pattern above. Used as the broker units'
+  # ExecStart below (`fleet serve <role>`); deliberately not in
+  # home.packages — the resolved `repo-queue` on PATH stays the
+  # standalone artifact until the proxy step's shim dir (design
+  # note §4) supersedes the hand-maintained symlinks.
+  fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = fleetToolchain;
+      rustc = fleetToolchain;
+    };
+    sourceRev = inputs.self.rev or "dirty";
+  };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -29,7 +97,8 @@ let
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
-  # The hub build ships the language_server binary the LS proxy drives. Same
+  # The hub build ships the language_server binary the retired
+  # (2026-10-30) antigravity-ls proxy drove. Same
   # derivation as the system one, so the store path is shared, not rebuilt.
   antigravity-hub = pkgs.callPackage ../../pkgs/antigravity-hub { };
   # 2.1.293; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
@@ -49,14 +118,152 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
-  # Hidden-shell auth hook (1Password service account, Jules, Cloudflare).
+  # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
-  # The environment the mcpx daemon runs with. It is set by the start wrapper
-  # below rather than by the unit, because `mcpx upgrade` starts the successor
-  # through that same wrapper, so the successor gets what a fresh start gets.
+  # The cascade's opencode build -- openchamber's nested opencode
+  # input, which is exactly the derivation services.opencode.package
+  # defaults to (the fork's module wrapper mkDefaults the fork
+  # flake's own packages.<system>.opencode). Named once here: the
+  # wrapper below execs it, and the wrapped package joins over it.
+  opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
+
+  # Drew's opencode wrapper -- formerly a standalone home.packages
+  # entry (writeShellScriptBin "opencode"), logic unchanged:
+  # Cloudflare env top-up and the stamp-gated sync-models
+  # kick. The one change is the exec target: the cascade build, not
+  # this repo's root opencode input (a second fork build, so CLI and
+  # service ran different fork commits).
+  opencodeWrapper = pkgs.writeShellScript "opencode" ''
+    if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+      [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+      [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+      export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
+    fi
+
+    # Opportunistic background model sync (max once every 24h, detached)
+    _CACHE_DIR="$HOME/.cache"
+    [ -n "$XDG_CACHE_HOME" ] && _CACHE_DIR="$XDG_CACHE_HOME"
+    _SYNC_STAMP="$_CACHE_DIR/sync-models.last"
+    if [ ! -f "$_SYNC_STAMP" ] || [ -n "$(find "$_SYNC_STAMP" -mtime +1 2>/dev/null)" ]; then
+      mkdir -p "$_CACHE_DIR"
+      touch "$_SYNC_STAMP"
+      (
+        export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+        if command -v sync-models >/dev/null 2>&1; then
+          sync-models >/dev/null 2>&1
+        elif [ -x "$HOME/code/bin/sync-models.mjs" ]; then
+          ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" >/dev/null 2>&1
+        fi
+      ) &
+    fi
+
+    exec ${opencodeCascade}/bin/opencode "$@"
+  '';
+  # The cascade opencode with the wrapper as its bin/opencode.
+  # symlinkJoin over the cascade package: the rest of its tree --
+  # above all bin/mcpx, the cascade mcpx symlink the code#5027
+  # settlement relies on -- rides along untouched. This is what
+  # services.opencode.package points at (below), so the systemd user
+  # service and the home profile share this one derivation.
+  opencodeWrapped = pkgs.symlinkJoin {
+    name = "${opencodeCascade.name}-wrapped";
+    paths = [ opencodeCascade ];
+    postBuild = ''
+      rm $out/bin/opencode
+      install -Dm755 ${opencodeWrapper} $out/bin/opencode
+    '';
+  };
+
+  # Brave with structural CDP (code#5924 follow-up): Brave is
+  # Chromium-family, so it takes the same --remote-debugging flags
+  # as Helium (19222) and system Chromium (19224); Brave gets
+  # 19223, loopback-only. Same wrapper shape as
+  # wrapElectronWithFlags in nixos/environment (binaries wrapped,
+  # desktop entries repointed at the wrappers) so every launch
+  # path -- shell or launcher -- carries the flags. Caller-passed
+  # flags come after wrapper flags and win.
+  braveCdp = pkgs.symlinkJoin {
+    name = "${pkgs.brave.name}-cdp";
+    paths = [ pkgs.brave ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      for bin in "$out"/bin/*; do
+        [ -L "$bin" ] || continue
+        target=$(readlink -f "$bin")
+        [ -x "$target" ] || continue
+        rm "$bin"
+        makeWrapper "$target" "$bin" \
+          --add-flags "--remote-debugging-address=127.0.0.1" \
+          --add-flags "--remote-debugging-port=19223"
+      done
+
+      if [ -d "$out/share/applications" ]; then
+        for f in "$out"/share/applications/*.desktop; do
+          [ -e "$f" ] || continue
+          src=$(readlink -f "$f")
+          base=$(basename "$f")
+          rm "$f"
+          sed "s|${pkgs.brave}/bin/|$out/bin/|g" "$src" > "$out/share/applications/$base"
+        done
+      fi
+    '';
+    meta = (pkgs.brave.meta or { }) // {
+      mainProgram = pkgs.brave.meta.mainProgram or null;
+    };
+  };
+  # Firefox with structural WebDriver BiDi (code#5924 follow-up):
+  # Firefox has no CDP; --remote-debugging-port starts its
+  # WebDriver BiDi remote agent (binds 127.0.0.1 itself; default
+  # Host/Origin policy kept -- see nixos/environment for the full
+  # port table: 19225 Firefox BiDi, 19226 Zen BiDi). Home-manager
+  # installs this as the programs.firefox package below; the
+  # NixOS side installs the same wrapper via
+  # environment.systemPackages (nixos/environment firefoxBidi).
+  firefoxBidi =
+    let
+      wrapBidi =
+        pkg:
+        let
+          joined = pkgs.symlinkJoin {
+            name = "${pkg.name}-bidi";
+            paths = [ pkg ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              for bin in "$out"/bin/*; do
+                [ -L "$bin" ] || continue
+                target=$(readlink -f "$bin")
+                [ -x "$target" ] || continue
+                rm "$bin"
+                makeWrapper "$target" "$bin" \
+                  --add-flags "--remote-debugging-port=19225"
+              done
+            '';
+            meta = (pkg.meta or { }) // {
+              mainProgram = pkg.meta.mainProgram or null;
+            };
+          };
+        in
+        joined
+        // {
+          # home-manager's firefox module (mkFirefoxModule) treats a
+          # wrapped package as reconfigurable only through its
+          # `override`: it probes `lib.functionArgs package.override`
+          # for `cfg` / `appDataDir` and calls it with an override
+          # function merging cfg, extraPolicies and pkcs11Modules.
+          # A bare symlinkJoin has no `override`, which broke the HM
+          # evaluation of main in code#6156. Forward the underlying
+          # package's override -- re-applying the BiDi wrap to its
+          # result, with the override's exact function-args shape --
+          # so the module behaves exactly as it does for pkgs.firefox.
+          override = lib.setFunctionArgs (args: wrapBidi (pkg.override args)) (lib.functionArgs pkg.override);
+        };
+    in
+    wrapBidi pkgs.firefox;
+  # The environment the mcpx daemon runs with (services.mcpx.environment
+  # below; the module renders it into the unit).
   mcpxEnvironment = {
     OPENCODE_BINARY = "${inputs.opencode.packages.${system}.opencode}/bin/opencode";
     OPENCODE_V2_BIN = "${inputs.opencode.packages.${system}.opencode}/bin/opencode";
@@ -72,121 +279,26 @@ let
       pkgs.openssh
     ];
   };
-  # The unit's start command, ahead of the binary. Its store path changes when
-  # the environment or the wrapper does, and the activation keys on that.
-  mcpxStart = pkgs.writeShellScript "mcpx-start" ''
-    ${lib.concatStrings (
-      lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}\n") mcpxEnvironment
-    )}
-    exec "$@"
-  '';
+  # The daemon's configuration (the former ~/code/.mcpx.json), and the
+  # config file the mcpx module renders from it: reproduced here so
+  # the deploy key below tracks the daemon's real configuration
+  # without this file needing the module system's `config`. (With an
+  # empty `servers` the module renders
+  # settings // { mcpServers = settings.mcpServers; }, so the two
+  # writeText results are the same store path.)
+  mcpxSettings = import ./mcpx-settings.nix;
+  mcpxConfigRendered = pkgs.writeText "mcpx-config.json" (builtins.toJSON mcpxSettings);
+  # The deploy key for the handover in home.activation.mcpxDeploy
+  # below: a switch that changes the daemon, its configuration or its
+  # environment hands the running daemon over, so the key covers
+  # exactly those three.
   mcpxKey = deployKey "mcpx" [
     mcpx
-    mcpxStart
+    mcpxConfigRendered
+    (builtins.toJSON mcpxEnvironment)
   ];
-  openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
-    # Single-instance guard (dezren39/nix#1117). The unit below is
-    # socket-activated with KillMode=process: a stop terminates only the
-    # tracked main process, so a server that is no longer the tracked
-    # main -- a self-handoff predecessor systemd has lost track of --
-    # survives in the cgroup still holding the listen socket systemd
-    # handed it. The next start passes the same socket to a new server
-    # and both accept() on it, so /api/version answers alternate between
-    # instances. Reap any leftover server before taking the socket over.
-    # Only the web server is matched (its managed OpenCode serves a
-    # different port and must stay up for adoption), and this script's
-    # own pid is excluded -- it execs into the new server below.
-    leftovers=""
-    for proc in /proc/[0-9]*; do
-      pid="''${proc#/proc/}"
-      [ "$pid" = "$$" ] && continue
-      # The pattern text itself rides in the argv of anything inspecting
-      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
-      # is not proof: the process must actually be the node server.
-      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
-      case "$exe" in
-        */node | */openchamber) ;;
-        *) continue ;;
-      esac
-      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
-      case "$cmd" in
-        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
-        *) continue ;;
-      esac
-      case "$cmd" in
-        # Argument boundary required: "--port 3000" must not match the
-        # 30001..30009 of an unrelated instance (cmdline words are
-        # space-separated here, trailing word included).
-        *"--port 3000 "*) leftovers="$leftovers $pid" ;;
-        *"--port=3000 "*) leftovers="$leftovers $pid" ;;
-      esac
-    done
-    if [ -n "$leftovers" ]; then
-      echo "openchamber-serve: reaping leftover server(s):$leftovers" >&2
-      for pid in $leftovers; do
-        kill -TERM "$pid" 2>/dev/null || true
-      done
-      # OpenChamber drains HTTP for up to 10 s on SIGTERM.
-      for _ in $(seq 1 100); do
-        alive=0
-        for pid in $leftovers; do
-          kill -0 "$pid" 2>/dev/null && alive=1
-        done
-        [ "$alive" = 0 ] && break
-        sleep 0.1
-      done
-      for pid in $leftovers; do
-        if kill -0 "$pid" 2>/dev/null; then
-          echo "openchamber-serve: pid $pid ignored SIGTERM; killing" >&2
-          kill -KILL "$pid" 2>/dev/null || true
-        fi
-      done
-      # Verify synchronously, before taking the socket over: a leftover
-      # that could not be reaped fails this start loudly instead of
-      # silently sharing the listener with the new server. (An
-      # ExecStartPost assertion cannot do this: with Type=simple it
-      # races the guard's drain window.)
-      sleep 0.2
-      for pid in $leftovers; do
-        if kill -0 "$pid" 2>/dev/null; then
-          echo "openchamber-serve: leftover server pid $pid could not be reaped; refusing to start a second server on port 3000" >&2
-          exit 1
-        fi
-      done
-    fi
-    pw="$HOME/.config/openchamber/ui-password"
-    if [ -r "$pw" ]; then
-      export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
-    fi
-    if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-      export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-      export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-      export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-    fi
-    export OPENCODE_BINARY="${openchamberBinDir}/opencode"
-    export PATH="${openchamberBinDir}:$PATH"
-    exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber serve \
-      --foreground \
-      --port 3000 --host 127.0.0.1
-  '';
-  # The unit launches through the checkout wrapper (bin/openchamber-start.sh),
-  # which attaches OpenChamber to the standing OpenCode server
-  # (openchamber#766) and execs the serve script above, passed as its
-  # argument. The wrapper reads the server password from
-  # ~/.local/state/opencode/service-prod.json at start time and exports
-  # OPENCODE_HOST / OPENCODE_SKIP_START / OPENCODE_PASSWORD, so the
-  # password never enters the store or a unit file. This is the durable
-  # form of the hand-applied openchamber.service.d/external-opencode.conf
-  # drop-in; same fleet pattern as commandcode-proxy (the checkout path
-  # also avoids the stale-store ExecStart failure of #883).
-  openchamberUnitStart = pkgs.writeShellScript "openchamber-start-unit" ''
-    exec /run/current-system/sw/bin/bash "$HOME/code/bin/openchamber-start.sh" "${openchamberStart}"
-  '';
   # A unit is replaced at switch time only when its start command or binaries change.
   deployKey = name: parts: "${name}:${builtins.concatStringsSep " " (map toString parts)}";
-  # OpenChamber runs the OpenCode behind this link. A switch re-points it and
-  # reloads OpenChamber, so a new OpenCode takes over without a restart.
-  openchamberBinDir = "$HOME/.local/state/openchamber/bin";
 in
 {
   wayland.windowManager.hyprland = {
@@ -423,7 +535,7 @@ in
     # };
     activitywatch = {
       enable = true;
-      package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
+      package = inputs.nixpkgs-unstable.legacyPackages.${pkgs.system}.activitywatch;
     };
   };
   # Every opencode on this machine is the 2.x fork (CLI and server), whose
@@ -435,9 +547,10 @@ in
   # converting back to v1 — that conversion is what made the keys flap on
   # every OpenChamber launch.
   #
-  # Watch the file and normalise any v1 spelling that lands in it (hand
-  # edits, older tools) to v2. The script is idempotent and refuses to
-  # write anything it cannot re-parse.
+  # Normalise any v1 spelling that lands in the file (hand edits, older
+  # tools) to v2. The script is idempotent and refuses to write anything
+  # it cannot re-parse. It is deliberately NOT watched by a path unit
+  # right now — see the note under the service.
   systemd.user.services.opencode-config-normalize = {
     Unit = {
       Description = "Normalise opencode config to v2 plugin/agent keys";
@@ -459,14 +572,25 @@ in
       ];
     };
   };
-  systemd.user.paths.opencode-config-normalize = {
-    Unit.Description = "Watch opencode config for v1 plugin/agent keys";
-    Path = {
-      PathChanged = "%h/.config/opencode/opencode.jsonc";
-      Unit = "opencode-config-normalize.service";
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # No systemd.user.paths.opencode-config-normalize until the fleet
+  # switch lands the v2 normaliser (2026-11-03): the normaliser in the
+  # RUNNING generation (built 2026-11-01, before #4594 taught
+  # pkgs/opencode-config-normalize to emit only v2) still writes the v1
+  # spellings, and a declared path unit re-arms on every home-manager
+  # activation — the runtime stops applied during the #5094 adoption
+  # were silently undone and the tracked config flapped back to v1.
+  # Until the switch, the service above runs only when started
+  # deliberately (systemctl --user start opencode-config-normalize).
+  # Restore the path unit in the same change that verifies the switched
+  # generation carries the v2 normaliser:
+  #   systemd.user.paths.opencode-config-normalize = {
+  #     Unit.Description = "Watch opencode config for v1 plugin/agent keys";
+  #     Path = {
+  #       PathChanged = "%h/.config/opencode/opencode.jsonc";
+  #       Unit = "opencode-config-normalize.service";
+  #     };
+  #     Install.WantedBy = [ "default.target" ];
+  #   };
 
   # Dated, on-change snapshots of agent credentials and config.
   #
@@ -506,11 +630,11 @@ in
       # PathChanged fires on close-after-write. Directories are watched where
       # the interesting file is rewritten rather than edited in place.
       PathChanged = [
-        "%h/.config/jules/api-key"
         "%h/.local/share/opencode/auth.json"
         "%h/.config/opencode/opencode.jsonc"
         "%h/.local/share/t3code/userdata/settings.json"
         "%h/.claude.json"
+        "%h/.claude/.credentials.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
         "%h/.pi/agent/auth.json"
@@ -578,128 +702,67 @@ in
   # change (its timer/service/config are removed below the proxy units):
   # exactly one owner per canonical port. Consumers (openchamber,
   # openclaw-gateway) Wants these units with Wants+After soft semantics.
-  systemd.user.services.clef-proxy = {
-    Unit = {
-      Description = "Clef System One Local Proxy for OpenChamber";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "clef-proxy-start" ''
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/clef-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CLEF_PROXY_PORT=${toString clefProxyPort}"
-        "CLEF_PROXY_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Clef door retired 2026-11-04 (opencode#1410): the OpenChamber
+  # classifier's endpoint file (~/.config/openchamber/
+  # classifier-endpoint.json) names the in-fork facade's
+  # /v1/systemone on the standing opencode server
+  # (127.0.0.1:13420); live probe parity against the door
+  # (byte-identical responses, including the shared upstream
+  # Cloudflare auth failure) was proven before this removal.
+  # bin/clef-proxy.mjs and its wrapper/test were removed in the
+  # same change.
 
-  # Antigravity Direct (agy CLI wire clone) Local Proxy Bridge. Speaks
-  # the agy CLI's own wire protocol directly -- the keyring OAuth
-  # credential (service "gemini", username "antigravity"), the CLI's
-  # embedded OAuth client for refresh, and its exact v1internal envelope
-  # to daily-cloudcode-pa.googleapis.com -- with no spawned CLI and no
-  # spawned language_server (bin/antigravity-direct.mjs; the CLI's wire
-  # behavior was captured live, see the header in that file). Since
-  # 2026-10-30 (Drew) this is the fleet's single Antigravity door: it
-  # replaces agy-proxy (CLI spawn, :18743, formerly in this spot) and
-  # antigravity-ls-proxy (language-server spawn, :18745, formerly below
-  # codex-proxy), whose unit definitions are removed in the same change
-  # so a switch stops them and they stay off. Must run inside the user
-  # session: Secret Service keyring access is how it authenticates,
-  # exactly like the CLI itself.
-  systemd.user.services.antigravity-direct = {
-    Unit = {
-      Description = "Antigravity Direct (CLI wire clone) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "antigravity-direct-start" ''
-          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:/run/current-system/sw/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/antigravity-direct.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "ANTIGRAVITY_DIRECT_PORT=${toString antigravityDirectProxyPort}"
-        "ANTIGRAVITY_DIRECT_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Antigravity Direct door retired 2026-11-04 (opencode#1414): the
+  # provider block in .opencode/opencode.jsonc names the in-fork
+  # native provider (@opencode/ai/providers/antigravity, opencode#1457)
+  # under the same antigravity-direct id, and a zero-traffic window
+  # on :18751 preceded this removal. bin/antigravity-direct.mjs and
+  # its wrapper/test were removed in the same change; the agy CLI
+  # remains the keyring credential owner and the native provider
+  # refreshes in memory, in place.
 
-  systemd.user.services.codex-proxy = {
-    Unit = {
-      Description = "OpenAI Codex CLI (codex) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "codex-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/codex-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CODEX_PROXY_PORT=${toString codexProxyPort}"
-        "CODEX_PROXY_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Codex proxy removed (2026-11-06, Drew): its unit + socket
+  # definitions stood here. The fork's native openai provider
+  # replaced the Codex CLI bridge -- the proxy-fronting providers
+  # (openai-codex, chatgpt) were deleted 2026-11-03 and their route
+  # legs re-seated onto openai-plan, and the token sync the door
+  # also performed was re-homed into the fork (opencode#1468).
+  # The definitions are removed, not commented out, so the switch
+  # stops the service and it stays off. bin/codex-proxy.mjs was
+  # removed in the same change. To undo: restore the two unit
+  # blocks, the bin program and the codexProxyPort let from git
+  # history, and re-add a proxy-fronting provider to
+  # opencode.jsonc.
 
   # Antigravity LS proxy retired (2026-10-30, Drew): its unit definition
   # stood here. The language-server door and the agy CLI-spawn door are
   # both replaced by antigravity-direct (above codex-proxy), which speaks
   # the CLI's wire protocol with no spawned processes. The definitions
   # are removed, not commented out, so the switch stops the services and
-  # they stay off; bin/antigravity-ls-proxy.mjs and bin/agy-proxy.mjs
-  # remain in the repo as history, uninvoked, and the matching opencode
-  # providers sit in disabled_providers. To undo: restore the two unit
-  # blocks and the agyProxyPort/antigravityLsProxyPort lets from git
-  # history, drop the session-variable removals below, and re-point the
-  # plan seats in opencode.jsonc back from antigravity-direct.
+  # they stay off. bin/antigravity-ls-proxy.mjs and bin/agy-proxy.mjs
+  # remained in the repo as history until the 2026-11-06 proxy-infra
+  # decommission removed them; the matching opencode providers sit in
+  # disabled_providers. To undo: restore the two unit blocks, the two
+  # bin programs and the agyProxyPort/antigravityLsProxyPort lets from
+  # git history, drop the session-variable removals below, and
+  # re-point the plan seats in opencode.jsonc back from
+  # antigravity-direct. Before retiring any future provider door, run
+  # the retirement gate (scripts/check-provider-retirement-gate.sh, #5610)
+  # to verify zero active configuration references remain.
 
-  systemd.user.services.design-code-proxy = {
-    Unit = {
-      Description = "Code Design / Design Code Local Proxy Bridge for OpenCode";
-      After = [
-        "network-online.target"
-        "codex-proxy.service"
-      ];
-      Wants = [
-        "network-online.target"
-        "codex-proxy.service"
-      ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "design-code-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/design-code-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "DESIGN_CODE_PROXY_PORT=${toString designCodeProxyPort}"
-        "DESIGN_CODE_PROXY_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Design Code proxy removed (2026-11-03, Drew): its unit definition
+  # stood here. Drew removed the design persona routes and the whole
+  # design-code machinery — "the only design thing I have is opendesign"
+  # — so the :18746 door has no consumers left: the persona routes are
+  # removed from opencode.jsonc in the same pass, and the opendesign
+  # provider/pool (a different thing, kept) never used this door. The
+  # definition is removed, not commented out, so the switch stops the
+  # service and it stays off. bin/design-code-proxy.mjs remained in
+  # the repo as history until the 2026-11-06 proxy-infra decommission
+  # removed it; its port let and session variable were removed with
+  # the unit. To undo: restore this unit block, the bin program, the
+  # designCodeProxyPort let, and the DESIGN_CODE_PROXY_PORT session
+  # variable from git history, and re-add the config-side machinery.
 
   # Proxy supervisor retired (#2104, 2026-10-28): the proxy-supervisor
   # oneshot service, its 2-minute timer, and the supervisor config that
@@ -715,168 +778,139 @@ in
   # reproduced: a switch that changes a unit's ExecStart restarts that
   # proxy, per the normal flake service pattern (cf. mcpx/openchamber).
 
-  # CLI proxy workroots (muse / commandcode / claude-code): the three
-  # units below point their *_PROXY_WORKDIR overrides at per-proxy
-  # subtrees of the state dir ~/.local/state/cli-proxies
-  # (cli-proxies/commandcode, cli-proxies/claude-code,
-  # cli-proxies/muse), so runtime session state (warm-session maps,
-  # per-conversation workdirs) lives outside the checkout. The
-  # scripts' default (bin/work inside ~/code) dirtied the primary
-  # checkout with every session and blocked pm-git-sync. The subtrees
-  # are per-proxy (#2785): commandcode and claude-code derive identical
-  # sessions/<sha256(key)[:16]> workdirs for overlapping keys, and
-  # muse uses its workroot as the session cwd/workspaceRoot, so one
-  # shared root let the proxies mutate each other's session state.
-  # Only the workroots moved: pre-#2785 state under the shared root is
-  # left in place (unattributable between the proxies by construction)
-  # and each proxy re-warms fresh state in its own subtree.
+  # CLI proxy workroot: the retired proxy units pointed their
+  # workdir overrides at ~/.local/state/cli-proxies/<name>, so
+  # runtime session state lived outside the checkout (the scripts'
+  # default, bin/work inside ~/code, dirtied the primary checkout
+  # with every session and blocked pm-git-sync). All three units
+  # that shared the cli-proxies root (#2785, #3067) are retired
+  # below; their state subtrees are left in place.
   #
-  # The commandcode + claude-code units additionally pin their shared
-  # key->session map via *_PROXY_SESSION_FILE to
-  # ~/.local/state/cli-proxies/sessions.json (#3067): that map was
-  # anchored to the scripts' own directory (bin/sessions.json) rather
-  # than the workroot, so the #2782 move missed it and the primary
-  # checkout kept dirtying. Both units MUST name the same file -- the
-  # two proxies share one map (mirrored key space).
+  # Command Code proxy retired 2026-11-06 (Drew, proxy-infra
+  # decommission): its unit definition stood here. The provider was
+  # repointed to the fork's native wire-emulation provider on
+  # 2026-11-05 (code#6117, opencode#1749), so the :18748 CLI bridge
+  # had no consumers left; its let, unit, session variable,
+  # bin/commandcode-proxy.mjs, its start script and its test were
+  # removed in the same change. The port is free.
+  #
+  # Claude Code proxy retired 2026-11-06 (Drew, proxy-infra
+  # decommission): its unit definition stood here. Same story: the
+  # provider was repointed to the fork's native wire-emulation
+  # provider on 2026-11-05 (code#6117, opencode#1749) and re-enabled
+  # as a native provider on 2026-11-06; the :18749 CLI bridge's let,
+  # unit, session variable, bin/claude-code-proxy.mjs and its test
+  # were removed in the same change. The port is free.
 
-  # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
-  # Provider API rejects the Go plan, so OpenCode talks to the CLI via
-  # this OpenAI-compatible bridge on 18748, same pattern as codex-proxy).
-  # Runs the repo checkout's start script -- the same invocation the
-  # proxy-supervisor used for its transient fps-commandcode-proxy unit --
-  # so laptop/sandbox env handling and the MAX_TURNS pins live in exactly
-  # one place: bin/commandcode-proxy-start.sh. (The checkout path also
-  # avoids the stale-store ExecStart failure of #883.)
+  # Muse (Meta) proxy retired 2026-11-06 (Drew, muse-direct order):
+  # its unit definition stood here. The provider was rebuilt as a
+  # native fork provider (@opencode/ai/providers/muse-direct,
+  # opencode PR #1872) speaking the Meta Responses wire in-process —
+  # the same /muse-code/key minted-key exchange the proxy's direct
+  # mode performed, with no hop — and the proxy's let, unit, session
+  # variable, bin/muse-proxy.mjs, its start script and its test
+  # were removed in the same change. The port is free.
+
+  # Route proxy retired 2026-11-04 (opencode#1153): the door's
+  # only live consumer, OpenClaw's opencode-route provider, was
+  # repointed to the OpenCode server facade (127.0.0.1:13420/v1)
+  # and verified live (four-part proof on opencode#1146: all five
+  # route ids answered through the direct path, a workhorse turn
+  # completed with this unit stopped and :18750 refusing
+  # connections). Demotion lives in the fork (routes.settings
+  # .demotion + ledger counts, opencode#1151), so nothing of the
+  # door's behaviour is lost. bin/opencode-route-proxy.mjs, its
+  # start script and test were removed in the same change.
+
+  # Atlas search service (code#5350 step 5, #5355): the Atlas
+  # service — one resident Snowflake
+  # embedder shared by every client, the job protocol with its
+  # in-memory temp store + dedupe cache, and per-client ceiling
+  # caps enforced from ~/.local/state/atlas-search/service.json
+  # (0600, written by `atlas-search init`). Binds 127.0.0.1:18760
+  # (atlasSearchPort above); the tailnet exposure is the OpenCode
+  # pattern — a `tailscale serve` mapping on the MagicDNS name in
+  # front of the loopback port — and is created at activation
+  # (step 6), not here: a serve mapping in front of a service
+  # that has not started would be a live exposure change, and
+  # tailscale serve state is imperative tailscaled state in this
+  # fleet (no declarative precedent to land it in).
   #
-  # History: this unit originally landed (169d594e) WITH an
-  # Install.WantedBy while the supervisor owned the port, and the first
-  # activation including it (2026-10-26) crash-looped it against the
-  # supervisor's instance (44 restarts). That fight was a two-owners
-  # problem; #2104 removes the supervisor, so WantedBy is now correct.
-  systemd.user.services.commandcode-proxy = {
+  # Landed disabled in step 5 (no Install section, so the
+  # unit could not auto-start); step 6 (#5356, the cutover)
+  # added Install.WantedBy below, issued the real client
+  # tokens via `atlas-search init`, and created the
+  # tailscale serve mapping.
+  #
+  # #5604 (fleet step 5 residual): ExecStart is `fleet serve search`
+  # (atlasSearchServeViaFleet above) — the same service rehomed into
+  # the fleet binary. The unit name, config, port and wire are
+  # unchanged; rollback is atlasSearchServeViaFleet = false (the
+  # standalone `atlas-search serve`), a single re-point. `init` and
+  # `fetch-model` stay on the standalone atlas-search on PATH.
+  systemd.user.services.atlas-search = {
     Unit = {
-      Description = "Command Code CLI Local Proxy Bridge for OpenCode";
+      Description = "Atlas search service (hybrid corpus search, serve mode)";
       After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
     };
     Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "commandcode-proxy-start-unit" ''
-          exec /run/current-system/sw/bin/bash "$HOME/code/bin/commandcode-proxy-start.sh"
-        ''
-      );
-      Restart = "always";
+      ExecStart =
+        if atlasSearchServeViaFleet then
+          "${fleetPkgs.fleet}/bin/fleet serve search"
+        else
+          "${atlasSearch}/bin/atlas-search serve";
+      Restart = "on-failure";
       RestartSec = 3;
-      Environment = [
-        "COMMANDCODE_PROXY_PORT=${toString commandcodeProxyPort}"
-        "COMMANDCODE_PROXY_HOST=127.0.0.1"
-        "COMMANDCODE_PROXY_WORKDIR=%h/.local/state/cli-proxies/commandcode"
-        "COMMANDCODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
-        "COMMANDCODE_PROXY_MAX_TURNS=1"
-        "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
-      ];
+    };
+    # Install added at the step-6 cutover (#5356): auto-start.
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
+  # Fleet broker roles (epic #5412 step 2, #5430): the secrets and
+  # queue brokers as `fleet serve <role>` units — one unit per role,
+  # as they have run since code#5362. This is the home-module
+  # pattern ported from dezren39/nix PR #1459 (closed as superseded
+  # by ruling D1) into this tree, now consuming this flake's own
+  # pkgs/fleet instead of a vendored copy. The unit files these
+  # definitions replace were hand-installed; home-manager converges
+  # them on the next activation, and the step-2 flips re-point the
+  # live files at the same artifact in the meantime.
+  systemd.user.services.secrets-broker = {
+    Unit = {
+      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
+      After = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
     };
     Install.WantedBy = [ "default.target" ];
   };
 
-  # Muse proxy (#2104): previously supervisor-config only, with no
-  # declarative unit at all. Entry point mirrors the supervisor's
-  # invocation of bin/claude-code-proxy.mjs (the codex-proxy shape).
-  systemd.user.services.claude-code-proxy = {
+  systemd.user.services.queue-broker = {
     Unit = {
-      Description = "Claude Code CLI Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
+      Description = "queue-broker — repo-health queue service (code#5362)";
+      After = [
+        "network-online.target"
+        "secrets-broker.service"
+      ];
+      Wants = [ "secrets-broker.service" ];
     };
     Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "claude-code-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/claude-code-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CLAUDE_CODE_PROXY_PORT=${toString claudeCodeProxyPort}"
-        "CLAUDE_CODE_PROXY_HOST=127.0.0.1"
-        "CLAUDE_CODE_PROXY_WORKDIR=%h/.local/state/cli-proxies/claude-code"
-        "CLAUDE_CODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  # Muse (Meta) proxy (#2104): also previously supervisor-config only.
-  # Runs the checkout start script, the supervisor's exact invocation;
-  # the script owns its environment (including keeping META_API_KEY out).
-  # Enrolled here so retiring the supervisor does not strand :18747 --
-  # the redesign leaves exactly one owner for every proxy port.
-  #
-  # Direct mode (#2753, 2026-10-30): bin/muse-proxy.mjs defaults to
-  # exchanging the Muse CLI account token for the plan's minted key
-  # and serving the OpenCode muse-direct provider (declared in
-  # .opencode/opencode.jsonc, the sole enabled Meta door) over the
-  # Responses API; the CLI harness remains only as a fallback. The
-  # credential is read at runtime from ~/.config/muse/auth.json --
-  # it is never part of this config. Direct mode changes nothing
-  # about this unit: same port, same start script, same env contract.
-  systemd.user.services.muse-proxy = {
-    Unit = {
-      Description = "Muse (Meta) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "muse-proxy-start-unit" ''
-          exec /run/current-system/sw/bin/bash "$HOME/code/bin/muse-proxy-start.sh"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "MUSE_PROXY_PORT=${toString museProxyPort}"
-        "MUSE_PROXY_HOST=127.0.0.1"
-        "MUSE_PROXY_WORKDIR=%h/.local/state/cli-proxies/muse"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  # OpenAI-compatible front for the OpenCode server (:13420): exposes the
-  # opencode-route pool models (workhorse et al.) in the chat-completions
-  # shape OpenClaw providers use (code#2229). Runs the repo checkout's
-  # start script -- the same invocation the proxy-supervisor ran for its
-  # transient unit -- so the routing-only door (bin/opencode-route-proxy.mjs)
-  # is owned by exactly one unit. Enrolled as an automatic service under
-  # the #2104 redesign (this unit landed on main after that branch was
-  # cut): retiring the supervisor must not strand :18750, and the
-  # openclaw-gateway unit Wants this service.
-  systemd.user.services.opencode-route-proxy = {
-    Unit = {
-      Description = "OpenCode route proxy (OpenAI-compatible front for the OpenCode server)";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "opencode-route-proxy-start-unit" ''
-          exec /run/current-system/sw/bin/bash "$HOME/code/bin/opencode-route-proxy-start.sh"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "OPENCODE_ROUTE_PROXY_PORT=${toString opencodeRouteProxyPort}"
-      ];
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve queue-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
     };
     Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.sync-models = {
     Unit = {
-      Description = "Sync AI models for OpenCode providers from models.dev, agy, and Codex";
+      Description = "Sync AI models for OpenCode providers from models.dev and agy";
       After = [ "network-online.target" ];
     };
     Service = {
@@ -903,6 +937,89 @@ in
       OnCalendar = "daily";
       Persistent = true;
       RandomizedDelaySec = "1h";
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  # #6803: the Turso sweepers — the replacement for the retired
+  # pg_cron trio (agent-expire-leases every minute, agent-prune-events
+  # daily 04:17, park-revalidation-daily 05:17). Both are thin timers
+  # POSTing to the queue broker's /sweep verb; all logic lives in the
+  # broker (pkgs/fleet/crates/fleet-queue/src/turso_queue.rs).
+  systemd.user.services.fleet-queue-expire = {
+    Unit = {
+      Description = "fleet-queue sweeper: expire lapsed leases (#6803)";
+      After = [
+        "network-online.target"
+        "queue-broker.service"
+      ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = toString (
+        pkgs.writeShellScript "fleet-queue-expire" ''
+          token="$(cat "$HOME/.config/queue-broker/token")"
+          exec ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"expire":true}'
+        ''
+      );
+    };
+  };
+
+  systemd.user.timers.fleet-queue-expire = {
+    Unit = {
+      Description = "Expire fleet-queue leases every minute (#6803)";
+    };
+    Timer = {
+      OnCalendar = "*-*-* *:*:00";
+      Persistent = true;
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  systemd.user.services.fleet-queue-sweeper = {
+    Unit = {
+      Description = "fleet-queue sweeper: prune events + revalidate parked tasks (#6803)";
+      After = [
+        "network-online.target"
+        "queue-broker.service"
+      ];
+    };
+    Service = {
+      Type = "oneshot";
+      # The revalidator lands in observe-only mode (C3,
+      # doc/fleet/agent-events-turso.md): it logs would-releases
+      # without mutating tasks. Flip it live by writing "enabled" to
+      # ~/.config/queue-broker/revalidator-mode once the first daily
+      # observe cycle has been reviewed on #6803.
+      ExecStart = toString (
+        pkgs.writeShellScript "fleet-queue-sweeper" ''
+          token="$(cat "$HOME/.config/queue-broker/token")"
+          mode="observe"
+          if [ -f "$HOME/.config/queue-broker/revalidator-mode" ]; then
+            mode="$(cat "$HOME/.config/queue-broker/revalidator-mode")"
+          fi
+          if [ "$mode" = "enabled" ]; then obs=false; else obs=true; fi
+          ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"prune":true,"keep_days":30}'
+          ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"revalidate":true,"observe_only":'$obs'}'
+        ''
+      );
+    };
+  };
+
+  systemd.user.timers.fleet-queue-sweeper = {
+    Unit = {
+      Description = "Daily fleet-queue prune + park revalidation (#6803)";
+    };
+    Timer = {
+      OnCalendar = "*-*-* 05:17:00";
+      Persistent = true;
+      RandomizedDelaySec = "10m";
     };
     Install.WantedBy = [ "timers.target" ];
   };
@@ -951,27 +1068,171 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  # mcpx standing daemon: pool management and Code Mode runner.
-  # Runs independently on boot; survives openchamber/opencode restarts.
-  # Supports seamless hot reload via `mcpx reload` on SIGHUP or config changes.
+  # ── Service cascade (2026-11-03) ─────────────────────────────────
+  # The three standing services are defined by the fleet's layered
+  # modules now, not by hand-rolled units in this file:
+  #
+  #   services.openchamber  developing-today-forks/openchamber, nix/modules
+  #   services.opencode     developing-today-forks/opencode fork, nix/modules
+  #   services.mcpx         developing-today/code, pkgs/mcpx/modules
+  #
+  # Each layer's enable cascades to the one below with mkDefault, so
+  # the single switch here turns the whole stack on. OpenChamber
+  # attaches to the standing OpenCode server (openchamber#766, the
+  # one-process rule): the module's start wrapper reads the server's
+  # registration file, exports OPENCODE_PASSWORD / OPENCODE_HOST /
+  # OPENCODE_SKIP_START, reaps leftover servers on the port, and
+  # refuses to start unattached. What remains in this file is only
+  # this deployment's consumer configuration for the three modules,
+  # plus the mcpx handover machinery the modules do not carry.
+  # The cascade modules. NOTE: this file is merged into each user
+  # with lib.merge (a recursiveUpdate fold — see home/user and
+  # home/root), which keeps only one `imports` list; home/user
+  # re-declares the effective union there. This line is what applies
+  # for single-file merges (home/root).
+  imports = [ inputs.openchamber.homeManagerModules.openchamber ];
+
+  services.openchamber = {
+    enable = true;
+    # uiPasswordFile (the browser-UI password the old serve script
+    # read from ~/.config/openchamber/ui-password) is a per-user
+    # absolute path, so it is set in home/user, not in this shared
+    # file. (The CLOUDFLARE_* exports the old script also made are
+    # not lost with it: those values live in the systemd user
+    # manager's environment, via the hand-maintained
+    # ~/.config/environment.d/50-cloudflare.conf, and every user unit
+    # inherits them — the mcpx daemon receives them the same way.)
+  };
+
+
+
+  services.opencode = {
+    # enable comes from the cascade (mkDefault at each layer).
+    #
+    # package: the cascade build with the wrapper baked in
+    # (opencodeWrapped, in the let above) -- one derivation for the
+    # service unit and the home profile (Drew's ruling, 2026-11-03;
+    # code#5038, option A). As a standalone home.packages entry the
+    # wrapper collided with this package on bin/opencode, and it
+    # exec'd the root input's build besides (CLI/service skew).
+    package = opencodeWrapped;
+
+    environment = {
+      # code#5490: the runtime overlay (code#4544) must be layered into
+      # the server process itself. As a home.sessionVariables entry it
+      # reached shells only; the systemd unit never saw it, and the
+      # standing server ran without the overlay after the 2026-11-04
+      # reboot (overlay-only models, e.g. all of antigravity-direct,
+      # unavailable) until a drop-in restored it live.
+      OPENCODE_CONFIG = "%h/.local/state/opencode/opencode-runtime.jsonc";
+      # opencode#1633: the fork agy client-secret extraction matches
+      # the nix agy build binary layout, not the self-updated
+      # ~/.gemini/bin build (1.4.11 moved the pairing secret). Pin the
+      # intel source to the nix build until the fork iterates
+      # candidates; remove then.
+      AGY_BIN = "/run/current-system/sw/bin/agy";
+    };
+  };
+
+  # DEEPSEEK_API_KEY for the opencode server: the value lives in
+  # Bitwarden (deepseek.api-key), mirrored into sops and decrypted to
+  # /run/secrets/agent-auth/deepseek-api-key (nixos/agent-auth). It must
+  # never enter the Nix store, so an ExecStartPre materializes a
+  # systemd EnvironmentFile at every server start — the same pattern
+  # as openclaw-facade-auth-materialize in home/openclaw — and the
+  # unit reads it via EnvironmentFile. It keys the deepseek provider's
+  # official-API leg (deepseek/deepseek-flash, "1017") in the
+  # deepseek-flash-plan route (Drew, direct order, 2026-11-05).
+  #
+  # MISTRAL_API_KEY is deliberately NOT materialized here (removed
+  # 2026-11-06, root cause on opencode#1653). Mistral meters per KEY,
+  # not by call metadata: the Bitwarden mistral.api-key value is the
+  # account API key, billed to the API budget, while Vibe-plan usage
+  # is billed only when the Vibe sign-in key is used (OS keyring
+  # service "ai.mistral.vibe", from `vibe --setup`). vibe-direct
+  # resolves its credential exactly like the vibe binary — env
+  # MISTRAL_API_KEY first — so materializing the API key here
+  # silently rerouted all vibe-direct traffic onto the API budget:
+  # it burned the pool 16% -> 100% on 2026-11-05 and then walled the
+  # mistral-plan route. With no MISTRAL_API_KEY in the server env,
+  # vibe-direct falls through to the keyring plan key. The mistral
+  # provider is unaffected: its enrolled credential (integration
+  # "mistral") is its source — verified live 2026-11-06 (the leg
+  # returns the API-budget 402, not an auth error, with the env var
+  # absent).
+  # ANTIGRAVITY_OAUTH_CLIENT_SECRET for the same server: the
+  # _antigravity provider refreshes the agy keyring token with the agy
+  # installed-app client's secret, read from the process environment
+  # since fork commit 80d6b2f1f6 (2026-11-08) retired the runtime
+  # extraction from the agy binary. The value lives in the vault as
+  # google.antigravity-oauth-client-secret (one-time extraction from
+  # the installed agy binary, sanctioned by Drew 2026-11-09, code#8086)
+  # and the materializer below fetches it by name into the same
+  # EnvironmentFile at every server start — it is never stored in this
+  # repo or the Nix store. The quota gatherer reads the same file (see
+  # nixos/services/pm-stack) so its `opencode quota` refresh works too.
+  systemd.user.services.opencode.Service = {
+    ExecStartPre = toString (
+      pkgs.writeShellScript "opencode-env-key-materialize" ''
+        set -eu
+        umask 077
+        mkdir -p "$HOME/.local/state/opencode"
+        printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        agy_client_secret="$("${fleetPkgs.fleet}/bin/fleet" secrets get google.antigravity-oauth-client-secret 2>/dev/null || true)"
+        if [ -n "$agy_client_secret" ]; then
+          printf 'ANTIGRAVITY_OAUTH_CLIENT_SECRET=%s\n' "$agy_client_secret" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        fi
+      ''
+    );
+    EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
+  };
+
+  services.mcpx = {
+    # enable comes from the cascade (mkDefault at each layer).
+    #
+    # package: deliberately unset. There is one mcpx — the
+    # cascade's (the fork's build, via the module wrapper's
+    # mkDefault) — and this config takes that one (Drew's ruling,
+    # 2026-11-03; code#5027). The former pin to this repo's own
+    # pkgs/mcpx build made two mcpx builds coexist and collided
+    # with the fork package's bin/mcpx in the home profile.
+    #
+    # addPackageToProfile: off. The profile's bin/mcpx comes from
+    # exactly one provider — the opencode package's bundled
+    # symlink. The module also adding cfg.package to home.packages
+    # would put a second mcpx entry in the profile (Drew's ruling,
+    # 2026-11-03; code#5027).
+    addPackageToProfile = false;
+    # The daemon's environment, unchanged from the hand-rolled unit
+    # (mcpxEnvironment above).
+    environment = mcpxEnvironment;
+    # The daemon's configuration: mcpxSettings (mcpx-settings.nix,
+    # the former ~/code/.mcpx.json). The module renders it to the
+    # store, starts the daemon with --config pointing there, links
+    # ~/.config/mcpx/config.json to the rendered file, and points
+    # MCPX_CONFIG at it for other clients.
+    settings = mcpxSettings;
+  };
+
+  # Consumer refinements on the module's mcpx unit: the parts of the
+  # hand-rolled unit the module does not express. (Description,
+  # ExecStart, Restart = always and the 20 s stop window are the
+  # module's own.)
   systemd.user.services.mcpx = {
     Unit = {
-      Description = "mcpx standing MCP gateway daemon";
       After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
-      # A switch must not restart the daemon: that would end every child.
-      # mcpxDeploy below hands a changed daemon over instead.
+      # A switch must not restart the daemon: that would end every
+      # pooled MCP child. mcpxDeploy below hands a changed daemon
+      # over instead.
       "X-RestartIfChanged" = false;
     };
     Service = {
       Type = "notify";
       NotifyAccess = "all";
-      ExecStart = "${mcpxStart} ${mcpx}/bin/mcpx daemon";
       ExecReload = "${mcpx}/bin/mcpx reload";
-      Restart = "always";
       RestartSec = 3;
     };
-    Install.WantedBy = [ "default.target" ];
   };
 
   # A switch that changes mcpx, its start command or its environment hands the
@@ -992,123 +1253,6 @@ in
       fi
       run mkdir -p "$(dirname "$state")"
       run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
-    fi
-  '';
-
-  # Watch .mcpx.json to hot-reload the standing mcpx daemon seamlessly.
-  systemd.user.paths.mcpx-config = {
-    Unit.Description = "Watch .mcpx.json for live reload";
-    Path = {
-      PathChanged = [
-        "%h/code/.mcpx.json"
-        "%h/.config/mcpx/config.json"
-      ];
-      Unit = "mcpx-reload.service";
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  systemd.user.services.mcpx-reload = {
-    Unit.Description = "Reload mcpx daemon configuration";
-    Service = {
-      Type = "oneshot";
-      ExecStart = "${mcpx}/bin/mcpx reload";
-    };
-  };
-
-  # systemd holds the listener across restarts, so connections made during a
-  # restart queue for the new process instead of being refused.
-  systemd.user.sockets.openchamber = {
-    Unit.Description = "OpenChamber listener";
-    Socket.ListenStream = "127.0.0.1:3000";
-    Install.WantedBy = [ "sockets.target" ];
-  };
-
-  # The provider proxies are automatic services (Install.WantedBy
-  # default.target, #2104), so they are up independently of OpenChamber;
-  # OpenChamber reaches them by port, not by unit, and only mcpx is a
-  # real unit dependency here. The After ordering entries stay
-  # (ordering only, harmless).
-  systemd.user.services.openchamber = {
-    Unit = {
-      Description = "OpenChamber server";
-      After = [
-        "network-online.target"
-        "mcpx.service"
-        "clef-proxy.service"
-        "codex-proxy.service"
-        "antigravity-direct.service"
-        "design-code-proxy.service"
-        "openchamber.socket"
-      ];
-      Wants = [
-        "network-online.target"
-        "mcpx.service"
-      ];
-      Requires = [ "openchamber.socket" ];
-    };
-    Service = {
-      ExecStart = "${openchamberUnitStart}";
-      ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
-      # Stopping OpenChamber leaves its managed OpenCode running; the next
-      # OpenChamber adopts it, so sessions survive a restart. The same
-      # KillMode lets an untracked server survive a stop with the socket
-      # attached -- the start script reaps leftovers (dezren39/nix#1117).
-      KillMode = "process";
-      # A self-handoff successor names itself the main pid (MAINPID=) from a child process.
-      # With NotifyAccess=none systemd ignores it, so the unit stops when the old process exits.
-      NotifyAccess = "all";
-      Restart = "on-failure";
-      RestartSec = 5;
-      Environment = [
-        "PATH=${
-          lib.makeBinPath [
-            mcpx
-            pkgs.git
-            pkgs.openssh
-            # The start script's single-instance guard scans /proc with
-            # coreutils (readlink, cat, tr, seq, sleep); without it the
-            # guard silently matches nothing. jq is for the checkout
-            # wrapper (bin/openchamber-start.sh), which reads the
-            # standing OpenCode server's state file.
-            pkgs.coreutils
-            pkgs.jq
-          ]
-        }"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  # A new OpenChamber start command restarts the unit. A new OpenCode only moves
-  # the link and reloads OpenChamber, which hands its OpenCode over in place.
-  home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
-    state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
-    key='${
-      deployKey "openchamber" [
-        openchamberStart
-        openchamberUnitStart
-      ]
-    }'
-    link="$HOME/.local/state/openchamber/bin/opencode"
-    target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
-    previous="$(readlink "$link" 2>/dev/null || true)"
-    active=0
-    if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
-      if ${pkgs.systemd}/bin/systemctl --user is-active --quiet openchamber.service 2>/dev/null; then
-        active=1
-      fi
-    fi
-    run mkdir -p "$HOME/.local/state/openchamber/bin"
-    run ln -sfn "$target" "$link"
-    if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
-      if [ "$active" = 1 ]; then
-        run ${pkgs.systemd}/bin/systemctl --user restart openchamber.service
-      fi
-      run mkdir -p "$(dirname "$state")"
-      run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
-    elif [ "$active" = 1 ] && [ "$previous" != "$target" ]; then
-      run ${pkgs.systemd}/bin/systemctl --user reload openchamber.service
     fi
   '';
 
@@ -1236,7 +1380,6 @@ in
     #
     #   bws-access-token          | ~/.config/bws/access-token          -> BWS_ACCESS_TOKEN (bws login)
     #   op-service-account-token  | ~/.config/op/service-account-token  -> OP_SERVICE_ACCOUNT_TOKEN
-    #   jules-api-key             | ~/.config/jules/api-key             -> JULES_API_KEY
     #   cloudflare-{account-id,gateway-id,ai-inference-token} | ~/.config/cloudflare/...
     #
     # The hook is sourced from bashrcExtra, which home-manager places BEFORE the
@@ -1244,10 +1387,6 @@ in
     # these exports used to be invisible to hidden agent shells). Non-interactive
     # `bash -c` shells get it through BASH_ENV instead (nixos/agent-auth +
     # systemd.user.sessionVariables below). See pkgs/agent-shell-env/env.sh.
-    #
-    # JULES_API_KEY is consumed by the @google/jules-mcp server wired into
-    # opencode via "mcp.jules" -> environment -> {env:JULES_API_KEY}. The `jules`
-    # CLI ignores it and uses the `jules login` OAuth token in gnome-keyring.
     bash = {
       bashrcExtra = ''
         . "${agent-shell-env}/share/agent-shell-env/env.sh"
@@ -1275,7 +1414,7 @@ in
     # };
     ghostty = {
       enable = true;
-      package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;
+      package = inputs.nixpkgs-unstable.legacyPackages.${system}.ghostty;
       settings = {
         # ghostty +list-themes
         theme = "Synthwave";
@@ -1317,6 +1456,7 @@ in
     #eza.enable = true;
     firefox = {
       enable = true;
+      package = firefoxBidi; # structural WebDriver BiDi on 127.0.0.1:19225 (code#5924)
       # pin legacy path explicitly; default changed to xdg.configHome in 26.05
       configPath = ".mozilla/firefox";
       policies = {
@@ -1584,19 +1724,10 @@ in
       OPENCODE_EXPERIMENTAL_OXFMT = "1";
       OPENCODE_EXPERIMENTAL_EXA = "1";
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
-      # Single source for the local proxy ports (see the let block):
-      # opencode.jsonc reads them via {env:...} substitution.
-      CLEF_PROXY_PORT = toString clefProxyPort;
-      CODEX_PROXY_PORT = toString codexProxyPort;
-      ANTIGRAVITY_DIRECT_PORT = toString antigravityDirectProxyPort;
-      DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
-      # The three below were missing: their {env:...} templates in
-      # opencode.jsonc resolved to an empty port in the OpenChamber serve
-      # (2026-10-25 audit) because the variables never reached its
-      # environment. The session list must cover every let-block port.
-      MUSE_PROXY_PORT = toString museProxyPort;
-      COMMANDCODE_PROXY_PORT = toString commandcodeProxyPort;
-      CLAUDE_CODE_PROXY_PORT = toString claudeCodeProxyPort;
+      # Proxy-port session variables stood here: the last of them
+      # (MUSE_PROXY_PORT) was removed with the muse proxy's
+      # retirement on 2026-11-06. Every provider proxy is gone, and
+      # no {env:...} templates remain in opencode.jsonc.
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
@@ -1639,25 +1770,23 @@ in
       with pkgs;
       [
         libnotify
-        (pkgs.writeShellScriptBin "clef-proxy" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "agy-proxy" ''
-          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "codex-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "antigravity-ls-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "design-code-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs "$@"
-        '')
+        # On-screen keyboard (wvkbd-mobintl) for touch use over the
+        # Sunshine/Moonlight stream: launched only while a stream is
+        # live, by Sunshine's global_prep_cmd (nixos/hosts/amd-sunshine.nix);
+        # SUPER+SHIFT+O re-shows it (bind in config/hypr/hyprland.lua).
+        wvkbd
+        # Atlas search CLI + service binary (pkgs/atlas-search);
+        # step-6 cutover (#5356): the Rust binary is the resolved
+        # `atlas-search` (the Python CLI is kept as atlas-search-py).
+        atlasSearch
+        # No "agy-proxy" / "antigravity-ls-proxy" launchers here: both
+        # doors were retired 2026-10-30, their units removed above, and
+        # their .mjs files removed in the 2026-11-06 proxy-infra
+        # decommission — a PATH launcher would resurrect a retired door
+        # on its canonical port.
+        # No "codex-proxy" launcher either: the door was retired
+        # 2026-11-06 in the proxy-infra decommission (the fork's
+        # native openai provider replaced the CLI bridge).
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
@@ -1666,35 +1795,9 @@ in
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
         '')
-        (pkgs.writeShellScriptBin "opencode" ''
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-            [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-          fi
-          if [ -z "$JULES_API_KEY" ] && [ -r "$HOME/.config/jules/api-key" ]; then
-            export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
-          fi
-
-          # Opportunistic background model sync (max once every 24h, detached)
-          _CACHE_DIR="$HOME/.cache"
-          [ -n "$XDG_CACHE_HOME" ] && _CACHE_DIR="$XDG_CACHE_HOME"
-          _SYNC_STAMP="$_CACHE_DIR/sync-models.last"
-          if [ ! -f "$_SYNC_STAMP" ] || [ -n "$(find "$_SYNC_STAMP" -mtime +1 2>/dev/null)" ]; then
-            mkdir -p "$_CACHE_DIR"
-            touch "$_SYNC_STAMP"
-            (
-              export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-              if command -v sync-models >/dev/null 2>&1; then
-                sync-models >/dev/null 2>&1
-              elif [ -x "$HOME/code/bin/sync-models.mjs" ]; then
-                ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" >/dev/null 2>&1
-              fi
-            ) &
-          fi
-
-          exec ${inputs.opencode.packages.${system}.opencode}/bin/opencode "$@"
-        '')
+        # No standalone "opencode" script in this list: the CLI is
+        # services.opencode.package -- the cascade build with the
+        # wrapper baked in (opencodeWrapped, in the let above; code#5038).
         #
         #         dog
         #         felix
@@ -1905,7 +2008,7 @@ in
         bluez
         bluez-tools
         bottom
-        brave
+        braveCdp # brave + structural CDP on 127.0.0.1:19223 (code#5924)
         brig
         brightnessctl
         brillo

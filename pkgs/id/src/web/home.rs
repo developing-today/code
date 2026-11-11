@@ -188,20 +188,32 @@ pub(super) fn render_home(
             ),
         );
     } else {
-        for world in worlds {
-            let name = html_escape(&world.name);
-            let href = urlencoding::encode(&world.name);
-            let state = if world.open {
-                "open"
-            } else {
-                "stored; opens on selection"
-            };
-            let _ = std::fmt::Write::write_fmt(
-                &mut html,
-                format_args!(
-                    "<li><a href=\"{world_route}?world={href}\">{name}</a> <span>{state}</span></li>"
-                ),
-            );
+        // The explorer renders from the shared directory serializer
+        // (#812): the same shape the CLI's `id world list --json` prints.
+        let directory = crate::world_hub::directory_json(worlds, default_world);
+        if let Some(entries) = directory["worlds"].as_array() {
+            for entry in entries {
+                let raw_name = entry["name"].as_str().unwrap_or_default();
+                let name = html_escape(raw_name);
+                let href = urlencoding::encode(raw_name);
+                let state = if entry["loaded"].as_bool().unwrap_or(false) {
+                    "open"
+                } else {
+                    "stored; opens on selection"
+                };
+                let presence = entry["presence"].as_u64().unwrap_or(0);
+                let presence_note = if presence > 0 {
+                    format!(" <span>{presence} active</span>")
+                } else {
+                    String::new()
+                };
+                let _ = std::fmt::Write::write_fmt(
+                    &mut html,
+                    format_args!(
+                        "<li><a href=\"{world_route}?world={href}\">{name}</a> <span>{state}</span>{presence_note}</li>"
+                    ),
+                );
+            }
         }
     }
     html.push_str("</ul><p>Unavailable worlds are not listed; selecting a listed world reports if it cannot be opened.</p></section>");
@@ -306,7 +318,10 @@ mod tests {
             crate::world_session::WorldService::new(world.clone(), None),
         ));
         (
-            super::super::routes::create_router(state),
+            super::super::routes::create_router(
+                state,
+                super::super::security::WebSecurity::default(),
+            ),
             store,
             tags,
             temp,

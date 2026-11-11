@@ -8,12 +8,21 @@
 // error (exit 2) naming the offending token, with no collection or
 // file-write side effect. A valid explicit --out and the no-argument
 // default keep working.
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const script = join(import.meta.dir, "../scripts/collect-fleet-feed.ts");
+
+// The collector POSTs a freshness notice after publishing and exits 1 when
+// that fails, so a successful run needs a listener; a stub keeps the test
+// hermetic instead of depending on a live aggregator on 127.0.0.1:4871.
+let freshnessStub: ReturnType<typeof Bun.serve>;
+beforeAll(() => {
+  freshnessStub = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("{}") });
+});
+afterAll(() => freshnessStub.stop(true));
 
 async function runScript(
   home: string,
@@ -27,6 +36,7 @@ async function runScript(
       HOME: home,
       TMPDIR: home,
       FLEET_FEED_OUT: join(home, "feed.json"),
+      PM_AGG_FRESHNESS_URL: `http://127.0.0.1:${freshnessStub.port}/publish`,
     },
     stdout: "pipe",
     stderr: "pipe",
