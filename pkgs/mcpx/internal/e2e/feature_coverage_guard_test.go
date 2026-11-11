@@ -180,14 +180,17 @@ func evaluateFeatureCoverage(rows []featureCoverageRow) []string {
 // featureCoverageGuardViolations is what guardedMain enforces after
 // a full, passing suite run. It returns nil when the evaluation does
 // not apply: a -run-filtered run's ledger is partial by construction,
-// and a failing run's rows are incomplete for the same reason its
-// tests failed.
+// a -list run executes no tests at all, a -skip-filtered run omits
+// the skipped tests' rows, and a failing run's rows are incomplete
+// for the same reason its tests failed.
 func featureCoverageGuardViolations(runCode int, rows []featureCoverageRow) []string {
 	if runCode != 0 {
 		return nil
 	}
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		return nil
+	for _, name := range []string{"test.run", "test.list", "test.skip"} {
+		if f := flag.Lookup(name); f != nil && f.Value.String() != "" {
+			return nil
+		}
 	}
 	return evaluateFeatureCoverage(rows)
 }
@@ -197,12 +200,16 @@ func featureCoverageGuardViolations(runCode int, rows []featureCoverageRow) []st
 // this run's rows. It is the fast iteration loop for the exemption
 // file (a full suite run is ~25 minutes) and the way a recorded
 // ledger — e.g. the one CI uploads — can be re-judged after the fact.
-// Set MCPX_FEATURE_COVERAGE_EVALUATE_LEDGER to the ledger path; the
-// test skips when it is unset.
+// Set MCPX_FEATURE_COVERAGE_EVALUATE_LEDGER to the ledger path; when
+// it is unset the test is a no-op pass, NOT a skip: the unfiltered CI
+// job's skip-count ratchet (scripts/gotest-report.py decide(), keyed
+// on the MCPX_GO_TESTS record) rejects a green run whose skip count
+// exceeds the stored ceiling, so an opt-in utility must never add a
+// permanent skip to normal runs (Codex finding on PR #8475).
 func TestFeatureCoverageGuardAgainstRecordedLedger(t *testing.T) {
 	path := os.Getenv("MCPX_FEATURE_COVERAGE_EVALUATE_LEDGER")
 	if path == "" {
-		t.Skip("MCPX_FEATURE_COVERAGE_EVALUATE_LEDGER is not set")
+		return
 	}
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -293,5 +300,33 @@ func TestFeatureCoverageGuardFailsForFabricatedRegistryEntry(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("a fabricated unexercised registry entry should fail the guard, got %v", violations)
+	}
+}
+
+// TestFeatureCoverageGuardSkipsPartialExecutionModes pins the Codex
+// finding on PR #8475: listing (-list) and skip-filtered (-skip) runs
+// produce empty or partial ledgers without setting test.run, so the
+// guard must not evaluate them.
+func TestFeatureCoverageGuardSkipsPartialExecutionModes(t *testing.T) {
+	for _, name := range []string{"test.list", "test.skip"} {
+		f := flag.Lookup(name)
+		if f == nil {
+			t.Fatalf("flag %s not registered", name)
+		}
+		orig := f.Value.String()
+		if err := flag.Set(name, "TestNothingMatchesThis"); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+		if violations := featureCoverageGuardViolations(0, nil); violations != nil {
+			flag.Set(name, orig)
+			t.Fatalf("with %s set, guard returned %v, want nil (evaluation excluded)", name, violations)
+		}
+		if err := flag.Set(name, orig); err != nil {
+			t.Fatalf("restore %s: %v", name, err)
+		}
+	}
+	// A failing run is never evaluated either.
+	if violations := featureCoverageGuardViolations(1, nil); violations != nil {
+		t.Fatalf("failing run: guard returned %v, want nil", violations)
 	}
 }
