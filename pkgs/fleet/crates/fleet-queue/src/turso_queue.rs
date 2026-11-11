@@ -4604,13 +4604,22 @@ fn envelope_is_ok(v: &Value) -> bool {
 
 /// #5757-A: claim + lane-assign + session-bind in one broker
 /// round trip — the composition of the three verbs, in order,
-/// with the same semantics as calling them in sequence: a
-/// step's error envelope, or an empty claim, returns verbatim
-/// and later steps are not attempted. The answer carries every
-/// step's row: `row` is the claimed task row (the shape /claim
-/// answers and the client's claim_output consumes); `lane_row`
-/// and `bind_row` are exactly what /lane and /bind answer in
-/// the three-verb flow.
+/// with the same semantics as calling them in sequence: the
+/// claim step's error envelope, or an empty claim, returns
+/// verbatim and later steps are not attempted. A LANE/BIND
+/// failure is different: the claim has already committed, so it
+/// answers as a partial success (ok envelope + claimed row +
+/// `claim_flow_partial` naming the failed step), never as an
+/// error envelope — a retryable error there would make the
+/// client's call_result replay the WHOLE flow and claim a
+/// second task, leaking this one (Codex P1 on PR #8493; the
+/// PostgREST broker in queue_broker.rs follows the same rule).
+/// The caller finishes the failed step with the single-verb
+/// /lane or /bind call for this task id. The answer carries
+/// every step's row: `row` is the claimed task row (the shape
+/// /claim answers and the client's claim_output consumes);
+/// `lane_row` and `bind_row` are exactly what /lane and /bind
+/// answer in the three-verb flow.
 fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
     if let Err(e) = crate::client::claim_flow_precheck(req) {
         return fail(2, e);
@@ -4630,7 +4639,14 @@ fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
     }
     let lane = verb_lane(t, &lane_req);
     if !envelope_is_ok(&lane) {
-        return lane;
+        return ok(json!({
+            "row": row,
+            "claim_flow_partial": {
+                "step": "lane",
+                "exit": lane.get("exit").cloned().unwrap_or(Value::Null),
+                "error": lane.get("error").cloned().unwrap_or(Value::Null),
+            },
+        }));
     }
     let bind_req = json!({
         "task_id": task_id,
@@ -4640,7 +4656,15 @@ fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
     });
     let bind = verb_bind(t, &bind_req);
     if !envelope_is_ok(&bind) {
-        return bind;
+        return ok(json!({
+            "row": row,
+            "lane_row": lane.get("row").cloned().unwrap_or(Value::Null),
+            "claim_flow_partial": {
+                "step": "bind",
+                "exit": bind.get("exit").cloned().unwrap_or(Value::Null),
+                "error": bind.get("error").cloned().unwrap_or(Value::Null),
+            },
+        }));
     }
     ok(json!({
         "row": row,
@@ -8441,6 +8465,29 @@ mod tests {
         assert!(pre < c && c < l && l < b, "steps run precheck -> claim -> lane -> bind");
         assert!(flow.contains("\"bind_row\""), "answer carries the bind row");
         assert!(flow.contains("\"lane_row\""), "answer carries the lane row");
+    }
+
+    #[test]
+    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
+        // #5757-A Codex P1 oracle (PR #8493): once the claim step
+        // has committed, a lane/bind failure must answer as a
+        // partial success carrying the claimed row and a
+        // claim_flow_partial marker for EACH step — never as the
+        // step's error envelope, which the client's retry loop
+        // would replay into a second claim.
+        let src = include_str!("turso_queue.rs");
+        let flow = seg8217(src, "fn verb_claim_flow(", "\nfn claimed_by(");
+        assert_eq!(
+            flow.matches("\"claim_flow_partial\"").count(),
+            2,
+            "lane and bind failures both carry claim_flow_partial"
+        );
+        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
+        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        assert!(
+            !flow.contains("return lane;") && !flow.contains("return bind;"),
+            "post-commit step envelopes are never returned verbatim"
+        );
     }
 
     #[test]

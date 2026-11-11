@@ -385,6 +385,13 @@ fn call_result(path: &str, body: &Value) -> Result<Value, (i32, String)> {
     // the caller. Safe for writes: a 57014 means Postgres cancelled
     // the statement, so the write rolled back and cannot
     // double-apply (enqueue dedupe keys are a second belt).
+    // /claim-flow invariant (#5757-A, Codex P1 on PR #8493): this
+    // whole-request retry is safe ONLY because both brokers answer
+    // any post-claim-commit lane/bind failure as a partial SUCCESS
+    // (ok envelope + `claim_flow_partial`), never as a retryable
+    // error — a retryable error out of /claim-flow can therefore
+    // only come from the claim step itself, whose statement rolled
+    // back. Do not weaken the broker side of this invariant.
     let mut attempt: u32 = 0;
     loop {
         match broker_roundtrip(path, body) {
@@ -1415,6 +1422,33 @@ pub(crate) fn claim_flow_precheck(req: &Value) -> Result<String, String> {
     Ok(session.to_string())
 }
 
+/// #5757-A: the operator-facing note for a /claim-flow partial
+/// success — the claim COMMITTED and stands, but the lane or bind
+/// step failed broker-side. The claimed task's identity is
+/// preserved (no re-claim, no replay); the caller finishes the
+/// named step with the single-verb call for this task id.
+/// Returns None on a full success (or a non-claim-flow answer).
+fn claim_flow_partial_note(resp: &Value) -> Option<String> {
+    let partial = resp.get("claim_flow_partial")?;
+    let step = partial
+        .get("step")
+        .and_then(|s| s.as_str())
+        .unwrap_or("lane/bind");
+    let error = partial
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or("unknown error");
+    let task_id = resp
+        .get("row")
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Some(format!(
+        "repo-queue: claim-flow claimed task {task_id} but the {step} step failed ({error}); \
+         the claim stands — finish that step with the single-verb call for task {task_id}, do not re-claim"
+    ))
+}
+
 /// Whether this claim takes the one-trip /claim-flow path
 /// (#5757-A): only with an explicit --bind, a single (non-batch)
 /// claim, no --from-session transfer, and a --session-id to
@@ -1609,6 +1643,9 @@ fn cmd_claim(rest: &[String]) -> i32 {
     } else {
         unwrap_ok_fb(call_fb("/claim", &body), "/claim")
     };
+    if let Some(note) = claim_flow_partial_note(&resp) {
+        eprint(&note);
+    }
     if count > 1 {
         return claim_batch_output(&resp, &worker, count);
     }
@@ -3428,6 +3465,25 @@ mod tests {
         // Absent --limit keeps the existing default of 20.
         assert_eq!(list_limit_or_default(None), Ok(20));
         assert_eq!(list_limit_or_default(Some(0)), validate_list_limit(0));
+    }
+
+    #[test]
+    fn claim_flow_partial_note_names_the_claimed_task_and_step() {
+        // #5757-A Codex P1 oracle (PR #8493): a partial success
+        // produces a note that preserves the claimed task's
+        // identity and names the failed step; a full success (and
+        // a plain /claim answer) produces no note.
+        let partial = json!({
+            "row": {"id": 4242},
+            "claim_flow_partial": {"step": "bind", "exit": 4, "error": "PGRST002 boom"},
+        });
+        let note = claim_flow_partial_note(&partial).expect("partial yields a note");
+        assert!(note.contains("4242"), "{note}");
+        assert!(note.contains("bind"), "{note}");
+        assert!(note.contains("do not re-claim"), "{note}");
+        let full = json!({"row": {"id": 4242}, "lane_row": {}, "bind_row": {}});
+        assert!(claim_flow_partial_note(&full).is_none());
+        assert!(claim_flow_partial_note(&json!({"row": {"id": 1}})).is_none());
     }
 
     #[test]
