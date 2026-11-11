@@ -99,6 +99,77 @@ describe("dashboard assembly deadline (#5664)", () => {
     expect(await response.json()).toEqual({ board: [{ id: "fast" }] });
   });
 
+  it("coalesces concurrent same-key requests into one assembly (#7065)", async () => {
+    const withinDeadline = createDashboardResponseDeadline({ timeoutMs: 200 });
+    const request = new Request("http://localhost/api/board.json");
+    let started = 0;
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const assemble = async () => {
+      started += 1;
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await Bun.sleep(30);
+      concurrent -= 1;
+      return Response.json({ board: [{ id: "shared" }] });
+    };
+
+    const responses = await Promise.all([
+      withinDeadline(request, assemble),
+      withinDeadline(request, assemble),
+      withinDeadline(request, assemble),
+    ]);
+
+    expect(started).toBe(1);
+    expect(maxConcurrent).toBe(1);
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ board: [{ id: "shared" }] });
+    }
+  });
+
+  it("joins the still-running assembly after an earlier waiter timed out (#7065)", async () => {
+    const withinDeadline = createDashboardResponseDeadline({ timeoutMs: 10 });
+    const request = new Request("http://localhost/api/board.json");
+    let started = 0;
+    const assemble = async () => {
+      started += 1;
+      await Bun.sleep(50);
+      return Response.json({ board: [{ id: "late" }] });
+    };
+
+    const first = await withinDeadline(request, assemble);
+    expect(first.status).toBe(503);
+    // The first assembly is still running; this overlapping request must
+    // share it (and time out on its own deadline), not start a second run.
+    const second = await withinDeadline(request, assemble);
+    expect(second.status).toBe(503);
+    expect(started).toBe(1);
+
+    // The shared late run seeds the last-good cache exactly once, so a
+    // later stalled request is served the shared result as stale.
+    await Bun.sleep(60);
+    const stale = await withinDeadline(request, () => new Promise<Response>(() => {}));
+    expect(stale.status).toBe(200);
+    expect(stale.headers.get("x-aggregator-stale")).toBe("true");
+    expect(JSON.parse(await stale.text())).toMatchObject({ board: [{ id: "late" }], stale: true });
+  });
+
+  it("does not poison the key when the shared assembly rejects (#7065)", async () => {
+    const withinDeadline = createDashboardResponseDeadline({ timeoutMs: 100 });
+    const request = new Request("http://localhost/api/board.json");
+
+    await expect(
+      withinDeadline(request, async () => {
+        throw new Error("assembly failed");
+      }),
+    ).rejects.toThrow("assembly failed");
+
+    const recovered = await withinDeadline(request, async () => Response.json({ board: [{ id: "fresh" }] }));
+    expect(recovered.status).toBe(200);
+    expect(await recovered.json()).toEqual({ board: [{ id: "fresh" }] });
+  });
+
   it("does not use a last-good response for a different filtered URL", async () => {
     const withinDeadline = createDashboardResponseDeadline({ timeoutMs: 10 });
     const filtered = new Request("http://localhost/api/board.json?view=mine");
