@@ -1,0 +1,33 @@
+name: cargo target janitor
+
+# CI tier policy: see .github/ci-policy.md
+on:
+  pull_request:
+    paths:
+      - "infra/cargo-target-janitor/**"
+      - ".github/workflows/cargo-target-janitor.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/cargo-target-janitor/**"
+      - ".github/workflows/cargo-target-janitor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "basic: cargo target janitor deletion safety"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run deletion-safety tests
+        run: |
+          test -f infra/cargo-target-janitor/tests/test_cargo_target_janitor.py
+          python3 infra/cargo-target-janitor/tests/test_cargo_target_janitor.py

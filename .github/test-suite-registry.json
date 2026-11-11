@@ -486,11 +486,16 @@
       "paths": [
         "infra/cargo-target-janitor/tests/test_cargo_target_janitor.py"
       ],
-      "invocation": "Python test; exact command not established",
-      "venue": null,
-      "status": "uncovered",
+      "invocation": "python3 infra/cargo-target-janitor/tests/test_cargo_target_janitor.py",
+      "venue": {
+        "workflow": ".github/workflows/cargo-target-janitor.yml",
+        "job_step": "test / Run deletion-safety tests",
+        "state": "unknown",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
       "phase2_issue": 5952,
-      "reason": "Hourly service runs the janitor, not its tests."
+      "reason": "New venue requires an observed successful Actions run and enablement audit."
     },
     {
       "id": "t3code.seed-providers",
