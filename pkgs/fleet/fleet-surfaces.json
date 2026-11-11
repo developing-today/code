@@ -87,8 +87,8 @@
       "status": "active",
       "targets": [
         "developing-today/code",
-        "developing-today/opencode",
-        "developing-today/openchamber",
+        "developing-today-forks/opencode",
+        "developing-today-forks/openchamber",
         "developing-today/.github",
         "developing-today/hardware-doc",
         "developing-today/zulip-archive"

@@ -227,6 +227,11 @@ pub trait Gh {
     fn codespace_list(&self) -> R<Vec<Value>>;
     /// `gh codespace ssh -c NAME -- COMMAND`; returns the exit code.
     fn codespace_ssh(&self, name: &str, command: &str) -> R<i32>;
+    /// Like codespace_ssh but also returns trimmed stdout (used to
+    /// validate the reused codespace's checked-out revision).
+    fn codespace_ssh_capture(&self, name: &str, command: &str) -> R<(i32, String)> {
+        Ok((self.codespace_ssh(name, command)?, String::new()))
+    }
     fn sleep_secs(&self, secs: u64) {
         std::thread::sleep(Duration::from_secs(secs));
     }
@@ -356,6 +361,17 @@ impl Gh for RealGh {
             .map_err(|e| Die(format!("gh codespace ssh: {e}")))?;
         Ok(out.status.code().unwrap_or(-1))
     }
+
+    fn codespace_ssh_capture(&self, name: &str, command: &str) -> R<(i32, String)> {
+        let out = std::process::Command::new("gh")
+            .args(["codespace", "ssh", "-c", name, "--", command])
+            .output()
+            .map_err(|e| Die(format!("gh codespace ssh: {e}")))?;
+        Ok((
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------- registry
@@ -412,6 +428,98 @@ fn state_dir() -> String {
 
 fn state_file() -> String {
     format!("{}/sessions.json", state_dir())
+}
+
+/// Interprocess lock for the session store: a lock directory
+/// created with create_dir (atomic) next to the store file.
+/// Holders write pid+epoch into it; a lock older than 120s is
+/// stale (crashed holder) and is broken. This serializes the
+/// store's read-modify-write transactions so concurrent
+/// dispatches/status calls cannot drop each other's sessions
+/// (Codex P1 on PR #8325).
+struct StoreLock {
+    dir: String,
+}
+
+impl StoreLock {
+    fn acquire() -> R<StoreLock> {
+        let dir = format!("{}/sessions.lockdir", state_dir());
+        std::fs::create_dir_all(state_dir())
+            .map_err(|e| Die(format!("cannot create state dir: {e}")))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match std::fs::create_dir(&dir) {
+                Ok(()) => {
+                    let _ = std::fs::write(
+                        format!("{dir}/owner"),
+                        format!("{} {}", std::process::id(), now_epoch()),
+                    );
+                    return Ok(StoreLock { dir });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&dir)
+                        .and_then(|m| m.modified())
+                        .map(|t| {
+                            t.elapsed().map(|d| d.as_secs() > 120).unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    if stale {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        continue;
+                    }
+                    if std::time::Instant::now() > deadline {
+                        return die(format!(
+                            "session store is locked by another fleet-place process ({dir}); retry shortly"
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return die(format!("cannot lock session store {dir}: {e}"));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn with_store_lock<T>(f: impl FnOnce() -> R<T>) -> R<T> {
+    let _guard = StoreLock::acquire()?;
+    f()
+}
+
+/// Commit one new session record (and optionally its Blacksmith
+/// ledger entry) under the store lock, merging into the CURRENT
+/// store on disk — records written by other processes since this
+/// process loaded its snapshot are preserved.
+fn commit_new_session(rec: &Value, blacksmith_entry: Option<&Value>) -> R<()> {
+    let handle = rec
+        .get("handle")
+        .and_then(|h| h.as_str())
+        .unwrap_or("")
+        .to_string();
+    with_store_lock(|| {
+        let mut store = load_store();
+        if let Some(sessions) = store["sessions"].as_object_mut() {
+            sessions.insert(handle.clone(), rec.clone());
+        }
+        if let Some(entry) = blacksmith_entry {
+            if let Some(arr) = store["blacksmith_dispatches"].as_array_mut() {
+                let exists = arr.iter().any(|d| {
+                    d.get("handle").and_then(|h| h.as_str()) == Some(handle.as_str())
+                });
+                if !exists {
+                    arr.push(entry.clone());
+                }
+            }
+        }
+        save_store(&store)
+    })
 }
 
 fn load_store() -> Value {
@@ -530,6 +638,10 @@ pub struct DispatchResult {
     pub run_url: Option<String>,
     pub note: Option<String>,
     pub codespace: Option<String>,
+    /// Set when the dispatch itself already knows the terminal
+    /// outcome (Codespace ssh exit code), so the session record
+    /// is terminal from the start instead of stuck `dispatched`.
+    pub terminal_state: Option<String>,
 }
 
 /// One adapter per registry `kind` (spec: "Adapters per placement
@@ -632,6 +744,35 @@ impl GithubActionsAdapter {
         let workflow = surf_str(s, "workflow").to_string();
         let token = gh.app_token(&repo)?;
         let inputs = self.workflow_inputs(job);
+        // Correlate the created run with THIS dispatch (Codex P1
+        // on PR #8325): snapshot the workflow's existing run ids
+        // BEFORE submitting, so a run another job submitted just
+        // before us can never be attached to this handle; among
+        // the runs that appear after, attach the EARLIEST one, so
+        // a concurrent later submission is not attached either.
+        // (The workflows expose no dispatch-id input or run field
+        // to carry a unique id through; snapshot exclusion is the
+        // strongest correlation the runs API supports.)
+        let list_runs = |gh: &dyn Gh| -> R<Vec<Value>> {
+            let (_st, runs) = gh.api(
+                "GET",
+                &format!(
+                    "/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100"
+                ),
+                &token,
+                None,
+            )?;
+            Ok(runs
+                .get("workflow_runs")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default())
+        };
+        let before_ids: std::collections::HashSet<i64> = list_runs(gh)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| r.get("id").and_then(|i| i.as_i64()))
+            .collect();
         let (status, payload) = gh.api(
             "POST",
             &format!("/repos/{repo}/actions/workflows/{workflow}/dispatches"),
@@ -648,43 +789,38 @@ impl GithubActionsAdapter {
                     .unwrap_or_else(|| payload.to_string())
             ));
         }
-        // Find the run the dispatch created (newest workflow_dispatch
-        // run at/after the dispatch instant).
+        // Find the run the dispatch created: the earliest run
+        // that was not in the pre-dispatch snapshot and was
+        // created at/after the dispatch instant.
         let since = gh.now_epoch() - 5;
         let mut found: Option<(i64, String)> = None;
         for _ in 0..12 {
             gh.sleep_secs(3);
-            let (_st, runs) = gh.api(
-                "GET",
-                &format!(
-                    "/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=5"
-                ),
-                &token,
-                None,
-            )?;
-            for r in runs
-                .get("workflow_runs")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default()
-            {
+            let mut candidates: Vec<(i64, i64, String)> = Vec::new();
+            for r in list_runs(gh)? {
+                let id = r.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+                if before_ids.contains(&id) {
+                    continue;
+                }
                 let created = r
                     .get("created_at")
                     .and_then(|c| c.as_str())
                     .and_then(parse_iso)
                     .unwrap_or(0);
                 if created >= since {
-                    found = Some((
-                        r.get("id").and_then(|i| i.as_i64()).unwrap_or(0),
+                    candidates.push((
+                        created,
+                        id,
                         r.get("html_url")
                             .and_then(|u| u.as_str())
                             .unwrap_or("")
                             .to_string(),
                     ));
-                    break;
                 }
             }
-            if found.is_some() {
+            candidates.sort();
+            if let Some((_created, id, url)) = candidates.into_iter().next() {
+                found = Some((id, url));
                 break;
             }
         }
@@ -745,7 +881,7 @@ impl Adapter for GithubActionsAdapter {
     fn surface(&self) -> &Value {
         &self.surface
     }
-    fn eligible(&self, job: &Job, ctx: &Ctx, _gh: &dyn Gh) -> (bool, String) {
+    fn eligible(&self, job: &Job, ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
         let _ = ctx;
         let (ok, why) = base_eligible(&self.surface, job);
         if !ok {
@@ -755,6 +891,19 @@ impl Adapter for GithubActionsAdapter {
             return (
                 false,
                 "job pins runner=blacksmith; this is a github-runner surface".to_string(),
+            );
+        }
+        // A surface the App cannot reach can never dispatch
+        // (Codex P2 on PR #8325): live token availability is part
+        // of eligibility, so an inaccessible surface cannot win
+        // the cascade and then abort at dispatch time.
+        let repo = surf_str(&self.surface, "repo");
+        if gh.mint_token(repo).is_none() {
+            return (
+                false,
+                format!(
+                    "app token cannot be minted for {repo} \u{2014} surface is \n                     unreachable by the App"
+                ),
             );
         }
         (true, "eligible".to_string())
@@ -828,7 +977,7 @@ impl Adapter for BlacksmithAdapter {
     fn surface(&self) -> &Value {
         &self.inner.surface
     }
-    fn eligible(&self, job: &Job, _ctx: &Ctx, _gh: &dyn Gh) -> (bool, String) {
+    fn eligible(&self, job: &Job, _ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
         if surf_str(&self.inner.surface, "owner") == "dezren39" {
             return (
                 false,
@@ -843,6 +992,15 @@ impl Adapter for BlacksmithAdapter {
             return (
                 false,
                 "job pins runner=github".to_string(),
+            );
+        }
+        let repo = surf_str(&self.inner.surface, "repo");
+        if gh.mint_token(repo).is_none() {
+            return (
+                false,
+                format!(
+                    "app token cannot be minted for {repo} \u{2014} surface is \n                     unreachable by the App"
+                ),
             );
         }
         (true, "eligible".to_string())
@@ -967,12 +1125,45 @@ impl Adapter for CodespaceAdapter {
             .and_then(|n| n.as_str())
             .unwrap_or("")
             .to_string();
+        // Honor the requested revision (Codex P2 on PR #8325):
+        // the reused codespace must be checked out at the
+        // requested ref; fleet-place validates and refuses rather
+        // than running against different code than the session
+        // records.
+        if !job.git_ref.is_empty() {
+            let esc = job.git_ref.replace('\'', "'\\''");
+            let (hcode, head) =
+                gh.codespace_ssh_capture(&name, "git rev-parse HEAD")?;
+            let (tcode, target) = gh.codespace_ssh_capture(
+                &name,
+                &format!(
+                    "git rev-parse --verify '{esc}^{{commit}}' 2>/dev/null || git rev-parse --verify 'origin/{esc}^{{commit}}' 2>/dev/null"
+                ),
+            )?;
+            if hcode != 0 || head.is_empty() || tcode != 0 || target.is_empty() {
+                return die(format!(
+                    "codespace {name}: cannot validate the requested ref {} \u{2014} \n                     the reused codespace's checkout could not be resolved \n                     against it; check out the ref in the codespace and \n                     resubmit, or drop --ref",
+                    job.git_ref
+                ));
+            }
+            if head != target {
+                return die(format!(
+                    "codespace {name} is checked out at {head}, not the \n                     requested ref {} ({target}) \u{2014} fleet-place does not \n                     move a reused codespace's checkout; check out the ref \n                     in the codespace and resubmit, or drop --ref",
+                    job.git_ref
+                ));
+            }
+        }
         let code = gh.codespace_ssh(&name, &job.command)?;
         Ok(DispatchResult {
             codespace: Some(name.clone()),
             note: Some(format!(
                 "job handed to a session in codespace {name} (ssh exit {code})"
             )),
+            // The ssh call IS the execution: its exit code is the
+            // terminal outcome (Codex P2 on PR #8325).
+            terminal_state: Some(
+                if code == 0 { "succeeded" } else { "failed" }.to_string(),
+            ),
             ..Default::default()
         })
     }
@@ -1540,6 +1731,40 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     };
     let registry = load_registry(&registry_path(&cli))?;
     let gh = RealGh::new();
+    // Reconcile outstanding Blacksmith sessions BEFORE the
+    // placement decision (Codex P2 on PR #8325), so the budget
+    // figure build_ctx sums reflects real run durations rather
+    // than stored zeros whenever a dispatch is being decided.
+    if dispatch && assume_blacksmith_used.is_none() {
+        let _ = with_store_lock(|| {
+            let mut store = load_store();
+            let handles: Vec<String> = store
+                .get("sessions")
+                .and_then(|s| s.as_object())
+                .map(|m| {
+                    m.iter()
+                        .filter(|(_h, rec)| {
+                            let sid = rec.get("surface").and_then(|v| v.as_str()).unwrap_or("");
+                            let state = rec.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                            rec.get("run_id").and_then(|v| v.as_i64()).is_some()
+                                && !["succeeded", "failed", "cancelled"].contains(&state)
+                                && find_surface(&registry, sid)
+                                    .map(|s| surf_str(s, "kind") == "blacksmith")
+                                    .unwrap_or(false)
+                        })
+                        .map(|(h, _)| h.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for h in &handles {
+                let _ = refresh_session(&mut store, h, &registry, &gh);
+            }
+            if !handles.is_empty() {
+                save_store(&store)?;
+            }
+            Ok(())
+        });
+    }
     let store = load_store();
     let ctx = build_ctx(
         &registry,
@@ -1580,7 +1805,6 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         print_out(&Value::Object(out), cli.json, render_decision);
         return Ok(0);
     }
-    let mut store = store;
     let handle = new_handle(&rand_source::URandom);
     match adapter {
         None => {
@@ -1597,10 +1821,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
             });
-            if let Some(sessions) = store["sessions"].as_object_mut() {
-                sessions.insert(handle.clone(), rec);
-            }
-            save_store(&store)?;
+            commit_new_session(&rec, None)?;
             out.insert("handle".into(), json!(handle));
             out.insert("state".into(), json!("queued"));
         }
@@ -1629,10 +1850,15 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             );
             rec.insert(
                 "state".into(),
-                json!(if result.run_id.is_some() {
-                    "queued"
-                } else {
-                    "dispatched"
+                json!(match &result.terminal_state {
+                    Some(s) => s.clone(),
+                    None => {
+                        if result.run_id.is_some() {
+                            "queued".to_string()
+                        } else {
+                            "dispatched".to_string()
+                        }
+                    }
                 }),
             );
             rec.insert("submitted_by".into(), json!(submitted_by()));
@@ -1648,21 +1874,18 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             if let Some(cs) = &result.codespace {
                 rec.insert("codespace".into(), json!(cs));
             }
-            if let Some(sessions) = store["sessions"].as_object_mut() {
-                sessions.insert(handle.clone(), Value::Object(rec));
-            }
-            if kind == "blacksmith" {
-                store["blacksmith_dispatches"].as_array_mut().map(|arr| {
-                    arr.push(json!({
-                        "handle": handle,
-                        "month": current_month(),
-                        "minutes": 0.0,
-                        "run_id": result.run_id,
-                        "note": "minutes reconciled from the run's duration on later invocations",
-                    }))
-                });
-            }
-            save_store(&store)?;
+            let blacksmith_entry = if kind == "blacksmith" {
+                Some(json!({
+                    "handle": handle,
+                    "month": current_month(),
+                    "minutes": 0.0,
+                    "run_id": result.run_id,
+                    "note": "minutes reconciled from the run's duration on later invocations",
+                }))
+            } else {
+                None
+            };
+            commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref())?;
             out.insert("handle".into(), json!(handle));
             out.insert(
                 "run_id".into(),
@@ -1692,9 +1915,12 @@ fn run_session(args: &[String]) -> R<i32> {
                 .cloned()
                 .ok_or_else(|| Die(format!("session {sub} needs a HANDLE")))?;
             let registry = load_registry(&registry_path(&cli))?;
-            let mut store = load_store();
-            let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
-            save_store(&store)?;
+            let rec = with_store_lock(|| {
+                let mut store = load_store();
+                let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
+                save_store(&store)?;
+                Ok(rec)
+            })?;
             if sub == "status" {
                 print_out(&rec, cli.json, |r| {
                     format!(
@@ -1833,15 +2059,32 @@ mod tests {
 
     const FIXED_NOW: i64 = 1_767_225_600; // 2026-01-01T00:00:00Z
 
-    #[derive(Default)]
     struct FakeGh {
         tokens_ok: bool,
         workflow_runs: Vec<Value>,
+        post_runs: Vec<Value>,
         runs_by_id: Map2<i64, Value>,
         load_by_repo: Map2<String, (i64, i64)>, // repo -> (in_progress, queued)
         codespace_ok: bool,
         codespace_items: Vec<Value>,
+        codespace_exit: i32,
         posts: RefCell<Vec<(String, Value)>>,
+    }
+
+    impl Default for FakeGh {
+        fn default() -> Self {
+            FakeGh {
+                tokens_ok: true,
+                workflow_runs: Vec::new(),
+                post_runs: Vec::new(),
+                runs_by_id: Map2::new(),
+                load_by_repo: Map2::new(),
+                codespace_ok: false,
+                codespace_items: Vec::new(),
+                codespace_exit: 0,
+                posts: RefCell::new(Vec::new()),
+            }
+        }
     }
 
     impl Gh for FakeGh {
@@ -1866,7 +2109,15 @@ mod tests {
                 return Ok((204, json!({})));
             }
             if path.contains("/runs?event=workflow_dispatch") {
-                return Ok((200, json!({ "workflow_runs": self.workflow_runs })));
+                // Runs created by a dispatch (post_runs) become
+                // visible only after this fake has seen a POST, so
+                // the pre-dispatch snapshot in dispatch_workflow
+                // behaves like the real API.
+                let mut runs = self.workflow_runs.clone();
+                if !self.posts.borrow().is_empty() {
+                    runs.extend(self.post_runs.iter().cloned());
+                }
+                return Ok((200, json!({ "workflow_runs": runs })));
             }
             if path.contains("/actions/runs?status=") {
                 let repo = path
@@ -1900,7 +2151,7 @@ mod tests {
             }
         }
         fn codespace_ssh(&self, _name: &str, _command: &str) -> R<i32> {
-            Ok(0)
+            Ok(self.codespace_exit)
         }
         fn sleep_secs(&self, _secs: u64) {}
         fn now_epoch(&self) -> i64 {
@@ -2169,7 +2420,7 @@ mod tests {
         let ad = adapter_for(&surface).unwrap();
         let gh = FakeGh {
             tokens_ok: true,
-            workflow_runs: vec![json!({
+            post_runs: vec![json!({
                 "id": 4242,
                 "html_url": "https://github.com/dezren39/fleet/actions/runs/4242",
                 "created_at": "2026-01-01T00:00:10Z"
@@ -2262,7 +2513,10 @@ mod tests {
                 { "handle": "fp_old", "month": "1999-01", "minutes": 900.0 }
             ]
         });
-        let gh = FakeGh::default(); // no tokens: load reads error out, counted 0
+        let gh = FakeGh {
+            tokens_ok: false,
+            ..Default::default()
+        }; // no tokens: load reads error out, counted 0
         let c = build_ctx(&reg, &store, false, "", None, &gh);
         assert_eq!(c.blacksmith_used_minutes, 15.0);
         assert!(!c.load_read_errors.is_empty());
@@ -2271,6 +2525,104 @@ mod tests {
         assert_eq!(c2.owner_load.get("dezren39"), Some(&(40, 0)));
         assert_eq!(c2.blacksmith_used_minutes, 7.0);
         assert_eq!(c2.owner_load_overridden, vec!["dezren39".to_string()]);
+    }
+
+    #[test]
+    fn dispatch_ignores_preexisting_run_and_picks_earliest_new_run() {
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: true,
+            // A run from another job, created inside the time
+            // window: the pre-dispatch snapshot must exclude it.
+            workflow_runs: vec![json!({
+                "id": 1111,
+                "html_url": "https://github.com/dezren39/fleet/actions/runs/1111",
+                "created_at": "2026-01-01T00:00:10Z"
+            })],
+            // Two runs appear after our dispatch; the earliest is
+            // ours, the later one is a concurrent submission.
+            post_runs: vec![
+                json!({
+                    "id": 2222,
+                    "html_url": "https://github.com/dezren39/fleet/actions/runs/2222",
+                    "created_at": "2026-01-01T00:00:20Z"
+                }),
+                json!({
+                    "id": 3333,
+                    "html_url": "https://github.com/dezren39/fleet/actions/runs/3333",
+                    "created_at": "2026-01-01T00:00:08Z"
+                }),
+            ],
+            ..Default::default()
+        };
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, Some(3333));
+    }
+
+    #[test]
+    fn surface_ineligible_when_app_token_cannot_be_minted() {
+        let reg = registry();
+        let gh = FakeGh {
+            tokens_ok: false,
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0)), ("developing-today", (0, 0))], 0.0, false);
+        let picked = pick(&reg, &job(), &c, &gh);
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn codespace_dispatch_records_terminal_state_from_ssh_exit() {
+        let reg = registry();
+        let surface = find_surface(&reg, "codespace-overflow").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let mk = |exit: i32| FakeGh {
+            codespace_ok: true,
+            codespace_exit: exit,
+            codespace_items: vec![json!({
+                "name": "cs-1",
+                "repository": "developing-today/code",
+                "state": "Available"
+            })],
+            ..Default::default()
+        };
+        let ok = ad.dispatch(&job(), &mk(0)).unwrap();
+        assert_eq!(ok.terminal_state.as_deref(), Some("succeeded"));
+        let bad = ad.dispatch(&job(), &mk(3)).unwrap();
+        assert_eq!(bad.terminal_state.as_deref(), Some("failed"));
+        // A --ref the fake cannot validate is refused, not run
+        // against the wrong revision.
+        let mut j = job();
+        j.git_ref = "deadbeef".to_string();
+        assert!(ad.dispatch(&j, &mk(0)).is_err());
+    }
+
+    #[test]
+    fn commit_new_session_merges_without_dropping_other_sessions() {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-place-test-merge-{}",
+            std::process::id()
+        ));
+        unsafe { std::env::set_var("FLEET_PLACE_STATE", &dir) };
+        let mut store = load_store();
+        store["sessions"]["fp_other"] = json!({ "handle": "fp_other", "state": "running" });
+        save_store(&store).unwrap();
+        // A second process's snapshot taken before fp_other was
+        // written must not erase it when committing its own
+        // session (the old load-modify-save race).
+        commit_new_session(
+            &json!({ "handle": "fp_mine", "state": "queued" }),
+            Some(&json!({ "handle": "fp_mine", "month": current_month(), "minutes": 0.0 })),
+        )
+        .unwrap();
+        let back = load_store();
+        assert_eq!(back["sessions"]["fp_other"]["state"], json!("running"));
+        assert_eq!(back["sessions"]["fp_mine"]["state"], json!("queued"));
+        assert_eq!(back["blacksmith_dispatches"].as_array().unwrap().len(), 1);
+        unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
