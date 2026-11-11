@@ -40,9 +40,28 @@
 //!   `Presented` to the confirm step (transfer found) or a clean
 //!   retry (transfer absent, attestation check re-run first).
 //!
+//! **The hold model.** §1.1 implements PendingHold as a ledger
+//! two-phase pending transfer, but the currency PoC seam's
+//! `Transfer` type has no pending flag or timeout — a transfer
+//! created through it posts immediately. Crediting the grantee at
+//! registration would therefore make the grant spendable while its
+//! record says PendingHold, violating §0 (this was Codex P1 on
+//! PR #8614). So the registration transfer credits a **service-owned
+//! hold account** for the currency (`hold_account_for`), never the
+//! grantee: during PendingHold the value sits in the service's
+//! custody, the grantee's spendable balance is untouched, and an
+//! adverse event at confirm leaves the money in the hold account,
+//! not with the grantee. The §1.3 post flow (a later phase) moves
+//! hold → grantee under its own deterministic transfer id; the
+//! §1.4 void flow moves hold → issuer. When the seam grows native
+//! two-phase transfers, the hold account is where the pending
+//! transfer's credit leg lands instead — the grant-facing
+//! guarantees (nothing spendable during the hold; resolution moves
+//! the value exactly once) do not change.
+//!
 //! Scope limits, per the phase packet: the pending hold's two-phase
 //! post/void resolution (§1.3/§1.4, scheduler sweep) is a later
-//! phase — this phase creates the pending transfer and records the
+//! phase — this phase creates the hold transfer and records the
 //! §1.2 window snapshot + timeout on the grant record; it does not
 //! post, void, or activate anything, and no path here enables
 //! Active-state grants (spec §10: not before §4 exists).
@@ -62,7 +81,7 @@ use crate::grants::{
 /// Revocation-policy ladder (§5.1), snapshotted onto the grant record
 /// at registration. Enforcement is §5, a later phase — this phase
 /// only guarantees the snapshot exists and never changes afterwards.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RevocationPolicy {
     None,
     ForCause,
@@ -116,7 +135,7 @@ pub struct StorefrontConfig {
 }
 
 /// A registered grant (the grant record §2.3 step 4a writes).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GrantRecord {
     pub grant_id: String,
     /// The fingerprint under the registering namespace (the
@@ -137,6 +156,10 @@ pub struct GrantRecord {
     /// §5.1 snapshot.
     pub revocation_policy: RevocationPolicy,
     pub state: GrantState,
+    /// The service-owned hold account the registration transfer
+    /// credits (see the module's hold model): value sits here, not
+    /// with the grantee, for the whole PendingHold.
+    pub hold_account: AccountId,
     /// Deterministic ledger transfer id (§2.5 step 1), derived from
     /// `grant_id` — the intent IS this id, so retries are identities.
     pub transfer_id: TransferId,
@@ -203,15 +226,28 @@ impl GrantStore {
         &mut self,
         fingerprints: &[String],
         grant: GrantRecord,
-    ) -> Result<RegistryEntry, RegisterRejection> {
+    ) -> Result<RegistryEntry, InsertPresentedError> {
         debug_assert_eq!(grant.state, GrantState::Presented);
+        // Grant-id uniqueness is checked BEFORE the registry is
+        // touched: a second intent reusing a grant_id must not
+        // register its key, must not replace the existing grant
+        // record, and must not reach the ledger (Codex P2 on
+        // PR #8614 — a reused id would otherwise let reconciliation
+        // confirm a replacement record against the first grant's
+        // transfer).
+        if self.grants.contains_key(&grant.grant_id) {
+            return Err(InsertPresentedError::DuplicateGrantId {
+                grant_id: grant.grant_id.clone(),
+            });
+        }
         let entry = self.registry.register(
             &grant.storefront_id,
             fingerprints,
             &grant.grant_id,
             &grant.registering_id,
             grant.registered_at,
-        )?;
+        )
+        .map_err(InsertPresentedError::Rejection)?;
         self.order.push(grant.grant_id.clone());
         self.grants.insert(grant.grant_id.clone(), grant);
         Ok(entry)
@@ -259,11 +295,83 @@ impl GrantStore {
     }
 }
 
+/// A serializable snapshot of the whole store: family
+/// declarations, every append-only registry row in registration
+/// order, and every grant record in insertion order.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StoreSnapshot {
+    pub families: HashMap<String, String>,
+    pub registry_rows: Vec<RegistryEntry>,
+    pub grants: Vec<GrantRecord>,
+}
+
+impl GrantStore {
+    /// Persist this: the service host writes the snapshot after
+    /// every mutation (its write-ahead discipline) and restores it
+    /// at startup, so a process restart loses NO registry entry and
+    /// NO grant intent (Codex P1 on PR #8614). A grant stranded in
+    /// `Presented` by a crash is exactly what the reconciler scans
+    /// for after restore — the intent protocol only works if the
+    /// intent survives, and this snapshot is what carries it.
+    pub fn snapshot(&self) -> StoreSnapshot {
+        let (families, registry_rows) = self.registry.snapshot();
+        StoreSnapshot {
+            families,
+            registry_rows,
+            grants: self
+                .order
+                .iter()
+                .filter_map(|id| self.grants.get(id).cloned())
+                .collect(),
+        }
+    }
+
+    /// Rebuild a store from a snapshot, re-deriving every index.
+    /// Behavior after restore is indistinguishable from the
+    /// snapshotted store: first-wins rows, key states, family
+    /// membership (including its freeze), and grant states all
+    /// carry over.
+    pub fn restore(snapshot: StoreSnapshot) -> Self {
+        let registry = KeyRegistry::restore(snapshot.families, snapshot.registry_rows);
+        let order: Vec<String> = snapshot.grants.iter().map(|g| g.grant_id.clone()).collect();
+        let grants = snapshot
+            .grants
+            .into_iter()
+            .map(|g| (g.grant_id.clone(), g))
+            .collect();
+        Self {
+            registry,
+            grants,
+            order,
+        }
+    }
+}
+
+/// Why an intent write did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InsertPresentedError {
+    /// The §2.2 one-grant rule (§2.3 step 3 included): the key is
+    /// already registered under this storefront family.
+    Rejection(RegisterRejection),
+    /// The grant_id already names a grant record. Checked before
+    /// any registry or ledger effect, so a duplicate intent is a
+    /// clean refusal, never a silent replacement.
+    DuplicateGrantId { grant_id: String },
+}
+
 /// Deterministic ledger transfer id for a grant (§2.5 step 1):
 /// derived from the grant_id alone, so the intent write, the ledger
 /// call, and every retry name the same transfer.
 pub fn transfer_id_for_grant(grant_id: &str) -> TransferId {
     derive_id(b"id-grant-transfer-v1", grant_id)
+}
+
+/// The service-owned hold account for a currency (see the
+/// module's hold model): every registration transfer for the
+/// currency credits this account, and §1's resolution flows move
+/// value out of it exactly once per grant.
+pub fn hold_account_for(ledger: u32) -> AccountId {
+    account_id_for("grant-hold", ledger)
 }
 
 /// Deterministic ledger account id for a named party + ledger.
@@ -388,6 +496,9 @@ pub enum RegistrationError {
     NoVerificationChannel { storefront_id: String },
     /// Verification refused the key (§2.3 step 2).
     VerificationFailed { source: VerifyError },
+    /// The request's grant_id already names a grant record; the
+    /// intent was refused before any registry or ledger effect.
+    DuplicateGrantId { grant_id: String },
     /// The verified product has no grant terms in the source
     /// configuration — an operator configuration gap, surfaced
     /// rather than defaulted (§9: open parameters are inputs).
@@ -498,16 +609,23 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
             window: cfg.window,
             revocation_policy: cfg.revocation_policy,
             state: GrantState::Presented,
+            hold_account: hold_account_for(terms.currency_ledger),
             transfer_id: transfer_id_for_grant(&request.grant_id),
             registered_at: request.now,
             pending_since: None,
         };
-        if let Err(rejection) = self.store.insert_presented(&fingerprints, grant.clone()) {
-            let re_presentation_attempt = rejection.is_re_presentation_attempt();
-            return Ok(RegistrationOutcome::Rejected {
-                rejection,
-                re_presentation_attempt,
-            });
+        match self.store.insert_presented(&fingerprints, grant.clone()) {
+            Ok(_) => {}
+            Err(InsertPresentedError::Rejection(rejection)) => {
+                let re_presentation_attempt = rejection.is_re_presentation_attempt();
+                return Ok(RegistrationOutcome::Rejected {
+                    rejection,
+                    re_presentation_attempt,
+                });
+            }
+            Err(InsertPresentedError::DuplicateGrantId { grant_id }) => {
+                return Err(RegistrationError::DuplicateGrantId { grant_id });
+            }
         }
 
         // Step 4b: the ledger transfer under the deterministic id.
@@ -548,8 +666,9 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         )
     }
 
-    /// Create the grant's pending transfer (§1.1) under its
-    /// deterministic id, ensuring both ledger accounts exist first
+    /// Create the grant's hold transfer (§1.1, via the module's
+    /// hold model) under its deterministic id, ensuring both
+    /// ledger accounts exist first
     /// (account creation with identical fields is idempotent —
     /// `Exists` is success). A transfer that already exists with
     /// identical fields (`Exists`) is the lost-response retry case:
@@ -559,7 +678,10 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         cfg: &StorefrontConfig,
         grant: &GrantRecord,
     ) -> Result<(), TransferError> {
-        let grantee_account = account_id_for(&grant.grantee_id, grant.currency_ledger);
+        // The credit leg is the service-owned HOLD account for the
+        // currency — never the grantee (see the module's hold
+        // model). The grantee's account is not even created here;
+        // it first appears in the §1.3 post flow (later phase).
         let accounts = [
             Account {
                 id: cfg.issuer_account,
@@ -568,9 +690,9 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
                 flags: Default::default(),
             },
             Account {
-                id: grantee_account,
+                id: grant.hold_account,
                 ledger: grant.currency_ledger,
-                code: 2,
+                code: 3,
                 flags: Default::default(),
             },
         ];
@@ -583,7 +705,7 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         let transfer = Transfer {
             id: grant.transfer_id,
             debit_account_id: cfg.issuer_account,
-            credit_account_id: grantee_account,
+            credit_account_id: grant.hold_account,
             amount: grant.amount,
             ledger: grant.currency_ledger,
             user_data_128: grant.transfer_id,
@@ -791,18 +913,25 @@ mod tests {
         assert_eq!(grant.pending_since, Some(1_000));
         assert_eq!(grant.window.pending_timeout_secs(), 15 * 24 * 3600);
         assert_eq!(grant.revocation_policy, RevocationPolicy::ForCause);
-        // The pending transfer exists under the deterministic id,
-        // and the grantee was credited exactly once.
+        // The hold transfer exists under the deterministic id and
+        // credits the service-owned HOLD account exactly once; the
+        // grantee has no account and no spendable balance while
+        // the grant says PendingHold (§0, §1.1).
         let transfer = svc
             .ledger()
             .lookup_transfer(transfer_id_for_grant("grant-1"))
             .expect("transfer exists");
         assert_eq!(transfer.amount, AMOUNT);
-        let balance = svc
+        assert_eq!(transfer.credit_account_id, hold_account_for(LEDGER_ID));
+        let hold_balance = svc
+            .ledger()
+            .account_balance(hold_account_for(LEDGER_ID))
+            .expect("hold account exists");
+        assert_eq!(hold_balance.credits_posted, AMOUNT);
+        assert!(svc
             .ledger()
             .account_balance(account_id_for("grantee-1", LEDGER_ID))
-            .expect("grantee account exists");
-        assert_eq!(balance.credits_posted, AMOUNT);
+            .is_none());
     }
 
     #[test]
@@ -1017,7 +1146,7 @@ mod tests {
         let balance = svc
             .ledger()
             .inner
-            .account_balance(account_id_for("grantee-1", LEDGER_ID))
+            .account_balance(hold_account_for(LEDGER_ID))
             .unwrap();
         assert_eq!(balance.credits_posted, AMOUNT);
     }
@@ -1112,7 +1241,7 @@ mod tests {
         let balance = svc
             .ledger()
             .inner
-            .account_balance(account_id_for("grantee-1", LEDGER_ID))
+            .account_balance(hold_account_for(LEDGER_ID))
             .unwrap();
         assert_eq!(balance.credits_posted, AMOUNT);
     }
@@ -1146,6 +1275,116 @@ mod tests {
         let report = svc.reconcile(9_999, 60);
         assert_eq!(report.blocked_by_event, 1);
         assert_eq!(report.confirmed, 0);
+        // The blocked grant's value sits in the service hold
+        // account — an adverse event at confirm never leaves
+        // spendable money with the grantee (Codex P1 on PR #8614).
+        let hold = svc
+            .ledger()
+            .account_balance(hold_account_for(LEDGER_ID))
+            .unwrap();
+        assert_eq!(hold.credits_posted, AMOUNT);
+        assert!(svc
+            .ledger()
+            .account_balance(account_id_for("grantee-1", LEDGER_ID))
+            .is_none());
+    }
+
+    #[test]
+    fn duplicate_grant_id_is_refused_before_any_registry_or_ledger_effect() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        // A DIFFERENT verified key under an already-used grant_id:
+        // refused as an error, and neither the registry nor the
+        // first grant record nor the ledger changes (Codex P2).
+        let err = svc
+            .register(&request("grant-1", "CCCCC-22222-DDDDD", 2_000))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            RegistrationError::DuplicateGrantId {
+                grant_id: "grant-1".to_string()
+            }
+        );
+        assert_eq!(svc.store().grant_count(), 1);
+        assert_eq!(svc.store().registry().len(), 1);
+        let first = svc.store().grant("grant-1").unwrap();
+        assert_eq!(first.state, GrantState::PendingHold);
+        assert_eq!(
+            first.fingerprint,
+            fingerprint_of_raw("steam", "AAAAA-11111-BBBBB")
+        );
+    }
+
+    #[test]
+    fn restart_restores_intents_and_reconcile_completes_without_double_issuance() {
+        // The §2.5 recovery property across a process restart
+        // (Codex P1 on PR #8614): intent written, ledger transfer
+        // created but its response lost, process dies. The store
+        // snapshot is what the host persisted; a fresh service over
+        // the restored store + the SAME (persistent) ledger
+        // reconciles the stranded Presented grant to PendingHold,
+        // and the hold account still shows exactly one credit.
+        let v = verifier();
+        let adverse = no_adverse();
+        let ledger = LoseFirstResponse {
+            inner: InMemoryLedger::new(),
+            lost: false,
+        };
+        let mut svc = RegistrationService::new(
+            GrantStore::new(),
+            ledger,
+            config(),
+            &v,
+            &adverse,
+        );
+        let outcome = svc
+            .register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            RegistrationOutcome::IntentPending { .. }
+        ));
+        // Serialize the snapshot (the host's persistence form) and
+        // restore from the bytes, so the test covers the real
+        // round-trip, not a clone.
+        let bytes = serde_json::to_vec(&svc.store().snapshot()).unwrap();
+        let snapshot: StoreSnapshot = serde_json::from_slice(&bytes).unwrap();
+        let restored = GrantStore::restore(snapshot);
+        assert_eq!(restored.grant_count(), 1);
+        assert_eq!(restored.registry().len(), 1);
+        assert_eq!(
+            restored.grant("grant-1").unwrap().state,
+            GrantState::Presented
+        );
+        // "Restart": the old service (and its in-memory store) is
+        // dropped; the ledger — the external system — persists and
+        // moves into the new service.
+        let RegistrationService { ledger, .. } = svc;
+        let mut svc2 = RegistrationService::new(restored, ledger, config(), &v, &adverse);
+        let report = svc2.reconcile(1_000 + 3_600, 60);
+        assert_eq!(report.confirmed, 1);
+        assert_eq!(
+            svc2.store().grant("grant-1").unwrap().state,
+            GrantState::PendingHold
+        );
+        let hold = svc2
+            .ledger()
+            .inner
+            .account_balance(hold_account_for(LEDGER_ID))
+            .unwrap();
+        assert_eq!(hold.credits_posted, AMOUNT);
+        // And after restart the one-grant rule still holds for the
+        // restored registry: the same key cannot grant twice.
+        let outcome = svc2
+            .register(&request("grant-2", "AAAAA-11111-BBBBB", 5_000))
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            RegistrationOutcome::Rejected { .. }
+        ));
     }
 
     #[test]
