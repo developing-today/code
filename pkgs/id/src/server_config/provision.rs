@@ -90,6 +90,20 @@ impl Provisioned {
         }
     }
 
+    /// Starts from state a previous run persisted: the accounts in
+    /// `directory` and the group `events` already recorded (#5119
+    /// slice 3). [`Provisioned::apply`] skips what already exists, so
+    /// a restart over the same persisted state creates nothing and
+    /// reports nothing.
+    #[must_use]
+    pub fn from_parts(directory: Directory, events: Vec<Event>) -> Self {
+        Self {
+            directory,
+            events,
+            create: CreateRule::Anyone,
+        }
+    }
+
     /// The accounts.
     #[must_use]
     pub const fn directory(&self) -> &Directory {

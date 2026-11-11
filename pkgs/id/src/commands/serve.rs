@@ -1068,6 +1068,51 @@ pub fn start_server_config(path: &Path) -> Result<StartedServerConfig> {
     })
 }
 
+/// The directory journal the server config provisioning persists
+/// its accounts in (#5119 slice 3): `directory.jsonl` beside the
+/// groups log, the same layout a world directory uses.
+#[cfg(feature = "world")]
+fn server_config_directory_path(groups_log: &Path) -> PathBuf {
+    groups_log.with_file_name("directory.jsonl")
+}
+
+/// Load the operator server config at `path` and run startup
+/// provisioning into the live serving state (#5119 slice 3): the
+/// provisioned accounts go into the journaled directory beside the
+/// groups log and the preformed group events into the groups log
+/// itself — the same state live serving folds and replays — so a
+/// restart loads them back, provisioning skips them, and the report
+/// names no new creations.
+///
+/// # Errors
+///
+/// Fails on the same startup contract as [`start_server_config`],
+/// and when the persisted directory or groups log cannot be opened
+/// or written.
+#[cfg(feature = "world")]
+pub fn start_server_config_persisted(
+    path: &Path,
+    groups_log: &Path,
+) -> Result<StartedServerConfig> {
+    let config = crate::server_config::ServerConfig::load(path)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    let directory = crate::directory::Directory::open(&server_config_directory_path(groups_log))?;
+    let mut log = crate::groups::log::GroupLog::open(groups_log)?;
+    let mut provisioned =
+        crate::server_config::Provisioned::from_parts(directory, log.events().to_vec());
+    let report = provisioned
+        .apply(&config)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    for event in provisioned.events() {
+        log.record_preformed(event)?;
+    }
+    Ok(StartedServerConfig {
+        config,
+        provisioned,
+        report,
+    })
+}
+
 /// The pull policy the live event-sync gate serves under (#5119): the server
 /// config's `[policy] pull_policy` when a config was loaded, else the code
 /// default ([`crate::pull_policy::PullPolicy::Open`]), so a `serve` without
@@ -1193,7 +1238,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     let started_server_config = match &server_config {
         Some(path) => {
-            let started = start_server_config(path)?;
+            let started = start_server_config_persisted(path, &groups_log)?;
             status!(
                 "server config: loaded {} (provisioned {} user(s), {} group(s), {} member(s))",
                 path.display(),
@@ -3512,6 +3557,50 @@ mod tests {
         let mut provisioned = started.provisioned;
         let again = provisioned.apply(&started.config).unwrap();
         assert_eq!(again, crate::server_config::Report::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn start_server_config_persisted_survives_a_restart() {
+        let dir = serve_config_dir("persisted");
+        let path = dir.join("server.toml");
+        let groups_log = dir.join("groups.jsonl");
+        // Real Ed25519 public keys, as in
+        // start_server_config_applies_provisioning.
+        let id = |n: u8| {
+            ed25519_dalek::SigningKey::from_bytes(&[n; 32])
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n\n\
+                 [[groups]]\nkey = \"team\"\nname = \"Team\"\ncreator = \"ann\"\n\n\
+                 [[groups.members]]\nuser = \"bo\"\nrole = \"write\"\n",
+                id(1),
+                id(2)
+            ),
+        )
+        .unwrap();
+        let started = start_server_config_persisted(&path, &groups_log).unwrap();
+        assert_eq!(started.report.users_created, 2);
+        assert_eq!(started.report.groups_created, 1);
+        assert_eq!(started.report.members_added, 1);
+        drop(started);
+        // A restart over the same persisted state loads the accounts
+        // and group events back and creates nothing: no recreations,
+        // no new-creation reports (#5119 slice 3 acceptance).
+        let restarted = start_server_config_persisted(&path, &groups_log).unwrap();
+        assert_eq!(restarted.report, crate::server_config::Report::default());
+        assert!(restarted.provisioned.directory().account(&id(1)).is_some());
+        assert!(restarted.provisioned.directory().account(&id(2)).is_some());
+        // The create event plus the one member add.
+        assert_eq!(restarted.provisioned.events().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
