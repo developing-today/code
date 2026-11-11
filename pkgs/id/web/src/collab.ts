@@ -372,20 +372,38 @@ export function initCollab(
           break;
         }
 
-        const steps = msg[1] as unknown[];
-        const clientIDs = msg[2] as number[];
+        const steps = msg[1];
+        const clientIDs = msg[2];
 
-        if (steps && clientIDs && steps.length > 0) {
+        // Frame-boundary validation (#7873): a malformed UPDATE is a
+        // bad frame, not a desync — drop it and keep the session. Only
+        // a failure to *apply* well-shaped steps means the editor state
+        // has diverged and needs the reconnect path below.
+        if (!Array.isArray(steps) || !Array.isArray(clientIDs) || steps.length !== clientIDs.length) {
+          console.error("[collab] Dropping malformed UPDATE frame: steps/clientIDs are not matching arrays");
+          break;
+        }
+
+        if (steps.length > 0) {
           console.log("[collab] Received update with", steps.length, "steps, clientIDs:", clientIDs);
+
+          // Use the schema from the editor instance (mode-aware)
+          const editorSchema = editorInstance.view.state.schema;
+          let parsedSteps;
+          try {
+            parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
+          } catch (err) {
+            // A step that fails to parse is a shape error in the
+            // frame, not an apply failure: drop the frame.
+            console.error("[collab] Dropping malformed UPDATE frame: step failed to parse:", err);
+            break;
+          }
 
           try {
             // Pass ALL steps to receiveTransaction - it will:
             // 1. Recognize and confirm our own steps (matching our clientID)
             // 2. Apply remote steps from other clients
             // 3. Rebase any unconfirmed local steps over remote steps
-            // Use the schema from the editor instance (mode-aware)
-            const editorSchema = editorInstance.view.state.schema;
-            const parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
             const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
             editorInstance.view.dispatch(tr);
             console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
@@ -414,11 +432,28 @@ export function initCollab(
         // [4, clientID, head, anchor, name?, idleSecs?]
         if (!editorInstance) break;
 
-        const clientID = msg[1] as number;
-        const head = msg[2] as number;
-        const anchor = msg[3] as number;
-        const name = msg[4] as string | null;
-        const idleSecs = msg[5] as number | null | undefined;
+        const clientID = msg[1];
+        const head = msg[2];
+        const anchor = msg[3];
+        const name = msg[4];
+        const idleSecs = msg[5];
+
+        // Frame-boundary validation (#7873): drop malformed cursors
+        // instead of storing unvalidated values in plugin state, where
+        // they feed NaN positions into decoration/coords code.
+        if (
+          (typeof clientID !== "string" && typeof clientID !== "number") ||
+          typeof head !== "number" ||
+          !Number.isFinite(head) ||
+          typeof anchor !== "number" ||
+          !Number.isFinite(anchor) ||
+          (name !== undefined && name !== null && typeof name !== "string")
+        ) {
+          console.error("[collab] Dropping malformed CURSOR frame");
+          break;
+        }
+        // idleSecs is advisory only: ignore it unless it is a finite number.
+        const idle = typeof idleSecs === "number" && Number.isFinite(idleSecs) ? idleSecs : undefined;
 
         // Mark cursor as fresh for reconnect cleanup (including own cursor)
         markCursorFresh(editorInstance.view, clientID);
@@ -431,10 +466,10 @@ export function initCollab(
           clientID,
           "at",
           head,
-          idleSecs ? `(idle ${idleSecs}s)` : "",
+          idle ? `(idle ${idle}s)` : "",
           clientID === myClientID ? "(own)" : "",
         );
-        updateCursor(editorInstance.view, clientID, head, anchor, name ?? undefined, idleSecs ?? undefined);
+        updateCursor(editorInstance.view, clientID, head, anchor, name ?? undefined, idle);
         break;
       }
 
@@ -470,7 +505,13 @@ export function initCollab(
         // [6, clientID]
         if (!editorInstance) break;
 
-        const clientID = msg[1] as number;
+        const clientID = msg[1];
+
+        // Frame-boundary validation (#7873), as for CURSOR.
+        if (typeof clientID !== "string" && typeof clientID !== "number") {
+          console.error("[collab] Dropping malformed CURSOR_REMOVE frame");
+          break;
+        }
 
         // Don't remove our own cursor on disconnect notification
         if (clientID === myClientID) break;

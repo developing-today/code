@@ -1,4 +1,7 @@
 import { Packr, Unpackr } from "msgpackr";
+import { Fragment, Slice } from "prosemirror-model";
+import { ReplaceStep } from "prosemirror-transform";
+import type { EditorView } from "prosemirror-view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_STEPS_MESSAGE_BYTES,
@@ -8,6 +11,7 @@ import {
   stepBatch,
   stepWireSize,
 } from "./collab";
+import { cursorPluginKey } from "./cursors";
 import { getSendableSteps, getVersion } from "./editor";
 
 // Same MessagePack configuration as collab.ts
@@ -17,6 +21,9 @@ const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
 const MSG_AUTH = 8;
 const MSG_AUTH_OK = 9;
 const MSG_INIT = 0;
+const MSG_UPDATE = 2;
+const MSG_CURSOR = 4;
+const MSG_CURSOR_REMOVE = 6;
 
 /** Minimal WebSocket stand-in: records sent frames, lets the test drive
  * open/message/close by hand. No real network is involved. */
@@ -453,5 +460,128 @@ describe("buildCollabWsUrl (#2830)", () => {
     expect(url.searchParams.get("filename")).toBe("a#b.md");
     conn.disconnect();
     vi.useRealTimers();
+  });
+});
+
+describe("UPDATE/CURSOR frame validation (#7873)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    while (liveConnections.length > 0) {
+      liveConnections.pop()?.disconnect();
+    }
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  function openInitialized() {
+    const onEditorReady = vi.fn();
+    const { conn, socket } = openCollab(onEditorReady);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    socket.deliver(validInit());
+    expect(conn.editor).not.toBeNull();
+    return { conn, socket };
+  }
+
+  /** The session must be untouched: socket open, no reconnect scheduled. */
+  function expectSessionIntact(socket: FakeWebSocket) {
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    vi.advanceTimersByTime(10_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  }
+
+  function insertStepJson(view: EditorView, text: string): unknown {
+    const { schema } = view.state;
+    const step = new ReplaceStep(1, 1, new Slice(Fragment.from(schema.text(text)), 0, 0));
+    return step.toJSON();
+  }
+
+  it("drops an UPDATE whose steps field is not an array, session intact", () => {
+    const { conn, socket } = openInitialized();
+    socket.deliver([MSG_UPDATE, "not-an-array", [1]]);
+    expectSessionIntact(socket);
+    expect(getVersion(conn.editor!.view.state)).toBe(0);
+
+    // A following valid frame still applies.
+    socket.deliver([MSG_UPDATE, [insertStepJson(conn.editor!.view, "hi")], [4242]]);
+    expect(conn.editor!.view.state.doc.textContent).toBe("hi");
+  });
+
+  it("drops an UPDATE whose clientIDs field is not an array, session intact", () => {
+    const { conn, socket } = openInitialized();
+    socket.deliver([MSG_UPDATE, [], "not-an-array"]);
+    socket.deliver([MSG_UPDATE, [insertStepJson(conn.editor!.view, "hi")], "not-an-array"]);
+    expectSessionIntact(socket);
+    expect(conn.editor!.view.state.doc.textContent).toBe("");
+  });
+
+  it("drops an UPDATE whose steps/clientIDs lengths differ, session intact", () => {
+    const { conn, socket } = openInitialized();
+    socket.deliver([MSG_UPDATE, [insertStepJson(conn.editor!.view, "hi")], []]);
+    socket.deliver([MSG_UPDATE, [], [4242]]);
+    expectSessionIntact(socket);
+    expect(conn.editor!.view.state.doc.textContent).toBe("");
+  });
+
+  it("drops an UPDATE with an unparseable step instead of reconnecting, session intact", () => {
+    const { conn, socket } = openInitialized();
+    // Pre-fix this threw inside the apply try and tore the session down
+    // with close(4001) + reconnect; a shape error is a bad frame.
+    socket.deliver([MSG_UPDATE, [123], [999]]);
+    socket.deliver([MSG_UPDATE, [{ stepType: "no-such-step" }], [999]]);
+    expectSessionIntact(socket);
+    expect(getVersion(conn.editor!.view.state)).toBe(0);
+
+    socket.deliver([MSG_UPDATE, [insertStepJson(conn.editor!.view, "ok")], [4242]]);
+    expect(conn.editor!.view.state.doc.textContent).toBe("ok");
+  });
+
+  it("drops a malformed CURSOR instead of storing a phantom cursor", () => {
+    const { conn, socket } = openInitialized();
+    // The probe frame from #7873: object head, string anchor, object name.
+    socket.deliver([MSG_CURSOR, 4242, { x: 1 }, "abc", { evil: 1 }, "zzz"]);
+    socket.deliver([MSG_CURSOR, { bad: 1 }, 1, 1, "ada"]);
+    socket.deliver([MSG_CURSOR, 4242, Number.NaN, 1, "ada"]);
+    socket.deliver([MSG_CURSOR, 4242, 1, Number.POSITIVE_INFINITY, "ada"]);
+    socket.deliver([MSG_CURSOR, 4242, 1, 1, 42]);
+
+    const state = cursorPluginKey.getState(conn.editor!.view.state);
+    expect(state?.cursors.has(4242)).toBe(false);
+    expect(state?.cursors.size).toBe(0);
+    expectSessionIntact(socket);
+  });
+
+  it("stores a well-formed CURSOR and tolerates a non-finite idleSecs", () => {
+    const { conn, socket } = openInitialized();
+    socket.deliver([MSG_CURSOR, 4242, 1, 1, "ada", "zzz"]);
+    const state = cursorPluginKey.getState(conn.editor!.view.state);
+    const cursor = state?.cursors.get(4242);
+    expect(cursor?.head).toBe(1);
+    expect(cursor?.anchor).toBe(1);
+    expect(cursor?.name).toBe("ada");
+    expectSessionIntact(socket);
+  });
+
+  it("drops a malformed CURSOR_REMOVE and still honors a valid one", () => {
+    const { conn, socket } = openInitialized();
+    socket.deliver([MSG_CURSOR, 4242, 1, 1, "ada"]);
+    expect(cursorPluginKey.getState(conn.editor!.view.state)?.cursors.has(4242)).toBe(true);
+
+    socket.deliver([MSG_CURSOR_REMOVE, { bad: 1 }]);
+    socket.deliver([MSG_CURSOR_REMOVE, null]);
+    const afterBad = cursorPluginKey.getState(conn.editor!.view.state);
+    expect(afterBad?.cursors.get(4242)?.pendingRemovalAt).toBeUndefined();
+    expectSessionIntact(socket);
+
+    socket.deliver([MSG_CURSOR_REMOVE, 4242]);
+    const afterValid = cursorPluginKey.getState(conn.editor!.view.state);
+    expect(afterValid?.cursors.get(4242)?.pendingRemovalAt).toBeTypeOf("number");
   });
 });
