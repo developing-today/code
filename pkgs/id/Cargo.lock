@@ -3904,6 +3904,7 @@ dependencies = [
  "id-caps",
  "id-core",
  "id-events",
+ "id-groups",
  "id-store",
  "id-sync",
  "iroh",
@@ -3918,7 +3919,6 @@ dependencies = [
  "n0-mainline",
  "p2panda-auth",
  "p2panda-core",
- "p2panda-encryption",
  "p2panda-store",
  "p2panda-sync",
  "postcard",
@@ -4025,6 +4025,28 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+]
+
+[[package]]
+name = "id-groups"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id-core",
+ "id-events",
+ "id-store",
+ "iroh-base",
+ "iroh-blobs",
+ "p2panda-core",
+ "p2panda-encryption",
+ "postcard",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
