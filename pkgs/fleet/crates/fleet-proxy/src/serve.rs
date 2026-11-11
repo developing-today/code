@@ -867,7 +867,26 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
                             {
                                 return;
                             }
-                            let _ = crate::raw_stream::relay(stream, tunnel);
+                            // A raw relay can be the broker's only
+                            // activity for hours (a live RustDesk
+                            // session): refresh last_used while it
+                            // runs, or keepalive_loop's idle exit
+                            // would kill the broker — and the session
+                            // — after idle_exit_secs (Codex P2, PR
+                            // #8618).
+                            let relay_done = std::sync::atomic::AtomicBool::new(false);
+                            std::thread::scope(|scope| {
+                                scope.spawn(|| {
+                                    while !relay_done.load(Ordering::Relaxed) {
+                                        std::thread::sleep(Duration::from_secs(60));
+                                        if !relay_done.load(Ordering::Relaxed) {
+                                            broker.last_used.store(now_secs(), Ordering::Relaxed);
+                                        }
+                                    }
+                                });
+                                let _ = crate::raw_stream::relay(stream, tunnel);
+                                relay_done.store(true, Ordering::Relaxed);
+                            });
                         }
                         Err(why) => {
                             let _ = write_frame(
