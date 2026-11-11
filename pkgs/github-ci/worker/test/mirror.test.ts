@@ -325,6 +325,24 @@ describe("mirror writers (#8580)", () => {
     expect(values).toContain("2026-11-11T02:00:00Z");
   });
 
+  it("the tombstone is written before the row deletion", async () => {
+    // Oracle (Codex P2, PR #8604): the batch is a sequence of
+    // separate executes, not a transaction, so the marker must be
+    // established first — a delayed delivery inserting after the
+    // marker is guard-blocked, and one inserting before it is
+    // removed by the DELETE that follows. DELETE-then-marker would
+    // leave the window between them unguarded.
+    const stmts = capturePipeline();
+    await mirrorIssueEvent(env, { ...issuePayload, action: "deleted" }, REPO);
+    const tombIdx = stmts.findIndex((s) =>
+      s.sql.includes("INSERT INTO github_mirror_tombstones"),
+    );
+    const delIdx = stmts.findIndex((s) => s.sql.startsWith("DELETE FROM"));
+    expect(tombIdx).toBeGreaterThanOrEqual(0);
+    expect(delIdx).toBeGreaterThanOrEqual(0);
+    expect(tombIdx).toBeLessThan(delIdx);
+  });
+
   it("both insertion paths carry the tombstone guard in SQL", async () => {
     // The guard is encoded in the statements themselves (atomic
     // with the write), in every path that can create a mirror row:

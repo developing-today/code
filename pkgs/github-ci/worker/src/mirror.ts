@@ -348,11 +348,17 @@ export async function mirrorIssueEvent(
 ): Promise<void> {
   if (payload.action === "deleted") {
     const issue = (payload.issue ?? {}) as Obj;
+    // Order is the fix (Codex P2, PR #8604, two rounds): the
+    // tombstone is written BEFORE the row is deleted. Turso.batch
+    // is a sequence of separate executes, not a transaction, so a
+    // DELETE-then-marker order leaves a window in which a delayed
+    // pre-deletion delivery can insert after the DELETE but before
+    // the marker exists — and the later marker then leaves that
+    // resurrected row in place forever. Marker first closes the
+    // window: once the marker lands, every insertion path is
+    // guard-blocked (TOMBSTONE_GUARD_SQL), and the DELETE that
+    // follows removes any row inserted before the marker landed.
     await mirrorBatch(env, "issues", repo, [
-      {
-        sql: "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
-        args: [tArg(repo), iArg(num(issue, "number"))],
-      },
       {
         // The tombstone: evidence of the deletion, carrying the
         // deleted issue's version, so a delayed pre-deletion
@@ -369,6 +375,10 @@ export async function mirrorIssueEvent(
           tArg(str(issue, "updated_at")),
           tArg(queueNow()),
         ],
+      },
+      {
+        sql: "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
+        args: [tArg(repo), iArg(num(issue, "number"))],
       },
     ]);
     return;
