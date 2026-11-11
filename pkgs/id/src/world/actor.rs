@@ -2461,6 +2461,7 @@ mod replication_feed_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_info_tests {
     use super::*;
     use crate::world_caps::{CapError, DeviceManifest};
