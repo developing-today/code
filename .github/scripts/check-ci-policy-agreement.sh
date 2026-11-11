@@ -187,8 +187,15 @@ push_targets_main() {
       }
       return open
     }
-    function flow_span(str, key,   i, start, seg) {
-      i = index(str, key)
+    function flow_span(str, key,   i, start, seg, from, prev) {
+      from = 1
+      while ((i = index(substr(str, from), key)) > 0) {
+        i = from + i - 1
+        prev = (i == 1) ? "" : substr(str, i - 1, 1)
+        if (prev == "" || prev == "{" || prev == "," || prev == " ") break
+        from = i + length(key)
+        i = 0
+      }
       if (i == 0) return ""
       start = index(substr(str, i), "[")
       if (start == 0) return ""
@@ -210,7 +217,8 @@ push_targets_main() {
         seen_branch_filter = 1
         branches_list = branches_list add_tokens(seg)
       }
-      if (str ~ /tags:/ || str ~ /tags-ignore:/) seen_tags = 1
+      if (str ~ /(^|[{,][[:space:]]*)["\047]?tags-ignore["\047]?[[:space:]]*:/) seen_tags = 1
+      if (str ~ /(^|[{,][[:space:]]*)["\047]?tags["\047]?[[:space:]]*:/) seen_tags = 1
     }
     function glob_regex(pat,   out, i, c, cls) {
       # GitHub filter-pattern syntax (workflow-syntax cheat sheet),
@@ -292,7 +300,7 @@ push_targets_main() {
       if (inpush) {
         seen_push = 1
         rest = $0
-        sub(/^  [a-z_]+:[[:space:]]*/, "", rest)
+        sub(/^  ["\047]?[a-z_]+["\047]?:[[:space:]]*/, "", rest)
         if (rest ~ /^\{/) apply_inline_filters(rest)
       }
       subkey = ""

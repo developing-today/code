@@ -579,6 +579,36 @@ grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_key_ignore.out"
 grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_key_ignore.out"
 echo "pass: quoted branches-ignore key with [main] keeps the main leg waived"
 
+
+# Codex P2 regressions on #8513 round 8: a quoted push key still
+# yields its inline mapping, and a tags: substring inside a path
+# scalar is not a tag filter.
+build_tree "$TMP/filter-quoted_push_inline"
+wf_raw "$TMP/filter-quoted_push_inline" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  "push": {branches: [release]}
+EOF
+bash "$SCRIPT" "$TMP/filter-quoted_push_inline" >"$TMP/filter-quoted_push_inline.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_push_inline.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_push_inline.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-quoted_push_inline.out"; then
+  echo "FAIL: a quoted push key hid its inline branch filter" >&2
+  exit 1
+fi
+echo "pass: quoted push key with inline branches: [release] keeps the main leg waived"
+
+build_tree "$TMP/filter-paths_tags_substring"
+wf_raw "$TMP/filter-paths_tags_substring" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {paths: ['docs/tags:/**']}
+EOF
+if bash "$SCRIPT" "$TMP/filter-paths_tags_substring" >"$TMP/filter-paths_tags_substring.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a paths-only inline push" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-paths_tags_substring.out"
+echo "pass: a tags: substring inside a path scalar is not a tag filter (waiver stale)"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python
