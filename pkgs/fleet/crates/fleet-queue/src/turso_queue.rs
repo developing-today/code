@@ -6521,42 +6521,64 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
         return fail(2, e);
     }
     let work = (|| -> Result<Value, TErr> {
-        let existing_rows = stack_rows(t, &append.stack_id)?;
-        let existing: Vec<crate::merge_intent::MergeIntent> =
-            existing_rows.iter().filter_map(merge_intent_core).collect();
-        let planned = crate::merge_intent::plan_append(&existing, &append);
-        let now = now_iso();
-        let res = t.exec(
-            "INSERT INTO merge_intents (stack_id, position, repo, branch, base_branch, \
-             head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
-             state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            &[
-                Arg::Text(planned.stack_id.clone()),
-                Arg::Int(planned.position),
-                Arg::Text(planned.repo.clone()),
-                Arg::Text(planned.branch.clone()),
-                Arg::Text(planned.base_branch.clone()),
-                arg_str(planned.head_sha.as_deref()),
-                planned.issue_number.map(Arg::Int).unwrap_or(Arg::Null),
-                planned.pr_number.map(Arg::Int).unwrap_or(Arg::Null),
-                Arg::Text(planned.owner_lane.clone()),
-                Arg::Text(planned.owner_worker.clone()),
-                arg_str(planned.owner_session.as_deref()),
-                Arg::Text(planned.state.as_str().to_string()),
-                Arg::Text(now.clone()),
-                Arg::Text(now),
-            ],
-        )?;
-        let rows = stack_rows(t, &append.stack_id)?;
-        let inserted = rows
-            .iter()
-            .find(|r| r.get("id").and_then(|v| v.as_i64()) == res.last_insert_rowid)
-            .cloned()
-            .unwrap_or(Value::Null);
-        Ok(json!({
-            "intent": inserted,
-            "stack": stack_state(&append.stack_id, &rows),
-        }))
+        // Concurrent lanes recording into the same stack can read the
+        // same rows and plan the same next position; the loser's INSERT
+        // then hits UNIQUE(stack_id, position). Retry the whole
+        // read/plan/insert cycle on that conflict so position AND base
+        // branch are recalculated from the winner's row (Codex P2 on
+        // PR #8660). Other errors — including the UNIQUE(repo, branch)
+        // duplicate-branch refusal — return immediately.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let existing_rows = stack_rows(t, &append.stack_id)?;
+            let existing: Vec<crate::merge_intent::MergeIntent> =
+                existing_rows.iter().filter_map(merge_intent_core).collect();
+            let planned = crate::merge_intent::plan_append(&existing, &append);
+            let now = now_iso();
+            let res = t.exec(
+                "INSERT INTO merge_intents (stack_id, position, repo, branch, base_branch, \
+                 head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+                 state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &[
+                    Arg::Text(planned.stack_id.clone()),
+                    Arg::Int(planned.position),
+                    Arg::Text(planned.repo.clone()),
+                    Arg::Text(planned.branch.clone()),
+                    Arg::Text(planned.base_branch.clone()),
+                    arg_str(planned.head_sha.as_deref()),
+                    planned.issue_number.map(Arg::Int).unwrap_or(Arg::Null),
+                    planned.pr_number.map(Arg::Int).unwrap_or(Arg::Null),
+                    Arg::Text(planned.owner_lane.clone()),
+                    Arg::Text(planned.owner_worker.clone()),
+                    arg_str(planned.owner_session.as_deref()),
+                    Arg::Text(planned.state.as_str().to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Text(now),
+                ],
+            );
+            let res = match res {
+                Ok(res) => res,
+                Err(e)
+                    if attempt < 5
+                        && e.contains("UNIQUE constraint failed")
+                        && e.contains("stack_id") =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            let rows = stack_rows(t, &append.stack_id)?;
+            let inserted = rows
+                .iter()
+                .find(|r| r.get("id").and_then(|v| v.as_i64()) == res.last_insert_rowid)
+                .cloned()
+                .unwrap_or(Value::Null);
+            return Ok(json!({
+                "intent": inserted,
+                "stack": stack_state(&append.stack_id, &rows),
+            }));
+        }
     })();
     match work {
         Ok(v) => ok(json!({"row": v})),
