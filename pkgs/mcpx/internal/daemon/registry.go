@@ -1672,9 +1672,16 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 			// by definition: seed the timestamp, or Namespaces
 			// reports it uncached forever and every CLI invocation
 			// pays for a global refresh that re-lists every other
-			// server too (Codex P2 on PR #8317).
-			if tools, res, at := p.CachedSchemas(); at.IsZero() {
-				p.SetSchemas(tools, res, p.CachedPrompts(), p.Instructions(), time.Now(), time.Time{}, false)
+			// server too (Codex P2 on PR #8317). A virtual
+			// namespace is the exception: its catalogue is
+			// assembled from its mount sources, so seeding it
+			// would report a cold namespace as cached while its
+			// sources are still loading (Codex P2 on PR #8632);
+			// Namespaces derives its readiness from the sources.
+			if !cfg.Virtual() {
+				if tools, res, at := p.CachedSchemas(); at.IsZero() {
+					p.SetSchemas(tools, res, p.CachedPrompts(), p.Instructions(), time.Now(), time.Time{}, false)
+				}
 			}
 			continue
 		}
@@ -1756,6 +1763,28 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 		allTools, res, at := p.CachedSchemas()
 		tools := visibleTools(view, r.viewCatalogue(name, view, allTools))
 		st := p.Status()
+		cached := !at.IsZero() || view.ScriptOnly()
+		if view.Virtual() {
+			// A virtual namespace has no catalogue of its own:
+			// it is cached exactly when every mount source is,
+			// so a cold source never lets a partial assembly
+			// present as authoritative.
+			cached = true
+			for _, tv := range view.ToolViews {
+				if tv.MountServer == "" {
+					continue
+				}
+				sp, ok := r.pools[tv.MountServer]
+				if !ok || sp == nil {
+					cached = false
+					break
+				}
+				if _, _, sat := sp.CachedSchemas(); sat.IsZero() {
+					cached = false
+					break
+				}
+			}
+		}
 		out = append(out, NamespaceInfo{
 			Namespace:       view.Namespace,
 			Server:          name,
@@ -1767,7 +1796,7 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			Sharing:         st.Sharing,
 			Scope:           st.Scope,
 			Error:           st.LastError,
-			Cached:          !at.IsZero() || view.ScriptOnly(),
+			Cached:          cached,
 			RequiresSecrets: view.RequiresSecrets,
 		})
 	}

@@ -295,3 +295,32 @@ func TestVirtualMountedSchemaCarriesSourceArgumentRules(t *testing.T) {
 		}
 	}
 }
+
+// A virtual namespace row reports cached exactly when its mount
+// sources are cached, so a cold source never lets a partial
+// assembly present as authoritative (Codex P2 on PR #8632).
+func TestVirtualNamespaceCachedFollowsSources(t *testing.T) {
+	r, _, _ := virtualRegistry(t)
+	cachedOf := func() bool {
+		t.Helper()
+		for _, ns := range r.Namespaces(config.Profile{}) {
+			if ns.Server == "combo" {
+				return ns.Cached
+			}
+		}
+		t.Fatal("combo namespace row missing")
+		return false
+	}
+	if cachedOf() {
+		t.Fatal("with no source cached, the virtual namespace must not report cached")
+	}
+	now := time.Now()
+	r.pools["alpha"].SetSchemas([]mcpclient.Tool{echoTool(), searchTool()}, nil, nil, "", now, now.Add(10*time.Minute), false)
+	if cachedOf() {
+		t.Fatal("with one source still cold, the virtual namespace must not report cached")
+	}
+	r.pools["beta"].SetSchemas([]mcpclient.Tool{echoTool(), searchTool()}, nil, nil, "", now, now.Add(10*time.Minute), false)
+	if !cachedOf() {
+		t.Fatal("with every source cached, the virtual namespace must report cached")
+	}
+}
