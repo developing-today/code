@@ -354,12 +354,36 @@ export const richSchema = new Schema({
           url: { default: "" },
           title: { default: null },
         },
-        parseDOM: [{ tag: "div[data-link-ref-def]" }],
+        parseDOM: [
+          {
+            tag: "div[data-link-ref-def]",
+            // Codex P2 on #7170: without getAttrs, clipboard
+            // cut/paste reparsed the atom with empty defaults and
+            // saving replaced the definition with `[]: <>`. Carry
+            // all three attributes in the DOM representation, as
+            // html_inline does for its payload.
+            getAttrs(dom) {
+              const el = dom as HTMLElement;
+              return {
+                label: el.dataset.linkRefLabel ?? "",
+                url: el.dataset.linkRefUrl ?? "",
+                title: el.dataset.linkRefTitle ?? null,
+              };
+            },
+          },
+        ],
         toDOM(node) {
           const title = node.attrs.title ? ` "${node.attrs.title as string}"` : "";
           return [
             "div",
-            { "data-link-ref-def": "" },
+            {
+              "data-link-ref-def": "",
+              "data-link-ref-label": node.attrs.label as string,
+              "data-link-ref-url": node.attrs.url as string,
+              ...(node.attrs.title
+                ? { "data-link-ref-title": node.attrs.title as string }
+                : {}),
+            },
             `[${node.attrs.label as string}]: ${node.attrs.url as string}${title}`,
           ];
         },
