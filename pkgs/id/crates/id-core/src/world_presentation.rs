@@ -489,9 +489,35 @@ struct TokenSpan {
 /// Malformed values that identify themselves as a screen are rejected. Other
 /// JSON and ordinary strings remain plain text for compatibility.
 pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
-    let value: Value = match serde_json::from_str(data) {
+    // A duplicate object key is a parse error for a surface document
+    // (#6491, the #6520 rule): the checks below must see the document as
+    // written, never a last-wins collapse of it — a forbidden version,
+    // width, lines, or rows hidden behind a duplicate was accepted
+    // before. Parse through the shared duplicate-rejecting helper;
+    // anything that is not a surface document keeps the legacy
+    // plain-text path (Ok(None)).
+    let value: Value = match crate::json_unique::parse_json_without_duplicate_keys(data) {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(err) => {
+            if err.to_string().contains("duplicate JSON object key") {
+                // The collapsed parse still names the document's kind: a
+                // duplicate anywhere in a text/screen document — or a
+                // duplicated `kind` key itself, which makes the dispatch
+                // ambiguous — rejects the document instead of letting
+                // the surviving values pass the checks.
+                let lenient: Option<Value> = serde_json::from_str(data).ok();
+                let kind = lenient
+                    .as_ref()
+                    .and_then(|value| value.get("kind"))
+                    .and_then(Value::as_str);
+                if matches!(kind, Some("screen" | "text"))
+                    || err.to_string().contains("\"kind\"")
+                {
+                    return Err(err).context("duplicate JSON object key in world presentation");
+                }
+            }
+            return Ok(None);
+        }
     };
     match value.get("kind").and_then(Value::as_str) {
         Some("screen") => {}
@@ -1324,6 +1350,50 @@ mod tests {
         assert_eq!(parse_surface("hello\nworld").unwrap(), None);
         assert_eq!(
             parse_surface(r#"{"kind":"other","version":1}"#).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn duplicate_keys_in_surface_documents_are_rejected() {
+        // #6491: raw string literals — serde_json::json! values cannot
+        // represent duplicate keys, so the in-tree tests could not express
+        // this defect. Every document below was accepted (Ok(Some(..)))
+        // before the fix: the forbidden value hides behind a benign
+        // duplicate and only the survivor was ever checked.
+        for doc in [
+            // Duplicate version, text: unsupported version first.
+            r#"{"kind":"text","version":99,"version":1,"lines":["hi"]}"#,
+            // Duplicate version, screen.
+            r#"{"kind":"screen","version":99,"version":1,"width":2,"height":1,"rows":["hi"]}"#,
+            // Duplicate width: a zero width hidden behind a benign one.
+            r#"{"kind":"text","version":1,"width":0,"width":80,"lines":["hi"]}"#,
+            // Duplicate lines: a control character (JSON-escaped ESC)
+            // hidden behind clean lines.
+            r#"{"kind":"text","version":1,"lines":["\u001b[31mred"],"lines":["clean"]}"#,
+            // Duplicate rows: an over-wide row hidden behind a fitting one.
+            r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["toolong"],"rows":["hi"]}"#,
+            // Duplicate kind: the dispatch itself must not be last-wins.
+            r#"{"kind":"screen","kind":"text","version":1,"lines":["hi"]}"#,
+            // Duplicate key at a nested level the parser inspects (a
+            // style span object).
+            r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["hi"],"styles":[[{"x":0,"x":0,"length":1,"fg":0,"bg":0,"bold":false}]]}"#,
+        ] {
+            assert!(
+                parse_surface(doc).is_err(),
+                "accepted duplicate-key document: {doc}"
+            );
+        }
+        // Controls: single-key documents behave exactly as before, and a
+        // duplicate in a document that is not a surface at all stays on
+        // the legacy plain-text path.
+        assert!(
+            parse_surface(r#"{"kind":"text","version":1,"lines":["hi"]}"#)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            parse_surface(r#"{"kind":"other","version":1,"version":1}"#).unwrap(),
             None
         );
     }
