@@ -228,9 +228,11 @@ pub struct AppState {
     pub tag_store: Arc<TagStore>,
     /// Per-file save rate limiter.
     pub save_limiter: SaveRateLimiter,
-    /// Serializes upload name resolution, tag assignment and metadata writes
-    /// across clones of this state. Independently constructed states, other
-    /// processes and non-upload tag writers do not participate in this lock.
+    /// Serializes filename-tag claims (upload name resolution, create
+    /// existence check, save tag assignment) and the filename-keyed
+    /// metadata writes across clones of this state (#2363, #8407).
+    /// Independently constructed states, other processes and tag writers
+    /// outside these handlers do not participate in this lock.
     pub(crate) upload_name_lock: Arc<Mutex<()>>,
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,

@@ -2304,6 +2304,214 @@ mod upload_router_tests {
         }
     }
 
+    async fn create_file(router: Router, name: &str) -> (StatusCode, String) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/new")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!("{{\"name\":\"{name}\"}}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // #8407: creating a name that already holds a nonempty file must
+    // conflict and leave the existing name binding untouched.
+    #[tokio::test]
+    async fn create_existing_name_conflicts_and_preserves_original() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (status, _first) = upload(
+            router.clone(),
+            multipart_body_named(
+                "existing.png",
+                "image/png",
+                b"\x89PNG\r\n\x1a\noriginal content",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let owner_before = upload_name_owner(&state.store, "existing.png")
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata_before = name_metadata(&state, "existing.png").await;
+        assert!(
+            metadata_before.iter().any(|(_, v)| v.is_some()),
+            "upload must record metadata for the existing file"
+        );
+        let (status, _body) = create_file(router.clone(), "existing.png").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let owner_after = upload_name_owner(&state.store, "existing.png")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner_before, owner_after);
+        // #8407 acceptance: metadata is left unchanged too, not just
+        // the name binding.
+        assert_eq!(metadata_before, name_metadata(&state, "existing.png").await);
+    }
+
+    async fn name_metadata(state: &AppState, name: &str) -> Vec<(String, Option<String>)> {
+        let mut out = Vec::new();
+        for key in [
+            b"created".as_slice(),
+            b"modified".as_slice(),
+            b"content-type".as_slice(),
+        ] {
+            let tags = state
+                .tag_store
+                .get_by_key(&state.tag_store.global, name.as_bytes(), key)
+                .await
+                .unwrap();
+            let value = tags
+                .first()
+                .and_then(|tag| tag.value.as_ref())
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+            out.push((String::from_utf8_lossy(key).into_owned(), value));
+        }
+        out
+    }
+
+    async fn save_file(state: AppState, name: &str, text: &str) -> (StatusCode, String) {
+        let response = save_handler(
+            State(state),
+            Json(SaveRequest {
+                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                name: name.to_owned(),
+                doc: serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
+            }),
+        )
+        .await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // #8407: a create for a name a save already claimed conflicts and
+    // leaves the saved binding and metadata intact (create vs another
+    // writer, sequential form).
+    #[tokio::test]
+    async fn create_after_save_conflicts_and_preserves_saved_file() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (status, body) = save_file(state.clone(), "saved.md", "saved text").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let saved_hash = upload_name_owner(&state.store, "saved.md")
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata_before = name_metadata(&state, "saved.md").await;
+        let (status, _body) = create_file(router.clone(), "saved.md").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            saved_hash,
+            upload_name_owner(&state.store, "saved.md")
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        assert_eq!(metadata_before, name_metadata(&state, "saved.md").await);
+    }
+
+    // #8407: a create racing a save of the same new name can never be
+    // the final binding: whichever claim lands first, the saver's
+    // explicit content is what the name resolves to afterwards, and
+    // the create either conflicts or is superseded by that save --
+    // the empty create blob never silently replaces saved content.
+    #[tokio::test]
+    async fn concurrent_create_and_save_leave_saved_content_bound() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let guard = state.upload_name_lock.lock().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let create_task = {
+            let router = router.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                create_file(router, "raced.md").await
+            })
+        };
+        let save_task = {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                save_file(state, "raced.md", "raced saved text").await
+            })
+        };
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        assert!(!create_task.is_finished());
+        assert!(!save_task.is_finished());
+        drop(guard);
+        let (create_status, _body) = create_task.await.unwrap();
+        assert!(
+            create_status == StatusCode::OK || create_status == StatusCode::CONFLICT,
+            "unexpected create status: {create_status}"
+        );
+        let (save_status, save_body) = save_task.await.unwrap();
+        assert_eq!(save_status, StatusCode::OK, "{save_body}");
+        let saved_hash: String =
+            serde_json::from_str::<serde_json::Value>(&save_body).unwrap()["hash"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        let final_owner = upload_name_owner(&state.store, "raced.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .to_string();
+        assert_eq!(final_owner, saved_hash);
+    }
+
+    // #8407: a create for a genuinely new name still succeeds.
+    #[tokio::test]
+    async fn create_unique_name_succeeds() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, _body) = create_file(router, "fresh.txt").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // #8407: two concurrent creates of the same new name -- exactly one
+    // wins; the other conflicts instead of replacing the winner's file.
+    #[tokio::test]
+    async fn concurrent_creates_same_name_exactly_one_wins() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        // Hold the shared name lock while both requests start; neither
+        // may pass its claim boundary until it is released.
+        let guard = state.upload_name_lock.lock().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            let router = router.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                create_file(router, "raced.txt").await
+            }));
+        }
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        assert!(tasks.iter().all(|task| !task.is_finished()));
+        drop(guard);
+        let mut oks = 0;
+        let mut conflicts = 0;
+        for task in tasks {
+            match task.await.unwrap().0 {
+                StatusCode::OK => oks += 1,
+                StatusCode::CONFLICT => conflicts += 1,
+                other => panic!("unexpected create status: {other}"),
+            }
+        }
+        assert_eq!((oks, conflicts), (1, 1));
+    }
+
     // #1549: a second upload under the same filename with different
     // bytes must not silently un-name the first: the second is stored
     // uniquified, both stay listed and resolvable, and the first name
