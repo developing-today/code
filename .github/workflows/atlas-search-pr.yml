@@ -30,8 +30,5 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.0 --profile minimal
 
-      - name: Test atlas-search
-        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-search
-
-      - name: Test atlas-core
-        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-core
+      - name: Test atlas-search workspace
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml --workspace --all-targets

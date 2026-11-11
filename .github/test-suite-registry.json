@@ -976,10 +976,13 @@
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
-      "venue": null,
-      "status": "uncovered",
+      "venue": {
+        "workflow": ".github/workflows/atlas-search-pr.yml",
+        "job": "atlas-search"
+      },
+      "status": "mapped",
       "phase2_issue": 6185,
-      "reason": "Flake checks.default exists, but no workflow invocation was confirmed; Phase 2 follow-up must be filed."
+      "reason": "The PR workflow runs the Rust workspace; gate_a_bit_identity remains ignored because it requires ONNX Runtime and the pinned model snapshot."
     },
     {
       "id": "fleet.rust",
