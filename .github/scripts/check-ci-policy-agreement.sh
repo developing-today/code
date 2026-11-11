@@ -162,16 +162,35 @@ push_targets_main() {
       if (tok != "") out = out " " tok
       return out
     }
+    function unquoted_close(str,   j, c, q) {
+      q = ""
+      for (j = 1; j <= length(str); j++) {
+        c = substr(str, j, 1)
+        if (q != "") { if (c == q) q = "" }
+        else if (c == "\047" || c == "\"") q = c
+        else if (c == "]") return j
+      }
+      return 0
+    }
+    function flow_span(str, key,   i, start, seg) {
+      i = index(str, key)
+      if (i == 0) return ""
+      start = index(substr(str, i), "[")
+      if (start == 0) return ""
+      start = i + start - 1
+      seg = substr(str, start)
+      i = unquoted_close(seg)
+      if (i == 0) return ""
+      return substr(seg, 1, i)
+    }
     function apply_inline_filters(str,   seg) {
-      if (match(str, /branches-ignore:[[:space:]]*\[[^]]*\]/)) {
-        seg = substr(str, RSTART, RLENGTH)
-        sub(/^[^[]*\[/, "[", seg)
+      seg = flow_span(str, "branches-ignore:")
+      if (seg != "") {
         seen_branch_filter = 1
         ignore_list = ignore_list add_tokens(seg)
       }
-      if (match(str, /branches:[[:space:]]*\[[^]]*\]/)) {
-        seg = substr(str, RSTART, RLENGTH)
-        sub(/^[^[]*\[/, "[", seg)
+      seg = flow_span(str, "branches:")
+      if (seg != "") {
         seen_branches = 1
         seen_branch_filter = 1
         branches_list = branches_list add_tokens(seg)
@@ -287,8 +306,9 @@ push_targets_main() {
     inpush && flow_key != "" {
       seg = $0
       sub(/[[:space:]]#.*/, "", seg)
-      if (seg ~ /\]/) {
-        sub(/\].*/, "", seg)
+      k = unquoted_close(seg)
+      if (k > 0) {
+        seg = substr(seg, 1, k - 1)
         if (flow_key == "branches") branches_list = branches_list add_tokens(seg)
         else if (flow_key == "branches-ignore") ignore_list = ignore_list add_tokens(seg)
         flow_key = ""

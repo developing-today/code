@@ -468,4 +468,36 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_map_main.out"
 echo "pass: inline push mapping with branches: [main] satisfies the main leg"
 
+
+# Codex P2 regression on #8513 round 5b: a quoted character class
+# contains its own ] — that bracket is not the flow-list terminator,
+# in multiline sequences or inline mappings.
+build_tree "$TMP/filter-flow_class"
+wf_raw "$TMP/filter-flow_class" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: [
+      '[a-z]ain',
+      release
+    ]
+EOF
+if bash "$SCRIPT" "$TMP/filter-flow_class" >"$TMP/filter-flow_class.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a flow list with a quoted class" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-flow_class.out"
+echo "pass: multiline flow list with a quoted character class satisfies the main leg"
+
+build_tree "$TMP/filter-inline_class"
+wf_raw "$TMP/filter-inline_class" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches: ['[a-z]ain']}
+EOF
+if bash "$SCRIPT" "$TMP/filter-inline_class" >"$TMP/filter-inline_class.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for an inline mapping with a quoted class" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_class.out"
+echo "pass: inline push mapping with a quoted character class satisfies the main leg"
+
 echo "check-ci-policy-agreement.test: all contract tests passed"
