@@ -1180,6 +1180,7 @@ func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider
 		DefaultModel:         pol.ModelDefault,
 		Timeout:              pol.ModelTimeout,
 		Sampler:              s.brokerSampler(session),
+		PluginSampler:        s.pluginSampler(session),
 	})
 }
 
@@ -1292,6 +1293,18 @@ func (p modelRepairProvider) Complete(ctx context.Context, req scripting.Complet
 // unavailable provider, not a hang: the broker's expiry answer lands as
 // an error here and the caller falls back deterministically.
 func (s *Server) brokerSampler(session string) model.SampleFunc {
+	return s.brokerSamplerFor(session, "sampling")
+}
+
+// pluginSampler is the plugin backend's binding over the same broker
+// (#1925): identical plumbing, but the question and the answer carry
+// the plugin provider's name, so a plugin answerer can tell its
+// questions from sampling's and callers see which backend answered.
+func (s *Server) pluginSampler(session string) model.SampleFunc {
+	return s.brokerSamplerFor(session, "plugin")
+}
+
+func (s *Server) brokerSamplerFor(session string, provider string) model.SampleFunc {
 	if s.reg == nil || s.reg.broker == nil {
 		return nil
 	}
@@ -1311,7 +1324,7 @@ func (s *Server) brokerSampler(session string) model.SampleFunc {
 		question, err := broker.OpenRequest(elicit.SampleAsk(elicit.Ask{
 			Server:  "mcpx",
 			Session: session,
-			Message: "mcpx asks for a model completion (model.provider=sampling)",
+			Message: "mcpx asks for a model completion (model.provider=" + provider + ")",
 			TTL:     ttl,
 		}, params))
 		if err != nil {
@@ -1340,13 +1353,13 @@ func (s *Server) brokerSampler(session string) model.SampleFunc {
 		s.reg.publish(events.Event{Kind: events.SampleAnswered, Server: question.Server,
 			Data: mustJSON(elicitAnsweredSummary(question, ans))})
 		if ans.Action != elicit.Accept {
-			return model.Response{}, fmt.Errorf("model: sampling %s: %w", ans.Action, model.ErrUnavailable)
+			return model.Response{}, fmt.Errorf("model: %s %s: %w", provider, ans.Action, model.ErrUnavailable)
 		}
 		text, answered := parseSampleResult(ans.Content)
 		if strings.TrimSpace(text) == "" {
-			return model.Response{}, fmt.Errorf("model: sampling answered with no text: %w", model.ErrUnavailable)
+			return model.Response{}, fmt.Errorf("model: %s answered with no text: %w", provider, model.ErrUnavailable)
 		}
-		return model.Response{Text: text, Model: answered, Provider: "sampling"}, nil
+		return model.Response{Text: text, Model: answered, Provider: provider}, nil
 	}
 }
 
