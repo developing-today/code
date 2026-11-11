@@ -264,6 +264,67 @@ def _d1_parse_payload(resp: bytes, what: str):
     return payload
 
 
+def _drive_parse_object(resp: bytes, what: str) -> dict:
+    """Parse a Drive success body that must be a JSON object."""
+    try:
+        payload = json.loads(resp)
+    except (ValueError, TypeError):
+        raise ColdStoreError(f"{what}: non-JSON body") from None
+    if not isinstance(payload, dict):
+        raise ColdStoreError(f"{what}: non-object body ({type(payload).__name__})")
+    return payload
+
+
+def _drive_required_string(payload: dict, key: str, what: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ColdStoreError(f"{what}: missing or invalid {key}")
+    return value
+
+
+def _drive_size(value, what: str) -> int:
+    """Parse Drive's decimal-string size without accepting lossy coercions."""
+    if isinstance(value, bool):
+        raise ColdStoreError(f"{what}: invalid size")
+    if isinstance(value, int):
+        size = value
+    elif isinstance(value, str) and value.isascii() and value.isdigit():
+        size = int(value)
+    else:
+        raise ColdStoreError(f"{what}: invalid size")
+    if size < 0:
+        raise ColdStoreError(f"{what}: invalid size")
+    return size
+
+
+def _drive_files(payload: dict, what: str, require_size: bool = False) -> list[dict]:
+    files = payload.get("files", [])
+    if not isinstance(files, list):
+        raise ColdStoreError(f"{what}: files is not a list")
+    for i, entry in enumerate(files):
+        entry_what = f"{what}: files[{i}]"
+        if not isinstance(entry, dict):
+            raise ColdStoreError(
+                f"{entry_what}: expected object, got {type(entry).__name__}"
+            )
+        _drive_required_string(entry, "id", entry_what)
+        _drive_required_string(entry, "name", entry_what)
+        if require_size or "size" in entry:
+            _drive_size(entry.get("size"), f"{entry_what}.size")
+    return files
+
+
+def _drive_optional_string(payload: dict, key: str, what: str, default):
+    if key not in payload:
+        return default
+    value = payload[key]
+    if value is None and default is None:
+        return None
+    if not isinstance(value, str):
+        raise ColdStoreError(f"{what}: invalid {key}")
+    return value
+
+
 def d1_error_message(resp: bytes) -> str:
     """Best-effort extraction of the D1 API's own error text from a
     response body, so a sync failure is diagnosable from the CLI output
@@ -749,7 +810,8 @@ class ColdStore:
         status, _h, resp = http_request("GET", url, headers=self._auth_headers())
         if status != 200:
             raise ColdStoreError(f"files.list failed (HTTP {status})")
-        files = json.loads(resp).get("files", [])
+        what = f"files.list for folder {name!r}"
+        files = _drive_files(_drive_parse_object(resp, what), what)
         return files[0]["id"] if files else None
 
     def _create_folder(self, name: str, parent_id: str | None) -> str:
@@ -764,7 +826,8 @@ class ColdStore:
         )
         if status not in (200, 201):
             raise ColdStoreError(f"folder create failed (HTTP {status})")
-        return json.loads(resp)["id"]
+        what = "folder create"
+        return _drive_required_string(_drive_parse_object(resp, what), "id", what)
 
     def ensure_folders(self) -> dict:
         state = self.load_state()
@@ -1002,7 +1065,10 @@ class ColdStore:
                     timeout=600,
                 )
                 if status in (200, 201):
-                    file_id = json.loads(resp)["id"]
+                    what = "resumable upload completion"
+                    file_id = _drive_required_string(
+                        _drive_parse_object(resp, what), "id", what
+                    )
                     break
                 if status == 308:
                     range_hdr = headers.get("Range") or headers.get("range") or ""
@@ -1080,10 +1146,13 @@ class ColdStore:
         )
         if status != 200:
             raise ColdStoreError(f"files.get after upload failed (HTTP {status})")
-        info = json.loads(resp)
+        what = "files.get after upload"
+        info = _drive_parse_object(resp, what)
+        _drive_required_string(info, "id", what)
+        drive_md5 = _drive_required_string(info, "md5Checksum", what)
         local_md5 = md5_file(path)
-        drive_size = int(info.get("size", -1))
-        if info.get("md5Checksum") != local_md5 or drive_size != row["bytes"]:
+        drive_size = _drive_size(info.get("size"), f"{what}: metadata")
+        if drive_md5 != local_md5 or drive_size != row["bytes"]:
             raise ColdStoreError(
                 "verification mismatch: Drive reports size/md5 that differ from "
                 "the local bundle — bundle NOT marked verified"
@@ -1093,7 +1162,7 @@ class ColdStore:
             conn.execute(
                 "UPDATE bundles SET state='verified', drive_file_id=?, drive_md5=?, uploaded_at=?"
                 " WHERE bundle_id=?",
-                (file_id, info["md5Checksum"], utcnow_str(), bundle_id),
+                (file_id, drive_md5, utcnow_str(), bundle_id),
             )
             conn.execute(
                 "UPDATE objects SET state='cold' WHERE hash IN"
@@ -1271,18 +1340,26 @@ class ColdStore:
                     raise ColdStoreError(
                         f"files.list for backups failed (HTTP {status})"
                     )
-                page = json.loads(resp)
-                for f in page.get("files", []):
+                what = f"files.list for backups of db {db}"
+                page = _drive_parse_object(resp, what)
+                files = _drive_files(page, what, require_size=True)
+                for i, f in enumerate(files):
+                    entry_what = f"{what}: files[{i}]"
+                    created_time = _drive_optional_string(
+                        f, "createdTime", entry_what, ""
+                    )
                     out.append(
                         {
                             "db": db,
                             "id": f["id"],
                             "name": f["name"],
-                            "size": int(f.get("size") or 0),
-                            "created_time": f.get("createdTime", ""),
+                            "size": _drive_size(f["size"], f"{entry_what}.size"),
+                            "created_time": created_time,
                         }
                     )
-                next_page_token = page.get("nextPageToken")
+                next_page_token = _drive_optional_string(
+                    page, "nextPageToken", what, None
+                )
                 if not next_page_token:
                     break
                 if next_page_token in seen_tokens:
@@ -1445,7 +1522,10 @@ class ColdStore:
         status, _h, resp = http_request("GET", url, headers=self._auth_headers())
         if status != 200:
             raise ColdStoreError(f"files.list for get-backup failed (HTTP {status})")
-        files = json.loads(resp).get("files", [])
+        what = "files.list for get-backup"
+        files = _drive_files(
+            _drive_parse_object(resp, what), what, require_size=True
+        )
         if not files:
             raise ColdStoreError(f"backup not found: {db_name}/{name}")
         file_id = files[0]["id"]

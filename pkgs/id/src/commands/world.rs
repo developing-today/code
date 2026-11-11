@@ -1014,8 +1014,12 @@ async fn join_over_ssh(
     let check = match ssh_host_key {
         Some(fingerprint) => HostKeyCheck::Fingerprint(fingerprint),
         None => {
+            // Home-resolution contract (issues #5762 / #5763): empty
+            // HOME is unset - the old code let Some("") through and
+            // joined a CWD-relative ".ssh/known_hosts".
             let home = std::env::var_os("HOME")
-                .context("no HOME for ~/.ssh/known_hosts; pass --ssh-host-key")?;
+                .filter(|home| !home.is_empty())
+                .context("no HOME (unset or empty) for ~/.ssh/known_hosts; pass --ssh-host-key")?;
             HostKeyCheck::KnownHosts(PathBuf::from(home).join(".ssh").join("known_hosts"))
         }
     };

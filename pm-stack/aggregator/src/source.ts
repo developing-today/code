@@ -56,8 +56,10 @@ export interface Source {
   dns(): Promise<DnsSection | null>;
   /** The AA cost explorer section (ainventory import data via the
    * fleet feed); null = not collected yet. The absent form
-   * ({status:"absent"}) is a real section: it renders its reason. */
-  aa(): Promise<AaFeedSection | null>;
+   * ({status:"absent"}) is a real section: it renders its reason.
+   * `batch` selects a cached historical workbook version (#3302);
+   * omitted keeps the latest/default behaviour. */
+  aa(batch?: string | null): Promise<AaFeedSection | null>;
   /** The identity registry (#906 §3): durable session records, oldest sources merged. */
   registry(): Promise<SessionRecord[]>;
   /** The GitHub Project pool (#910 stage 5) from the fleet feed; empty when not collected. */

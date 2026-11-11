@@ -129,6 +129,7 @@ let
   # flake's own packages.<system>.opencode). Named once here: the
   # wrapper below execs it, and the wrapped package joins over it.
   opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
+
   # Drew's opencode wrapper -- formerly a standalone home.packages
   # entry (writeShellScriptBin "opencode"), logic unchanged:
   # Cloudflare env top-up and the stamp-gated sync-models
@@ -1103,6 +1104,8 @@ in
     # inherits them — the mcpx daemon receives them the same way.)
   };
 
+
+
   services.opencode = {
     # enable comes from the cascade (mkDefault at each layer).
     #
@@ -1157,6 +1160,17 @@ in
   # "mistral") is its source — verified live 2026-11-06 (the leg
   # returns the API-budget 402, not an auth error, with the env var
   # absent).
+  # ANTIGRAVITY_OAUTH_CLIENT_SECRET for the same server: the
+  # _antigravity provider refreshes the agy keyring token with the agy
+  # installed-app client's secret, read from the process environment
+  # since fork commit 80d6b2f1f6 (2026-11-08) retired the runtime
+  # extraction from the agy binary. The value lives in the vault as
+  # google.antigravity-oauth-client-secret (one-time extraction from
+  # the installed agy binary, sanctioned by Drew 2026-11-09, code#8086)
+  # and the materializer below fetches it by name into the same
+  # EnvironmentFile at every server start — it is never stored in this
+  # repo or the Nix store. The quota gatherer reads the same file (see
+  # nixos/services/pm-stack) so its `opencode quota` refresh works too.
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-env-key-materialize" ''
@@ -1164,6 +1178,10 @@ in
         umask 077
         mkdir -p "$HOME/.local/state/opencode"
         printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        agy_client_secret="$("${fleetPkgs.fleet}/bin/fleet" secrets get google.antigravity-oauth-client-secret 2>/dev/null || true)"
+        if [ -n "$agy_client_secret" ]; then
+          printf 'ANTIGRAVITY_OAUTH_CLIENT_SECRET=%s\n' "$agy_client_secret" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        fi
       ''
     );
     EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";

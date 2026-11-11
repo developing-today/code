@@ -2684,7 +2684,10 @@ fn escape_code_span_pipes_in_line(line: &str) -> String {
             i += run;
             continue;
         }
-        let ch_len = line[i..].chars().next().unwrap().len_utf8();
+        let Some(ch) = line.get(i..).and_then(|remaining| remaining.chars().next()) else {
+            break;
+        };
+        let ch_len = ch.len_utf8();
         out.push_str(&line[i..i + ch_len]);
         i += ch_len;
     }
@@ -6272,7 +6275,7 @@ pub fn raw_text_to_prosemirror(text: &str) -> Value {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

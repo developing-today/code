@@ -1020,6 +1020,57 @@ fn validate_via_broker(packet: &Value, quiet: bool) -> Vec<String> {
 // Subcommands
 // ---------------------------------------------------------------------------
 
+/// #8097 Rule 2: a --platform value is a coarse FAMILY selector,
+/// never a lane name: exactly "openchamber" or "muse". Shared by
+/// the enqueue and claim verbs so both spell the rule once.
+fn platform_flag(v: &str) -> Result<String, String> {
+    match v {
+        "openchamber" | "muse" => Ok(v.to_string()),
+        other => Err(format!(
+            "invalid --platform {other:?} (expected \"openchamber\" or \"muse\")"
+        )),
+    }
+}
+
+/// #8176: the claim-model stamp flags. The claiming session reports
+/// its own serving leaf — provider and model together (the leaf it
+/// read from its session surface, route_usage's lastServing,
+/// opencode#1891), variant optional. Naming either half alone is a
+/// usage error, mirroring the broker's parse: a half-stamp must
+/// never reach the wire.
+fn model_stamp_flags(
+    provider: Option<&str>,
+    model: Option<&str>,
+    variant: Option<&str>,
+) -> Result<Option<(String, String, Option<String>)>, String> {
+    fn clean<'a>(v: Option<&'a str>) -> Option<&'a str> {
+        v.map(str::trim).filter(|s| !s.is_empty())
+    }
+    match (clean(provider), clean(model)) {
+        (None, None) => {
+            if clean(variant).is_some() {
+                return Err(
+                    "--model-variant requires --model-provider and --model-id".to_string(),
+                );
+            }
+            Ok(None)
+        }
+        (Some(p), Some(m)) => Ok(Some((
+            p.to_string(),
+            m.to_string(),
+            clean(variant).map(str::to_string),
+        ))),
+        (Some(_), None) => Err(
+            "--model-provider requires --model-id (the claim stamp names the serving leaf, provider and model together)"
+                .to_string(),
+        ),
+        (None, Some(_)) => Err(
+            "--model-id requires --model-provider (the claim stamp names the serving leaf, provider and model together)"
+                .to_string(),
+        ),
+    }
+}
+
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -1070,7 +1121,7 @@ fn resolve_enqueue_queue(
 }
 
 fn cmd_enqueue(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &["dry-run", "shadow-intent"]);
+    let args = parse_args(rest, &["queue", "platform"], &["dry-run", "shadow-intent"]);
     reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
@@ -1089,6 +1140,15 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         Ok(q) => q,
         Err(e) => die(2, &e),
     };
+    // #8097 Rule 2: the platform selector is optional; when given
+    // it restricts the item to that family. Absent = unset.
+    let platform = match args.get("platform") {
+        None => None,
+        Some(p) => match platform_flag(&p) {
+            Ok(v) => Some(v),
+            Err(e) => die(2, &e),
+        },
+    };
     let shadow_intent = args.has("shadow-intent");
     if queue.ends_with("-shadow") && !shadow_intent {
         die(
@@ -1104,7 +1164,7 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
         "/enqueue",
         &json!({
             "packet": packet, "queue": queue, "dry_run": dry_run,
-            "shadow_intent": shadow_intent,
+            "shadow_intent": shadow_intent, "platform": platform,
         }),
     );
     let resp = unwrap_ok(resp);
@@ -1247,7 +1307,24 @@ fn cmd_list(rest: &[String]) -> i32 {
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane"], &[]);
+    let args = parse_args(
+        rest,
+        &[
+            "queue",
+            "worker",
+            "lease-seconds",
+            "lane",
+            "task",
+            "count",
+            "from-session",
+            "platform",
+            "session-id",
+            "model-provider",
+            "model-id",
+            "model-variant",
+        ],
+        &["handoff"],
+    );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
@@ -1258,7 +1335,82 @@ fn cmd_claim(rest: &[String]) -> i32 {
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
+    // --platform <family>: declare this claim's platform MARK
+    // (#8097 Rule 2, demoted by #8187). The broker stamps it on
+    // the claimed row and the claimed event; it filters NOTHING —
+    // a mismatched or undeclared claim claims items all the same.
+    if let Some(p) = args.get("platform") {
+        match platform_flag(&p) {
+            Ok(v) => body["platform"] = json!(v),
+            Err(e) => die(2, &e),
+        }
+    }
+    // --session-id: the claiming session's own id, recorded as a
+    // mark on the claimed event when the surface knows it (#8187).
+    if let Some(sid) = args.get("session-id") {
+        body["session_id"] = json!(sid);
+    }
+    // --model-provider/--model-id[/--model-variant]: the claiming
+    // session's own model, stamped on the task by the broker
+    // (#8176). The session reads its serving leaf from its own
+    // session surface (route_usage lastServing, opencode#1891)
+    // and passes it here; the broker stores it as the row's
+    // claim_provider / claim_model / claim_variant.
+    match model_stamp_flags(
+        args.get("model-provider").as_deref(),
+        args.get("model-id").as_deref(),
+        args.get("model-variant").as_deref(),
+    ) {
+        Ok(Some((provider, model, variant))) => {
+            body["model_provider"] = json!(provider);
+            body["model_id"] = json!(model);
+            if let Some(v) = variant {
+                body["model_variant"] = json!(v);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => die(2, &e),
+    }
+    // --handoff: the no-id collection of the next recorded
+    // opencode handoff from the sink (status 'handed_off', #8234;
+    // #8097 Rule 1) — the claimant's default handoff path. The
+    // BROKER picks the row; the caller names no task id. (--task
+    // remains the special-case claim.)
+    if args.has("handoff") {
+        body["pick"] = json!("handed_off");
+    }
+    // --task <id>: by-id claim — take exactly that row when the
+    // broker's by-id predicate allows it (a queued row under the
+    // ordinary predicate, or a sink row). The opencode claimant
+    // uses this to collect handed-off tasks out of the sink; a
+    // plain claim never names a task.
+    if let Some(task) = args.get_i64("task") {
+        body["task_id"] = json!(task);
+    }
+    // --count <n> (#8217): batch claim — the broker runs the same
+    // atomic pick n times and answers with every claimed row. The
+    // cap is enforced here (local, instant) and broker-side.
+    let count = match batch_count_flag(args.get_i64("count")) {
+        Ok(c) => c,
+        Err(e) => die(2, &e),
+    };
+    if count > 1 {
+        body["count"] = json!(count);
+    }
+    // --from-session <ses>: with --task, a session-to-session
+    // TRANSFER (#8210) — claim exactly this task DIRECTLY from
+    // the session named, which must be the task's current holder
+    // (its session mark is the capability; a mismatch refuses and
+    // leaves the claim untouched). The task never passes through
+    // queued or parked. --session-id on the same claim binds the
+    // claiming session in the same operation.
+    if let Some(fs) = args.get("from-session") {
+        body["from_session"] = json!(fs);
+    }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
+    if count > 1 {
+        return claim_batch_output(&resp, &worker, count);
+    }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
         eprint("repo-queue: no claimable task");
@@ -1367,6 +1519,138 @@ enum GuardOutcome {
     Unchecked(String),
 }
 
+/// #8217: --count validation for the batch claim. Absent or 1 is
+/// the ordinary single claim; 2..=BATCH_CLAIM_MAX is a batch;
+/// anything else is a usage error, checked locally so the failure
+/// is instant (the broker enforces the same bound).
+fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
+    match n {
+        None => Ok(1),
+        Some(n) if n == 1 => Ok(1),
+        Some(n) if (2..=crate::turso_queue::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
+        Some(n) => Err(format!(
+            "claim --count {n} is out of range: a batch claim takes \
+             1..={} items (#8217)",
+            crate::turso_queue::BATCH_CLAIM_MAX
+        )),
+    }
+}
+
+/// The batch claim's response handling (#8217): the broker ran the
+/// pick repeatedly and returned every claimed row. Each row goes
+/// through the SAME per-item post-claim handling as a single
+/// claim — the payload defense in depth and the #6741
+/// no-double-serve guard (a fallback-held row is blocked back,
+/// never served) — then prints one verdict:
+/// {"tasks": [...], "claimed": k, "requested": n, "guard_held": [...]}.
+/// Zero served rows is the usual no-claim verdict (NO_CLAIM_EXIT).
+fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
+    let rows = resp
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut tasks: Vec<Value> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+    for row in rows {
+        // Payload defense in depth, as in claim_output (#5444): a
+        // well-formed claim never carries a null or {} payload.
+        if let Some(payload) = row.get("payload") {
+            if payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty()) {
+                continue;
+            }
+        }
+        match fallback_guard(&row, worker) {
+            GuardOutcome::HeldBy(holder) => {
+                let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let (repo, issue) = task_issue(&row);
+                let blocker = format!(
+                    "issue {repo}#{issue} is held in the GitHub fallback by {holder}; \
+                     primary-store claim auto-blocked to prevent double-serve (#6741)"
+                );
+                let resp = call(
+                    "/block",
+                    &json!({
+                        "task_id": task_id,
+                        "worker": worker,
+                        "reason_class": "fallback_held",
+                        "blocker": blocker,
+                        "progress": {},
+                    }),
+                );
+                if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                    eprint(
+                        "repo-queue: WARNING: fallback guard block failed; \
+                         the task stays claimed under its lease",
+                    );
+                }
+                held.push(json!({
+                    "task": task_id,
+                    "held_by": holder,
+                    "repo": repo,
+                    "issue": issue,
+                }));
+            }
+            GuardOutcome::Unchecked(e) => {
+                let mut row = row;
+                if let Some(o) = row.as_object_mut() {
+                    o.insert(
+                        "guard_warning".to_string(),
+                        json!(format!(
+                            "fallback double-serve guard could not check GitHub: {e}"
+                        )),
+                    );
+                }
+                tasks.push(row);
+            }
+            GuardOutcome::Serve => tasks.push(row),
+        }
+    }
+    let claimed = tasks.len();
+    print_json(&json!({
+        "tasks": tasks,
+        "claimed": claimed,
+        "requested": requested,
+        "guard_held": held,
+    }));
+    if claimed == 0 {
+        eprint("repo-queue: no claimable task");
+        return NO_CLAIM_EXIT;
+    }
+    0
+}
+
+/// Release a claimed task straight back to the queue (#8217):
+/// `release <task_id> --worker <w> --reason <text>`. The broker
+/// returns the row to `queued`, immediately claimable, and records
+/// the reason on a `released` event. Dispatch uses it for an item
+/// whose sub-task failed to launch or bind: the item goes back to
+/// the pool in the same touch instead of sitting claimed and idle
+/// until its lease expires.
+fn cmd_release(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("release", &args, 1);
+    let Some(reason) = args.get("reason") else {
+        die(
+            2,
+            "release requires --reason \"<why this task goes back to the pool>\" (#8217)",
+        );
+    };
+    if reason.trim().is_empty() {
+        die(2, "release requires a non-empty --reason (#8217)");
+    }
+    let resp = unwrap_ok(call(
+        "/release",
+        &json!({
+            "task_id": args.pos_i64(0, "task_id"),
+            "worker": opt_worker(&args),
+            "reason": reason,
+        }),
+    ));
+    print_json(&require_row(&resp, "release_repo_task"));
+    0
+}
+
 fn fallback_guard(row: &Value, my_worker: &str) -> GuardOutcome {
     let (repo, issue) = task_issue(row);
     if repo.is_empty() || issue <= 0 {
@@ -1418,7 +1702,17 @@ fn claim_output(resp: &Value) -> (Value, i32) {
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["worker", "exclusion-reason"], &[]);
+    let args = parse_args(
+        rest,
+        &[
+            "worker",
+            "exclusion-reason",
+            "opencode-reason",
+            "limit-platform",
+            "limit-reason",
+        ],
+        &["clear-platform-limit"],
+    );
     reject_extra_pos("lane", &args, 1);
     let resp = unwrap_ok(call(
         "/lane",
@@ -1426,6 +1720,13 @@ fn cmd_lane(rest: &[String]) -> i32 {
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
             "exclusion_reason": args.get("exclusion-reason"),
+            "opencode_reason": args.get("opencode-reason"),
+            // #8210: a platform limitation — an exception that
+            // exists only with its recorded reason. The broker
+            // refuses a limitation with no --limit-reason.
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
+            "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
     print_json(&require_row(&resp, "assign_repo_task_lane"));
@@ -1550,6 +1851,22 @@ fn cmd_park(rest: &[String]) -> i32 {
     0
 }
 
+/// wake (#8184): release a broker-held parked wait now that
+/// its condition is satisfied (e.g. the triage step finished
+/// triaging the item). The broker flips it back to queued.
+fn cmd_wake(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("wake", &args, 1);
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+    });
+    let resp = unwrap_ok(call("/wake", &body));
+    print_json(&require_row(&resp, "wake_task"));
+    0
+}
+
 fn cmd_block(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -1559,6 +1876,16 @@ fn cmd_block(rest: &[String]) -> i32 {
             "blocker",
             "progress",
             "progress-file",
+            // #8276: typed dependency blocks — the broker watches
+            // these and releases the task itself when they clear
+            // (or when the max TTL expires). Comma-separated for
+            // several deps of one kind.
+            "blocked-by-pr",
+            "blocked-by-issue",
+            "blocked-by-task",
+            "blocked-by-ci",
+            "dep-recheck-seconds",
+            "dep-max-ttl-seconds",
         ],
         &[],
     );
@@ -1569,17 +1896,111 @@ fn cmd_block(rest: &[String]) -> i32 {
     let blocker = args
         .get("blocker")
         .unwrap_or_else(|| die(2, "block: --blocker is required"));
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason_class": rc,
+        "blocker": blocker,
+        "progress": progress_arg(&args).unwrap_or(json!({})),
+    });
+    let deps = dep_flags(&args);
+    if !deps.is_empty() {
+        body["deps"] = json!(deps);
+    }
+    if let Some(s) = args.get_i64("dep-recheck-seconds") {
+        body["dep_recheck_seconds"] = json!(s);
+    }
+    if let Some(s) = args.get_i64("dep-max-ttl-seconds") {
+        body["dep_max_ttl_seconds"] = json!(s);
+    }
+    let resp = unwrap_ok(call("/block", &body));
+    print_json(&require_row(&resp, "block_task"));
+    0
+}
+
+/// #8276: parse the --blocked-by-* flags into the broker's deps
+/// array. Refs are owner/repo#N for pr/issue/ci (the number is a
+/// PR/issue number or an Actions run id) and bare ids for tasks;
+/// comma-separated lists allow several deps of one kind. Bad
+/// refs die here, at the caller's terminal — never as a prose
+/// block the broker cannot watch.
+fn dep_flags(args: &Args) -> Vec<Value> {
+    let mut deps = Vec::new();
+    for (flag, kind) in [
+        ("blocked-by-pr", "pr"),
+        ("blocked-by-issue", "issue"),
+        ("blocked-by-ci", "ci"),
+    ] {
+        if let Some(v) = args.get(flag) {
+            for item in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                let Some((repo, num)) = item.rsplit_once('#') else {
+                    die(
+                        2,
+                        &format!("block: --{flag} expects owner/repo#N, got '{item}'"),
+                    );
+                };
+                let n: i64 = num.parse().unwrap_or_else(|_| {
+                    die(
+                        2,
+                        &format!("block: --{flag} expects owner/repo#N, got '{item}'"),
+                    )
+                });
+                if kind == "ci" {
+                    deps.push(json!({"kind": kind, "repo": repo, "run_id": n}));
+                } else {
+                    deps.push(json!({"kind": kind, "repo": repo, "number": n}));
+                }
+            }
+        }
+    }
+    if let Some(v) = args.get("blocked-by-task") {
+        for item in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let n: i64 = item.parse().unwrap_or_else(|_| {
+                die(
+                    2,
+                    &format!("block: --blocked-by-task expects a task id, got '{item}'"),
+                )
+            });
+            deps.push(json!({"kind": "task", "task_id": n}));
+        }
+    }
+    deps
+}
+
+/// unblock (#8276): the manual override — release a blocked
+/// task now, dep-blocked or classic. The broker audits who
+/// overrode and what dep record was discarded.
+fn cmd_unblock(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("unblock", &args, 1);
     let resp = unwrap_ok(call(
-        "/block",
+        "/unblock",
         &json!({
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
-            "reason_class": rc,
-            "blocker": blocker,
-            "progress": progress_arg(&args).unwrap_or(json!({})),
+            "reason": args.get("reason").unwrap_or_default(),
         }),
     ));
-    print_json(&require_row(&resp, "block_task"));
+    print_json(&require_row(&resp, "unblock_task"));
+    0
+}
+
+/// dep-recheck (#8276): run the broker's dep recheck pass now,
+/// or force one task's recheck with --task. Production cadence
+/// is the sweep's (the expire timer fires it every minute);
+/// this is the manual trigger.
+fn cmd_dep_recheck(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["task", "limit"], &[]);
+    reject_extra_pos("dep-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/dep-recheck", &body));
+    print_json(&require_row(&resp, "dep_recheck"));
     0
 }
 
@@ -1862,10 +2283,460 @@ fn atomic_write_json(path: &str, obj: &Value) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Creation outbox (#3706) — client verbs + the serial drainer.
+//
+// `fleet queue outbox enqueue|list|metrics|claim|resolve` are the
+// producer API and the drainer's building blocks; `outbox drain`
+// is the pilot drainer itself: claim the oldest due entry from the
+// broker, run its create through `gh`, verify by read-back, and
+// resolve. Exactly one producer is wired as the pilot
+// (new-issue-creator-code-a — doc/fleet/creation-outbox.md); there
+// is no dual-write and no automatic fallback to direct creation:
+// a broker failure stops the drain visibly.
+// ---------------------------------------------------------------------------
+
+fn outbox_payload(args: &Args) -> Value {
+    if let Some(path) = args.get("payload-file") {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| die(2, &format!("cannot read payload file {path}: {e}")));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| die(2, &format!("payload file {path} is not JSON: {e}")))
+    } else if let Some(raw) = args.get("payload") {
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|e| die(2, &format!("--payload is not JSON: {e}")))
+    } else {
+        die(2, "outbox enqueue needs --payload-file or --payload")
+    }
+}
+
+fn cmd_outbox_enqueue(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "repo",
+            "kind",
+            "dedup-key",
+            "producer",
+            "payload-file",
+            "payload",
+        ],
+        &[],
+    );
+    reject_extra_pos("outbox enqueue", &args, 0);
+    let resp = unwrap_ok(call(
+        "/outbox-enqueue",
+        &json!({
+            "repo": args.get("repo"),
+            "kind": args.get("kind"),
+            "dedup_key": args.get("dedup-key"),
+            "producer": args.get("producer"),
+            "payload": outbox_payload(&args),
+        }),
+    ));
+    print_json(&resp);
+    0
+}
+
+fn cmd_outbox_list(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["repo", "state"], &[]);
+    reject_extra_pos("outbox list", &args, 0);
+    let resp = unwrap_ok(call(
+        "/outbox-list",
+        &json!({"repo": args.get("repo"), "state": args.get("state")}),
+    ));
+    print_json(&resp);
+    0
+}
+
+fn cmd_outbox_metrics(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &[], &[]);
+    reject_extra_pos("outbox metrics", &args, 0);
+    let resp = unwrap_ok(call("/outbox-metrics", &json!({})));
+    print_json(&resp);
+    0
+}
+
+fn outbox_claim(owner: &str) -> Value {
+    unwrap_ok(call("/outbox-claim", &json!({"owner": owner})))
+}
+
+fn outbox_resolve(id: &str, outcome: &str, extra: Value) -> Value {
+    let mut body = json!({"id": id, "outcome": outcome});
+    if let (Some(dst), Some(src)) = (body.as_object_mut(), extra.as_object()) {
+        for (k, v) in src {
+            dst.insert(k.clone(), v.clone());
+        }
+    }
+    unwrap_ok(call("/outbox-resolve", &body))
+}
+
+fn cmd_outbox_claim(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["owner"], &[]);
+    reject_extra_pos("outbox claim", &args, 0);
+    let owner = args
+        .get("owner")
+        .unwrap_or_else(|| "outbox-drainer".to_string());
+    print_json(&outbox_claim(&owner));
+    0
+}
+
+fn cmd_outbox_resolve(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "outcome",
+            "github-number",
+            "github-url",
+            "retry-after",
+            "error",
+        ],
+        &[],
+    );
+    if args.pos.is_empty() {
+        die(
+            2,
+            "usage: repo-queue outbox resolve <id> --outcome done|rate_limited|uncertain|failed",
+        );
+    }
+    let outcome = args.get("outcome").unwrap_or_default();
+    let resp = outbox_resolve(
+        &args.pos[0],
+        &outcome,
+        json!({
+            "github_number": args.get_i64("github-number"),
+            "github_url": args.get("github-url"),
+            "retry_after": args.get_i64("retry-after"),
+            "error": args.get("error"),
+        }),
+    );
+    print_json(&resp);
+    0
+}
+
+/// Run one `gh` command and capture (success, stdout, stderr)
+/// without a shell — arguments never pass through shell expansion.
+fn gh_run(argv: &[String]) -> (bool, String, String) {
+    match std::process::Command::new("gh").args(argv).output() {
+        Ok(out) => (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ),
+        Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+    }
+}
+
+fn gh_json(argv: &[String]) -> Option<Value> {
+    let (ok, stdout, _) = gh_run(argv);
+    if !ok {
+        return None;
+    }
+    serde_json::from_str(&stdout).ok()
+}
+
+fn s(v: &Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// The drainer's GitHub leg (production `Creator` for the
+/// creation_outbox state machine): submits with the entry's marker
+/// in the body, classifies the result, and verifies by read-back.
+struct GhCreator;
+
+impl GhCreator {
+    fn create(&mut self, entry: &Value) -> crate::creation_outbox::CreateOutcome {
+        use crate::creation_outbox::CreateOutcome;
+        let repo = s(entry, "repo");
+        let kind = s(entry, "kind");
+        let id = s(entry, "id");
+        let payload = entry.get("payload").cloned().unwrap_or(json!({}));
+        let body = format!(
+            "{}\n\n{}",
+            s(&payload, "body"),
+            crate::creation_outbox::marker(&id)
+        );
+        let title = s(&payload, "title");
+        let argv: Vec<String> = match kind.as_str() {
+            "issue" => {
+                let mut a = vec![
+                    "issue".into(),
+                    "create".into(),
+                    "--repo".into(),
+                    repo.clone(),
+                    "--title".into(),
+                    title,
+                    "--body".into(),
+                    body,
+                ];
+                if let Some(labels) = payload.get("labels").and_then(|l| l.as_array()) {
+                    for label in labels.iter().filter_map(|l| l.as_str()) {
+                        a.push("--label".into());
+                        a.push(label.to_string());
+                    }
+                }
+                a
+            }
+            "issue_comment" | "pr_comment" => {
+                let target = payload
+                    .get("target_number")
+                    .and_then(|n| n.as_i64())
+                    .unwrap_or(0);
+                if target <= 0 {
+                    return CreateOutcome::Failed(format!("{kind} payload needs target_number"));
+                }
+                vec![
+                    "issue".into(),
+                    "comment".into(),
+                    target.to_string(),
+                    "--repo".into(),
+                    repo.clone(),
+                    "--body".into(),
+                    body,
+                ]
+            }
+            "pull_request" => vec![
+                "pr".into(),
+                "create".into(),
+                "--repo".into(),
+                repo.clone(),
+                "--title".into(),
+                title,
+                "--body".into(),
+                body,
+                "--head".into(),
+                s(&payload, "head"),
+                "--base".into(),
+                {
+                    let base = s(&payload, "base");
+                    if base.is_empty() {
+                        "main".to_string()
+                    } else {
+                        base
+                    }
+                },
+            ],
+            other => return CreateOutcome::Failed(format!("unknown outbox kind {other:?}")),
+        };
+        let (ok, stdout, stderr) = gh_run(&argv);
+        if !ok {
+            let lower = stderr.to_lowercase();
+            if lower.contains("403")
+                || lower.contains("429")
+                || lower.contains("rate limit")
+                || lower.contains("submitted too quickly")
+            {
+                return CreateOutcome::RateLimited { retry_after: None };
+            }
+            return CreateOutcome::Failed(stderr);
+        }
+        // The created object's URL is the last stdout line; its
+        // trailing path segment (or #issuecomment-<id>) is the
+        // number the read-back verifies. Empty or unparseable
+        // output on a zero exit is the silent-loss shape.
+        let url = stdout.lines().last().unwrap_or("").trim().to_string();
+        let number = url
+            .rsplit('#')
+            .next()
+            .and_then(|frag| frag.strip_prefix("issuecomment-"))
+            .and_then(|n| n.parse::<i64>().ok())
+            .or_else(|| url.rsplit('/').next().and_then(|n| n.parse::<i64>().ok()));
+        match number {
+            Some(number) => CreateOutcome::Created { number, url },
+            None => {
+                CreateOutcome::Ambiguous(format!("gh succeeded with unusable output: {stdout:?}"))
+            }
+        }
+    }
+
+    fn read_back(&mut self, entry: &Value, number: i64) -> bool {
+        let repo = s(entry, "repo");
+        let kind = s(entry, "kind");
+        let id = s(entry, "id");
+        let obj = match kind.as_str() {
+            "issue" => gh_json(&[
+                "issue".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repo,
+                "--json".into(),
+                "number,url,body".into(),
+            ]),
+            "pull_request" => gh_json(&[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repo,
+                "--json".into(),
+                "number,url,body".into(),
+            ]),
+            _ => gh_json(&[
+                "api".into(),
+                format!("repos/{repo}/issues/comments/{number}"),
+            ]),
+        };
+        match obj {
+            Some(v) => crate::creation_outbox::marker_id(&s(&v, "body")) == Some(id),
+            None => false,
+        }
+    }
+
+    fn find_by_marker(&mut self, entry: &Value) -> Option<(i64, String)> {
+        let repo = s(entry, "repo");
+        let id = s(entry, "id");
+        let q = format!("repo:{repo} fleet-outbox:{id}");
+        let results = gh_json(&[
+            "api".into(),
+            "search/issues".into(),
+            "-f".into(),
+            format!("q={q}"),
+        ])?;
+        let items = results.get("items").and_then(|i| i.as_array())?;
+        for item in items {
+            let number = item.get("number").and_then(|n| n.as_i64())?;
+            let url = s(item, "html_url");
+            if self.read_back(entry, number) {
+                return Some((number, url));
+            }
+        }
+        None
+    }
+}
+
+fn cmd_outbox_drain(rest: &[String]) -> i32 {
+    use crate::creation_outbox::CreateOutcome;
+    let args = parse_args(rest, &["owner", "max"], &[]);
+    reject_extra_pos("outbox drain", &args, 0);
+    let owner = args
+        .get("owner")
+        .unwrap_or_else(|| "outbox-drainer".to_string());
+    let max = args.get_i64("max").unwrap_or(20).max(1);
+    let mut creator = GhCreator;
+    let mut processed = 0i64;
+    let mut last_create: Option<std::time::Instant> = None;
+    for _ in 0..max {
+        let resp = outbox_claim(&owner);
+        let row = resp.get("row").cloned().unwrap_or(Value::Null);
+        if row.is_null() {
+            println!(
+                "{}",
+                json!({"drained": processed, "idle": true, "claim": resp})
+            );
+            return 0;
+        }
+        let id = s(&row, "id");
+        let state = s(&row, "state");
+        processed += 1;
+
+        // Uncertain first: reconcile by marker, never blind-retry.
+        if state == "uncertain" {
+            match creator.find_by_marker(&row) {
+                Some((number, url)) => {
+                    let resp = outbox_resolve(
+                        &id,
+                        "done",
+                        json!({"github_number": number, "github_url": url, "reconciled": true}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "reconciled", "number": number, "row": resp.get("row")})
+                    );
+                    continue;
+                }
+                None => {
+                    // Marker search proves absence: fall through and
+                    // re-create under the same entry.
+                }
+            }
+        }
+
+        // Pacing: the minimum gap between creates (the broker also
+        // enforces the circuit and the hourly budget at claim).
+        if let Some(last) = last_create {
+            let elapsed = last.elapsed().as_secs() as i64;
+            let wait = crate::creation_outbox::MIN_GAP_SECONDS - elapsed;
+            if wait > 0 {
+                std::thread::sleep(Duration::from_secs(wait as u64));
+            }
+        }
+        last_create = Some(std::time::Instant::now());
+        match creator.create(&row) {
+            CreateOutcome::Created { number, url } => {
+                if creator.read_back(&row, number) {
+                    outbox_resolve(
+                        &id,
+                        "done",
+                        json!({"github_number": number, "github_url": url}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "done", "number": number, "url": url})
+                    );
+                } else {
+                    outbox_resolve(
+                        &id,
+                        "uncertain",
+                        json!({"error": "read-back failed after create"}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "uncertain", "reason": "readback_failed"})
+                    );
+                }
+            }
+            CreateOutcome::RateLimited { retry_after } => {
+                outbox_resolve(&id, "rate_limited", json!({"retry_after": retry_after}));
+                println!(
+                    "{}",
+                    json!({"id": id, "outcome": "rate_limited", "retry_after": retry_after})
+                );
+            }
+            CreateOutcome::Ambiguous(why) => {
+                outbox_resolve(&id, "uncertain", json!({"error": why}));
+                println!(
+                    "{}",
+                    json!({"id": id, "outcome": "uncertain", "reason": why})
+                );
+            }
+            CreateOutcome::Failed(why) => {
+                outbox_resolve(&id, "failed", json!({"error": why}));
+                println!("{}", json!({"id": id, "outcome": "failed", "reason": why}));
+            }
+        }
+    }
+    println!("{}", json!({"drained": processed, "idle": false}));
+    0
+}
+
+fn cmd_outbox(rest: &[String]) -> i32 {
+    if rest.is_empty() {
+        eprint("usage: repo-queue outbox <enqueue|list|metrics|claim|resolve|drain> ...");
+        return 2;
+    }
+    let sub = rest[0].as_str();
+    let tail = &rest[1..];
+    match sub {
+        "enqueue" => cmd_outbox_enqueue(tail),
+        "list" => cmd_outbox_list(tail),
+        "metrics" => cmd_outbox_metrics(tail),
+        "claim" => cmd_outbox_claim(tail),
+        "resolve" => cmd_outbox_resolve(tail),
+        "drain" => cmd_outbox_drain(tail),
+        _ => {
+            eprint(&format!("repo-queue: unknown outbox command {sub:?}"));
+            2
+        }
+    }
+}
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|revive|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox> ...",
         );
         return 2;
     }
@@ -1879,12 +2750,16 @@ pub fn run(args: &[String]) -> i32 {
         "enqueue" => cmd_enqueue(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
+        "release" => cmd_release(rest),
         "lane" => cmd_lane(rest),
         "bind" => cmd_bind(rest),
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
+        "unblock" => cmd_unblock(rest),
+        "dep-recheck" => cmd_dep_recheck(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
@@ -1892,6 +2767,7 @@ pub fn run(args: &[String]) -> i32 {
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
         "fallback" => crate::fallback::run(rest),
+        "outbox" => cmd_outbox(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2
@@ -1903,6 +2779,60 @@ pub fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    #[test]
+    fn model_stamp_flags_require_provider_and_model_together() {
+        // #8176 oracle: the claim stamp names the serving leaf —
+        // provider and model together, variant optional. Either
+        // half alone (or a variant alone) is a usage error.
+        assert_eq!(
+            model_stamp_flags(Some("_claude"), Some("claude-sonnet-5-5"), Some("medium")),
+            Ok(Some((
+                "_claude".to_string(),
+                "claude-sonnet-5-5".to_string(),
+                Some("medium".to_string()),
+            )))
+        );
+        assert_eq!(
+            model_stamp_flags(Some("openai.main"), Some("gpt-6-luna"), None),
+            Ok(Some((
+                "openai.main".to_string(),
+                "gpt-6-luna".to_string(),
+                None,
+            )))
+        );
+        assert_eq!(model_stamp_flags(None, None, None), Ok(None));
+        assert!(model_stamp_flags(Some("_claude"), None, None).is_err());
+        assert!(model_stamp_flags(None, Some("claude-sonnet-5-5"), None).is_err());
+        assert!(model_stamp_flags(None, None, Some("medium")).is_err());
+    }
+
+    #[test]
+    fn platform_flag_accepts_only_the_two_families() {
+        // #8097 Rule 2: the selector is a coarse family, never a
+        // lane name — a lane id as --platform is a usage error.
+        assert_eq!(platform_flag("openchamber"), Ok("openchamber".to_string()));
+        assert_eq!(platform_flag("muse"), Ok("muse".to_string()));
+        assert!(platform_flag("code-a").is_err());
+        assert!(platform_flag("").is_err());
+    }
+
+    #[test]
+    fn batch_count_flag_bounds_8217() {
+        // #8217: absent/1 = the single claim; 2..=cap = a batch;
+        // anything else is a usage error naming the cap.
+        assert_eq!(batch_count_flag(None), Ok(1));
+        assert_eq!(batch_count_flag(Some(1)), Ok(1));
+        assert_eq!(batch_count_flag(Some(2)), Ok(2));
+        assert_eq!(
+            batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX)),
+            Ok(crate::turso_queue::BATCH_CLAIM_MAX)
+        );
+        assert!(batch_count_flag(Some(0)).is_err());
+        assert!(batch_count_flag(Some(-3)).is_err());
+        assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+    }
 
     #[test]
     fn fallback_switch_json_shape() {

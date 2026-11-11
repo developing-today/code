@@ -594,6 +594,149 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
     }
 }
 
+
+/// The GitHub token the dep rechecker authenticates with,
+/// resolved by name through the secrets broker like every other
+/// broker credential (#8276).
+const GH_DEP_TOKEN_SECRET: &str = "github.developing-today-code-automation";
+
+/// #8276: the production DepProbe — GitHub state reads for the
+/// dep rechecker, inside the broker process. The token resolves
+/// by name through the secrets Resolver (the same one the Turso
+/// token uses) and is cached for ten minutes; the value never
+/// leaves this process. Every transport/auth failure maps to
+/// DepObs::Failed — a broken checker never clears a gate; only
+/// a block's max TTL can release it then. A 404 maps to Broken:
+/// the reference does not exist, and a typo'd gate must not
+/// become a life sentence.
+struct GhDepProbe {
+    // The secrets coordinates, not a Resolver: fleet_secrets'
+    // Resolver is not Send/Sync, and the probe lives behind an
+    // Arc<dyn DepProbe>. The source is rebuilt per resolve,
+    // exactly like the broker builds its own per backend.
+    secrets_url: String,
+    secrets_token: String,
+    agent: ureq::Agent,
+    token: Mutex<Option<(String, std::time::Instant)>>,
+}
+
+impl GhDepProbe {
+    fn token(&self) -> Result<String, String> {
+        let mut slot = self.token.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((tok, at)) = &*slot {
+            if at.elapsed() < std::time::Duration::from_secs(600) {
+                return Ok(tok.clone());
+            }
+        }
+        let source = DirectSecrets {
+            url: self.secrets_url.clone(),
+            token: self.secrets_token.clone(),
+            agent: self.agent.clone(),
+        };
+        let v = source
+            .resolve(GH_DEP_TOKEN_SECRET)
+            .map_err(|e| format!("github token resolve failed: {e}"))?;
+        let tok = v.expose().to_string();
+        *slot = Some((tok.clone(), std::time::Instant::now()));
+        Ok(tok)
+    }
+
+    fn get_json(&self, path: &str) -> Result<Value, crate::turso_queue::DepObs> {
+        use crate::turso_queue::DepObs;
+        let tok = self.token().map_err(DepObs::Failed)?;
+        let url = format!("https://api.github.com{path}");
+        let mut resp = match self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {tok}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fleet-queue-broker")
+            .call()
+        {
+            Ok(r) => r,
+            Err(ureq::Error::StatusCode(404)) => {
+                return Err(DepObs::Broken(format!("github 404 for {path}")));
+            }
+            Err(ureq::Error::StatusCode(code)) => {
+                return Err(DepObs::Failed(format!("github http {code} for {path}")));
+            }
+            Err(e) => {
+                return Err(DepObs::Failed(format!("github request failed: {e}")));
+            }
+        };
+        let status = resp.status().as_u16();
+        if status == 404 {
+            return Err(DepObs::Broken(format!("github 404 for {path}")));
+        }
+        if !(200..300).contains(&status) {
+            return Err(DepObs::Failed(format!("github http {status} for {path}")));
+        }
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| DepObs::Failed(format!("github response unreadable: {e}")))?;
+        serde_json::from_str(&text)
+            .map_err(|e| DepObs::Failed(format!("github response not json: {e}")))
+    }
+}
+
+impl crate::turso_queue::DepProbe for GhDepProbe {
+    fn probe_issue(&self, repo: &str, number: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/issues/{number}")) {
+            Ok(v) => {
+                let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                if state == "closed" {
+                    DepObs::Cleared("issue closed".to_string())
+                } else {
+                    DepObs::Open(format!("issue {state}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+
+    fn probe_pr(&self, repo: &str, number: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/pulls/{number}")) {
+            Ok(v) => {
+                let merged = v
+                    .get("merged")
+                    .and_then(|m| m.as_bool())
+                    .unwrap_or(false);
+                let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                if merged {
+                    DepObs::Cleared("pr merged".to_string())
+                } else if state == "closed" {
+                    DepObs::Cleared("pr closed without merge".to_string())
+                } else {
+                    DepObs::Open(format!("pr {state}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+
+    fn probe_ci(&self, repo: &str, run_id: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/actions/runs/{run_id}")) {
+            Ok(v) => {
+                let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                if status == "completed" {
+                    let conclusion = v
+                        .get("conclusion")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    DepObs::Cleared(format!("run completed: {conclusion}"))
+                } else {
+                    DepObs::Open(format!("run {status}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
@@ -895,6 +1038,36 @@ fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     provided.map(|v| v == expected).unwrap_or(false)
 }
 
+/// Pre-body gate for the broker transports (#6515, PR #6514 thread
+/// 4492609604). Oracle: an unauthorized or oversized request is
+/// refused from its headers alone, before a single body byte is
+/// read — an unauthenticated client can no longer stream a large or
+/// unfinished body and hold the connection until the handler's 401.
+/// Returns the refusal to send, or `None` to proceed to the body.
+/// The only unauthenticated route is the health probe, mirroring
+/// `handle_request`.
+fn pre_body_refusal(
+    method: &str,
+    target: &str,
+    provided_token: Option<&str>,
+    token: &str,
+    content_length: Option<u64>,
+) -> Option<(u16, Value)> {
+    let path = target.split('?').next().unwrap_or("");
+    if method == "GET" && path == "/healthz" {
+        return None;
+    }
+    if !token_matches(provided_token, token) {
+        return Some((401, json!({"error": "unauthorized"})));
+    }
+    if let Some(n) = content_length {
+        if n > crate::uds_http::MAX_BODY_BYTES as u64 {
+            return Some((413, json!({"error": "request body too large"})));
+        }
+    }
+    None
+}
+
 /// Transport-agnostic request handling (#6216): the TCP loop adapts
 /// tiny_http requests to this function and the UDS loop adapts
 /// Unix-socket requests; routes and auth are identical on both
@@ -929,6 +1102,7 @@ fn handle_request(
 }
 
 pub fn run() -> i32 {
+    use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
     let home = crate::home::from_env().unwrap_or_else(|error| {
@@ -998,7 +1172,16 @@ pub fn run() -> i32 {
                     })
             }
         };
-        let backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
+        let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
+        // #8276: the dep rechecker's GitHub window, authenticated
+        // by name through the same secrets Resolver as the Turso
+        // token above.
+        backend.set_gh_probe(Arc::new(GhDepProbe {
+            secrets_url: secrets_url.clone(),
+            secrets_token: secrets_token.clone(),
+            agent: agent.clone(),
+            token: Mutex::new(None),
+        }));
         backend.ensure_schema().unwrap_or_else(|e| {
             crate::log::info(
                 "queue-broker",
@@ -1047,20 +1230,43 @@ pub fn run() -> i32 {
                 &format!("listening on uds {}", socket_path.display()),
             );
             std::thread::spawn(move || {
-                crate::uds_http::serve(listener, move |req| {
-                    let (status, value) = handle_request(
-                        &st,
-                        &tok,
-                        &req.method,
-                        &req.target,
-                        req.header("X-Agent-Token"),
-                        &req.body,
-                    );
-                    (
-                        status,
-                        serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-                    )
-                });
+                let pre_tok = tok.clone();
+                crate::uds_http::serve_with_precheck(
+                    listener,
+                    move |head| {
+                        // #6515: same pre-body gate as the TCP loop.
+                        let content_length = head
+                            .header("Content-Length")
+                            .and_then(|v| v.parse::<u64>().ok());
+                        pre_body_refusal(
+                            &head.method,
+                            &head.target,
+                            head.header("X-Agent-Token"),
+                            &pre_tok,
+                            content_length,
+                        )
+                        .map(|(status, value)| {
+                            (
+                                status,
+                                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                            )
+                        })
+                    },
+                    move |req| {
+                        let (status, value) = handle_request(
+                            &st,
+                            &tok,
+                            &req.method,
+                            &req.target,
+                            req.header("X-Agent-Token"),
+                            &req.body,
+                        );
+                        (
+                            status,
+                            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                        )
+                    },
+                );
             });
         }
         Ok(None) => crate::log::info(
@@ -1087,9 +1293,40 @@ pub fn run() -> i32 {
                 .iter()
                 .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
                 .map(|h| h.value.as_str().to_string());
+            // #6515: authenticate and size-check from the headers
+            // before reading any body byte. tiny_http 0.12 exposes
+            // no per-connection read timeout, so the residual TCP
+            // slow-body risk is bounded by this gate plus the capped
+            // read below and thread-per-connection isolation; the
+            // UDS transport carries real read timeouts (uds_http).
+            let content_length = req
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
+                .and_then(|h| h.value.as_str().parse::<u64>().ok());
+            if let Some((status, value)) = pre_body_refusal(
+                &method,
+                &target,
+                provided.as_deref(),
+                &token,
+                content_length,
+            ) {
+                let _ = req.respond(json_response(status, value));
+                return;
+            }
             let mut body = Vec::new();
             if method == "POST" {
-                let _ = req.as_reader().read_to_end(&mut body);
+                // Capped read: cap+1 bytes detect an overrun that
+                // the declared length hid (or never declared).
+                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
+                let _ = req.as_reader().take(cap).read_to_end(&mut body);
+                if body.len() > crate::uds_http::MAX_BODY_BYTES {
+                    let _ = req.respond(json_response(
+                        413,
+                        json!({"error": "request body too large"}),
+                    ));
+                    return;
+                }
             }
             let (status, value) =
                 handle_request(&state, &token, &method, &target, provided.as_deref(), &body);
@@ -1103,6 +1340,40 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_body_refusal_decides_from_headers_alone() {
+        // #6515 oracle (thread 4492609604): the gate's answer
+        // depends only on method/target/token/declared length —
+        // never on body bytes — so an unauthorized or oversized
+        // request is refused before its body is read.
+        let over = crate::uds_http::MAX_BODY_BYTES as u64 + 1;
+        // Unauthorized: refused even with an enormous declared body.
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", None, "tok", Some(over)).map(|r| r.0),
+            Some(401)
+        );
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("wrong"), "tok", None).map(|r| r.0),
+            Some(401)
+        );
+        // Authorized but oversized: 413.
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("tok"), "tok", Some(over)).map(|r| r.0),
+            Some(413)
+        );
+        // Authorized and within cap (or undeclared): proceeds.
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("tok"), "tok", Some(2)),
+            None
+        );
+        assert_eq!(
+            pre_body_refusal("POST", "/claim", Some("tok"), "tok", None),
+            None
+        );
+        // The health probe stays unauthenticated, as in handle_request.
+        assert_eq!(pre_body_refusal("GET", "/healthz", None, "tok", None), None);
+    }
 
     #[test]
     fn secrets_url_explicit_wins_and_default_is_a_known_endpoint() {

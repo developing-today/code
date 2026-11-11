@@ -29,6 +29,7 @@ in
       "services/power-guard"
       "services/openai-cred-watchdog"
       "services/opencode-go-seating-guard"
+      "services/opencode-watchdog"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -90,6 +91,32 @@ in
         # asserting every Go leaf seated in a pool has an exact-id active
         # credential and has recorded a successful route attempt recently.
         services.opencode-go-seating-guard.enable = true;
+      }
+      {
+        # OpenCode watchdog (code#7780): per-minute user timer asserting
+        # opencode.service is active or port 13420 is serving; an
+        # exit-0 non-serving restart sticks dark under Restart=on-failure,
+        # so after a 120s dark grace window the watchdog alerts and
+        # restarts the unit (Restart=always would race lifecycle
+        # handovers — see the module).
+        services.opencode-watchdog = {
+          enable = true;
+          # The build the watchdog's build-identity check (code#8255)
+          # expects on the port, read from the name of the very
+          # opencode package derivation the unit runs (openchamber's
+          # nested opencode input — the same derivation home/common's
+          # cascade wraps), so expectation and ExecStart resolve from
+          # one derivation and cannot drift apart. This option lives
+          # at the NixOS level (this module is a NixOS import); the
+          # home-manager copy of this setting that #8255 landed in
+          # home/common/default.nix named an option that does not
+          # exist there and broke evaluation of the whole config.
+          expectedVersion =
+            let
+              m = builtins.match "opencode-(.*)" inputs.openchamber.inputs.opencode.packages.x86_64-linux.opencode.name;
+            in
+            if m == null then "" else builtins.head m;
+        };
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard

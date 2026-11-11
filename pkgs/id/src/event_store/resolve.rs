@@ -25,7 +25,9 @@
 //!    also gives the roster of a group it decided, so a refused operation's target never shows
 //!    as a member. Operations the bridge cannot represent (a create or an operation naming a
 //!    group as a member, friendship and policy bodies the body codec does not carry) keep the
-//!    membership verdict alone; the fold judges them when they travel as group events. Two
+//!    membership verdict alone; the fold judges them when they travel as group events. Each
+//!    unbridged shape carries a tracked disposition ruled on issue #6980, with the
+//!    per-shape reasoning recorded there. Two
 //!    reconciliations keep the layers in agreement: an operation the fold refuses with a
 //!    voiding reason is fed to the membership layer as a no-op, so its authority changes never
 //!    reach the descendants the layer judges; and a create that lists its author below Manage
@@ -46,8 +48,8 @@ use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
 use crate::chain::Event;
 use crate::chat::CHAT_MESSAGE_KIND;
 use crate::groups::{
-    Body as GroupBody, Create as GroupCreate, Event as GroupEvent, MemberOp, Policy, Projection,
-    Role as GroupRole, Template,
+    Body as GroupBody, Create as GroupCreate, DeviceOp, Event as GroupEvent, MemberOp, Policy,
+    Projection, Role as GroupRole, Template,
 };
 use crate::membership::{AuthId, CausalEvent, Membership, Role};
 use crate::rejection::Reason;
@@ -58,6 +60,11 @@ use crate::waiting::AuthorKey;
 pub(super) struct Stored {
     pub event: Event,
     pub action: Option<GroupAction<AuthId, ()>>,
+    /// The device operation the event's `group.event` body carries, with the group the body
+    /// names, when one was recorded at ingest (issue #5656). A device operation has no
+    /// membership action: the body codec does not carry it, so it reaches the fold only
+    /// through this channel.
+    pub device: Option<(DeviceOp, Option<Hash>)>,
 }
 
 /// The applied state of a set of events.
@@ -77,6 +84,8 @@ struct Node {
     group: Option<Hash>,
     after: Vec<Hash>,
     action: Option<GroupAction<AuthId, ()>>,
+    /// The device operation the event's body carries, with the group the body names.
+    device: Option<(DeviceOp, Option<Hash>)>,
     /// True for a fork proof header, and for an event at or above its author's fork point. Such a
     /// node never applies.
     excluded: bool,
@@ -119,6 +128,7 @@ pub(super) fn resolve(
             group: event.header.extensions.group,
             after: event.header.extensions.after.clone(),
             action: item.action.clone(),
+            device: item.device.clone(),
             excluded,
             chat: event.header.extensions.kind == CHAT_MESSAGE_KIND,
             backlink: event.header.backlink,
@@ -135,6 +145,7 @@ pub(super) fn resolve(
             group: header.header.extensions.group,
             after: header.header.extensions.after.clone(),
             action: None,
+            device: None,
             excluded: true,
             chat: header.header.extensions.kind == CHAT_MESSAGE_KIND,
             backlink: header.header.backlink,
@@ -245,7 +256,9 @@ pub(super) fn resolve(
 /// the record a signed store body cannot carry yet — and an add, remove, promote or demote
 /// becomes the member operation with the same member and access. An operation naming a group
 /// as its member has no group-event form, and a create that does not list its author has no
-/// agreed form (see [`bridge`]), so both are left out and keep the membership verdict.
+/// agreed form (see [`bridge`]), so both are left out and keep the membership verdict --
+/// by ruling, not by omission: each unbridged shape's disposition is recorded on
+/// issue #6980.
 /// A bridged event names as its `after` the bridged operations it causally follows, reached
 /// through any stored events in between, because the fold requires every named dependency to
 /// be in its set. A fold that cannot judge the set (it reports an error) gates nothing: the
@@ -347,6 +360,19 @@ fn bridged_after(
 
 /// One stored group operation as a group event, or `None` when it has no group-event form.
 fn bridge(node: &Node) -> Option<GroupEvent> {
+    // A device operation bridges from its recorded body, not from a membership action: the
+    // group the body names is the group the operation was made in, and the header's group
+    // stands when the body names none (issue #5656).
+    if let Some((op, body_group)) = &node.device {
+        let group = body_group.or(node.group)?;
+        return Some(GroupEvent {
+            id: node.id,
+            author: node.author,
+            after: Vec::new(),
+            group: Some(group),
+            body: GroupBody::Device(*op),
+        });
+    }
     let action = node.action.as_ref()?;
     let body = match action {
         GroupAction::Create { initial_members } => {
@@ -367,7 +393,8 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
                     // create listing its author below Manage names two different roles for the
                     // creator in the two models. That mapping cannot be reconciled before
                     // folding, so the create does not bridge and the group keeps the membership
-                    // verdict alone (Codex P2 on PR #3725).
+                    // verdict alone (Codex P2 on PR #3725; disposition ruled on
+                    // issue #6980).
                     if !access.is_manage() {
                         return None;
                     }
@@ -414,7 +441,10 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
 }
 
 /// The account key of a member, or `None` when the member is a group: group events name
-/// accounts only, so an operation on a group member cannot bridge.
+/// accounts only, so an operation on a group member cannot bridge. Group members are
+/// judged by the membership layer alone, by the ruling recorded on issue #6980: the
+/// fold's roster names accounts, and a group member written as its ID bytes would
+/// conflate group IDs with account keys.
 fn member_key(member: &GroupMember<AuthId>) -> Option<crate::groups::Key> {
     match member {
         GroupMember::Individual(AuthId::Key(key)) => Some(*key),
@@ -538,6 +568,7 @@ pub(super) type Loaded = (Vec<Stored>, HashMap<AuthorKey, SeqNum>, Vec<Event>);
 pub(super) fn load<T>(
     events: &T,
     actions: &T,
+    device_ops: &T,
     forks: &T,
     proof_headers: &T,
 ) -> Result<Loaded, StoreError>
@@ -552,7 +583,15 @@ where
             Some(row) => Some(decode_action(row.value())?),
             None => None,
         };
-        stored.push(Stored { event, action });
+        let device = match device_ops.get(event.id.as_bytes().as_slice())? {
+            Some(row) => Some(decode_device_op(row.value())?),
+            None => None,
+        };
+        stored.push(Stored {
+            event,
+            action,
+            device,
+        });
     }
     // An author has a row at each point it has forked at. Its fork point is the lowest of them.
     let mut fork_points: HashMap<AuthorKey, SeqNum> = HashMap::new();
@@ -576,6 +615,50 @@ pub(super) fn encode_action(action: &GroupAction<AuthId, ()>) -> Result<Vec<u8>,
     let value = cbor_core::Value::serialized(action)
         .map_err(|err| corrupt(format!("a group action does not encode: {err}")))?;
     Ok(value.encode())
+}
+
+/// Encodes a device operation and the group its body names for its table, as the CBOR
+/// array `[op, group]`, where `group` is the group's bytes or null. Mirrors
+/// [`encode_action`]; the group travels with the op because the bridged fold event names
+/// the group the operation was made in, which the event header alone may not carry.
+pub(super) fn encode_device_op(op: &DeviceOp, group: Option<&Hash>) -> Result<Vec<u8>, StoreError> {
+    let op_value = cbor_core::Value::serialized(op)
+        .map_err(|err| corrupt(format!("a device operation does not encode: {err}")))?;
+    let group_value = match group {
+        Some(group) => cbor_core::Value::ByteString(group.as_bytes().to_vec().into()),
+        None => cbor_core::Value::null(),
+    };
+    Ok(cbor_core::Value::Array(vec![op_value, group_value]).encode())
+}
+
+/// Decodes a device operation and the group its body names from its table.
+pub(super) fn decode_device_op(bytes: &[u8]) -> Result<(DeviceOp, Option<Hash>), StoreError> {
+    let value = cbor_core::Value::decode(bytes)
+        .map_err(|err| corrupt(format!("a device operation row is not CBOR: {err}")))?;
+    let cbor_core::Value::Array(items) = value else {
+        return Err(corrupt("a device operation row is not an array".to_owned()));
+    };
+    let [op_value, group_value] = items.try_into().map_err(|_| {
+        corrupt("a device operation row does not hold an op and a group".to_owned())
+    })?;
+    let op: DeviceOp = op_value
+        .deserialized()
+        .map_err(|err| corrupt(format!("a device operation row does not decode: {err}")))?;
+    let group = match group_value {
+        value if value.encode() == cbor_core::Value::null().encode() => None,
+        cbor_core::Value::ByteString(bytes) => {
+            let bytes: [u8; 32] = bytes.as_ref().try_into().map_err(|_| {
+                corrupt("a device operation row's group is not 32 bytes".to_owned())
+            })?;
+            Some(Hash::from_bytes(bytes))
+        }
+        _ => {
+            return Err(corrupt(
+                "a device operation row's group is neither bytes nor null".to_owned(),
+            ));
+        }
+    };
+    Ok((op, group))
 }
 
 /// Decodes a group action from its table.
@@ -627,6 +710,7 @@ mod tests {
             group: None,
             after: after.iter().map(|a| Hash::digest([*a])).collect(),
             action: None,
+            device: None,
             excluded: false,
             chat: false,
             backlink: None,
@@ -649,6 +733,7 @@ mod tests {
                     group: None,
                     after: base[i].after.clone(),
                     action: None,
+                    device: None,
                     excluded: false,
                     chat: false,
                     backlink: None,
@@ -717,6 +802,7 @@ mod tests {
                     p2panda_auth::Access::manage(),
                 )],
             }),
+            device: None,
             excluded: false,
             chat: false,
             backlink: None,
@@ -727,6 +813,7 @@ mod tests {
             group: None,
             after: vec![Hash::digest([41])],
             action: None,
+            device: None,
             excluded: true,
             chat: false,
             backlink: None,
@@ -756,6 +843,7 @@ mod tests {
                     p2panda_auth::Access::manage(),
                 )],
             }),
+            device: None,
             excluded: false,
             chat: false,
             backlink: None,

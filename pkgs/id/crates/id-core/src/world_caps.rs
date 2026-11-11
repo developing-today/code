@@ -942,7 +942,7 @@ pub fn result_event(id: &str, outcome: Result<serde_json::Value, CapError>) -> S
 
 /// The event delivered when a subscription is refused.
 #[must_use]
-pub fn subscription_refused_event(spec: &str, error: CapError) -> String {
+pub fn subscription_refused_event(spec: &str, error: &CapError) -> String {
     let mut event =
         serde_json::json!({"cap":"subscription","spec":spec,"ok":false,"error":error.code()});
     if let Some(reason) = error.reason() {
@@ -1089,6 +1089,16 @@ impl CapError {
         Self {
             code: CapErrorCode::ActorDenied,
             reason: None,
+        }
+    }
+
+    /// The acting participant lacks the scope for the effect, and `reason`
+    /// says why.
+    #[must_use]
+    pub fn actor_denied_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::ActorDenied,
+            reason: Some(reason.into()),
         }
     }
 
@@ -1982,12 +1992,28 @@ mod tests {
     #[test]
     fn test_provider_registry_matches_the_legacy_catalog_and_carries_manifests() {
         let entry_names = PROVIDER_REGISTRY.ordered_names();
+        // The registry assembles the production catalog plus any
+        // feature-gated registry-only entries. Under `test-provider`
+        // that is exactly one extra — the RegistryProbe (#1061),
+        // whose manifest default is Excluded. The root package's
+        // dev-dependencies enable the feature, and workspace test
+        // builds (the Nix check phase among them) unify it into this
+        // test binary, so the production expectations below are stated
+        // against the catalog with the probe removed again.
+        #[cfg(feature = "test-provider")]
+        let production_names: Vec<&str> = entry_names
+            .iter()
+            .copied()
+            .filter(|name| *name != TEST_PROVIDER_NAME)
+            .collect();
+        #[cfg(not(feature = "test-provider"))]
+        let production_names: Vec<&str> = entry_names.clone();
         assert_eq!(
-            entry_names, CATALOG,
+            production_names, CATALOG,
             "legacy catalog derives from manifests"
         );
         assert_eq!(
-            entry_names,
+            production_names,
             vec![
                 "time.now",
                 "time.tick",
@@ -2012,7 +2038,10 @@ mod tests {
             ],
             "registry retains the catalog names and order (17 pre-#2341 names plus loc.position/loc.watch and device.info)"
         );
-        assert_eq!(PROVIDER_REGISTRY.entries().len(), 20);
+        assert_eq!(
+            PROVIDER_REGISTRY.entries().len(),
+            production_names.len() + EXTRA_CATALOG_ENTRIES.len()
+        );
         assert!(
             PROVIDER_REGISTRY
                 .entries()
@@ -2052,11 +2081,16 @@ mod tests {
         // Every non-sensor provider opted in explicitly. The sensor
         // caps (#2341) registered as Excluded, so the default ceiling
         // is the catalog minus loc.* — registering them widened no
-        // existing world's authority.
+        // existing world's authority. The RegistryProbe is Excluded
+        // for the same reason (#838), so under `test-provider` it is
+        // subtracted the same way.
+        let mut excluded_from_ceiling = names(&["loc.position", "loc.watch"]);
+        #[cfg(feature = "test-provider")]
+        excluded_from_ceiling.insert(TEST_PROVIDER_NAME.to_owned());
         assert_eq!(
             default_ceiling_names(),
             catalog_names()
-                .difference(&names(&["loc.position", "loc.watch"]))
+                .difference(&excluded_from_ceiling)
                 .cloned()
                 .collect::<BTreeSet<String>>()
         );

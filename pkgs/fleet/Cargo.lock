@@ -42,6 +42,7 @@ name = "atlas-core"
 version = "0.1.0"
 dependencies = [
  "atlas-embed",
+ "atlas-proto",
  "base64 0.22.1",
  "rusqlite",
  "serde",
@@ -565,6 +566,7 @@ version = "0.1.0"
 dependencies = [
  "fleet-config",
  "fleet-secrets",
+ "libc",
  "proptest",
  "serde",
  "serde_json",
