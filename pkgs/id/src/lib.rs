@@ -260,7 +260,7 @@ pub mod world;
 #[cfg(feature = "world")]
 pub use id_caps::world_caps;
 #[cfg(feature = "world")]
-pub mod world_cache;
+pub use id_worlds::world_cache;
 pub mod world_compile;
 #[cfg(feature = "world")]
 pub mod world_doctor;
@@ -272,7 +272,7 @@ mod session_host;
 pub mod world_hub;
 #[cfg(feature = "world")]
 pub use id_caps::world_limits;
-pub(crate) mod world_line;
+pub(crate) use id_worlds::world_line;
 #[cfg(feature = "world")]
 pub use id_caps::world_manifest;
 #[cfg(feature = "world")]
@@ -292,7 +292,7 @@ pub mod world_ssh;
 #[cfg(feature = "world")]
 pub mod world_store;
 #[cfg(feature = "world")]
-pub(crate) mod world_terminal;
+pub(crate) use id_worlds::world_terminal;
 
 #[cfg(feature = "web")]
 pub use id_core::qr;

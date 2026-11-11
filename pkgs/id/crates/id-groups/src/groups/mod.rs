@@ -9,7 +9,7 @@
 //! re-exports them at the paths the facade has always presented.
 //! What lives here is the remainder over that projection:
 //! [`actions`], [`log`] and [`warnings`]. The cross-world bridge
-//! (`worlds`) stays in the facade until step 5 extracts `id-worlds`.
+//! (`worlds`) lives in `id-worlds` since step 5 (seam 6).
 //!
 //! A group changes only by events. [`fold`] computes its state from
 //! the whole set of events, so the result does not depend on the order
