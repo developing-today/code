@@ -172,6 +172,7 @@ pub use id_core::connectivity;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
+pub mod device_bridge;
 pub mod dht;
 #[cfg(feature = "world")]
 pub mod directory;
