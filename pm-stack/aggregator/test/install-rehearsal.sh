@@ -80,6 +80,7 @@ if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" HOME="$HOME
   echo 'install unexpectedly accepted a non-primary checkout' >&2
   exit 1
 fi
+printf '%s\n' '{"kept":"legacy annotations"}' >"$INSTALL_SRC/roadmap-annotations.json"
 TEST_LOG="$LOG" \
   TEST_UNIT_DST="$UNIT_DST" \
   TEST_REAL_CP="$REAL_CP" \
@@ -106,6 +107,10 @@ grep -Fx "PM_AGG_SNAPSHOTS_DIR=$STATE/snapshots" "$STATE/.env" >/dev/null
 grep -Fx "PM_AGG_QUOTA_CURRENT_FILE=$STATE/quota-current.json" "$STATE/.env" >/dev/null
 grep -Fx "PM_AGG_COVERAGE_SNAPSHOT_FILE=$STATE/coverage-snapshot.json" "$STATE/.env" >/dev/null
 grep -Fx "PM_AGG_ROADMAP_ANNOTATIONS_FILE=$STATE/roadmap-annotations.json" "$STATE/.env" >/dev/null
+
+# The legacy checkout store is migrated, not orphaned (#8763).
+grep -Fx '{"kept":"legacy annotations"}' "$STATE/roadmap-annotations.json" >/dev/null
+test ! -e "$INSTALL_SRC/roadmap-annotations.json"
 
 grep -Fx 'WorkingDirectory=%h/git/code/pm-stack/aggregator' \
   "$HOME_TEST/.config/systemd/user/pm-aggregator.service" >/dev/null

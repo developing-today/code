@@ -125,6 +125,23 @@ if [ "$CHANGED" -eq 1 ]; then
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
+  # Migrate a legacy roadmap-annotations store out of the checkout
+  # (#8763; Codex P2 on PR #8765): before the env above rendered
+  # PM_AGG_ROADMAP_ANNOTATIONS_FILE, config.ts defaulted the store to
+  # the service working directory -- this checkout -- so an existing
+  # deployment's history can sit at $SRC/roadmap-annotations.json.
+  # Move it to the state-dir path instead of silently starting empty
+  # at the new path; never overwrite an existing destination.
+  LEGACY_ANNOTATIONS="$SRC/roadmap-annotations.json"
+  if [ -f "$LEGACY_ANNOTATIONS" ]; then
+    if [ -e "${STATE_DIR}/roadmap-annotations.json" ]; then
+      echo "WARNING: legacy roadmap annotations at $LEGACY_ANNOTATIONS and an existing ${STATE_DIR}/roadmap-annotations.json both exist; leaving both untouched -- merge them manually" >&2
+    else
+      mv "$LEGACY_ANNOTATIONS" "${STATE_DIR}/roadmap-annotations.json"
+      echo "migrated legacy roadmap annotations from $LEGACY_ANNOTATIONS to ${STATE_DIR}/roadmap-annotations.json"
+    fi
+  fi
+
   if [ -L "$UNIT_DST" ]; then
     echo "pm-aggregator.service is symlink-managed at $UNIT_DST; skipping unit copy"
   else
