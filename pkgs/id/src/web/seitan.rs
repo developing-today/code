@@ -226,19 +226,24 @@ pub(crate) async fn seitan_invite_handler(
         }
     };
     let invite_id = invite.id().to_hex();
+    // Registration is idempotent for an invite ID the registry
+    // already holds (Codex P2 on PR #8529): the ID is deterministic
+    // for a token, and `Invite::create` starts with `used: None`, so
+    // replacing an existing entry on a retried or duplicated
+    // registration would reset a redeemed invite's single-use state
+    // (and could silently rebind its world). Preserve the existing
+    // entry; a genuinely new invite uses a new token.
     state
         .seitan
         .inner
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .invites
-        .insert(
-            invite_id.clone(),
-            RegisteredInvite {
-                world: request.world,
-                invite,
-            },
-        );
+        .entry(invite_id.clone())
+        .or_insert(RegisteredInvite {
+            world: request.world,
+            invite,
+        });
     Json(SeitanInviteResponse { invite_id }).into_response()
 }
 

@@ -2283,6 +2283,30 @@ mod upload_router_tests {
     }
 
     #[tokio::test]
+    async fn seitan_duplicate_registration_does_not_reset_single_use_state() {
+        // Codex P2 on PR #8529: a retried registration after the
+        // invite was redeemed must not replace the consumed invite
+        // with a fresh one — the same proof refuses `used`, it does
+        // not admit a second time.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+
+        let reregistered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(reregistered.status(), StatusCode::OK);
+
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(seitan_response_json(refused).await["reason"], "used");
+    }
+
+    #[tokio::test]
     async fn public_entry_point_honours_a_configured_binding() {
         // A host that has already read its app manifest selects the
         // binding through the public API alone (Codex P2 on PR #3894):
