@@ -46,6 +46,33 @@ test("checkLibDependencies is clean when node_modules carries the declared packa
   }
 });
 
+test("optional and peer dependencies are not mandatory (Codex P2, PR #8764)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lib-deps-optional-"));
+  const libDir = join(root, "packages/web/server/lib");
+  await mkdir(libDir, { recursive: true });
+  try {
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        dependencies: { yaml: "^2.8.1" },
+        optionalDependencies: { "node-llama-cpp": "^3.0.0" },
+        peerDependencies: { react: "^19.0.0" },
+      }),
+      "utf8",
+    );
+    await writeFile(join(root, "bun.lock"), "", "utf8");
+    await mkdir(join(root, "node_modules/yaml"), { recursive: true });
+    // yaml (mandatory) resolves; node-llama-cpp and react are absent
+    // but optional/peer, so nothing is missing and no install runs.
+    expect(checkLibDependencies(libDir).missing).toEqual([]);
+    let installs = 0;
+    await ensureLibDependencies({ libDir, install: async () => { installs++; } });
+    expect(installs).toBe(0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("ensure installs exactly once when packages are missing and re-checks clean", async () => {
   const { root, libDir } = await fakeCheckout();
   try {

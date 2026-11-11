@@ -29,7 +29,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 const LOCKFILES = ["bun.lock", "bun.lockb", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
-const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
+// Mandatory fields only: an optionalDependency may be intentionally
+// absent (platform-specific, e.g. packages/web's node-llama-cpp) and a
+// peerDependency is supplied by the consumer — neither is an install
+// postcondition, so neither may block the keeper (Codex P2, PR #8764).
+const DEPENDENCY_FIELDS = ["dependencies", "devDependencies"];
 
 /** Walk up from libDir to the checkout root: the first ancestor that
  * carries both a package.json and a lockfile. Null when no ancestor
