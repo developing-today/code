@@ -99,16 +99,52 @@ func TestMalformedEnvironmentPairsAreCaught(t *testing.T) {
 }
 
 func TestTypeCheckIsSkippedWhenOff(t *testing.T) {
-	r := preflight.TypeCheck(nil, "/bin/deno", "/nope.ts", preflight.TypeCheckOff, 0)
+	r := preflight.TypeCheck(context.TODO(), "/bin/deno", "/nope.ts", preflight.TypeCheckOff, 0)
 	if len(r.Problems) != 0 {
 		t.Errorf("off means off: %v", r.Problems)
+	}
+}
+
+func TestScriptCheckModesSelectTypesAndStrictCommands(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "args")
+	stub := filepath.Join(dir, "deno-stub")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + marker + "'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		mode preflight.TypeCheckMode
+		want []string
+	}{
+		{preflight.TypeCheckTypes, []string{"check", entry}},
+		{preflight.TypeCheckStrict, []string{"check", "--all", entry}},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			rep := preflight.TypeCheckResolved(context.Background(), stub, entry, tc.mode, 0, nil, dir)
+			if err := rep.Err(); err != nil {
+				t.Fatalf("check failed: %v", err)
+			}
+			got, err := os.ReadFile(marker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fields := strings.Fields(string(got)); strings.Join(fields, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Errorf("arguments = %q, want %q", fields, tc.want)
+			}
+		})
 	}
 }
 
 func TestTypeCheckSaysSoWhenTheRuntimeCannotDoIt(t *testing.T) {
 	// Node and Bun strip types rather than checking them. Saying so is
 	// better than pretending the check ran.
-	r := preflight.TypeCheck(nil, "/usr/bin/node", "/x.ts", preflight.TypeCheckOn, 0)
+	r := preflight.TypeCheck(context.TODO(), "/usr/bin/node", "/x.ts", preflight.TypeCheckOn, 0)
 	if len(r.Problems) != 1 {
 		t.Fatalf("expected one note, got %v", r.Problems)
 	}
@@ -117,6 +153,74 @@ func TestTypeCheckSaysSoWhenTheRuntimeCannotDoIt(t *testing.T) {
 	}
 	if !strings.Contains(r.Problems[0].What, "only available under Deno") {
 		t.Errorf("got %q", r.Problems[0].What)
+	}
+}
+
+func TestTypeCheckErrorPolicies(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deno := filepath.Join(dir, "deno")
+	if err := os.WriteFile(deno, []byte("#!/bin/sh\necho type error >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		policy   string
+		fatal    bool
+		problems int
+	}{
+		{policy: "fail", fatal: true, problems: 1},
+		{policy: "warn", fatal: false, problems: 1},
+		{policy: "run", problems: 0},
+	} {
+		t.Run(tc.policy, func(t *testing.T) {
+			rep := preflight.TypeCheckWithPolicy(context.Background(), deno, entry,
+				preflight.TypeCheckTypes, 0, nil, dir, tc.policy, "warn")
+			if len(rep.Problems) != tc.problems {
+				t.Fatalf("problems = %v, want %d", rep.Problems, tc.problems)
+			}
+			if (rep.Err() != nil) != tc.fatal {
+				t.Errorf("fatal error = %v, want fatal=%v", rep.Err(), tc.fatal)
+			}
+		})
+	}
+}
+
+func TestUnsupportedRuntimePolicies(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deno := filepath.Join(dir, "deno")
+	marker := filepath.Join(dir, "args")
+	if err := os.WriteFile(deno, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	for _, tc := range []struct {
+		policy   string
+		problems int
+		checked  bool
+	}{
+		{policy: "skip", problems: 0},
+		{policy: "warn", problems: 1},
+		{policy: "switch", problems: 0, checked: true},
+	} {
+		t.Run(tc.policy, func(t *testing.T) {
+			_ = os.Remove(marker)
+			rep := preflight.TypeCheckWithPolicy(context.Background(), "/usr/bin/node", entry,
+				preflight.TypeCheckTypes, 0, nil, dir, "fail", tc.policy)
+			if len(rep.Problems) != tc.problems || rep.Err() != nil {
+				t.Fatalf("report = %+v, err = %v", rep, rep.Err())
+			}
+			_, err := os.Stat(marker)
+			if (err == nil) != tc.checked {
+				t.Errorf("Deno check marker exists = %v, want %v", err == nil, tc.checked)
+			}
+		})
 	}
 }
 

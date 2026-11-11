@@ -99,13 +99,26 @@ function labelNames(raw: unknown): string[] {
   return out;
 }
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7741, mirroring the #7694 capUnits guard in actions.ts):
+// an astral character straddling the cap is dropped whole. Local copy, like
+// comments.ts (#7731) — a shared import would tangle module dependencies.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 /** Best-effort reason: an explicit "Escalated: …" / "Reason: …" line in
  *  the item body. Anything else is null — the fallback is the point. */
 export function extractNeedsDrewReason(body: unknown): string | null {
   if (typeof body !== "string") return null;
   const m = /(?:^|\n)\s*(?:escalated(?:\s+to\s+drew)?|reason)\s*[:\-—]\s*(.+)/i.exec(body);
   const reason = m?.[1]?.trim();
-  return reason ? reason.slice(0, 240) : null;
+  return reason ? capUnits(reason, 240) : null;
 }
 
 export interface NeedsDrewSweeperOptions {
@@ -182,9 +195,7 @@ export async function buildNeedsDrewCensus(
           const res = await fetchPage(needsDrewSearchUrl(repo, label, page));
           if (!res.ok) {
             const j = res.json as { status?: unknown; error?: unknown } | null;
-            throw new Error(
-              typeof j?.status === "number" ? `HTTP ${j.status}` : String(j?.error ?? "fetch failed"),
-            );
+            throw new Error(typeof j?.status === "number" ? `HTTP ${j.status}` : String(j?.error ?? "fetch failed"));
           }
           const payload = res.json as { total_count?: unknown; items?: unknown; incomplete_results?: unknown };
           if (typeof payload?.total_count === "number") total = payload.total_count;

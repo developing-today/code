@@ -132,8 +132,19 @@ export function dnsSectionFromRegisterJson(
     } = raw;
     if (typeof domain !== "string" || domain.length === 0 || seen.has(domain)) return null;
     if (typeof registrar !== "string" || typeof dnsHost !== "string") return null;
-    if (typeof renewal !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(renewal)) return null;
-    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price))) return null;
+    // Shape alone is not enough: an impossible calendar date
+    // (2027-02-30, 2026-13-01) must return null like any other
+    // malformation, so the caller falls back to the Markdown parse
+    // instead of serving a poisoned register (#4858, cf. #2199).
+    // isIsoDate re-checks the components, so leap dates
+    // (2024-02-29) still parse.
+    if (typeof renewal !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(renewal) || !isIsoDate(renewal)) return null;
+    // Money is non-negative: the shared gate isDnsSection refuses
+    // negative prices (#4226), so a finite negative price here is a
+    // malformation like any other — return null and let the caller
+    // fall back to the Markdown parse instead of minting a section
+    // the gate will discard whole (#4883). Zero stays valid.
+    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price) || price < 0)) return null;
     if (autoRenew !== null && autoRenew !== undefined && typeof autoRenew !== "boolean") return null;
     seen.add(domain);
     const md = mdByDomain.get(domain);
@@ -180,7 +191,12 @@ export function isDnsSection(v: unknown): v is DnsSection {
         typeof e === "object" &&
         e !== null &&
         typeof (e as DnsEntry).domain === "string" &&
-        typeof (e as DnsEntry).renewal === "string" &&
+        // renewal must be a real calendar date, not merely a string:
+        // an impossible date (2027-02-30, 2026-13-01) string-sorts
+        // into summarizeDns and poisons nextRenewal (#4858, cf. #2199
+        // for the builder paths). isIsoDate also rejects non-strings
+        // and shape-invalid strings, so this subsumes the typeof check.
+        isIsoDate((e as DnsEntry).renewal) &&
         // priceUsd is number|null in the model: null/absent stays valid,
         // but a present value must be a finite number (#2412).
         (() => {

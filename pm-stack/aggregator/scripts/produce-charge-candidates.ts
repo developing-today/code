@@ -44,6 +44,14 @@
 // label (card brand + mask). No balances, no debt, no account
 // numbers, no account-owner names ever enter the file.
 //
+// Admission (#3161, the charges contract's first rule): a
+// candidate exists only where money demonstrably moved.
+// Declined/failed alerts and amounts merely due are excluded by
+// isNotChargeSubject below, and a candidate's amount is the
+// amount PAID: explicit paid/charged labels outrank a bare total,
+// and a bare total counts only as a standalone label, never as a
+// substring of "Subtotal".
+//
 // Usage: bun run scripts/produce-charge-candidates.ts
 //   [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]
 // Defaults: start = first of the current month, end = today,
@@ -100,9 +108,56 @@ export function stagedManifestPeriod(manifest: { start?: unknown; end?: unknown 
 /** Plaid categories that are money movement, not merchant charges. */
 const EXCLUDED_CATEGORIES = new Set(["Transfer", "Payment", "Interest", "Bank Fees"]);
 
+const USAGE = "usage: bun run scripts/produce-charge-candidates.ts [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]";
+
+// Reject unknown, misspelled, joined, duplicated, or positional
+// arguments BEFORE any connector call, staged-file read, or file
+// write (#7302): argv used to be probed token-by-token only
+// (argValue indexOf, the --skip-gmail includes check in main), so a
+// typo --skip-gmial silently ran the Gmail read the operator meant
+// to skip, and a typo or joined (--start=...) --start silently fell
+// back to the default current-month period. Mirrors rejectUnknownArgs
+// in generate-digest.ts (#7097) / collect-github-billing.ts (#7254).
+// Called at the top of main() rather than at module scope because
+// unit tests import this module pure helpers; main() only runs as
+// the entry point, and its first action is still this check, before
+// any I/O. Value validation itself stays in argValue/main (#3333).
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (token === "--start" || token === "--end" || token === "--out") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      i++; // skip the value; argValue validates it
+      continue;
+    }
+    if (token === "--skip-gmail") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      continue;
+    }
+    console.error("producer: unknown argument " + JSON.stringify(token) + " (" + USAGE + ")");
+    process.exit(2);
+  }
+}
+
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value.startsWith("--")) {
+    console.error(`producer: ${flag} requires a value${value === undefined ? "" : ` (got ${value})`}`);
+    process.exit(2);
+  }
+  return value;
 }
 
 function isoDay(d: Date): string {
@@ -396,9 +451,15 @@ async function gmailCandidates(
 }
 
 async function main(): Promise<void> {
+  rejectUnknownArgs();
+  // Parse values before any connector call or file write. Staged periods
+  // come from their manifest, so --start/--end remain ignored there.
+  const outArg = argValue("--out");
+  const explicitStart = INPUTS_DIR ? undefined : argValue("--start");
+  const explicitEnd = INPUTS_DIR ? undefined : argValue("--end");
   const now = new Date();
-  let start = argValue("--start") ?? isoDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-  let end = argValue("--end") ?? isoDay(now);
+  let start = explicitStart ?? isoDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+  let end = explicitEnd ?? isoDay(now);
   if (INPUTS_DIR) {
     // Staged mode: the fetcher's manifest period governs — the staged
     // payloads were fetched for exactly that window.
@@ -410,9 +471,22 @@ async function main(): Promise<void> {
     // otherwise unreal manifest period must fail the run here, not
     // surface as a written candidates file with period {}.
     ({ start, end } = stagedManifestPeriod(manifest));
+  } else {
+    if (explicitStart !== undefined && !isRealCalendarDate(explicitStart)) {
+      console.error(`producer: --start value ${JSON.stringify(explicitStart)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (explicitEnd !== undefined && !isRealCalendarDate(explicitEnd)) {
+      console.error(`producer: --end value ${JSON.stringify(explicitEnd)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (end < start) {
+      console.error(`producer: --start ${start} must be on or before --end ${end}`);
+      process.exit(2);
+    }
   }
   const outPath =
-    argValue("--out") ??
+    outArg ??
     process.env.CHARGE_CANDIDATES_PATH ??
     join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json");
 

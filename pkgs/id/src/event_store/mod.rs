@@ -62,6 +62,7 @@ use redb::{
 
 use crate::chain::{self, Event};
 
+mod chat;
 mod claims;
 mod documents;
 mod ingest;
@@ -69,11 +70,13 @@ pub mod range;
 mod resolve;
 pub mod sync;
 mod waiting_rows;
+mod writer_set;
 
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use ingest::{Ingest, Refusal};
-use ingest::{is_present, present_in};
+use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
+pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
 /// The store's file name in its directory.
 pub const FILE_NAME: &str = "events.redb";
@@ -108,10 +111,26 @@ const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
 const BLOCKS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("blocks");
+/// Each writer-set or rescind event's retained body, by event ID (writer-set
+/// spec §§4–5; issue #6690). Headers commit to bodies by hash but are stored
+/// without them; this table is the one place a body is kept, so a stored
+/// writer-set object can be read back and checked against its header. Written
+/// only from the ingest path, after the body has been verified against the
+/// header's payload commitment.
+const WRITER_SET_BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("writer_set_bodies");
 /// Each group operation's encoded action, by event ID. Written when the event arrives, held or
 /// stored, so a release reads it back without the caller. The resolution reads it again.
 const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("actions");
+/// Each device operation's encoded op and the group its body names, by event ID (P8.3,
+/// issue #5656). A device operation travels as a `group.event` body, which the membership
+/// body codec does not carry, so it has no [`ACTIONS`] row; this table is its storage
+/// channel to the resolution, whose bridge folds it as a group device event. Written only
+/// from the ingest path, after the body has been verified against the header's payload
+/// commitment and the body's author checked against the event's signer.
+const DEVICE_OPS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("device_ops");
 /// The IDs of the applied events, with an empty value. Written by the resolution.
 const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("applied");
@@ -163,6 +182,9 @@ pub enum StoreError {
     /// refuses further calls. Reopening it rebuilds them.
     #[error("event store is unusable after a failed write: reopen it")]
     Unusable,
+    /// The reader is not a member of the group whose chat they asked to read (#3950).
+    #[error("the reader is not a member of this group")]
+    NotMember,
 }
 
 fn corrupt(message: impl Into<String>) -> StoreError {
@@ -643,12 +665,14 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        // The blocks table is additive: stores created before it gain it here,
-        // on the write every open already performs, instead of a format change
-        // that would refuse them.
+        // The blocks, writer-set-bodies and device-ops tables are additive:
+        // stores created before them gain them here, on the write every open
+        // already performs, instead of a format change that would refuse them.
         {
             let txn = db.begin_write()?;
             txn.open_table(BLOCKS)?;
+            txn.open_table(WRITER_SET_BODIES)?;
+            txn.open_table(DEVICE_OPS)?;
             txn.commit()?;
         }
         let mut store = Self {
@@ -735,9 +759,10 @@ impl EventStore {
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
             let actions = txn.open_table(ACTIONS)?;
+            let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &forks, &proof_headers)?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
         Ok(resolve::roster_of(&resolved, group))
@@ -962,6 +987,7 @@ impl EventStore {
             let mut hashes_table = txn.open_table(HASHES)?;
             let mut groups_table = txn.open_multimap_table(GROUPS)?;
             let mut actions_table = txn.open_table(ACTIONS)?;
+            let mut device_ops_table = txn.open_table(DEVICE_OPS)?;
             let mut applied_table = txn.open_table(APPLIED)?;
 
             for id in &to_prune {
@@ -976,6 +1002,7 @@ impl EventStore {
                     if meta.has_action {
                         actions_table.remove(id.as_bytes().as_slice())?;
                     }
+                    device_ops_table.remove(id.as_bytes().as_slice())?;
                     applied_table.remove(id.as_bytes().as_slice())?;
                 }
             }
@@ -1297,9 +1324,12 @@ impl EventStore {
     }
 
     /// Rebuilds the waiting pool from the rows, in arrival order. A row due at `now_ms` is
-    /// dropped, and so is a row past its author's cap. The drops commit with the rebuild. A row
-    /// that waits for a present event means the rows and the store disagree, so the rebuild
-    /// fails as corruption and the pool is left as it was.
+    /// dropped, and so is a row past its author's cap. A row whose event is already present --
+    /// stored, applied, or voided -- is stale, so it is dropped too: restoring it would hold an
+    /// already-decided event again. A row for a fork proof header is instead re-held through
+    /// the explicit held-for-good route, even though the header is present. Every drop commits
+    /// with the rebuild. A row that waits for a present event means the rows and the store
+    /// disagree, so the rebuild fails as corruption and the pool is left as it was.
     fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;
         let mut pool = WaitingPool::new(self.limits);
@@ -1312,6 +1342,35 @@ impl EventStore {
                 dropped = true;
                 continue;
             }
+            let event = row_event(&row)?;
+            if is_proof_header(&txn, &row.author, &row.id)? {
+                // A proof header is present but never applied: it stays held for good through
+                // the explicit route, which the ordinary restore's arrived guard would refuse.
+                match pool.restore_held_for_good(row.author, row.id, event, row.arrived_at) {
+                    Ok(()) => {
+                        if !row.deps.is_empty() {
+                            let parked = Row {
+                                deps: Vec::new(),
+                                ..row
+                            };
+                            waiting_rows::put(&txn, &parked)?;
+                            dropped = true;
+                        }
+                    }
+                    Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
+                        waiting_rows::delete(&txn, &row.id)?;
+                        dropped = true;
+                    }
+                }
+                continue;
+            }
+            if is_present(&txn, &row.id)? {
+                // The event is already stored, applied, or voided: the row is stale, so it
+                // goes rather than holding an already-decided event again.
+                waiting_rows::delete(&txn, &row.id)?;
+                dropped = true;
+                continue;
+            }
             for dep in &row.deps {
                 if is_present(&txn, dep)? {
                     return Err(corrupt(
@@ -1319,9 +1378,14 @@ impl EventStore {
                     ));
                 }
             }
-            let event = row_event(&row)?;
             match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
-                Ok(()) => {}
+                Ok(()) if pool.contains(&row.id) => {}
+                Ok(()) => {
+                    // Skipped by an arrived, ready, or duplicate guard: the row names an
+                    // event the rebuilt pool does not hold, so the row goes with the rebuild.
+                    waiting_rows::delete(&txn, &row.id)?;
+                    dropped = true;
+                }
                 Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                     waiting_rows::delete(&txn, &row.id)?;
                     dropped = true;
@@ -1661,6 +1725,8 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
+            chat: None,
         }
     }
 

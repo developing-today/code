@@ -272,6 +272,31 @@ describe("uploadImageFile", () => {
     const file = new File(["data"], "photo.png", { type: "image/png" });
     await expect(uploadImageFile(file)).rejects.toThrow("Network error");
   });
+
+  // Regression (#7823): a wrong-shape 200 must reject at the fetch
+  // boundary so the caller takes the upload-failure path; pre-fix these
+  // payloads resolved and inserted an image node with src undefined
+  // (or made the caller deref null and report "Insertion failed").
+  it.each([
+    ["null body", null],
+    ["string body", "abc"],
+    ["array body", []],
+    ["empty object", {}],
+    ["missing url", { hash: "abc123", name: "photo.png" }],
+    ["missing hash", { name: "photo.png", url: "/blob/abc123" }],
+    ["missing name", { hash: "abc123", url: "/blob/abc123" }],
+    ["non-string url", { hash: "abc123", name: "photo.png", url: 123 }],
+    ["non-string hash", { hash: 42, name: "photo.png", url: "/blob/abc123" }],
+  ])("rejects a malformed /api/upload payload: %s", async (_label, payload) => {
+    const mockResponse = {
+      ok: true,
+      json: () => Promise.resolve(payload),
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse as Response);
+
+    const file = new File(["fake image data"], "photo.png", { type: "image/png" });
+    await expect(uploadImageFile(file)).rejects.toThrow("Upload failed: malformed /api/upload response");
+  });
 });
 
 // ============================================================================
@@ -425,7 +450,7 @@ describe("handlePaste batch ordering (#1323)", () => {
 
   function paste(v: EditorView, files: File[]): void {
     const event = { clipboardData: { files }, preventDefault: vi.fn() };
-    const result = handlePaste!.call(plugin, v, event as unknown as ClipboardEvent, undefined as unknown as Slice);
+    const result = handlePaste!.call(plugin!, v, event as unknown as ClipboardEvent, undefined as unknown as Slice);
     expect(result).toBe(true);
   }
 
@@ -440,7 +465,7 @@ describe("handlePaste batch ordering (#1323)", () => {
     uploads.clear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
-      const file = (init?.body as FormData).get("file") as File;
+      const file = (init?.body as FormData | undefined)?.get("file") as File;
       const d = deferred<Response>();
       uploads.set(file.name, d);
       return d.promise;
@@ -497,6 +522,46 @@ describe("handlePaste batch ordering (#1323)", () => {
     await vi.waitFor(() => {
       expect(imageAlts(v)).toEqual(["one.png", "three.png"]);
     });
+  });
+
+  it("does not dispatch or warn when a successful upload completes after view destruction", async () => {
+    const v = createView();
+    const dispatchSpy = vi.spyOn(v, "dispatch");
+    paste(v, [new File(["a"], "after-destroy.png", { type: "image/png" })]);
+    expect(uploads.has("after-destroy.png")).toBe(true);
+
+    v.destroy();
+    view = null;
+    uploads.get("after-destroy.png")!.resolve(okResponse("after-destroy.png"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Only the synchronous placeholder insertion may dispatch. A successful
+    // upload settling after destroy must not try insertion or cleanup.
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch placeholder cleanup when a failed upload completes after view destruction", async () => {
+    const v = createView();
+    const dispatchSpy = vi.spyOn(v, "dispatch");
+    const warnSpy = vi.mocked(console.warn);
+    paste(v, [new File(["a"], "failed-after-destroy.png", { type: "image/png" })]);
+    expect(uploads.has("failed-after-destroy.png")).toBe(true);
+
+    v.destroy();
+    view = null;
+    uploads.get("failed-after-destroy.png")!.reject(new Error("upload failed"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The upload failure is real and may be logged, but dead-view cleanup
+    // must be skipped. Vitest also fails the test if the async chain rejects
+    // unhandled while settling.
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Upload failed for failed-after-destroy.png"),
+      expect.any(Error),
+    );
   });
 });
 

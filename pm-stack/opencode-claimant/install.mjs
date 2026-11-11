@@ -12,14 +12,15 @@
 // Usage:
 //   bun install.mjs [--store <path>] [--dry-run] [--enable]
 //   node install.mjs ...           (same; no dependencies)
+import fs from "node:fs";
 import { readFile, writeFile, rename, copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const TASK_ID = "f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9";
 export const TASK_NAME = "Opencode lane claimant/executor - #3026";
-export const CRON = "*/10 * * * *";
+export const CRON = "*/5 * * * *";
 export const TIMEZONE = "America/Chicago";
 export const PROVIDER_ID = "opencode-route";
 export const MODEL_ID = "workhorse";
@@ -128,8 +129,14 @@ async function main(argv) {
   return 0;
 }
 
-const isMain = process.argv[1]
-  && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
 if (isMain) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
