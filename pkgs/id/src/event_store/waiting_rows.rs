@@ -339,7 +339,12 @@ impl Mirror<'_> {
     }
 
     /// Removes the row of an event the pool has released, once it is decided for good.
-    pub fn drop_row(&self, id: &Hash) -> Result<(), StoreError> {
+    /// The event is decided for good here: it reaches neither `release` nor
+    /// `restore` after this, so its handed-out mark in the pool is finalized
+    /// too (#7724) -- otherwise every released-then-refused event would leak
+    /// one mark for the life of the pool.
+    pub fn drop_row(&mut self, id: &Hash) -> Result<(), StoreError> {
+        self.pool.forget(id);
         delete(self.txn, id)
     }
 }

@@ -711,10 +711,15 @@
       "id": "pm-stack.meta-exporter",
       "paths": ["pm-stack/meta-exporter/meta-quota-export.test.mjs"],
       "invocation": "node --test pm-stack/meta-exporter/meta-quota-export.test.mjs",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 6185,
-      "reason": "Added to current main after the initial inventory; no workflow invokes it. Phase 2 follow-up must be filed."
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test meta-exporter suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6344],
+      "notes": "Wired by #6344: pm-stack-tests.yml gains pm-stack/meta-exporter/** in both push and pull_request path filters and a guarded step running the explicit test file under Node 24; the registry records configuration, not an automatic coverage claim."
     },
     {
       "id": "github-backup.python",
@@ -727,7 +732,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "related_issues": [5937]
+      "related_issues": [5937, 7777]
     },
     {
       "id": "repo-universe.python",

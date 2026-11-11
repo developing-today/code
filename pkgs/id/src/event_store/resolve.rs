@@ -25,7 +25,9 @@
 //!    also gives the roster of a group it decided, so a refused operation's target never shows
 //!    as a member. Operations the bridge cannot represent (a create or an operation naming a
 //!    group as a member, friendship and policy bodies the body codec does not carry) keep the
-//!    membership verdict alone; the fold judges them when they travel as group events. Two
+//!    membership verdict alone; the fold judges them when they travel as group events. Each
+//!    unbridged shape carries a tracked disposition ruled on issue #6980, with the
+//!    per-shape reasoning recorded there. Two
 //!    reconciliations keep the layers in agreement: an operation the fold refuses with a
 //!    voiding reason is fed to the membership layer as a no-op, so its authority changes never
 //!    reach the descendants the layer judges; and a create that lists its author below Manage
@@ -254,7 +256,9 @@ pub(super) fn resolve(
 /// the record a signed store body cannot carry yet — and an add, remove, promote or demote
 /// becomes the member operation with the same member and access. An operation naming a group
 /// as its member has no group-event form, and a create that does not list its author has no
-/// agreed form (see [`bridge`]), so both are left out and keep the membership verdict.
+/// agreed form (see [`bridge`]), so both are left out and keep the membership verdict --
+/// by ruling, not by omission: each unbridged shape's disposition is recorded on
+/// issue #6980.
 /// A bridged event names as its `after` the bridged operations it causally follows, reached
 /// through any stored events in between, because the fold requires every named dependency to
 /// be in its set. A fold that cannot judge the set (it reports an error) gates nothing: the
@@ -389,7 +393,8 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
                     // create listing its author below Manage names two different roles for the
                     // creator in the two models. That mapping cannot be reconciled before
                     // folding, so the create does not bridge and the group keeps the membership
-                    // verdict alone (Codex P2 on PR #3725).
+                    // verdict alone (Codex P2 on PR #3725; disposition ruled on
+                    // issue #6980).
                     if !access.is_manage() {
                         return None;
                     }
@@ -436,7 +441,10 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
 }
 
 /// The account key of a member, or `None` when the member is a group: group events name
-/// accounts only, so an operation on a group member cannot bridge.
+/// accounts only, so an operation on a group member cannot bridge. Group members are
+/// judged by the membership layer alone, by the ruling recorded on issue #6980: the
+/// fold's roster names accounts, and a group member written as its ID bytes would
+/// conflate group IDs with account keys.
 fn member_key(member: &GroupMember<AuthId>) -> Option<crate::groups::Key> {
     match member {
         GroupMember::Individual(AuthId::Key(key)) => Some(*key),

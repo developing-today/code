@@ -214,6 +214,17 @@ fn open_stream(config: &Config, transport: &Transport) -> Result<TcpStream> {
     }
 }
 
+/// How a response body is delimited. Exactly one shape is chosen
+/// from the headers, and it is chosen unambiguously: conflicting
+/// or malformed framing headers are refused while parsing the
+/// head, before any body byte is trusted (#8433).
+enum Framing {
+    Length(usize),
+    Chunked,
+    /// No framing headers: the body runs to connection close.
+    Eof,
+}
+
 /// Read one HTTP/1.1 response: status line, headers, and a body
 /// framed by chunked encoding, Content-Length, or connection
 /// close — the three shapes a Bun.serve JSON reply can take.
@@ -243,107 +254,175 @@ fn read_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>)> {
         .nth(1)
         .and_then(|c| c.parse().ok())
         .ok_or_else(|| transport_err("pm-dispatch answered with a malformed status line"))?;
+    // Framing is validated where it is read (#6582, #8433): a
+    // present-but-invalid Content-Length or Transfer-Encoding is
+    // refused, never silently treated as absent — a partial body
+    // can be valid JSON, so lenient framing would make truncation
+    // invisible to the caller.
     let mut content_length: Option<usize> = None;
-    let mut chunked = false;
+    let mut transfer_codings: Vec<String> = Vec::new();
     for line in head.lines().skip(1) {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim();
         if name.eq_ignore_ascii_case("content-length") {
-            content_length = value.parse().ok();
-        } else if name.eq_ignore_ascii_case("transfer-encoding")
-            && value.to_ascii_lowercase().contains("chunked")
-        {
-            chunked = true;
+            // Repeated headers and comma-joined values are the same
+            // claim stated several times: every statement must parse
+            // and they must all agree.
+            for part in value.split(',') {
+                let part = part.trim();
+                let parsed: usize = part.parse().map_err(|_| {
+                    transport_err(format!(
+                        "pm-dispatch answered with a malformed Content-Length: {value:?}"
+                    ))
+                })?;
+                match content_length {
+                    None => content_length = Some(parsed),
+                    Some(prev) if prev == parsed => {}
+                    Some(prev) => {
+                        return Err(transport_err(format!(
+                            "pm-dispatch answered with conflicting Content-Length values: {prev} and {parsed}"
+                        )));
+                    }
+                }
+            }
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            transfer_codings.extend(
+                value
+                    .split(',')
+                    .map(|c| c.trim().to_ascii_lowercase())
+                    .filter(|c| !c.is_empty()),
+            );
         }
     }
-    let mut body: Vec<u8> = raw[header_end..].to_vec();
-    // Fill the body per its framing. `Connection: close` was sent,
-    // so EOF is a valid terminator for every shape.
-    let complete = |body: &[u8]| -> bool {
-        if chunked {
-            dechunked_len(body).is_some()
-        } else if let Some(n) = content_length {
-            body.len() >= n
-        } else {
-            false
+    let framing = match (content_length, transfer_codings.as_slice()) {
+        (Some(n), []) => Framing::Length(n),
+        (None, []) => Framing::Eof,
+        (None, [only]) if only == "chunked" => Framing::Chunked,
+        (Some(_), _) => {
+            return Err(transport_err(
+                "pm-dispatch answered with both Content-Length and Transfer-Encoding",
+            ));
+        }
+        _ => {
+            return Err(transport_err(format!(
+                "pm-dispatch answered with an unsupported Transfer-Encoding: {}",
+                transfer_codings.join(", ")
+            )));
         }
     };
-    while !complete(&body) {
+    let mut body: Vec<u8> = raw[header_end..].to_vec();
+    // Fill the body per its framing. `Connection: close` was sent,
+    // so EOF terminates an unframed body; for a declared length or
+    // a chunked stream, EOF first is truncation, not completion.
+    loop {
+        match framing {
+            Framing::Length(n) if body.len() >= n => break,
+            Framing::Chunked => match parse_chunked(&body) {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(e) => return Err(e),
+            },
+            _ => {}
+        }
         let n = stream
             .read(&mut chunk)
             .map_err(|e| transport_err(format!("pm-dispatch read failed: {e}")))?;
         if n == 0 {
-            break;
+            match framing {
+                Framing::Eof => break,
+                Framing::Length(want) => {
+                    return Err(transport_err(format!(
+                        "pm-dispatch response truncated: Content-Length {want}, connection closed after {} body bytes",
+                        body.len()
+                    )));
+                }
+                Framing::Chunked => {
+                    return Err(transport_err(
+                        "pm-dispatch response truncated: connection closed inside a chunked body",
+                    ));
+                }
+            }
         }
         body.extend_from_slice(&chunk[..n]);
         if body.len() > 64 * 1024 * 1024 {
             return Err(transport_err("pm-dispatch response body exceeds 64 MiB"));
         }
     }
-    let body = if chunked {
-        dechunk(&body)
-    } else if let Some(n) = content_length {
-        body[..n.min(body.len())].to_vec()
-    } else {
-        body
+    let body = match framing {
+        Framing::Chunked => parse_chunked(&body)?.unwrap_or_default(),
+        Framing::Length(n) => body[..n].to_vec(),
+        Framing::Eof => body,
     };
     Ok((status, body))
 }
 
-/// Length of the decoded body if `body` holds at least one full
-/// chunked stream, else None (more bytes needed).
-fn dechunked_len(body: &[u8]) -> Option<usize> {
-    let mut total = 0usize;
+/// Strictly decode a chunked body. `Ok(Some(decoded))` when `body`
+/// holds one complete chunked stream — terminal chunk and the
+/// trailer section's closing CRLF included; `Ok(None)` when more
+/// bytes could still complete it; `Err` when the bytes present are
+/// already malformed (a size line that is not hex, or a chunk not
+/// followed by its CRLF terminator). The chunk size is
+/// peer-declared and never trusted (#5579): it is checked with
+/// `checked_add` before it is used to slice or extend anything, so
+/// a declared size near `usize::MAX` reads as "not complete"
+/// instead of panicking in debug builds or wrapping in release
+/// builds (#6512). The decoded output never exceeds the input, so
+/// the caller's body bound covers it.
+fn parse_chunked(body: &[u8]) -> Result<Option<Vec<u8>>> {
+    let mut out: Vec<u8> = Vec::new();
     let mut rest = body;
     loop {
-        let line_end = find_subslice(rest, b"\r\n")?;
+        let Some(line_end) = find_subslice(rest, b"\r\n") else {
+            return Ok(None);
+        };
         let size_str = String::from_utf8_lossy(&rest[..line_end]).into_owned();
-        let size = usize::from_str_radix(size_str.trim().split(';').next()?.trim(), 16).ok()?;
+        let size_field = size_str.trim().split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_field, 16).map_err(|_| {
+            transport_err(format!(
+                "pm-dispatch answered with a malformed chunk size: {size_field:?}"
+            ))
+        })?;
         rest = &rest[line_end + 2..];
         if size == 0 {
-            return Some(total);
+            // Trailer section: header-like lines ended by an empty
+            // line. The stream is complete only once that closing
+            // CRLF has arrived; anything less is truncation.
+            loop {
+                if rest.starts_with(b"\r\n") {
+                    return Ok(Some(out));
+                }
+                let Some(trailer_end) = find_subslice(rest, b"\r\n") else {
+                    return Ok(None);
+                };
+                rest = &rest[trailer_end + 2..];
+            }
         }
-        // The chunk size is peer-declared and never trusted (#5579):
-        // every arithmetic step on it is checked, so a declared size
-        // near `usize::MAX` reads as "not complete" here instead of
-        // panicking in debug builds or wrapping the completeness guard
-        // and the slice index in release builds (#6512).
         let Some(chunk_end) = size.checked_add(2) else {
-            return None;
+            return Ok(None);
         };
         if rest.len() < chunk_end {
-            return None;
+            return Ok(None);
         }
-        let Some(new_total) = total.checked_add(size) else {
-            return None;
-        };
-        total = new_total;
+        if &rest[size..chunk_end] != b"\r\n" {
+            return Err(transport_err(
+                "pm-dispatch answered with a chunk missing its CRLF terminator",
+            ));
+        }
+        out.extend_from_slice(&rest[..size]);
         rest = &rest[chunk_end..];
     }
 }
 
+/// Length of the decoded body if `body` holds at least one full
+/// chunked stream, else None (more bytes needed, or malformed).
+fn dechunked_len(body: &[u8]) -> Option<usize> {
+    parse_chunked(body).ok().flatten().map(|v| v.len())
+}
+
 fn dechunk(body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut rest = body;
-    while let Some(line_end) = find_subslice(rest, b"\r\n") {
-        let size_str = String::from_utf8_lossy(&rest[..line_end]).into_owned();
-        let Ok(size) = usize::from_str_radix(size_str.trim().split(';').next().unwrap_or(""), 16)
-        else {
-            break;
-        };
-        rest = &rest[line_end + 2..];
-        if size == 0 || rest.len() < size {
-            break;
-        }
-        out.extend_from_slice(&rest[..size]);
-        rest = &rest[size..];
-        if rest.starts_with(b"\r\n") {
-            rest = &rest[2..];
-        }
-    }
-    out
+    parse_chunked(body).ok().flatten().unwrap_or_default()
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -893,6 +972,116 @@ mod tests {
     }
 
     #[test]
+    fn chunk_missing_terminator_is_malformed() {
+        // The chunk data is present but its CRLF is not: the old
+        // decoder skipped any two bytes and kept going (#8433).
+        let wire = b"4\r\nWikiXX5\r\npedia\r\n0\r\n\r\n";
+        assert_eq!(dechunk(wire), Vec::<u8>::new());
+        assert_eq!(dechunked_len(wire), None);
+        assert!(parse_chunked(wire).is_err());
+        // A stream that ends inside the trailer section is not
+        // complete either.
+        assert_eq!(dechunked_len(b"4\r\nWiki\r\n0\r\nX-T: 1\r\n"), None);
+        assert_eq!(dechunked_len(b"4\r\nWiki\r\n0\r\nX-T: 1\r\n\r\n"), Some(4));
+    }
+
+    /// Feed `wire` to `read_response` over a loopback socket: the
+    /// writer sends the bytes and closes, which is exactly the EOF
+    /// signal the framing rules key on (#8433).
+    fn serve_once(wire: &[u8]) -> Result<(u16, Vec<u8>)> {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bytes = wire.to_vec();
+        let writer = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            sock.write_all(&bytes).unwrap();
+        });
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let result = read_response(&mut stream);
+        writer.join().unwrap();
+        result
+    }
+
+    fn served_err(wire: &[u8]) -> String {
+        serve_once(wire).err().unwrap().message()
+    }
+
+    #[test]
+    fn framed_responses_round_trip() {
+        // Valid controls: Content-Length, chunked (with a trailer),
+        // repeated agreeing lengths, and an unframed close body.
+        assert_eq!(
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").unwrap(),
+            (200, b"hello".to_vec())
+        );
+        assert_eq!(
+            serve_once(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\nX-T: 1\r\n\r\n"
+            )
+            .unwrap(),
+            (200, b"Wikipedia".to_vec())
+        );
+        assert_eq!(
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello")
+                .unwrap(),
+            (200, b"hello".to_vec())
+        );
+        assert_eq!(
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5, 5\r\n\r\nhello").unwrap(),
+            (200, b"hello".to_vec())
+        );
+        assert_eq!(
+            serve_once(b"HTTP/1.1 204 No Content\r\n\r\n").unwrap(),
+            (204, Vec::new())
+        );
+    }
+
+    #[test]
+    fn invalid_or_conflicting_lengths_are_refused() {
+        let msg = served_err(b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\nhello");
+        assert!(msg.contains("malformed Content-Length"), "{msg}");
+        let msg =
+            served_err(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!");
+        assert!(msg.contains("conflicting Content-Length"), "{msg}");
+        let msg = served_err(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nhello",
+        );
+        assert!(msg.contains("both Content-Length"), "{msg}");
+        let msg = served_err(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nhello");
+        assert!(msg.contains("unsupported Transfer-Encoding"), "{msg}");
+        let msg = served_err(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\nhello");
+        assert!(msg.contains("unsupported Transfer-Encoding"), "{msg}");
+    }
+
+    #[test]
+    fn truncated_bodies_are_refused() {
+        // Truncation after valid JSON bytes: the partial body parses
+        // as JSON, which is exactly why lenient framing was silent.
+        let msg = served_err(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{\"ok\":true}");
+        assert!(msg.contains("truncated"), "{msg}");
+        // Chunked stream cut mid-chunk and mid-size-line.
+        let msg = served_err(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\nped",
+        );
+        assert!(msg.contains("truncated"), "{msg}");
+        let msg = served_err(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r");
+        assert!(msg.contains("truncated"), "{msg}");
+    }
+
+    #[test]
+    fn malformed_chunks_are_refused() {
+        let msg = served_err(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nWiki\r\n0\r\n\r\n",
+        );
+        assert!(msg.contains("malformed chunk size"), "{msg}");
+        let msg = served_err(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWikiXX5\r\npedia\r\n0\r\n\r\n",
+        );
+        assert!(msg.contains("CRLF terminator"), "{msg}");
+    }
+
+    #[test]
     fn status_help_and_rejection_need_no_service() {
         // Help and argument rejection return before any transport is
         // opened (the default config's transport would try the
@@ -922,7 +1111,9 @@ mod tests {
             strings(&["--repo=a", "--repo=b"]),
             strings(&["--repo", "a", "--repo=a"]),
         ] {
-            let err = parse_args(&args, &["repo"], &[]).err().expect("duplicate must error");
+            let err = parse_args(&args, &["repo"], &[])
+                .err()
+                .expect("duplicate must error");
             assert_eq!(err.exit_code(), EXIT_USAGE);
             assert!(err.message().contains("--repo"), "{}", err.message());
             assert!(

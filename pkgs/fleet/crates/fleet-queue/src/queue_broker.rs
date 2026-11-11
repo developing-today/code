@@ -539,6 +539,76 @@ fn list_limit(req: &Value) -> Result<i64, String> {
     crate::client::list_limit_or_default(raw)
 }
 
+/// One duration field of a request, validated before the RPC
+/// (#6420): the broker is the trust boundary for non-CLI callers, so
+/// an out-of-range value is rejected with the same usage error the
+/// client itself raises (design #6448 Phase 3: reject, not clamp).
+/// An absent or null field stays absent — the SQL defaults apply,
+/// exactly as before. A field that is PRESENT but not an i64 (a
+/// float, a string, an integer beyond i64) is rejected, never
+/// treated as absent: before this guard it reached the SQL integer
+/// parameter and failed there, and silently defaulting it would
+/// mutate the task on a value the caller never chose (Codex
+/// finding on PR #8425).
+fn duration_field(req: &Value, field: &str, flag: &str, max: i64) -> Result<Option<i64>, String> {
+    let raw = match req.get(field) {
+        None => return Ok(None),
+        Some(v) if v.is_null() => return Ok(None),
+        Some(v) => v,
+    };
+    match raw.as_i64() {
+        Some(v) => crate::client::validate_duration(flag, v, max).map(Some),
+        None => Err(format!(
+            "argument --{flag}: value {raw} out of range 1..={max}"
+        )),
+    }
+}
+
+/// The `/claim` lease, validated before the RPC (#6420).
+fn lease_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "lease_seconds",
+        "lease-seconds",
+        crate::client::LEASE_SECONDS_MAX,
+    )
+}
+
+/// The `/heartbeat` extend, validated before the RPC (#6420).
+fn extend_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "extend_seconds",
+        "extend-seconds",
+        crate::client::EXTEND_SECONDS_MAX,
+    )
+}
+
+/// The `/park` delay, validated before the RPC (#6420).
+fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "delay_seconds",
+        "delay-seconds",
+        crate::client::DELAY_SECONDS_MAX,
+    )
+}
+
+/// The duration guard for one request path (#6420), run at the top
+/// of `dispatch` BEFORE backend selection: the Turso backend
+/// dispatches verbatim, so validating only inside the PostgREST
+/// handlers would leave the trust boundary open on that backend
+/// (Codex finding on PR #8425). The PostgREST handlers keep their
+/// own checks as defense in depth.
+fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
+    match path {
+        "/claim" => lease_seconds(req).map(|_| ()),
+        "/heartbeat" => extend_seconds(req).map(|_| ()),
+        "/park" => delay_seconds(req).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
 fn ok(fields: Value) -> Value {
     let mut m = json!({"ok": true});
     if let (Some(dst), Some(src)) = (m.as_object_mut(), fields.as_object()) {
@@ -738,6 +808,9 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
 }
 
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
+    if let Err(e) = validate_durations(path, req) {
+        return fail(2, e);
+    }
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
             return crate::turso_queue::dispatch(t, path, req);
@@ -801,10 +874,14 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
         }
         "/claim" => {
+            let lease = match lease_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
             let mut args = json!({
                 "p_worker": req.get("worker"),
                 "p_queue": req.get("queue"),
-                "p_lease_seconds": req.get("lease_seconds"),
+                "p_lease_seconds": lease,
             });
             if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
                 args["p_lane_id"] = lane.clone();
@@ -830,16 +907,22 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 "p_launched_by": req.get("launched_by"),
             }),
         ),
-        "/heartbeat" => simple_rpc(
-            st,
-            "heartbeat_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_extend_seconds": req.get("extend_seconds"),
-                "p_progress": req.get("progress"),
-            }),
-        ),
+        "/heartbeat" => {
+            let extend = match extend_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
+            simple_rpc(
+                st,
+                "heartbeat_task",
+                json!({
+                    "p_task_id": req.get("task_id"),
+                    "p_worker": req.get("worker"),
+                    "p_extend_seconds": extend,
+                    "p_progress": req.get("progress"),
+                }),
+            )
+        }
         "/checkpoint" => simple_rpc(
             st,
             "checkpoint_task",
@@ -851,6 +934,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }),
         ),
         "/park" => {
+            let delay = match delay_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
             let mut args = json!({
                 "p_task_id": req.get("task_id"),
                 "p_worker": req.get("worker"),
@@ -859,8 +946,8 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             });
             if let Some(nb) = req.get("not_before").filter(|v| !v.is_null()) {
                 args["p_not_before"] = nb.clone();
-            } else if let Some(d) = req.get("delay_seconds").filter(|v| !v.is_null()) {
-                args["p_delay_seconds"] = d.clone();
+            } else if let Some(d) = delay {
+                args["p_delay_seconds"] = json!(d);
             }
             if let Some(rc) = req.get("ready_condition").filter(|v| !v.is_null()) {
                 args["p_ready_condition"] = rc.clone();
@@ -1468,5 +1555,96 @@ mod tests {
         assert_eq!(list_limit(&json!({"limit": 500})), Ok(500));
         // Absent limit keeps the existing default of 20.
         assert_eq!(list_limit(&json!({})), Ok(20));
+    }
+
+    #[test]
+    fn duration_fields_reject_out_of_range_before_the_rpc() {
+        // #6420: a raw caller could send a born-expired lease, a
+        // self-lapsing heartbeat extend, or a park delay in the past
+        // straight to the RPC. The broker rejects all three with the
+        // client's usage error before any RPC is built.
+        for bad in [0, -1, 86_401, i64::MAX] {
+            let err = lease_seconds(&json!({"lease_seconds": bad}))
+                .err()
+                .expect("out-of-range lease_seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = extend_seconds(&json!({"extend_seconds": bad}))
+                .err()
+                .expect("out-of-range extend_seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, 604_801, i64::MAX] {
+            let err = delay_seconds(&json!({"delay_seconds": bad}))
+                .err()
+                .expect("out-of-range delay_seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        assert_eq!(
+            lease_seconds(&json!({"lease_seconds": 2700})),
+            Ok(Some(2700))
+        );
+        assert_eq!(
+            extend_seconds(&json!({"extend_seconds": 900})),
+            Ok(Some(900))
+        );
+        assert_eq!(
+            delay_seconds(&json!({"delay_seconds": 1200})),
+            Ok(Some(1200))
+        );
+        // Absent fields stay absent (SQL defaults apply, as before).
+        assert_eq!(lease_seconds(&json!({})), Ok(None));
+        assert_eq!(extend_seconds(&json!({})), Ok(None));
+        assert_eq!(delay_seconds(&json!({})), Ok(None));
+        // Present but not an i64 (beyond-i64 integer, float, string)
+        // is rejected, never silently defaulted (Codex finding on
+        // PR #8425): before this guard such a value failed at the
+        // SQL integer parameter instead.
+        for bad in [json!(9223372036854775808u64), json!(1.5), json!("2700")] {
+            let err = lease_seconds(&json!({"lease_seconds": bad}))
+                .err()
+                .expect("present-but-invalid lease_seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = extend_seconds(&json!({"extend_seconds": bad}))
+                .err()
+                .expect("present-but-invalid extend_seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = delay_seconds(&json!({"delay_seconds": bad}))
+                .err()
+                .expect("present-but-invalid delay_seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        // The dispatch-level guard covers both backends: it fires
+        // per path before backend selection (Codex finding on
+        // PR #8425), and leaves unrelated paths alone.
+        assert!(validate_durations("/claim", &json!({"lease_seconds": 0})).is_err());
+        assert!(validate_durations("/heartbeat", &json!({"extend_seconds": -1})).is_err());
+        assert!(validate_durations("/park", &json!({"delay_seconds": 604_801})).is_err());
+        assert_eq!(
+            validate_durations("/claim", &json!({"lease_seconds": 2700})),
+            Ok(())
+        );
+        assert_eq!(validate_durations("/heartbeat", &json!({})), Ok(()));
+        assert_eq!(
+            validate_durations("/list", &json!({"lease_seconds": 0})),
+            Ok(())
+        );
     }
 }

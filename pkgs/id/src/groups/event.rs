@@ -624,7 +624,7 @@ fn unsigned(value: &Value<'static>) -> Result<u64, EventError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::groups::policy::{Delegation, History, OnMemberRemoved, Policy, Removal};

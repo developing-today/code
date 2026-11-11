@@ -151,6 +151,7 @@ import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/re
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
 import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
 import { ItemHistoryStore } from "./item-history.ts";
+import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -1699,6 +1700,9 @@ async function handler(req: Request): Promise<Response> {
       orchestrationStatus,
     });
     const forecasts = (await allForecastContracts(pool)).byRef;
+    // #4830: the same twin /api/flow-analytics.json serves, computed
+    // the same way — the Roadmap charts render exactly this object.
+    const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1730,6 +1734,7 @@ async function handler(req: Request): Promise<Response> {
           viewQuery,
           briefs,
           forecasts,
+          flowAnalytics,
         ),
       );
     }
@@ -1767,8 +1772,21 @@ async function handler(req: Request): Promise<Response> {
         viewQuery,
         briefs,
         forecasts,
+        flowAnalytics,
       ),
     );
+  }
+
+  if (path === "/api/flow-analytics.json") {
+    // #4829 (step 2 of #1281): the flow-analytics JSON twin — the
+    // exact numbers the step-3 charts (#4830) will render, computed
+    // from the #3981 item-history store. Every group carries its
+    // computation window and gap signal via the shared window block.
+    const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+    return json({
+      generatedAt: new Date().toISOString(),
+      ...computeFlowAnalytics(cutoffs),
+    });
   }
 
   if (path === "/api/forecasts.json") {
@@ -2024,6 +2042,10 @@ async function handler(req: Request): Promise<Response> {
         identities: formOpts.identities,
         briefs,
         forecasts: (await allForecastContracts(viewPool)).byRef,
+        // #4830: the Projects page (merged into /program, #1497)
+        // renders the #4829 twin as charts, computed as the endpoint
+        // computes it.
+        flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
       }),
     );
   }

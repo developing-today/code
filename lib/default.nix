@@ -671,6 +671,9 @@ let
         inherit identity;
       };
       identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
+      genericRuntime = pkgs.callPackage ../pkgs/generic-containers/runtime-base.nix { };
+      genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
+      genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -693,6 +696,9 @@ let
         mcpx-container = mcpxContainer;
         identity-image = identityImage;
         identity-provider-image = identityProviderImage;
+        generic-runtime = genericRuntime;
+        generic-js-runtime = genericJsRuntime;
+        generic-python-runtime = genericPythonRuntime;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -800,17 +806,67 @@ let
           };
           nixCommon = import ../nix-common.nix { inherit pkgs; };
           inherit (nixCommon) fmtBins;
+
+          # Read excludes from treefmt.toml so we can filter passed files
+          treefmtConfig = builtins.fromTOML (builtins.readFile ../treefmt.toml);
+          excludes =
+            if treefmtConfig ? global && treefmtConfig.global ? excludes then
+              treefmtConfig.global.excludes
+            else
+              [ ];
+
           formatCheck = pkgs.writeShellScriptBin "format-check" ''
-            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-            if [ "$#" -eq 0 ]; then
-              echo "usage: nix run .#format-check -- <changed-file>..." >&2
-              exit 2
-            fi
-            exec treefmt \
-              --config-file "$PWD/treefmt.toml" \
-              --tree-root "$PWD" \
-              --fail-on-change \
-              "$@"
+                        export PATH="${pkgs.lib.makeBinPath (fmtBins ++ [ pkgs.python3 ])}:$PATH"
+                        if [ "$#" -eq 0 ]; then
+                          echo "usage: nix run .#format-check -- <changed-file>..." >&2
+                          return 2 2>/dev/null || exit 2
+                        fi
+
+                        filter_script=$(cat << 'PYEOF'
+            import sys, fnmatch
+
+            excludes = [
+            ${builtins.concatStringsSep "\n" (map (x: "    \"${x}\",") excludes)}
+            ]
+
+            filtered = []
+            for f in sys.argv[1:]:
+                excluded = False
+                for excl in excludes:
+                    if fnmatch.fnmatch(f, excl):
+                        excluded = True
+                        break
+                    if excl.endswith("/**") and f.startswith(excl[:-2]):
+                        excluded = True
+                        break
+                    if excl.startswith("**/") and (f == excl[3:] or f.endswith("/" + excl[3:])):
+                        excluded = True
+                        break
+                    if f == excl:
+                        excluded = True
+                        break
+                if not excluded:
+                    filtered.append(f)
+
+            for f in filtered:
+                print(f + '\0', end=''')
+            PYEOF
+            )
+                        filtered_files=()
+                        while IFS= read -r -d $'\0' file; do
+                            filtered_files+=("$file")
+                        done < <(python3 -c "$filter_script" "$@")
+
+                        if [ ''${#filtered_files[@]} -eq 0 ]; then
+                          echo "No files to format after applying treefmt excludes."
+                          return 0 2>/dev/null || exit 0
+                        else
+                          exec treefmt \
+                            --config-file "$PWD/treefmt.toml" \
+                            --tree-root "$PWD" \
+                            --fail-on-change \
+                            "''${filtered_files[@]}"
+                        fi
           '';
           # Write-mode twin of format-check, for the auto-format
           # workflow (.github/workflows/auto-format.yml): same

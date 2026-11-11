@@ -27,6 +27,8 @@ import { diffCoverage, staleIssueState, type CoverageSnapshotFile } from "./cove
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { formatForecastSummary, type ForecastContract } from "./forecast-contract.ts";
+import type { FlowAnalytics } from "./flow-analytics.ts";
+import { flowChartsHtml } from "./flow-charts.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT, selectVisibleDoneCards } from "./board-policy.ts";
 import { summarizeWipLanes } from "./wip-limits.ts";
@@ -1770,6 +1772,7 @@ export function renderRoadmap(
   viewQuery = "",
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
+  flowAnalytics?: FlowAnalytics,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1823,7 +1826,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
     provenance,
     "/roadmap",
     "",
@@ -6604,6 +6607,8 @@ export function renderProgram(
     /** Prebuilt briefs (#1279), e.g. with comment activity folded in. */
     briefs?: Map<RefKey, ItemBrief>;
     forecasts?: Map<RefKey, ForecastContract[]>;
+    /** The #4829 flow twin the #4830 charts render on this page. */
+    flowAnalytics?: FlowAnalytics;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
@@ -6632,7 +6637,7 @@ ${poolSummaryHtml(live)}
 ${orchestrationHtml(live)}
 <h2>The PM dashboard's own record</h2>
 <p class="muted">This dashboard's architecture, what's built, what's next, and its long-term roadmap live on its project page: <a href="/program/pm-dashboard">PM dashboard →</a>. Its tracked issues, resolved live:</p>
-${trackedTable(live.tracked)}${poolSectionHtml}`;
+${trackedTable(live.tracked)}${poolSectionHtml}${poolSection?.flowAnalytics ? flowChartsHtml(poolSection.flowAnalytics) : ""}`;
   return layout(
     "Program status",
     body,

@@ -589,6 +589,7 @@ fn validate_id(kind: &'static str, role: &'static str, id: u128) -> Result<(), C
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use proptest::prelude::*;
 

@@ -33,6 +33,7 @@ fn spec_importing(module: &str) -> CompileSpec {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn the_probe_is_visible_in_the_capability_catalog() {
     let names = catalog_names();
     assert!(
