@@ -75,7 +75,7 @@ def _auth_header_args() -> List[str]:
 
 # --- Verified-read server transport (#7770 Phase 2: #7367, #7760) ---
 #
-# The seam contract (design #7770, decision 3): EVERY OpenCode server
+# The seam contract (design #7770, decision 2): EVERY OpenCode server
 # call in this module goes through _server_request - one authenticated
 # transport - and every verdict is taken from the HTTP status plus the
 # body's shape. A curl exit code is never a verdict: curl -s exits 0
@@ -133,7 +133,7 @@ def _get_session(session_id: str):
     """Verified per-id session read. Returns (verdict, session):
     "ok" with the session dict on a 2xx carrying a session object
     with an id; "gone" only on a 404 from this GET (contract
-    decision 3: gone is a 404 verdict, never a body-shape
+    decision 2: gone is a 404 verdict, never a body-shape
     accident); "unknown" with None for every other outcome - auth
     failures, 5xx, transport failures and mis-shaped 2xx bodies
     never authorize an action."""
@@ -182,12 +182,18 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
+def log_fire(mode: str, candidates: "List[Dict] | None", launched: List[Dict], cap_room: "int | None", skips: List[Dict]) -> None:
     """Append a fire log entry to fires.jsonl.
 
     cap_room is the measured available-slot count, or None when the
-    fire exited before the cap step ran (#7732): null means unknown,
-    never a placeholder 0, which would read as a saturated fleet.
+    cap is unknown (#7732): null means unknown, never a placeholder
+    0 (which would read as a saturated fleet) and never the cap
+    step's -1 sentinel, which is an internal return value, not a
+    measurement. candidates is likewise None when candidate
+    discovery itself failed: candidates_seen null (I could not
+    read) is a different state from [] (I read, and the queue was
+    empty) — the #7770 Phase 4 audit found the gate exit logging
+    the two identically.
     """
     ensure_state_dir()
     
@@ -306,7 +312,7 @@ def supervision_step(mode: str) -> List[Dict]:
                     # "gone" is a 404 from the per-id GET; "unknown"
                     # (auth failure, 5xx, transport failure, mis-shaped
                     # body) never authorizes recovery - the task stays
-                    # bound (#7367, #7770 decision 3).
+                    # bound (#7367, #7770 decision 2).
                     verdict, session = _get_session(session_id)
                     if verdict == "unknown":
                         continue
@@ -392,26 +398,30 @@ def supervision_step(mode: str) -> List[Dict]:
     return recovery_candidates
 
 
-def gate_step() -> bool:
+def gate_step() -> Optional[bool]:
     """
     Step 2: Gate - check if there are any unbound opencode-lane candidates.
-    
-    Returns True if there are candidates to process, False otherwise.
+
+    Returns True if there are candidates to process, False if the
+    (verified) candidate list holds none, and None when discovery
+    itself failed: an unreadable queue is UNKNOWN, not empty
+    (#7770 contract — unknown never authorizes a side effect and
+    is never recorded as a measurement).
     """
     try:
         poll_data = run_poll()
         candidates = poll_data.get("candidates", [])
-        
+
         # Filter for unbound opencode-lane tasks
         unbound_opencode = [
             c for c in candidates
             if c.get("lane") == "opencode" and not c.get("session_id")
         ]
-        
+
         return len(unbound_opencode) > 0
     except Exception as e:
         print(f"Gate check failed: {e}")
-        return False
+        return None
 
 
 def cap_step() -> int:
@@ -851,19 +861,24 @@ def main():
     # Step 2: Gate
     print("Running gate step...")
     has_candidates = gate_step()
-    
+
+    if has_candidates is None:
+        print("Gate check failed: candidate discovery unknown. Exiting.")
+        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}])
+        return 1
+
     if not has_candidates:
         print("No unbound opencode-lane candidates found. Exiting.")
         log_fire(mode, [], [], None, [{"reason": "no_candidates"}])
         return 0
-    
+
     # Step 3: Cap
     print("Running cap step...")
     cap_room = cap_step()
-    
+
     if cap_room == -1:
         print("Warning: Could not determine cap room. Exiting.")
-        log_fire(mode, [], [], -1, [{"reason": "cap_unknown"}])
+        log_fire(mode, [], [], None, [{"reason": "cap_unknown"}])
         return 1
     
     if cap_room <= 0:
