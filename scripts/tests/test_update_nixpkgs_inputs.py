@@ -34,6 +34,7 @@ Run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_input
 
 import json
 import os
+import random
 import runpy
 import shutil
 import subprocess
@@ -928,6 +929,105 @@ class _Missing:
 
 
 _MISSING = _Missing()
+
+
+def _random_json(rng, depth):
+    """A random JSON-shaped value: scalars, lists, and objects with
+    keys drawn from the flake.lock vocabulary, so mutations land in
+    positions the readers actually consult."""
+    kind = rng.randrange(6 if depth < 3 else 3)
+    if kind == 0:
+        return None
+    if kind == 1:
+        return rng.choice([True, False, 0, 1, 7, 123, -1, 2.5])
+    if kind == 2:
+        return rng.choice([
+            "", "nixpkgs", "github", "NixOS", "master", "root",
+            "a" * 40, "nixos-unstable",
+        ])
+    if kind == 3:
+        return [_random_json(rng, depth + 1) for _ in range(rng.randrange(3))]
+    keys = ["nodes", "root", "inputs", "original", "locked", "type",
+            "owner", "repo", "ref", "rev", "nixpkgs", "nixpkgs-node"]
+    return {
+        rng.choice(keys): _random_json(rng, depth + 1)
+        for _ in range(rng.randrange(4))
+    }
+
+
+def _mutate(rng, value, depth=0):
+    """Return `value` with one random subtree replaced by a random
+    JSON value (or the whole value replaced at the top)."""
+    if depth > 3 or rng.random() < 0.35:
+        return _random_json(rng, 1)
+    if isinstance(value, dict) and value:
+        key = rng.choice(list(value))
+        clone = dict(value)
+        clone[key] = _mutate(rng, value[key], depth + 1)
+        return clone
+    if isinstance(value, list) and value:
+        idx = rng.randrange(len(value))
+        clone = list(value)
+        clone[idx] = _mutate(rng, value[idx], depth + 1)
+        return clone
+    return _random_json(rng, 1)
+
+
+class TestLockReaderTotalityProperty(unittest.TestCase):
+    """Property coverage for the #6847 totality invariant.
+
+    Oracle: for ANY JSON value in any flake.lock position, every
+    reader returns a value of its documented type and never raises —
+    discover_inputs -> list[str] drawn from the root input names;
+    get_input_info -> a 3-tuple of strings; get_input_ref /
+    get_locked_rev -> str or None; get_input_node -> dict or None.
+    Deterministic seeds keep failures reproducible.
+    """
+
+    def test_readers_are_total_over_generated_shapes_in_both_copies(self):
+        rng = random.Random(0x6847)
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                mod = runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))
+                discover = mod["discover_inputs"]
+                info = mod["get_input_info"]
+                get_ref = mod["get_input_ref"]
+                locked_rev = mod["get_locked_rev"]
+                get_node = mod["get_input_node"]
+                for i in range(400):
+                    if i % 2:
+                        lock = _mutate(rng, FLAKE_LOCK)
+                    else:
+                        lock = _random_json(rng, 0)
+                    names = set()
+                    if isinstance(lock, dict):
+                        nodes = lock.get("nodes")
+                        if isinstance(nodes, dict):
+                            root = nodes.get("root")
+                            if isinstance(root, dict):
+                                inputs = root.get("inputs")
+                                if isinstance(inputs, dict):
+                                    names = set(inputs)
+                    found = discover(lock, None)
+                    self.assertIsInstance(found, list)
+                    self.assertLessEqual(set(found), names | {"nixpkgs"})
+                    for name in ("nixpkgs", "candidate", ""):
+                        rev_info = info(lock, name)
+                        self.assertEqual(len(rev_info), 3)
+                        self.assertTrue(
+                            all(isinstance(part, str) for part in rev_info),
+                            f"info({name!r}) = {rev_info!r} for lock {lock!r}",
+                        )
+                        self.assertTrue(
+                            get_ref(lock, name) is None
+                            or isinstance(get_ref(lock, name), str)
+                        )
+                        self.assertTrue(
+                            locked_rev(lock, name) is None
+                            or isinstance(locked_rev(lock, name), str)
+                        )
+                        node = get_node(lock, name)
+                        self.assertTrue(node is None or isinstance(node, dict))
 
 
 if __name__ == "__main__":
