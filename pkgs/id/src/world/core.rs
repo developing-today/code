@@ -262,6 +262,45 @@ fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
 /// Validate the invariants shared by standalone handoff entries and
 /// checkpoint-carried transfer state. `prior_transfers` are the already
 /// admitted records, so callers validate a checkpoint's list in list order.
+/// The owner epoch an entity sits at after a transfer: an export leaves
+/// at the epoch it records as prior (ownership departs at that epoch), an
+/// import lands at its new epoch. A subsequent crossing for the same
+/// entity must chain from exactly this epoch; anything else is a stale
+/// ownership claim and must never supersede the recorded state (#3902).
+fn owner_epoch_after(transfer: &HandoffTransferState) -> u64 {
+    match transfer.direction {
+        HandoffDirection::Export => transfer.prior_owner_epoch,
+        HandoffDirection::Import => transfer
+            .new_owner_epoch
+            .unwrap_or(transfer.prior_owner_epoch),
+    }
+}
+
+/// Enforce the epoch chain against the transfers already recorded for
+/// the entity, if any: the new transfer's prior epoch must continue the
+/// latest recorded transfer. First crossings are unconstrained (the
+/// epoch originates with the caller's ownership claim).
+fn ensure_epoch_chains(
+    transfer: &HandoffTransferState,
+    prior_transfers: &[HandoffTransferState],
+) -> Result<()> {
+    if let Some(latest) = prior_transfers
+        .iter()
+        .rev()
+        .find(|prior| prior.entity_ref == transfer.entity_ref)
+    {
+        ensure!(
+            transfer.prior_owner_epoch == owner_epoch_after(latest),
+            "handoff {:?} claims prior owner epoch {} for entity {:?}, but the latest recorded transfer leaves it at epoch {}",
+            transfer.handoff_id,
+            transfer.prior_owner_epoch,
+            transfer.entity_ref,
+            owner_epoch_after(latest)
+        );
+    }
+    Ok(())
+}
+
 fn validate_handoff_transfer(
     transfer: &HandoffTransferState,
     prior_transfers: &[HandoffTransferState],
@@ -296,6 +335,7 @@ fn validate_handoff_transfer(
         "journal {name}s handoff {:?} twice",
         transfer.handoff_id
     );
+    ensure_epoch_chains(transfer, prior_transfers)?;
     Ok(())
 }
 
@@ -2361,6 +2401,7 @@ impl WorldCore {
                 ),
             "entity already has an active export or handoff ID is duplicated"
         );
+        ensure_epoch_chains(transfer, &self.handoff_transfers)?;
         Ok(())
     }
 
@@ -2408,6 +2449,7 @@ impl WorldCore {
                 ),
             "entity already has an active import or handoff ID is duplicated"
         );
+        ensure_epoch_chains(transfer, &self.handoff_transfers)?;
         Ok(())
     }
 

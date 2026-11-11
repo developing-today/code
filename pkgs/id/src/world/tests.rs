@@ -852,6 +852,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_epoch_import_cannot_supersede_an_export_fence() {
+        let (mut actor, _, journal, _, _) = transfer_actor(b"entity".to_vec(), false);
+        let exported = export(&mut actor).await.unwrap();
+        assert!(actor.core.entity_is_fenced("entity-1"));
+
+        // A returning import under a fresh handoff ID but a STALE prior
+        // epoch (6, while the export left ownership at 7) must be
+        // rejected: recording it would make it the latest transfer and
+        // silently clear the fence (#3902).
+        let payload = b"entity".to_vec();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ImportEntity {
+                handoff_id: "34".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-b".to_owned(),
+                target_region: "region-a".to_owned(),
+                prior_owner_epoch: 6,
+                program_module_hash: "module-hash".to_owned(),
+                payload_schema: "test/v1".to_owned(),
+                payload_digest: hex_encode(blake3::hash(&payload).as_bytes()),
+                payload,
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_err());
+        assert!(actor.core.entity_is_fenced("entity-1"));
+        assert_eq!(actor.core.handoff_transfers().len(), 1);
+
+        // The same invariant holds at journal restoration: a journal
+        // carrying the stale import after the export is refused.
+        let stale_event = {
+            let payload = b"entity".to_vec();
+            let envelope = serde_json::json!({
+                "protocol": "world.entity-transfer.v1",
+                "direction": "import",
+                "app_event": "add-entity",
+                "payload_hex": hex_encode(&payload),
+                "payload_digest": hex_encode(blake3::hash(&payload).as_bytes()),
+            });
+            WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: envelope.to_string(),
+                },
+            }
+        };
+        let mut entries = journal.entries();
+        entries.push(JournalEntry::EntityImported {
+            handoff_id: "34".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-b".to_owned(),
+            target_region: "region-a".to_owned(),
+            prior_owner_epoch: 6,
+            new_owner_epoch: 7,
+            program_module_hash: "module-hash".to_owned(),
+            payload_schema: "test/v1".to_owned(),
+            payload_digest: exported.payload_digest.clone(),
+            destination_event: stale_event,
+        });
+        assert!(
+            WorldCore::restore(
+                "source",
+                WorldLimits {
+                    region_sharded: true,
+                    ..WorldLimits::default()
+                },
+                entries,
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn entity_input_on_a_read_only_replica_never_reaches_the_program() {
         let (mut actor, token, _, _, applied) = transfer_actor(b"entity".to_vec(), false);
         actor.read_only = true;
