@@ -175,4 +175,29 @@ begin
   end;
 end $$;
 
-\echo 'migration-0026 tests: all 8 scenarios passed'
+-- S9 (oracle: the full relaunch sequence, per the migration-0026
+-- header): recovery, then the broker's expiry/collection
+-- transition (the recovered row returns via the handoff sink and
+-- is collected under a FRESH claim lease), then the normal bind of
+-- the replacement session succeeds against that live lease.
+do $$
+begin
+  perform agent.test_seed('-10 minutes', 1, 4);
+  perform agent.bind_repo_task_lane_session(
+    1, 'opencode-claimant', 'ses_old',
+    'opencode-claimant-recovery:gone-session');
+  -- Simulate the broker transition: expired claimed row with the
+  -- launch_failed handoff shape returns to the sink and is
+  -- collected by the claimant under a fresh lease.
+  update agent.tasks
+     set status = 'claimed', worker_id = 'opencode-claimant',
+         lease_until = now() + interval '2700 seconds'
+   where id = 1;
+  perform agent.bind_repo_task_lane_session(1, 'opencode-claimant', 'ses_new', 'opencode-claimant');
+  if (select session_id from agent.repo_task_lane_ledger where task_id = 1) <> 'ses_new'
+     or (select progress ->> 'session_id' from agent.tasks where id = 1) <> 'ses_new' then
+    raise exception 'TEST FAIL S9: normal bind after recovery + fresh claim did not bind';
+  end if;
+end $$;
+
+\echo 'migration-0026 tests: all 9 scenarios passed'

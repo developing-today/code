@@ -40,6 +40,17 @@
 --   session id present in BOTH stores (any mismatch raises and
 --   leaves both stores unchanged), and attempts remaining.
 --
+-- Launch eligibility after recovery: recovery deliberately does
+-- NOT renew the lease or change the task status. The recovered row
+-- is claimed with an expired lease and stage 'launch_failed', which
+-- is the broker's handoff shape: lease expiry returns such a row to
+-- the handoff sink, and the claimant collects it there with a fresh
+-- claim (a new live lease) before launching the replacement session
+-- and binding it through the normal branch above. Renewing the
+-- lease inside recovery would diverge from the live bind contract,
+-- which renews nothing at bind or recovery time. The test file
+-- covers this full sequence (scenario S9).
+--
 -- revalidate_parked_tasks is not redefined here: migration-0024's
 -- definition stands.
 
