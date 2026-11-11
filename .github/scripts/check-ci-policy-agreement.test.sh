@@ -609,6 +609,38 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-paths_tags_substring.out"
 echo "pass: a tags: substring inside a path scalar is not a tag filter (waiver stale)"
 
+
+# Codex P2 regression on #8513 round 9: an inline push mapping may
+# span lines — the whole mapping is collected before its filters
+# are evaluated.
+build_tree "$TMP/filter-inline_split"
+wf_raw "$TMP/filter-inline_split" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches: [
+    release]}
+EOF
+bash "$SCRIPT" "$TMP/filter-inline_split" >"$TMP/filter-inline_split.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_split.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-inline_split.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_split.out"; then
+  echo "FAIL: a split inline push mapping was treated as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: split inline push mapping with branches: [release] keeps the main leg waived"
+
+build_tree "$TMP/filter-inline_split_main"
+wf_raw "$TMP/filter-inline_split_main" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches: [
+    main]}
+EOF
+if bash "$SCRIPT" "$TMP/filter-inline_split_main" >"$TMP/filter-inline_split_main.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a split inline main mapping" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_split_main.out"
+echo "pass: split inline push mapping with branches: [main] satisfies the main leg"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python

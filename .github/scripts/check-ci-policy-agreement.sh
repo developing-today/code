@@ -301,12 +301,29 @@ push_targets_main() {
         seen_push = 1
         rest = $0
         sub(/^  ["\047]?[a-z_]+["\047]?:[[:space:]]*/, "", rest)
-        if (rest ~ /^\{/) apply_inline_filters(rest)
+        if (rest ~ /^\{/) {
+          if (rest ~ /\}/) apply_inline_filters(rest)
+          else { inline_collect = 1; inline_buf = rest }
+        }
       }
       subkey = ""
       next
     }
     inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0; child_indent = 0 }
+    inline_collect {
+      if ($0 ~ /^[^[:space:]#]/) {
+        apply_inline_filters(inline_buf)
+        inline_collect = 0
+      } else {
+        inline_buf = inline_buf " " $0
+        if ($0 ~ /\}/) {
+          apply_inline_filters(inline_buf)
+          inline_collect = 0
+        }
+        next
+      }
+    }
+
     inpush && /^ +["\047]?[a-z-]+["\047]?:/ {
       line = $0
       match(line, /^ +/)
