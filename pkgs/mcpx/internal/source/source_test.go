@@ -279,6 +279,36 @@ func TestDirectorySkipsDanglingLinkAndFollowsLinkOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestDirectorySkipsSymlinkLoops(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		links map[string]string
+	}{
+		{"self", map[string]string{"loop.ts": "loop.ts"}},
+		{"pair", map[string]string{"a.ts": "b.ts", "b.ts": "a.ts"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			regular := filepath.Join(root, "regular.ts")
+			if err := os.WriteFile(regular, []byte("regular"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for name, target := range tc.links {
+				if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+					t.Skipf("symlinks are unavailable: %v", err)
+				}
+			}
+			got, err := source.Resolve("@dir:"+root, opts(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Files) != 1 || got.Files[0] != regular {
+				t.Fatalf("got files %v, want [%s]", got.Files, regular)
+			}
+		})
+	}
+}
+
 func TestResolveAllJoinsInOrder(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "second.ts"), []byte("SECOND"), 0o644)
