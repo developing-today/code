@@ -34,6 +34,7 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference` and `research`. Run `ls doc/` to list them all. Some starting points:
 
+- [Redis→SQLite export + query-Redis-get-SQLite](2026-11-11T00-16-00Z_design_id5807_redis_sqlite_export/2026-11-11T00-16-00Z_design_id5807_redis_sqlite_export.md) — design for #5807 (from #5672 §B4/§B5): one scan/map/write core for whole-keyspace export and selection queries, a shared SQLite schema with bytes-exact + UTF-8-view columns, and the lossy corners (TTL, set ordering, binary data, zset scores, huge values, unmapped types) stated with a closed skip-reason vocabulary.
 - [Moderation preset tiers](2026-11-10T21-05-00Z_design_id6007_moderation_presets/2026-11-10T21-05-00Z_design_id6007_moderation_presets.md) — design for #6007: Open/Standard/Strict tiers compiling to a concrete moderation rule schema over the append-only Hide/Restore log.
 - [Architecture index](../planning/architecture/README.md) — every architecture and design record in one place, plus the ADR index and template.
 - [Next stage platform architecture](2026-10-17T15-00-00Z_architecture_next_stage_platform/2026-10-17T15-00-00Z_architecture_next_stage_platform.md)
