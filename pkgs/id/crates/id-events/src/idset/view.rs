@@ -8,7 +8,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 use p2panda_core::Hash;
 
 use crate::groups::Role;
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 use super::{Entry, Excludes, Rescind, WriterSet};
 

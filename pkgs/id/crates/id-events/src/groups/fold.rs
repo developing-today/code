@@ -12,7 +12,7 @@
 //! rule for concurrent adds past the cap (design §5.1). The voiding track's rules for removal may
 //! refine how a removal meets a concurrent change.
 //!
-//! Membership operations go to [`crate::membership`], which decides them on p2panda-auth. Each
+//! Membership operations go to [`id_core::membership`], which decides them on p2panda-auth. Each
 //! event is handed to it once, so the causal index stays complete. An event this layer refuses is
 //! handed over as a no-op.
 //!
@@ -29,11 +29,11 @@ use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::Hash;
 use thiserror::Error;
 
-use crate::membership::{
+use id_core::membership::{
     AuthId, CausalEvent, Membership, MembershipError, Outcome as Decided, Refusal as AuthRefusal,
     Role as Placement,
 };
-use crate::rejection::Reason;
+use id_core::rejection::Reason;
 
 use super::delegation::{Grant, GrantVisibility, Removal, removed_member};
 use super::friendship::{Pair, friendship_id};

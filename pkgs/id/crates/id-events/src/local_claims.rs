@@ -1,7 +1,7 @@
 //! The node's own local-only tag claims (#1793, issue #1793 bullet 2).
 //!
 //! A tag claim's scope says where it lives. A shared claim is a signed `tag.set` event in the
-//! event store ([`crate::tag_claims`]): it is in the sync set, so every peer receives it. A
+//! event store ([`id_store::tag_claims`]): it is in the sync set, so every peer receives it. A
 //! **local** claim is the opposite in exactly one respect — it is never signed into the event
 //! store, so it is never in the sync set and never reaches another node. It is kept here, in a
 //! JSON file beside the event store, and only this node reads it.
@@ -22,10 +22,10 @@ use std::path::{Path, PathBuf};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::tag_claims::{
+use id_store::tag_claims::{
     LocalClaim, MAX_NAME_BYTES, MAX_VALUE_BYTES, TagError, TagScope, check_text,
 };
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 /// The file local claims live in, under the event store's directory.
 pub const FILE_NAME: &str = "local-claims.jsonl";

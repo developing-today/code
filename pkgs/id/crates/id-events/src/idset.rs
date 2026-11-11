@@ -5,8 +5,8 @@
 //! A writer set is its own signed event kind, with the entry list in the event
 //! **body** — never in `ChainExt` — so the signed-header format, and therefore
 //! every existing verifier, is unchanged (spec §D1). Bodies produced here are
-//! passed to [`crate::chain::sign`] as the event body and checked on receipt by
-//! [`crate::chain::decode`] plus [`decode_writer_body`] / [`decode_rescind_body`];
+//! passed to [`id_store::chain::sign`] as the event body and checked on receipt by
+//! [`id_store::chain::decode`] plus [`decode_writer_body`] / [`decode_rescind_body`];
 //! no new crypto is involved.
 //!
 //! The body is a canonical CBOR array. A writer-set body is
@@ -45,7 +45,7 @@
 //! failing. Encoders always write the flag.
 //!
 //! Canonicality is judged at the CBOR value level, the way
-//! [`crate::chain::decode`] judges a header: the bytes must be the canonical
+//! [`id_store::chain::decode`] judges a header: the bytes must be the canonical
 //! encoding of the value they hold. That is what lets a legacy entry (a
 //! shorter array) be canonical bytes and still decode, while a re-encoded
 //! entry always carries the flag.
@@ -66,7 +66,7 @@ use p2panda_core::Hash;
 use unicode_normalization::is_nfc;
 
 use crate::groups::Role;
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 /// Store-wired expansion over the membership layer (spec §9 item 2).
 pub mod expand;
@@ -656,7 +656,7 @@ mod tests {
     use p2panda_core::SigningKey;
 
     use super::*;
-    use crate::chain::{ChainExt, decode, sign};
+    use id_store::chain::{ChainExt, decode, sign};
 
     fn owner() -> AuthorKey {
         std::array::from_fn(|i| u8::try_from(i).unwrap())
