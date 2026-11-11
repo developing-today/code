@@ -50,6 +50,10 @@ jobs:
         run: |
           test -f lib/run-switch.test.sh
           bash lib/run-switch.test.sh
+      - name: Run drain-wrapper credential fallback tests (#5222)
+        run: |
+          test -f infra/github-backup/systemd/drain-wrapper.test.sh
+          bash infra/github-backup/systemd/drain-wrapper.test.sh
       - name: Run identity provider core static confinement regression tests (#6180)
         run: |
           test -f pkgs/identity/provider/core-static-test.sh
