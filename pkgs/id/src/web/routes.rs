@@ -614,6 +614,9 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/tags/search", get(super::tags_ws::search_tags_handler))
         // Identity API routes
         .route("/api/identity/register", post(identity_register_handler))
+        // Seitan admission API (#8487)
+        .route("/api/seitan/invite", post(super::seitan::seitan_invite_handler))
+        .route("/api/seitan/admit", post(super::seitan::seitan_admit_handler))
         .route("/api/identity/me", get(identity_me_handler))
         .route("/api/identity/name", post(identity_update_name_handler))
         // WebSocket for collaboration
@@ -2303,6 +2306,238 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert_eq!(root.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ---- Seitan admission (#8487) ----
+
+    fn seitan_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn seitan_now_ms() -> u64 {
+        u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+    }
+
+    async fn seitan_response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    /// The account a seitan proof names in these tests: a keyed
+    /// account whose id is its public key's hex, as provisioning
+    /// records it. Returns (key hex, uid) — the same string here.
+    fn seitan_account_key() -> String {
+        seitan_hex(
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .as_bytes(),
+        )
+    }
+
+    /// A router over a state whose seitan state is `seitan` (with the
+    /// test account already keyed into its directory when
+    /// `with_account`), hosting world `arena` under admin `s3cret`.
+    async fn seitan_app(
+        seitan: crate::web::SeitanState,
+        with_account: bool,
+    ) -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
+        let (_, mut state, dir, endpoint, docs) = router_with_state().await;
+        if with_account {
+            seitan.sign_up_keyed(&seitan_account_key(), "joiner").unwrap();
+        }
+        state.seitan = seitan;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        (app, state, dir, endpoint, docs)
+    }
+
+    async fn seitan_register(app: &Router, token: &str, admin: Option<&str>) -> Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/seitan/invite")
+            .header("content-type", "application/json");
+        if let Some(admin) = admin {
+            builder = builder.header("x-world-admin-token", admin);
+        }
+        let body = serde_json::json!({
+            "token": token,
+            "world": "arena",
+            "expires_ms": seitan_now_ms() + 3_600_000,
+        })
+        .to_string();
+        app.clone()
+            .oneshot(builder.body(Body::from(body)).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn seitan_admit(app: &Router, proof: &crate::seitan::Proof) -> Response {
+        let body = serde_json::json!({
+            "message": seitan_hex(&proof.message),
+            "signature": seitan_hex(&proof.signature),
+        })
+        .to_string();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/seitan/admit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_happy_path_under_a_configured_window() {
+        // (a) A non-default window (10 min, not the 5-minute default)
+        // is exercised at the boundary: a proof signed 8 minutes
+        // before the invite was created is outside the default window
+        // and inside the configured one, and it admits.
+        let seitan = crate::web::SeitanState::new(
+            crate::directory::Directory::new(),
+            std::time::Duration::from_mins(10),
+        );
+        let (app, state, _dir, _endpoint, _docs) = seitan_app(seitan, true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let uid = seitan_account_key();
+        let proof = crate::seitan::accept::sign(
+            &token,
+            &uid,
+            1,
+            seitan_now_ms().saturating_sub(480_000),
+        )
+        .unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        let body = seitan_response_json(admitted).await;
+        assert_eq!(body["uid"], uid);
+        assert_eq!(body["world"], "arena");
+        assert!(
+            state.seitan.is_verified(&uid),
+            "AccountVerified must land in the directory before the 200"
+        );
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_refuses_a_stale_proof_through_the_live_path() {
+        // (b) Under a 1-minute configured window, a proof signed 5
+        // minutes before the invite was created refuses `stale`.
+        let seitan = crate::web::SeitanState::new(
+            crate::directory::Directory::new(),
+            std::time::Duration::from_mins(1),
+        );
+        let (app, _state, _dir, _endpoint, _docs) = seitan_app(seitan, true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = crate::seitan::accept::sign(
+            &token,
+            &seitan_account_key(),
+            1,
+            seitan_now_ms().saturating_sub(300_000),
+        )
+        .unwrap();
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(seitan_response_json(refused).await["reason"], "stale");
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_no_config_default_window_admits_a_fresh_proof() {
+        // (c) The default state (no server config) admits a fresh
+        // proof under the 5-minute default window.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
+            .unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_unknown_invite_is_404() {
+        // (d) A proof for a token that was never registered names an
+        // invite the registry does not hold.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), true).await;
+        let token = crate::seitan::Token::generate();
+        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
+            .unwrap();
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_invite");
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_unknown_account_is_403_and_does_not_consume_the_invite() {
+        // (e) The account check runs before `admit`: an unknown uid
+        // refuses 403, and the same proof succeeds once the account
+        // exists — the invite was not consumed by the refusal.
+        let seitan = crate::web::SeitanState::default();
+        let (app, state, _dir, _endpoint, _docs) = seitan_app(seitan.clone(), false).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let uid = seitan_account_key();
+        let proof = crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_account");
+
+        state.seitan.sign_up_keyed(&uid, "joiner").unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        assert!(state.seitan.is_verified(&uid));
+    }
+
+    #[tokio::test]
+    async fn seitan_invite_registration_requires_the_admin_secret() {
+        // Minting an invite without the admin secret (or with the
+        // wrong one) is refused, like POST /api/world/invite.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), false).await;
+        let token = crate::seitan::Token::generate();
+        let no_secret = seitan_register(&app, token.as_str(), None).await;
+        assert_eq!(no_secret.status(), StatusCode::UNAUTHORIZED);
+        let wrong_secret = seitan_register(&app, token.as_str(), Some("wrong")).await;
+        assert_eq!(wrong_secret.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn seitan_duplicate_registration_does_not_reset_single_use_state() {
+        // Codex P2 on PR #8529: a retried registration after the
+        // invite was redeemed must not replace the consumed invite
+        // with a fresh one — the same proof refuses `used`, it does
+        // not admit a second time.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+
+        let reregistered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(reregistered.status(), StatusCode::OK);
+
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(seitan_response_json(refused).await["reason"], "used");
     }
 
     #[tokio::test]
