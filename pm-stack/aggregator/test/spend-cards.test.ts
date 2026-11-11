@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { projectsBodyHtml } from "../src/render.ts";
+import { projectsBodyHtml, renderRoadmap } from "../src/render.ts";
+import type { Provenance, RoadmapRow } from "../src/model.ts";
 import {
   buildSpendCards,
   spendCardHtml,
@@ -151,6 +152,40 @@ describe("Projects pool cards render spend beside progress (#4824)", () => {
     expect(html).toContain("no-worktree: 7 tokens");
     // Without spend data the cards render exactly as before.
     const bare = projectsBodyHtml(pool, {});
+    expect(bare).not.toContain("Unattributed spend");
+  });
+
+  test("roadmap view renders the unattributed row too (both views)", () => {
+    const row: RoadmapRow = {
+      id: 1,
+      subject: "grist:doc/table/1",
+      title: "Roadmap row",
+      area: "pm-dashboard",
+      status: "In progress",
+      horizon: "Q4 2026",
+      source: "fixture",
+      notes: "",
+      links: [],
+    };
+    const prov = {
+      board: "fixture",
+      roadmap: "fixture",
+      items: "fixture",
+      comments: "fixture",
+      quota: "fixture",
+      usage: "fixture",
+      attention: "fixture",
+      orchestration: "fixture",
+      dns: "fixture",
+      registry: "fixture",
+      aa: "fixture",
+    } as Provenance;
+    const spend = buildSpendCards(
+      rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]),
+    );
+    const html = renderRoadmap([row], new Map(), prov, "quarter", undefined, undefined, undefined, undefined, undefined, "", undefined, undefined, undefined, spend);
+    expect(html).toContain("Unattributed spend");
+    const bare = renderRoadmap([row], new Map(), prov, "quarter");
     expect(bare).not.toContain("Unattributed spend");
   });
 });

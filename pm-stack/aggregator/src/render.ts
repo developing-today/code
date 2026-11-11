@@ -1835,7 +1835,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
     provenance,
     "/roadmap",
     "",
