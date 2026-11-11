@@ -715,10 +715,16 @@
         "pm-stack/opencode-claimant/test/install.test.mjs"
       ],
       "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 6091,
-      "reason": "No workflow invokes the install suite."
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test claimant install bun suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [
+        6091
+      ]
     },
     {
       "id": "pkarr-worker",
