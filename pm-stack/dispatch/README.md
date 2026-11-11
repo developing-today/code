@@ -517,9 +517,12 @@ touching any caller.
 | `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                                                                                           |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                                                                                       |
 
-GitHub issue creation uses the pm-stack GitHub App (installed on code,
-opencode, openchamber and dezren39/darwin-nix — **not** developing-today/zettel
-or dezren39/dezren39, where issue creation is skipped with a warning).
+GitHub issue creation uses the pm-stack GitHub App (installed on
+developing-today/code and dezren39/darwin-nix — **not** on
+developing-today-forks/opencode, developing-today-forks/openchamber,
+developing-today/zettel or dezren39/dezren39, where issue creation is
+skipped with a warning; APP_INSTALLED_REPOS in src/config.ts is the
+list of record).
 If the app route is unusable, the laptop's
 authenticated `gh` CLI is the fallback; if both fail, the request
 proceeds without an issue and says so in `warnings` (for `/v1/tasks`
