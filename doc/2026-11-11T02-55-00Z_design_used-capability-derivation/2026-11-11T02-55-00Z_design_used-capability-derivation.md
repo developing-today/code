@@ -74,7 +74,16 @@ The tool takes exactly three inputs:
    module-qualified name. Default: the platform interface's
    declared exports for the world kind being scanned, when the
    caller does not override. A scan with zero resolved entry points
-   is an input error.
+   is an input error. Entry points are also a certification input:
+   a result is certified *for the whole world* only when the
+   resolved entry-point set equals the platform interface's
+   complete declared export set for the world kind being scanned.
+   A caller override that resolves to a proper subset (one valid
+   handler out of several the platform can invoke) yields a
+   partial-scope record (§6.2): the omitted handlers' capabilities
+   are outside the scan, the record names the entry points it was
+   seeded with, and it is never certified — §6.3 must not read a
+   partial record as evidence about the whole world.
 3. **Catalog snapshot** — the catalog as `BTreeSet<String>` from
    `PROVIDER_REGISTRY.catalog_names()` in the `id-core` build the
    tool is compiled against. The catalog is compiled in, not read
@@ -94,8 +103,16 @@ allowlist/denylist input: exceptions are expressed by the rules of
    the full source closure. Collect every definition (function or
    value) in the closure, keyed by module-qualified name.
 2. **Graph.** Build the call graph over closure definitions: an
-   edge A → B for each direct call of B in A's body. Platform
-   functions are sink nodes labelled by catalog name.
+   edge A → B for each direct call of B in A's body, and a
+   dependency edge A → V for each *value* definition V that A
+   references — a module-level aggregate, record, or alias such as
+   `ops = { read: records.read }` reached through `ops.read`, or
+   `read = records.read` used unapplied. A value definition's
+   initializer is analysed like a body: when V is reachable, the
+   platform references in its initializer are collected (§5 rule
+   R5), and function values stored in it take the value-flow edges
+   of rule R3 from V. Platform functions are sink nodes labelled
+   by catalog name.
 3. **Reach.** Mark definitions reachable from the entry points,
    following call edges to a fixpoint (cycles are expected;
    reachability is a visited-set computation, not a recursion).
@@ -110,7 +127,11 @@ allowlist/denylist input: exceptions are expressed by the rules of
    construct, add the unknown marker and mark the result
    uncertified. Certification is whole-scan: one dynamic site
    anywhere reachable uncertifies the scan, because the site can
-   in principle reach any platform function.
+   in principle reach any platform function. A scan whose resolved
+   entry-point set is a proper subset of the platform's declared
+   exports (§3) is likewise never certified, whatever else it saw:
+   it is emitted as a partial-scope record (§6.2), not a
+   whole-world one.
 6. **Emit** the output document of §6, deterministically: names
    sorted (the `BTreeSet` iteration order), no timestamps or
    environment data in the document, so identical inputs produce
@@ -119,7 +140,7 @@ allowlist/denylist input: exceptions are expressed by the rules of
 ## 5. Over-approximation rules
 
 The scan is exact for direct calls in a statically closed world.
-Exactly three rules widen it, and one rule marks its limit. No
+Exactly four rules widen it, and one rule marks its limit. No
 other widening is permitted: an implementation that approximates
 anywhere else is not implementing this spec.
 
@@ -157,6 +178,20 @@ anywhere else is not implementing this spec.
   uncertified (§2). It does **not** add the whole catalog: the
   used-set stays a truthful record of what was *seen*, and the
   certification flag, not set inflation, carries the uncertainty.
+- **R5 — value-definition dependencies.** A platform reference
+  that sits in the initializer of a module-level value definition
+  — an aggregate member (`ops = { read: records.read }`), an alias
+  (`read = records.read`), or a stored structure — counts as used
+  when the value definition is referenced from reachable code,
+  exactly as if the reference appeared in the referencing
+  definition's body. Without this rule a reachable access like
+  `ops.read` would contribute nothing: neither a direct call from
+  the accessor's body nor an R3 function-value edge names the
+  value definition, so a genuinely used capability could be
+  omitted from a certified result and §6.3 would report it as
+  over-declared. Value definitions referenced only from
+  unreachable code stay dead (§5's dead-code rule applies to them
+  unchanged).
 
 Dead code is not an approximation source in either direction:
 platform functions referenced only from unreachable definitions
@@ -175,6 +210,14 @@ pub struct UsedCaps {
     pub used: BTreeSet<String>,
     /// False iff a rule R4 construct was reachable.
     pub certified: bool,
+    /// The entry-point definitions the scan was seeded with
+    /// (module-qualified names), as resolved in §3.
+    pub entry_points: BTreeSet<String>,
+    /// True iff `entry_points` is a proper subset of the platform
+    /// interface's declared exports for the world kind: the
+    /// record's scope is partial (§3, §6.2) and `certified` is
+    /// false.
+    pub partial: bool,
 }
 ```
 
@@ -193,7 +236,10 @@ and the runtime instrumentation path (`CapLedger.usage` keys, with
 `<unknown>` for unattributable use) produces the same set type.
 Static and runtime discovery are two producers of one type; #5958's
 question "static, instrumentation, or both" is answered: both,
-diffed the same way.
+diffed the same way. Representation is not pairing semantics,
+though: §6.3 defines what may serve as the *declared* side of the
+diff, and a live `Wants::caps()` snapshot may not — it is a
+demand snapshot, not a declaration (§6.3).
 
 ### 6.2 Serialized form
 
@@ -214,6 +260,13 @@ The registry record is a JSON document:
   `BTreeSet` serialization); `<unknown>` appears here exactly when
   `certified` is false and R4 fired.
 - `certified` — the §2 certification flag.
+- `entry_points` — the sorted array of entry-point definitions
+  the scan was seeded with (module-qualified names).
+- `scope` — `"whole-world"` when `entry_points` equals the
+  platform interface's complete declared export set for the world
+  kind, otherwise `"partial"`. A partial record always has
+  `certified: false`; §6.3 treats it like an uncertified record
+  (over-declared side suppressed) and names its restricted scope.
 - Optional diagnostic field `unreachable_refs` (sorted array of
   catalog names referenced only from unreachable code) may be
   emitted for tooling display; consumers MUST NOT diff against it,
@@ -226,8 +279,22 @@ collapse).
 
 ### 6.3 Pairing and differences
 
-Given `declared = wants.caps()` and a `UsedCaps` record for the
-same world:
+Given a `UsedCaps` record for a world and `declared` — the
+world's **stable declared capability surface**: the declaration of
+record for that world and build (the set the world declares it
+may request, as the registry stores it), *not* a live
+`Wants::caps()` snapshot. `Wants::caps()` collects only the
+current requests and subscriptions (`world_caps.rs`): a world
+like `examples/roc-chat` starts from `RocCap.empty` and its
+`wants` emits only pending requests, so `chat.say` is absent
+until a send is in flight and disappears when it completes.
+Diffing whole-program static use against that momentary snapshot
+would report deferred-but-legitimate effects as under-declared
+while a request is unissued, and vanished ones as over-declared
+after it completes. A pairing against a `wants` snapshot may be
+displayed only labelled demand-vs-use, never declared-vs-used;
+the differences below are defined on the stable declaration
+only:
 
 - **Under-declared** = `used − declared`. Always reportable, for
   certified and uncertified records alike: the scan only ever
@@ -254,6 +321,7 @@ All errors name the offending artifact; none degrade silently.
 | Zero entry points resolved | input error (§3.2) |
 | Platform reference with no catalog name | error naming the reference (§3.3) |
 | R4 construct reachable | **not an error** — `<unknown>` + uncertified (§5) |
+| Entry-point override resolving to a proper subset of the platform's declared exports | **not an error** — partial-scope record (§6.2), never certified |
 | Platform reference only in dead code | not an error, not in the used-set (§5) |
 
 ## 8. Implementation shape (for the follow-on)
@@ -298,9 +366,18 @@ in the fixture, never the tool's own output:
    visible uses still listed (R4).
 7. **Version skew:** a platform reference absent from the catalog;
    expect the §7 error naming it.
-8. **Diff pairing:** a fixture `Wants` + fixture record exercising
-   §6.3 both ways, including the uncertified suppression of the
-   over-declared side.
+8. **Diff pairing:** a fixture stable declaration + fixture record
+   exercising §6.3 both ways, including the uncertified suppression
+   of the over-declared side.
+9. **Value-definition aggregate:** `ops = { read: records.read }`
+   with `ops.read` accessed from a reachable definition and no
+   direct `records.read` call anywhere; expect `records.read`
+   present (R5), certified.
+10. **Partial entry points:** a scan seeded with only `init` on a
+    world whose `update` handler uses `chat.say`; expect a
+    partial-scope record with `chat.say` absent from `used`,
+    `certified: false`, the seeded entry points named, and the
+    §6.3 over-declared side suppressed.
 
 ## 10. References
 
