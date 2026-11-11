@@ -21,7 +21,13 @@ import {
   foldKv,
   listR2Buckets,
   parseGraphqlUsage,
+  AI_NEURONS_GROUP_LIMIT,
+  D1_GROUP_LIMIT,
+  KV_GROUP_LIMIT,
+  QUEUES_GROUP_LIMIT,
+  R2_OPERATIONS_GROUP_LIMIT,
   R2_STORAGE_GROUP_LIMIT,
+  WORKERS_GROUP_LIMIT,
   run,
   successDocument,
 } from "./cloudflare-quota-export.mjs";
@@ -176,6 +182,89 @@ test("parseGraphqlUsage: r2-storage total covers every bucket group, saturation 
   assert.match(satById["r2-storage"].detail, /LOWER BOUND/);
   assert.equal(satById["r2-storage"].lowerBound, true);
   assert.equal(coveredById["r2-storage"].lowerBound, undefined);
+});
+
+// #6880: every grouped dataset with an explicit query limit flags
+// its metrics lowerBound at the limit (the r2-storage pattern) and
+// stays unflagged one below it — no at-limit sum publishes as exact.
+const SATURATION_CASES = [
+  {
+    dataset: "workersInvocationsAdaptive",
+    limit: WORKERS_GROUP_LIMIT,
+    group: () => ({ sum: { requests: 1, cpuTimeUs: 1000 } }),
+    metricIds: ["workers-requests", "workers-cpu-ms"],
+  },
+  {
+    dataset: "kvOperationsAdaptiveGroups",
+    limit: KV_GROUP_LIMIT,
+    group: () => ({ dimensions: { actionType: "read" }, sum: { requests: 1 } }),
+    metricIds: ["kv-reads", "kv-writes"],
+  },
+  {
+    dataset: "d1AnalyticsAdaptiveGroups",
+    limit: D1_GROUP_LIMIT,
+    group: () => ({ sum: { rowsRead: 1, rowsWritten: 1 } }),
+    metricIds: ["d1-rows-read", "d1-rows-written"],
+  },
+  {
+    dataset: "queueMessageOperationsAdaptiveGroups",
+    limit: QUEUES_GROUP_LIMIT,
+    group: () => ({ sum: { billableOperations: 1 } }),
+    metricIds: ["queues-ops"],
+  },
+  {
+    dataset: "r2OperationsAdaptiveGroups",
+    limit: R2_OPERATIONS_GROUP_LIMIT,
+    group: () => ({ dimensions: { actionType: "GetObject" }, sum: { requests: 1 } }),
+    metricIds: ["r2-class-a", "r2-class-b"],
+  },
+  {
+    dataset: "aiInferenceAdaptiveGroups",
+    limit: AI_NEURONS_GROUP_LIMIT,
+    group: () => ({ sum: { totalNeurons: 10 } }),
+    metricIds: ["workers-ai-neurons"],
+  },
+];
+
+for (const { dataset, limit, group, metricIds } of SATURATION_CASES) {
+  test(`parseGraphqlUsage: ${dataset} at its query limit flags lowerBound (#6880)`, () => {
+    const atLimit = structuredClone(ACCOUNT);
+    atLimit[dataset] = Array.from({ length: limit }, group);
+    const satById = Object.fromEntries(
+      parseGraphqlUsage(atLimit, { now: NOW, cycleStart: START }).metrics.map((m) => [m.id, m]),
+    );
+    for (const id of metricIds) assert.equal(satById[id].lowerBound, true, id);
+
+    const belowLimit = structuredClone(ACCOUNT);
+    belowLimit[dataset] = Array.from({ length: limit - 1 }, group);
+    const belowById = Object.fromEntries(
+      parseGraphqlUsage(belowLimit, { now: NOW, cycleStart: START }).metrics.map((m) => [m.id, m]),
+    );
+    for (const id of metricIds) assert.equal(belowById[id].lowerBound, undefined, id);
+  });
+}
+
+test("classifyR2: saturation is reported for r2OperationsAdaptiveGroups (#6880)", () => {
+  const groups = Array.from({ length: R2_OPERATIONS_GROUP_LIMIT }, () => ({
+    dimensions: { actionType: "GetObject" },
+    sum: { requests: 1 },
+  }));
+  const atLimit = classifyR2(groups);
+  assert.equal(atLimit.saturated, true);
+  assert.equal(atLimit.classB, R2_OPERATIONS_GROUP_LIMIT);
+  assert.equal(classifyR2(groups.slice(1)).saturated, false);
+});
+
+test("parseGraphqlUsage: ai cycle-total saturation is flagged in prose too (#6880)", () => {
+  const atLimit = structuredClone(ACCOUNT);
+  atLimit.aiInferenceAdaptiveGroups = Array.from({ length: AI_NEURONS_GROUP_LIMIT }, () => ({
+    sum: { totalNeurons: 10 },
+  }));
+  const byId = Object.fromEntries(
+    parseGraphqlUsage(atLimit, { now: NOW, cycleStart: START }).metrics.map((m) => [m.id, m]),
+  );
+  assert.equal(byId["workers-ai-neurons"].lowerBound, true);
+  assert.match(byId["workers-ai-neurons"].detail, /LOWER BOUND/);
 });
 
 test("classifyR2/foldKv: a missing groups field fails closed, not zero", () => {
