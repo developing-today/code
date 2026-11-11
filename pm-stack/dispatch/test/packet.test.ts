@@ -16,8 +16,8 @@ describe("dedupe keys", () => {
     expect(canonicalDedupeKey("triage", "developing-today/opencode", 7)).toBe(
       "repo-health:v1:triage:developing-today/opencode:issue:7",
     );
-    expect(canonicalDedupeKey("ci_investigation", "dezren39/nix", 9)).toBe(
-      "repo-health:v1:triage:dezren39/nix:issue:9",
+    expect(canonicalDedupeKey("ci_investigation", "dezren39/darwin-nix", 9)).toBe(
+      "repo-health:v1:triage:dezren39/darwin-nix:issue:9",
     );
     expect(canonicalDedupeKey("pr_shepherd", "developing-today/code", 3)).toBeNull();
   });

@@ -4,7 +4,7 @@
 // the app id + private key rendered into the service env from
 // ~/secrets/pm-stack.sops.yaml — the same material connect-repo.sh uses).
 // The installations cover developing-today/code, developing-today-forks/opencode
-// and dezren39/nix; callers skip repos with no
+// and dezren39/darwin-nix; callers skip repos with no
 // installation (developing-today/zettel, dezren39/dezren39) before reaching
 // here.
 //
