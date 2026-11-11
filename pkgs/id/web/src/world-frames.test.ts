@@ -176,4 +176,128 @@ describe("world page invite/view/error frame shapes (#7924)", () => {
     socket.deliver({ type: "error" });
     expect(status().textContent).toBe("World request failed");
   });
+  it("property: generated invite/view/error frame shapes follow the acceptance oracle; rejected frames preserve state", () => {
+    // Oracle — the #7924 validation in world.ts receive(), restated:
+    // - invite: reject iff `invite` is present and not a record, or a
+    //   present non-null capability / display_name is not a string.
+    // - view: reject iff a present data is not a string, or a present
+    //   non-null view_revision / base_view_revision is not a finite number.
+    // - error: reject iff a present non-null message is not a string.
+    // A rejected frame may set only the invalid-frame status: capability,
+    // sessionStorage and the rendered view stay byte-identical. An
+    // accepted frame applies exactly the field effects the oracle names.
+    // The generator is a fixed-seed PRNG, so the run is deterministic.
+    let seed = 0x7924;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const values: unknown[] = ["text", "second", "", 42, 3.5, 0, true, false, null, { nested: [1, 2] }, ["a"], {}];
+    const pick = () => values[Math.floor(rand() * values.length)];
+    const isRec = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+    const badStringField = (v: unknown) => v !== undefined && v !== null && typeof v !== "string";
+    const badNumberField = (v: unknown) =>
+      v !== undefined && v !== null && !(typeof v === "number" && Number.isFinite(v));
+    const seen = { inviteRejected: 0, inviteAccepted: 0, viewRejected: 0, viewAccepted: 0, errorRejected: 0, errorAccepted: 0, displayName: 0, baseRevision: 0 };
+
+    for (let i = 0; i < 240; i++) {
+      const capBefore = capability().value;
+      const storedBefore = sessionStorage.getItem(storageKey());
+      const viewBefore = view().textContent;
+      const kind = i % 3;
+      if (kind === 0) {
+        const shape = rand();
+        let frame: Record<string, unknown>;
+        let inv: Record<string, unknown>;
+        let inviteIsRecord = true;
+        if (shape < 0.65) {
+          const inner: Record<string, unknown> = {};
+          if (rand() < 0.9) inner.capability = pick();
+          if (rand() < 0.7) { inner.display_name = pick(); seen.displayName++; }
+          frame = { type: "invite", invite: inner };
+          inv = inner;
+        } else if (shape < 0.85) {
+          frame = { type: "invite", capability: pick() };
+          if (rand() < 0.7) { frame.display_name = pick(); seen.displayName++; }
+          inv = frame;
+        } else {
+          const bad = pick();
+          frame = { type: "invite", invite: bad };
+          inv = {};
+          inviteIsRecord = isRec(bad);
+          if (inviteIsRecord) inv = bad as Record<string, unknown>;
+        }
+        const rejected = !inviteIsRecord || badStringField(inv.capability) || badStringField(inv.display_name);
+        socket.deliver(frame);
+        if (rejected) {
+          seen.inviteRejected++;
+          expect(status().textContent).toBe("Received an invalid world frame");
+          expect(capability().value).toBe(capBefore);
+          expect(sessionStorage.getItem(storageKey())).toBe(storedBefore);
+          expect(view().textContent).toBe(viewBefore);
+        } else {
+          seen.inviteAccepted++;
+          if (typeof inv.capability === "string" && inv.capability) {
+            expect(capability().value).toBe(inv.capability);
+            expect(sessionStorage.getItem(storageKey())).toBe(inv.capability);
+            expect(status().textContent).toBe("Invite ready to share");
+          } else {
+            expect(capability().value).toBe(capBefore);
+            expect(sessionStorage.getItem(storageKey())).toBe(storedBefore);
+          }
+          expect(view().textContent).toBe(viewBefore);
+        }
+      } else if (kind === 1) {
+        const frame: Record<string, unknown> = { type: "view" };
+        if (rand() < 0.9) frame.data = pick();
+        if (rand() < 0.7) frame.view_revision = pick();
+        if (rand() < 0.5) { frame.base_view_revision = pick(); seen.baseRevision++; }
+        const rejected =
+          (frame.data !== undefined && typeof frame.data !== "string") ||
+          badNumberField(frame.view_revision) ||
+          badNumberField(frame.base_view_revision);
+        socket.deliver(frame);
+        if (rejected) {
+          seen.viewRejected++;
+          expect(status().textContent).toBe("Received an invalid world frame");
+          expect(view().textContent).toBe(viewBefore);
+        } else {
+          seen.viewAccepted++;
+          if (typeof frame.data === "string") expect(view().textContent).toBe(frame.data);
+          else expect(view().textContent).toBe(viewBefore);
+        }
+        expect(capability().value).toBe(capBefore);
+        expect(sessionStorage.getItem(storageKey())).toBe(storedBefore);
+      } else {
+        const frame: Record<string, unknown> = { type: "error" };
+        if (rand() < 0.9) frame.message = pick();
+        const rejected = badStringField(frame.message);
+        socket.deliver(frame);
+        if (rejected) {
+          seen.errorRejected++;
+          expect(status().textContent).toBe("Received an invalid world frame");
+        } else {
+          seen.errorAccepted++;
+          if (typeof frame.message === "string") expect(status().textContent).toBe(frame.message);
+          else expect(status().textContent).toBe("World request failed");
+        }
+        expect(capability().value).toBe(capBefore);
+        expect(sessionStorage.getItem(storageKey())).toBe(storedBefore);
+        expect(view().textContent).toBe(viewBefore);
+      }
+    }
+    // Coverage guard: the generated run must actually exercise both
+    // outcomes per frame kind and both branches Codex named.
+    expect(seen.inviteRejected).toBeGreaterThan(5);
+    expect(seen.inviteAccepted).toBeGreaterThan(3);
+    expect(seen.viewRejected).toBeGreaterThan(5);
+    expect(seen.viewAccepted).toBeGreaterThan(3);
+    expect(seen.errorRejected).toBeGreaterThan(5);
+    expect(seen.errorAccepted).toBeGreaterThan(3);
+    expect(seen.displayName).toBeGreaterThan(10);
+    expect(seen.baseRevision).toBeGreaterThan(10);
+  });
 });
