@@ -40,9 +40,9 @@ use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 
-use crate::groups::policy::History;
-use crate::text::sanitize_chat;
-use crate::waiting::AuthorKey;
+use crate::policy::History;
+use id_core::text::sanitize_chat;
+use id_core::waiting::AuthorKey;
 
 /// The kind of a `chat.message.v1` event, as the header's `kind` names it.
 pub const CHAT_MESSAGE_KIND: &str = "chat.message.v1";

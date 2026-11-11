@@ -36,7 +36,7 @@ use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 /// The kind of a `tag.set` event, as the header's `kind` names it.
 pub const SET_KIND: &str = "tag.set";
@@ -266,7 +266,7 @@ pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
 }
 
 /// Checks a text field: its byte length is in `min..=max`, and it is NFC.
-pub(crate) fn check_text(field: &str, text: &str, min: usize, max: usize) -> Result<(), TagError> {
+pub fn check_text(field: &str, text: &str, min: usize, max: usize) -> Result<(), TagError> {
     let length = text.len();
     if !(min..=max).contains(&length) {
         return Err(TagError::Field(format!(

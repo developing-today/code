@@ -16,14 +16,14 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
-members = ["crates/id-core", "crates/id-caps", "crates/id-native-shell"]
+members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-native-shell"]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
 exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
-default-members = [".", "crates/id-core", "crates/id-caps"]
+default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store"]
 
 # =============================================================================
 # Features
@@ -71,6 +71,9 @@ id-core = { path = "crates/id-core", default-features = false }
 # Capability/limit/manifest modules extracted in step 1 of the crate split
 # (#4403). Re-exported at their historical crate:: paths in src/lib.rs.
 id-caps = { path = "crates/id-caps", default-features = false }
+# Store-family modules extracted in step 2a of the crate split (#4405).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-store = { path = "crates/id-store", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's

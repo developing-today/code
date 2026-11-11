@@ -629,7 +629,7 @@ mod tests {
     use p2panda_core::Extensions;
 
     use super::*;
-    use crate::currency::issuer_id;
+    use crate::issuer_rotation::issuer_id;
     use crate::issuer_rotation::{ISSUER_ROTATION_KIND, RotationMode};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.

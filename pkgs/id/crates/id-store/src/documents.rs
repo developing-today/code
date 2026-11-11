@@ -26,7 +26,7 @@ use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 /// The kind of a `document.put` event, as the header's `kind` names it.
 pub const DOCUMENT_KIND: &str = "document.put";

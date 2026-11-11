@@ -63,9 +63,28 @@ use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
-use crate::currency::{IssuerId, issuer_id};
 
 /// The event kind carrying an issuer rotation body.
+/// An issuer identity: the 32 bytes of its signing key's verifying
+/// key, the same bytes the event store uses as an author key.
+///
+/// Moved here from the facade's `currency` module in step 2a of the crate
+/// split (#4405): the rotation record names issuers, so the identity shape
+/// is rotation vocabulary. `currency` re-exports it at its historical path.
+pub type IssuerId = [u8; 32];
+
+/// The issuer id of a signing key.
+#[must_use]
+pub fn issuer_id(key: &SigningKey) -> IssuerId {
+    *key.verifying_key().as_bytes()
+}
+
+/// The author of a decoded (signature-verified) event, as an issuer id.
+#[must_use]
+pub fn author_id(event: &Event) -> IssuerId {
+    *event.header.verifying_key.as_bytes()
+}
+
 pub const ISSUER_ROTATION_KIND: &str = "issuer.rotation";
 
 /// Whether `kind` is the issuer rotation kind: an event of this
@@ -796,7 +815,7 @@ impl std::error::Error for SignError {}
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::currency::{author_id, issuer_id};
+    use crate::issuer_rotation::{author_id, issuer_id};
 
     fn gen0_key() -> SigningKey {
         SigningKey::from_bytes(&[7; 32])

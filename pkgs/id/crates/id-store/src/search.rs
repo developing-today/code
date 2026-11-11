@@ -25,10 +25,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use p2panda_core::Hash;
 
-use crate::event_store::{EventStore, StoreError};
+use crate::event_types::StoreError;
+use crate::store_traits::EventStoreBackend;
 use crate::tag_claims::Claim;
 use crate::tag_index::TagIndex;
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 /// Which values a search matches, for one tag name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,8 +191,8 @@ pub fn search_terms(
 /// # Errors
 ///
 /// Returns the errors of [`EventStore::tag_claims`].
-pub fn search_store(
-    store: &EventStore,
+pub fn search_store<S: EventStoreBackend>(
+    store: &S,
     name: &str,
     value: ValueMatch<'_>,
 ) -> Result<Vec<Hit>, StoreError> {
@@ -206,7 +207,7 @@ pub fn search_store(
 ///
 /// Returns the errors of [`EventStore::tag_claims`], and if `terms` contains any
 /// [`Term::SubjectKind`], the errors of [`EventStore::event_by_id`].
-pub fn search_store_terms(store: &EventStore, terms: &[Term<'_>]) -> Result<Vec<Hit>, StoreError> {
+pub fn search_store_terms<S: EventStoreBackend>(store: &S, terms: &[Term<'_>]) -> Result<Vec<Hit>, StoreError> {
     let claims = store.tag_claims()?;
 
     // ⚡ Bolt optimization: skip per-subject `event_by_id` store queries when no kind

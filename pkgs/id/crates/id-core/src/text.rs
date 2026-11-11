@@ -4,7 +4,7 @@
 ///
 /// Newlines and tabs remain valid; zero-width joiners are retained for
 /// grapheme sequences. The result is trimmed to match world chat behavior.
-pub(crate) fn sanitize_chat(text: &str) -> String {
+pub fn sanitize_chat(text: &str) -> String {
     text.chars()
         .filter(|ch| {
             (!ch.is_control() || *ch == '\n' || *ch == '\t')

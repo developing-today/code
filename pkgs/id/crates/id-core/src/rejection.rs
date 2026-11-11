@@ -1,8 +1,8 @@
 //! The reason a refusal gives, one enum for every surface that refuses something.
 //!
-//! The event store's ingest result ([`crate::event_store::Ingest`]), the groups fold
-//! ([`crate::groups::Outcome`]), and the encryption adapter's errors
-//! ([`crate::encryption::SchemeError`]) each give a reason through [`Reason`], so a caller shows the
+//! The event store's ingest result (`id::event_store::Ingest`), the groups fold
+//! (`id::groups::Outcome`), and the encryption adapter's errors
+//! (`id::encryption::SchemeError`) each give a reason through [`Reason`], so a caller shows the
 //! same three words whichever layer refused. The reasons are the design's (task 10): voided,
 //! waiting, frozen.
 //!
