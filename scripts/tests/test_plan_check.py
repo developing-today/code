@@ -64,6 +64,56 @@ class PlanCheckTests(unittest.TestCase):
         self.assertIn("first in wave 1", result.stdout)
         self.assertIn("repeated in wave 2", result.stdout)
 
+    def test_requires_prose_numbers_are_not_step_references(self):
+        cases = [
+            "1 and the Node 20 runtime",
+            "1, per RFC 8446",
+            "1 and Python 3.12",
+            "1 (the lock layout)",
+        ]
+        for requires in cases:
+            with self.subTest(requires=requires):
+                plan = (
+                    "### Wave 1\n"
+                    + step(1, "first", "first.md")
+                    + "### Wave 2\n"
+                    + step(2, "second", "second.md", requires=requires)
+                )
+
+                result = self.run_checker(plan)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("ok: 2 steps in 2 waves", result.stdout)
+
+    def test_requires_number_list_still_parses_all_targets(self):
+        plan = (
+            "### Wave 1\n"
+            + step(1, "first", "first.md")
+            + "### Wave 2\n"
+            + step(2, "second", "second.md", requires="1")
+            + "### Wave 3\n"
+            + step(3, "third", "third.md", requires="1, 2")
+        )
+
+        result = self.run_checker(plan)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ok: 3 steps in 3 waves", result.stdout)
+
+    def test_requires_bad_target_in_prose_sentence_still_fails(self):
+        plan = (
+            "### Wave 1\n"
+            + step(1, "first", "first.md")
+            + "### Wave 2\n"
+            + step(2, "second", "second.md", requires="99 and the Node 20 runtime")
+        )
+
+        result = self.run_checker(plan)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("step 2: requires 99, not a lower step", result.stdout)
+        self.assertNotIn("requires 20", result.stdout)
+
     def test_unique_step_numbers_pass(self):
         plan = (
             "### Wave 1\n"
