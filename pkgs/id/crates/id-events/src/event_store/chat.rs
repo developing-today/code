@@ -2,7 +2,7 @@
 //!
 //! A chat message is its `chat.message.v1` event in the channel group. The event applies
 //! like any content event, and the store keeps it either way. [`EventStore::chat_records`]
-//! is the record conversion the causal projection in [`crate::chat`] consumes: a stored
+//! is the record conversion the causal projection in [`id_store::chat`] consumes: a stored
 //! event becomes a [`ChatRecord`] with its `after` taken from the header extension and its
 //! author's previous event taken from the header backlink (the store keeps the author's
 //! own head out of `after`; see `local_events`).
@@ -10,7 +10,7 @@
 //! [`EventStore::chat_timeline`] is the policy-enforcing read: a reader who is not on the
 //! group's roster reads nothing ([`StoreError::NotMember`]), and a member reads the
 //! projected timeline cut by the group policy's history rule (see
-//! [`crate::chat::visible_history`] for the exact semantics of each rule).
+//! [`id_store::chat::visible_history`] for the exact semantics of each rule).
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,10 +23,10 @@ use super::{
     ACTIONS, APPLIED, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt,
     decode_stored,
 };
-use crate::chat::{CHAT_MESSAGE_KIND, ChatRecord, project, visible_history};
+use id_store::chat::{CHAT_MESSAGE_KIND, ChatRecord, project, visible_history};
 use crate::groups::policy::{History, Policy};
-use crate::membership::AuthId;
-use crate::waiting::AuthorKey;
+use id_core::membership::AuthId;
+use id_core::waiting::AuthorKey;
 
 impl EventStore {
     /// The chat records of `group`: each applied `chat.message.v1` event that names the
@@ -253,10 +253,10 @@ fn past_size(id: Hash, parents: &HashMap<Hash, Vec<Hash>>) -> usize {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::chain::{ChainExt, sign};
-    use crate::chat::ChatMessage;
-    use crate::membership::body::encode_body;
-    use crate::waiting::WaitingLimits;
+    use id_store::chain::{ChainExt, sign};
+    use id_store::chat::ChatMessage;
+    use id_core::membership::body::encode_body;
+    use id_core::waiting::WaitingLimits;
     use p2panda_core::{SeqNum, SigningKey};
 
     fn key(n: u8) -> SigningKey {
@@ -285,7 +285,7 @@ mod tests {
         after: Vec<Hash>,
         group: Option<Hash>,
         action: &GroupAction<AuthId, ()>,
-    ) -> (crate::chain::Event, Vec<u8>) {
+    ) -> (id_store::chain::Event, Vec<u8>) {
         let body = encode_body(action).unwrap();
         let ext = ChainExt {
             kind: "group.op".to_owned(),
@@ -312,7 +312,7 @@ mod tests {
         after: Vec<Hash>,
         group: Hash,
         text: &str,
-    ) -> crate::chain::Event {
+    ) -> id_store::chain::Event {
         let ext = ChainExt {
             kind: CHAT_MESSAGE_KIND.to_owned(),
             group: Some(group),

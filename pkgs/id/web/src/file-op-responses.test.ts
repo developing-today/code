@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  isCopyFileResponse,
-  isNewFileResponse,
-  isRenameFileResponse,
-  isSaveFileResponse,
-} from "./file-op-responses";
+import { isCopyFileResponse, isNewFileResponse, isRenameFileResponse, isSaveFileResponse } from "./file-op-responses";
 
 // Regression tests for #7837: the /api/save, /api/new, /api/rename and
 // /api/copy handlers in main.ts shape-trusted their 200 responses via
@@ -18,9 +13,7 @@ const wrongShapes: unknown[] = [{}, null, "abc", [], 42, undefined];
 describe("isSaveFileResponse", () => {
   it("accepts a valid save response", () => {
     expect(isSaveFileResponse({ hash: "abc123", name: "notes.md", archive_name: null })).toBe(true);
-    expect(
-      isSaveFileResponse({ hash: "abc123", name: "notes.md", archive_name: "notes-1.md" }),
-    ).toBe(true);
+    expect(isSaveFileResponse({ hash: "abc123", name: "notes.md", archive_name: "notes-1.md" })).toBe(true);
   });
 
   it("rejects wrong-shape bodies", () => {

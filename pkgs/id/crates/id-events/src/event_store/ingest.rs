@@ -103,13 +103,13 @@ use super::{
     store_chain, store_event, store_fork,
 };
 use super::{Ingest, Refusal};
-use crate::chain::{self, Event};
-use crate::documents::{is_document_kind, is_removal_kind};
-use crate::membership::AuthId;
-use crate::membership::body::decode_body;
-use crate::rejection::Reason;
-use crate::tag_claims::is_tag_kind;
-use crate::waiting::{AuthorKey, WaitingPool};
+use id_store::chain::{self, Event};
+use id_store::documents::{is_document_kind, is_removal_kind};
+use id_core::membership::AuthId;
+use id_core::membership::body::decode_body;
+use id_core::rejection::Reason;
+use id_store::tag_claims::is_tag_kind;
+use id_core::waiting::{AuthorKey, WaitingPool};
 
 /// What the store decides for one event, before the waiting pool sees it.
 #[derive(Debug, PartialEq, Eq)]
@@ -146,7 +146,7 @@ impl EventStore {
 
     /// Verifies one received event with its body, and applies what it allows. This is the
     /// production path. The membership action comes from the body, by the body codec in
-    /// [`crate::membership::body`]:
+    /// [`id_core::membership::body`]:
     ///
     /// - A body that is not a group operation, or no body at all, makes the event content.
     /// - A body that claims to be a group operation decodes to its action, or it is refused.
@@ -1138,10 +1138,10 @@ pub(super) fn present_in(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::chain::{ChainExt, sign};
+    use id_store::chain::{ChainExt, sign};
     use crate::event_store::waiting_rows::{self, Row};
-    use crate::rejection::Reason;
-    use crate::waiting::WaitingLimits;
+    use id_core::rejection::Reason;
+    use id_core::waiting::WaitingLimits;
     use p2panda_core::SigningKey;
     use redb::ReadableDatabase;
 
@@ -1551,7 +1551,7 @@ mod tests {
     /// is released by that event's arrival, and reads back byte for byte.
     #[test]
     fn test_a_session_checkpoint_waits_and_round_trips() {
-        use crate::session_checkpoint::{
+        use id_store::session_checkpoint::{
             MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
         };
 
@@ -1615,7 +1615,7 @@ mod tests {
         segment_seq: u64,
         prev: Option<Hash>,
     ) -> Event {
-        use crate::session_checkpoint::{
+        use id_store::session_checkpoint::{
             MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
         };
 
@@ -1927,7 +1927,7 @@ mod tests {
         group: Option<Hash>,
         action: &GroupAction<AuthId, ()>,
     ) -> (Event, Vec<u8>) {
-        let body = crate::membership::body::encode_body(action).unwrap();
+        let body = id_core::membership::body::encode_body(action).unwrap();
         let ext = ChainExt {
             kind: "group.op".to_owned(),
             group,

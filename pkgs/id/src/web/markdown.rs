@@ -3511,6 +3511,7 @@ mod tests {
         assert_eq!(first, second, "literal-context round-trip is a fixpoint");
     }
 
+    #[test]
     fn test_footnote_roundtrip_fixpoint() {
         // #945: a footnote reference + definition round-trip open->save
         // intact — emitted as [^label] syntax, never backslash-escaped,
@@ -3544,7 +3545,6 @@ mod tests {
         assert_eq!(first, second, "multi-footnote round-trip is a fixpoint");
     }
 
-    #[test]
     #[test]
     fn test_unreferenced_footnote_definition_survives_save() {
         // #1565: a definition nothing references is dropped by comrak

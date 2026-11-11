@@ -41,7 +41,7 @@ use redb::{ReadableDatabase, ReadableTable};
 use crate::groups::Role;
 use crate::idset::view::{ExpandedWriters, GroupMembers, ProjectionError, expand_set};
 use crate::idset::{IdsetError, Rescind, WriterSet, decode_rescind_body, decode_writer_body};
-use crate::waiting::AuthorKey;
+use id_core::waiting::AuthorKey;
 
 use super::{EventStore, StoreError, WRITER_SET_BODIES, resolve};
 
@@ -161,7 +161,7 @@ impl EventStore {
         &self,
         id: &Hash,
         kind: &str,
-    ) -> Result<Option<(crate::chain::Event, Vec<u8>)>, WriterSetStoreError> {
+    ) -> Result<Option<(id_store::chain::Event, Vec<u8>)>, WriterSetStoreError> {
         let Some(event) = self.event_by_id(id)? else {
             return Ok(None);
         };

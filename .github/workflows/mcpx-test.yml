@@ -106,6 +106,8 @@ jobs:
           test -f pkgs/mcpx/scripts/tests/test_affected_embeds.py
           command -v git >/dev/null
           python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v
+      - name: Affected run-injection regressions (#5649)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p test_affected_run_injection.py -v
       - name: Run-seed wrapper regressions (#1949)
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v
       - name: Shard-packer discovery regressions (#6906)

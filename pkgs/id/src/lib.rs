@@ -158,7 +158,7 @@ pub mod aliases;
 pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
-pub mod attestation;
+pub use id_events::attestation;
 pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
@@ -192,8 +192,8 @@ pub mod encryption;
 pub mod envelope_net;
 #[cfg(feature = "world")]
 pub mod envelope_outbox;
-pub mod event_store;
-pub mod event_sync;
+pub use id_events::event_store;
+pub use id_events::event_sync;
 pub mod fileops;
 pub mod foreign_libsql;
 pub mod frames;
@@ -210,7 +210,7 @@ pub use id_store::issuer_rotation;
 pub(crate) mod key_envelope;
 pub mod local;
 pub use id_events::local_claims;
-pub mod local_events;
+pub use id_events::local_events;
 pub mod log_sync;
 mod peer_announcement;
 pub mod serve_proxy;
