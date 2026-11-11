@@ -80,6 +80,8 @@ import {
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
+import { SpendRollupStore } from "./spend-rollups.ts";
+import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -190,6 +192,18 @@ const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
+/** #4824: the Projects/Roadmap spend-beside-progress view over the
+ * #4823 rollup store. A failed read renders no spend block (the
+ * store's absence is already the honest state — ingestion is a
+ * separate slice); it never fabricates zeroed cards. */
+const loadSpendCards = async (): Promise<SpendCardsView | null> => {
+  try {
+    return buildSpendCards(await spendRollupStore.readAll());
+  } catch {
+    return null;
+  }
+};
 
 async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
   const targets = [...items.values()].filter((item) =>
@@ -1775,6 +1789,7 @@ async function handler(req: Request): Promise<Response> {
     // #4830: the same twin /api/flow-analytics.json serves, computed
     // the same way — the Roadmap charts render exactly this object.
     const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
+    const spendCards = await loadSpendCards();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -1807,6 +1822,7 @@ async function handler(req: Request): Promise<Response> {
           briefs,
           forecasts,
           flowAnalytics,
+          spendCards,
         ),
       );
     }
@@ -1845,6 +1861,7 @@ async function handler(req: Request): Promise<Response> {
         briefs,
         forecasts,
         flowAnalytics,
+        spendCards,
       ),
     );
   }
@@ -2118,6 +2135,8 @@ async function handler(req: Request): Promise<Response> {
         // renders the #4829 twin as charts, computed as the endpoint
         // computes it.
         flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
+        // #4824: spend beside progress on the pool cards.
+        spend: await loadSpendCards(),
       }),
     );
   }
