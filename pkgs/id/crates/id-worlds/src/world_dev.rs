@@ -1392,6 +1392,7 @@ pub async fn run_dev_watch(
                     coalesced_events,
                     outcome: "freshness_rescan_failed".to_owned(),
                     detail: Some(detail),
+                    view: None,
                 });
                 continue;
             }
