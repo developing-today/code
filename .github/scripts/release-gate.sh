@@ -59,6 +59,29 @@ WATCHED_WORKFLOWS=(
   "id bench"
 )
 
+# Watched workflows whose push-to-main trigger is path-filtered (verified
+# against the workflow files on main, 2026-11-10: mcpx.yml,
+# mcpx-conformance.yml, id-bench.yml). Only these may fall back to their
+# latest push-to-main run when the release SHA has no run of their own:
+# a commit outside their paths legitimately never triggered them. Every
+# other watched workflow must produce a push run on the exact release
+# SHA — accepting an older run for an unfiltered workflow would let a
+# release through on a verdict that predates the tagged code (CodeRabbit
+# finding on PR #4636). Keep this list in sync with the push triggers.
+PATH_FILTERED_WORKFLOWS=(
+  "mcpx"
+  "mcpx conformance"
+  "id bench"
+)
+
+is_path_filtered() {
+  local candidate="$1" wf
+  for wf in "${PATH_FILTERED_WORKFLOWS[@]}"; do
+    [ "$wf" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
 die() { echo "release-gate: error: $*" >&2; exit 2; }
 verdict_fail() { echo "release-gate: REFUSED: $*"; }
 verdict_pass() { echo "release-gate: ALLOWED: $*"; }
@@ -131,9 +154,9 @@ JSON
         printf '{"workflow_runs":[{"head_sha":"success-sha","conclusion":null,"status":"in_progress","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/1"}]}\n' ;;
       missing:1)
         printf '{"workflow_runs":[]}\n' ;;
-      fallback:2)
+      fallback:3)
         printf '{"workflow_runs":[{"head_sha":"older-sha","conclusion":"success","status":"completed","created_at":"2026-11-01T00:00:00Z","html_url":"https://example.invalid/run/2"}]}\n' ;;
-      fallback-red:2)
+      fallback-red:3)
         printf '{"workflow_runs":[{"head_sha":"older-sha","conclusion":"success","status":"completed","created_at":"2026-11-01T00:00:00Z","html_url":"https://example.invalid/run/2a"},{"head_sha":"older-sha-2","conclusion":"failure","status":"completed","created_at":"2026-11-01T12:00:00Z","html_url":"https://example.invalid/run/2b"}]}\n' ;;
       *) printf '{"workflow_runs":[{"head_sha":"success-sha","conclusion":"success","status":"completed","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/%s"}]}\n' "$id" ;;
     esac
@@ -244,6 +267,15 @@ for wf in "${WATCHED_WORKFLOWS[@]}"; do
   run_json="$(jq -c --arg sha "$SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last // empty' <<<"$runs_json")"
   basis="exact-SHA run"
   if [ -z "$run_json" ]; then
+    if ! is_path_filtered "$wf"; then
+      # Not path-filtered: this workflow runs on every push to main (or is
+      # expected to), so a missing exact-SHA run means its verdict on the
+      # tagged code does not exist yet — refuse rather than judge an
+      # older run.
+      verdict_fail "$wf: no push run on $SHA (exact-SHA run required; workflow is not path-filtered)"
+      failures=$((failures + 1))
+      continue
+    fi
     # No push run on this SHA: normal for a path-filtered workflow when the
     # release commit is outside its paths. Fall back to that workflow's
     # latest push-to-main run — its current verdict on main. The SHA is

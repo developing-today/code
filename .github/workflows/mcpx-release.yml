@@ -28,6 +28,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   packages: write
 
@@ -37,8 +38,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-gate:
+    name: "release: main-gate check"
+    # Manual runs are non-publishing snapshots; tag pushes must pass the gate.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require a green main-gate for this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/release-gate.sh
+
   artifacts:
     name: "release: build artifacts"
+    needs: release-gate
+    # Keep dispatch snapshots runnable while requiring the gate for every
+    # tag-push path (including the GHCR container push below).
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.release-gate.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -123,7 +147,7 @@ jobs:
     needs: artifacts
     # A skipped release-gate (push-only) skips the whole downstream chain
     # unless each job opts back in: preserve dispatch snapshots here too.
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.artifacts.result == 'success')
+    if: always() && needs.artifacts.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -248,7 +272,7 @@ jobs:
     needs: artifacts
     # Same always() opt-in as installer above: a skipped release-gate must
     # not silently drop the snapshot container build on manual runs.
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.artifacts.result == 'success')
+    if: always() && needs.artifacts.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
