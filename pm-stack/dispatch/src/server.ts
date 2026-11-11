@@ -730,7 +730,9 @@ async function handleGetSession(caller: CallerIdentity, idSegment: string): Prom
   if (raw === null || raw === undefined) return json(404, { error: `session ${sessionId} not found` });
   // Repo gate, the task read's rule applied to sessions: a
   // dispatch-launched session is bound to the queue task that
-  // launched it (progress.session_id), and that task's repo must be
+  // launched it - by the live progress.session_id binding, or by
+  // the durable progress.session_cleared record the queue keeps
+  // after a park/lease-expiry unbinds it - and that task's repo must be
   // in the current allowlist for the session's status to be
   // readable — removing a repo from the allowlist closes its
   // sessions too. A denied session answers like a missing one: no

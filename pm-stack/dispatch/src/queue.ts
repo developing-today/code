@@ -126,18 +126,29 @@ export class QueueClient {
   }
 
   /** Session -> task lookup (issue #5555): the dispatch-launched task
-   * whose progress carries `session_id`, or null. Unlike the dedupe
-   * pre-check below, a lookup failure throws QueueError — this lookup
-   * backs the repo gate on GET /v1/sessions/:id, and a transient
+   * bound to sessionId, or null. Two bindings are checked, live first:
+   * the current progress.session_id, and - when that binding has been
+   * cleared - the durable progress.session_cleared.session_id record
+   * the queue leaves on the task row when it clears a binding on park /
+   * lease expiry (opencode-claimant migration-0023). The cleared record
+   * is what keeps the session route repo gate attached to a session
+   * after its task unbinds: without it, removing the repo from the
+   * allowlist would silently un-gate a still-live session. Unlike the
+   * dedupe pre-check below, a lookup failure throws QueueError - this
+   * lookup backs the repo gate on GET /v1/sessions/:id, and a transient
    * PostgREST failure must fail closed (the route answers 502), never
-   * read as "no task, so no gate". */
+   * read as no task, so no gate. */
   async findTaskBySessionId(sessionId: string): Promise<TaskRow | null> {
-    const res = await fetch(
-      `${this.baseUrl}/rest/v1/tasks?progress->>session_id=eq.${encodeURIComponent(sessionId)}&select=*&limit=1`,
-      { headers: this.headers(false) },
-    );
+    const live = await this.findTaskByProgressField('progress->>session_id', sessionId);
+    if (live) return live;
+    return this.findTaskByProgressField('progress->session_cleared->>session_id', sessionId);
+  }
+
+  private async findTaskByProgressField(field: string, sessionId: string): Promise<TaskRow | null> {
+    const url = this.baseUrl + '/rest/v1/tasks?' + field + '=eq.' + encodeURIComponent(sessionId) + '&select=*&limit=1';
+    const res = await fetch(url, { headers: this.headers(false) });
     if (!res.ok) {
-      throw new QueueError(`task lookup by session failed (HTTP ${res.status})`, res.status);
+      throw new QueueError('task lookup by session failed (HTTP ' + res.status + ')', res.status);
     }
     const rows = (await res.json()) as TaskRow[];
     return rows[0] ?? null;
