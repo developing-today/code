@@ -55,6 +55,7 @@ mod identity;
 mod markdown;
 mod routes;
 mod security;
+mod seitan;
 mod tags_ws;
 mod templates;
 pub mod world_ws;
@@ -82,6 +83,7 @@ pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
 pub use routes::{create_program_router, create_router, create_router_for_app};
+pub use seitan::SeitanState;
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
@@ -257,6 +259,12 @@ pub struct AppState {
     /// (`id serve` passes its `--groups-log` resolution); `None` reads
     /// the default `groups.jsonl`, as the group CLI does.
     pub groups_log: Option<std::path::PathBuf>,
+    /// Seitan admission state for `/api/seitan/*` (#8487): the invite
+    /// registry, the directory admissions append to, and the freshness
+    /// window. `id serve` replaces the default (empty in-memory
+    /// directory, default window) with the server-config directory
+    /// journal and the configured window; see [`SeitanState`].
+    pub seitan: SeitanState,
 }
 
 impl std::fmt::Debug for AppState {
@@ -274,6 +282,7 @@ impl std::fmt::Debug for AppState {
             .field("world", &self.world)
             .field("cookie_secure", &self.cookie_secure)
             .field("groups_log", &self.groups_log)
+            .field("seitan", &self.seitan)
             .finish()
     }
 }
@@ -343,6 +352,7 @@ impl AppState {
             program_world: None,
             cookie_secure: false,
             groups_log: None,
+            seitan: SeitanState::default(),
         })
     }
 }
@@ -438,6 +448,7 @@ pub async fn web_router(
         cookie_secure,
         None,
         groups_log,
+        SeitanState::default(),
     ))
 }
 
@@ -474,6 +485,7 @@ pub async fn web_router_with_local_events(
         cookie_secure,
         None,
         groups_log,
+        SeitanState::default(),
     ))
 }
 
@@ -501,6 +513,7 @@ pub async fn web_routers(
     local_events: Option<Arc<Mutex<crate::local_events::LocalEvents>>>,
     surfaces: Vec<Option<String>>,
     groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
 ) -> anyhow::Result<Vec<Router>> {
     let state = match local_events {
         Some(events) => {
@@ -538,6 +551,7 @@ pub async fn web_routers(
                 cookie_secure,
                 surface,
                 groups_log.clone(),
+                seitan.clone(),
             )
         })
         .collect())
@@ -556,9 +570,11 @@ fn finish_router(
     cookie_secure: bool,
     surface: Option<String>,
     groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
 ) -> Router {
     state.world = world;
     state.groups_log = groups_log;
+    state.seitan = seitan;
     state.cookie_secure = cookie_secure;
     let security = WebSecurity {
         cookie_secure,
