@@ -406,4 +406,66 @@ grep -q "ci-policy-agreement: OK" "$TMP/filter-class_ignore.out"
 grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-class_ignore.out"
 echo "pass: branches-ignore: ['[a-z]ain'] keeps the main leg waived, not stale"
 
+
+# Codex P2 regressions on #8513 round 5. A **/ component matches
+# zero directories: '**/main' excludes main.
+build_tree "$TMP/filter-globstar_ignore"
+wf_raw "$TMP/filter-globstar_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: ['**/main']
+EOF
+bash "$SCRIPT" "$TMP/filter-globstar_ignore" >"$TMP/filter-globstar_ignore.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-globstar_ignore.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-globstar_ignore.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-globstar_ignore.out"; then
+  echo "FAIL: branches-ignore: ['**/main'] was certified as main-tier agreement" >&2
+  exit 1
+fi
+echo "pass: branches-ignore: ['**/main'] keeps the main leg waived, not stale"
+
+# A comma inside a quoted scalar is content, not a separator:
+# 'release,main' is one branch pattern that is not main.
+build_tree "$TMP/filter-quoted_comma"
+wf_raw "$TMP/filter-quoted_comma" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ['release,main']
+EOF
+bash "$SCRIPT" "$TMP/filter-quoted_comma" >"$TMP/filter-quoted_comma.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-quoted_comma.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-quoted_comma.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-quoted_comma.out"; then
+  echo "FAIL: a quoted comma manufactured a main branch entry" >&2
+  exit 1
+fi
+echo "pass: branches: ['release,main'] keeps the main leg waived, not stale"
+
+# An inline push mapping carries its filters on the same line.
+build_tree "$TMP/filter-inline_map"
+wf_raw "$TMP/filter-inline_map" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches: [release]}
+EOF
+bash "$SCRIPT" "$TMP/filter-inline_map" >"$TMP/filter-inline_map.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_map.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-inline_map.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_map.out"; then
+  echo "FAIL: an inline push mapping was treated as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: inline push mapping with branches: [release] keeps the main leg waived"
+
+build_tree "$TMP/filter-inline_map_main"
+wf_raw "$TMP/filter-inline_map_main" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches: [main]}
+EOF
+if bash "$SCRIPT" "$TMP/filter-inline_map_main" >"$TMP/filter-inline_map_main.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for an inline main push mapping" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_map_main.out"
+echo "pass: inline push mapping with branches: [main] satisfies the main leg"
+
 echo "check-ci-policy-agreement.test: all contract tests passed"

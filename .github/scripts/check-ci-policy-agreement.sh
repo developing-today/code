@@ -135,19 +135,48 @@ push_targets_main() {
   local file="$1"
   awk '
     function clean(tok) {
-      gsub(/["\047,]/, "", tok)
+      if (length(tok) >= 2) {
+        if ((substr(tok, 1, 1) == "\047" && substr(tok, length(tok), 1) == "\047") || (substr(tok, 1, 1) == "\"" && substr(tok, length(tok), 1) == "\"")) tok = substr(tok, 2, length(tok) - 2)
+      }
       return tok
     }
-    function add_tokens(str,   n, parts, i, tok, out) {
+    function add_tokens(str,   i, c, q, tok, out) {
       sub(/^[[:space:]]*\[/, "", str)
       sub(/\][[:space:]]*$/, "", str)
       out = ""
-      n = split(str, parts, /[[:space:],]+/)
-      for (i = 1; i <= n; i++) {
-        tok = clean(parts[i])
-        if (tok != "") out = out " " tok
+      tok = ""
+      q = ""
+      for (i = 1; i <= length(str); i++) {
+        c = substr(str, i, 1)
+        if (q != "") {
+          if (c == q) q = ""
+          else tok = tok c
+        } else if (c == "\047" || c == "\"") {
+          q = c
+        } else if (c ~ /[[:space:],]/) {
+          if (tok != "") { out = out " " tok; tok = "" }
+        } else {
+          tok = tok c
+        }
       }
+      if (tok != "") out = out " " tok
       return out
+    }
+    function apply_inline_filters(str,   seg) {
+      if (match(str, /branches-ignore:[[:space:]]*\[[^]]*\]/)) {
+        seg = substr(str, RSTART, RLENGTH)
+        sub(/^[^[]*\[/, "[", seg)
+        seen_branch_filter = 1
+        ignore_list = ignore_list add_tokens(seg)
+      }
+      if (match(str, /branches:[[:space:]]*\[[^]]*\]/)) {
+        seg = substr(str, RSTART, RLENGTH)
+        sub(/^[^[]*\[/, "[", seg)
+        seen_branches = 1
+        seen_branch_filter = 1
+        branches_list = branches_list add_tokens(seg)
+      }
+      if (str ~ /tags:/ || str ~ /tags-ignore:/) seen_tags = 1
     }
     function glob_regex(pat,   out, i, c, cls) {
       # GitHub filter-pattern syntax (workflow-syntax cheat sheet),
@@ -157,7 +186,10 @@ push_targets_main() {
       for (i = 1; i <= length(pat); i++) {
         c = substr(pat, i, 1)
         if (c == "*") {
-          if (substr(pat, i + 1, 1) == "*") { out = out ".*"; i++ }
+          if (substr(pat, i + 1, 1) == "*") {
+            if (substr(pat, i + 2, 1) == "/") { out = out "(.*/)?"; i += 2 }
+            else { out = out ".*"; i++ }
+          }
           else out = out "[^/]*"
         }
         else if (c == "?" || c == "+") out = out c
@@ -221,7 +253,12 @@ push_targets_main() {
       sub(/^  /, "", key)
       sub(/:.*/, "", key)
       inpush = (key == "push")
-      if (inpush) seen_push = 1
+      if (inpush) {
+        seen_push = 1
+        rest = $0
+        sub(/^  [a-z_]+:[[:space:]]*/, "", rest)
+        if (rest ~ /^\{/) apply_inline_filters(rest)
+      }
       subkey = ""
       next
     }
