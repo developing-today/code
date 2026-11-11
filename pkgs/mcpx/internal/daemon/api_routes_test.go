@@ -215,3 +215,29 @@ func TestAPIAddRefusesServerNamespaceCollision(t *testing.T) {
 		t.Fatalf("the colliding declaration was persisted: %s", got)
 	}
 }
+
+// The exact server NAME is a collision independently of its resolved
+// namespace: a server named `backend` with mcpx.namespace "pets" owns
+// the namespace `pets`, but augmentAPIs still refuses an API named
+// `backend` at load — so both names are refused before persisting
+// (Codex P1, PR #4637 round 2).
+func TestAPIAddRefusesExactServerNameWithForeignNamespace(t *testing.T) {
+	s, _ := setupPersist(t, []byte(`{"mcpServers":{"backend":{"command":"/bin/true","mcpx":{"namespace":"pets"}}}}`), false)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "apis.json")
+	if err := os.WriteFile(file, []byte(`{"apis":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.set.SetRuntime("paths.apis", file); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"backend", "pets"} {
+		rec := postAPI(t, s, fmt.Sprintf(`{"name":%q,"spec":"./x.json"}`, name))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("add %q: status %d, want 409: %s", name, rec.Code, rec.Body)
+		}
+		if got := readFile(t, file); strings.Contains(got, name) {
+			t.Fatalf("add %q: the colliding declaration was persisted: %s", name, got)
+		}
+	}
+}

@@ -1125,21 +1125,33 @@ func (s *Server) handleAPIsAdd(w http.ResponseWriter, r *http.Request) {
 			if srv == nil {
 				continue
 			}
-			// Compare against the server's RESOLVED namespace, not its
-			// name: a server named `backend` with mcpx.namespace "pets"
-			// owns the namespace `pets`, and ResolveAll would reject an
-			// API of that name at reload (Codex P1, PR #4637).
+			// Compare against the server's RESOLVED namespace, not only
+			// its name: a server named `backend` with mcpx.namespace
+			// "pets" owns the namespace `pets`, and ResolveAll would
+			// reject an API of that name at reload (Codex P1, PR #4637).
 			resolved := config.SanitizeNamespace(name)
 			if r, rerr := cfg.Resolve(name); rerr == nil && r != nil {
 				resolved = r.Namespace
 			}
-			if resolved != want && config.SanitizeNamespace(resolved) != want {
+			nsHit := resolved == want || config.SanitizeNamespace(resolved) == want
+			// The EXACT server name is a collision independently of the
+			// namespace: augmentAPIs refuses an API whose name equals a
+			// configured server's name even when that server resolves
+			// to a different namespace (Codex P1, PR #4637 round 2).
+			exactHit := name == req.Name
+			if !nsHit && !exactHit {
 				continue
 			}
-			if name == req.Name {
+			if exactHit {
 				if _, isAPI := srv.Env["MCPX_API_DECLARATION_SHA256"]; isAPI {
 					continue
 				}
+			}
+			if exactHit && !nsHit {
+				writeErr(w, http.StatusConflict, fmt.Errorf(
+					"%q is already the name of configured server %q; pick another API name",
+					req.Name, name))
+				return
 			}
 			writeErr(w, http.StatusConflict, fmt.Errorf(
 				"%q resolves to namespace %q, already used by configured server %q; pick another API name",
