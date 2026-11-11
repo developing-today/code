@@ -484,6 +484,51 @@ struct TokenSpan {
     token: StyleToken,
 }
 
+/// Whether the document's top-level object repeats the `kind` key.
+///
+/// Only a top-level duplicate makes the surface dispatch ambiguous: a
+/// `kind` repeated inside a nested object (for example a legacy
+/// `{"payload":{"kind":"a","kind":"b"}}`) cannot affect dispatch, which
+/// reads the top-level `kind` alone, so it must not turn a plain-text
+/// document into an error. Nested values are skipped with
+/// `IgnoredAny`, which does not itself reject duplicates.
+fn top_level_kind_is_duplicated(data: &str) -> bool {
+    use serde::Deserializer as _;
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+    use std::fmt;
+
+    struct TopLevelKindVisitor;
+
+    impl<'de> Visitor<'de> for TopLevelKindVisitor {
+        type Value = bool;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a JSON object")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<bool, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut seen_kind = false;
+            while let Some(key) = map.next_key::<String>()? {
+                let _ignored = map.next_value::<IgnoredAny>()?;
+                if key == "kind" {
+                    if seen_kind {
+                        return Ok(true);
+                    }
+                    seen_kind = true;
+                }
+            }
+            Ok(false)
+        }
+    }
+
+    serde_json::Deserializer::from_str(data)
+        .deserialize_map(TopLevelKindVisitor)
+        .unwrap_or(false)
+}
+
 /// Parse the opt-in screen contract; untagged program views remain legacy text.
 ///
 /// Malformed values that identify themselves as a screen are rejected. Other
