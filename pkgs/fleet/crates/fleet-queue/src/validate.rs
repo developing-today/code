@@ -6,6 +6,7 @@
 //! the database RPCs remain the backstop.)
 
 use serde_json::{Value, json};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 pub const KINDS: [&str; 4] = ["pr_shepherd", "triage", "small_fix", "ci_investigation"];
@@ -35,16 +36,6 @@ pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
 maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>";
 
-fn is_empty(v: Option<&Value>) -> bool {
-    match v {
-        None | Some(Value::Null) => true,
-        Some(Value::String(s)) => s.is_empty(),
-        Some(Value::Array(a)) => a.is_empty(),
-        Some(Value::Object(o)) => o.is_empty(),
-        _ => false,
-    }
-}
-
 fn manual_schema_errors(p: &Value) -> Vec<String> {
     let mut errs = Vec::new();
     let obj = match p.as_object() {
@@ -70,13 +61,26 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         ));
     }
     for f in ["problem", "priority_reason"] {
-        if is_empty(get(f)) {
-            errs.push(format!("payload.{f}: required field missing or empty"));
+        match get(f) {
+            Some(Value::String(s)) if !s.is_empty() => {}
+            Some(Value::String(_)) | None => {
+                errs.push(format!("payload.{f}: required field missing or empty"))
+            }
+            // A non-string problem/priority_reason (123, {x:1}) used to pass
+            // is_empty and be forwarded verbatim (#6430).
+            Some(_) => errs.push(format!("payload.{f}: must be a non-empty string")),
         }
     }
     for f in ["evidence", "acceptance", "tests", "context_refs"] {
-        if !matches!(get(f), Some(Value::Array(_))) {
-            errs.push(format!("payload.{f}: must be a list"));
+        match get(f) {
+            Some(Value::Array(a)) => {
+                // Element types were never checked: [123], [null], [{x:1}]
+                // and [[t]] all validated and were forwarded verbatim (#6430).
+                if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                    errs.push(format!("payload.{f}: every element must be a string"));
+                }
+            }
+            _ => errs.push(format!("payload.{f}: must be a list")),
         }
     }
     for f in ["evidence", "acceptance", "tests"] {
@@ -88,19 +92,38 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     }
     match get("scope") {
         Some(Value::Object(scope)) => {
-            if !matches!(scope.get("include"), Some(Value::Array(_))) {
-                errs.push("payload.scope.include: must be a list".to_string());
+            match scope.get("include") {
+                Some(Value::Array(a)) => {
+                    if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                        errs.push(
+                            "payload.scope.include: every element must be a string".to_string(),
+                        );
+                    }
+                }
+                _ => errs.push("payload.scope.include: must be a list".to_string()),
             }
-            if is_empty(scope.get("exclude")) {
-                errs.push("payload.scope.exclude: required (scope exclusions)".to_string());
+            match scope.get("exclude") {
+                Some(Value::Array(a)) if !a.is_empty() => {
+                    if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                        errs.push(
+                            "payload.scope.exclude: every element must be a string".to_string(),
+                        );
+                    }
+                }
+                _ => errs.push("payload.scope.exclude: required (scope exclusions)".to_string()),
             }
         }
         _ => errs.push("payload.scope: must be an object with include/exclude".to_string()),
     }
     match get("risk") {
         Some(Value::Object(risk)) if matches!(risk.get("level"), Some(Value::String(l)) if ["low","medium","high"].contains(&l.as_str())) => {
-            if !matches!(risk.get("flags"), Some(Value::Array(_))) {
-                errs.push("payload.risk.flags: must be a list".to_string());
+            match risk.get("flags") {
+                Some(Value::Array(a)) => {
+                    if a.iter().any(|e| !matches!(e, Value::String(_))) {
+                        errs.push("payload.risk.flags: every element must be a string".to_string());
+                    }
+                }
+                _ => errs.push("payload.risk.flags: must be a list".to_string()),
             }
         }
         _ => errs.push("payload.risk.level: must be low|medium|high".to_string()),
@@ -113,9 +136,12 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         }
     }
     let ded_ok = matches!(get("dedupe"), Some(Value::Object(d))
-        if !is_empty(d.get("checked_at")) && !is_empty(d.get("basis")));
+        if matches!(d.get("checked_at"), Some(Value::String(s)) if !s.is_empty())
+            && matches!(d.get("basis"), Some(Value::String(s)) if !s.is_empty()));
     if !ded_ok {
-        errs.push("payload.dedupe: must have checked_at and basis".to_string());
+        errs.push(
+            "payload.dedupe: must have checked_at and basis as non-empty strings".to_string(),
+        );
     }
     // Identity numbers are GitHub numbers: positive integers only. A
     // non-positive issue number names no issue, whatever the dedupe key
@@ -481,6 +507,173 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
     errors
 }
 
+/// The not_before horizon (#6426; triage task 10871 decision): a
+/// not_before more than 366 days in the future is REJECTED, never
+/// clamped — a task gated that far out is born unclaimable while
+/// still counting as queued. The same bound applies at every layer
+/// that accepts a not_before: packet validation, the client
+/// --not-before flag, and the broker's /park and /revive gates.
+pub const NOT_BEFORE_MAX_FUTURE_SECONDS: i64 = 366 * 86_400;
+
+/// (year, month, day) -> days since 1970-01-01 (Howard Hinnant's
+/// algorithm, the same civil-date math fallback.rs and client.rs use).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = (y_adj - era * 400) as u64; // [0, 399]
+    let mp = if m > 2 { m - 3 } else { m + 9 } as u64; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + (d as u64) - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe as i64 - 719_468
+}
+
+/// Parse an RFC 3339 timestamp (`...Z` or with a numeric offset,
+/// optional fractional seconds) to epoch seconds. The day must exist
+/// in the given month and year (the fallback.rs #6667 rule):
+/// days_from_civil alone silently normalizes impossible dates.
+/// Oracle: RFC 3339 + the Gregorian calendar.
+fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (date, rest) = s
+        .split_once('T')
+        .or_else(|| s.split_once('t'))
+        .or_else(|| s.split_once(' '))?;
+    let mut dp = date.split('-');
+    // RFC 3339 field widths come first (date-fullyear is 4DIGIT,
+    // month/day/time components 2DIGIT): a year with unbounded
+    // digits parses as an i64 and then overflows the civil-date
+    // arithmetic — a panic in overflow-checked builds, a wrapped
+    // negative epoch that passes the horizon gate in release
+    // (Codex P2 on PR #8489). With the widths enforced, every
+    // value below is provably inside i64 arithmetic range.
+    fn digits(s: &str, n: usize) -> Option<i64> {
+        if s.len() == n && s.bytes().all(|b| b.is_ascii_digit()) {
+            s.parse().ok()
+        } else {
+            None
+        }
+    }
+    let year: i64 = digits(dp.next()?, 4)?;
+    let month: u32 = digits(dp.next()?, 2)?.try_into().ok()?;
+    let day: u32 = digits(dp.next()?, 2)?.try_into().ok()?;
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if dp.next().is_some() || day < 1 || day > days_in_month {
+        return None;
+    }
+    let (time, offset_s) = if let Some(t) = rest.strip_suffix(['Z', 'z']) {
+        (t, 0i64)
+    } else if let Some(idx) = rest.rfind(['+', '-']) {
+        if idx == 0 {
+            return None;
+        }
+        let (t, off) = rest.split_at(idx);
+        let sign: i64 = if rest.as_bytes()[idx] == b'+' { 1 } else { -1 };
+        let mut op = off[1..].split(':');
+        let oh: i64 = digits(op.next()?, 2)?;
+        // A present-but-invalid component is an error, never a
+        // silent zero (Codex P2 on PR #8489, for seconds/fraction
+        // below as well as here).
+        let om: i64 = match op.next() {
+            Some(v) => digits(v, 2)?,
+            None => 0,
+        };
+        if op.next().is_some() {
+            return None;
+        }
+        // RFC 3339 time-numoffset is a time-hour (00-23) and
+        // time-minute (00-59): an unbounded offset would let the
+        // epoch arithmetic wrap a far-future date back into the
+        // accepted range (Codex P2 on PR #8489).
+        if !(0..=23).contains(&oh) || !(0..=59).contains(&om) {
+            return None;
+        }
+        (t, sign * (oh * 3600 + om * 60))
+    } else {
+        (rest, 0)
+    };
+    // Fractional seconds: when the '.' is present, the fraction
+    // must be non-empty digits — discarding it unvalidated would
+    // accept `00:00:00.garbage` (Codex P2 on PR #8489).
+    let (time, fraction) = match time.split_once('.') {
+        Some((t, f)) => (t, Some(f)),
+        None => (time, None),
+    };
+    if let Some(f) = fraction {
+        if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    let mut tp = time.split(':');
+    let hh: i64 = digits(tp.next()?, 2)?;
+    let mm: i64 = digits(tp.next()?, 2)?;
+    let ss: i64 = match tp.next() {
+        Some(v) => digits(v, 2)?,
+        None => 0,
+    };
+    if tp.next().is_some() {
+        return None;
+    }
+    if !(0..24).contains(&hh) || !(0..60).contains(&mm) || !(0..61).contains(&ss) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hh * 3600 + mm * 60 + ss - offset_s)
+}
+
+fn now_epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Validate one not_before value against the #6426 rule at a given
+/// "now" (epoch seconds): it must be a non-empty string that parses
+/// as RFC 3339 and is no more than NOT_BEFORE_MAX_FUTURE_SECONDS in
+/// the future. Past and near-future values pass unchanged. Every
+/// error names `field` (`packet.not_before`, `--not-before`, or
+/// `not_before`) so the rejection points at its source.
+pub fn validate_not_before_at(value: &Value, field: &str, now: i64) -> Result<(), String> {
+    let Some(s) = value.as_str() else {
+        return Err(format!(
+            "{field}: must be an RFC 3339 timestamp string, got {}",
+            match value {
+                Value::Number(_) => "a number",
+                Value::Bool(_) => "a boolean",
+                Value::Array(_) => "an array",
+                Value::Object(_) => "an object",
+                Value::Null => "null",
+                Value::String(_) => unreachable!(),
+            }
+        ));
+    };
+    if s.trim().is_empty() {
+        return Err(format!(
+            "{field}: must not be empty (an RFC 3339 timestamp is required)"
+        ));
+    }
+    let Some(epoch) = parse_rfc3339_epoch(s) else {
+        return Err(format!("{field}: '{s}' is not a valid RFC 3339 timestamp"));
+    };
+    if epoch - now > NOT_BEFORE_MAX_FUTURE_SECONDS {
+        return Err(format!(
+            "{field}: {s} is more than 366 days in the future — a task gated that far out is born unclaimable (#6426); rejected, not clamped"
+        ));
+    }
+    Ok(())
+}
+
+/// validate_not_before_at against the current time.
+pub fn validate_not_before(value: &Value, field: &str) -> Result<(), String> {
+    validate_not_before_at(value, field, now_epoch_seconds())
+}
+
 /// validate_packet: returns (errors, warnings).
 pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     let mut errors: Vec<String> = Vec::new();
@@ -516,13 +709,34 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
         }
         Some(_) => errors.push("packet.priority: must be an integer".to_string()),
     }
-    if let Some(Value::String(body)) = obj.get("body") {
-        let words = body.split_whitespace().count();
-        if words > BODY_WARN_WORDS {
-            warnings.push(format!(
-                "packet.body: {words} words exceeds the ~{BODY_WARN_WORDS}-word design target"
-            ));
+    // not_before (#6426): absent or null keeps the historical
+    // behaviour; a present value must satisfy validate_not_before —
+    // until now it was forwarded verbatim, so garbage failed only as
+    // a downstream DB cast error and a far-future value enqueued a
+    // task the claim predicate would not admit for years.
+    if let Some(nb) = obj.get("not_before").filter(|v| !v.is_null()) {
+        if let Err(e) = validate_not_before(nb, "packet.not_before") {
+            errors.push(e);
         }
+    }
+    match obj.get("body") {
+        Some(Value::String(body)) if !body.trim().is_empty() => {
+            let words = body.split_whitespace().count();
+            if words > BODY_WARN_WORDS {
+                warnings.push(format!(
+                    "packet.body: {words} words exceeds the ~{BODY_WARN_WORDS}-word design target"
+                ));
+            }
+        }
+        // Absent is valid, and null is its stored spelling:
+        // task_from_packet writes body:null for a body-less packet, and
+        // the claim guard (#5444) revalidates stored rows through this
+        // same function — a null body must not quarantine a task that
+        // enqueue accepted (Codex P1 on PR #8477).
+        None | Some(Value::Null) => {}
+        // body=12345/{x:1}/[a]/true and even body='' used to pass silently
+        // because the body was only read when it was a string (#6430).
+        Some(_) => errors.push("packet.body: must be a non-empty string".to_string()),
     }
     let size = serde_json::to_string(payload).map(|s| s.len()).unwrap_or(0);
     if size > PAYLOAD_MAX_BYTES {
@@ -582,6 +796,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn payload_with(identity: serde_json::Value) -> Value {
         let mut payload = json!({
@@ -711,6 +926,72 @@ mod tests {
                 .is_none()
         );
     }
+    fn valid_packet() -> Value {
+        json!({
+            "title": "t",
+            "body": "b",
+            "priority": 20,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:6430",
+            "payload": payload_with(json!({"issue": {"number": 6430}})),
+        })
+    }
+
+    #[test]
+    fn packet_string_fields_and_list_elements_are_type_checked() {
+        // Valid control: the well-typed packet still validates clean (#6430).
+        let (errors, _) = validate_packet(&valid_packet());
+        assert!(errors.is_empty(), "valid control errors: {errors:?}");
+
+        // A body-less packet validates, in both spellings: the key
+        // absent (enqueue form) and null (the stored-row form the claim
+        // guard revalidates, #5444 / PR #8477 Codex P1).
+        let mut no_body = valid_packet();
+        no_body.as_object_mut().unwrap().remove("body");
+        let (errors, _) = validate_packet(&no_body);
+        assert!(errors.is_empty(), "absent body errors: {errors:?}");
+        let mut null_body = valid_packet();
+        null_body["body"] = Value::Null;
+        let (errors, _) = validate_packet(&null_body);
+        assert!(errors.is_empty(), "null body errors: {errors:?}");
+
+        // The probe cases from issue #6430 (~/git/fleet/probe-queue-body):
+        // every malformed variant must now error, naming its field.
+        let cases: Vec<(&str, Value, &str)> = vec![
+            ("/body", json!(12345), "packet.body"),
+            ("/body", json!({"x": 1}), "packet.body"),
+            ("/body", json!(["a"]), "packet.body"),
+            ("/body", json!(true), "packet.body"),
+            ("/body", json!(""), "packet.body"),
+            ("/payload/problem", json!(123), "payload.problem"),
+            ("/payload/problem", json!({"x": 1}), "payload.problem"),
+            ("/payload/priority_reason", json!(123), "payload.priority_reason"),
+            ("/payload/dedupe/checked_at", json!(123), "payload.dedupe"),
+            ("/payload/dedupe/basis", json!(123), "payload.dedupe"),
+            ("/payload/evidence", json!([123]), "payload.evidence"),
+            ("/payload/evidence", json!([null]), "payload.evidence"),
+            ("/payload/evidence", json!([{"x": 1}]), "payload.evidence"),
+            ("/payload/evidence", json!([["t"]]), "payload.evidence"),
+            ("/payload/acceptance", json!([123]), "payload.acceptance"),
+            ("/payload/tests", json!([123]), "payload.tests"),
+            ("/payload/context_refs", json!([null]), "payload.context_refs"),
+            ("/payload/scope/include", json!([123]), "payload.scope.include"),
+            ("/payload/scope/exclude", json!([123]), "payload.scope.exclude"),
+            ("/payload/scope/exclude", json!("y"), "payload.scope.exclude"),
+            ("/payload/risk/flags", json!([123]), "payload.risk.flags"),
+        ];
+        for (pointer, bad, field) in cases {
+            let mut packet = valid_packet();
+            *packet
+                .pointer_mut(pointer)
+                .unwrap_or_else(|| panic!("pointer {pointer} exists")) = bad.clone();
+            let (errors, _) = validate_packet(&packet);
+            assert!(
+                errors.iter().any(|e| e.contains(field)),
+                "{pointer} = {bad} must error naming {field}; got {errors:?}"
+            );
+        }
+    }
+
     fn dedupe_errs(key: &str, kind: &str, identity: serde_json::Value) -> Vec<String> {
         let mut payload = payload_with(identity);
         payload
@@ -860,5 +1141,253 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn not_before_is_validated_against_rfc3339_and_the_366_day_horizon() {
+        // #6426: not_before was forwarded verbatim at every layer —
+        // garbage failed only as a downstream DB cast error, and a
+        // far-future value enqueued a task born unclaimable. Oracle:
+        // RFC 3339 plus the triage decision (reject beyond 366 days).
+        // Fixed "now": 2026-11-06T00:00:00Z.
+        let now = parse_rfc3339_epoch("2026-11-06T00:00:00Z").expect("test now parses");
+        // Non-string shapes are errors naming the field.
+        for bad in [
+            json!(42),
+            json!(true),
+            json!({}),
+            json!(["2026-11-06T00:00:00Z"]),
+        ] {
+            let err = validate_not_before_at(&bad, "packet.not_before", now)
+                .err()
+                .expect("non-string not_before must be rejected");
+            assert!(
+                err.contains("packet.not_before"),
+                "error names the field: {err}"
+            );
+        }
+        // Empty and unparseable strings are errors naming the field.
+        for bad in [
+            "",
+            "   ",
+            "banana",
+            "2026-13-01T00:00:00Z",
+            "2026-02-31T00:00:00Z",
+            "2026-11-06",
+            // Offsets outside the RFC 3339 ranges are not valid
+            // timestamps — and an unbounded one must not be able to
+            // wrap a far-future date past the horizon check.
+            "2026-11-06T00:00:00+24:00",
+            "2026-11-06T00:00:00+00:60",
+            "9999-01-01T00:00:00+70000000:00",
+            // Field widths are RFC 3339 syntax, not decoration: an
+            // unbounded year overflows the epoch arithmetic.
+            "300000000000-01-01T00:00:00Z",
+            "10000-01-01T00:00:00Z",
+            "2026-1-06T00:00:00Z",
+            // Present-but-invalid components must not silently
+            // default to zero.
+            "2026-11-06T00:00:bananaZ",
+            "2026-11-06T00:00:00.garbageZ",
+            "2026-11-06T00:00:00+05:xx",
+            "2026-11-06T00:00:00:00Z",
+        ] {
+            let err = validate_not_before_at(&json!(bad), "packet.not_before", now)
+                .err()
+                .expect("garbage not_before must be rejected");
+            assert!(
+                err.contains("packet.not_before"),
+                "error names the field: {err}"
+            );
+        }
+        // Beyond the 366-day horizon is an error (a year-9999 value
+        // must not silently enqueue as a normal queued task).
+        for far in ["9999-01-01T00:00:00Z", "2027-11-07T00:00:01Z"] {
+            let err = validate_not_before_at(&json!(far), "packet.not_before", now)
+                .err()
+                .expect("far-future not_before must be rejected");
+            assert!(
+                err.contains("packet.not_before"),
+                "error names the field: {err}"
+            );
+            assert!(err.contains("366 days"), "error names the horizon: {err}");
+        }
+        // Exactly at the horizon, near-future, past, and offset forms
+        // pass unchanged.
+        for ok in [
+            "2027-11-07T00:00:00Z",
+            "2026-11-06T00:00:01Z",
+            "2020-01-01T00:00:00Z",
+            "2026-11-06T05:30:00+05:30",
+            "2026-11-06T00:00:00.5Z",
+            // RFC 3339 permits lowercase t/z markers; PostgreSQL's
+            // timestamptz conversion accepted them before this
+            // validation existed (Codex P2 on PR #8489).
+            "2026-11-06t00:00:00z",
+        ] {
+            assert!(
+                validate_not_before_at(&json!(ok), "packet.not_before", now).is_ok(),
+                "valid not_before passes: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_packet_applies_the_not_before_rule() {
+        // Packet-level wiring: a present not_before is checked by
+        // validate_packet; absent and null stay exactly as before.
+        fn packet_with(not_before: Option<Value>) -> Value {
+            let mut packet = json!({
+                "title": "t",
+                "priority": 40,
+                "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:6426",
+                "payload": payload_with(json!({"issue": {"number": 6426}})),
+            });
+            if let Some(nb) = not_before {
+                packet
+                    .as_object_mut()
+                    .expect("packet object")
+                    .insert("not_before".to_string(), nb);
+            }
+            packet
+        }
+        fn nb_errors(packet: &Value) -> Vec<String> {
+            validate_packet(packet)
+                .0
+                .into_iter()
+                .filter(|e| e.contains("not_before"))
+                .collect()
+        }
+        assert!(nb_errors(&packet_with(None)).is_empty());
+        assert!(nb_errors(&packet_with(Some(Value::Null))).is_empty());
+        assert!(nb_errors(&packet_with(Some(json!("2020-01-01T00:00:00Z")))).is_empty());
+        for bad in [
+            json!("banana"),
+            json!(""),
+            json!(42),
+            json!({}),
+            json!("9999-01-01T00:00:00Z"),
+        ] {
+            let errs = nb_errors(&packet_with(Some(bad.clone())));
+            assert_eq!(errs.len(), 1, "one not_before error for {bad}: {errs:?}");
+            assert!(
+                errs[0].contains("packet.not_before"),
+                "error names the field: {}",
+                errs[0]
+            );
+        }
+    }
+
+    /// Test-local civil_from_days (Howard Hinnant's algorithm) —
+    /// the independent inverse of days_from_civil, used as the
+    /// calendar oracle by the property tests below.
+    fn civil_from_days(z: i64) -> (i64, u32, u32) {
+        let z = z + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = (z - era * 146_097) as u64;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+        (if m <= 2 { y + 1 } else { y }, m, d)
+    }
+
+    fn format_utc(epoch: i64) -> String {
+        let (y, m, d) = civil_from_days(epoch.div_euclid(86_400));
+        let secs = epoch.rem_euclid(86_400);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            secs / 3600,
+            (secs % 3600) / 60,
+            secs % 60
+        )
+    }
+
+    proptest! {
+        /// Calendar invariant (Codex P1 on PR #8489): the parser
+        /// accepts a (year, month, day) triple iff that day exists,
+        /// and the parsed value is the civil-date epoch. Oracle: the
+        /// inverse pair days_from_civil/civil_from_days — a triple
+        /// is a real date iff the round trip returns it unchanged
+        /// (normalization moves impossible dates into the next
+        /// month, so their round trip differs).
+        #[test]
+        fn parse_accepts_exactly_real_dates(
+            year in 1600i64..2400,
+            month in 1u32..=12,
+            day in 1u32..=31,
+        ) {
+            let s = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+            let real = civil_from_days(days_from_civil(year, month, day)) == (year, month, day);
+            prop_assert_eq!(parse_rfc3339_epoch(&s).is_some(), real, "{}", s);
+            if real {
+                prop_assert_eq!(
+                    parse_rfc3339_epoch(&s),
+                    Some(days_from_civil(year, month, day) * 86_400)
+                );
+            }
+        }
+
+        /// Round-trip invariant: any epoch in the RFC 3339 year
+        /// range formats (via the civil_from_days oracle) to a
+        /// string the parser reads back as the same epoch.
+        #[test]
+        fn parse_format_round_trip_any_epoch(epoch in -31_622_400i64..253_402_300_799) {
+            prop_assert_eq!(parse_rfc3339_epoch(&format_utc(epoch)), Some(epoch));
+        }
+
+        /// Offset-equivalence invariant: the same wall clock with a
+        /// numeric offset names the instant shifted by exactly that
+        /// offset. Oracle: the offset-seconds arithmetic identity.
+        #[test]
+        fn offset_forms_shift_by_exactly_the_offset(
+            epoch in -31_622_400i64..253_402_300_799,
+            oh in 0i64..=23,
+            om in 0i64..=59,
+            sign in proptest::bool::ANY,
+        ) {
+            let (y, m, d) = civil_from_days(epoch.div_euclid(86_400));
+            let secs = epoch.rem_euclid(86_400);
+            let s = format!(
+                "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}{}{oh:02}:{om:02}",
+                secs / 3600,
+                (secs % 3600) / 60,
+                secs % 60,
+                if sign { "+" } else { "-" }
+            );
+            let offset = (if sign { 1 } else { -1 }) * (oh * 3600 + om * 60);
+            prop_assert_eq!(parse_rfc3339_epoch(&s), Some(epoch - offset), "{}", s);
+        }
+
+        /// Horizon invariant (#6426): validation accepts a formatted
+        /// instant iff it is at most NOT_BEFORE_MAX_FUTURE_SECONDS
+        /// past the given now. Oracle: the direct epoch comparison.
+        #[test]
+        fn horizon_accepts_iff_within_366_days(
+            now in 0i64..2_000_000_000,
+            delta in -40_000_000i64..40_000_000,
+        ) {
+            let epoch = now + delta;
+            let ok = validate_not_before_at(&json!(format_utc(epoch)), "packet.not_before", now)
+                .is_ok();
+            prop_assert_eq!(ok, delta <= NOT_BEFORE_MAX_FUTURE_SECONDS, "delta {}", delta);
+        }
+
+        /// Robustness invariant: arbitrary text never panics the
+        /// parser or the validator — every input resolves to
+        /// None/Some or Err/Ok. (The enumerated shapes above pin
+        /// the semantics; this pins the absence of panics on
+        /// overflow-shaped inputs, the failure mode of Codex
+        /// rounds 2-4 on PR #8489.)
+        #[test]
+        fn arbitrary_text_never_panics(
+            chars in proptest::collection::vec(proptest::char::range('\u{20}', '\u{7e}'), 0..64),
+        ) {
+            let s: String = chars.into_iter().collect();
+            let _ = parse_rfc3339_epoch(&s);
+            let _ = validate_not_before_at(&json!(s), "packet.not_before", 1_762_700_000);
+        }
     }
 }

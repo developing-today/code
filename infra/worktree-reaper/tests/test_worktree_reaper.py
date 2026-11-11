@@ -26,6 +26,7 @@ synthetic repo; 100000 makes everything active).
 Run on the laptop:  python3 tests/test_worktree_reaper.py
 """
 
+import argparse
 import contextlib
 import fcntl
 import importlib.util
@@ -376,6 +377,105 @@ class UnitTests(unittest.TestCase):
             self.assertAlmostEqual(mtime3, old, delta=2)
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class ConfigValidationTests(unittest.TestCase):
+    """#6394: load_config validates both config files, naming the file.
+
+    Each invalid case from the issue must yield a clean ConfigError
+    (never a silent disarm, never a raw traceback): a typo'd deny
+    key, a string-typed deny list, a wrong-shaped top level,
+    malformed JSON, and a string-typed numeric. A valid config and
+    a valid overlay merge exactly as before.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="reaper-config-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state_dir = os.path.join(self.tmp, "state")
+        os.makedirs(self.state_dir)
+
+    def _args(self, config_path=None):
+        return argparse.Namespace(
+            config=config_path,
+            state_dir=self.state_dir,
+            quiet_hours=None,
+            max_removals=None,
+            no_fetch=False,
+        )
+
+    def _write(self, name, text):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+
+    def _load(self, config_path=None):
+        return wr.load_config(self.tmp, self._args(config_path))
+
+    def test_typo_deny_key_is_refused_naming_the_file(self):
+        path = self._write("config.json", json.dumps({"deny_path": ["/x"]}))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn(path, str(ctx.exception))
+        self.assertIn("deny_path", str(ctx.exception))
+
+    def test_string_typed_deny_paths_is_refused(self):
+        path = self._write(
+            "config.json", json.dumps({"deny_paths": "/home/user/git/important"})
+        )
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("deny_paths", str(ctx.exception))
+
+    def test_top_level_list_is_refused_cleanly(self):
+        path = self._write("config.json", json.dumps(["deny_paths"]))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("must be a JSON object", str(ctx.exception))
+
+    def test_malformed_json_is_refused_naming_the_file(self):
+        path = self._write("bad.json", "{oops")
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn(path, str(ctx.exception))
+        self.assertIn("invalid JSON", str(ctx.exception))
+
+    def test_string_typed_quiet_hours_is_refused_at_load(self):
+        path = self._write("config.json", json.dumps({"quiet_hours": "6"}))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("quiet_hours", str(ctx.exception))
+
+    def test_overlay_typo_key_is_refused_naming_the_overlay(self):
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump({"deny_path": ["/x"]}, fh)
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load()
+        self.assertIn(overlay, str(ctx.exception))
+
+    def test_overlay_top_level_list_is_refused_cleanly(self):
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump(["x"], fh)
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load()
+        self.assertIn(overlay, str(ctx.exception))
+
+    def test_valid_config_and_overlay_merge_unchanged(self):
+        path = self._write(
+            "config.json",
+            json.dumps({"quiet_hours": 2, "deny_paths": ["/a"], "fetch": False}),
+        )
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump({"deny_paths": ["/b"], "max_removals": 5}, fh)
+        cfg = self._load(path)
+        self.assertEqual(cfg["quiet_hours"], 2)
+        self.assertEqual(cfg["deny_paths"], ["/a", "/b"])
+        self.assertEqual(cfg["max_removals"], 5)
+        self.assertFalse(cfg["fetch"])
 
 
 class ProcScanFailClosedTests(unittest.TestCase):
