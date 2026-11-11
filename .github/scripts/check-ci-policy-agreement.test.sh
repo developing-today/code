@@ -378,4 +378,32 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-flow_multiline.out"
 echo "pass: multiline flow branches list including main satisfies the main leg"
 
+
+# Codex P2 regression on #8513 round 4: character classes inside a
+# pattern are pattern syntax, not YAML delimiters — '[a-z]ain'
+# matches main, in both the positive and the ignore list.
+build_tree "$TMP/filter-class_main"
+wf_raw "$TMP/filter-class_main" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ['[a-z]ain']
+EOF
+if bash "$SCRIPT" "$TMP/filter-class_main" >"$TMP/filter-class_main.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a character-class main push" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-class_main.out"
+echo "pass: branches: ['[a-z]ain'] satisfies the main leg (waiver stale)"
+
+build_tree "$TMP/filter-class_ignore"
+wf_raw "$TMP/filter-class_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: ['[a-z]ain']
+EOF
+bash "$SCRIPT" "$TMP/filter-class_ignore" >"$TMP/filter-class_ignore.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-class_ignore.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-class_ignore.out"
+echo "pass: branches-ignore: ['[a-z]ain'] keeps the main leg waived, not stale"
+
 echo "check-ci-policy-agreement.test: all contract tests passed"

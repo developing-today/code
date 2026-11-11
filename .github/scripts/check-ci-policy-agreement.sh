@@ -135,10 +135,12 @@ push_targets_main() {
   local file="$1"
   awk '
     function clean(tok) {
-      gsub(/["\047\[\],]/, "", tok)
+      gsub(/["\047,]/, "", tok)
       return tok
     }
     function add_tokens(str,   n, parts, i, tok, out) {
+      sub(/^[[:space:]]*\[/, "", str)
+      sub(/\][[:space:]]*$/, "", str)
       out = ""
       n = split(str, parts, /[[:space:],]+/)
       for (i = 1; i <= n; i++) {
