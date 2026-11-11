@@ -39,7 +39,7 @@ world = [
   "dep:rmp-serde",
   "id-core/world",
 ]
-ssh = ["world", "dep:russh"]
+ssh = ["world", "id-worlds/ssh"]
 web = [
   "world",
   "dep:axum",
@@ -181,7 +181,8 @@ scrypt = { version = "0.12", optional = true }
 subtle = { version = "2", optional = true }
 # wasmtime moved to id-worlds in step 5b of the crate split (#4408):
 # the `sandbox` feature above forwards to `id-worlds/sandbox`.
-russh = { version = "=0.65.0", optional = true }
+# russh moved to id-worlds in step 5c of the crate split (#4408):
+# the `ssh` feature above forwards to `id-worlds/ssh`.
 
 [dev-dependencies]
 # Paused-time session-driver tests. Dev only.
@@ -204,7 +205,11 @@ id-sync = { path = "crates/id-sync", default-features = false, features = [
 rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"
 tokio-tungstenite = "0.29"
-vt100 = "=0.16.2"
+# vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
+# The CLI integration tests drive an SSH client against the world SSH
+# server; the server side (and its russh) lives in id-worlds since
+# step 5c, so the facade keeps russh for its tests only.
+russh = "=0.65.0"
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"

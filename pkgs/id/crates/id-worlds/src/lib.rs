@@ -49,6 +49,9 @@ pub mod sandbox;
 mod session_host;
 pub mod shell_contract;
 pub mod world;
+#[cfg(feature = "sandbox")]
+pub mod world_dev;
+pub mod world_doctor;
 pub mod world_cache;
 pub mod world_compile;
 pub mod world_fixture;
@@ -57,7 +60,10 @@ pub mod world_line;
 pub mod world_native;
 pub mod world_net;
 pub mod world_records;
+pub mod world_replication_net;
 pub mod world_session;
+#[cfg(feature = "ssh")]
+pub mod world_ssh;
 pub mod world_store;
 pub mod world_terminal;
 
