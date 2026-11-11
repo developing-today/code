@@ -132,7 +132,13 @@ workflow before use.
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and
-its fixtures on pull requests and pushes to `main`. The
+its fixtures on pull requests and pushes to `main`. **Venue
+disposition (#6187 Phase 3, closed 2026-11-11): re-armed the same
+day under Drew’s #7089 ruling (commit 82377fa1ed) — the venue is
+active, its waiver is deleted above, and its push + dispatch runs
+were dispatched at the re-arm; the dispatch-only default scoped
+for it under #6185 ruling (c) was superseded for this venue by
+the #7089 ruling before the #6187 closeout landed.** The
 guard checks known metered selections (`cloudflare-*` and the direct
 PAYG `deepseek` provider) in model-route targets/fallbacks, provider-route
 selections, top-level defaults, and agent model/fallback fields. Disabled
@@ -240,7 +246,11 @@ contract tests live in
 `.github/scripts/check-ci-policy-agreement.test.sh` (oracle: for
 every in-scope workflow, tier, declared triggers, and the recorded
 waiver set must agree). Enablement is not visible from the tree:
-it is audited from the Actions API on the #6187 recurring cadence,
+it is audited from the Actions API on the #6187 recurring cadence
+(**recurring enablement re-audit — owner: the repo-health fleet
+(queue-worker lanes, venue-audit task series); cadence: monthly,
+and after any change to a workflow’s enablement; a disabled venue
+with no recorded disposition is a finding, not a default**),
 and a disabled in-scope venue is reported with its disposition.
 At Phase 1 landing, the disabled in-scope venues were exactly the
 waiver set below. As of the 2026-11-11 re-arm landing under Drew's
