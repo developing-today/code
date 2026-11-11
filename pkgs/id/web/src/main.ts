@@ -21,6 +21,7 @@ import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
+import { parseTagsResponse } from "./tags-response";
 import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
@@ -47,6 +48,7 @@ interface IdApp {
   disconnectTagsWs: () => void;
   loadFileTags: (filename: string) => Promise<void>;
   renderEditorTags: (tags: Array<{ key: string; value: string | null }>) => void;
+  renderEditorTagsLoadError: () => void;
   addTagInline: () => Promise<void>;
   removeTag: (subject: string, key: string, value: string | null) => Promise<void>;
   bulkAddTag: () => Promise<void>;
@@ -761,10 +763,23 @@ async function init(): Promise<void> {
     async loadFileTags(filename: string): Promise<void> {
       try {
         const response = await fetch(`/api/tags?subject=${encodeURIComponent(filename)}`);
-        if (!response.ok) return;
-        const raw = await response.json();
-        // API may return { tags: [...] } or a flat array
-        const tags: Array<{ key: string; value: string | null }> = Array.isArray(raw) ? raw : raw.tags || [];
+        if (!response.ok) {
+          console.error(`[id] Failed to load file tags for ${filename}: HTTP ${response.status}`);
+          this.renderEditorTagsLoadError();
+          return;
+        }
+        const raw: unknown = await response.json();
+        // API may return { tags: [...] } or a flat array. Validate the
+        // shape at the fetch boundary (#7841): a wrong-shape 200 fails
+        // closed into the explicit load-failure state — never a false
+        // "none", never the previous file's pills left in place, never
+        // a coerced "[object Object]" pill.
+        const tags = parseTagsResponse(raw);
+        if (tags === null) {
+          console.error(`[id] Failed to load file tags for ${filename}: unexpected /api/tags response shape`);
+          this.renderEditorTagsLoadError();
+          return;
+        }
         // Filter out system tags (created, modified, deleted, archive.*)
         const userTags = tags.filter(
           (t: { key: string }) =>
@@ -772,8 +787,26 @@ async function init(): Promise<void> {
         );
         this.renderEditorTags(userTags);
       } catch (err) {
-        console.warn("[id] Failed to load file tags:", err);
+        console.error("[id] Failed to load file tags:", err);
+        this.renderEditorTagsLoadError();
       }
+    },
+
+    /**
+     * Render the explicit tag load-failure state (#7841): the panel
+     * says the tags could not be loaded, replacing whatever the
+     * previous file's render left behind.
+     */
+    renderEditorTagsLoadError(): void {
+      const list = document.getElementById("editor-tag-list");
+      if (!list) return;
+
+      list.innerHTML = "";
+      const error = document.createElement("span");
+      error.className = "tag-load-error text-muted";
+      error.textContent = "failed to load tags";
+      error.style.fontSize = "9px";
+      list.appendChild(error);
     },
 
     /**
