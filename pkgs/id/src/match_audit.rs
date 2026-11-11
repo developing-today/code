@@ -475,8 +475,10 @@ fn hash_parts(parts: &[&[u8]]) -> Hash {
 ///
 /// # Errors
 ///
-/// Returns [`AuditErrorV0::SignerNotInRoster`] when the caller's key is
-/// absent from `header.players`, and
+/// Returns [`AuditErrorV0::UnsupportedVersion`] for a header version this
+/// implementation does not understand, [`AuditErrorV0::Roster`] for an
+/// empty or duplicate-key roster, [`AuditErrorV0::SignerNotInRoster`] when
+/// the caller's key is absent from `header.players`, and
 /// [`AuditErrorV0::SeedCommitmentMismatch`] when the digest of
 /// `footer.seed_reveal` differs from `header.seed_commitment` — the
 /// footer-local rules [`MatchLogV0::verify_integrity`] applies, checked
@@ -488,6 +490,10 @@ pub fn sign_footer(
     metadata: &MetadataV0,
     footer: &FooterV0,
 ) -> Result<PlayerSignatureV0, AuditErrorV0> {
+    if header.version != FORMAT_VERSION_V0 {
+        return Err(AuditErrorV0::UnsupportedVersion(header.version));
+    }
+    validate_roster(&header.players)?;
     validate_signer(key, header)?;
     if Hash::digest(&footer.seed_reveal) != header.seed_commitment {
         return Err(AuditErrorV0::SeedCommitmentMismatch);
@@ -1144,6 +1150,41 @@ mod tests {
         let log = fixture();
         let error = sign_header(&key(3), &log.header).unwrap_err();
         assert!(matches!(error, AuditErrorV0::SignerNotInRoster));
+    }
+
+    #[test]
+    fn sign_footer_refuses_unsupported_version() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        header.version = FORMAT_VERSION_V0 + 1;
+        let error = sign_footer(
+            &key(1),
+            &header,
+            log.entries[1].hash,
+            &log.metadata,
+            &log.footer,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, AuditErrorV0::UnsupportedVersion(version) if version == FORMAT_VERSION_V0 + 1)
+        );
+    }
+
+    #[test]
+    fn sign_footer_refuses_duplicate_roster() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        let duplicate = header.players[0].clone();
+        header.players.push(duplicate);
+        let error = sign_footer(
+            &key(1),
+            &header,
+            log.entries[1].hash,
+            &log.metadata,
+            &log.footer,
+        )
+        .unwrap_err();
+        assert!(matches!(error, AuditErrorV0::Roster));
     }
 
     #[test]

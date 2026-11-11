@@ -201,7 +201,16 @@ describe("world page invite/view/error frame shapes (#7924)", () => {
     const badStringField = (v: unknown) => v !== undefined && v !== null && typeof v !== "string";
     const badNumberField = (v: unknown) =>
       v !== undefined && v !== null && !(typeof v === "number" && Number.isFinite(v));
-    const seen = { inviteRejected: 0, inviteAccepted: 0, viewRejected: 0, viewAccepted: 0, errorRejected: 0, errorAccepted: 0, displayName: 0, baseRevision: 0 };
+    const seen = {
+      inviteRejected: 0,
+      inviteAccepted: 0,
+      viewRejected: 0,
+      viewAccepted: 0,
+      errorRejected: 0,
+      errorAccepted: 0,
+      displayName: 0,
+      baseRevision: 0,
+    };
 
     for (let i = 0; i < 240; i++) {
       const capBefore = capability().value;
@@ -216,12 +225,18 @@ describe("world page invite/view/error frame shapes (#7924)", () => {
         if (shape < 0.65) {
           const inner: Record<string, unknown> = {};
           if (rand() < 0.9) inner.capability = pick();
-          if (rand() < 0.7) { inner.display_name = pick(); seen.displayName++; }
+          if (rand() < 0.7) {
+            inner.display_name = pick();
+            seen.displayName++;
+          }
           frame = { type: "invite", invite: inner };
           inv = inner;
         } else if (shape < 0.85) {
           frame = { type: "invite", capability: pick() };
-          if (rand() < 0.7) { frame.display_name = pick(); seen.displayName++; }
+          if (rand() < 0.7) {
+            frame.display_name = pick();
+            seen.displayName++;
+          }
           inv = frame;
         } else {
           const bad = pick();
@@ -254,7 +269,10 @@ describe("world page invite/view/error frame shapes (#7924)", () => {
         const frame: Record<string, unknown> = { type: "view" };
         if (rand() < 0.9) frame.data = pick();
         if (rand() < 0.7) frame.view_revision = pick();
-        if (rand() < 0.5) { frame.base_view_revision = pick(); seen.baseRevision++; }
+        if (rand() < 0.5) {
+          frame.base_view_revision = pick();
+          seen.baseRevision++;
+        }
         const rejected =
           (frame.data !== undefined && typeof frame.data !== "string") ||
           badNumberField(frame.view_revision) ||

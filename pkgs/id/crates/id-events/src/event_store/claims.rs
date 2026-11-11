@@ -13,10 +13,10 @@ use redb::ReadableDatabase;
 
 use super::resolve::{self, author_of};
 use super::{ACTIONS, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt};
-use crate::chain::Event;
+use id_store::chain::Event;
 use crate::groups::{Projection, Role as GroupRole};
-use crate::tag_claims::{Applied, Claim, TagOp, compacted_claims, is_tag_kind};
-use crate::tag_index::TagIndex;
+use id_store::tag_claims::{Applied, Claim, TagOp, compacted_claims, is_tag_kind};
+use id_store::tag_index::TagIndex;
 
 /// The events an event names: its `after` hashes, and its backlink.
 fn parents_of(event: &Event) -> Vec<Hash> {
@@ -112,7 +112,7 @@ fn default_view_events(
     subject_groups: &HashMap<Hash, Hash>,
     projection: Option<&Projection>,
 ) -> Vec<Applied> {
-    let claims: HashMap<Hash, (crate::waiting::AuthorKey, Hash)> = applied
+    let claims: HashMap<Hash, (id_core::waiting::AuthorKey, Hash)> = applied
         .iter()
         .filter_map(|event| match &event.op {
             TagOp::Set { subject, .. } => Some((event.id, (event.author, *subject))),

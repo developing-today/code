@@ -40,6 +40,22 @@ events.ts): DATABASE-FIRST WITH SPILL TO OUTBOX.
                 pusher-health.json — the visible surface a stewardship
                 visibility pass reads to spot a stuck pusher.
 
+  outbox lock   The outbox file itself is guarded by a short flock
+                (outbox.jsonl.lock, #6875): spill() holds it only for
+                its append+fsync, and the pusher holds it only to read
+                the outbox and again to rewrite it — never across the
+                per-record inserts, so recording never waits on a
+                drain. Before the rewrite, the pusher re-reads the
+                outbox under that lock and carries every line that
+                arrived after its first read verbatim into the new
+                outbox: a record spilled mid-drain was never in the
+                pusher's read set, so without the merge the rewrite
+                would replace the inode its line was appended to and
+                the record would vanish while the drain reported
+                clean. Mid-drain arrivals stay pending for the next
+                run and are counted in pending_count, so such a run
+                is not a clean drain.
+
   status        Print pusher health + outbox depth + DB row count.
 
   record-many   Batch form of record (one JSON object per line) —
@@ -51,6 +67,8 @@ Test hooks (env): EXTERNAL_COMMS_TURSO_URL overrides the database
 URL; EXTERNAL_COMMS_TURSO_TOKEN overrides the token;
 EXTERNAL_COMMS_STATE_DIR overrides the state directory.
 """
+import collections
+import contextlib
 import fcntl
 import json
 import os
@@ -65,6 +83,7 @@ STATE_DIR = os.environ.get(
     "EXTERNAL_COMMS_STATE_DIR",
     os.path.expanduser("~/.local/state/external-comms"))
 OUTBOX = os.path.join(STATE_DIR, "outbox.jsonl")
+OUTBOX_LOCK = OUTBOX + ".lock"
 HEALTH = os.path.join(STATE_DIR, "pusher-health.json")
 QUARANTINE = os.path.join(STATE_DIR, "quarantine.jsonl")
 LOCK = os.path.join(STATE_DIR, "pusher.lock")
@@ -181,15 +200,48 @@ def insert_record(base, key, rec):
     _pipeline(base, key, [(sql, tuple(row.get(c) for c in COLUMNS))])
 
 
+@contextlib.contextmanager
+def outbox_locked():
+    """Hold the outbox flock for one short critical section (#6875).
+
+    Serializes spill()'s append against the pusher's outbox read and
+    rewrite. Holders never do network or DB work inside the section,
+    so the wait is bounded by a local file append/read/rewrite."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(OUTBOX_LOCK, "a") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lockf, fcntl.LOCK_UN)
+
+
 def spill(rec):
     os.makedirs(STATE_DIR, exist_ok=True)
     rec = dict(rec)
     rec.setdefault("_spilled_at", now_iso())
     rec.setdefault("_attempts", 0)
-    with open(OUTBOX, "a") as f:
-        f.write(json.dumps(rec) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    with outbox_locked():
+        with open(OUTBOX, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+
+def _lines_arrived_since(original, current):
+    """Lines in `current` that were not in `original`, in file order.
+
+    Multiset difference on the exact line strings: a line the pusher
+    already read is accounted for once per read occurrence, so a
+    mid-drain spill of an identical line still counts as arrived."""
+    remaining = collections.Counter(original)
+    arrived = []
+    for ln in current:
+        if remaining[ln] > 0:
+            remaining[ln] -= 1
+        else:
+            arrived.append(ln)
+    return arrived
 
 
 def write_health(_remove=(), **fields):
@@ -267,6 +319,7 @@ def do_push():
     run_at = now_iso()
     pending, landed, last_error = [], 0, None
     pending_raw = []  # malformed lines whose quarantine write failed
+    arrived_lines = []  # lines spilled mid-drain, carried over verbatim
     quarantined, last_quarantine_reason = 0, None
     total_landed, total_quarantined = 0, 0
     if os.path.exists(HEALTH):
@@ -278,9 +331,10 @@ def do_push():
         except Exception:
             total_landed, total_quarantined = 0, 0
     lines = []
-    if os.path.exists(OUTBOX):
-        with open(OUTBOX) as f:
-            lines = [ln for ln in f if ln.strip()]
+    with outbox_locked():
+        if os.path.exists(OUTBOX):
+            with open(OUTBOX) as f:
+                lines = [ln for ln in f if ln.strip()]
     if lines:
         try:
             base, key = db_config()
@@ -323,16 +377,29 @@ def do_push():
                 rec["_last_attempt_at"] = run_at
                 last_error = str(e)[:300]
                 pending.append(rec)
-        tmp = OUTBOX + ".tmp"
-        with open(tmp, "w") as f:
-            for rec in pending:
-                f.write(json.dumps(rec) + "\n")
-            for ln in pending_raw:
-                f.write(ln)
-        os.replace(tmp, OUTBOX)
+        # Re-read and merge under the outbox lock (#6875): lines a
+        # concurrent record spilled while this drain was inserting are
+        # not in `lines`, were never inserted, and must survive the
+        # rewrite verbatim as pending — replacing the outbox from the
+        # stale read set alone silently lost them.
+        with outbox_locked():
+            current = []
+            if os.path.exists(OUTBOX):
+                with open(OUTBOX) as f:
+                    current = [ln for ln in f if ln.strip()]
+            arrived_lines = _lines_arrived_since(lines, current)
+            tmp = OUTBOX + ".tmp"
+            with open(tmp, "w") as f:
+                for rec in pending:
+                    f.write(json.dumps(rec) + "\n")
+                for ln in pending_raw:
+                    f.write(ln)
+                for ln in arrived_lines:
+                    f.write(ln if ln.endswith("\n") else ln + "\n")
+            os.replace(tmp, OUTBOX)
     total_landed += landed
     total_quarantined += quarantined
-    pending_total = len(pending) + len(pending_raw)
+    pending_total = len(pending) + len(pending_raw) + len(arrived_lines)
     health_fields = dict(
         last_run_at=run_at,
         pending_count=pending_total,

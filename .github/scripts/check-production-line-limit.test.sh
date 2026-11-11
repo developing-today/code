@@ -163,4 +163,28 @@ bash "$SCRIPT" "$TMP/tests" >"$TMP/tests.out"
 grep -q "checked 0 production" "$TMP/tests.out"
 echo "pass: test files are not counted"
 
+# Build output is out of scope (#6960): an over-limit generated file
+# under a target/ directory (any depth) is not counted, and does not
+# mask a real over-limit source file in the same tree.
+mkdir -p "$TMP/target/pkgs/demo/src" "$TMP/target/pkgs/demo/target/debug/build/gen-abc/out"
+gen "$TMP/target/pkgs/demo/src/lib.rs" 10
+gen "$TMP/target/pkgs/demo/target/debug/build/gen-abc/out/generated.rs" 2600
+bash "$SCRIPT" "$TMP/target" >"$TMP/target.out"
+grep -q "checked 1 production" "$TMP/target.out"
+echo "pass: over-limit build output under target/ is not counted"
+
+mkdir -p "$TMP/targetmask/pkgs/demo/src" "$TMP/targetmask/pkgs/demo/target/release/build/gen-x/out"
+gen "$TMP/targetmask/pkgs/demo/src/huge.rs" 2600
+gen "$TMP/targetmask/pkgs/demo/target/release/build/gen-x/out/generated.rs" 2600
+if bash "$SCRIPT" "$TMP/targetmask" >"$TMP/targetmask.out" 2>&1; then
+  echo "FAIL: guard passed a tree with an over-limit source file" >&2
+  exit 1
+fi
+grep -q "OVER LIMIT pkgs/demo/src/huge.rs" "$TMP/targetmask.out"
+if grep -q "generated.rs" "$TMP/targetmask.out"; then
+  echo "FAIL: guard reported build output under target/" >&2
+  exit 1
+fi
+echo "pass: target/ exclusion does not mask over-limit sources"
+
 echo "check-production-line-limit.test.sh: all contract tests passed"
