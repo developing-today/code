@@ -54,12 +54,11 @@ REGISTRY=(
 # phase lands (or is ruled retire), delete the waiver in the same PR
 # that changes the triggers or the policy row.
 WAIVERS=(
-  # Phase 2 (#6953): venue disabled_manually; pull_request leg
-  # restored by the 2026-11-08 sweep fix, main-tier push leg missing.
-  "opencode-config-guard.yml|main|6953"
-  # Phase 3 (#6959): dispatch-only; the guard's ci-policy row is new
-  # in Phase 1 and its PR leg awaits the Phase 3 disposition.
-  "production-line-guard.yml|pr|6959"
+  # Empty as of 2026-11-11: Drew ruled re-arm on #7089 and both
+  # Phase 2-3 disagreements landed in the same PR - the
+  # opencode-config-guard main leg (#6953, push restored; venue
+  # re-enabled via the Actions API) and the production-line-guard
+  # PR leg (#6959, pull_request restored alongside push to main).
 )
 
 required_trigger() {
