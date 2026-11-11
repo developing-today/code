@@ -155,9 +155,12 @@ type Extras struct {
 	// ToolViews declares renamed views over an alias target's tools
 	// (#1933 slice 1): each entry exposes one target tool under a new
 	// name, optionally pinning arguments and hiding the pinned
-	// properties from the exposed schema. Only meaningful on an
-	// aliasOf server; a non-empty map replaces the allowlist -- only
-	// the named views are exposed.
+	// properties from the exposed schema. On an aliasOf server the
+	// From is a bare tool name; on a server with no command, url or
+	// aliasOf -- a virtual namespace (#1933 slice 3) -- From is
+	// qualified ("server.tool") and the views may mount tools from
+	// several different servers. A non-empty map replaces the
+	// allowlist -- only the named views are exposed.
 	ToolViews map[string]ToolView `json:"toolViews,omitempty"`
 	// WritePolicy overrides the daemon policy.write setting for this
 	// server alone: ask, allow or deny (#1979). Empty means inherit the
@@ -195,11 +198,17 @@ type Extras struct {
 	Preconditions map[string]Precondition `json:"preconditions,omitempty"`
 }
 
-// ToolView is one declared view of a tool (#1933 slices 1 and 2). A view
-// is either a renamed view of an aliased server's tool (From), or a
-// script-backed tool that runs a declared local command (Command).
+// ToolView is one declared view of a tool (#1933 slices 1-3). A view
+// is either a renamed view of an aliased server's tool (From), a
+// script-backed tool that runs a declared local command (Command), or
+// -- on a server with no process of its own, a virtual namespace -- a
+// mount of another server's tool, named by a qualified From of the
+// form "server.tool"; several mounts from several servers are what
+// make the namespace cross-server.
 type ToolView struct {
-	// From is the target tool's real name on the aliased server.
+	// From is the target tool's real name on the aliased server. On a
+	// virtual namespace (a server with no command, url or aliasOf) it
+	// is qualified: "server.tool" names the tool on that server.
 	From string `json:"from"`
 	// Pin fixes argument values the caller cannot set or override:
 	// a call through the view merges them over the caller's args.
@@ -245,6 +254,12 @@ type ToolView struct {
 	// Placeholders are the script's @param declarations, parsed at load
 	// time so a call can render its body without re-reading the header.
 	Placeholders []recipes.Placeholder `json:"-"`
+	// MountServer and MountTool are a qualified From ("server.tool")
+	// split at load time (#1933 slice 3): the configured server the
+	// mounted tool lives on, and its name there. Both are empty for an
+	// unqualified From (an alias view or a script-backed view).
+	MountServer string `json:"-"`
+	MountTool   string `json:"-"`
 }
 
 // Precondition specifies requirements for a tool or server.
@@ -754,6 +769,23 @@ func (r *Resolved) Stdio() bool { return r.Command != "" }
 // Nothing may start or refresh such a server's pool.
 func (r *Resolved) ScriptOnly() bool { return r.Command == "" && r.URL == "" }
 
+// Virtual reports whether this namespace is assembled from other
+// servers' tools (#1933 slice 3): it has no process, url or alias
+// target of its own, and at least one tool view mounts a qualified
+// "server.tool" From. A script-only namespace is virtual only when
+// it also mounts; a namespace of pure script views is not.
+func (r *Resolved) Virtual() bool {
+	if r == nil || r.AliasOf != "" || r.Command != "" || r.URL != "" {
+		return false
+	}
+	for _, tv := range r.ToolViews {
+		if tv.MountServer != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func parseDur(s string, def time.Duration) time.Duration {
 	if s == "" {
 		return def
@@ -917,7 +949,17 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		}
 		sort.Strings(viewNames)
 		for _, vn := range viewNames {
-			if err := validateToolView(name, vn, ex.ToolViews[vn], s.AliasOf != "" && (s.Command != "" || s.URL != "")); err != nil {
+			tv := ex.ToolViews[vn]
+			canRename := s.AliasOf != "" && (s.Command != "" || s.URL != "")
+			if tv.From != "" && isVirtualEntry(c.MCPServers[name]) {
+				// A virtual namespace mounts by qualified name; the
+				// target must exist and be a server with a process.
+				if _, _, merr := c.mountTarget(name, vn, tv.From); merr != nil {
+					return nil, merr
+				}
+				canRename = true
+			}
+			if err := validateToolView(name, vn, tv, canRename); err != nil {
 				return nil, err
 			}
 		}
@@ -946,6 +988,13 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 					return nil, verr
 				}
 				tv = enriched
+			}
+			if tv.From != "" && isVirtualEntry(c.MCPServers[name]) {
+				ms, mt, merr := c.mountTarget(name, vn, tv.From)
+				if merr != nil {
+					return nil, merr
+				}
+				tv.MountServer, tv.MountTool = ms, mt
 			}
 			views[vn] = tv
 		}
@@ -991,6 +1040,46 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 // a command, a description callers can choose it by, an inputSchema that
 // compiles, and pins that name properties the schema declares. Hide is
 // checked for both kinds: a hidden property must be pinned.
+// isVirtualEntry reports whether a server entry declares a virtual
+// namespace (#1933 slice 3): no process, no url, no alias target --
+// its toolViews are its whole substance.
+func isVirtualEntry(s *Server) bool {
+	return s != nil && s.AliasOf == "" && s.Command == "" && s.URL == ""
+}
+
+// mountTarget splits a qualified From ("server.tool") for a virtual
+// namespace: the longest configured server name that prefixes From
+// wins, so a server whose own name contains dots still mounts
+// unambiguously, and the remainder is the tool's name there. The
+// target must exist, must not be the virtual server itself, and must
+// have a process of its own (directly or through an alias): a mount
+// of a mount would make the catalogue depend on resolution order.
+func (c *Config) mountTarget(self, view, from string) (string, string, error) {
+	best := ""
+	for i := 0; i < len(from); i++ {
+		if from[i] != '.' {
+			continue
+		}
+		if _, ok := c.MCPServers[from[:i]]; ok && len(from[:i]) > len(best) {
+			best = from[:i]
+		}
+	}
+	if best == "" {
+		return "", "", fmt.Errorf("server %q: toolView %q: from %q does not name a configured server; a virtual namespace mounts by qualified server.tool name", self, view, from)
+	}
+	tool := from[len(best)+1:]
+	if tool == "" {
+		return "", "", fmt.Errorf("server %q: toolView %q: from %q names server %q but no tool", self, view, from, best)
+	}
+	if best == self {
+		return "", "", fmt.Errorf("server %q: toolView %q: from %q mounts the namespace from itself", self, view, from)
+	}
+	if tgt := c.MCPServers[best]; isVirtualEntry(tgt) {
+		return "", "", fmt.Errorf("server %q: toolView %q: from %q mounts from %q, which is itself a virtual namespace; mount from a server with a process", self, view, from, best)
+	}
+	return best, tool, nil
+}
+
 func validateToolView(server, view string, tv ToolView, canRename bool) error {
 	if view == "" {
 		return fmt.Errorf("server %q: toolView name must not be empty", server)

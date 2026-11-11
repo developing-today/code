@@ -432,6 +432,51 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 	return out
 }
 
+// virtualCatalogue assembles the catalogue a virtual namespace's
+// listing is built from (#1933 slice 3): the visible tools of every
+// server the namespace mounts from, each renamed to its qualified
+// "server.tool" form, so viewTools finds a mount by exactly the
+// From its author wrote. Mount sources are visited in view-name
+// order and each contributes once; a source whose cache is empty
+// contributes nothing yet -- the mount appears when its catalogue
+// does, and load-time validation defers the same way.
+func virtualCatalogue(view *config.Resolved, views map[string]*config.Resolved, pools map[string]*pool.Pool) []mcpclient.Tool {
+	names := make([]string, 0, len(view.ToolViews))
+	for vn := range view.ToolViews {
+		names = append(names, vn)
+	}
+	sort.Strings(names)
+	seen := map[string]bool{}
+	var out []mcpclient.Tool
+	for _, vn := range names {
+		tv := view.ToolViews[vn]
+		if tv.MountServer == "" || seen[tv.MountServer] {
+			continue
+		}
+		seen[tv.MountServer] = true
+		tp, ok := pools[tv.MountServer]
+		if !ok || tp == nil {
+			continue
+		}
+		tall, _, _ := tp.CachedSchemas()
+		for _, t := range visibleTools(views[tv.MountServer], tall) {
+			t.Name = tv.MountServer + "." + t.Name
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// viewCatalogue is the catalogue a view's listings are built from:
+// the view's own pool cache, or -- for a virtual namespace, which
+// has no catalogue of its own -- the assembled mounts.
+func (r *Registry) viewCatalogue(name string, view *config.Resolved, own []mcpclient.Tool) []mcpclient.Tool {
+	if view == nil || !view.Virtual() {
+		return own
+	}
+	return virtualCatalogue(view, r.views, r.pools)
+}
+
 // viewTools materialises a view's declared tool views (#1933 slice 1):
 // exactly the named target tools, under their view names, with any
 // description override and the pinned properties hidden from the
@@ -1390,7 +1435,16 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 			continue
 		}
 		all, _, _ := p.CachedSchemas()
-		if len(all) == 0 || p.SchemaExpired() {
+		if view.Virtual() {
+			// A virtual namespace validates its mounts against the
+			// assembled catalogue; an empty assembly means no mount
+			// source has a catalogue yet, so validation defers
+			// exactly as an uncached server's does.
+			all = virtualCatalogue(view, views, pools)
+			if len(all) == 0 {
+				continue
+			}
+		} else if len(all) == 0 || p.SchemaExpired() {
 			continue
 		}
 		byName := make(map[string]mcpclient.Tool, len(all))
@@ -1669,7 +1723,7 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			continue
 		}
 		allTools, res, at := p.CachedSchemas()
-		tools := visibleTools(view, allTools)
+		tools := visibleTools(view, r.viewCatalogue(name, view, allTools))
 		st := p.Status()
 		out = append(out, NamespaceInfo{
 			Namespace:       view.Namespace,
@@ -1770,7 +1824,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 			continue
 		}
 		all, _, _ := p.CachedSchemas()
-		for _, t := range visibleTools(view, all) {
+		for _, t := range visibleTools(view, r.viewCatalogue(name, view, all)) {
 			fn := codegen.ToolFuncName(t.Name)
 			out = append(out, ToolInfo{
 				Namespace:    view.Namespace,
@@ -2185,7 +2239,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 		matchedNS[ns], matchedNS[name] = true, true
 
 		all, _, _ := p.CachedSchemas()
-		cached := visibleTools(view, all)
+		cached := visibleTools(view, r.viewCatalogue(name, view, all))
 		cn := codegen.Namespace{
 			Name: ns, Server: name,
 			Description: view.Description,
@@ -2327,6 +2381,21 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 			}
 		}
 		r.mu.RUnlock()
+	}
+
+	// A call into a virtual namespace (#1933 slice 3) is a call to
+	// the mounted tool on its home server: the mount's pins merge
+	// over the caller's arguments first, then the home server's own
+	// views, policies and pool see the call exactly as if it had
+	// been addressed there -- so history and the write ledger record
+	// the home server and the real tool name, while the caller
+	// addressed the mount. The home server is never itself virtual
+	// (config validation refuses a mount of a mount), so this
+	// delegation is exactly one hop.
+	if view, ok := r.View(server); ok && view.Virtual() {
+		if tv, isView := view.ToolViews[tool]; isView && tv.From != "" {
+			return r.Call(ctx, tv.MountServer, tv.MountTool, cc, mergePinnedArgs(args, tv.Pin))
+		}
 	}
 
 	p, ok := r.Pool(server)

@@ -256,7 +256,7 @@ func (r *Registry) DiagnoseTools() []diagnose.Tool {
 			// would let the history record every one of them as removed.
 			continue
 		}
-		for _, t := range visibleTools(view, all) {
+		for _, t := range visibleTools(view, r.viewCatalogue(name, view, all)) {
 			out = append(out, diagnose.Tool{
 				Namespace: view.Namespace,
 				Name:      t.Name,

@@ -474,6 +474,27 @@ every name that reaches it.
 Chains are rejected. An alias of an alias is a puzzle, and the error says to
 point at the original.
 
+**Virtual namespaces** assemble one namespace from several servers. A server
+entry with no command, url or  of its own is virtual: its 
+mount tools by qualified name --  -- and the views may draw
+from as many different servers as the namespace needs.
+
+
+
+The rules are the alias rules, widened exactly once. A mount renames, pins and
+hides exactly as an alias view does; the exposed name is the view's key, so
+two servers that both call a tool  collide only if the author gives
+their mounts the same key, which a map cannot hold -- the collision rule is
+that there is none, and the same tool may be mounted twice under two keys. A
+call through a mount is a call to the tool on its home server: the mount's
+pins merge over the caller's arguments first, and the home server's own
+views, policies and process then see the call as if it had been addressed
+there, so history records the home server and the real tool name. A mount
+target must be a server with a process of its own (an alias of one counts);
+mounting a virtual namespace from another is refused at load, so a call is
+never more than one hop from a real server. Script-backed views may sit
+beside mounts in the same namespace.
+
 2026-09-27T13:00:00-05:00
 
 ## The script contract
