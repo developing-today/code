@@ -544,25 +544,34 @@ fn list_limit(req: &Value) -> Result<i64, String> {
 /// an out-of-range value is rejected with the same usage error the
 /// client itself raises (design #6448 Phase 3: reject, not clamp).
 /// An absent or null field stays absent — the SQL defaults apply,
-/// exactly as before.
-fn duration_field(
-    req: &Value,
-    field: &str,
-    validate: fn(i64) -> Result<i64, String>,
-) -> Result<Option<i64>, String> {
-    match req
-        .get(field)
-        .filter(|v| !v.is_null())
-        .and_then(|v| v.as_i64())
-    {
-        Some(v) => validate(v).map(Some),
-        None => Ok(None),
+/// exactly as before. A field that is PRESENT but not an i64 (a
+/// float, a string, an integer beyond i64) is rejected, never
+/// treated as absent: before this guard it reached the SQL integer
+/// parameter and failed there, and silently defaulting it would
+/// mutate the task on a value the caller never chose (Codex
+/// finding on PR #8425).
+fn duration_field(req: &Value, field: &str, flag: &str, max: i64) -> Result<Option<i64>, String> {
+    let raw = match req.get(field) {
+        None => return Ok(None),
+        Some(v) if v.is_null() => return Ok(None),
+        Some(v) => v,
+    };
+    match raw.as_i64() {
+        Some(v) => crate::client::validate_duration(flag, v, max).map(Some),
+        None => Err(format!(
+            "argument --{flag}: value {raw} out of range 1..={max}"
+        )),
     }
 }
 
 /// The `/claim` lease, validated before the RPC (#6420).
 fn lease_seconds(req: &Value) -> Result<Option<i64>, String> {
-    duration_field(req, "lease_seconds", crate::client::validate_lease_seconds)
+    duration_field(
+        req,
+        "lease_seconds",
+        "lease-seconds",
+        crate::client::LEASE_SECONDS_MAX,
+    )
 }
 
 /// The `/heartbeat` extend, validated before the RPC (#6420).
@@ -570,13 +579,19 @@ fn extend_seconds(req: &Value) -> Result<Option<i64>, String> {
     duration_field(
         req,
         "extend_seconds",
-        crate::client::validate_extend_seconds,
+        "extend-seconds",
+        crate::client::EXTEND_SECONDS_MAX,
     )
 }
 
 /// The `/park` delay, validated before the RPC (#6420).
 fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
-    duration_field(req, "delay_seconds", crate::client::validate_delay_seconds)
+    duration_field(
+        req,
+        "delay_seconds",
+        "delay-seconds",
+        crate::client::DELAY_SECONDS_MAX,
+    )
 }
 
 fn ok(fields: Value) -> Value {
@@ -1571,5 +1586,32 @@ mod tests {
         assert_eq!(lease_seconds(&json!({})), Ok(None));
         assert_eq!(extend_seconds(&json!({})), Ok(None));
         assert_eq!(delay_seconds(&json!({})), Ok(None));
+        // Present but not an i64 (beyond-i64 integer, float, string)
+        // is rejected, never silently defaulted (Codex finding on
+        // PR #8425): before this guard such a value failed at the
+        // SQL integer parameter instead.
+        for bad in [json!(9223372036854775808u64), json!(1.5), json!("2700")] {
+            let err = lease_seconds(&json!({"lease_seconds": bad}))
+                .err()
+                .expect("present-but-invalid lease_seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = extend_seconds(&json!({"extend_seconds": bad}))
+                .err()
+                .expect("present-but-invalid extend_seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = delay_seconds(&json!({"delay_seconds": bad}))
+                .err()
+                .expect("present-but-invalid delay_seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
     }
 }
