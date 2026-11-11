@@ -1260,6 +1260,17 @@ impl BoardGraph {
     /// would execute as the previous player's move. A lineage whose
     /// turn leaves the state snapshot unchanged is therefore refused:
     /// signed roles can never drift from executed moves.
+    ///
+    /// Genesis alignment (Codex P2 on PR #8327): the signed-turn
+    /// schedule is defined from the package's initial state — graph
+    /// validation binds turn index 0 to the first participant. A
+    /// genesis that restores to any other state is a mid-game state,
+    /// and which participant it hands the move to is package-internal
+    /// (the pinned tic-tac-toe package derives it from the restored
+    /// mark count) with no generic read through the sandbox
+    /// interface. Replay therefore refuses a genesis that does not
+    /// restore to the package's initial state rather than execute a
+    /// signed turn under a possibly wrong participant.
     pub fn replay_game_lineage(
         &self,
         game_post: &ArtifactHash,
@@ -1284,6 +1295,11 @@ impl BoardGraph {
         let lineage = self.game_lineage(game_post, head)?;
         let sandbox =
             crate::sandbox::Sandbox::compile(package_bytes, crate::sandbox::SandboxLimits::default())?;
+        // The package's own initial state: the one state the
+        // signed-turn schedule (participants by turn index, from 0)
+        // is defined from.
+        let mut fresh_instance = sandbox.instantiate(0)?;
+        let initial_snapshot = fresh_instance.snapshot()?;
         let mut instance = sandbox.instantiate(0)?;
         let genesis_bytes = match &post_body.genesis {
             serde_json::Value::String(text) => text.clone().into_bytes(),
@@ -1293,6 +1309,15 @@ impl BoardGraph {
             instance.restore(&genesis_bytes)?;
         }
         let mut previous_snapshot = instance.snapshot()?;
+        if !genesis_bytes.is_empty() {
+            if let (Some(initial), Some(restored)) = (&initial_snapshot, &previous_snapshot) {
+                ensure!(
+                    initial == restored,
+                    "game genesis state is not the package's initial state: \
+                     replay cannot align the signed turn schedule with a restored mid-game state"
+                );
+            }
+        }
         for (hash, turn) in &lineage {
             let signed = self
                 .objects
@@ -4240,6 +4265,15 @@ mod tests {
         opponent: &SigningKey,
         board: ArtifactHash,
     ) -> SignedBoardObject {
+        wasm_game_post_object_with_genesis(author, opponent, board, "---------")
+    }
+
+    fn wasm_game_post_object_with_genesis(
+        author: &SigningKey,
+        opponent: &SigningKey,
+        board: ArtifactHash,
+        genesis: &str,
+    ) -> SignedBoardObject {
         let participants = vec![
             GameParticipant {
                 author: hex_encode(&author.verifying_key().to_bytes()),
@@ -4263,7 +4297,7 @@ mod tests {
                 mode: GameMode::AsyncTurns,
                 configuration: serde_json::json!({"board_size": 3}),
                 participants,
-                genesis: serde_json::json!("---------"),
+                genesis: serde_json::json!(genesis),
             }),
         )
         .unwrap()
@@ -4577,12 +4611,24 @@ mod tests {
     fn wasm_game_lineage(
         actions: &[&str],
     ) -> (BoardGraph, ArtifactHash, ArtifactHash) {
+        wasm_game_lineage_with_genesis(actions, "---------")
+    }
+
+    fn wasm_game_lineage_with_genesis(
+        actions: &[&str],
+        genesis: &str,
+    ) -> (BoardGraph, ArtifactHash, ArtifactHash) {
         let creator = key(71);
         let opponent = key(72);
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&creator)).unwrap();
         let game_hash = graph
-            .insert(wasm_game_post_object(&creator, &opponent, root_hash.clone()))
+            .insert(wasm_game_post_object_with_genesis(
+                &creator,
+                &opponent,
+                root_hash.clone(),
+                genesis,
+            ))
             .unwrap();
         graph
             .insert(game_acceptance_object(
@@ -4661,6 +4707,93 @@ mod tests {
                 .unwrap(),
             b"XXXOO----"
         );
+    }
+
+    #[test]
+    fn game_replay_rejects_genesis_that_is_not_the_package_initial_state() {
+        // Codex P2 on PR #8327, its exact example: genesis "X--------"
+        // restores with plays = 1, so the package hands the next move
+        // to O — but graph validation requires turn 0 to be signed by
+        // the X participant, whose action "1" would then place O's
+        // mark. Replay refuses the lineage instead of accepting a
+        // move executed under the wrong signer.
+        let (graph, game_hash, head) = wasm_game_lineage_with_genesis(&["1"], "X--------");
+        let error = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("genesis state is not the package's initial state"),
+            "{error:#}"
+        );
+
+        // A mid-game genesis whose mark parity happens to agree with
+        // the opening signer is refused too: alignment of a restored
+        // state with the signed schedule is package-internal and
+        // cannot be verified through the sandbox interface, so no
+        // non-initial genesis is replayed under a signed schedule
+        // defined from the initial state.
+        let (graph, game_hash, head) = wasm_game_lineage_with_genesis(&["2"], "XX-------");
+        assert!(
+            graph
+                .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+                .is_err()
+        );
+
+        // Control: the initial-state genesis replays the same signed
+        // opening turn to X's mark in cell 1.
+        let (graph, game_hash, head) = wasm_game_lineage_with_genesis(&["1"], "---------");
+        assert_eq!(
+            graph
+                .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+                .unwrap(),
+            b"-X-------"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(10))]
+
+        /// Invariant (oracle: `tic_tac_toe_oracle`, plus the
+        /// package's initial snapshot "---------"): for any genesis
+        /// state and any short alternating signed lineage, replay
+        /// accepts only when the genesis restores to the package's
+        /// initial state and the oracle can execute every action
+        /// from it; a non-initial genesis is always refused, so a
+        /// restored mid-game state can never execute a signed turn
+        /// under the wrong participant.
+        #[test]
+        fn game_replay_aligns_genesis_with_the_signed_schedule(
+            genesis in proptest::sample::select(vec![
+                "---------", "X--------", "O--------", "XO-------",
+                "XX-------", "XOX------", "XXXOO----", "XOXOXOXOX",
+            ]),
+            actions in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+                ]),
+                1..=4,
+            ),
+        ) {
+            let owned: Vec<String> = actions.iter().map(|a| a.to_string()).collect();
+            let refs: Vec<&str> = actions.clone();
+            let (graph, game_hash, head) = wasm_game_lineage_with_genesis(&refs, genesis);
+            let replayed = graph.replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM);
+            if genesis != "---------" {
+                prop_assert!(replayed.is_err());
+            } else {
+                match tic_tac_toe_oracle(&owned) {
+                    Ok(expected) => {
+                        let state = replayed.unwrap();
+                        prop_assert_eq!(String::from_utf8(state).unwrap(), expected);
+                    }
+                    Err(()) => {
+                        prop_assert!(replayed.is_err());
+                    }
+                }
+            }
+        }
     }
 
     /// The tic-tac-toe rules, restated as the property oracle: a
