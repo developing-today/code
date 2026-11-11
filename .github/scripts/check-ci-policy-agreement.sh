@@ -107,11 +107,12 @@ triggers_of() {
       exit
     }
     /^"?on"?:[[:space:]]*$/ { inblock = 1; next }
-    inblock && /^  ["\047]?[a-z_]+["\047]?:/ {
+    inblock && /^  ["\047]?[a-z_]+["\047]?[[:space:]]*:/ {
       key = $0
       sub(/^  /, "", key)
       sub(/:.*/, "", key)
       gsub(/["\047]/, "", key)
+      sub(/[[:space:]]+$/, "", key)
       print key
       next
     }
@@ -253,6 +254,29 @@ push_targets_main() {
       }
       return 0
     }
+    # strip_comment: the text of a line up to (not including) an
+    # unquoted comment start, with the same quote discipline as
+    # unquoted_close. Joining physical lines into one logical line
+    # (inline_collect) must strip each line first (Codex P2, PR
+    # #8513 round 14): flattening first puts a closing bracket
+    # that follows a comment inside that comment, and the filter
+    # it closes is silently discarded.
+    function strip_comment(str,   j, c, q) {
+      q = ""
+      for (j = 1; j <= length(str); j++) {
+        c = substr(str, j, 1)
+        if (q == "\"") {
+          if (c == "\\") j++
+          else if (c == "\"") q = ""
+        } else if (q == "\047") {
+          if (c == "\047" && substr(str, j + 1, 1) == "\047") j++
+          else if (c == "\047") q = ""
+        }
+        else if (c == "\047" || c == "\"") q = c
+        else if (c == "#" && (j == 1 || substr(str, j - 1, 1) ~ /[[:space:]]/)) return substr(str, 1, j - 1)
+      }
+      return str
+    }
     function flow_unclosed(str,   j, c, q, open) {
       q = ""
       open = 0
@@ -309,11 +333,13 @@ push_targets_main() {
     }
     function apply_inline_filters(str,   seg) {
       seg = flow_span(str, "branches-ignore:")
+      if (seg == "") seg = flow_span(str, "branches-ignore :")
       if (seg != "") {
         seen_branch_filter = 1
         ignore_list = ignore_list add_tokens(seg)
       }
       seg = flow_span(str, "branches:")
+      if (seg == "") seg = flow_span(str, "branches :")
       if (seg != "") {
         seen_branches = 1
         seen_branch_filter = 1
@@ -416,15 +442,16 @@ push_targets_main() {
       exit
     }
     /^"?on"?:[[:space:]]*$/ { inblock = 1; next }
-    inblock && /^  ["\047]?[a-z_]+["\047]?:/ {
+    inblock && /^  ["\047]?[a-z_]+["\047]?[[:space:]]*:/ {
       key = $0
       sub(/^  /, "", key)
       sub(/:.*/, "", key)
       gsub(/["\047]/, "", key)
+      sub(/[[:space:]]+$/, "", key)
       inpush = (key == "push")
       if (!inpush) child_indent = 0
       rest = $0
-      sub(/^  ["\047]?[a-z_]+["\047]?:[[:space:]]*/, "", rest)
+      sub(/^  ["\047]?[a-z_]+["\047]?[[:space:]]*:[[:space:]]*/, "", rest)
       # YAML anchors (Codex P2, PR #8513 round 13): a mapping
       # value may carry &name and be referenced later as *name.
       # Record anchored bodies so an aliased push resolves to
@@ -449,7 +476,7 @@ push_targets_main() {
           resolve_push_alias(alias)
         } else if (rest ~ /^\{/) {
           if (has_unquoted_brace(rest)) apply_inline_filters(rest)
-          else { inline_collect = 1; inline_buf = rest; inline_anchor = anchor_here }
+          else { inline_collect = 1; inline_buf = strip_comment(rest); inline_anchor = anchor_here }
         }
       }
       subkey = ""
@@ -462,8 +489,9 @@ push_targets_main() {
         if (inline_anchor != "") { anchor_body[inline_anchor] = inline_buf; inline_anchor = "" }
         inline_collect = 0
       } else {
-        inline_buf = inline_buf " " $0
-        if (has_unquoted_brace($0)) {
+        inline_line = strip_comment($0)
+        inline_buf = inline_buf " " inline_line
+        if (has_unquoted_brace(inline_line)) {
           apply_inline_filters(inline_buf)
           if (inline_anchor != "") { anchor_body[inline_anchor] = inline_buf; inline_anchor = "" }
           inline_collect = 0
@@ -472,7 +500,7 @@ push_targets_main() {
       }
     }
 
-    !inpush && cur_anchor != "" && /^ +["\047]?[a-z-]+["\047]?:/ {
+    !inpush && cur_anchor != "" && /^ +["\047]?[a-z-]+["\047]?[[:space:]]*:/ {
       line = $0
       match(line, /^ +/)
       ind = RLENGTH
@@ -483,6 +511,7 @@ push_targets_main() {
       subkey_a = substr(line, ind + 1)
       sub(/:.*/, "", subkey_a)
       gsub(/["\047]/, "", subkey_a)
+      sub(/[[:space:]]+$/, "", subkey_a)
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey_a == "branches" || subkey_a == "branches-ignore" || subkey_a == "tags" || subkey_a == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
@@ -536,7 +565,7 @@ push_targets_main() {
       }
       next
     }
-    inpush && /^ +["\047]?[a-z-]+["\047]?:/ {
+    inpush && /^ +["\047]?[a-z-]+["\047]?[[:space:]]*:/ {
       line = $0
       match(line, /^ +/)
       ind = RLENGTH
@@ -547,6 +576,7 @@ push_targets_main() {
       subkey = substr(line, ind + 1)
       sub(/:.*/, "", subkey)
       gsub(/["\047]/, "", subkey)
+      sub(/[[:space:]]+$/, "", subkey)
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", val)

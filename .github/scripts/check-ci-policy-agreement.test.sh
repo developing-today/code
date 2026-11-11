@@ -767,7 +767,7 @@ wf_raw "$TMP/filter-inline_comment_brace" mcpx-nixbuild.yml <<'EOF'
 EOF
 bash "$SCRIPT" "$TMP/filter-inline_comment_brace" >"$TMP/filter-inline_comment_brace.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_comment_brace.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-inline_comment_brace.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-inline_comment_brace.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_comment_brace.out"; then
   echo "FAIL: a brace in a YAML comment ended the inline mapping early and hid branches-ignore" >&2
   exit 1
@@ -795,7 +795,7 @@ wf_raw "$TMP/filter-anchor_alias_block" mcpx-nixbuild.yml <<'EOF'
 EOF
 bash "$SCRIPT" "$TMP/filter-anchor_alias_block" >"$TMP/filter-anchor_alias_block.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_alias_block.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_alias_block.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-anchor_alias_block.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_alias_block.out"; then
   echo "FAIL: an aliased release-only push was certified as targeting main" >&2
   exit 1
@@ -809,7 +809,7 @@ wf_raw "$TMP/filter-anchor_inline_push" mcpx-nixbuild.yml <<'EOF'
 EOF
 bash "$SCRIPT" "$TMP/filter-anchor_inline_push" >"$TMP/filter-anchor_inline_push.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_inline_push.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_inline_push.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-anchor_inline_push.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_inline_push.out"; then
   echo "FAIL: an anchored inline release-only push was certified as targeting main" >&2
   exit 1
@@ -823,7 +823,7 @@ wf_raw "$TMP/filter-anchor_alias_inline" mcpx-nixbuild.yml <<'EOF'
 EOF
 bash "$SCRIPT" "$TMP/filter-anchor_alias_inline" >"$TMP/filter-anchor_alias_inline.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_alias_inline.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_alias_inline.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-anchor_alias_inline.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_alias_inline.out"; then
   echo "FAIL: an aliased inline-anchored push was certified as targeting main" >&2
   exit 1
@@ -837,12 +837,79 @@ wf_raw "$TMP/filter-anchor_unknown_alias" mcpx-nixbuild.yml <<'EOF'
 EOF
 bash "$SCRIPT" "$TMP/filter-anchor_unknown_alias" >"$TMP/filter-anchor_unknown_alias.out"
 grep -q "ci-policy-agreement: OK" "$TMP/filter-anchor_unknown_alias.out"
-grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \\[main\\]" "$TMP/filter-anchor_unknown_alias.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-anchor_unknown_alias.out"
 if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-anchor_unknown_alias.out"; then
   echo "FAIL: an unresolvable alias was certified as an unfiltered push" >&2
   exit 1
 fi
 echo "pass: an unresolvable push alias is never certified as targeting main"
+
+# Round-14 (Codex P2): a comment that ends the first physical line
+# of a split inline mapping must not swallow the closing bracket
+# on the continuation line — the comment ends at the newline, so
+# the release-only filter survives and the leg stays waived.
+build_tree "$TMP/filter-inline_comment_split"
+wf_raw "$TMP/filter-inline_comment_split" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches: [ # release only
+    release]}
+EOF
+bash "$SCRIPT" "$TMP/filter-inline_comment_split" >"$TMP/filter-inline_comment_split.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-inline_comment_split.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-inline_comment_split.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-inline_comment_split.out"; then
+  echo "FAIL: a comment on a split inline mapping line swallowed its branch filter" >&2
+  exit 1
+fi
+echo "pass: a comment ending a split inline mapping line does not swallow the closing bracket"
+
+# Round-14 (Codex P2): YAML allows whitespace before a mapping
+# colon — branches : [release] is the same filter as
+# branches: [release], and branches-ignore : [main] still
+# excludes main; neither may be read as an unfiltered push.
+build_tree "$TMP/filter-spaced_colon"
+wf_raw "$TMP/filter-spaced_colon" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches : [release]
+EOF
+bash "$SCRIPT" "$TMP/filter-spaced_colon" >"$TMP/filter-spaced_colon.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-spaced_colon.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-spaced_colon.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-spaced_colon.out"; then
+  echo "FAIL: a spaced-colon branches filter was read as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: branches with a spaced colon keeps the main leg waived"
+
+build_tree "$TMP/filter-spaced_colon_ignore"
+wf_raw "$TMP/filter-spaced_colon_ignore" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore : [main]
+EOF
+bash "$SCRIPT" "$TMP/filter-spaced_colon_ignore" >"$TMP/filter-spaced_colon_ignore.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-spaced_colon_ignore.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-spaced_colon_ignore.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-spaced_colon_ignore.out"; then
+  echo "FAIL: a spaced-colon branches-ignore filter was read as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: branches-ignore with a spaced colon keeps the main leg waived"
+
+build_tree "$TMP/filter-spaced_colon_inline"
+wf_raw "$TMP/filter-spaced_colon_inline" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push: {branches : [release]}
+EOF
+bash "$SCRIPT" "$TMP/filter-spaced_colon_inline" >"$TMP/filter-spaced_colon_inline.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-spaced_colon_inline.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-spaced_colon_inline.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-spaced_colon_inline.out"; then
+  echo "FAIL: a spaced-colon inline branches filter was read as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: inline branches with a spaced colon keeps the main leg waived"
 
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
