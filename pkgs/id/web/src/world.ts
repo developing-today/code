@@ -174,6 +174,16 @@ function initWorld(): void {
     }
     return false;
   };
+  // #7908: the records frame is shape-checked like its snapshot/event
+  // siblings. `records` merges into the rendered set, so a non-object
+  // value (a string merges per-character, an array per-index, a number
+  // silently as an empty page) corrupts the render; `next_after` is
+  // echoed back verbatim as the `after` cursor, so a non-string cursor
+  // poisons the pagination chain. Both must match the declared
+  // WorldFrame contract before anything is merged or adopted.
+  const isWorldRecords = (frame: WorldFrame): boolean =>
+    (frame.records === undefined || isRecord(frame.records)) &&
+    (frame.next_after === undefined || frame.next_after === null || typeof frame.next_after === "string");
   const rejectFrame = () => {
     setStatus("Received an invalid world frame", "error");
     appendLine(log, "error: invalid world frame");
@@ -267,6 +277,10 @@ function initWorld(): void {
         break;
       case "records": {
         if (!recordsPending) return;
+        if (!isWorldRecords(frame)) {
+          rejectFrame();
+          return;
+        }
         // #2953 (define, don't assign): frame.records is peer-supplied, so
         // its keys are stored with define semantics — Object.assign would
         // run a "__proto__" key through the setter instead of storing it.
