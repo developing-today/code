@@ -41,11 +41,11 @@ pub enum SuccessorKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoveSuccessor {
     /// A specifically named member.
-    Member(#[serde(with = "super::log::wire::key")] Key),
+    Member(#[serde(with = "super::wire::key")] Key),
     /// A group administrator, resolved at the removal's causal position.
     Admin,
     /// A specifically designated account.
-    Designated(#[serde(with = "super::log::wire::key")] Key),
+    Designated(#[serde(with = "super::wire::key")] Key),
     /// The account performing the removal.
     Actor,
 }

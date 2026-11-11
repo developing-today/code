@@ -51,8 +51,8 @@ use p2panda_auth::Access;
 use p2panda_core::Hash;
 
 use crate::groups::Role;
-use crate::membership::{Membership, MembershipError};
-use crate::waiting::AuthorKey;
+use id_core::membership::{Membership, MembershipError};
+use id_core::waiting::AuthorKey;
 
 use super::view::{GroupMembers, ProjectionError, expand_set};
 use super::{Entry, WriterSet};
