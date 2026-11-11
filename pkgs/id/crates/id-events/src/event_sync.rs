@@ -40,7 +40,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_base::EndpointId;
 use tokio::sync::Mutex;
 
-use crate::blob_gate::WorldAccess;
+use crate::world_access::WorldAccess;
 use crate::event_store::sync::{ALPN, Outcome};
 use crate::local_events::LocalEvents;
 use crate::pull_policy::{PullGate, PullPolicy};
@@ -55,7 +55,10 @@ pub const SYNC_INTERVAL: Duration = Duration::from_secs(30);
 /// How long the accepting side waits, after a completed session, for the dialer
 /// to close the connection before it lets the router close it instead (see
 /// `EventSyncProtocol::accept`).
-pub(crate) const CLOSE_WAIT: Duration = Duration::from_secs(5);
+/// How long a closing session waits for its peer. `pub` since step
+/// 2b: the facade's artifact serving names it, as it did when both
+/// lived in one crate.
+pub const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
 /// Membership answers for this store, which is not a world and has no membership
 /// source. [`PullPolicy::Open`] admits every peer without reading membership, so
@@ -182,7 +185,7 @@ pub async fn sync_with_peer(
     events: &Arc<Mutex<LocalEvents>>,
     gate: &PullGate,
 ) -> Result<Outcome> {
-    let conn = crate::connectivity::connect(endpoint, peer, ALPN).await?;
+    let conn = id_core::connectivity::connect(endpoint, peer, ALPN).await?;
     let outcome = {
         let mut events = events.lock().await;
         events
@@ -254,9 +257,12 @@ mod tests {
     /// session opens with a range flight, and the two shapes misread each other.
     #[test]
     fn test_range_alpn_is_distinct_from_handshake_alpn() {
-        assert_ne!(ALPN, crate::log_sync::SYNC_ALPN);
+        // The handshake ALPN is the facade's `log_sync::SYNC_ALPN`
+        // (`/id-sync/1`); it stays a literal here since step 2b —
+        // `log_sync` is above this crate, and the value is the wire
+        // constant the distinctness rule is about.
+        assert_ne!(ALPN, b"/id-sync/1");
         assert_eq!(ALPN, b"/id-range-sync/1");
-        assert_eq!(crate::log_sync::SYNC_ALPN, b"/id-sync/1");
     }
 
     /// The #792 acceptance test: a document revision published (saved) on node A is

@@ -328,9 +328,7 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
       // unknown mark type
       {
         type: "doc",
-        content: [
-          { type: "paragraph", content: [{ type: "text", text: "hi", marks: [{ type: "future_mark" }] }] },
-        ],
+        content: [{ type: "paragraph", content: [{ type: "text", text: "hi", marks: [{ type: "future_mark" }] }] }],
       },
       // non-string text
       { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: 12345 }] }] },
@@ -603,11 +601,7 @@ describe("UPDATE/CURSOR frame validation (#7873)", () => {
   // The session-intact oracle for a dropped frame: socket never
   // closed (no 4001 teardown), no reconnect socket appears even
   // after timers run, and the collab version does not move.
-  function expectSessionIntact(
-    socket: FakeWebSocket,
-    view: ReturnType<typeof openAndInit>["view"],
-    version: number,
-  ) {
+  function expectSessionIntact(socket: FakeWebSocket, view: ReturnType<typeof openAndInit>["view"], version: number) {
     expect(socket.readyState).toBe(FakeWebSocket.OPEN);
     vi.advanceTimersByTime(120_000);
     expect(FakeWebSocket.instances).toHaveLength(1);

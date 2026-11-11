@@ -851,7 +851,7 @@ export interface AaThreshold {
   usdPerUsablePoint: number | null;
 }
 
-/** One AA Intelligence Index row of ainventory.benchmark_results. */
+/** One AA Intelligence Index row of ainventory.measurement_events (canonical, code#4401). */
 export interface AaConfig {
   modelName: string;
   benchmark: string;
@@ -880,7 +880,7 @@ export interface AaTestRun {
 }
 
 /**
- * One Coding Agent Index row of ainventory.benchmark_results (the
+ * One Coding Agent Index row of ainventory.measurement_events (the
  * import's Coding_Agent_Results rows): a model + effort + agent
  * harness observation, kept strictly separate from the AA Intelligence
  * Index — no score conversion between the indexes (the ChatGPT

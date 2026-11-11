@@ -58,8 +58,8 @@ describe("parseWorldHostViewPage", () => {
     expect(() => parseWorldHostViewPage({ ...validPage, snapshot: { world_id: "arena" } })).toThrow(
       /^Host view unavailable/,
     );
-    expect(
-      () => parseWorldHostViewPage({ ...validPage, snapshot: { ...validSnapshot, participants: [{ id: "1" }] } }),
+    expect(() =>
+      parseWorldHostViewPage({ ...validPage, snapshot: { ...validSnapshot, participants: [{ id: "1" }] } }),
     ).toThrow(/^Host view unavailable/);
   });
 });

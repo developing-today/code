@@ -154,6 +154,80 @@ class GoTestReportTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIsNone(record)
 
+    def test_equal_count_skip_swap_fails_without_record(self):
+        # #6391, oracle: the docstring invariant -- the record only moves
+        # down and a skip cannot creep back in. Stored record skips TestA
+        # + TestB; this run skips TestA + TestC at the SAME count. The old
+        # code returned exit 0 and wrote [TestA, TestC] as the new record,
+        # ratifying TestC's skip without it ever failing a run.
+        result, summary, record = self.run_report(
+            [
+                {
+                    "Action": "pass",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestGood",
+                },
+                {
+                    "Action": "skip",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestA",
+                },
+                {
+                    "Action": "skip",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestC",
+                },
+                {
+                    "Action": "output",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestC",
+                    "Output": "    skip reason\n",
+                },
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(record)
+        self.assertIn("widgets.TestC", result.stdout)
+        self.assertIn("record is held unchanged", summary)
+
+    def test_pure_rename_disposition_fails_without_record(self):
+        # #6391 rename disposition: a renamed test is one name leaving and
+        # a new name arriving, indistinguishable from a swap, so it takes
+        # the same path -- fail, no record. The acknowledgement for a
+        # genuine rename is explicitly updating the record variable.
+        result, _, record = self.run_report(
+            [
+                {
+                    "Action": "skip",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestA",
+                },
+                {
+                    "Action": "skip",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestBRenamed",
+                },
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(record)
+        self.assertIn("widgets.TestBRenamed", result.stdout)
+
+    def test_decrease_with_a_new_name_fails_without_record(self):
+        # A lower count does not launder a new name either: fewer skips
+        # overall, but TestC was never in the record.
+        result, _, record = self.run_report(
+            [
+                {
+                    "Action": "skip",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestC",
+                },
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(record)
+
     def test_quarantine_skip_remains_exempt_from_skip_record(self):
         result, _, record = self.run_report(
             [

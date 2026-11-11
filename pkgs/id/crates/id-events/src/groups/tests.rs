@@ -16,7 +16,7 @@ use super::{
     Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal,
     RemoveMode, RemoveSuccessor, Role, TransferOpts, fold, friendship_id,
 };
-use crate::rejection::Reason;
+use id_core::rejection::Reason;
 
 fn key(n: u8) -> Key {
     [n; 32]

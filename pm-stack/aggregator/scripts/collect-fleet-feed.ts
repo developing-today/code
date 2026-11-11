@@ -44,7 +44,7 @@
 //     section and logs only that it was omitted.
 //   - the AA cost explorer data — Supabase `ainventory` (the AA
 //     import: v_rankings, v_threshold_metrics,
-//     benchmark_results — both the AA Intelligence Index rows and the
+//     measurement_events — both the AA Intelligence Index rows and the
 //     Coding Agent Index rows, kept as separate benchmark families —
 //     the Test_Runs data, and the price event log's v_current_prices),
 //     read through v_latest_import_batch via the Management API SQL endpoint.

@@ -3903,6 +3903,7 @@ dependencies = [
  "hmac 0.13.0",
  "id-caps",
  "id-core",
+ "id-events",
  "id-store",
  "iroh",
  "iroh-base",
@@ -3998,6 +3999,32 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vt100",
+]
+
+[[package]]
+name = "id-events"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cbor-core",
+ "clap",
+ "id-core",
+ "id-store",
+ "iroh",
+ "iroh-base",
+ "iroh-blobs",
+ "p2panda-auth",
+ "p2panda-core",
+ "proptest",
+ "redb 4.3.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-normalization",
 ]
 
 [[package]]
