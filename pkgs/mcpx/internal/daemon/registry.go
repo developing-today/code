@@ -1638,6 +1638,30 @@ func (r *Registry) Pool(nameOrNS string) (*pool.Pool, bool) {
 	return nil, false
 }
 
+// KnownServer reports whether nameOrNS names a configured server --
+// by its configured name, by a live pool under that name, or by the
+// namespace of a configured server. It is a map read only, like
+// CanonicalName: no lease, no upstream. Callers that must not act on
+// names the registry does not know (the completion rate limiter,
+// #6978) check this first, so a request naming nothing real is
+// refused by the pool lookup without side effects.
+func (r *Registry) KnownServer(nameOrNS string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.pools[nameOrNS]; ok {
+		return true
+	}
+	if _, ok := r.views[nameOrNS]; ok {
+		return true
+	}
+	for _, name := range r.order {
+		if r.views[name].Namespace == nameOrNS {
+			return true
+		}
+	}
+	return false
+}
+
 // CanonicalName resolves a name-or-namespace the way Pool does and
 // returns the configured server name, or the input unchanged when it
 // names nothing. It is a map read only -- no lease, no upstream -- so
