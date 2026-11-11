@@ -4,7 +4,7 @@ Issue: #5998 (design). Parent topic: #5958 (capability model);
 program: #5955 (worlds). Triage of record: the 2026-11-07 triage
 note on #5998 (comment 6700990165), which verified every premise
 below against main and fixed the one open rule (value-passed
-platform functions) conservatively, pending #5963.
+capability-naming functions) conservatively, pending #5963.
 
 This document is the tool spec the issue's "done looks like" asks
 for: inputs, algorithm, over-approximation rules, and output schema,
@@ -20,12 +20,22 @@ Nothing today derives the capabilities a world's code *actually
 uses*, so declarations can only be checked by running the world and
 watching the ledger — and only for the paths a run happens to take.
 This tool derives the used-set statically: call-graph reachability
-over the world's Roc source closure, against the platform-function
-namespace the capability catalog defines. In Roc all effects are
-named platform functions, so the scan is exact except for the named
-over-approximation sources in §5 — unlike binary/API static
-analysis (noisy, needs an API→capability mapping the platform does
-not otherwise have) or type inference (exact, unavailable in Roc).
+over the world's Roc source closure, plus extraction of catalog
+names from the capability positions of reachable definitions.
+Capabilities are not Roc-callable functions: a world *requests* a
+capability by naming it as data — it constructs request and
+subscription documents (usually through platform helper modules
+such as `RocCap`) whose `cap` field carries a catalog name,
+supplied as a string literal at the issuing call
+(`RocCap.issue(session, "chat.say")` in
+`examples/roc-chat/main.roc`) and embedded again in the helper
+builder that constructs the document (`RocCap.chat_request` builds
+the object whose `cap` is `"chat.say"`, in
+`examples/roc-world/RocCap.roc`). The scan is exact for that
+protocol except for the named over-approximation sources in §5 —
+unlike binary/API static analysis (noisy, needs an API→capability
+mapping the platform does not otherwise have) or type inference
+(exact, unavailable in Roc).
 
 The output pairs with the declared set in the registry format #5958
 defines (its requested-vs-discovered pairing): both sides are the
@@ -38,22 +48,34 @@ under-declaration are plain set differences (§6).
   `pkgs/id/crates/id-core/src/world_caps.rs`: the const
   `PROVIDER_REGISTRY` (`ProviderRegistry` over `CATALOG_ENTRIES`),
   with `catalog_names() -> BTreeSet<String>` and `is_known(name)`.
-  Catalog names are dotted platform-function names (`chat.say`,
+  Catalog names are dotted capability names (`chat.say`,
   `records.read`, `schedule.at`, `loc.position`, …). The catalog is
   the *only* capability namespace the tool knows.
-- **Platform function.** A Roc-callable function the platform
-  provides, identified by exactly one catalog name.
+- **Capability name.** A catalog name carried as data in a request
+  or subscription document — the `cap` field the runtime dispatches
+  on. A world names a capability in exactly two places: as a string
+  literal at an issuing call in its own code (above), and inside
+  the platform helper builder that constructs the document. Both
+  are use sites (§4 step 4).
+- **Platform helper.** A definition in a platform module (`RocCap`,
+  `RocJson`, …) that constructs or issues request/subscription
+  documents. Helpers are ordinary closure definitions: their
+  bodies are scanned, and calling one is a call-graph edge like
+  any other. A helper is not a catalog name and is never checked
+  against the catalog.
 - **Source closure.** The transitive set of Roc modules a world (or
   library) compiles from: its entry module plus everything it
-  imports, recursively, within the package being scanned. Platform
-  modules themselves are leaves — their *names* are catalog names,
-  their bodies are not scanned.
+  imports, recursively, within the package being scanned and the
+  platform tree it imports from. Platform modules are part of the
+  closure like any other module: helper bodies carry capability
+  literals (§2), so they are scanned, never treated as leaves.
 - **Entry points.** The definitions the platform can invoke on the
   world: the world's exported effect handlers / main definitions,
   as declared by the world's platform interface. The scan is seeded
   exactly at the entry points; a scan request names them (§3).
 - **Used-set.** The set of catalog names the derivation proves the
-  world can reach a call to, under the rules of §5.
+  world can name in a capability position (§4 step 4), under the
+  rules of §5.
 - **Certified.** A used-set is *certified* when the scan saw no
   construct that defeats static enumeration (§5 rule R4). Only a
   certified used-set supports the over-declaration difference
@@ -88,10 +110,13 @@ The tool takes exactly three inputs:
    `PROVIDER_REGISTRY.catalog_names()` in the `id-core` build the
    tool is compiled against. The catalog is compiled in, not read
    from the scanned package: the platform the world will run
-   against is the authority, and a platform function reference that
-   resolves to no catalog name is an error naming the reference
-   (it indicates version skew between the world and the platform,
-   which must surface loudly, not degrade the scan).
+   against is the authority, and a string literal in a capability
+   position (§4 step 4) that is not a catalog name is an error
+   naming the literal (it indicates version skew between the world
+   and the platform, which must surface loudly, not degrade the
+   scan). References to platform helpers resolve inside the closure
+   (§2), never against the catalog: a helper name is not a
+   capability name, and no helper reference is a skew error.
 
 No other configuration exists. In particular there is no
 allowlist/denylist input: exceptions are expressed by the rules of
@@ -111,23 +136,44 @@ allowlist/denylist input: exceptions are expressed by the rules of
    initializer is analysed like a body: when V is reachable, the
    platform references in its initializer are collected (§5 rule
    R5), and function values stored in it take the value-flow edges
-   of rule R3 from V. Platform functions are sink nodes labelled
-   by catalog name.
+   of rule R3 from V. There are no sink nodes: platform helper
+   definitions are closure definitions, and catalog names enter
+   the result only at Collect (§4 step 4).
 3. **Reach.** Mark definitions reachable from the entry points,
    following call edges to a fixpoint (cycles are expected;
    reachability is a visited-set computation, not a recursion).
    Value-flow edges from §5 rule R3 are added during this pass and
    participate in the same fixpoint.
-4. **Collect.** The used-set is the set of catalog names labelling
-   platform-function nodes that are (a) called from a reachable
-   definition, or (b) taken as a value in a reachable definition
-   (§5 rule R2). Each collected name is checked with `is_known`;
-   an unknown name here is the §3 version-skew error.
+4. **Collect.** The used-set is the set of catalog names that
+   appear in a *capability position* in a reachable definition. A
+   capability position is:
+   (a) the capability argument of a request-issuing call (the
+   `RocCap.issue`-shaped position — a string literal supplied
+   where a request is issued);
+   (b) the value of a `cap` field in a request or subscription
+   document a definition constructs — including inside platform
+   helper builders (`RocCap.chat_request`'s `"cap": "chat.say"`),
+   which is why helper bodies are closure code, not leaves;
+   (c) an element of a subscription list, with one optional
+   `:<args>` suffix stripped (`time.tick:5000` names `time.tick`),
+   matching how `parse_wants` treats subscription entries; and
+   (d) a `cap` field inside a *serialized* document a definition
+   returns as a single string (a whole wants document carried as
+   escaped JSON): extraction parses embedded documents for `cap`
+   fields rather than treating the string as opaque.
+   String literals in any other position are not uses. References
+   inside string interpolations are ordinary references:
+   extraction strips literal text, never the interpolated
+   expressions, whose targets stay in the graph. Each collected
+   name is checked with `is_known`; a capability-position literal
+   that is not a catalog name is the §3 version-skew error. Names
+   a reachable definition can cause to be named through a function
+   value it passes on are collected under §5 rule R2.
 5. **Certify.** If any reachable definition contains a §5 rule R4
    construct, add the unknown marker and mark the result
    uncertified. Certification is whole-scan: one dynamic site
    anywhere reachable uncertifies the scan, because the site can
-   in principle reach any platform function. A scan whose resolved
+   in principle reach any capability. A scan whose resolved
    entry-point set is a proper subset of the platform's declared
    exports (§3) is likewise never certified, whatever else it saw:
    it is emitted as a partial-scope record (§6.2), not a
@@ -144,18 +190,22 @@ Exactly four rules widen it, and one rule marks its limit. No
 other widening is permitted: an implementation that approximates
 anywhere else is not implementing this spec.
 
-- **R1 — direct reference.** A platform function called (applied)
-  in a reachable definition is used. This is the base rule and
+- **R1 — direct reference.** A catalog name that appears in a
+  capability position (§4 step 4) in a reachable definition is
+  used — at an issuing call in the world's own code, or inside a
+  reachable platform helper builder. This is the base rule and
   covers the overwhelming majority of real code.
-- **R2 — platform function passed as a value.** A platform
-  function that appears in a reachable definition in any
-  non-applied position — passed as an argument, returned, stored
-  in a structure, captured by a closure — counts as used,
-  wholesale, whether or not the scan can prove the value is ever
-  applied. Rationale (the triage's conservative ruling, pending
-  #5963): once a platform function becomes a value, tracking every
-  application site is a dataflow problem the programming model
-  does not yet make trackable; counting it as used is the sound
+- **R2 — capability-naming function passed as a value.** A
+  function — platform helper or closure-local — whose body names
+  capabilities, taken as a value in a reachable definition in any
+  non-applied position (passed as an argument, returned, stored
+  in a structure, captured by a closure), contributes *every*
+  catalog name its own body can name (its §4 step 4 literal set),
+  whether or not the scan can prove the value is ever applied.
+  Rationale (the triage's conservative ruling, pending #5963):
+  once such a function becomes a value, tracking every application
+  site is a dataflow problem the programming model does not yet
+  make trackable; counting its full named set is the sound
   direction (it can only overstate, never understate). If #5963's
   model later makes value-passing trackable, this rule narrows —
   by amending this spec, not by implementation choice.
@@ -163,15 +213,19 @@ anywhere else is not implementing this spec.
   function taken as a value in reachable code is treated as
   reachable itself (a value-flow edge from the taking definition
   to it), because it may be applied anywhere the value flows.
-  This is what makes R2 compose: a local helper that calls
-  `records.read` and is passed as a callback contributes
-  `records.read`. Platform functions are not re-analysed this way
-  (they are sinks); only closure definitions get value-flow edges.
+  This is what makes R2 compose: a helper that names
+  `records.read` in a capability position and is passed as a
+  callback contributes `records.read`. Every closure definition —
+  app code or platform helper — gets value-flow edges the same
+  way.
 - **R4 — dynamic dispatch / runtime loading.** A reachable use of
   any mechanism that selects code or capabilities at run time —
-  dynamic loading, runtime module resolution, string-named
-  invocation, or a platform escape hatch of the same shape —
-  defeats enumeration. The scan adds the literal name
+  dynamic loading, runtime module resolution, a capability
+  position filled by a *computed* (non-literal) name, or a
+  platform escape hatch of the same shape — defeats enumeration.
+  A *literal* string name is R1, never R4: string-named requests
+  are the protocol's normal case (§2), and treating them as
+  dynamic would decertify every ordinary world. The scan adds the literal name
   `<unknown>` (the existing `UNKNOWN_CAP_USAGE_KEY` in
   world_caps.rs, the same bucket the runtime ledger uses for
   unattributable use) to the used-set and marks the result
@@ -194,7 +248,7 @@ anywhere else is not implementing this spec.
   unchanged).
 
 Dead code is not an approximation source in either direction:
-platform functions referenced only from unreachable definitions
+capability names referenced only from unreachable definitions
 are **not** in the used-set. (An implementation may report them in
 the optional diagnostic field of §6, but they never enter the
 diffed set.)
@@ -319,7 +373,7 @@ All errors name the offending artifact; none degrade silently.
 | Entry module unparseable | error naming the file |
 | Import unresolvable inside the package | error naming the import (§3.1) |
 | Zero entry points resolved | input error (§3.2) |
-| Platform reference with no catalog name | error naming the reference (§3.3) |
+| Capability-position literal with no catalog name | error naming the literal (§3.3) |
 | R4 construct reachable | **not an error** — `<unknown>` + uncertified (§5) |
 | Entry-point override resolving to a proper subset of the platform's declared exports | **not an error** — partial-scope record (§6.2), never certified |
 | Platform reference only in dead code | not an error, not in the used-set (§5) |
@@ -333,7 +387,10 @@ All errors name the offending artifact; none degrade silently.
   `id-core`, so no new crate is needed.
 - The Roc front-end the implementation uses must expose, per
   definition: direct call targets, value-position references to
-  named functions, and the R4 constructs. If the available Roc
+  named functions, string literals in capability positions
+  (§4 step 4 — including `cap` fields inside serialized JSON
+  documents, and with references inside string interpolations
+  retained as graph references), and the R4 constructs. If the available Roc
   AST access cannot distinguish applied from value positions, R2
   cannot be implemented as specified and the implementation task
   must say so on #5998 rather than silently widening or narrowing
@@ -348,18 +405,20 @@ Each fixture is a small Roc package with a hand-computed expected
 record — the oracle is the fixture author's reading of §5, stated
 in the fixture, never the tool's own output:
 
-1. **Direct use, transitive:** entry → helper → `records.read`;
-   expect exactly `{records.read}`, certified.
+1. **Direct use, transitive:** entry → helper, the helper naming
+   `records.read` in a capability position; expect exactly
+   `{records.read}`, certified.
 2. **Subscription-style name:** a reachable `schedule.at` use;
    expect it present (the catalog namespace is uniform — no
    special-casing by provider family).
-3. **Value-passed platform function:** `chat.say` passed as a
-   callback, never applied in the fixture; expect `chat.say`
-   present (R2), certified.
-4. **Value-passed local helper:** helper calling `loc.position`
-   passed as a value; expect `loc.position` present (R3).
-5. **Dead code:** `time.now`-class platform function referenced
-   only from an unreachable definition; expect it absent, and
+3. **Value-passed request builder:** a helper naming `chat.say`
+   in a capability position, passed as a callback and never applied
+   in the fixture; expect `chat.say` present (R2), certified.
+4. **Value-passed local helper:** helper naming `loc.position`
+   in a capability position, passed as a value; expect
+   `loc.position` present (R3).
+5. **Dead code:** a `time.now`-class capability named only from
+   an unreachable definition; expect it absent, and
    present in `unreachable_refs` if emitted.
 6. **Dynamic loading:** a reachable runtime-loading call; expect
    `<unknown>` present and `certified: false`, with the statically
@@ -378,6 +437,16 @@ in the fixture, never the tool's own output:
     partial-scope record with `chat.say` absent from `used`,
     `certified: false`, the seeded entry points named, and the
     §6.3 over-declared side suppressed.
+11. **Request protocol (roc-chat shape):** the entry calls
+    `RocCap.issue(session, "chat.say")` and the platform helper
+    builder `RocCap.chat_request` embeds `"chat.say"` as the
+    document's `cap`; expect `chat.say` present, certified. A
+    variant with the issuing definition unreachable expects
+    `chat.say` absent.
+12. **Serialized wants document:** a reachable definition returns
+    its whole wants document as one escaped JSON string containing
+    a `players` subscription `cap` field; expect that catalog name
+    present, certified (§4 step 4d).
 
 ## 10. References
 
@@ -390,7 +459,10 @@ in the fixture, never the tool's own output:
 - Prior-art research: `worlds-capabilities-brief-2026-11-04`
   (Lane B item 8) — the Android/Koka contrast in §1.
 - Code anchors (verified at the main this spec was written
-  against): `world_caps.rs` — `PROVIDER_REGISTRY`,
+  against): `examples/roc-chat/main.roc` (`RocCap.issue` naming
+  capabilities as literals) and `examples/roc-world/RocCap.roc`
+  (request builders embedding `cap` names); `world_caps.rs` —
+  `PROVIDER_REGISTRY`,
   `catalog_names()`, `is_known`, `Wants::caps()`, `parse_wants`
   (`WANTS_VERSION`), `CapLedger` / `CapUsage`,
   `UNKNOWN_CAP_USAGE_KEY`.
