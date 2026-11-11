@@ -447,13 +447,16 @@ impl Default for WebContentTarget {
 }
 
 impl WebContentTarget {
-    /// Build a `Program` target, validating the world name the same
-    /// way the #2147 publication registry validates its world names:
-    /// non-empty once trimmed. The stored name is the trimmed one.
+    /// Build a `Program` target, validating the world name against
+    /// the world-name rule ([`crate::world_hub::validate_world_name`]):
+    /// a program target names a world, so it must be a name a world
+    /// can bear -- 1 to 64 bytes of `a-z`, `0-9`, `-` and `_`, never
+    /// a path segment. The stored name is the trimmed one.
     ///
     /// # Errors
     ///
-    /// Fails on an empty or all-whitespace world name.
+    /// Fails on an empty or all-whitespace world name, or on any
+    /// name the world-name rule rejects.
     pub fn program(world: impl Into<String>) -> Result<Self> {
         let world = world.into();
         let world = world.trim();
@@ -461,6 +464,9 @@ impl WebContentTarget {
             !world.is_empty(),
             "program target world name must not be empty (expected program:<world-name>)"
         );
+        crate::world_hub::validate_world_name(world).map_err(|e| {
+            anyhow::anyhow!("invalid program target world name {world:?}: {e}")
+        })?;
         Ok(Self::Program(world.to_owned()))
     }
 
@@ -473,8 +479,8 @@ impl WebContentTarget {
     ///
     /// # Errors
     ///
-    /// Fails on an unknown spec or an empty program world name,
-    /// naming the spec.
+    /// Fails on an unknown spec or a program world name the
+    /// world-name rule rejects, naming the spec.
     pub fn parse(spec: &str) -> Result<Self> {
         match spec {
             "explorer" => Ok(Self::Explorer),
@@ -526,7 +532,8 @@ impl WebBinding {
     ///
     /// # Errors
     ///
-    /// Fails on an empty or all-whitespace world name.
+    /// Fails on an empty or all-whitespace world name, or on any
+    /// name the world-name rule rejects.
     pub fn program(addr: SocketAddr, world: impl Into<String>) -> Result<Self> {
         Ok(Self {
             addr,
@@ -3601,6 +3608,51 @@ mod tests {
             WebContentTarget::Explorer
         );
         assert!(WebContentTarget::parse("document:readme").is_err());
+    }
+
+    #[test]
+    fn test_web_content_target_program_validates_world_name_rule() {
+        // #5711: a program target names a world, so program()/parse
+        // reject every name crate::world_hub::validate_world_name
+        // rejects -- a target no world can bear could never resolve.
+        for bad in [
+            "Arena",               // uppercase
+            ".",                   // dot segment
+            "..",                  // parent segment
+            "a/b",                 // slash
+            "a.b",                 // embedded dot
+            "has space",           // interior whitespace survives trim
+            "caf\u{e9}",          // non-ASCII
+            &"a".repeat(65),       // over the 64-byte cap
+        ] {
+            assert!(
+                WebContentTarget::program(bad).is_err(),
+                "program target accepted {bad:?}"
+            );
+            let spec = format!("program:{bad}");
+            let err = WebContentTarget::parse(&spec).unwrap_err();
+            assert!(
+                err.to_string().contains(&spec),
+                "parse error must name the spec {spec:?}: {err}"
+            );
+        }
+        // Legal names keep working: exactly at the byte cap, and
+        // hyphen/underscore/digit mixes, with trim preserved.
+        let max = "a".repeat(64);
+        assert_eq!(
+            WebContentTarget::program(max.clone()).unwrap(),
+            WebContentTarget::Program(max)
+        );
+        assert_eq!(
+            WebContentTarget::program(" my-world_2 ").unwrap(),
+            WebContentTarget::Program("my-world_2".to_owned())
+        );
+        assert_eq!(
+            WebContentTarget::parse("program:my-world_2")
+                .unwrap()
+                .describe(),
+            "program:my-world_2"
+        );
     }
 
     #[test]
