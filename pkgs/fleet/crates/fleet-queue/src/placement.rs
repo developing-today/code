@@ -721,9 +721,23 @@ impl GithubActionsAdapter {
         if !cache.is_empty() {
             entry.insert("cache".into(), Value::Object(cache));
             inputs.insert("jobs".into(), json!(Value::Array(vec![Value::Object(entry)]).to_string()));
+            // org-run.yml declares the top-level `repo` input
+            // required even when `jobs` is given (Codex P2 on
+            // PR #8325) — retain it alongside the jobs payload.
+            inputs.insert("repo".into(), json!(job.repo));
         } else {
             inputs.insert("repo".into(), json!(job.repo));
             inputs.insert("command".into(), json!(job.command));
+        }
+        if surf_str(&self.surface, "workflow") == "org-run.yml" {
+            // org-run's setup job defaults to a Blacksmith runner;
+            // pin it to this dispatch's provider so a GitHub-only
+            // dispatch does not silently consume Blacksmith
+            // minutes outside the budget/ledger (Codex P2).
+            inputs.insert(
+                "setup_runner".into(),
+                json!(self.runner_name(job)),
+            );
         }
         if self.runner_name(job) == "blacksmith" {
             inputs.insert("runner".into(), json!("blacksmith"));
@@ -797,7 +811,14 @@ impl GithubActionsAdapter {
         for _ in 0..12 {
             gh.sleep_secs(3);
             let mut candidates: Vec<(i64, i64, String)> = Vec::new();
-            for r in list_runs(gh)? {
+            // A failed run-list request after the POST was
+            // accepted (HTTP 204) must not abort the command: the
+            // job is already executing, and discarding the
+            // session would lose the reconnectable handle (and
+            // invite a duplicate submission). Treat it as "not
+            // visible yet" and keep polling; after the loop the
+            // caller records an accepted-but-unresolved session.
+            for r in list_runs(gh).unwrap_or_default() {
                 let id = r.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
                 if before_ids.contains(&id) {
                     continue;
@@ -902,7 +923,8 @@ impl Adapter for GithubActionsAdapter {
             return (
                 false,
                 format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \n                     unreachable by the App"
+                    "app token cannot be minted for {repo} \u{2014} surface is \
+                     unreachable by the App"
                 ),
             );
         }
@@ -999,7 +1021,8 @@ impl Adapter for BlacksmithAdapter {
             return (
                 false,
                 format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \n                     unreachable by the App"
+                    "app token cannot be minted for {repo} \u{2014} surface is \
+                     unreachable by the App"
                 ),
             );
         }
@@ -1142,13 +1165,19 @@ impl Adapter for CodespaceAdapter {
             )?;
             if hcode != 0 || head.is_empty() || tcode != 0 || target.is_empty() {
                 return die(format!(
-                    "codespace {name}: cannot validate the requested ref {} \u{2014} \n                     the reused codespace's checkout could not be resolved \n                     against it; check out the ref in the codespace and \n                     resubmit, or drop --ref",
+                    "codespace {name}: cannot validate the requested ref {} \u{2014} \
+                     the reused codespace's checkout could not be resolved \
+                     against it; check out the ref in the codespace and \
+                     resubmit, or drop --ref",
                     job.git_ref
                 ));
             }
             if head != target {
                 return die(format!(
-                    "codespace {name} is checked out at {head}, not the \n                     requested ref {} ({target}) \u{2014} fleet-place does not \n                     move a reused codespace's checkout; check out the ref \n                     in the codespace and resubmit, or drop --ref",
+                    "codespace {name} is checked out at {head}, not the \
+                     requested ref {} ({target}) \u{2014} fleet-place does not \
+                     move a reused codespace's checkout; check out the ref \
+                     in the codespace and resubmit, or drop --ref",
                     job.git_ref
                 ));
             }
@@ -2059,6 +2088,12 @@ mod tests {
 
     const FIXED_NOW: i64 = 1_767_225_600; // 2026-01-01T00:00:00Z
 
+    /// Tests that set the process-wide FLEET_PLACE_STATE variable
+    /// must not run concurrently (parallel test threads would
+    /// swap each other's state dir, and one test removing the
+    /// variable would drop the other into the real user store).
+    static STORE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct FakeGh {
         tokens_ok: bool,
         workflow_runs: Vec<Value>,
@@ -2403,6 +2438,18 @@ mod tests {
         assert_eq!(jobs[0]["cache"]["actions_key"], json!("tests"));
         assert_eq!(jobs[0]["cache"]["actions_path"], json!("./out"));
         assert_eq!(inputs["ref"], json!("abc123"));
+        // The jobs form retains the required top-level repo input.
+        assert_eq!(inputs["repo"], json!("developing-today/code"));
+        // org-run dispatches pin setup_runner to the dispatch's
+        // own provider (its setup job otherwise defaults to
+        // Blacksmith).
+        let org_surface = find_surface(&reg, "org-run").unwrap();
+        let org_ad = GithubActionsAdapter {
+            surface: org_surface.clone(),
+            force_runner: "github",
+        };
+        let inputs = org_ad.workflow_inputs(&job());
+        assert_eq!(inputs["setup_runner"], json!("github"));
         // Blacksmith variant sends the runner input.
         let bs_surface = find_surface(&reg, "fleet-org-blacksmith").unwrap();
         let bs = GithubActionsAdapter {
@@ -2601,6 +2648,7 @@ mod tests {
 
     #[test]
     fn commit_new_session_merges_without_dropping_other_sessions() {
+        let _store_env_guard = STORE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "fleet-place-test-merge-{}",
             std::process::id()
@@ -2627,6 +2675,7 @@ mod tests {
 
     #[test]
     fn store_roundtrip_preserves_sessions() {
+        let _store_env_guard = STORE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "fleet-place-test-{}",
             std::process::id()
