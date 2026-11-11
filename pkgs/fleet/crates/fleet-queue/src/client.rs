@@ -3460,6 +3460,142 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
     0
 }
 
+/// Merge-intent stack verbs (#8582 increment 3): the client surface
+/// for the broker's /stack-record and /stack-list routes (increment
+/// 2). Recording a finished branch names its authoring lane/worker
+/// pair; the broker validates that pair against the lane registry
+/// (the validation deferred from the CodeRabbit round on PR #8660,
+/// where the pair originates — here, at the client verbs).
+/// Stack list answers the full stack state from the database alone.
+pub(crate) fn stack_record_body(
+    stack_id: &str,
+    repo: &str,
+    branch: &str,
+    base_branch: Option<&str>,
+    head_sha: Option<&str>,
+    issue_number: Option<i64>,
+    pr_number: Option<i64>,
+    owner_lane: &str,
+    owner_worker: &str,
+    owner_session: Option<&str>,
+) -> Result<Value, String> {
+    // Fail fast with the pure core's own append rules, so a bad
+    // record is a usage error here and the identical verdict at
+    // the broker (validate_append is the one rule set, #8582).
+    let append = crate::merge_intent::AppendRequest {
+        stack_id: stack_id.to_string(),
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+        base_branch: base_branch.map(|s| s.to_string()),
+        head_sha: head_sha.map(|s| s.to_string()),
+        issue_number,
+        pr_number,
+        owner_lane: owner_lane.to_string(),
+        owner_worker: owner_worker.to_string(),
+        owner_session: owner_session.map(|s| s.to_string()),
+    };
+    crate::merge_intent::validate_append(&append)?;
+    Ok(json!({
+        "stack_id": stack_id,
+        "repo": repo,
+        "branch": branch,
+        "base_branch": base_branch,
+        "head_sha": head_sha,
+        "issue_number": issue_number,
+        "pr_number": pr_number,
+        "owner_lane": owner_lane,
+        "owner_worker": owner_worker,
+        "owner_session": owner_session,
+    }))
+}
+
+fn cmd_stack_record(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "stack",
+            "repo",
+            "branch",
+            "base-branch",
+            "head-sha",
+            "issue",
+            "pr",
+            "lane",
+            "worker",
+            "session-id",
+        ],
+        &[],
+    );
+    reject_extra_pos("stack record", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack record: --stack is required"));
+    let repo = args
+        .get("repo")
+        .unwrap_or_else(|| die(2, "stack record: --repo is required"));
+    let branch = args
+        .get("branch")
+        .unwrap_or_else(|| die(2, "stack record: --branch is required"));
+    // The owner pair originates here (#8582): the authoring lane is
+    // required, and the worker defaults to this caller's worker —
+    // the broker refuses a pair the lane registry does not hold.
+    let owner_lane = args
+        .get("lane")
+        .unwrap_or_else(|| die(2, "stack record: --lane is required (the authoring lane)"));
+    let body = match stack_record_body(
+        &stack_id,
+        &repo,
+        &branch,
+        args.get("base-branch").as_deref(),
+        args.get("head-sha").as_deref(),
+        args.get_i64("issue"),
+        args.get_i64("pr"),
+        &owner_lane,
+        &opt_worker(&args),
+        args.get("session-id").as_deref(),
+    ) {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-record", &body));
+    print_json(&require_row(&resp, "stack_record"));
+    0
+}
+
+fn cmd_stack_list(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["stack", "worker"], &[]);
+    reject_extra_pos("stack list", &args, 1);
+    let positional = args.pos.first().cloned();
+    let stack_id = match (positional, args.get("stack")) {
+        (Some(p), Some(f)) if p != f => {
+            die(2, "stack list: positional stack id and --stack disagree")
+        }
+        (Some(p), _) => p,
+        (None, Some(f)) => f,
+        (None, None) => die(2, "stack list: a stack id is required"),
+    };
+    let resp = unwrap_ok(call("/stack-list", &json!({"stack_id": stack_id})));
+    print_json(&require_row(&resp, "stack_list"));
+    0
+}
+
+fn cmd_stack(rest: &[String]) -> i32 {
+    if rest.is_empty() {
+        eprint("usage: repo-queue stack <record|list> ...");
+        return 2;
+    }
+    let sub = rest[0].as_str();
+    let tail = &rest[1..];
+    match sub {
+        "record" => cmd_stack_record(tail),
+        "list" => cmd_stack_list(tail),
+        _ => {
+            eprint(&format!("repo-queue: unknown stack command {sub:?}"));
+            2
+        }
+    }
+}
+
 fn cmd_outbox(rest: &[String]) -> i32 {
     if rest.is_empty() {
         eprint("usage: repo-queue outbox <enqueue|list|metrics|claim|resolve|drain> ...");
@@ -3483,7 +3619,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox|dispatch|session|surfaces> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
         );
         return 2;
     }
@@ -3518,6 +3654,7 @@ pub fn run(args: &[String]) -> i32 {
         "session" => crate::placement::cmd_session(rest),
         "surfaces" => crate::placement::cmd_surfaces(rest),
         "outbox" => cmd_outbox(rest),
+        "stack" => cmd_stack(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2
@@ -3582,6 +3719,77 @@ mod tests {
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
         assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn stack_record_body_carries_the_append_shape_8582() {
+        // #8582 increment 3 oracle: the client record body is
+        // exactly the broker's append shape (stack, repo, branch,
+        // owner lane/worker pair, optional base/head/issue/pr/
+        // session), and the pure core's append rules are the
+        // client's fail-fast rules too — an ownerless or
+        // branchless record never reaches the broker.
+        let body = stack_record_body(
+            "outage-2026-11-11",
+            "developing-today/code",
+            "queue/1-2-fix",
+            None,
+            Some("abc123"),
+            Some(8582),
+            None,
+            "any-a",
+            "repo-worker-code",
+            Some("ses_1"),
+        )
+        .expect("a complete append is valid");
+        assert_eq!(body["stack_id"], json!("outage-2026-11-11"));
+        assert_eq!(body["repo"], json!("developing-today/code"));
+        assert_eq!(body["branch"], json!("queue/1-2-fix"));
+        assert_eq!(body["base_branch"], Value::Null);
+        assert_eq!(body["head_sha"], json!("abc123"));
+        assert_eq!(body["issue_number"], json!(8582));
+        assert_eq!(body["owner_lane"], json!("any-a"));
+        assert_eq!(body["owner_worker"], json!("repo-worker-code"));
+        assert_eq!(body["owner_session"], json!("ses_1"));
+        assert!(stack_record_body(
+            "s",
+            "developing-today/code",
+            "queue/1-2-fix",
+            None,
+            None,
+            None,
+            None,
+            "",
+            "repo-worker-code",
+            None,
+        )
+        .is_err());
+        assert!(stack_record_body(
+            "s",
+            "developing-today/code",
+            "",
+            None,
+            None,
+            None,
+            None,
+            "any-a",
+            "repo-worker-code",
+            None,
+        )
+        .is_err());
+        assert!(stack_record_body(
+            "s",
+            "developing-today/code",
+            "queue/1-2-fix",
+            Some("  "),
+            None,
+            None,
+            None,
+            "any-a",
+            "repo-worker-code",
+            None,
+        )
+        .is_err());
     }
 
     #[test]

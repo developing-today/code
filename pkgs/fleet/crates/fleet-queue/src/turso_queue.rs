@@ -6520,6 +6520,48 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
     if let Err(e) = crate::merge_intent::validate_append(&append) {
         return fail(2, e);
     }
+    // Owner lane/worker pair validation against the lane registry
+    // (#8582 increment 3; deferred from the CodeRabbit round on
+    // PR #8660, where the pair originates at the client verbs):
+    // a recorded intent's conflict is routed to its owner pair, so
+    // the pair must be one the registry actually holds — an
+    // unknown lane, a lane owned by a different worker, or a
+    // disabled lane would strand that routing. Mirrors the claim
+    // preamble's registry check (minus the queue binding: stack
+    // recording is not a claim).
+    {
+        let lanes = match t.query_objs(
+            "SELECT lane_id, worker_id, enabled FROM lanes WHERE lane_id = ?",
+            &[Arg::Text(append.owner_lane.clone())],
+            &[],
+        ) {
+            Ok(rows) => rows,
+            Err(e) => return terr(e),
+        };
+        let Some(l) = lanes.into_iter().next() else {
+            return fail(
+                2,
+                format!("stack_record: unknown owner lane_id {}", append.owner_lane),
+            );
+        };
+        if l.get("worker_id").and_then(|v| v.as_str()) != Some(append.owner_worker.as_str()) {
+            return fail(
+                2,
+                format!(
+                    "stack_record: lane {} belongs to worker {}, not {}",
+                    append.owner_lane,
+                    l.get("worker_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    append.owner_worker
+                ),
+            );
+        }
+        if l.get("enabled").and_then(|v| v.as_i64()) == Some(0) {
+            return fail(
+                2,
+                format!("stack_record: lane {} is disabled", append.owner_lane),
+            );
+        }
+    }
     // One stack, one repository (#8582): refuse a cross-repo append
     // before planning — plan_append would otherwise base the new
     // branch on a tip from the other repository (CodeRabbit finding,
@@ -7253,6 +7295,17 @@ mod tests {
             "record validates via the core"
         );
         assert!(record.contains("plan_append("), "record plans via the core");
+        // Increment 3: the record verb validates the owner
+        // lane/worker pair against the lanes registry, so a
+        // conflict route recorded here names a real owner.
+        assert!(
+            record.contains("FROM lanes WHERE lane_id = ?"),
+            "record validates the owner pair against the lane registry"
+        );
+        assert!(
+            record.contains("unknown owner lane_id"),
+            "record refuses an unregistered owner lane"
+        );
         let list = seg8217(src, "fn verb_stack_list(", "\nfn verb_signal_count(");
         assert!(list.contains("stack_state("), "list answers the derived stack state");
     }
