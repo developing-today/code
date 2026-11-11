@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::world_caps::{
     MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, MAX_SCHEDULE_HORIZON_DAYS, MAX_SCHEDULE_HORIZON_MS,
-    validate_ceiling_names, validate_grant_names,
+    default_ceiling_names, validate_ceiling_names, validate_grant_names,
 };
 use crate::world_limits::WorldExecutionProfile;
 
@@ -46,7 +46,9 @@ pub struct WorldManifest {
     /// allowed, so an empty list allows none. `None` (the field is omitted)
     /// leaves the live ceiling alone — a manifest that never mentions the
     /// ceiling can never widen it. (In a [`WorldState`] and in
-    /// [`ApplyStep::SetCeiling`], `None` instead means the whole catalog.)
+    /// [`ApplyStep::SetCeiling`], `None` means the default ceiling — the
+    /// one meaning of `None` for a live ceiling everywhere, #6817. The
+    /// whole catalog stays expressible as the explicit full list.)
     pub ceiling: Option<Vec<String>>,
     /// Requested execution profile bounds. Omitted fields inherit the server,
     /// so the all-default profile leaves the live profile alone.
@@ -68,7 +70,7 @@ pub struct WorldState {
     pub seed: u64,
     /// The granted capability set (raw, `*` allowed).
     pub grants: Vec<String>,
-    /// The capability ceiling (`None` = whole catalog, empty = none).
+    /// The capability ceiling (`None` = the default ceiling, empty = none).
     pub ceiling: Option<Vec<String>>,
     /// The requested execution profile.
     pub profile: WorldExecutionProfile,
@@ -86,6 +88,27 @@ impl Default for WorldState {
             profile: WorldExecutionProfile::default(),
             schedules: BTreeMap::new(),
         }
+    }
+}
+
+/// Fold a host-reported ceiling list into a [`WorldState`] ceiling.
+///
+/// The host always reports a world's ceiling as a concrete list. A report
+/// equal (as a set) to the default ceiling folds to `None`, because `None`
+/// IS the default ceiling — the one meaning of `None` for a live ceiling
+/// (#6817): [`plan`] compares a `None` live ceiling against the default
+/// set, the model [`apply`] stores a `None` step as `None`, and the wire
+/// executor restores the default names for a `None` step. Folding here is
+/// what makes a default-ceiling manifest converge: without it, a manifest
+/// pinning the default list would plan a `SetCeiling` step against the
+/// folded state forever.
+#[must_use]
+pub fn fold_reported_ceiling(reported: Vec<String>) -> Option<Vec<String>> {
+    let reported_set: std::collections::BTreeSet<String> = reported.iter().cloned().collect();
+    if reported_set == default_ceiling_names() {
+        None
+    } else {
+        Some(reported)
     }
 }
 
@@ -110,7 +133,7 @@ pub enum ApplyStep {
     },
     /// Replace the capability ceiling.
     SetCeiling {
-        /// Desired ceiling (`None` = whole catalog, empty = none).
+        /// Desired ceiling (`None` = the default ceiling, empty = none).
         ceiling: Option<Vec<String>>,
     },
     /// Replace the requested execution profile.
@@ -329,15 +352,17 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
     // replaces it when the SET differs (compared as sets, like grants --
     // #1519: a reorder of the same names is not drift). The step carries
     // the desired list in its declared order. A live ceiling of None is
-    // the whole catalog, which no present list equals as a set.
+    // the default ceiling (#6817), so it compares as the default set: a
+    // manifest pinning exactly the default names converges (no step),
+    // while the full catalog — a strict superset — still plans one
+    // widening step.
     if let Some(ceiling) = &desired.ceiling {
-        let desired_set: std::collections::BTreeSet<&str> =
-            ceiling.iter().map(String::as_str).collect();
-        let current_set: Option<std::collections::BTreeSet<&str>> = current
-            .ceiling
-            .as_ref()
-            .map(|names| names.iter().map(String::as_str).collect());
-        if current_set.as_ref() != Some(&desired_set) {
+        let desired_set: std::collections::BTreeSet<String> = ceiling.iter().cloned().collect();
+        let current_set: std::collections::BTreeSet<String> = match &current.ceiling {
+            Some(names) => names.iter().cloned().collect(),
+            None => default_ceiling_names(),
+        };
+        if current_set != desired_set {
             steps.push(ApplyStep::SetCeiling {
                 ceiling: Some(ceiling.clone()),
             });
@@ -413,6 +438,9 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
                 }
             }
             ApplyStep::SetCeiling { ceiling } => {
+                // Stored verbatim: a `None` step leaves `state.ceiling`
+                // as `None`, which means the default ceiling (#6817) —
+                // exactly what the wire executor restores for `None`.
                 if let Some(names) = ceiling {
                     validate_ceiling_names(names)?;
                 }
@@ -516,7 +544,7 @@ fn render_steps(steps: &[ApplyStep]) -> String {
                 Some(names) => {
                     out.push_str(&format!("~ ceiling [{}]\n", names.join(", ")));
                 }
-                None => out.push_str("~ ceiling [*] (whole catalog)\n"),
+                None => out.push_str("~ ceiling (default ceiling)\n"),
             },
             ApplyStep::SetProfile { profile } => {
                 out.push_str(&format!("~ profile {profile:?}\n"));
@@ -785,15 +813,135 @@ native_memory_bytes = 16777216",
     }
 
     #[test]
+    fn default_ceiling_manifest_converges_against_none_ceiling() {
+        // #6817 (acceptance 1): a manifest pinning exactly the default
+        // ceiling against a world whose live ceiling is None (never set,
+        // or folded from a default report) must plan NO SetCeiling step.
+        // Pre-fix, plan() read None as the whole catalog, so it planned a
+        // step forever (non-convergence).
+        let manifest = WorldManifest {
+            ceiling: Some(
+                crate::world_caps::default_ceiling_names()
+                    .into_iter()
+                    .collect(),
+            ),
+            ..WorldManifest::default()
+        };
+        let current = WorldState::default(); // ceiling: None
+        let steps = plan(&manifest, &current);
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::SetCeiling { .. })),
+            "default-ceiling manifest must converge against a None ceiling, got {steps:?}"
+        );
+    }
+
+    #[test]
+    fn default_ceiling_round_trip_converges() {
+        // #6817 (acceptance 4): plan -> apply -> re-read (fold) -> plan for
+        // a default-ceiling manifest; the second plan is empty.
+        let default_names: Vec<String> = crate::world_caps::default_ceiling_names()
+            .into_iter()
+            .collect();
+        let manifest = WorldManifest {
+            ceiling: Some(default_names.clone()),
+            ..WorldManifest::default()
+        };
+        // Start from a narrowed world: the first plan widens to the default.
+        let mut state = WorldState {
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(
+            steps,
+            vec![ApplyStep::SetCeiling {
+                ceiling: Some(default_names.clone())
+            }]
+        );
+        apply(&steps, &mut state).unwrap();
+        // Re-read: the host now reports the default list, which folds to
+        // None — and None means the default ceiling, so nothing drifts.
+        state.ceiling = fold_reported_ceiling(state.ceiling.clone().unwrap());
+        assert_eq!(state.ceiling, None);
+        assert!(plan(&manifest, &state).is_empty());
+        // A host report of exactly the default list (never folded by hand)
+        // also converges from the start.
+        let reported = WorldState {
+            ceiling: Some(default_names.clone()),
+            ..WorldState::default()
+        };
+        let folded = WorldState {
+            ceiling: fold_reported_ceiling(reported.ceiling.clone().unwrap()),
+            ..reported
+        };
+        assert!(plan(&manifest, &folded).is_empty());
+    }
+
+    #[test]
+    fn ceiling_controls_hold_under_default_meaning() {
+        // #6817 controls: the full catalog against a default-ceiling world
+        // plans exactly one widening step; any other list plans a step iff
+        // the sets differ; an omitted ceiling plans none.
+        let current = WorldState::default(); // ceiling: None = default
+        let catalog: Vec<String> = crate::world_caps::PROVIDER_REGISTRY
+            .catalog_names()
+            .into_iter()
+            .collect();
+        assert!(catalog.len() > crate::world_caps::default_ceiling_names().len());
+        let widening = WorldManifest {
+            ceiling: Some(catalog.clone()),
+            ..WorldManifest::default()
+        };
+        assert_eq!(
+            plan(&widening, &current),
+            vec![ApplyStep::SetCeiling {
+                ceiling: Some(catalog)
+            }]
+        );
+        let narrowed = WorldManifest {
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            ..WorldManifest::default()
+        };
+        assert_eq!(
+            plan(&narrowed, &current),
+            vec![ApplyStep::SetCeiling {
+                ceiling: Some(vec!["chat.say".to_owned()])
+            }]
+        );
+        let omitted = WorldManifest::default();
+        assert!(plan(&omitted, &current).is_empty());
+    }
+
+    #[test]
+    fn fold_reported_ceiling_only_folds_the_default_set() {
+        // #6817: order does not matter (set comparison); any other list —
+        // including a strict subset and the empty list — stays concrete.
+        let mut shuffled: Vec<String> = crate::world_caps::default_ceiling_names()
+            .into_iter()
+            .collect();
+        shuffled.reverse();
+        assert_eq!(fold_reported_ceiling(shuffled), None);
+        assert_eq!(
+            fold_reported_ceiling(vec!["chat.say".to_owned()]),
+            Some(vec!["chat.say".to_owned()])
+        );
+        assert_eq!(fold_reported_ceiling(Vec::new()), Some(Vec::new()));
+    }
+
+    #[test]
     fn ceiling_none_and_empty_render_distinctly() {
-        // #817: widening to the whole catalog and narrowing to nothing are
+        // #817: restoring the default ceiling and narrowing to nothing are
         // opposite operations and must not render the same in `world diff`.
+        // (#6817: None renders as the default ceiling, not the whole
+        // catalog — that was the split meaning this test used to pin.)
         let widened = render_steps(&[ApplyStep::SetCeiling { ceiling: None }]);
         let emptied = render_steps(&[ApplyStep::SetCeiling {
             ceiling: Some(Vec::new()),
         }]);
         assert_ne!(widened, emptied);
-        assert!(widened.contains("whole catalog"), "{widened}");
+        assert!(widened.contains("default ceiling"), "{widened}");
         assert!(emptied.contains("ceiling []"), "{emptied}");
     }
 
