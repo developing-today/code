@@ -594,6 +594,149 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
     }
 }
 
+
+/// The GitHub token the dep rechecker authenticates with,
+/// resolved by name through the secrets broker like every other
+/// broker credential (#8276).
+const GH_DEP_TOKEN_SECRET: &str = "github.developing-today-code-automation";
+
+/// #8276: the production DepProbe — GitHub state reads for the
+/// dep rechecker, inside the broker process. The token resolves
+/// by name through the secrets Resolver (the same one the Turso
+/// token uses) and is cached for ten minutes; the value never
+/// leaves this process. Every transport/auth failure maps to
+/// DepObs::Failed — a broken checker never clears a gate; only
+/// a block's max TTL can release it then. A 404 maps to Broken:
+/// the reference does not exist, and a typo'd gate must not
+/// become a life sentence.
+struct GhDepProbe {
+    // The secrets coordinates, not a Resolver: fleet_secrets'
+    // Resolver is not Send/Sync, and the probe lives behind an
+    // Arc<dyn DepProbe>. The source is rebuilt per resolve,
+    // exactly like the broker builds its own per backend.
+    secrets_url: String,
+    secrets_token: String,
+    agent: ureq::Agent,
+    token: Mutex<Option<(String, std::time::Instant)>>,
+}
+
+impl GhDepProbe {
+    fn token(&self) -> Result<String, String> {
+        let mut slot = self.token.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((tok, at)) = &*slot {
+            if at.elapsed() < std::time::Duration::from_secs(600) {
+                return Ok(tok.clone());
+            }
+        }
+        let source = DirectSecrets {
+            url: self.secrets_url.clone(),
+            token: self.secrets_token.clone(),
+            agent: self.agent.clone(),
+        };
+        let v = source
+            .resolve(GH_DEP_TOKEN_SECRET)
+            .map_err(|e| format!("github token resolve failed: {e}"))?;
+        let tok = v.expose().to_string();
+        *slot = Some((tok.clone(), std::time::Instant::now()));
+        Ok(tok)
+    }
+
+    fn get_json(&self, path: &str) -> Result<Value, crate::turso_queue::DepObs> {
+        use crate::turso_queue::DepObs;
+        let tok = self.token().map_err(DepObs::Failed)?;
+        let url = format!("https://api.github.com{path}");
+        let mut resp = match self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {tok}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fleet-queue-broker")
+            .call()
+        {
+            Ok(r) => r,
+            Err(ureq::Error::StatusCode(404)) => {
+                return Err(DepObs::Broken(format!("github 404 for {path}")));
+            }
+            Err(ureq::Error::StatusCode(code)) => {
+                return Err(DepObs::Failed(format!("github http {code} for {path}")));
+            }
+            Err(e) => {
+                return Err(DepObs::Failed(format!("github request failed: {e}")));
+            }
+        };
+        let status = resp.status().as_u16();
+        if status == 404 {
+            return Err(DepObs::Broken(format!("github 404 for {path}")));
+        }
+        if !(200..300).contains(&status) {
+            return Err(DepObs::Failed(format!("github http {status} for {path}")));
+        }
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| DepObs::Failed(format!("github response unreadable: {e}")))?;
+        serde_json::from_str(&text)
+            .map_err(|e| DepObs::Failed(format!("github response not json: {e}")))
+    }
+}
+
+impl crate::turso_queue::DepProbe for GhDepProbe {
+    fn probe_issue(&self, repo: &str, number: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/issues/{number}")) {
+            Ok(v) => {
+                let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                if state == "closed" {
+                    DepObs::Cleared("issue closed".to_string())
+                } else {
+                    DepObs::Open(format!("issue {state}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+
+    fn probe_pr(&self, repo: &str, number: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/pulls/{number}")) {
+            Ok(v) => {
+                let merged = v
+                    .get("merged")
+                    .and_then(|m| m.as_bool())
+                    .unwrap_or(false);
+                let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                if merged {
+                    DepObs::Cleared("pr merged".to_string())
+                } else if state == "closed" {
+                    DepObs::Cleared("pr closed without merge".to_string())
+                } else {
+                    DepObs::Open(format!("pr {state}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+
+    fn probe_ci(&self, repo: &str, run_id: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/actions/runs/{run_id}")) {
+            Ok(v) => {
+                let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                if status == "completed" {
+                    let conclusion = v
+                        .get("conclusion")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    DepObs::Cleared(format!("run completed: {conclusion}"))
+                } else {
+                    DepObs::Open(format!("run {status}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
@@ -1029,7 +1172,16 @@ pub fn run() -> i32 {
                     })
             }
         };
-        let backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
+        let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
+        // #8276: the dep rechecker's GitHub window, authenticated
+        // by name through the same secrets Resolver as the Turso
+        // token above.
+        backend.set_gh_probe(Arc::new(GhDepProbe {
+            secrets_url: secrets_url.clone(),
+            secrets_token: secrets_token.clone(),
+            agent: agent.clone(),
+            token: Mutex::new(None),
+        }));
         backend.ensure_schema().unwrap_or_else(|e| {
             crate::log::info(
                 "queue-broker",

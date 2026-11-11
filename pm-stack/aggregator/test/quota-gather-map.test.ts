@@ -4,11 +4,15 @@ import {
   ANTIGRAVITY_GEMINI_SERVICE_ID,
   GO_POPESDREW_SERVICE_ID,
   GO_DREWRYPOPE_SERVICE_ID,
+  OPENAI_ALTERNATE_SERVICE_ID,
+  OPENAI_MAIN_SERVICE_ID,
+  OPENAI_SELF_SERVICE_ID,
   canonicalProviderId,
   entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
+  codexPoolServiceId,
   goPoolServiceId,
   lastKnownEntries,
   mapWithConcurrency,
@@ -919,7 +923,7 @@ describe("pool splits (#1331)", () => {
     ]);
   });
 
-  test("Go lapse: an errored drewrypope row splits as a pool error; unconfigured rows never split", () => {
+  test("Go lapse: a lapsed drewrypope row splits as a pool lapsed; unconfigured rows never split", () => {
     const lapsed: QuotaProviderResult = {
       providerId: "opencode-go",
       providerName: "OpenCode Go",
@@ -929,7 +933,9 @@ describe("pool splits (#1331)", () => {
       credentialId: "cred_personal",
       credentialLabel: "drewrypope",
       error: "No active OpenCode Go subscription on the selected Console account",
-      usage: null,
+      // Even if a provider includes old usage alongside the lapse error,
+      // it must not be published as a current quota window or snapshot.
+      usage: { windows: { monthly: { usedPercent: 100 } } },
     };
     const unconfigured: QuotaProviderResult = {
       providerId: "opencode-go",
@@ -944,8 +950,40 @@ describe("pool splits (#1331)", () => {
     const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
     expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_DREWRYPOPE_SERVICE_ID]);
     const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
-    expect(personal.state).toBe("error");
+    expect(personal.state).toBe("lapsed");
     expect(personal.error).toContain("No active OpenCode Go subscription");
+    expect(personal.windows).toEqual([]);
+    expect(recordsFromEntries(split, new Map(), "quota-gatherer").records).toEqual([]);
+    // Control: a configured Go failure without the lapse signal stays an error.
+    const failed = entryFromResult(
+      {
+        providerId: "opencode-go",
+        providerName: "OpenCode Go",
+        ok: false,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        credentialId: "cred_personal",
+        credentialLabel: "drewrypope",
+        error: "timeout",
+        usage: null,
+      },
+      TICK,
+    );
+    expect(failed.state).toBe("error");
+    expect(failed.error).toContain("timeout");
+    // The signal only maps for the opencode-go provider itself: a
+    // different provider with the same words still throws an error.
+    const sameReason = entryFromResult(
+      {
+        providerId: "claude",
+        ok: false,
+        configured: true,
+        error: "No active OpenCode Go subscription on the selected Console account",
+        usage: null,
+      },
+      TICK,
+    );
+    expect(sameReason.state).toBe("error");
   });
 
   test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {
@@ -1192,5 +1230,88 @@ describe("canonicalProviderId (config-id alignment, #1823)", () => {
     const retained = markRetained([prevEntry], "2026-10-27T06:00:00.000Z");
     expect(retained[0].providerId).toBe("_claude");
     expect(retained[0].retainedFromFailedTick).toBe("2026-10-27T06:00:00.000Z");
+  });
+});
+
+describe("codexPoolServiceId — folded codex rows file under their own OpenAI pool", () => {
+  const TICK = "2026-11-10T21:30:00.000Z";
+  const win = (usedPercent: number, windowSeconds: number) => ({
+    usedPercent,
+    remainingPercent: 100 - usedPercent,
+    windowSeconds,
+    resetAt: 1794364348000,
+  });
+  const codexResult = (
+    credentialLabel: string | undefined,
+    providerName: string,
+    windows: Record<string, ReturnType<typeof win>>,
+  ): QuotaProviderResult => ({
+    providerId: "codex",
+    providerName,
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    credentialId: "cred_x",
+    credentialLabel,
+    usage: { windows },
+  });
+
+  test("each instance credential lands on its own serviceId", () => {
+    const alt = entryFromResult(
+      codexResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+        "5h": win(42, 18_000),
+        weekly: win(65, 604_800),
+      }),
+      TICK,
+    );
+    expect(alt.serviceId).toBe(OPENAI_ALTERNATE_SERVICE_ID);
+    const main = entryFromResult(
+      codexResult("OpenAI Main (drewrypope)", "OpenAI Main (drewrypope)", { weekly: win(100, 604_800) }),
+      TICK,
+    );
+    expect(main.serviceId).toBe(OPENAI_MAIN_SERVICE_ID);
+    const self = entryFromResult(
+      codexResult("OpenAI (_openai, drewrypope) — self-contained", "OpenAI Self-Contained (drewrypope, no Codex)", {
+        weekly: win(100, 604_800),
+      }),
+      TICK,
+    );
+    expect(self.serviceId).toBe(OPENAI_SELF_SERVICE_ID);
+  });
+
+  test("unmatched folded rows keep the historical openai.main fallback; codexPoolServiceId is null", () => {
+    expect(codexPoolServiceId({ credentialLabel: undefined, providerName: "Codex" })).toBeNull();
+    expect(codexPoolServiceId({ credentialLabel: "some future account", providerName: "Codex" })).toBeNull();
+    const bare = entryFromResult(codexResult(undefined, "Codex", { weekly: win(10, 604_800) }), TICK);
+    expect(bare.serviceId).toBe("openai.main");
+  });
+
+  test("recordsFromEntries: the alternate account's 5h never enters openai.main's series", () => {
+    const alt = entryFromResult(
+      codexResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+        "5h": win(42, 18_000),
+        weekly: win(65, 604_800),
+      }),
+      TICK,
+    );
+    const mainDedicated = entryFromResult(
+      {
+        providerId: "openai.main",
+        providerName: "OpenAI Main (drewrypope)",
+        ok: true,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        credentialId: "cred_main",
+        credentialLabel: "OpenAI Main (drewrypope)",
+        usage: { windows: { weekly: win(100, 604_800) } },
+      },
+      TICK,
+    );
+    const { records } = recordsFromEntries([alt, mainDedicated], new Map(), "quota-gatherer");
+    const byKey = new Map(records.map((r) => [`${r.serviceId}|${r.metricId}`, r.value]));
+    expect(byKey.get("openai.alternate|5h")).toBe(42);
+    expect(byKey.has("openai.main|5h")).toBe(false);
+    expect(byKey.get("openai.main|weekly")).toBe(100);
+    expect(byKey.get("openai.alternate|weekly")).toBe(65);
   });
 });

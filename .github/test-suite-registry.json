@@ -319,6 +319,20 @@
       "reason": "The registered mcpx-test workflow is disabled_manually."
     },
     {
+      "id": "mcpx.scripts.affected-embeds",
+      "paths": ["pkgs/mcpx/scripts/tests/test_affected_embeds.py"],
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run mcpx embed-selector regression tests (#6866)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6866],
+      "reason": "The active scripts-test PR workflow explicitly checks for this file before running the selector regressions; mcpx-test includes a separate dispatch-only step too."
+    },
+    {
       "id": "mcpx.plugin.v1",
       "paths": ["pkgs/mcpx/plugin/opencode/mcpx/*.test.ts"],
       "invocation": "bun test plugin/opencode/mcpx/",

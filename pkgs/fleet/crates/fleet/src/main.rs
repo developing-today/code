@@ -341,7 +341,7 @@ fn help_text(surface: &Surface) -> String {
     }
     out.push_str("\nBuilt-in commands:\n");
     out.push_str(
-        "  init           Autostart the session proxy if it is not running (no-op when it is)\n",
+        "  init           Autostart this host's roles per the [host] manifest (no-op when running)\n",
     );
     out.push_str("  version        Print version, enabled capabilities, and source rev\n");
     out.push_str("  capabilities   Print the registry and this build's capabilities as JSON\n");
@@ -370,7 +370,9 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "secrets" => "included in this build",
             "search" => "included in this build",
             "proxy" => "included in this build",
-            "serve" => "included in this build (queue-broker, secrets-broker and search roles)",
+            "serve" => {
+                "included in this build (queue-broker, secrets-broker, search and proxy roles)"
+            }
             _ => "included in this build (implementation lands in a later step of epic #5412)",
         },
         CapState::NotInBuild => {
@@ -402,8 +404,9 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
                 Some("queue-broker") => Ok(Capability::QueueBroker),
                 Some("secrets-broker") => Ok(Capability::SecretsBroker),
                 Some("search") => Ok(Capability::SearchServe),
+                Some("proxy") => Ok(Capability::ProxyServe),
                 _ => Err(usage_error(
-                    "'fleet serve' needs a role: queue-broker, secrets-broker, or search",
+                    "'fleet serve' needs a role: queue-broker, secrets-broker, search, or proxy",
                 )),
             }
         }
@@ -546,6 +549,14 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if let Some(tail) = search_serve_tail(d, args) {
                 return fleet_search::serve::run(tail);
             }
+            // #6770 (design #5687 §5): the proxy daemon role under
+            // its serve spelling — the same leaf as `fleet proxy
+            // serve`. fleet-proxy's spawn_serve spawns this
+            // spelling since the rename, so this route is what
+            // every auto-started broker now runs as.
+            if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("proxy") {
+                return run_serve_proxy(surface, &args[1..]);
+            }
             // Step 4 (#5432): the dispatch domain runs for real — a
             // thin client over pm-stack's pm-dispatch service.
             #[cfg(feature = "dispatch")]
@@ -585,6 +596,42 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             stub(surface, d.name, &CapState::Available, invoked_as)
         }
         state => stub(surface, d.name, &state, invoked_as),
+    }
+}
+
+const SERVE_PROXY_USAGE: &str = "\
+Usage: fleet serve proxy
+
+Run the session proxy (the broker) in the foreground, binding the
+broker socket from fleet config (FLEET_BROKER_SOCKET / broker_socket).
+The same leaf as 'fleet proxy serve'.
+
+Takes no arguments.";
+
+/// `fleet serve proxy` — the proxy daemon role under its serve
+/// spelling (design #5687 §5, impl #6770). Argument handling is
+/// the proxy serve leaf's own (`classify_proxy_serve_args`): the
+/// leaf takes no arguments, so a trailing one is a usage error,
+/// never something silently dropped before the socket is bound.
+fn run_serve_proxy(surface: &Surface, tail: &[String]) -> i32 {
+    match classify_proxy_serve_args(tail) {
+        ProxyServeArgs::Help => {
+            println!("{SERVE_PROXY_USAGE}");
+            EXIT_OK
+        }
+        ProxyServeArgs::Reject(arg) => usage_error(&format!(
+            "'fleet serve proxy' takes no arguments, got {arg:?}\n\n{SERVE_PROXY_USAGE}"
+        )),
+        ProxyServeArgs::Run => {
+            #[cfg(feature = "proxy-serve")]
+            {
+                fleet_proxy::serve::run(&surface.config)
+            }
+            #[cfg(not(feature = "proxy-serve"))]
+            {
+                unreachable!("serve proxy dispatched without the proxy-serve capability")
+            }
+        }
     }
 }
 

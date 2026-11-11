@@ -96,6 +96,13 @@ pub enum ConvertError {
         /// Which leg: `"source"`, `"fee"`, or `"destination"`.
         leg: &'static str,
     },
+    /// A leg's ledger is zero. No account can exist on ledger 0
+    /// (the ledger layer's `LedgerMustNotBeZero`), so a batch built
+    /// on it could never post.
+    ZeroLedger {
+        /// Which ledger: `source` or `destination`.
+        leg: &'static str,
+    },
     /// A positive fee was computed but no fee account was supplied.
     MissingFeeAccount,
     /// The caller supplied the wrong number of transfer IDs.
@@ -109,6 +116,16 @@ pub enum ConvertError {
     /// leg and must be distinct.
     DuplicateTransferId {
         /// The repeated transfer ID.
+        id: u128,
+    },
+    /// A TigerBeetle account or transfer ID is reserved and cannot be
+    /// submitted. Both zero and `u128::MAX` are invalid IDs.
+    InvalidId {
+        /// Whether this is an account ID or a transfer ID.
+        kind: &'static str,
+        /// The account or conversion leg that supplied the ID.
+        role: &'static str,
+        /// The reserved ID value.
         id: u128,
     },
 }
@@ -140,6 +157,9 @@ impl std::fmt::Display for ConvertError {
             Self::SameAccount { leg } => {
                 write!(f, "{leg} leg debits and credits the same account")
             }
+            Self::ZeroLedger { leg } => {
+                write!(f, "{leg} ledger must not be zero")
+            }
             Self::MissingFeeAccount => {
                 write!(f, "a positive fee requires a fee account")
             }
@@ -149,6 +169,10 @@ impl std::fmt::Display for ConvertError {
             Self::DuplicateTransferId { id } => {
                 write!(f, "transfer ID {id} is used by more than one leg")
             }
+            Self::InvalidId { kind, role, id } => write!(
+                f,
+                "invalid {kind} ID {id} for {role}: zero and u128::MAX are reserved"
+            ),
         }
     }
 }
@@ -421,8 +445,11 @@ pub struct ConversionAmounts {
 /// request with the typed reason. Pure: no ledger or store access.
 ///
 /// Validation order is fixed so callers see deterministic errors:
-/// amount bounds, rate/scale/fee terms, account shape, fee-account
-/// presence, then transfer-ID shape.
+/// amount bounds, rate/scale/fee terms, ledger shape,
+/// account-ID validity (caller source, LP source, optional fee
+/// account, LP destination, caller destination), account shape,
+/// fee-account presence, then transfer-ID count, validity, and
+/// uniqueness (in leg order).
 ///
 /// # Errors
 ///
@@ -456,6 +483,19 @@ pub fn build_conversion_batch(
         Some(fee_bps) => fee_amount(request.amount_in, fee_bps)?,
         None => 0,
     };
+    if request.source_ledger == 0 {
+        return Err(ConvertError::ZeroLedger { leg: "source" });
+    }
+    if request.dest_ledger == 0 {
+        return Err(ConvertError::ZeroLedger { leg: "destination" });
+    }
+    validate_id("account", "caller_source", request.caller_source)?;
+    validate_id("account", "lp_source", request.lp_source)?;
+    if let Some(fee_account) = request.fee_account {
+        validate_id("account", "fee_account", fee_account)?;
+    }
+    validate_id("account", "lp_dest", request.lp_dest)?;
+    validate_id("account", "caller_dest", request.caller_dest)?;
     if request.caller_source == request.lp_source {
         return Err(ConvertError::SameAccount { leg: "source" });
     }
@@ -479,7 +519,13 @@ pub fn build_conversion_batch(
         });
     }
     let mut seen = std::collections::HashSet::with_capacity(leg_count);
-    for id in &request.transfer_ids {
+    for (index, id) in request.transfer_ids.iter().enumerate() {
+        let role = match (fee > 0, index) {
+            (_, 0) => "source",
+            (true, 1) => "fee",
+            _ => "destination",
+        };
+        validate_id("transfer", role, *id)?;
         if !seen.insert(id) {
             return Err(ConvertError::DuplicateTransferId { id: *id });
         }
@@ -533,6 +579,13 @@ pub fn build_conversion_batch(
         total_source_debit,
     };
     Ok((amounts, legs))
+}
+
+fn validate_id(kind: &'static str, role: &'static str, id: u128) -> Result<(), ConvertError> {
+    if id == 0 || id == u128::MAX {
+        return Err(ConvertError::InvalidId { kind, role, id });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -823,6 +876,123 @@ mod tests {
         assert!(legs[1].linked);
         assert_eq!(legs[2].id, 33);
         assert!(!legs[2].linked);
+    }
+
+    #[test]
+    fn batch_rejects_zero_ledgers_but_builds_for_sane_ledgers() {
+        // Oracle: the ledger layer itself — no account can exist on
+        // ledger 0 (LedgerMustNotBeZero), so a batch naming ledger 0
+        // for either side can never post and must be rejected here.
+        let mut req = request();
+        req.source_ledger = 0;
+        assert_eq!(
+            build_conversion_batch(&req),
+            Err(ConvertError::ZeroLedger { leg: "source" })
+        );
+
+        let mut req = request();
+        req.dest_ledger = 0;
+        assert_eq!(
+            build_conversion_batch(&req),
+            Err(ConvertError::ZeroLedger { leg: "destination" })
+        );
+
+        // Control: the sane 100/200 request builds the identical batch
+        // the happy-path test pins (ledgers copied onto the legs).
+        let (amounts, legs) = build_conversion_batch(&request()).expect("sane ledgers");
+        assert_eq!(amounts.amount_out, 1_500);
+        assert_eq!(legs[0].ledger, 100);
+        assert_eq!(legs[1].ledger, 200);
+    }
+
+    #[test]
+    fn rejects_reserved_transfer_ids_in_every_leg_position() {
+        for (index, role) in [(0, "source"), (1, "fee"), (2, "destination")] {
+            for id in [0, u128::MAX] {
+                let mut req = request();
+                req.transfer_ids = vec![11, 22, 33];
+                req.fee_bps = Some(50);
+                req.fee_account = Some(9);
+                req.transfer_ids[index] = id;
+                assert_eq!(
+                    build_conversion_batch(&req),
+                    Err(ConvertError::InvalidId {
+                        kind: "transfer",
+                        role,
+                        id,
+                    })
+                );
+            }
+        }
+
+        // The ordinary IDs still produce the expected control batch.
+        let req = request();
+        let (amounts, legs) = build_conversion_batch(&req).expect("sane IDs build");
+        assert_eq!(amounts.amount_out, 1_500);
+        assert_eq!(legs.iter().map(|leg| leg.id).collect::<Vec<_>>(), [11, 22]);
+    }
+
+    #[test]
+    fn rejects_reserved_account_ids_in_every_role() {
+        for id in [0, u128::MAX] {
+            let mut req = request();
+            req.fee_bps = Some(50);
+            req.transfer_ids = vec![11, 22, 33];
+
+            req.caller_source = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "caller_source",
+                    id,
+                })
+            );
+
+            req.caller_source = 1;
+            req.lp_source = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "lp_source",
+                    id,
+                })
+            );
+
+            req.lp_source = 2;
+            req.fee_account = Some(id);
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "fee_account",
+                    id,
+                })
+            );
+
+            req.fee_account = Some(9);
+            req.lp_dest = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "lp_dest",
+                    id,
+                })
+            );
+
+            req.lp_dest = 3;
+            req.caller_dest = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "caller_dest",
+                    id,
+                })
+            );
+        }
     }
 
     #[test]

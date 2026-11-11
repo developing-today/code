@@ -25,8 +25,10 @@ import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
 import {
   buildNotificationCandidates,
+  classTestObjectRef,
   decideNotification,
   nextNotificationDigestAt,
+  notificationTestLanding,
   NOTIFICATION_CLASS_DEFAULTS,
   type NotificationHistoryEntry,
   type NotificationSnapshot,
@@ -621,6 +623,84 @@ export class AlertsStore {
   async listSends(): Promise<NotificationSendRow[]> {
     return this.db.query<NotificationSendRow>(`select * from alerts.notification_sends`);
   }
+}
+
+/** Per-class test sends (#3318): the preferences page's send-test
+ * button per class. The payload carries the class under test and
+ * lands per the design §3 deep-link contract
+ * (notificationTestLanding): a real candidate's own triage-capable
+ * URL when one is supplied, otherwise the test item's class view —
+ * never the origin root, and the digest test is the only
+ * list-shaped landing (attention filtered to its refs). */
+export function buildClassTestPayload(
+  cls: string,
+  origin: string,
+  candidate?: { objectRef: string; title: string; url: string } | null,
+): PushPayload {
+  return {
+    class: cls,
+    objectRef: candidate?.objectRef ?? classTestObjectRef(cls),
+    url: notificationTestLanding(cls, origin, candidate),
+    title: `Test ${cls} — PM Stack`,
+    body: candidate
+      ? `Test ${cls} notification for ${candidate.title}. If you can read this, ${cls} delivery and its deep link work on this device.`
+      : `Test ${cls} notification (test item ${classTestObjectRef(cls)}). If you can read this, ${cls} delivery and its deep link work on this device.`,
+  };
+}
+
+export interface ClassTestPushSummary extends TestPushSummary {
+  cls: string;
+  /** Subscriptions the class toggle let through (all of them for
+   * the digest test, which is a delivery shape, not a class). */
+  eligible: number;
+  /** The deep-link landing the test notification opens. */
+  url: string;
+}
+
+/**
+ * Send the per-class test push. Unlike the generic test, this one
+ * honours the stored preference: a subscription whose class toggle
+ * is off receives nothing — the same classEnabled check the engine
+ * applies, so the test proves the toggle's effect. One sends-ledger
+ * row per attempted subscription, under the tested class with the
+ * test object ref. The sender is injectable, like sendTestPush.
+ */
+export async function sendClassTestPush(
+  store: Pick<AlertsStore, "listSubscriptions" | "logSend" | "noteSubscriptionGone" | "noteSubscriptionAlive">,
+  origin: string,
+  cls: string,
+  send: typeof sendPush = sendPush,
+  candidate?: { objectRef: string; title: string; url: string } | null,
+): Promise<ClassTestPushSummary> {
+  const payload = buildClassTestPayload(cls, origin, candidate);
+  const subs = await store.listSubscriptions();
+  const targets = cls === "digest" ? subs : subs.filter((sub) => classEnabled(sub, cls));
+  const summary: ClassTestPushSummary = {
+    subscriptions: subs.length,
+    eligible: targets.length,
+    sent: 0,
+    gone: 0,
+    errors: 0,
+    cls,
+    url: payload.url,
+  };
+  for (const sub of targets) {
+    const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+    const outcome = await send(target, payload);
+    if (outcome.ok) {
+      summary.sent += 1;
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "sent" });
+      await store.noteSubscriptionAlive(sub.endpoint);
+    } else if (outcome.gone) {
+      summary.gone += 1;
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "gone" });
+      await store.noteSubscriptionGone(sub.endpoint);
+    } else {
+      summary.errors += 1;
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "error" });
+    }
+  }
+  return summary;
 }
 
 /** The test alert (#3676 follow-up, Drew 2026-11-01): the /alerts

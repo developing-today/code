@@ -56,3 +56,24 @@ export function applyBoardDonePolicy(items: BoardItem[], now = Date.now()): Boar
     return true;
   });
 }
+
+/**
+ * The done cards that actually render in the collapsed strip (#1179):
+ * every surviving done card, or the newest `limit` when the caller has
+ * not asked for the full strip (`?done=all`). Kept here next to the
+ * age-out policy so the HTML board and `/api/board.json` can never
+ * disagree about which done cards are "on the board" — `#5082` was
+ * exactly that disagreement: the JSON endpoint shipped every card and
+ * every linked item (~2.4 MB) while the page rendered 100.
+ */
+export function selectVisibleDoneCards(
+  done: readonly BoardItem[],
+  opts: { showAll: boolean; limit?: number },
+): BoardItem[] {
+  if (opts.showAll) return [...done];
+  const limit = opts.limit ?? DONE_STRIP_RENDER_LIMIT;
+  if (done.length <= limit) return [...done];
+  return [...done]
+    .sort((a, b) => (Date.parse(b.updatedAt ?? "") || 0) - (Date.parse(a.updatedAt ?? "") || 0))
+    .slice(0, limit);
+}

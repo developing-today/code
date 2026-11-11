@@ -83,6 +83,13 @@ export interface Config {
   coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
+  /** The standing OpenCode server's own state file (service-prod.json):
+   * url + password for the server the fleet actually runs on. The
+   * aggregator reads it as the second laptop attention leg (#1116) —
+   * the OpenChamber-managed server it used to read has been gone since
+   * 2026-10-29, which left attention single-legged on the collector
+   * feed until the 2026-11-10 fixture incident. */
+  opencodeServerStateFile: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -197,6 +204,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
+    ),
+    opencodeServerStateFile: s(
+      env.PM_AGG_OPENCODE_SERVER_STATE,
+      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),

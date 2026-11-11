@@ -7,7 +7,8 @@
 //! a vector pool with the caller's sensitivity ceiling and
 //! filters applied **inside the branch queries** — before any
 //! ranking — and [`run_search`] fuses the pools with reciprocal
-//! rank fusion (k = 10, pool 100/branch by default).
+//! rank fusion using the versioned per-query contract (defaults in
+//! atlas-proto's query-parameters-v1.json).
 //!
 //! Vector strategies all live behind the backend:
 //! [`VectorBackend::Scan`] (exact `vector_distance_cos` over the
@@ -51,7 +52,7 @@ pub use eval::{
     select_best_signal,
 };
 pub use filters::{Filters, Sensitivity};
-pub use fusion::{FusedEntry, RRF_K};
+pub use fusion::FusedEntry;
 pub use local::LocalBackend;
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, run_get_chunk,

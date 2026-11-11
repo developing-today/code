@@ -28,7 +28,7 @@ in the
 - `common/chain.rs`: the event decoder's contract, shared the same way.
 - `regressions/`: checked-in failing cases. See its [README](regressions/README.md).
 
-## Planted-bug check (#1395)
+## Planted-bug check (#1395, #1421)
 
 The plan of record (P2.3/P2.8) requires more than property tests: a planted
 bug in the voiding/frontier logic must actually fail the suites, so the
@@ -63,6 +63,14 @@ suites cannot silently pass a broken implementation.
     `CausalIndex::combine`, `crates/id-core/src/membership/frontier.rs`).
     Caught by the `membership::frontier` unit tests and
     `membership_properties` / `membership_scenarios`.
+  - `tag-fold-clear.patch`: the causal-past filter in `live_claims`
+    (`src/tag_claims.rs`) is inverted, so a clear removes exactly the
+    claims its author had NOT seen and keeps the ones it had — both
+    halves of the tag observed-remove rule (plan P5.1, §13 layer 11,
+    #1421). Caught by the `tag_claims` unit tests in `src/tag_claims.rs`
+    (the compacted-fold pair) and by the `tag_claims` / `tag_index`
+    integration suites (the live-set oracle property under any delivery
+    order and the compacted-fold agreement property).
 - Exit 0 means baseline green and every planted bug caught; exit 1 names a
   mutation that survived (a real test gap); exit 2 means the baseline is
   red, a patch no longer applies, or a mutated file was dirty.

@@ -64,12 +64,12 @@ describe("resolveTooltipDisplay", () => {
     expect(resolveTooltipDisplay({ mode: "minimal", now: NOW })).toBe("minimal");
   });
   it("minimal mode shows the tooltip only at hover >= 1s", () => {
-    expect(
-      resolveTooltipDisplay({ mode: "minimal", hoverSince: NOW - (HOVER_TOOLTIP_DELAY_MS - 1), now: NOW }),
-    ).toBe("minimal");
-    expect(
-      resolveTooltipDisplay({ mode: "minimal", hoverSince: NOW - HOVER_TOOLTIP_DELAY_MS, now: NOW }),
-    ).toBe("tooltip");
+    expect(resolveTooltipDisplay({ mode: "minimal", hoverSince: NOW - (HOVER_TOOLTIP_DELAY_MS - 1), now: NOW })).toBe(
+      "minimal",
+    );
+    expect(resolveTooltipDisplay({ mode: "minimal", hoverSince: NOW - HOVER_TOOLTIP_DELAY_MS, now: NOW })).toBe(
+      "tooltip",
+    );
   });
   it("hidden mode hides unpinned cursors but still tracks them", () => {
     expect(resolveTooltipDisplay({ mode: "hidden", now: NOW })).toBe("hidden");
@@ -84,18 +84,14 @@ describe("resolveTooltipDisplay", () => {
   });
   it("the enlarge chain overrides the minimal-mode resting display", () => {
     expect(resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW, now: NOW })).toBe("big");
-    expect(resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW - ENLARGE_STEP_MS, now: NOW })).toBe(
-      "tooltip",
-    );
-    expect(resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW - 2 * ENLARGE_STEP_MS, now: NOW })).toBe(
-      "minimal",
-    );
+    expect(resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW - ENLARGE_STEP_MS, now: NOW })).toBe("tooltip");
+    expect(resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW - 2 * ENLARGE_STEP_MS, now: NOW })).toBe("minimal");
   });
   it("an elapsed enlarge chain rests at minimal in full mode and during a long minimal-mode hover", () => {
     expect(resolveTooltipDisplay({ mode: "full", enlargedAt: NOW - 5_000, now: NOW })).toBe("minimal");
-    expect(
-      resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW - 5_000, hoverSince: NOW - 2_000, now: NOW }),
-    ).toBe("minimal");
+    expect(resolveTooltipDisplay({ mode: "minimal", enlargedAt: NOW - 5_000, hoverSince: NOW - 2_000, now: NOW })).toBe(
+      "minimal",
+    );
   });
   it("hidden mode without a pin suppresses even an enlarged cursor", () => {
     expect(resolveTooltipDisplay({ mode: "hidden", enlargedAt: NOW, now: NOW })).toBe("hidden");
@@ -157,10 +153,7 @@ describe("cursor lifecycle logging (#1790 slice 3)", () => {
   });
 
   it("reports both events for a cursor first observed past the minimum", () => {
-    expect(lifecycleEventsForAge(FADE_END_MS + 1, new Set())).toEqual([
-      "first-inactive",
-      "minimum-reached",
-    ]);
+    expect(lifecycleEventsForAge(FADE_END_MS + 1, new Set())).toEqual(["first-inactive", "minimum-reached"]);
   });
 
   it("never repeats an event already logged", () => {
@@ -170,8 +163,6 @@ describe("cursor lifecycle logging (#1790 slice 3)", () => {
 
   it("formats one structured log line, with the name when known", () => {
     expect(formatCursorLifecycleLog("removed", 42)).toBe("[cursor-lifecycle] removed client=42");
-    expect(formatCursorLifecycleLog("hover", "abc", "drew")).toBe(
-      "[cursor-lifecycle] hover client=abc name=drew",
-    );
+    expect(formatCursorLifecycleLog("hover", "abc", "drew")).toBe("[cursor-lifecycle] hover client=abc name=drew");
   });
 });

@@ -480,10 +480,53 @@ def cmd_create(args) -> int:
             f"create in {args.repo} returned no issue number (response keys: "
             f"{sorted(created) if isinstance(created, dict) else type(created)})"
         )
-    # Verify by readback — an unverified create counts as a failure.
+    # Verify by readback — an unverified create counts as a failure. The
+    # README promises the comparison covers (title, body, state) and the
+    # labels that were sent (#6901): a create whose body was dropped or
+    # mangled, or whose labels were not applied, must not report success.
     _, got = http("GET", f"/repos/{args.repo}/issues/{number}", token)
     if got.get("title") != title or got.get("number") != number:
         die(f"readback mismatch for {args.repo}#{number}: title={got.get('title')!r}")
+    readback_body = got.get("body")
+    if readback_body != body:
+        sent_chars = len(body) if isinstance(body, str) else "n/a"
+        readback_chars = (
+            len(readback_body) if isinstance(readback_body, str) else "n/a"
+        )
+        die(
+            f"readback mismatch for {args.repo}#{number}: body sent "
+            f"{sent_chars} chars, read back {readback_chars} chars "
+            f"(body={_shape_name(readback_body)})"
+        )
+    if got.get("state") != "open":
+        die(
+            f"readback mismatch for {args.repo}#{number}: state={got.get('state')!r}, "
+            f"expected 'open' for a freshly created issue"
+        )
+    if args.label:
+        readback_labels = got.get("labels", [])
+        if not isinstance(readback_labels, list):
+            die(
+                f"readback mismatch for {args.repo}#{number}: labels have invalid "
+                f"shape (expected array, got {_shape_name(readback_labels)})"
+            )
+        have = set()
+        for label in readback_labels:
+            name = label if isinstance(label, str) else (
+                label.get("name") if isinstance(label, dict) else None
+            )
+            if not isinstance(name, str):
+                die(
+                    f"readback mismatch for {args.repo}#{number}: label entry has "
+                    f"no string name (got {_shape_name(label)})"
+                )
+            have.add(name)
+        missing = sorted(set(args.label) - have)
+        if missing:
+            die(
+                f"readback mismatch for {args.repo}#{number}: labels not applied: "
+                f"{missing} (read back {sorted(have)})"
+            )
     ledger_append("create", args.repo, str(number), title)
     print(f"created+verified: {args.repo}#{number} {created.get('html_url')}")
     return 0

@@ -180,6 +180,9 @@
             CARGO_INCREMENTAL = "0";
             CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
             CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+            # Fake-compiler probe tests need a real interpreter for their
+            # shebang in the sandbox, where /bin/sh does not exist (#5926).
+            ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs =
@@ -419,6 +422,14 @@
           # noise (absolute source path, body serialisation), so this is
           # green on any correctly regenerated file.
           just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+
+          # Regression pins for scripts/build.sh variant handling (#6869):
+          # the fixture suite stubs cargo and exercises every variant, so a
+          # variant-specific regression fails here instead of in a just recipe.
+          build-sh-test = mkCheckWith {
+            name = "build-sh-test";
+            checkCommand = "bash scripts/build-sh-test.sh";
+          };
 
           # Exercise the same alias-admission function used by apps against
           # synthetic recipes/aliases, including dangling targets and names
@@ -816,6 +827,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
@@ -865,6 +879,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh";

@@ -694,16 +694,31 @@ fn apply_rlimits() -> std::io::Result<()> {
 /// The exact nightly matters: a different one produces a different module
 /// layout (found the hard way). `id world doctor` and the compile path agree
 /// on the toolchain by both going through this function.
+/// The homes under which `locate_roc` probes for the pinned nightly:
+/// exactly the non-empty `HOME`, or nothing. Pure, so the contract
+/// probe matrix (unset and empty both yield no candidate; set yields
+/// exactly that home) is unit-testable without touching the process
+/// environment.
+fn roc_home_candidates(home: Option<String>) -> Vec<String> {
+    match home {
+        Some(home) if !home.is_empty() => vec![home],
+        _ => Vec::new(),
+    }
+}
+
 pub fn locate_roc() -> Result<String> {
     if let Ok(path) = std::env::var("ID_ROC_BIN") {
         return Ok(path);
     }
     let tag = "nightly-2026-10-04-130536d";
     let version = tag.trim_start_matches("nightly-");
-    for home in [
-        std::env::var("HOME").unwrap_or_default(),
-        "/home/user".to_owned(),
-    ] {
+    // Home-resolution contract (issues #5762 / #5763): the pinned-roc
+    // probe runs only under a non-empty HOME. The old candidate list
+    // probed a root-anchored path (empty HOME via unwrap_or_default)
+    // and a hardcoded "/home/user" - both are substitute directories
+    // the contract bans. With HOME unset/empty the probe is skipped
+    // and the PATH lookup below decides, so no invented home is used.
+    for home in roc_home_candidates(std::env::var("HOME").ok()) {
         let path = format!(
             "{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc"
         );
@@ -722,6 +737,20 @@ pub fn locate_roc() -> Result<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roc_home_candidates_follow_the_home_contract() {
+        // Oracle: the home-resolution contract (issues #5762 / #5763) -
+        // unset and empty HOME both yield no probe candidate (never a
+        // root-anchored "" or a hardcoded user), and a set HOME yields
+        // exactly itself, so the pinned-roc path is unchanged.
+        assert!(roc_home_candidates(None).is_empty());
+        assert!(roc_home_candidates(Some(String::new())).is_empty());
+        assert_eq!(
+            roc_home_candidates(Some("/home/someone".to_owned())),
+            vec!["/home/someone".to_owned()]
+        );
+    }
 
     fn spec(files: Vec<(&str, &str)>) -> CompileSpec {
         CompileSpec {
@@ -777,20 +806,43 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn fake_compiler(script: &str) -> (tempfile::TempDir, PathBuf) {
+    fn fake_compiler(script: &str) -> Option<(tempfile::TempDir, PathBuf)> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let is_executable = |path: &Path| {
+            std::fs::metadata(path).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        };
+        let interpreter = std::env::var_os("ID_TEST_FAKE_SH")
+            .map(PathBuf::from)
+            .filter(|path| is_executable(path))
+            .or_else(|| {
+                let path = PathBuf::from("/bin/sh");
+                is_executable(&path).then_some(path)
+            });
+        let Some(interpreter) = interpreter else {
+            eprintln!(
+                "skipping fake compiler probe test: neither ID_TEST_FAKE_SH nor /bin/sh is executable"
+            );
+            return None;
+        };
+
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("fake-roc");
+        let script = format!("#!{}\n{script}", interpreter.display());
         std::fs::write(&path, script).expect("write fake compiler");
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake compiler");
-        (dir, path)
+        Some((dir, path))
     }
 
     #[cfg(unix)]
     #[test]
     fn version_probe_records_the_reported_version() {
-        let (_dir, bin) = fake_compiler("#!/bin/sh\necho 'roc version 9.9-test'\n");
+        let Some((_dir, bin)) = fake_compiler("echo 'roc version 9.9-test'\n") else {
+            return;
+        };
         assert_eq!(
             probe_compiler_version(&bin, Duration::from_secs(5)),
             "roc version 9.9-test"
@@ -803,7 +855,9 @@ mod tests {
         // A compiler that hangs while reporting its version must be
         // killed at the probe bound and recorded as unavailable, not
         // block the compile forever (Codex P2 on PR #4263).
-        let (_dir, bin) = fake_compiler("#!/bin/sh\nsleep 30\n");
+        let Some((_dir, bin)) = fake_compiler("sleep 30\n") else {
+            return;
+        };
         let started = std::time::Instant::now();
         assert_eq!(probe_compiler_version(&bin, Duration::from_millis(200)), "");
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -812,7 +866,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn version_probe_failure_records_empty() {
-        let (_dir, bin) = fake_compiler("#!/bin/sh\nexit 3\n");
+        let Some((_dir, bin)) = fake_compiler("exit 3\n") else {
+            return;
+        };
         assert_eq!(probe_compiler_version(&bin, Duration::from_secs(5)), "");
     }
 

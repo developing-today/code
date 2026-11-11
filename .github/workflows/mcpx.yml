@@ -30,9 +30,10 @@
 # tiny-budget demo gates whatever the dispatch ran.
 # ────────────────────────────────────────────────────────────────────
 name: mcpx
+# CI tier policy: see .github/ci-policy.md
 
-# Builds mcpx on every change to it, and repairs the one thing a dependency
-# bot cannot: the Nix vendorHash.
+# Builds mcpx for package and dogfood-plugin changes, and repairs the one
+# thing a dependency bot cannot: the Nix vendorHash.
 #
 # Renovate updates go.mod and go.sum correctly. It has no way to know the hash
 # of the vendored module tree, so every Go dependency bump it opens leaves the
@@ -52,6 +53,23 @@ name: mcpx
 # (#297).
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      # The seed store is data the collector bot files (#1953): its
+      # commits must never re-trigger this workflow (the collector
+      # also marks its commits [skip ci] — both addendum fixes).
+      - "!pkgs/mcpx/testdata/seeds/**"
+      - ".opencode/plugin/**"
+      # Keep the workflow self-tested, including this trigger restoration.
+      - ".github/workflows/mcpx.yml"
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - "!pkgs/mcpx/testdata/seeds/**"
+      - ".opencode/plugin/**"
+      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"
@@ -101,6 +119,7 @@ jobs:
       - name: Check the dogfood plugin copy is in sync
         run: |
           diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff -r pkgs/mcpx/plugin/core .opencode/plugin/core
           diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
 
   seed:
@@ -178,6 +197,7 @@ jobs:
       - name: Check the dogfood plugin copy is in sync
         run: |
           diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff -r pkgs/mcpx/plugin/core .opencode/plugin/core
           diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
 
       - uses: actions/setup-go@v7
@@ -292,7 +312,7 @@ jobs:
       # test fails CI instead of never running (#1978).
       - name: Plugin tests (bun)
         working-directory: pkgs/mcpx
-        run: bun test plugin/opencode/mcpx/
+        run: bun test plugin/opencode/mcpx/ plugin/core/
 
       - name: Upload runtime feature coverage ledger
         if: always()
@@ -430,7 +450,7 @@ jobs:
 
       - name: bun test
         working-directory: pkgs/mcpx
-        run: bun test plugin/opencode/mcpx/
+        run: bun test plugin/opencode/mcpx/ plugin/core/
 
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)
