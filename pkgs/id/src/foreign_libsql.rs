@@ -830,11 +830,18 @@ impl Transport for HttpTransport {
     }
 }
 
+// #8504: chunk framing is parsed on byte slices and the chunk size is a
+// byte count — never a string boundary. The old code lossy-decoded the whole
+// response first, so a multi-byte UTF-8 sequence split across chunks became
+// replacement characters and slicing at the byte count panicked. Only the
+// fully assembled body is decoded (lossy, the prior body contract).
 fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> {
-    let text = String::from_utf8_lossy(raw);
-    let (head, body) = text
-        .split_once("\r\n\r\n")
+    let head_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
         .ok_or_else(|| TransportError::Io("response has no header block".to_owned()))?;
+    let head = String::from_utf8_lossy(&raw[..head_end]);
+    let body_bytes = &raw[head_end + 4..];
     let status_line = head.lines().next().unwrap_or_default();
     let status: u16 = status_line
         .split_whitespace()
@@ -845,32 +852,37 @@ fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> 
         line.to_ascii_lowercase().starts_with("transfer-encoding:")
             && line.to_ascii_lowercase().contains("chunked")
     });
-    let body = if chunked {
-        dechunk(body)?
+    let body_bytes = if chunked {
+        dechunk(body_bytes)?
     } else {
-        body.to_owned()
+        body_bytes.to_vec()
     };
+    let body = String::from_utf8_lossy(&body_bytes).into_owned();
     Ok(TransportResponse { status, body })
 }
 
-fn dechunk(body: &str) -> Result<String, TransportError> {
-    let mut out = String::new();
+fn dechunk(body: &[u8]) -> Result<Vec<u8>, TransportError> {
+    let mut out = Vec::new();
     let mut rest = body;
     loop {
-        let (size_line, after) = rest
-            .split_once("\r\n")
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
             .ok_or_else(|| TransportError::Io("bad chunk framing".to_owned()))?;
+        let size_line = std::str::from_utf8(&rest[..line_end])
+            .map_err(|_| TransportError::Io("bad chunk size".to_owned()))?;
         let size = usize::from_str_radix(size_line.trim(), 16)
             .map_err(|_| TransportError::Io("bad chunk size".to_owned()))?;
         if size == 0 {
             return Ok(out);
         }
+        let after = &rest[line_end + 2..];
         if after.len() < size {
             return Err(TransportError::Io("short chunk".to_owned()));
         }
-        out.push_str(&after[..size]);
+        out.extend_from_slice(&after[..size]);
         rest = &after[size..];
-        rest = rest.strip_prefix("\r\n").unwrap_or(rest);
+        rest = rest.strip_prefix(b"\r\n").unwrap_or(rest);
     }
 }
 
@@ -1235,6 +1247,48 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     use super::*;
+
+    /// Oracle: #8504 - chunk sizes are byte counts, so framing is parsed
+    /// on byte slices and UTF-8 is decoded only after the body is fully
+    /// assembled: a multi-byte sequence split across chunks round-trips,
+    /// and malformed framing returns a transport error, never a panic.
+    #[test]
+    fn test_chunked_body_decodes_utf8_split_across_chunks() {
+        let mut raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        // U+00E9 is 0xC3 0xA9 in UTF-8; ship it as two one-byte chunks.
+        raw.extend_from_slice(b"1\r\n\xc3\r\n1\r\n\xa9\r\n0\r\n\r\n");
+        let response = parse_http_response(&raw).expect("split-UTF8 chunked body parses");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "\u{e9}");
+    }
+
+    #[test]
+    fn test_chunked_body_ordinary_chunks_round_trip() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let response = parse_http_response(raw).expect("ordinary chunked body parses");
+        assert_eq!(response.body, "Wikipedia");
+    }
+
+    #[test]
+    fn test_chunked_body_malformed_framing_errors_without_panic() {
+        let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        for body in [&b"zz\r\nabc\r\n0\r\n\r\n"[..], b"4\r\nWi", b"4"] {
+            let mut raw = head.to_vec();
+            raw.extend_from_slice(body);
+            assert!(
+                parse_http_response(&raw).is_err(),
+                "malformed framing must error: {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_chunked_body_keeps_utf8_intact() {
+        let mut raw = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+        raw.extend_from_slice("h\u{e9}llo".as_bytes());
+        let response = parse_http_response(&raw).expect("plain body parses");
+        assert_eq!(response.body, "h\u{e9}llo");
+    }
 
     fn sample_query() -> GrantedQuery {
         GrantedQuery {
