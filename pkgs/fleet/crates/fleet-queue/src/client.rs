@@ -2024,6 +2024,16 @@ fn claim_output(resp: &Value) -> (Value, i32) {
             return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
         }
     }
+    // #5757-A (Codex P2, PR #8493): a /claim-flow partial success
+    // must stay distinguishable in the machine-readable output —
+    // the stderr note alone leaves stdout consumers unable to tell
+    // a completed bind from an unbound claim. Carry the broker's
+    // claim_flow_partial marker on the printed row, alongside the
+    // claimed task's identity; the claim itself is not retried.
+    let mut row = row;
+    if let (Some(partial), Some(obj)) = (resp.get("claim_flow_partial"), row.as_object_mut()) {
+        obj.insert("claim_flow_partial".to_string(), partial.clone());
+    }
     (row, 0)
 }
 
@@ -3583,6 +3593,27 @@ mod tests {
         let full = json!({"row": {"id": 4242}, "lane_row": {}, "bind_row": {}});
         assert!(claim_flow_partial_note(&full).is_none());
         assert!(claim_flow_partial_note(&json!({"row": {"id": 1}})).is_none());
+    }
+
+    #[test]
+    fn claim_output_preserves_claim_flow_partial_marker() {
+        // #5757-A Codex P2 oracle (PR #8493): claim_output on a
+        // partial /claim-flow answer keeps claim_flow_partial in
+        // the printed JSON with the claimed task's identity and
+        // exit 0; a full success passes the row through untouched.
+        let partial = json!({
+            "row": {"id": 4242, "status": "claimed"},
+            "claim_flow_partial": {"step": "bind", "exit": 4, "error": "PGRST002 boom"},
+        });
+        let (out, code) = claim_output(&partial);
+        assert_eq!(code, 0);
+        assert_eq!(out["id"], 4242);
+        assert_eq!(out["claim_flow_partial"]["step"], "bind");
+        assert_eq!(out["claim_flow_partial"]["exit"], 4);
+        let full = json!({"row": {"id": 4242, "status": "claimed"}, "lane_row": {}, "bind_row": {}});
+        let (out, code) = claim_output(&full);
+        assert_eq!(code, 0);
+        assert!(out.get("claim_flow_partial").is_none());
     }
 
     #[test]
