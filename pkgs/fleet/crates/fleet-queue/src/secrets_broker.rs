@@ -7,9 +7,25 @@
 //! only; consumers reach it through the sandbox session proxy.
 //!
 //! Endpoints (header `X-Agent-Token` required except /health):
-//!   GET /health        -> {ok, secrets, last_refresh_unix, refreshing}
+//!   GET /health        -> {ok, secrets, last_refresh_unix, refreshing,
+//!                          oldest_secret_age_seconds}
 //!   GET /secrets       -> {names: [...]}
-//!   GET /secret/<name> -> {key, value} | 404 | 503 (not loaded yet)
+//!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
+//!                          source} | 404 | 503 (not loaded yet)
+//!
+//! Every cached value carries the time the broker last fetched it
+//! from Bitwarden (#6767), and /secret/<name> exposes that age plus
+//! the value's source (cache vs a just-now read-through), so a
+//! rotation runbook can tell whether it is verifying the broker or
+//! Bitwarden itself. A refresh installs per secret: fetches that
+//! succeed land immediately, a secret whose fetch fails keeps its
+//! previous value and age, and deletions follow the authoritative
+//! list — one broken fetch can no longer block every rotation in
+//! the vault the way the fail-whole install did (#6767, cf. #5504,
+//! whose no-eviction rule the per-secret install preserves). Only a
+//! refresh in which EVERY fetch fails keeps the whole previous
+//! cache untouched. A rotation therefore lands within one TTL of
+//! the edit, bounded and observable via the exposed age.
 //!
 //! A miss on a loaded cache is not final: the broker reads through
 //! to Bitwarden for that one name (single-flighted per name) and
@@ -30,8 +46,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use tiny_http::{Header, Response, Server, StatusCode};
 
+/// One cached secret: its value plus when the broker last fetched
+/// it from Bitwarden (#6767). The age is what lets a consumer (or a
+/// rotation runbook) distinguish "the broker is serving a value N
+/// seconds old" from "Bitwarden itself holds this value".
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CachedSecret {
+    value: String,
+    fetched_at_unix: u64,
+}
+
 struct State {
-    secrets: RwLock<HashMap<String, String>>,
+    secrets: RwLock<HashMap<String, CachedSecret>>,
     last_refresh: RwLock<Option<u64>>,
     refreshing: RwLock<bool>,
     /// In-flight read-through fetches, one gate per name (#6275):
@@ -168,11 +194,10 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
         serde_json::from_str(&list_raw).map_err(|e| format!("bws list not json: {e}"))?;
     let items: Vec<(String, String)> = parse_list_entries(&list)?;
     // Fetch values with a small worker pool over a shared index.
-    // Every per-item failure is counted: a refresh that could not fetch
-    // a listed secret must fail as a whole (the caller keeps serving the
-    // previous cache, per the stale-while-revalidate contract in run())
-    // instead of installing the partial map and evicting the secrets it
-    // failed to fetch (#5504).
+    // Every per-item failure is counted, and the install below is
+    // per secret (#6767): successes land, failures keep their
+    // secret's previous value — the #5504 no-eviction rule, applied
+    // per secret instead of failing the whole refresh.
     let total = items.len();
     let items = Arc::new(items);
     let idx = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -211,16 +236,109 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
         let _ = h.join();
     }
     let failed = failed.load(std::sync::atomic::Ordering::SeqCst);
-    if failed > 0 {
-        return Err(format!(
+    let fetched = got.read().unwrap().clone();
+    // Install per secret (#6767): the successes land, a failed fetch
+    // keeps its secret's previous value, and only a refresh in which
+    // EVERY fetch failed keeps the whole previous cache (the
+    // fail-whole tail this replaces let one broken fetch block every
+    // rotation in the vault indefinitely).
+    match install_refresh(state, &items, fetched, now_unix()) {
+        Some(outcome) => {
+            if outcome.kept_failed > 0 {
+                crate::log::info(
+                    "secrets-broker",
+                    &format!(
+                        "partial refresh: {failed} of {total} fetches failed; kept the previous values for {} secrets",
+                        outcome.kept_failed
+                    ),
+                );
+            }
+            Ok(outcome.total)
+        }
+        None => Err(format!(
             "{failed} of {total} secret fetches failed; keeping the previous cache"
-        ));
+        )),
     }
-    let map = got.read().unwrap().clone();
-    let n = map.len();
-    *state.secrets.write().unwrap() = map;
-    *state.last_refresh.write().unwrap() = Some(now_unix());
-    Ok(n)
+}
+
+/// What one refresh installed (#6767): how many listed secrets got a
+/// fresh value, how many kept their previous value because their
+/// fetch failed, how many cached names the authoritative list no
+/// longer carries, and the cache size after the install.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InstallOutcome {
+    installed: usize,
+    kept_failed: usize,
+    removed: usize,
+    total: usize,
+}
+
+/// Install one refresh's fetches into the cache, per secret (#6767).
+///
+/// - a listed secret whose fetch succeeded takes the new value and
+///   this refresh's timestamp;
+/// - a listed secret whose fetch failed keeps its previous value
+///   AND its previous timestamp — a failure never evicts and never
+///   makes a stale value look fresh (#5504's rule, per secret);
+/// - a cached name absent from the list is removed: the list is
+///   authoritative for existence (it parsed strictly, #6568, so a
+///   name is absent only because the vault no longer carries it);
+/// - if the list is non-empty but NOT ONE fetch succeeded, the
+///   refresh is a source outage, not news about the vault: nothing
+///   is installed or removed and the caller keeps the whole
+///   previous cache (returns None).
+fn install_refresh(
+    state: &Arc<State>,
+    listed: &[(String, String)],
+    fetched: HashMap<String, String>,
+    now: u64,
+) -> Option<InstallOutcome> {
+    if fetched.is_empty() && !listed.is_empty() {
+        return None;
+    }
+    let listed_keys: std::collections::HashSet<&str> =
+        listed.iter().map(|(_, key)| key.as_str()).collect();
+    let mut installed = 0;
+    let mut kept_failed = 0;
+    let (removed, total) = {
+        let mut secrets = state.secrets.write().unwrap();
+        let doomed: Vec<String> = secrets
+            .keys()
+            .filter(|k| !listed_keys.contains(k.as_str()))
+            .cloned()
+            .collect();
+        let removed = doomed.len();
+        for k in &doomed {
+            secrets.remove(k);
+        }
+        for (_, key) in listed {
+            match fetched.get(key) {
+                Some(v) => {
+                    secrets.insert(
+                        key.clone(),
+                        CachedSecret {
+                            value: v.clone(),
+                            fetched_at_unix: now,
+                        },
+                    );
+                    installed += 1;
+                }
+                None => {
+                    if secrets.contains_key(key) {
+                        kept_failed += 1;
+                    }
+                }
+            }
+        }
+        (removed, secrets.len())
+    };
+    *state.last_refresh.write().unwrap() = Some(now);
+    Some(InstallOutcome {
+        installed,
+        kept_failed,
+        removed,
+        total,
+    })
 }
 
 /// One name, straight from Bitwarden: resolve the key to its id via
@@ -263,8 +381,8 @@ fn fetch_through_with(
 ) -> Result<Option<String>, String> {
     // A refresh (or an earlier fetch) may have landed the value
     // since the caller missed.
-    if let Some(v) = state.secrets.read().unwrap().get(name) {
-        return Ok(Some(v.clone()));
+    if let Some(c) = state.secrets.read().unwrap().get(name) {
+        return Ok(Some(c.value.clone()));
     }
     // Join the in-flight fetch for this name, or become its leader.
     let (gate, leader) = {
@@ -291,11 +409,13 @@ fn fetch_through_with(
     let result = fetch(name);
     match &result {
         Ok(Some(v)) => {
-            state
-                .secrets
-                .write()
-                .unwrap()
-                .insert(name.to_string(), v.clone());
+            state.secrets.write().unwrap().insert(
+                name.to_string(),
+                CachedSecret {
+                    value: v.clone(),
+                    fetched_at_unix: now_unix(),
+                },
+            );
             crate::log::info(
                 "secrets-broker",
                 &format!("read-through: fetched {name:?} from Bitwarden on a cache miss"),
@@ -375,6 +495,14 @@ fn handle_request(
 ) -> (u16, Value) {
     let path = url.split('?').next().unwrap_or("").to_string();
     if method == "GET" && path == "/health" {
+        let now = now_unix();
+        let oldest_secret_age_seconds = state
+            .secrets
+            .read()
+            .unwrap()
+            .values()
+            .map(|c| now.saturating_sub(c.fetched_at_unix))
+            .max();
         (
             200,
             json!({
@@ -382,6 +510,7 @@ fn handle_request(
                 "secrets": state.secrets.read().unwrap().len(),
                 "last_refresh_unix": state.last_refresh.read().unwrap().clone(),
                 "refreshing": *state.refreshing.read().unwrap(),
+                "oldest_secret_age_seconds": oldest_secret_age_seconds,
             }),
         )
     } else if !token_matches(provided_token, token) {
@@ -401,7 +530,16 @@ fn handle_request(
         let name = url_decode(&name);
         let cached = state.secrets.read().unwrap().get(&name).cloned();
         match cached {
-            Some(v) => (200, json!({"key": name, "value": v})),
+            Some(c) => (
+                200,
+                json!({
+                    "key": name,
+                    "value": c.value,
+                    "fetched_at_unix": c.fetched_at_unix,
+                    "age_seconds": now_unix().saturating_sub(c.fetched_at_unix),
+                    "source": "cache",
+                }),
+            ),
             None => {
                 if state.last_refresh.read().unwrap().is_none() {
                     (503, json!({"error": "secrets not loaded yet"}))
@@ -413,7 +551,16 @@ fn handle_request(
                     // TTL tick. A source failure is a loud 502, never
                     // a silent 404-as-if-absent.
                     match fetch_through(state, &name) {
-                        Ok(Some(v)) => (200, json!({"key": name, "value": v})),
+                        Ok(Some(v)) => (
+                            200,
+                            json!({
+                                "key": name,
+                                "value": v,
+                                "fetched_at_unix": now_unix(),
+                                "age_seconds": 0,
+                                "source": "bitwarden-read-through",
+                            }),
+                        ),
                         Ok(None) => (404, json!({"error": "no such secret"})),
                         Err(_) => (502, json!({"error": "bitwarden read-through failed"})),
                     }
@@ -618,8 +765,8 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_through_with, parse_list_entries, pre_body_refusal, resolve_list_id, url_decode,
-        State,
+        fetch_through_with, handle_request, install_refresh, now_unix, parse_list_entries,
+        pre_body_refusal, resolve_list_id, url_decode, CachedSecret, State,
     };
 
     #[test]
@@ -674,7 +821,7 @@ mod tests {
                 .read()
                 .unwrap()
                 .get("new.name")
-                .map(String::as_str),
+                .map(|c| c.value.as_str()),
             Some("fixture-value-not-a-secret")
         );
         // Second read is a cache hit: no further fetch.
@@ -804,6 +951,105 @@ mod tests {
         let non_string = serde_json::json!([{"id": 7, "key": "alpha"}]);
         assert!(resolve_list_id(&non_string, "alpha").is_err());
         assert!(resolve_list_id(&serde_json::json!({"not": "array"}), "alpha").is_err());
+    }
+
+    fn seeded_state(entries: &[(&str, &str, u64)]) -> Arc<State> {
+        let state = empty_state();
+        {
+            let mut secrets = state.secrets.write().unwrap();
+            for (k, v, at) in entries {
+                secrets.insert(
+                    k.to_string(),
+                    CachedSecret {
+                        value: v.to_string(),
+                        fetched_at_unix: *at,
+                    },
+                );
+            }
+        }
+        state
+    }
+
+    #[test]
+    fn install_refresh_lands_successes_keeps_failures_and_drops_delisted() {
+        // #6767 oracle: one broken fetch must not block the rest of
+        // the vault. alpha rotates (lands, fresh timestamp), beta's
+        // fetch fails (previous value AND previous age kept — never
+        // evicted, never made to look fresh), gamma left the list
+        // (removed), delta is new (installed).
+        let state = seeded_state(&[
+            ("alpha", "old-alpha", 100),
+            ("beta", "old-beta", 100),
+            ("gamma", "old-gamma", 100),
+        ]);
+        let listed = vec![
+            ("id-a".to_string(), "alpha".to_string()),
+            ("id-b".to_string(), "beta".to_string()),
+            ("id-d".to_string(), "delta".to_string()),
+        ];
+        let fetched: HashMap<String, String> = [
+            ("alpha".to_string(), "new-alpha".to_string()),
+            ("delta".to_string(), "fresh-delta".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let outcome = install_refresh(&state, &listed, fetched, 200).expect("partial install");
+        assert_eq!(outcome.installed, 2);
+        assert_eq!(outcome.kept_failed, 1);
+        assert_eq!(outcome.removed, 1);
+        assert_eq!(outcome.total, 3);
+        let secrets = state.secrets.read().unwrap();
+        assert_eq!(
+            secrets.get("alpha"),
+            Some(&CachedSecret {
+                value: "new-alpha".to_string(),
+                fetched_at_unix: 200
+            })
+        );
+        assert_eq!(
+            secrets.get("beta"),
+            Some(&CachedSecret {
+                value: "old-beta".to_string(),
+                fetched_at_unix: 100
+            })
+        );
+        assert!(!secrets.contains_key("gamma"));
+        assert_eq!(secrets.get("delta").map(|c| c.fetched_at_unix), Some(200));
+        assert_eq!(*state.last_refresh.read().unwrap(), Some(200));
+    }
+
+    #[test]
+    fn install_refresh_with_zero_successes_keeps_the_whole_previous_cache() {
+        // A total fetch outage is not news about the vault: nothing
+        // installs and nothing is removed, not even a delisted name.
+        let state = seeded_state(&[("alpha", "old-alpha", 100), ("gamma", "old-gamma", 100)]);
+        let listed = vec![("id-a".to_string(), "alpha".to_string())];
+        assert_eq!(install_refresh(&state, &listed, HashMap::new(), 200), None);
+        let secrets = state.secrets.read().unwrap();
+        assert_eq!(secrets.len(), 2);
+        assert_eq!(
+            secrets.get("alpha"),
+            Some(&CachedSecret {
+                value: "old-alpha".to_string(),
+                fetched_at_unix: 100
+            })
+        );
+        assert_eq!(*state.last_refresh.read().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn secret_response_exposes_age_and_source() {
+        // #6767: a rotation runbook must be able to tell whether it
+        // is verifying the broker or Bitwarden — the cache response
+        // names its source and the value's fetch time and age.
+        let at = now_unix() - 120;
+        let state = seeded_state(&[("alpha", "fixture-value-not-a-secret", at)]);
+        let (status, body) = handle_request(&state, "tok", "GET", "/secret/alpha", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["source"], "cache");
+        assert_eq!(body["fetched_at_unix"], at);
+        let age = body["age_seconds"].as_u64().expect("age present");
+        assert!((120..130).contains(&age), "age {age}");
     }
 
     proptest! {
