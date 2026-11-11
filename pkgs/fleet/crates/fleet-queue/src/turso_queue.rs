@@ -5948,7 +5948,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
     sql += &format!(
-        " ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit} OFFSET {offset}"
+        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]

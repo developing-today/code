@@ -1013,7 +1013,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             let offset =
                 crate::client::list_offset_or_default(req.get("offset").and_then(|o| o.as_i64()));
             let mut path = format!(
-                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc&limit={limit}&offset={offset}",
+                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}",
                 quote(queue, "")
             );
             // #7871: --task narrows to one task id, so a worker can
