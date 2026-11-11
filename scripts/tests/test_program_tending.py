@@ -277,6 +277,78 @@ class Slice2EpicsTest(unittest.TestCase):
         self.assertEqual(section["actions"], [])
         self.assertIn("tended within 7 days", section["checked"][0]["disposition"])
 
+    def test_completion_proposal_suppressed_when_recently_tended(self):
+        epic = {
+            "number": 100,
+            "title": "Epic A",
+            "updated_at": "2026-11-10T00:00:00Z",
+            "labels": [],
+            "body": "- [x] #102 done child",
+        }
+        children = {
+            102: {"number": 102, "state": "closed", "title": "Done", "labels": []},
+        }
+        comments = [
+            {
+                "body": "completion <!-- program-tending:epics -->",
+                "created_at": "2026-11-10T00:00:00Z",
+            }
+        ]
+        with mock.patch.object(
+            pt, "_gh_api", self.fake_api(epic, children, comments)
+        ):
+            section = pt.section_epics(
+                ["developing-today/code"], False, self.now, 12
+            )
+        self.assertEqual(section["actions"], [])
+        self.assertIn("tended within 7 days", section["checked"][0]["disposition"])
+
+    def test_write_failure_isolated_per_repo(self):
+        epics = {
+            "aaa/one": {
+                "number": 100, "title": "Epic A",
+                "updated_at": "2026-10-20T00:00:00Z", "labels": [],
+                "body": "- [ ] #101 first child",
+            },
+            "bbb/two": {
+                "number": 200, "title": "Epic B",
+                "updated_at": "2026-10-20T00:00:00Z", "labels": [],
+                "body": "- [ ] #201 first child",
+            },
+        }
+        kids = {
+            ("aaa/one", 101): {"number": 101, "state": "open", "title": "First", "labels": []},
+            ("bbb/two", 201): {"number": 201, "state": "open", "title": "First", "labels": []},
+        }
+
+        def api(path):
+            for repo, epic in epics.items():
+                if path.startswith(f"/repos/{repo}/issues?"):
+                    return [epic]
+            if "/comments" in path:
+                return []
+            for (repo, number), child in kids.items():
+                if path == f"/repos/{repo}/issues/{number}":
+                    return [child]
+            return []
+
+        def write(path, payload):
+            if path.startswith("/repos/aaa/one/"):
+                raise RuntimeError("403 forbidden")
+            return {"id": 999}
+
+        with mock.patch.object(pt, "_gh_api", api):
+            with mock.patch.object(pt, "_gh_write", write):
+                section = pt.section_epics(
+                    ["aaa/one", "bbb/two"], True, self.now, 12
+                )
+        by_repo = {a["repo"]: a for a in section["actions"]}
+        self.assertIn("write failed", by_repo["aaa/one"]["error"])
+        self.assertEqual(by_repo["bbb/two"]["comment_id"], 999)
+        dispositions = {c["repo"]: c["disposition"] for c in section["checked"]}
+        self.assertIn("comment failed", dispositions["aaa/one"])
+        self.assertIn("posted", dispositions["bbb/two"])
+
     def test_live_epic_comment_posts(self):
         epic = {
             "number": 100,
@@ -385,6 +457,24 @@ class Slice2RoadmapsTest(unittest.TestCase):
         self.assertTrue(any("/comments" in c for c in calls))
         self.assertTrue(any("/labels" in c for c in calls))
 
+    def test_table_row_drift_detected(self):
+        planning = self.root / "planning" / "roadmaps"
+        planning.mkdir(parents=True)
+        (planning / "proj.md").write_text(
+            "# Project roadmap\n"
+            "## Now\n"
+            "| Item | Issue |\n"
+            "| --- | --- |\n"
+            "| Table landed thing | #201 |\n"
+            "| Table open thing | #203 |\n"
+        )
+        with mock.patch.object(pt, "_gh_api", self.fake_api):
+            certain, _ambiguous = pt._roadmap_drift(self.root)
+        texts = [e["text"] for e in certain]
+        self.assertTrue(any("Table landed thing" in x for x in texts), texts)
+        self.assertFalse(any("Table open thing" in x for x in texts), texts)
+        self.assertFalse(any(x.strip().startswith("| ---") for x in texts), texts)
+
     def test_remove_lines(self):
         target = self.root / "ROADMAP.md"
         pt._remove_lines(target, {3})
@@ -415,6 +505,58 @@ class GhApiSingleObjectTest(unittest.TestCase):
                 pt._gh_api("/repos/x/y/issues/7"),
                 [{"number": 7, "state": "open"}],
             )
+
+
+class RefsInTest(unittest.TestCase):
+    """Reference extraction (Codex regression, PR #8377)."""
+
+    def test_markdown_link_label_is_not_a_local_ref(self):
+        refs = pt._refs_in(
+            "[#42](https://github.com/other/repo/issues/42) and #43",
+            "developing-today/code",
+        )
+        self.assertEqual(
+            refs, [("other/repo", 42), ("developing-today/code", 43)]
+        )
+
+    def test_bare_and_url_refs_still_found(self):
+        refs = pt._refs_in(
+            "see #7 and https://github.com/a/b/pull/9",
+            "developing-today/code",
+        )
+        self.assertEqual(refs, [("a/b", 9), ("developing-today/code", 7)])
+
+
+class DriftPrGitIdentityTest(unittest.TestCase):
+    """The drift-PR commit carries an explicit git identity (PR #8377)."""
+
+    def test_commit_configures_identity(self):
+        import tempfile
+
+        calls = []
+
+        def fake_run_cmd(argv, cwd):
+            calls.append(argv)
+
+        proc = mock.MagicMock()
+        proc.stdout = "https://example.invalid/pr/1\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text("# Roadmap\nold line\n")
+            certain = [{
+                "file": "ROADMAP.md", "line": 2, "text": "old line",
+                "refs": ["developing-today/code#1:closed"],
+            }]
+            with mock.patch.object(pt, "_run_cmd", fake_run_cmd):
+                with mock.patch.object(
+                    pt.subprocess, "run", return_value=proc
+                ):
+                    pt._open_drift_pr(root, certain, "2026-11-11")
+        commit = next(a for a in calls if "commit" in a)
+        self.assertIn("user.name=github-actions[bot]", commit)
+        self.assertTrue(
+            any(x.startswith("user.email=") for x in commit), commit
+        )
 
 
 if __name__ == "__main__":

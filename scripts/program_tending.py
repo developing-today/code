@@ -83,8 +83,23 @@ ROADMAP_MARKER = "<!-- program-tending:roadmaps -->"
 
 _REF_RE = re.compile(r"(?<![\w/])#(\d+)")
 _URL_REF_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)")
+_MD_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]*\)")
 _CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*)$")
 _LIST_ITEM_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+\S")
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+
+
+def _is_roadmap_item(line: str) -> bool:
+    """A roadmap entry line: a list item, or a Markdown table row.
+
+    The project roadmaps under planning/roadmaps/ express their
+    Now/Next/Later entries as table rows, not bullets (Codex,
+    PR #8377); separator rows (|---|---|) are not entries.
+    """
+    if _LIST_ITEM_RE.match(line):
+        return True
+    return bool(_TABLE_ROW_RE.match(line)) and not _TABLE_SEP_RE.match(line)
 
 
 def _utcnow() -> str:
@@ -167,7 +182,12 @@ def _refs_in(text: str, default_repo: str) -> list[tuple[str, int]]:
         if key not in seen:
             seen.add(key)
             refs.append(key)
-    for match in _REF_RE.finditer(text):
+    # Bare refs are read from the text with Markdown links masked out:
+    # a link's label ("[#42](https://github.com/other/repo/issues/42)")
+    # is not a local reference -- the URL pass above already recorded
+    # the cross-repo ref, and counting the label too would invent a
+    # phantom local child (Codex, PR #8377).
+    for match in _REF_RE.finditer(_MD_LINK_RE.sub(" ", text)):
         key = (default_repo, int(match.group(1)))
         if key not in seen:
             seen.add(key)
@@ -311,7 +331,10 @@ def section_epics(
                 entry["disposition"] = "verified: no action due"
                 checked.append(entry)
                 continue
-            if kind == "status":
+            # The recent-tending suppression applies to both kinds: a
+            # completion proposal reposted daily would spam the epic
+            # and burn the shared action budget (Codex, PR #8377).
+            if kind in ("status", "completion"):
                 try:
                     comments = _gh_api(
                         f"/repos/{repo}/issues/{epic.get('number')}/comments"
@@ -340,10 +363,21 @@ def section_epics(
                 "live": False,
             }
             if live:
-                posted = _gh_write(
-                    f"/repos/{repo}/issues/{epic.get('number')}/comments",
-                    {"body": _epic_comment(kind, epic, children)},
-                )
+                try:
+                    posted = _gh_write(
+                        f"/repos/{repo}/issues/{epic.get('number')}/comments",
+                        {"body": _epic_comment(kind, epic, children)},
+                    )
+                except Exception as exc:  # noqa: BLE001 - isolate the failure
+                    # One repo's write failure (e.g. a token without
+                    # access there) must not abort the run before the
+                    # remaining repos and sections are processed
+                    # (Codex, PR #8377).
+                    action["error"] = f"write failed: {exc}"
+                    actions.append(action)
+                    entry["disposition"] = f"{kind} comment failed: {exc}"
+                    checked.append(entry)
+                    continue
                 action["live"] = True
                 action["comment_id"] = posted.get("id")
             actions.append(action)
@@ -413,7 +447,7 @@ def _roadmap_drift(root: Path) -> tuple[list[dict], list[dict]]:
             if line.startswith("##"):
                 kind = _section_kind(line)
                 continue
-            if kind == "neutral" or not _LIST_ITEM_RE.match(line):
+            if kind == "neutral" or not _is_roadmap_item(line):
                 continue
             refs = _refs_in(line, HOME_REPO)
             if not refs:
@@ -477,7 +511,13 @@ def _open_drift_pr(root: Path, certain: list[dict], today: str) -> dict:
     _run_cmd(["git", "checkout", "-b", branch], root)
     _run_cmd(["git", "add", *sorted(by_file)], root)
     _run_cmd(
-        ["git", "commit", "-m", "docs(roadmap): program-tending drift fix — remove landed forward items"],
+        [
+            "git",
+            "-c", "user.name=github-actions[bot]",
+            "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+            "commit", "-m",
+            "docs(roadmap): program-tending drift fix — remove landed forward items",
+        ],
         root,
     )
     _run_cmd(["git", "push", "-u", "origin", branch], root)

@@ -51,5 +51,10 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_program_tending.py' -v
       - name: Run program-tending (slice 2 sections live)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Live writes span all four fleet repos; this repo's
+          # GITHUB_TOKEN cannot write issues elsewhere (Codex,
+          # PR #8377). REPO_AUTOMATION_TOKEN is the fleet credential
+          # other cross-repo workflows here already use; fall back to
+          # the workflow token when it is not configured.
+          GH_TOKEN: ${{ secrets.REPO_AUTOMATION_TOKEN || github.token }}
         run: python3 -I scripts/program_tending.py --run --live
