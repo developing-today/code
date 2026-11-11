@@ -1842,11 +1842,23 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
     // both copies and added another (Codex P2 on PR #5949). Skip
     // the block's lines entirely; an unterminated leading `---` is
     // a thematic break, not front matter, and is not skipped.
-    let front_matter_end = if lines.first().is_some_and(|l| l.trim() == "---") {
+    // The boundaries must be the parser's own (comrak
+    // split_off_front_matter): the document must open with a line
+    // that is exactly the `---` delimiter (after an optional BOM),
+    // and only a later line that is exactly `---` closes the block.
+    // Accepting whitespace-trimmed delimiters or a `...` closing
+    // line skipped definitions comrak treats as real, so an orphan
+    // footnote referencing one saved its link as literal bracketed
+    // text and lost the destination (Codex P2 on PR #5949, fresh
+    // round).
+    let front_matter_end = if lines
+        .first()
+        .is_some_and(|l| l.trim_start_matches('\u{feff}') == "---")
+    {
         lines
             .iter()
             .skip(1)
-            .position(|l| l.trim() == "---" || l.trim() == "...")
+            .position(|l| *l == "---")
             .map(|pos| pos + 2)
             .unwrap_or(0)
     } else {
@@ -2525,7 +2537,15 @@ fn collect_used_link_reference_labels<'a>(
 /// The normalized label of a collected reference definition's
 /// source text, or None when the source opens no label.
 fn link_reference_definition_label(source: &str) -> Option<String> {
-    let stripped = strip_container_prefixes(source.trim_start());
+    // Strip the enclosing containers from EVERY line before keying:
+    // a multiline label inside a blockquote keeps its continuation
+    // lines' `>` under a first-line-only strip, so the key became
+    // `long > label` instead of `long label` and the unused quoted
+    // definition matched a different used label and was dropped
+    // (Codex P2 on PR #5949, fresh round).
+    // strip_reference_definition_containers removes exactly the
+    // first line's container levels from the following lines.
+    let stripped = strip_reference_definition_containers(source.trim_start());
     let start = stripped.find('[')?;
     let candidate = &stripped[start..];
     let close = find_label_close(candidate)?;
@@ -2573,23 +2593,69 @@ fn link_reference_use_label(source: &str) -> Option<String> {
 /// start of `source`, honouring nested brackets and backslash
 /// escapes; None when the label never closes.
 fn find_balanced_label_close(source: &str) -> Option<usize> {
+    // Brackets inside an inline code span are literal text, not
+    // link-text structure: in `[x`]...` the first `]` closes the
+    // code span, and treating it as the link-text boundary keyed
+    // the use as `x\`` instead of the explicit label, so the
+    // genuinely unused definition was discarded as consumed
+    // (Codex P2 on PR #5949, fresh round). A backtick run with no
+    // matching run is literal text and its brackets still count.
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
     let mut depth = 0usize;
     let mut escaped = false;
-    for (index, ch) in source.char_indices() {
+    let mut i = 0usize;
+    while i < chars.len() {
+        let (index, ch) = chars[i];
         if escaped {
             escaped = false;
+            i += 1;
             continue;
         }
         match ch {
-            '\\' => escaped = true,
-            '[' => depth += 1,
+            '\\' => {
+                escaped = true;
+                i += 1;
+            }
+            '`' => {
+                let run = chars[i..]
+                    .iter()
+                    .take_while(|(_, c)| *c == '`')
+                    .count();
+                // Find a closing run of exactly the same length.
+                let mut j = i + run;
+                let mut closed_at = None;
+                while j < chars.len() {
+                    if chars[j].1 == '`' {
+                        let r = chars[j..]
+                            .iter()
+                            .take_while(|(_, c)| *c == '`')
+                            .count();
+                        if r == run {
+                            closed_at = Some(j + r);
+                            break;
+                        }
+                        j += r;
+                    } else {
+                        j += 1;
+                    }
+                }
+                match closed_at {
+                    Some(end) => i = end,
+                    None => i += run,
+                }
+            }
+            '[' => {
+                depth += 1;
+                i += 1;
+            }
             ']' => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
                     return Some(index);
                 }
+                i += 1;
             }
-            _ => {}
+            _ => i += 1,
         }
     }
     None
@@ -8512,6 +8578,66 @@ mod tests {
             "front-matter definition is not duplicated: {first:?}"
         );
         assert_eq!(first, second, "front-matter round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_dots_line_does_not_close_front_matter_for_definition_collection() {
+        // Codex P2 on PR #5949 (fresh round): comrak's front-matter
+        // parser requires the configured `---` closing delimiter; a
+        // `...` line does not close the block, so the opening lines
+        // are ordinary Markdown and `[url]: /target` is a real
+        // definition the orphan footnote's link resolves through.
+        let original = "---\n[url]: /target\n...\n\n[^n]: [label][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[label](/target)"),
+            "footnote link resolves through the definition: {first:?}"
+        );
+        assert_eq!(first, second, "dots-delimiter round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_quoted_multiline_definition_label_matches_without_container() {
+        // Codex P2 on PR #5949 (fresh round): the quoted definition's
+        // label spans two lines; stripping only the first line's
+        // container left the continuation's `>` in the matching key,
+        // so the unused definition was keyed as the used label
+        // `long > label` and silently dropped.
+        let original =
+            "[long > label]\n\n[long > label]: /used\n\n> [long\n> label]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("/keep"),
+            "unused quoted multiline definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[long > label]: /used"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "quoted-multiline round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_code_span_bracket_does_not_end_link_text() {
+        // Codex P2 on PR #5949 (fresh round): in `[x`]...` the first
+        // closing bracket belongs to an inline code span; the link's
+        // explicit label is `used`, and keying the use as `x\`` made
+        // the genuinely unused `[x`]` definition look consumed.
+        let original = "[x`]\u{60}][used]\n\n[used]: /used-target\n[x`]: /keep\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("(/used-target)"),
+            "explicit reference resolves: {first:?}"
+        );
+        assert!(
+            first.contains("[x`]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used-target"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert_eq!(first, second, "code-span-bracket round-trip is a fixpoint");
     }
 
     #[test]
