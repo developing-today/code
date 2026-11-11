@@ -436,6 +436,42 @@ fn resubmitted_failed_transfer_returns_id_already_failed_after_cause_fixed() {
     assert!(ledger.lookup_transfer(700).is_none());
 }
 
+/// Parity (#6108): the in-memory backend refuses the reserved ID
+/// shapes with the same typed errors the TigerBeetle binding maps,
+/// so a scenario means the same thing on both backends. A retry of
+/// a reserved-ID transfer returns the ID error again — not
+/// `IdAlreadyFailed` — because TigerBeetle validates reserved IDs
+/// ahead of its failed-transfer lookup (Codex P2 on #8670).
+#[test]
+fn in_memory_rejects_the_reserved_id_shapes_like_tigerbeetle() {
+    let mut ledger = funded_ledger();
+    let results = ledger.create_accounts(&[account(0, SRC, false)]);
+    assert_eq!(results, vec![Err(AccountError::IdMustNotBeZero)]);
+    let results = ledger.create_accounts(&[account(u128::MAX, SRC, false)]);
+    assert_eq!(results, vec![Err(AccountError::IdMustNotBeIntMax)]);
+
+    for (id, error) in [
+        (0, TransferError::IdMustNotBeZero),
+        (u128::MAX, TransferError::IdMustNotBeIntMax),
+    ] {
+        let results = ledger.create_transfers(&[funding_transfer(id, USER_SRC, LP_SRC, 10, SRC)]);
+        assert_eq!(results, vec![Err(error)]);
+        let results = ledger.create_transfers(&[funding_transfer(id, USER_SRC, LP_SRC, 10, SRC)]);
+        assert_eq!(results, vec![Err(error)], "retry of reserved ID {id}");
+    }
+
+    // Reserved debit/credit account IDs are refused with the typed
+    // errors, not misreported as "not found".
+    let results = ledger.create_transfers(&[funding_transfer(777_001, 0, LP_SRC, 10, SRC)]);
+    assert_eq!(results, vec![Err(TransferError::DebitAccountIdMustNotBeZero)]);
+    let results =
+        ledger.create_transfers(&[funding_transfer(777_002, USER_SRC, u128::MAX, 10, SRC)]);
+    assert_eq!(
+        results,
+        vec![Err(TransferError::CreditAccountIdMustNotBeIntMax)]
+    );
+}
+
 #[test]
 fn single_unterminated_linked_transfer_rejected() {
     // #4121: a lone transfer with `linked: true` promises a following
