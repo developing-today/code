@@ -114,6 +114,7 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_SNAPSHOTS_DIR=${STATE_DIR}/snapshots"
     echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
     echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
+    echo "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${STATE_DIR}/roadmap-annotations.json"
     echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
     for key in kaneo_admin_email:KANEO_ADMIN_EMAIL kaneo_admin_password:KANEO_ADMIN_PASSWORD grist_api_key:GRIST_API_KEY; do
       sops_key="${key%%:*}"

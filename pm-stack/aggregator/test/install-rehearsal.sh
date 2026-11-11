@@ -105,6 +105,7 @@ grep -Fx "PM_AGG_REGISTRY_FILE=$STATE/registry.json" "$STATE/.env" >/dev/null
 grep -Fx "PM_AGG_SNAPSHOTS_DIR=$STATE/snapshots" "$STATE/.env" >/dev/null
 grep -Fx "PM_AGG_QUOTA_CURRENT_FILE=$STATE/quota-current.json" "$STATE/.env" >/dev/null
 grep -Fx "PM_AGG_COVERAGE_SNAPSHOT_FILE=$STATE/coverage-snapshot.json" "$STATE/.env" >/dev/null
+grep -Fx "PM_AGG_ROADMAP_ANNOTATIONS_FILE=$STATE/roadmap-annotations.json" "$STATE/.env" >/dev/null
 
 grep -Fx 'WorkingDirectory=%h/git/code/pm-stack/aggregator' \
   "$HOME_TEST/.config/systemd/user/pm-aggregator.service" >/dev/null
