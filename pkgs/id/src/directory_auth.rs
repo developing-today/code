@@ -1013,6 +1013,226 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum Guess {
+        /// The target slot's own current code.
+        Own,
+        /// The other flow's current code (the #6177 confusion).
+        Other,
+        /// A code that is not the target slot's.
+        Wrong,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum PendingCodeOp {
+        Issue(usize),
+        Check(usize, Guess),
+        Advance(u64),
+    }
+
+    fn pending_code_op_strategy() -> impl proptest::strategy::Strategy<Value = PendingCodeOp> {
+        use proptest::prelude::*;
+        prop_oneof![
+            3 => (0..2usize).prop_map(PendingCodeOp::Issue),
+            4 => (0..2usize, 0..3u8).prop_map(|(idx, g)| PendingCodeOp::Check(
+                idx,
+                match g {
+                    0 => Guess::Own,
+                    1 => Guess::Other,
+                    _ => Guess::Wrong,
+                },
+            )),
+            2 => (0..90_000u64).prop_map(PendingCodeOp::Advance),
+            1 => (90_000..1_200_000u64).prop_map(PendingCodeOp::Advance),
+        ]
+    }
+
+    // Property coverage for pending-code flow isolation (Codex P1 on
+    // PR #6479): generate interleaved issuance, verification, and time
+    // advancement across both flows for one address, and check every
+    // step against an independent per-slot model. An operation on one
+    // flow's slot must preserve the other slot's code, resend window,
+    // and attempt budget exactly. The one cross-slot effect in the
+    // production code is the issuance sweep, which removes EXPIRED
+    // slots of either flow and nothing else — the model accounts for
+    // exactly that and nothing more.
+    proptest::proptest! {
+        #[test]
+        fn pending_code_slots_are_isolated_across_flows(
+            ops in proptest::collection::vec(pending_code_op_strategy(), 1..48)
+        ) {
+            #[derive(Clone, Debug)]
+            struct SlotModel {
+                code: String,
+                sent_at: u64,
+                expires_at: u64,
+                attempts: u32,
+            }
+
+            fn wrong_code(exclude: Option<&str>) -> String {
+                if exclude == Some("000000") {
+                    "000001".to_owned()
+                } else {
+                    "000000".to_owned()
+                }
+            }
+
+            let address = "a@b.co";
+            let purposes = [
+                Purpose::Confirm {
+                    account: "ab".repeat(32),
+                },
+                Purpose::SignIn {
+                    account: "cd".repeat(32),
+                },
+            ];
+            let kinds = [PurposeKind::Confirm, PurposeKind::SignIn];
+            // The full observable state of one production slot.
+            let snapshot = |auth: &DirectoryAuth, idx: usize| -> Option<([u8; 32], u64, u64, u32)> {
+                auth.codes
+                    .get(&(address.to_owned(), kinds[idx]))
+                    .map(|p| (p.digest, p.sent_at, p.expires_at, p.attempts))
+            };
+
+            let mut auth = DirectoryAuth::default();
+            let mut model: [Option<SlotModel>; 2] = [None, None];
+            let mut now = now();
+
+            for op in &ops {
+                match *op {
+                    PendingCodeOp::Advance(dt) => {
+                        now += dt;
+                    }
+                    PendingCodeOp::Issue(idx) => {
+                        let other = 1 - idx;
+                        let other_before = snapshot(&auth, other);
+                        // Post-sweep view of the target slot: issuance
+                        // sweeps expired codes first, so an expired slot
+                        // cannot rate-limit a fresh issuance.
+                        let live = match model[idx].take() {
+                            Some(slot) if slot.expires_at > now => Some(slot),
+                            _ => None,
+                        };
+                        let rate_limited = matches!(
+                            &live,
+                            Some(slot) if slot.sent_at + CODE_RESEND_MS > now
+                        );
+                        let result = auth.issue_code(purposes[idx].clone(), address, now);
+                        if rate_limited {
+                            let err = result.expect_err("model predicts the resend window");
+                            proptest::prop_assert!(
+                                matches!(
+                                    err.downcast_ref::<Refusal>(),
+                                    Some(Refusal::RateLimited(_))
+                                ),
+                                "issue inside the resend window must be rate-limited, got {err:?}"
+                            );
+                            model[idx] = live;
+                        } else {
+                            let code = result.expect("model predicts issuance");
+                            model[idx] = Some(SlotModel {
+                                code,
+                                sent_at: now,
+                                expires_at: now + CODE_TTL_MS,
+                                attempts: 0,
+                            });
+                        }
+                        // The other slot survives issuance untouched
+                        // while unexpired; an expired other slot is
+                        // removed by the sweep and only by the sweep.
+                        let expected_other = match &model[other] {
+                            Some(slot) if slot.expires_at > now => {
+                                proptest::prop_assert!(
+                                    other_before.is_some(),
+                                    "live modelled slot missing from production state"
+                                );
+                                other_before
+                            }
+                            _ => None,
+                        };
+                        proptest::prop_assert_eq!(
+                            snapshot(&auth, other),
+                            expected_other,
+                            "issue on flow {} mutated the other flow's slot",
+                            idx
+                        );
+                    }
+                    PendingCodeOp::Check(idx, guess) => {
+                        let other = 1 - idx;
+                        let other_before = snapshot(&auth, other);
+                        let guess_code = match guess {
+                            Guess::Own => model[idx]
+                                .as_ref()
+                                .map_or_else(|| wrong_code(None), |s| s.code.clone()),
+                            Guess::Other => model[other].as_ref().map_or_else(
+                                || wrong_code(model[idx].as_ref().map(|s| s.code.as_str())),
+                                |s| s.code.clone(),
+                            ),
+                            Guess::Wrong => {
+                                wrong_code(model[idx].as_ref().map(|s| s.code.as_str()))
+                            }
+                        };
+                        #[derive(PartialEq)]
+                        enum CheckExpect {
+                            Absent,
+                            Dead,
+                            Wrong,
+                            Match,
+                        }
+                        let expectation = match &model[idx] {
+                            None => CheckExpect::Absent,
+                            Some(slot)
+                                if slot.expires_at <= now
+                                    || slot.attempts >= CODE_ATTEMPTS =>
+                            {
+                                CheckExpect::Dead
+                            }
+                            Some(slot) if guess_code != slot.code => CheckExpect::Wrong,
+                            Some(_) => CheckExpect::Match,
+                        };
+                        let result = auth.check_code(address, kinds[idx], &guess_code, now);
+                        match expectation {
+                            CheckExpect::Absent => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "check with no pending code must fail"
+                                );
+                            }
+                            CheckExpect::Dead => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "expired or attempt-exhausted code must fail"
+                                );
+                                model[idx] = None;
+                            }
+                            CheckExpect::Wrong => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "a wrong code must fail"
+                                );
+                                model[idx].as_mut().expect("slot modelled live").attempts += 1;
+                            }
+                            CheckExpect::Match => {
+                                let purpose =
+                                    result.expect("model predicts the presented code matches");
+                                proptest::prop_assert_eq!(purpose, purposes[idx].clone());
+                                model[idx] = None;
+                            }
+                        }
+                        // check_code never touches the other slot — it
+                        // does not even sweep it.
+                        proptest::prop_assert_eq!(
+                            snapshot(&auth, other),
+                            other_before,
+                            "check on flow {} mutated the other flow's slot",
+                            idx
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn hex_bytes_refuses_plus_encoded_pairs() {
         // #2517: '+' pairs must not decode at either auth shape.
