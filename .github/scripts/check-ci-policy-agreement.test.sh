@@ -23,6 +23,17 @@ wf() { # wf <root> <file> <trigger-lines...>
   } >"$root/.github/workflows/$file"
 }
 
+wf_raw() { # wf_raw <root> <file>: workflow whose on: block is stdin
+  local root="$1" file="$2"
+  mkdir -p "$root/.github/workflows"
+  {
+    echo "name: $file"
+    echo "on:"
+    cat
+    echo "jobs: {}"
+  } >"$root/.github/workflows/$file"
+}
+
 policy() { # policy <root>: a ci-policy.md naming every registry row
   local root="$1"
   mkdir -p "$root/.github"
@@ -82,6 +93,95 @@ if bash "$SCRIPT" "$TMP/stale" >"$TMP/stale.out" 2>&1; then
 fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/stale.out"
 echo "pass: a waiver whose leg now agrees fails as stale"
+
+# Main-tier branch filters (#7950): a push that cannot run on main
+# does NOT satisfy the main leg. mcpx-nixbuild's main leg is waived
+# (#6981), so a mis-filtered push keeps the waiver recorded — the
+# tree still passes and the verdict is WAIVED, never STALE.
+for case in release ignore_main tags_only; do
+  build_tree "$TMP/filter-$case"
+done
+wf_raw "$TMP/filter-release" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: [release]
+EOF
+bash "$SCRIPT" "$TMP/filter-release" >"$TMP/filter-release.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-release.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-release.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-release.out"; then
+  echo "FAIL: branches: [release] was certified as main-tier agreement" >&2
+  exit 1
+fi
+echo "pass: push branches: [release] keeps the main leg waived, not stale"
+
+wf_raw "$TMP/filter-ignore_main" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: [main]
+EOF
+bash "$SCRIPT" "$TMP/filter-ignore_main" >"$TMP/filter-ignore_main.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-ignore_main.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-ignore_main.out"
+echo "pass: push branches-ignore: [main] keeps the main leg waived, not stale"
+
+wf_raw "$TMP/filter-tags_only" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+EOF
+bash "$SCRIPT" "$TMP/filter-tags_only" >"$TMP/filter-tags_only.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-tags_only.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-tags_only.out"
+echo "pass: tags-only push keeps the main leg waived, not stale"
+
+# A push that does target main satisfies the leg: the #6981 waiver
+# for mcpx-nixbuild's main leg is stale and must be deleted. Both
+# the flow-list and the block-sequence branches: forms agree.
+build_tree "$TMP/filter-main"
+wf_raw "$TMP/filter-main" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: [main]
+EOF
+if bash "$SCRIPT" "$TMP/filter-main" >"$TMP/filter-main.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a main-targeting push" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-main.out"
+echo "pass: push branches: [main] satisfies the main leg (waiver stale)"
+
+build_tree "$TMP/filter-main-list"
+wf_raw "$TMP/filter-main-list" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches:
+      - release
+      - main
+EOF
+if bash "$SCRIPT" "$TMP/filter-main-list" >"$TMP/filter-main-list.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a block-sequence branches: [main]" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-main-list.out"
+echo "pass: block-sequence branches including main satisfies the main leg"
+
+# An unwaived main leg with a mis-filtered push is a disagreement,
+# never an agreement: mcpx-fix-test-guard's main leg has no waiver.
+build_tree "$TMP/filter-unwaived"
+wf_raw "$TMP/filter-unwaived" mcpx-fix-test-guard.yml <<'EOF'
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - main
+EOF
+if bash "$SCRIPT" "$TMP/filter-unwaived" >"$TMP/filter-unwaived.out" 2>&1; then
+  echo "FAIL: checker certified an unwaived main leg whose push excludes main" >&2
+  exit 1
+fi
+grep -q "DISAGREEMENT mcpx-fix-test-guard.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-unwaived.out"
+echo "pass: unwaived main leg with branches-ignore: [main] fails as disagreement"
 
 # Missing policy row: production-line guard's row vanishes.
 build_tree "$TMP/norow"

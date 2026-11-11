@@ -118,6 +118,113 @@ triggers_of() {
   ' "$file"
 }
 
+# push_targets_main <workflow-file>: print "yes" when the workflow
+# declares a push trigger that runs on main, "no" when it declares a
+# push trigger that cannot run on main, and "absent" when it declares
+# no push trigger at all. The main tier's contract is a push on
+# branches: [main] (ci-policy.md), so the trigger *name* is not
+# enough (#7950): a bare/unfiltered push counts; an explicit
+# branches: filter must list main; branches-ignore: naming main, a
+# branches: list without main, and a tags-only push never run on
+# main and do not satisfy the leg. Path gates do not affect the
+# verdict ("path gates as before").
+push_targets_main() {
+  local file="$1"
+  awk '
+    function clean(tok) {
+      gsub(/["\047\[\],]/, "", tok)
+      return tok
+    }
+    function add_tokens(str,   n, parts, i, tok, out) {
+      out = ""
+      n = split(str, parts, /[[:space:],]+/)
+      for (i = 1; i <= n; i++) {
+        tok = clean(parts[i])
+        if (tok != "") out = out " " tok
+      }
+      return out
+    }
+    /^"?on"?:[[:space:]]*\[/ {
+      line = $0
+      sub(/^"?on"?:[[:space:]]*\[/, "", line)
+      sub(/\].*/, "", line)
+      if (line ~ /(^|,)[[:space:]]*push[[:space:]]*(,|$)/) verdict = "yes"
+      else verdict = "absent"
+      done = 1
+      exit
+    }
+    /^"?on"?:[[:space:]]*[a-z_]/ {
+      line = $0
+      sub(/^"?on"?:[[:space:]]*/, "", line)
+      sub(/[[:space:]].*/, "", line)
+      verdict = (line == "push") ? "yes" : "absent"
+      done = 1
+      exit
+    }
+    /^"?on"?:[[:space:]]*$/ { inblock = 1; next }
+    inblock && /^  [a-z_]+:/ {
+      key = $0
+      sub(/^  /, "", key)
+      sub(/:.*/, "", key)
+      inpush = (key == "push")
+      if (inpush) seen_push = 1
+      subkey = ""
+      next
+    }
+    inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0 }
+    inpush && /^    [a-z-]+:/ {
+      line = $0
+      subkey = line
+      sub(/^    /, "", subkey)
+      sub(/:.*/, "", subkey)
+      val = line
+      sub(/^[^:]*:[[:space:]]*/, "", val)
+      if (subkey == "branches") {
+        seen_branches = 1
+        branches_list = add_tokens(val)
+      } else if (subkey == "branches-ignore") {
+        ignore_list = add_tokens(val)
+      } else if (subkey == "tags") {
+        seen_tags = 1
+      }
+      next
+    }
+    inpush && /^      -[[:space:]]/ {
+      item = $0
+      sub(/^      -[[:space:]]*/, "", item)
+      if (subkey == "branches") {
+        seen_branches = 1
+        branches_list = branches_list " " clean(item)
+      } else if (subkey == "branches-ignore") {
+        ignore_list = ignore_list " " clean(item)
+      } else if (subkey == "tags") {
+        seen_tags = 1
+      }
+      next
+    }
+    END {
+      if (done) {
+        print verdict
+        exit
+      }
+      if (!seen_push) {
+        print "absent"
+        exit
+      }
+      if ((" " ignore_list " ") ~ / main /) {
+        print "no"
+      } else if (seen_branches) {
+        if ((" " branches_list " ") ~ / main /) print "yes"
+        else print "no"
+      } else if (seen_tags) {
+        print "no"
+      } else {
+        print "yes"
+      }
+    }
+  ' "$file"
+}
+
 waiver_for() { # waiver_for <file> <leg> -> issue or empty
   local entry
   for entry in "${WAIVERS[@]}"; do
@@ -162,7 +269,20 @@ for row in "${REGISTRY[@]}"; do
   IFS=',' read -ra tier_list <<<"$tiers"
   for tier in "${tier_list[@]}"; do
     req="$(required_trigger "$tier")"
-    if printf '%s\n' "$triggers" | grep -qx "$req"; then
+    agrees=0
+    mistargeted=0
+    if [ "$tier" = "main" ]; then
+      # The main leg agrees only when the push trigger targets main
+      # (#7950): a mis-filtered push keeps the leg in disagreement,
+      # so a waiver for it is recorded, never stale.
+      case "$(push_targets_main "$wf")" in
+        yes) agrees=1 ;;
+        no) mistargeted=1 ;;
+      esac
+    elif printf '%s\n' "$triggers" | grep -qx "$req"; then
+      agrees=1
+    fi
+    if [ "$agrees" -eq 1 ]; then
       if [ -n "$(waiver_for "$file" "$tier")" ]; then
         echo "::error::STALE WAIVER $file: $tier leg now agrees (trigger '$req' declared) — delete the waiver for issue #$(waiver_for "$file" "$tier") in this PR"
         fail=1
@@ -172,9 +292,17 @@ for row in "${REGISTRY[@]}"; do
       if [ -n "$issue" ]; then
         SEEN_WAIVER["$file|$tier"]=1
         waived=$((waived + 1))
-        echo "::warning::WAIVED $file: $tier tier requires trigger '$req', not declared — disagreement recorded against issue #$issue (Phase 2-3 of #7089, awaiting Drew's ruling)"
+        if [ "$mistargeted" -eq 1 ]; then
+          echo "::warning::WAIVED $file: $tier tier requires a push trigger on branches: [main]; the declared push does not target main — disagreement recorded against issue #$issue (Phase 2-3 of #7089, awaiting Drew's ruling)"
+        else
+          echo "::warning::WAIVED $file: $tier tier requires trigger '$req', not declared — disagreement recorded against issue #$issue (Phase 2-3 of #7089, awaiting Drew's ruling)"
+        fi
       else
-        echo "::error::DISAGREEMENT $file: $tier tier requires trigger '$req', not declared and no waiver records it — restore the trigger, strike the tier from ci-policy.md, or record a waiver naming its phase issue (#7089)"
+        if [ "$mistargeted" -eq 1 ]; then
+          echo "::error::DISAGREEMENT $file: $tier tier requires a push trigger on branches: [main]; the declared push does not target main and no waiver records it — retarget the push to main, strike the tier from ci-policy.md, or record a waiver naming its phase issue (#7089)"
+        else
+          echo "::error::DISAGREEMENT $file: $tier tier requires trigger '$req', not declared and no waiver records it — restore the trigger, strike the tier from ci-policy.md, or record a waiver naming its phase issue (#7089)"
+        fi
         fail=1
       fi
     fi
