@@ -908,7 +908,7 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
     }
 }
 
-fn keepalive_loop(broker: Arc<Broker>) {
+fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
     let idle = broker.config.idle_exit_secs();
     let health_req = Request {
         method: "GET".to_string(),
@@ -921,10 +921,15 @@ fn keepalive_loop(broker: Arc<Broker>) {
     loop {
         std::thread::sleep(Duration::from_secs(IDLE_TICK_S));
         let now = now_secs();
-        if now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle {
+        if idle_exit
+            && now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle
+        {
             // The Python exits via os._exit from its keepalive
             // loop; the same abruptness is fine — the broker holds
-            // nothing that needs draining.
+            // nothing that needs draining. Standalone brokers only:
+            // a co-hosted proxy (run_cohosted) must never exit the
+            // shared process out from under its sibling roles
+            // (#8394 Codex P1).
             std::process::exit(0);
         }
         if now.saturating_sub(last_health) >= KEEPALIVE_S {
@@ -934,12 +939,26 @@ fn keepalive_loop(broker: Arc<Broker>) {
     }
 }
 
+/// Run the broker co-hosted with other serve roles in one process
+/// (`fleet serve <role> [<role> ...]`, #6264): same broker, but the
+/// idle-exit is disabled — the proxy's standalone lifetime contract
+/// (auto-spawned, exits when idle) must not terminate the sibling
+/// roles sharing the process (design #5698 point 5, #8394 Codex P1).
+/// The serve-list supervisor owns this process's lifetime instead.
+pub fn run_cohosted(config: &Config) -> i32 {
+    run_inner(config, false)
+}
+
 /// Run the broker in the foreground. Returns the process exit code.
 ///
 /// Startup mirrors the Python exactly: if the socket file exists
 /// and a connect succeeds, a live broker owns it — exit 0 quietly.
 /// If the connect fails, the file is stale — unlink and bind.
 pub fn run(config: &Config) -> i32 {
+    run_inner(config, true)
+}
+
+fn run_inner(config: &Config, idle_exit: bool) -> i32 {
     let socket_path = config.broker_socket();
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1012,7 +1031,7 @@ pub fn run(config: &Config) -> i32 {
     }
     {
         let broker = Arc::clone(&broker);
-        std::thread::spawn(move || keepalive_loop(broker));
+        std::thread::spawn(move || keepalive_loop(broker, idle_exit));
     }
     // CONNECT-UDP (RFC 9298) spike (#6109): only when the
     // config opts in — the flag defaults off and nothing in
