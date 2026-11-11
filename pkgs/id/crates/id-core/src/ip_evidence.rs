@@ -205,22 +205,29 @@ pub enum RetentionError {
     WindowTooLong,
     /// The window ends at or before the observation it retains.
     WindowInPast,
-    /// Raw-IP retention was enabled without the stated purpose the
-    /// retention contract (design §4.1) requires.
+    /// Retention (raw IP or derived geography) was requested without
+    /// the stated purpose the retention contract (design §4.1)
+    /// requires.
     PurposeMissing,
 }
 
 /// Reduce evidence to what [`PrivacyClass::VerdictOnly`] permits: the
 /// boundary verdict alone. Country and region are derived geography
 /// and never ride along under a verdict-only label, however the
-/// record was produced.
+/// record was produced. A verdict whose only content was geography
+/// has nothing left once stripped: like an empty lookup in
+/// [`resolve_signals`], it normalizes to unknown — never a `Known`
+/// with no usable field that still satisfies a policy.
 fn verdict_only(evidence: IpEvidence) -> IpEvidence {
     match evidence {
-        IpEvidence::Known(v) => IpEvidence::Known(IpVerdict {
-            country: None,
-            region: None,
-            inside_boundary: v.inside_boundary,
-        }),
+        IpEvidence::Known(v) => match v.inside_boundary {
+            Some(inside) => IpEvidence::Known(IpVerdict {
+                country: None,
+                region: None,
+                inside_boundary: Some(inside),
+            }),
+            None => IpEvidence::Unknown(IpUnknownReason::LookupEmpty),
+        },
         unknown => unknown,
     }
 }
@@ -278,7 +285,13 @@ pub fn retain(
     if retention.retain_until - observation.observed_at > MAX_RAW_RETENTION_SECS {
         return Err(RetentionError::WindowTooLong);
     }
-    if raw_enabled && retention.purpose.trim().is_empty() {
+    // Design §4.1 states the period and the purpose for every
+    // retained derived value, not only for raw addresses: a
+    // declaration that retains the raw IP or any derived geography
+    // (country/region) must state its purpose.
+    let retains_derived =
+        matches!(&evidence, IpEvidence::Known(v) if v.country.is_some() || v.region.is_some());
+    if (raw_enabled || retains_derived) && retention.purpose.trim().is_empty() {
         return Err(RetentionError::PurposeMissing);
     }
     let raw_ip = if raw_enabled && !observation.via_relay {
@@ -757,6 +770,51 @@ mod tests {
                     IpEvidence::Known(verdict("DE", false)),
                     Some(&o),
                     true,
+                    Some(Retention {
+                        purpose: purpose.into(),
+                        retain_until: 2_000,
+                    })
+                ),
+                Err(RetentionError::PurposeMissing)
+            );
+        }
+    }
+
+    #[test]
+    fn verdict_only_redaction_of_geography_only_evidence_is_unknown() {
+        // Codex finding on PR #8551 (fresh round on a1211f92c4): when
+        // a lookup determined only country/region, verdict-only
+        // redaction strips every populated field; the result must
+        // normalize to Unknown, not remain a Known that satisfies a
+        // policy as if the boundary had been judged.
+        let o = obs(ip(192, 0, 2, 1), None, false);
+        let geo_only = IpVerdict {
+            country: Some("DE".to_string()),
+            region: Some("Bavaria".to_string()),
+            inside_boundary: None,
+        };
+        let r = retain(IpEvidence::Known(geo_only), Some(&o), true, None).unwrap();
+        assert_eq!(
+            r.evidence,
+            IpEvidence::Unknown(IpUnknownReason::LookupEmpty)
+        );
+        assert!(!r.evidence.is_known());
+    }
+
+    #[test]
+    fn derived_retention_requires_a_stated_purpose() {
+        // Codex finding on PR #8551 (fresh round on a1211f92c4):
+        // design §4.1 requires a retention period and purpose for each
+        // derived IP value, not just raw addresses — with
+        // raw_enabled=false an empty purpose must not retain
+        // country/region as PrivacyClass::Derived.
+        let o = obs(ip(192, 0, 2, 1), None, false);
+        for purpose in ["", "   "] {
+            assert_eq!(
+                retain(
+                    IpEvidence::Known(verdict("DE", false)),
+                    Some(&o),
+                    false,
                     Some(Retention {
                         purpose: purpose.into(),
                         retain_until: 2_000,
