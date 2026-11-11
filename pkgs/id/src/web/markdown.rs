@@ -1892,6 +1892,51 @@ mod tests {
     }
 
     #[test]
+    fn test_top_level_fence_with_quote_like_content_round_trips() {
+        // #8665: strip_leading_blank_quote_lines had no fence state, so
+        // a top-level fenced block whose first content lines are `> `
+        // and `> text` lost its first line on save — the fence opener
+        // reset the quote-run scan and the literal code content was
+        // stripped as if it led a blockquote.
+        for original in [
+            "```\n> \n> text\n```\n",
+            "```rust\n> \n> text\n```\n",
+            "```\n> \n> text\n```\n\n> quote\n",
+        ] {
+            let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+            assert_eq!(saved, original, "first save polluted {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&saved),
+                markdown_to_prosemirror(original),
+                "structure changed for {original:?}"
+            );
+            let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+            assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+        }
+        // Control: quote-like lines inside a blockquote's own fence are
+        // content too — structure and fixpoint must hold.
+        let quoted = "> ```\n> \n> text\n> ```\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(quoted)).unwrap();
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(quoted),
+            "quoted fence structure changed: {saved:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for quoted fence");
+        // Tilde fences are canonicalized to backticks by the renderer,
+        // but their content must survive intact and reach a fixpoint.
+        let tilde = "~~~\n> \n> text\n~~~\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(tilde)).unwrap();
+        assert_eq!(
+            saved, "```\n> \n> text\n```\n",
+            "tilde fence content changed: {saved:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for tilde fence");
+    }
+
+    #[test]
     fn test_info_less_fence_in_blockquote_trailing_content_round_trips() {
         // #1496 acceptance cases: a no-info fence inside a blockquote
         // followed by each kind of trailing quoted content must reopen

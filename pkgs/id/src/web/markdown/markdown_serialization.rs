@@ -935,9 +935,47 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
     let lines: Vec<&str> = output.split('\n').collect();
     let mut result: Vec<&str> = Vec::with_capacity(lines.len());
     let mut at_quote_start = true;
+    // #8665: fenced code is literal content. Without fence tracking the
+    // scan mistook a top-level fence whose first content lines are `> `
+    // and `> text` for the start of a quote run — the fence opener is
+    // neither a blank quote line nor quote content, so it set
+    // at_quote_start and the stripper deleted the code block's first
+    // line on save. Track fences exactly as
+    // restore_github_alert_markers does: a fence is owned by the quote
+    // depth that opened it, and leaving that container ends it with no
+    // closing delimiter. Lines inside a fence are never stripped.
+    let mut fence = FenceTracker::default();
+    let mut fence_depth: Option<usize> = None;
     let mut i = 0;
     while i < lines.len() {
-        if at_quote_start && is_blank_quote_line(lines[i]) {
+        let line = lines[i];
+        let indent = line.bytes().take_while(|&b| b == b' ').count();
+        if indent <= 3 {
+            let (depth, rest) = split_quote_prefix(&line[indent..]);
+            if let Some(opened_at) = fence_depth {
+                if depth < opened_at {
+                    fence.reset();
+                    fence_depth = None;
+                } else if let Some(body) = strip_quote_depth(&line[indent..], opened_at) {
+                    fence.feed(fence_feed_line(body));
+                    if !fence.in_fence() {
+                        fence_depth = None;
+                    }
+                    result.push(line);
+                    at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
+                    i += 1;
+                    continue;
+                }
+            }
+            if fence_depth.is_none() && fence.feed(fence_feed_line(rest)) {
+                fence_depth = Some(depth);
+                result.push(line);
+                at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
+                i += 1;
+                continue;
+            }
+        }
+        if at_quote_start && fence_depth.is_none() && is_blank_quote_line(line) {
             let mut j = i + 1;
             while j < lines.len() && is_blank_quote_line(lines[j]) {
                 j += 1;
@@ -947,8 +985,8 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
                 continue;
             }
         }
-        result.push(lines[i]);
-        at_quote_start = !is_blank_quote_line(lines[i]) && !is_quote_content_line(lines[i]);
+        result.push(line);
+        at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);
         i += 1;
     }
     result.join("\n")
