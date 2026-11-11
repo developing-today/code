@@ -491,7 +491,7 @@ func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, serv
 			// is what happened on every call that arrived while a new daemon
 			// was still reading schemas -- so read them now, and refuse if
 			// they cannot be read: failing open is the one wrong answer here.
-			fresh, _, err := p.RefreshSchemas(ctx)
+			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 					Reason: "its annotations could not be read: " + err.Error()}

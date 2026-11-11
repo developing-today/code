@@ -545,3 +545,19 @@ func TestRenderTypeScriptKeepsJSONLiterals(t *testing.T) {
 		t.Errorf("a TypeScript recipe keeps its JSON string literal:\n%s", out)
 	}
 }
+
+func TestHashCommentMentionsAreNotPlaceholdersInPythonOrShell(t *testing.T) {
+	// PR #8317 Codex P2: Parse discovered references with the
+	// JavaScript scanner even for the #-comment languages, so a
+	// harmless comment minted a required argument the (already
+	// language-aware) renderer would never substitute.
+	for _, tc := range []struct{ path, src string }{
+		{"/tmp/x.py", "# Contact @alice for details\nprint(@who)\n"},
+		{"/tmp/x.sh", "# Contact @alice for details\necho @who\n"},
+	} {
+		r := recipes.Parse("x", tc.path, tc.src)
+		if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+			t.Errorf("%s: placeholders = %+v, want only the code reference @who", tc.path, r.Placeholders)
+		}
+	}
+}

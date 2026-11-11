@@ -771,3 +771,33 @@ func TestScriptFileToolRefusesUnavailableSecretBeforeRunning(t *testing.T) {
 		t.Errorf("the script ran before the refusal: %s exists", sideEffect)
 	}
 }
+
+// PR #8317 Codex P2: two script-only namespaces with otherwise-default
+// settings hash to the same ProcessID, which used to give them one
+// pool -- and the write ledger blocks by pool, so an unknown outcome
+// in one namespace blocked writes in the other. They share no upstream
+// process or state, so each now gets its own pool.
+func TestScriptOnlyNamespacesDoNotShareAPool(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"alpha": {Name: "alpha", Mcpx: echoPinnedView()},
+		"beta":  {Name: "beta", Mcpx: echoPinnedView()},
+	})
+	if r.pools["alpha"] == r.pools["beta"] {
+		t.Fatal("script-only namespaces share a pool")
+	}
+	if r.writeLedger == nil {
+		t.Fatal("test registry has no write ledger")
+	}
+	if err := r.writeLedger.Record(unknownWriteRecord{
+		Server: "alpha", Tool: "wipe", ArgsSHA256: strings.Repeat("d", 64),
+		At: time.Now().UTC(), Surface: "call",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, blocked := r.ledgerLookupFor("alpha", r.pools["alpha"]); !blocked {
+		t.Fatal("the namespace that recorded the unknown outcome is not blocked")
+	}
+	if _, blocked := r.ledgerLookupFor("beta", r.pools["beta"]); blocked {
+		t.Fatal("an unknown outcome in alpha blocks unrelated namespace beta")
+	}
+}

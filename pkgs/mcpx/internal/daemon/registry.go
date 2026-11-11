@@ -261,6 +261,18 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		r.bindSecrets(s)
 
 		id := s.ProcessID()
+		if s.ScriptOnly() {
+			// A script-only namespace has no process to share: the
+			// pool exists to hand out one running child, and there
+			// is none. Two such namespaces with otherwise-default
+			// settings hash to the same ProcessID, which used to
+			// give them one pool -- and the write ledger blocks by
+			// pool, so an unknown outcome in one namespace blocked
+			// writes in the other (Codex P2 on PR #8317). Their
+			// declared scripts are the substance, not a view over
+			// a shared process, so each gets its own pool.
+			id += "\x00script:" + s.Namespace
+		}
 		p, shared := byPoolID[id]
 		if !shared {
 			p = pool.New(s)

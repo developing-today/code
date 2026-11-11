@@ -154,7 +154,7 @@ func Parse(name, path, src string) Recipe {
 		declared = append(declared, p)
 	}
 
-	used := refs(src)
+	used := refsFor(src, r.language())
 	// A name used in the body but never declared is still a placeholder:
 	// refusing to run it would be right, but describing it as a required
 	// string is more useful, because the form then asks for it.
@@ -394,8 +394,17 @@ func scanCode(src string) []bool {
 
 // refs finds every `@name` in the body, ignoring declarations, comments and
 // anything inside a string.
-func refs(src string) []string {
-	code := scanCode(src)
+func refs(src string) []string { return refsFor(src, langJS) }
+
+// refsFor is refs with the code mask of the body's own language: a
+// Python or shell comment is not JavaScript, and an `@name` inside one
+// ('# Contact @alice') is text, not a placeholder -- while Parse used
+// scanCode unconditionally, such comments minted required arguments
+// the renderer (already language-aware) would never substitute
+// (Codex P2 on PR #8317). Discovery and substitution now share the
+// one language-aware scan.
+func refsFor(src string, lang string) []string {
+	code := scanCodeFor(src, lang)
 	var out []string
 	seen := map[string]bool{}
 	offset := 0
