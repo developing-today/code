@@ -166,4 +166,19 @@ describe("flow analytics (#4829)", () => {
     });
     expect(empty.groups).toEqual([]);
   });
+  test("throughput credits explicit unassigned membership at the closing cutoff, not the previous parent", () => {
+    const cutoffs = [
+      cutoff(W1, [item(1, { parentRef: EPIC })]),
+      cutoff(W2, [item(1, { state: "closed", status: "Done" })]),
+    ];
+    const out = computeFlowAnalytics(cutoffs);
+    const epic = out.groups.find((g) => g.groupRef === EPIC)!;
+    expect(epic.throughput.every((w) => w.completed === 0)).toBe(true);
+    expect(epic.throughput.flatMap((w) => w.completedRefs)).toEqual([]);
+    const unassigned = out.groups.find((g) => g.groupRef === null)!;
+    expect(unassigned.throughput).toEqual([
+      { cutoffAt: W2, completed: 1, completedRefs: [`${REPO}#1`] },
+    ]);
+  });
+
 });

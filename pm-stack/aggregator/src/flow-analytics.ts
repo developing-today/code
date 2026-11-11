@@ -183,9 +183,15 @@ export function computeFlowAnalytics(cutoffs: ItemHistoryCutoff[]): FlowAnalytic
   // definition (chain rule, issues only, zero weeks preserved) is
   // identical to the forecasting series.
   const weeks = weeklyTransitions(ordered);
-  const groupAt = (cutoff: ItemHistoryCutoff | undefined, ref: RefKey): RefKey | null => {
+  // Returns undefined when the item is not observed at the cutoff,
+  // so a missing observation stays distinguishable from an explicit
+  // unassigned membership (groupRefOf -> null) at that cutoff.
+  const groupAt = (
+    cutoff: ItemHistoryCutoff | undefined,
+    ref: RefKey,
+  ): { group: RefKey | null } | undefined => {
     const item = cutoff?.items.find((i) => i.ref === ref);
-    return item ? groupRefOf(item) : null;
+    return item ? { group: groupRefOf(item) } : undefined;
   };
   const byCutoff = new Map(ordered.map((c) => [c.cutoffAt, c]));
   const prevCutoffOf = (cutoffAt: string): ItemHistoryCutoff | undefined => {
@@ -197,7 +203,7 @@ export function computeFlowAnalytics(cutoffs: ItemHistoryCutoff[]): FlowAnalytic
     const closing = byCutoff.get(week.cutoffAt);
     const previous = prevCutoffOf(week.cutoffAt);
     for (const ref of week.completedRefs) {
-      const group = groupAt(closing, ref) ?? groupAt(previous, ref);
+      const group = (groupAt(closing, ref) ?? groupAt(previous, ref))?.group ?? null;
       let perWeek = throughputByGroup.get(group);
       if (!perWeek) {
         perWeek = new Map();
