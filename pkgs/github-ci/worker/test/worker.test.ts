@@ -236,7 +236,7 @@ describe("github-ci worker", () => {
     const res = await post(p, "issue_comment", await sign(p));
     expect(res.status).toBe(200);
     const all = seen.join("\n");
-    expect(all).toContain("UPDATE github_mirror_issues SET comments");
+    expect(all).toContain("UPDATE github_mirror_issues SET");
     expect(all).toContain("31337");
   });
 });

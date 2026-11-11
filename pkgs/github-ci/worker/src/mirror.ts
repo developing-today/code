@@ -28,6 +28,14 @@
  * "deleted" delivery removes the mirror row outright: a deleted
  * issue must leave the read model, not be re-upserted by its own
  * deletion event (projector precedent, #4210).
+ *
+ * Comment counts carry their own version, independent of the pointer
+ * guard: an issue_comment delivery sets the count only when the
+ * carrying object's updated_at is at least the stored gh_updated_at,
+ * and advances gh_updated_at to it — a delayed delivery reporting a
+ * smaller count cannot regress a newer one. (Same-second deliveries
+ * share a timestamp and stay arrival-ordered; the backfill sweep is
+ * the repair path for that residual, as for every mirror field.)
  */
 import { Turso, iArg, tArg, type TursoArg } from "./turso";
 import { queueNow, type SinkEnv } from "./sink";
@@ -163,6 +171,8 @@ export interface CommentTouch {
   number: number | null;
   isPr: boolean;
   comments: number;
+  /** The carrying issue/PR object's updated_at: the count's version. */
+  ghUpdatedAt: string | null;
   /** Set only when the comment carries the fleet agent-note marker. */
   agentNoteId: number | null;
   agentNoteUrl: string | null;
@@ -193,6 +203,7 @@ export function buildCommentTouch(payload: Obj, repo: string): CommentTouch {
     number: num(issue, "number"),
     isPr: !!issue.pull_request,
     comments: Number(issue.comments ?? 0) || 0,
+    ghUpdatedAt: str(issue, "updated_at"),
     agentNoteId: note && !deleted ? num(comment, "id") : null,
     agentNoteUrl: note && !deleted ? str(comment, "html_url") : null,
     deletedNoteId: note && deleted ? num(comment, "id") : null,
@@ -360,7 +371,10 @@ export async function mirrorPrEvent(
  * the comment is an agent note, the latest-agent-note pointer — replaced
  * only when the incoming note is at least as new as the stored one
  * (comment ids are creation order), so a delayed or redelivered older
- * note never overwrites the pointer to a newer note. Only the
+ * note never overwrites the pointer to a newer note. The comments
+ * count is versioned separately (the carrying object's updated_at
+ * against the stored gh_updated_at), so a delayed delivery cannot
+ * regress a newer count either. Only the
  * comment fields move — title/state stay with the issues/PR events and
  * the backfill sweep. A row the mirror has never seen is seeded minimal
  * (the sweep fills the rest).
@@ -381,7 +395,16 @@ export async function mirrorCommentEvent(
       args: [tArg(touch.repo), iArg(touch.number), tArg(queueNow())],
     },
     {
-      sql: `UPDATE ${table} SET comments = ?, mirrored_at = ?,
+      sql: `UPDATE ${table} SET
+              comments = CASE
+                WHEN ? IS NULL OR gh_updated_at IS NULL
+                     OR ? >= gh_updated_at
+                THEN ? ELSE comments END,
+              gh_updated_at = CASE
+                WHEN ? IS NULL OR gh_updated_at IS NULL
+                     OR ? >= gh_updated_at
+                THEN COALESCE(?, gh_updated_at) ELSE gh_updated_at END,
+              mirrored_at = ?,
               latest_agent_note_id = CASE
                 WHEN ? IS NOT NULL
                  AND (latest_agent_note_id IS NULL
@@ -394,7 +417,12 @@ export async function mirrorCommentEvent(
                 THEN ? ELSE latest_agent_note_url END
             WHERE repo = ? AND number = ?`,
       args: [
+        tArg(touch.ghUpdatedAt),
+        tArg(touch.ghUpdatedAt),
         iArg(touch.comments),
+        tArg(touch.ghUpdatedAt),
+        tArg(touch.ghUpdatedAt),
+        tArg(touch.ghUpdatedAt),
         tArg(queueNow()),
         iArg(touch.agentNoteId),
         iArg(touch.agentNoteId),

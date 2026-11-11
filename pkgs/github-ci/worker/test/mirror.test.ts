@@ -260,7 +260,7 @@ describe("mirror writers (#8580)", () => {
     );
     const sql = stmts.map((s) => s.sql).join("\n");
     expect(sql).toContain("ON CONFLICT(repo, number) DO NOTHING");
-    expect(sql).toContain("UPDATE github_mirror_issues SET comments");
+    expect(sql).toContain("UPDATE github_mirror_issues SET");
     expect(sql).toContain("latest_agent_note_id = CASE");
     expect(sql).toContain("OR ? >= latest_agent_note_id");
     const update = stmts.find((s) =>
@@ -309,7 +309,7 @@ describe("mirror writers (#8580)", () => {
       REPO,
     );
     const update = stmts.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues SET comments"),
+      s.sql.startsWith("UPDATE github_mirror_issues SET"),
     );
     // Both pointer fields move only when the incoming note id is at
     // least the stored one, so an older redelivery cannot overwrite
@@ -319,6 +319,52 @@ describe("mirror writers (#8580)", () => {
     expect(update?.sql).toContain("OR ? >= latest_agent_note_id");
     const values = (update?.args ?? []).map((a) => a.value);
     expect(values.filter((v) => v === "777")).toHaveLength(5);
+  });
+
+  it("mirrorCommentEvent versions the count by the object updated_at", async () => {
+    const stmts = capturePipeline();
+    await mirrorCommentEvent(
+      env,
+      {
+        action: "created",
+        issue: {
+          number: 8580,
+          comments: 5,
+          updated_at: "2026-11-11T04:00:00Z",
+        },
+        comment: {
+          id: 888,
+          html_url: "https://example.invalid/issues/8580#c888",
+          body: "plain comment",
+        },
+        repository: { full_name: REPO },
+      },
+      REPO,
+    );
+    const update = stmts.find((s) =>
+      s.sql.startsWith("UPDATE github_mirror_issues SET"),
+    );
+    // The count moves only when the carrying object's updated_at is
+    // at least the stored gh_updated_at, and the version advances
+    // with it — independently of the agent-note pointer guard.
+    expect(update?.sql).toContain("comments = CASE");
+    expect(update?.sql).toContain("OR ? >= gh_updated_at");
+    expect(update?.sql).toContain(
+      "THEN COALESCE(?, gh_updated_at) ELSE gh_updated_at END",
+    );
+    const values = (update?.args ?? []).map((a) => a.value);
+    expect(values.filter((v) => v === "2026-11-11T04:00:00Z")).toHaveLength(5);
+    expect(values).toContain("5");
+    // buildCommentTouch carries the version off the issue object.
+    const touch = buildCommentTouch(
+      {
+        action: "created",
+        issue: { number: 8580, comments: 5, updated_at: "2026-11-11T04:00:00Z" },
+        comment: { id: 888, html_url: "u", body: "hi" },
+      },
+      REPO,
+    );
+    expect(touch.ghUpdatedAt).toBe("2026-11-11T04:00:00Z");
   });
 
   it("mirrorCommentEvent clears a pointer naming the deleted note", async () => {
@@ -347,7 +393,7 @@ describe("mirror writers (#8580)", () => {
     // The comments update itself assigns no pointer for a deletion:
     // its CASE note args carry no value.
     const update = stmts.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues SET comments"),
+      s.sql.startsWith("UPDATE github_mirror_issues SET"),
     );
     const updateValues = (update?.args ?? []).map((a) => a.value);
     expect(updateValues).not.toContain(
