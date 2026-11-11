@@ -1835,8 +1835,29 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
     // P2 on #1565's twelfth cut).
     let mut in_footnote_block = false;
     let lines: Vec<&str> = markdown.lines().collect();
+    // Front matter (a leading `---` block) is carried by the
+    // front_matter node, not parsed as Markdown: a definition-shaped
+    // line inside it is metadata text. Collecting it appended a
+    // second copy outside the metadata, and every save collected
+    // both copies and added another (Codex P2 on PR #5949). Skip
+    // the block's lines entirely; an unterminated leading `---` is
+    // a thematic break, not front matter, and is not skipped.
+    let front_matter_end = if lines.first().is_some_and(|l| l.trim() == "---") {
+        lines
+            .iter()
+            .skip(1)
+            .position(|l| l.trim() == "---" || l.trim() == "...")
+            .map(|pos| pos + 2)
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let mut i = 0;
     while i < lines.len() {
+        if i < front_matter_end {
+            i += 1;
+            continue;
+        }
         let line = lines[i];
         // Indentation in COLUMNS: a tab advances to the next
         // multiple of 4, so a tab-indented line is indented code
@@ -2424,29 +2445,74 @@ fn preserve_unreferenced_link_reference_definitions<'a>(
     }
 }
 
+/// Remove the container prefixes that enclose a collected reference
+/// definition, so the recovered source is a top-level definition.
+/// Only the FIRST line's container levels are stripped from the
+/// following lines: a continuation line's own content is never
+/// re-interpreted as a container, so a literal marker inside a
+/// multiline title (`[r]: /target "first\n2. second"`) survives
+/// verbatim instead of losing its `2. ` (Codex P2 on PR #5949).
 fn strip_reference_definition_containers(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| strip_container_prefixes(line).trim_start_matches([' ', '\t']))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut lines = source.lines();
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    let first_stripped = strip_container_prefixes(first);
+    let levels = container_signature(&first[..first.len() - first_stripped.len()])
+        .chars()
+        .count();
+    let mut out = vec![first_stripped.trim_start_matches([' ', '\t']).to_string()];
+    for line in lines {
+        let relative = if levels > 0 {
+            strip_container_levels(line, levels)
+        } else {
+            line
+        };
+        out.push(relative.trim_start_matches([' ', '\t']).to_string());
+    }
+    out.join("\n")
 }
 
+/// Collect the labels of link/image references the parse actually
+/// resolved, from each node's own source span.
 fn collect_used_link_reference_labels<'a>(
     node: &'a AstNode<'a>,
     lines: &[&str],
     used: &mut std::collections::HashSet<String>,
 ) {
-    let (is_link, start_line, end_line) = {
+    let (is_link, start_line, start_col, end_line, end_col) = {
         let data = node.data.borrow();
         (
             matches!(&data.value, NodeValue::Link(_) | NodeValue::Image(_)),
             data.sourcepos.start.line,
+            data.sourcepos.start.column,
             data.sourcepos.end.line,
+            data.sourcepos.end.column,
         )
     };
     if is_link && start_line > 0 && end_line >= start_line && end_line <= lines.len() {
-        let source = lines[start_line - 1..end_line].join("\n");
+        // Slice each line to the node's own columns (comrak columns
+        // are 1-based byte columns, the end column inclusive):
+        // examining whole lines let bracketed text sharing the line
+        // -- a code span, a neighbouring link -- decide this node's
+        // label, so the genuinely unused definition was discarded
+        // and the consumed one appended (Codex P2 on PR #5949).
+        let mut parts = Vec::new();
+        for line_no in start_line..=end_line {
+            let line = lines[line_no - 1];
+            let from = if line_no == start_line {
+                start_col.saturating_sub(1)
+            } else {
+                0
+            };
+            let to = if line_no == end_line {
+                end_col
+            } else {
+                line.len()
+            };
+            parts.push(line.get(from..to).unwrap_or(line).to_string());
+        }
+        let source = parts.join("\n");
         if let Some(label) = link_reference_use_label(&source) {
             used.insert(label);
         }
@@ -2456,6 +2522,8 @@ fn collect_used_link_reference_labels<'a>(
     }
 }
 
+/// The normalized label of a collected reference definition's
+/// source text, or None when the source opens no label.
 fn link_reference_definition_label(source: &str) -> Option<String> {
     let stripped = strip_container_prefixes(source.trim_start());
     let start = stripped.find('[')?;
@@ -2493,6 +2561,9 @@ fn link_reference_use_label(source: &str) -> Option<String> {
     Some(normalize_link_reference_label(first))
 }
 
+/// The byte index of the `]` closing the label opened at the
+/// start of `source`, honouring nested brackets and backslash
+/// escapes; None when the label never closes.
 fn find_balanced_label_close(source: &str) -> Option<usize> {
     let mut depth = 0usize;
     let mut escaped = false;
@@ -2516,13 +2587,24 @@ fn find_balanced_label_close(source: &str) -> Option<usize> {
     None
 }
 
+/// Normalize a link reference label for matching: resolve
+/// backslash escapes of ASCII punctuation, collapse internal
+/// whitespace, and fold case. A backslash before any other
+/// character is literal text in CommonMark and stays in the key,
+/// so `[a\\b]` and `[ab]` remain distinct labels (CodeRabbit
+/// finding on PR #5949).
 fn normalize_link_reference_label(label: &str) -> String {
     let mut unescaped = String::with_capacity(label.len());
     let mut chars = label.chars();
     while let Some(ch) = chars.next() {
         if ch == '\\' {
-            if let Some(escaped) = chars.next() {
-                unescaped.push(escaped);
+            match chars.next() {
+                Some(escaped) if escaped.is_ascii_punctuation() => unescaped.push(escaped),
+                Some(escaped) => {
+                    unescaped.push('\\');
+                    unescaped.push(escaped);
+                }
+                None => unescaped.push('\\'),
             }
         } else {
             unescaped.push(ch);
@@ -8418,6 +8500,72 @@ mod tests {
             );
         }
         assert_eq!(first, second, "unused definitions round-trip to a fixpoint");
+    }
+
+    #[test]
+    fn test_front_matter_definition_is_not_recovered() {
+        // Codex P2 / CodeRabbit on PR #5949: a definition-shaped line
+        // inside front matter is metadata; recovering it appended a
+        // duplicate outside the block on every save.
+        let original = "---\n[docs]: https://example.com\n---\n\nBody\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[docs]:").count(),
+            1,
+            "front-matter definition is not duplicated: {first:?}"
+        );
+        assert_eq!(first, second, "front-matter round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_use_detection_scoped_to_node_columns() {
+        // Codex P2 / CodeRabbit on PR #5949: the literal code span
+        // sharing the line must not decide the real link's label.
+        let original = "`[unused]` [used]\n\n[unused]: /keep\n[used]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[used](/used-target)"),
+            "real shortcut reference resolves: {first:?}"
+        );
+        assert!(
+            !first.contains("[used]: /used-target"),
+            "consumed definition is not appended: {first:?}"
+        );
+        assert!(
+            first.contains("[unused]: /keep"),
+            "genuinely unused definition is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "column-scoped round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiline_title_literal_marker_survives() {
+        // Codex P2 on PR #5949: a multiline title's continuation line
+        // is title text, not a list container.
+        let original = "Body\n\n[r]: /target \"first\n2. second\"\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\"first\n2. second\""),
+            "multiline title survives verbatim: {first:?}"
+        );
+        assert_eq!(first, second, "multiline-title round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_backslash_label_stays_distinct() {
+        // CodeRabbit on PR #5949: `[a\\b]` and `[ab]` are different
+        // labels; using one must not consume the other's definition.
+        let original = "[ab]\n\n[a\\b]: /keep\n[ab]: /used-target\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[ab](/used-target)"),
+            "used label resolves: {first:?}"
+        );
+        assert!(
+            first.contains("[a\\b]: /keep"),
+            "backslash label definition is preserved: {first:?}"
+        );
+        assert_eq!(first, second, "backslash-label round-trip is a fixpoint");
     }
 
     #[test]
