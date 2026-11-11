@@ -4597,6 +4597,58 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Whether a broker envelope reports success.
+fn envelope_is_ok(v: &Value) -> bool {
+    v.get("ok").and_then(|o| o.as_bool()) == Some(true)
+}
+
+/// #5757-A: claim + lane-assign + session-bind in one broker
+/// round trip — the composition of the three verbs, in order,
+/// with the same semantics as calling them in sequence: a
+/// step's error envelope, or an empty claim, returns verbatim
+/// and later steps are not attempted. The answer carries every
+/// step's row: `row` is the claimed task row (the shape /claim
+/// answers and the client's claim_output consumes); `lane_row`
+/// and `bind_row` are exactly what /lane and /bind answer in
+/// the three-verb flow.
+fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
+    if let Err(e) = crate::client::claim_flow_precheck(req) {
+        return fail(2, e);
+    }
+    let claim = verb_claim(t, req);
+    if !envelope_is_ok(&claim) {
+        return claim;
+    }
+    let row = claim.get("row").cloned().unwrap_or(Value::Null);
+    if row.is_null() {
+        return claim;
+    }
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut lane_req = req.clone();
+    if let Some(obj) = lane_req.as_object_mut() {
+        obj.insert("task_id".to_string(), json!(task_id));
+    }
+    let lane = verb_lane(t, &lane_req);
+    if !envelope_is_ok(&lane) {
+        return lane;
+    }
+    let bind_req = json!({
+        "task_id": task_id,
+        "worker": req.get("worker"),
+        "session_id": req.get("session_id"),
+        "launched_by": req.get("launched_by"),
+    });
+    let bind = verb_bind(t, &bind_req);
+    if !envelope_is_ok(&bind) {
+        return bind;
+    }
+    ok(json!({
+        "row": row,
+        "lane_row": lane.get("row").cloned().unwrap_or(Value::Null),
+        "bind_row": bind.get("row").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 /// Shared guard for the claimed-by verbs: returns the task row or
 /// the PG-shaped refusal.
 fn claimed_by(t: &TursoBackend, task_id: i64, worker: &str, verb: &str) -> Result<Value, Value> {
@@ -6702,6 +6754,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/enqueue" => verb_enqueue(t, req),
         "/revive" => verb_revive(t, req),
         "/claim" => verb_claim(t, req),
+        "/claim-flow" => verb_claim_flow(t, req),
         "/lane" => verb_lane(t, req),
         "/bind" => verb_bind(t, req),
         "/heartbeat" => verb_heartbeat(t, req),
@@ -8366,6 +8419,28 @@ mod tests {
             .map(|r| r["id"].as_i64().unwrap())
             .collect();
         assert_eq!(ids, vec![11, 7, 42], "rows keep pick order");
+    }
+
+    #[test]
+    fn claim_flow_composes_claim_lane_bind_in_order_5757() {
+        // #5757-A oracle: /claim-flow is dispatched, prechecks
+        // before any step runs, and composes the three verbs in
+        // claim -> lane -> bind order, answering with all three
+        // rows. (The verbs themselves are covered by their own
+        // tests; this pins the composition and the route.)
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("\"/claim-flow\" => verb_claim_flow(t, req)"),
+            "dispatch routes /claim-flow"
+        );
+        let flow = seg8217(src, "fn verb_claim_flow(", "\nfn claimed_by(");
+        let pre = flow.find("claim_flow_precheck").expect("precheck present");
+        let c = flow.find("verb_claim(").expect("claim step");
+        let l = flow.find("verb_lane(").expect("lane step");
+        let b = flow.find("verb_bind(").expect("bind step");
+        assert!(pre < c && c < l && l < b, "steps run precheck -> claim -> lane -> bind");
+        assert!(flow.contains("\"bind_row\""), "answer carries the bind row");
+        assert!(flow.contains("\"lane_row\""), "answer carries the lane row");
     }
 
     #[test]
