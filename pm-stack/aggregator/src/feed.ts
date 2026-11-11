@@ -167,12 +167,16 @@ export interface FleetFeedDecisionResolution {
   qid: string;
   /** 1-based index of the question within its ledger item. */
   questionIndex: number;
-  kind: "answered" | "deferred";
+  kind: "answered" | "deferred" | "request-info";
   optionId?: string;
   optionLabel?: string;
   freeText?: string;
   /** Deferred only: the lean recorded with the defer. */
   lean?: "none" | "skeptical" | "approve";
+  /** Request-info only: what Drew said is missing (optional). */
+  note?: string;
+  /** Any kind: Drew's remark attached to the resolution. */
+  comment?: string;
   at: string;
   via: string;
 }
