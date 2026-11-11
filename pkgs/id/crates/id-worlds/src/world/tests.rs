@@ -4643,7 +4643,7 @@ mod tests {
             source: crate::world_caps::LocationSource::Gnss,
         };
         actor.location_consent = crate::world_caps::LocationConsent::Granted;
-        actor.location_fix = Some(reading);
+        actor.set_location_fix(reading);
 
         actor.after_change().await;
         actor
@@ -4659,10 +4659,15 @@ mod tests {
 
         clock.advance(5000);
         actor.fire_loc_watches().await;
+        // The fix was received at t=0 with fix_age_ms 250; at the
+        // t=5000 delivery its true age is 5250 (Codex round-2 P2:
+        // the age is updated at serve time, never served stale).
+        let mut aged = reading;
+        aged.fix_age_ms += 5000;
         assert_eq!(
             loc_events(&actor),
-            vec![crate::world_caps::loc_watch_reading_event(&reading)],
-            "the open watch delivers the host reading"
+            vec![crate::world_caps::loc_watch_reading_event(&aged)],
+            "the open watch delivers the host reading at its true age"
         );
 
         // Consent withdrawn: the next fire closes the watch with
@@ -4673,7 +4678,7 @@ mod tests {
         assert_eq!(
             loc_events(&actor),
             vec![
-                crate::world_caps::loc_watch_reading_event(&reading),
+                crate::world_caps::loc_watch_reading_event(&aged),
                 crate::world_caps::loc_watch_revocation_event(),
             ]
         );
@@ -4713,7 +4718,7 @@ mod tests {
             source: crate::world_caps::LocationSource::Gnss,
         };
         actor.location_consent = crate::world_caps::LocationConsent::Granted;
-        actor.location_fix = Some(reading);
+        actor.set_location_fix(reading);
 
         actor.after_change().await;
         actor
@@ -4728,9 +4733,11 @@ mod tests {
         );
         clock.advance(5000);
         actor.fire_loc_watches().await;
+        let mut aged = reading;
+        aged.fix_age_ms += 5000;
         assert_eq!(
             loc_events(&actor),
-            vec![crate::world_caps::loc_watch_reading_event(&reading)],
+            vec![crate::world_caps::loc_watch_reading_event(&aged)],
             "the open watch delivers before authority is removed"
         );
 
@@ -4752,7 +4759,7 @@ mod tests {
         actor.fire_loc_watches().await;
         assert_eq!(
             loc_events(&actor),
-            vec![crate::world_caps::loc_watch_reading_event(&reading)],
+            vec![crate::world_caps::loc_watch_reading_event(&aged)],
             "no reading is delivered after authority removal"
         );
     }
@@ -4777,6 +4784,94 @@ mod tests {
             crate::world_caps::parse_wants(&text).is_ok(),
             "exactly MAX_LOC_WATCHES location watches must parse"
         );
+    }
+
+    /// A program whose loc.watch wants the test rewrites between
+    /// `after_change` passes, via the shared cell (#8643 round-2 P2).
+    #[derive(Debug)]
+    struct VarLocProgram {
+        wants: std::sync::Arc<std::sync::Mutex<String>>,
+        events: Vec<String>,
+    }
+
+    impl WorldProgram for VarLocProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.events.push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(self.wants.lock().unwrap().clone()))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"events": self.events}).to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn loc_watch_timers_are_pruned_when_subscriptions_leave_wants() {
+        // Oracle: PR #8643 Codex round-2 P2 — when a program replaces
+        // its requested watch interval, the old timer is disarmed by
+        // the wants reconciliation itself, not left in loc_watches
+        // until its distant deadline: the timer map must never hold
+        // an interval that is no longer an active subscription.
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("loc-watch-prune", WorldLimits::default(), clock.clone())
+                .unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["loc.watch".to_owned()]));
+        let mut allowed = crate::world_caps::default_ceiling_names();
+        allowed.insert("loc.watch".to_owned());
+        core.ledger.set_allowed(allowed);
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let wants = std::sync::Arc::new(std::sync::Mutex::new(
+            serde_json::json!({"v": 1, "subscribe": ["loc.watch:60000"]}).to_string(),
+        ));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(VarLocProgram {
+                wants: wants.clone(),
+                events: Vec::new(),
+            }),
+            None,
+        );
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        assert!(
+            actor.loc_watches.contains_key(&60000),
+            "the requested watch arms"
+        );
+
+        // The program replaces its watch with a different interval:
+        // the 60s timer must be pruned by this reconciliation, and
+        // only the new interval stays armed.
+        *wants.lock().unwrap() =
+            serde_json::json!({"v": 1, "subscribe": ["loc.watch:5000"]}).to_string();
+        actor.after_change().await;
+        assert!(
+            !actor.loc_watches.contains_key(&60000),
+            "the replaced watch's timer is pruned when it leaves wants"
+        );
+        assert!(
+            actor.loc_watches.contains_key(&5000),
+            "the replacement watch arms"
+        );
+        assert_eq!(actor.loc_watches.len(), 1, "no stale timers accumulate");
     }
 
     #[tokio::test]

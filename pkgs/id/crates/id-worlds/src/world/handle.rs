@@ -254,6 +254,7 @@ impl WorldHandle {
             device_manifest,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
             location_fix: None,
+            location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
         };

@@ -464,6 +464,11 @@ pub(crate) struct WorldActor {
     /// the state of any host with no location source — answers
     /// `failed` / `no_fix`; a fix is never fabricated.
     pub(crate) location_fix: Option<crate::world_caps::LocationReading>,
+    /// When `location_fix` was received, on the world clock. The
+    /// reading's `fix_age_ms` is its age at receipt; serving adds
+    /// the time elapsed since receipt, so a cached fix never claims
+    /// to be younger than it is (PR #8643 Codex round-2 P2).
+    pub(crate) location_fix_received_at: Option<std::time::Instant>,
     /// Armed `loc.watch` intervals to their next fire time.
     pub(crate) loc_watches: BTreeMap<u64, std::time::Instant>,
     /// Request ids the restored program already listed in `wants` when the
@@ -1296,6 +1301,16 @@ impl WorldActor {
         }
         let current = wants.subscribe.clone();
         self.active_subs.retain(|sub| current.contains(sub));
+        // Timers for subscriptions that just left the wants are
+        // disarmed now, not at their distant deadlines (PR #8643
+        // Codex round-2 P2): otherwise every wants update can leave
+        // up to MAX_LOC_WATCHES stale timers behind, growing the map
+        // — and every next_deadline scan — without bound. This is
+        // the same prune reconcile_subscriptions applies on an
+        // authority change.
+        let active = &self.active_subs;
+        self.loc_watches
+            .retain(|ms, _| active.contains(&Subscription::LocWatch(*ms)));
         self.denied_subs
             .retain(|spec| current.iter().any(|sub| &sub.spec() == spec));
         if self.presence.values().all(|count| *count == 0) {
@@ -1395,7 +1410,7 @@ impl WorldActor {
             }
             self.loc_watches
                 .insert(ms, now + std::time::Duration::from_millis(ms));
-            if let Some(reading) = self.location_fix {
+            if let Some(reading) = self.current_location_reading() {
                 self.deliver(crate::world_caps::loc_watch_reading_event(&reading))
                     .await;
             }
@@ -1505,6 +1520,34 @@ impl WorldActor {
         Ok(manifest.to_json())
     }
 
+    /// Record the host location source's latest fix (#2341 slice 2),
+    /// stamped with the world clock so serving can report the fix's
+    /// true age at delivery time.
+    pub(crate) fn set_location_fix(&mut self, reading: crate::world_caps::LocationReading) {
+        self.location_fix_received_at = Some(self.core.clock().now_instant());
+        self.location_fix = Some(reading);
+    }
+
+    /// The cached fix with its age updated to now: `fix_age_ms` is
+    /// defined as the age when delivered, so the elapsed time since
+    /// receipt is added at serve time (PR #8643 Codex round-2 P2).
+    /// A fix recorded without a receipt stamp (a direct field write)
+    /// is served as recorded.
+    fn current_location_reading(&self) -> Option<crate::world_caps::LocationReading> {
+        let mut reading = self.location_fix?;
+        if let Some(received_at) = self.location_fix_received_at {
+            let elapsed = self
+                .core
+                .clock()
+                .now_instant()
+                .saturating_duration_since(received_at);
+            reading.fix_age_ms = reading
+                .fix_age_ms
+                .saturating_add(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        }
+        Some(reading)
+    }
+
     /// `loc.position` (#2341 slice 2): one reading from the host
     /// location source, gated in order by the cap ledger (in
     /// [`execute`](Self::execute), before dispatch), the consent seam,
@@ -1519,7 +1562,7 @@ impl WorldActor {
         if let Some(refusal) = self.location_consent.refusal() {
             return Err(refusal);
         }
-        let Some(reading) = self.location_fix else {
+        let Some(reading) = self.current_location_reading() else {
             return Err(CapError::no_fix());
         };
         // A supplied ceiling that is not an unsigned integer is
@@ -4058,7 +4101,7 @@ mod device_info_tests {
     fn loc_position_refuses_a_fix_beyond_the_precision_ceiling() {
         let mut actor = loc_actor();
         actor.location_consent = crate::world_caps::LocationConsent::Granted;
-        actor.location_fix = Some(sample_reading());
+        actor.set_location_fix(sample_reading());
         let error = actor
             .execute(&loc_request(serde_json::json!({"max_accuracy_m": 5})))
             .unwrap_err();
@@ -4079,7 +4122,7 @@ mod device_info_tests {
         // requests must not succeed with the imprecise reading.
         let mut actor = loc_actor();
         actor.location_consent = crate::world_caps::LocationConsent::Granted;
-        actor.location_fix = Some(sample_reading());
+        actor.set_location_fix(sample_reading());
         for bad in [serde_json::json!(5.5), serde_json::json!("5")] {
             let error = actor
                 .execute(&loc_request(serde_json::json!({"max_accuracy_m": bad})))
@@ -4147,6 +4190,7 @@ impl WorldActor {
             device_manifest: None,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
             location_fix: None,
+            location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
