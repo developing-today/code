@@ -29,6 +29,7 @@ in
       "services/power-guard"
       "services/openai-cred-watchdog"
       "services/opencode-go-seating-guard"
+      "services/opencode-watchdog"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -92,6 +93,32 @@ in
         services.opencode-go-seating-guard.enable = true;
       }
       {
+        # OpenCode watchdog (code#7780): per-minute user timer asserting
+        # opencode.service is active or port 13420 is serving; an
+        # exit-0 non-serving restart sticks dark under Restart=on-failure,
+        # so after a 120s dark grace window the watchdog alerts and
+        # restarts the unit (Restart=always would race lifecycle
+        # handovers — see the module).
+        services.opencode-watchdog = {
+          enable = true;
+          # The build the watchdog's build-identity check (code#8255)
+          # expects on the port, read from the name of the very
+          # opencode package derivation the unit runs (openchamber's
+          # nested opencode input — the same derivation home/common's
+          # cascade wraps), so expectation and ExecStart resolve from
+          # one derivation and cannot drift apart. This option lives
+          # at the NixOS level (this module is a NixOS import); the
+          # home-manager copy of this setting that #8255 landed in
+          # home/common/default.nix named an option that does not
+          # exist there and broke evaluation of the whole config.
+          expectedVersion =
+            let
+              m = builtins.match "opencode-(.*)" inputs.openchamber.inputs.opencode.packages.x86_64-linux.opencode.name;
+            in
+            if m == null then "" else builtins.head m;
+        };
+      }
+      {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
         # backup (local + R2 + Drive) and the repo-archive restic job,
         # declared in this flake (nixos/home/laptop-backups.nix) as a
@@ -134,6 +161,16 @@ in
         };
       }
       {
+        # Laptop scratch sweep (darwin-nix#373): daily reaping of
+        # opencode test/build scratch (>72h) and mcpx binary dirs
+        # (>24h) - the two un-reaped scratch growth sources behind
+        # the 2026-11-11 disk catch.
+        home-manager.users.user = {
+          imports = [ ../home/laptop-scratch-sweep.nix ];
+          services.laptop-scratch-sweep.enable = true;
+        };
+      }
+      {
         # GitHub backup mirror timers (code#3215): webhook-queue
         # drain every 5 min, daily mirror fetch, weekly reconcile.
         # Folded into the flake 2026-11-01 (code#3720); the scripts
@@ -164,6 +201,21 @@ in
             ../home/cloudflare-quota-export.nix
           ];
           services.cloudflare-quota-export.enable = true;
+        };
+      }
+      {
+        # Supabase -> Turso coord mirror (code#1723): the daily
+        # sync_agent_to_turso duty that moved to the laptop with
+        # the Tier-2 migration but was never scheduled (its
+        # watermark sat at 2026-10-28). Declared in this flake
+        # (nixos/home/supabase-turso-coord-mirror.nix) per Drew's
+        # all-laptop-services-in-nix rule. The identical hand
+        # units were installed 2026-11-11 ahead of the switch so
+        # the schedule was live; the switch replaces them with
+        # the store units below.
+        home-manager.users.user = {
+          imports = [ ../home/supabase-turso-coord-mirror.nix ];
+          services.supabase-turso-coord-mirror.enable = true;
         };
       }
       {

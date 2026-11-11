@@ -142,7 +142,7 @@
     },
     {
       "id": "id.roc.examples",
-      "paths": ["pkgs/id/examples/roc-world/**"],
+      "paths": ["pkgs/id/examples/lounge/**", "pkgs/id/examples/roc-chat/**", "pkgs/id/examples/roc-counter/**", "pkgs/id/examples/roc-grid/**", "pkgs/id/examples/roc-screen/**", "pkgs/id/examples/roc-text-counter/**", "pkgs/id/examples/territory/**", "pkgs/id/apps/tic-tac-toe/program/**", "pkgs/id/scripts/rebuild-roc-examples.sh"],
       "invocation": "roc-examples flake check: rebuild examples, run sandbox/world tests, cargo test --test toolchain_pin",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -151,6 +151,34 @@
         "dispatchable": true
       },
       "status": "mapped"
+    },
+    {
+      "id": "id.examples.plaza-sdk",
+      "paths": ["pkgs/id/examples/rust-world/src/**"],
+      "invocation": "cargo test --manifest-path examples/rust-world/Cargo.toml (test-rust-examples flake check)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-rust-examples",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [7904],
+      "notes": "plaza-sdk is a standalone crate outside the pkgs/id workspace (own [workspace] table), so workspace test venues never ran its 9 unit tests before #7904."
+    },
+    {
+      "id": "id.examples.rust-counter",
+      "paths": ["pkgs/id/examples/rust-counter/src/**"],
+      "invocation": "cargo test --manifest-path examples/rust-counter/Cargo.toml (test-rust-examples flake check); counter.wasm rebuilt from source and sandbox-tested in the rust-counter-wasm flake check",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-rust-examples",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [7904],
+      "notes": "Standalone crate (path dependency on plaza-sdk); its checked-in counter.wasm is loaded by the sandbox conformance tests (src/sandbox.rs), and the rust-counter-wasm check rebuilds the module from source (roc-examples pattern) and runs those tests against the rebuild -- wasm bytes are not reproducible across rustc builds, so no byte gate."
     },
     {
       "id": "id.web.playwright",
@@ -319,6 +347,20 @@
       "reason": "The registered mcpx-test workflow is disabled_manually."
     },
     {
+      "id": "mcpx.scripts.affected-embeds",
+      "paths": ["pkgs/mcpx/scripts/tests/test_affected_embeds.py"],
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run mcpx embed-selector regression tests (#6866)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6866],
+      "reason": "The active scripts-test PR workflow explicitly checks for this file before running the selector regressions; mcpx-test includes a separate dispatch-only step too."
+    },
+    {
       "id": "mcpx.plugin.v1",
       "paths": ["pkgs/mcpx/plugin/opencode/mcpx/*.test.ts"],
       "invocation": "bun test plugin/opencode/mcpx/",
@@ -444,11 +486,16 @@
       "paths": [
         "infra/cargo-target-janitor/tests/test_cargo_target_janitor.py"
       ],
-      "invocation": "Python test; exact command not established",
-      "venue": null,
-      "status": "uncovered",
+      "invocation": "python3 infra/cargo-target-janitor/tests/test_cargo_target_janitor.py",
+      "venue": {
+        "workflow": ".github/workflows/cargo-target-janitor.yml",
+        "job_step": "test / Run deletion-safety tests",
+        "state": "unknown",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
       "phase2_issue": 5952,
-      "reason": "Hourly service runs the janitor, not its tests."
+      "reason": "New venue requires an observed successful Actions run and enablement audit."
     },
     {
       "id": "t3code.seed-providers",
@@ -697,10 +744,15 @@
       "id": "pm-stack.meta-exporter",
       "paths": ["pm-stack/meta-exporter/meta-quota-export.test.mjs"],
       "invocation": "node --test pm-stack/meta-exporter/meta-quota-export.test.mjs",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 6185,
-      "reason": "Added to current main after the initial inventory; no workflow invokes it. Phase 2 follow-up must be filed."
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test meta-exporter suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6344],
+      "notes": "Wired by #6344: pm-stack-tests.yml gains pm-stack/meta-exporter/** in both push and pull_request path filters and a guarded step running the explicit test file under Node 24; the registry records configuration, not an automatic coverage claim."
     },
     {
       "id": "github-backup.python",
@@ -713,7 +765,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "related_issues": [5937]
+      "related_issues": [5937, 7777]
     },
     {
       "id": "repo-universe.python",
@@ -957,10 +1009,15 @@
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
-      "venue": null,
-      "status": "uncovered",
+      "venue": {
+        "workflow": ".github/workflows/atlas-search-pr.yml",
+        "job_step": "atlas-search / Test atlas-search, Test atlas-core, Test atlas-proto, Test atlas-embed",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
       "phase2_issue": 6185,
-      "reason": "Flake checks.default exists, but no workflow invocation was confirmed; Phase 2 follow-up must be filed."
+      "reason": "Wired by #7825: atlas-search-pr.yml runs all four crates with --all-targets on pull_request, push to main, and workflow_dispatch. gate_a's model test remains #[ignore]d (requires ATLAS_ORT_LIB and the pinned model snapshot)."
     },
     {
       "id": "fleet.rust",

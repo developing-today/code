@@ -31,8 +31,11 @@ workflow's decision, on main only.
 """
 
 import collections
+import datetime
 import json
+import re
 import sys
+from urllib.parse import urlsplit
 
 
 class StoredRecordError(ValueError):
@@ -91,7 +94,50 @@ def parse_stored(raw):
 _EVENT_STRING_FIELDS = ("Package", "Test", "Action", "Output")
 
 
-def read(path):
+QUARANTINE_NOTICE = re.compile(
+    r"quarantined until (?P<expiry>\d{4}-\d{2}-\d{2}) "
+    r"\((?P<issue>[^()\s]+)\)"
+)
+GITHUB_ISSUE_PATH = re.compile(r"/[^/\s?#]+/[^/\s?#]+/issues/[1-9]\d*")
+# In the real `go test -json` stream, a test's skip message carries the
+# Go-generated source location of the t.Skipf call site:
+# "widgets_test.go:42: quarantined until ...". That prefix is part of
+# the output format, not of the notice, so strip exactly that shape
+# before validating the complete notice.
+GO_SOURCE_PREFIX = re.compile(r"[^\s/:]+\.go:\d+: ")
+
+
+def is_valid_quarantine_notice(reason, today):
+    match = QUARANTINE_NOTICE.fullmatch(GO_SOURCE_PREFIX.sub("", reason, count=1))
+    if not match:
+        return False
+
+    expiry_text = match.group("expiry")
+    try:
+        expiry = datetime.date.fromisoformat(expiry_text)
+        issue = urlsplit(match.group("issue"))
+    except ValueError:
+        return False
+
+    return (
+        expiry.isoformat() == expiry_text
+        and expiry >= today
+        and issue.scheme == "https"
+        and issue.netloc == "github.com"
+        and GITHUB_ISSUE_PATH.fullmatch(issue.path) is not None
+        and not issue.query
+        and not issue.fragment
+    )
+
+
+def utc_date(now):
+    parsed = datetime.datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc).date()
+
+
+def read(path, today):
     counts = collections.Counter()
     out = collections.defaultdict(list)
     skipped, failed, package_failed = [], [], []
@@ -129,7 +175,9 @@ def read(path):
             if o.strip() and not o.lstrip().startswith(("=== ", "--- "))
         ]
         reasons[k] = (lines[-1] if lines else "(no reason given)")[:200]
-    quarantined = sorted(k for k in skipped if "quarantined until " in reasons[k])
+    quarantined = sorted(
+        k for k in skipped if is_valid_quarantine_notice(reasons[k], today)
+    )
     counted = sorted(k for k in skipped if k not in quarantined)
     # A failing test also emits a package-level fail for its package; only
     # packages without their own test failure are independent package failures
@@ -181,7 +229,7 @@ def decide(skipped, passed, failed_n, stored, run, now):
 
 def main(path, stored_raw, run, now, summary, new_file):
     counts, skipped, failed, reasons, quarantined, all_skipped, package_failed = read(
-        path
+        path, utc_date(now)
     )
     try:
         stored = parse_stored(stored_raw)

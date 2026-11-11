@@ -431,18 +431,13 @@ export function resolveTooltipDisplay(input: TooltipVisibilityInput): TooltipDis
   if (stage !== null) return stage;
 
   if (input.mode === "minimal") {
-    return hoverSince !== null && input.now - hoverSince >= HOVER_TOOLTIP_DELAY_MS
-      ? "tooltip"
-      : "minimal";
+    return hoverSince !== null && input.now - hoverSince >= HOVER_TOOLTIP_DELAY_MS ? "tooltip" : "minimal";
   }
   return "tooltip";
 }
 
 /** Read one cursor's display state, defaulting to the resting state. */
-export function getCursorDisplayState(
-  states: CursorDisplayStateMap,
-  clientID: string | number,
-): CursorDisplayState {
+export function getCursorDisplayState(states: CursorDisplayStateMap, clientID: string | number): CursorDisplayState {
   return states.get(clientID) ?? DEFAULT_CURSOR_DISPLAY_STATE;
 }
 
@@ -507,12 +502,7 @@ export function partitionCursorsByMinimized<T extends { clientID: string | numbe
 // liveness (socket close / pong timeout, see pkgs/id/src/web/collab.rs),
 // never by local pointer idleness.
 
-export type CursorLifecycleEvent =
-  | "first-inactive"
-  | "minimum-reached"
-  | "removed"
-  | "hover"
-  | "unhover";
+export type CursorLifecycleEvent = "first-inactive" | "minimum-reached" | "removed" | "hover" | "unhover";
 
 /**
  * Age-based lifecycle events that should be logged for a cursor of age

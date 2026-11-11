@@ -45,8 +45,17 @@ use fleet_registry::{
 #[cfg(feature = "secrets")]
 mod secrets;
 
+#[allow(dead_code)]
+// the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
+mod derived_version;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SOURCE_REV: &str = env!("FLEET_SOURCE_REV");
+/// The derived per-app version (#8566; derivation in
+/// `derived_version.rs`, baked by build.rs from the app's tags,
+/// with `$FLEET_DERIVED_VERSION` as the packaged-build channel —
+/// the same channel shape as `FLEET_SOURCE_REV`).
+const DERIVED_VERSION: &str = env!("FLEET_DERIVED_VERSION");
 
 const EXIT_OK: i32 = 0;
 const EXIT_USAGE: i32 = 2;
@@ -57,7 +66,7 @@ const EXIT_UNAVAILABLE: i32 = 69;
 /// The capabilities this artifact was compiled with (its Cargo feature
 /// set). `proxy-connect` is unconditional: it is in every variant (§2).
 fn compiled_capabilities() -> CapabilitySet {
-    let mut caps = capability_set(&[Capability::ProxyConnect]);
+    let mut caps = capability_set(&[Capability::ProxyConnect, Capability::ProxyRawSplice]);
     if cfg!(feature = "proxy-serve") {
         caps.insert(Capability::ProxyServe);
     }
@@ -250,6 +259,7 @@ fn print_version(surface: &Surface, invoked_as: &str) {
         ),
         None => println!("Build: {build}"),
     }
+    println!("Derived version: {DERIVED_VERSION}");
     println!("Source rev: {SOURCE_REV}");
     println!("Enabled capabilities: {}", format_caps(&surface.usable()));
 }
@@ -280,6 +290,7 @@ fn print_capabilities(surface: &Surface, invoked_as: &str) {
         "build": {
             "name": build,
             "version": VERSION,
+            "derived_version": DERIVED_VERSION,
             "source_rev": SOURCE_REV,
             "invoked_as": invoked_as,
             "profile": surface.profile.map(|v| v.name()),
@@ -341,7 +352,7 @@ fn help_text(surface: &Surface) -> String {
     }
     out.push_str("\nBuilt-in commands:\n");
     out.push_str(
-        "  init           Autostart the session proxy if it is not running (no-op when it is)\n",
+        "  init           Autostart this host's roles per the [host] manifest (no-op when running)\n",
     );
     out.push_str("  version        Print version, enabled capabilities, and source rev\n");
     out.push_str("  capabilities   Print the registry and this build's capabilities as JSON\n");
@@ -370,7 +381,9 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "secrets" => "included in this build",
             "search" => "included in this build",
             "proxy" => "included in this build",
-            "serve" => "included in this build (queue-broker, secrets-broker and search roles)",
+            "serve" => {
+                "included in this build (queue-broker, secrets-broker, search and proxy roles)"
+            }
             _ => "included in this build (implementation lands in a later step of epic #5412)",
         },
         CapState::NotInBuild => {
@@ -402,8 +415,9 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
                 Some("queue-broker") => Ok(Capability::QueueBroker),
                 Some("secrets-broker") => Ok(Capability::SecretsBroker),
                 Some("search") => Ok(Capability::SearchServe),
+                Some("proxy") => Ok(Capability::ProxyServe),
                 _ => Err(usage_error(
-                    "'fleet serve' needs a role: queue-broker, secrets-broker, or search",
+                    "'fleet serve' needs a role: queue-broker, secrets-broker, search, or proxy",
                 )),
             }
         }
@@ -418,8 +432,9 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
                 Some("connect") | Some("init") | Some("ssh") => Ok(Capability::ProxyConnect),
+                Some("splice") => Ok(Capability::ProxyRawSplice),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, init, or ssh",
+                    "'fleet proxy' needs a command: serve, connect, init, ssh, or splice",
                 )),
             }
         }
@@ -452,6 +467,9 @@ fn broker_argument_error(d: &Domain, args: &[String]) -> Option<String> {
     if d.name != "serve" {
         return None;
     }
+    if parse_serve_list(args).is_some() {
+        return None;
+    }
     let role = args.first()?.as_str();
     if !matches!(role, "queue-broker" | "secrets-broker") {
         return None;
@@ -468,6 +486,225 @@ fn search_serve_tail<'a>(d: &Domain, args: &'a [String]) -> Option<&'a [String]>
     match (d.name, first) {
         ("serve", Some("search")) | ("search", Some("serve")) => Some(&args[1..]),
         _ => None,
+    }
+}
+
+/// One role of the `serve` domain, spelled as its registry token
+/// (#6264, design #5698).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServeRole {
+    QueueBroker,
+    SecretsBroker,
+    Search,
+    Proxy,
+}
+
+impl ServeRole {
+    fn from_token(token: &str) -> Option<ServeRole> {
+        match token {
+            "queue-broker" => Some(ServeRole::QueueBroker),
+            "secrets-broker" => Some(ServeRole::SecretsBroker),
+            "search" => Some(ServeRole::Search),
+            "proxy" => Some(ServeRole::Proxy),
+            _ => None,
+        }
+    }
+
+    fn token(self) -> &'static str {
+        match self {
+            ServeRole::QueueBroker => "queue-broker",
+            ServeRole::SecretsBroker => "secrets-broker",
+            ServeRole::Search => "search",
+            ServeRole::Proxy => "proxy",
+        }
+    }
+
+    fn capability(self) -> Capability {
+        match self {
+            ServeRole::QueueBroker => Capability::QueueBroker,
+            ServeRole::SecretsBroker => Capability::SecretsBroker,
+            ServeRole::Search => Capability::SearchServe,
+            ServeRole::Proxy => Capability::ProxyServe,
+        }
+    }
+}
+
+/// The complete current serve set (#6264): every role the serve
+/// domain can run today. The serve list can express all of them in
+/// one invocation — Drew's "equivalent of all" acceptance criterion
+/// on design #5698 — and `serve_set_covers_every_serve_token` in the
+/// tests pins this list to the tokens `required_capability` accepts.
+const SERVE_SET: [ServeRole; 4] = [
+    ServeRole::QueueBroker,
+    ServeRole::SecretsBroker,
+    ServeRole::Search,
+    ServeRole::Proxy,
+];
+
+/// Parse a multi-role serve list (design #5698 option (i), impl
+/// #6264): `fleet serve <role> [<role> ...]` with two or more
+/// distinct role tokens and nothing else.
+///
+/// Returns None when the invocation is not a list — a single role,
+/// or a role followed by its own tail (the search role's flags, a
+/// help flag) — so those keep the existing single-role paths and
+/// their per-role argument rules. Returns Some(Err) when the first
+/// two tokens are roles but the rest of the list is malformed (a
+/// stray token or a duplicate role): a list is validated as a
+/// whole, never partially started.
+fn parse_serve_list(args: &[String]) -> Option<Result<Vec<ServeRole>, String>> {
+    if args.len() < 2 {
+        return None;
+    }
+    ServeRole::from_token(&args[0])?;
+    ServeRole::from_token(&args[1])?;
+    let mut roles: Vec<ServeRole> = Vec::new();
+    for token in args {
+        match ServeRole::from_token(token) {
+            Some(role) => {
+                if roles.contains(&role) {
+                    return Some(Err(format!(
+                        "duplicate role '{token}' in 'fleet serve' list"
+                    )));
+                }
+                roles.push(role);
+            }
+            None => {
+                return Some(Err(format!(
+                    "unexpected argument '{token}' in 'fleet serve' list: a serve list is role tokens only ({})",
+                    SERVE_SET
+                        .iter()
+                        .map(|r| r.token())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+    }
+    Some(Ok(roles))
+}
+
+/// Run one serve role in the calling thread. Only reached after the
+/// role's capability state checked out Available, so a feature that
+/// is not compiled in is unreachable here.
+fn run_serve_role(role: ServeRole, config: &fleet_config::Config) -> i32 {
+    match role {
+        ServeRole::QueueBroker => {
+            #[cfg(feature = "queue-broker")]
+            {
+                fleet_queue::queue_broker::run()
+            }
+            #[cfg(not(feature = "queue-broker"))]
+            {
+                unreachable!("queue-broker role gated by capability before spawn")
+            }
+        }
+        ServeRole::SecretsBroker => {
+            #[cfg(feature = "secrets-broker")]
+            {
+                fleet_queue::secrets_broker::run()
+            }
+            #[cfg(not(feature = "secrets-broker"))]
+            {
+                unreachable!("secrets-broker role gated by capability before spawn")
+            }
+        }
+        ServeRole::Search => {
+            #[cfg(feature = "search-serve")]
+            {
+                fleet_search::serve::run(&[])
+            }
+            #[cfg(not(feature = "search-serve"))]
+            {
+                unreachable!("search role gated by capability before spawn")
+            }
+        }
+        ServeRole::Proxy => {
+            #[cfg(feature = "proxy-serve")]
+            {
+                // Co-hosted: the proxy's idle-exit is disabled so an
+                // idle proxy cannot exit the shared process (#8394
+                // Codex P1); the supervisor above owns the lifetime.
+                fleet_proxy::serve::run_cohosted(config)
+            }
+            #[cfg(not(feature = "proxy-serve"))]
+            {
+                unreachable!("proxy role gated by capability before spawn")
+            }
+        }
+    }
+}
+
+/// Run a validated multi-role serve list in this one process
+/// (#6264): every role's existing blocking serve loop on its own
+/// thread, supervised from here. All roles are capability-checked
+/// before anything binds — a role this invocation cannot run stubs
+/// the whole list (exit 69) with no partial start. A role thread
+/// that returns or panics is fatal to the process (the external
+/// supervisor restarts the unit, per design #5698): the exit code
+/// is the role's own when it reported one, else 1, and the role is
+/// named on stderr either way.
+fn run_serve_list(surface: &Surface, roles: &[ServeRole], invoked_as: &str) -> i32 {
+    for role in roles {
+        let state = surface.cap_state(role.capability(), "serve");
+        if state != CapState::Available {
+            eprintln!(
+                "fleet serve: role '{}' cannot run in this invocation",
+                role.token()
+            );
+            return stub(surface, "serve", &state, invoked_as);
+        }
+    }
+    println!(
+        "fleet serve: starting {} roles in one process: {}",
+        roles.len(),
+        roles
+            .iter()
+            .map(|r| r.token())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut handles = Vec::new();
+    for role in roles {
+        let role = *role;
+        let config = surface.config.clone();
+        handles.push((
+            role,
+            std::thread::spawn(move || run_serve_role(role, &config)),
+        ));
+    }
+    loop {
+        // The position scan's borrow ends before the finished
+        // handle is taken out of the vector.
+        let finished = handles.iter().position(|(_, h)| h.is_finished());
+        if let Some(pos) = finished {
+            let (role, handle) = handles
+                .into_iter()
+                .nth(pos)
+                .expect("position was just observed");
+            // The process exits with this role's outcome, which
+            // ends the sibling threads with it.
+            let code = match handle.join() {
+                Ok(code) => code,
+                Err(_) => {
+                    eprintln!("fleet serve: role '{}' panicked", role.token());
+                    return 1;
+                }
+            };
+            if code == EXIT_OK {
+                eprintln!(
+                    "fleet serve: role '{}' exited; shutting the serve list down",
+                    role.token()
+                );
+                return 1;
+            }
+            eprintln!(
+                "fleet serve: role '{}' exited with code {code}; shutting the serve list down",
+                role.token()
+            );
+            return code;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -499,6 +736,18 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
     };
     match surface.cap_state(cap, d.name) {
         CapState::Available => {
+            // #6264 (design #5698 option (i)): a multi-role serve
+            // list runs every listed role in this one process. The
+            // parse returns None for single-role invocations, which
+            // keep the paths below unchanged.
+            if d.name == "serve" {
+                if let Some(list) = parse_serve_list(args) {
+                    match list {
+                        Ok(roles) => return run_serve_list(surface, &roles, invoked_as),
+                        Err(message) => return usage_error(&message),
+                    }
+                }
+            }
             // Step 2 (#5430): the queue domain runs for real — the
             // repo-queue client surface and the two broker roles.
             // `--version` through the argv0 route is the census fix:
@@ -527,6 +776,7 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
                             "fleet"
                         }
                     );
+                    println!("Derived version: {DERIVED_VERSION}");
                     return EXIT_OK;
                 }
                 return fleet_queue::client::run(args);
@@ -545,6 +795,14 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "search-serve")]
             if let Some(tail) = search_serve_tail(d, args) {
                 return fleet_search::serve::run(tail);
+            }
+            // #6770 (design #5687 §5): the proxy daemon role under
+            // its serve spelling — the same leaf as `fleet proxy
+            // serve`. fleet-proxy's spawn_serve spawns this
+            // spelling since the rename, so this route is what
+            // every auto-started broker now runs as.
+            if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("proxy") {
+                return run_serve_proxy(surface, &args[1..]);
             }
             // Step 4 (#5432): the dispatch domain runs for real — a
             // thin client over pm-stack's pm-dispatch service.
@@ -588,6 +846,42 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
     }
 }
 
+const SERVE_PROXY_USAGE: &str = "\
+Usage: fleet serve proxy
+
+Run the session proxy (the broker) in the foreground, binding the
+broker socket from fleet config (FLEET_BROKER_SOCKET / broker_socket).
+The same leaf as 'fleet proxy serve'.
+
+Takes no arguments.";
+
+/// `fleet serve proxy` — the proxy daemon role under its serve
+/// spelling (design #5687 §5, impl #6770). Argument handling is
+/// the proxy serve leaf's own (`classify_proxy_serve_args`): the
+/// leaf takes no arguments, so a trailing one is a usage error,
+/// never something silently dropped before the socket is bound.
+fn run_serve_proxy(surface: &Surface, tail: &[String]) -> i32 {
+    match classify_proxy_serve_args(tail) {
+        ProxyServeArgs::Help => {
+            println!("{SERVE_PROXY_USAGE}");
+            EXIT_OK
+        }
+        ProxyServeArgs::Reject(arg) => usage_error(&format!(
+            "'fleet serve proxy' takes no arguments, got {arg:?}\n\n{SERVE_PROXY_USAGE}"
+        )),
+        ProxyServeArgs::Run => {
+            #[cfg(feature = "proxy-serve")]
+            {
+                fleet_proxy::serve::run(&surface.config)
+            }
+            #[cfg(not(feature = "proxy-serve"))]
+            {
+                unreachable!("serve proxy dispatched without the proxy-serve capability")
+            }
+        }
+    }
+}
+
 const PROXY_SERVE_USAGE: &str = "\
 Usage: fleet proxy serve
 
@@ -606,6 +900,14 @@ the fixed destination. The fleet proxy credential stays in the environment and
 is sent only by the CONNECT relay.
 
 The inner SSH destination is fixed; do not pass an SSH `--` separator.";
+
+const PROXY_SPLICE_USAGE: &str = "\
+Usage: fleet proxy splice
+
+Listen on 127.0.0.1:21118 and relay each accepted TCP stream through
+the fleet broker to the laptop's RustDesk direct-access service.
+
+Takes no arguments.";
 
 /// What the arguments after `fleet proxy serve` ask for. The serve
 /// leaf takes no arguments at all (`fleet_proxy::serve::run` is
@@ -690,6 +992,24 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
         }
         Some("init") => run_init_call(surface, &args[1..]),
         Some("ssh") => run_proxy_ssh(&args[1..], config),
+        Some("splice") => {
+            if args[1..].iter().any(|a| is_help_flag(a)) {
+                println!("{PROXY_SPLICE_USAGE}");
+                return EXIT_OK;
+            }
+            if let Some(arg) = args.get(1) {
+                return usage_error(&format!(
+                    "'fleet proxy splice' takes no arguments, got {arg:?}\n\n{PROXY_SPLICE_USAGE}"
+                ));
+            }
+            match fleet_proxy::raw_splice::run(config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
         _ => unreachable!("required_capability rejects other proxy commands first"),
     }
 }
@@ -942,6 +1262,7 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
                 return code;
             }
             println!("fleet {VERSION}");
+            println!("Derived version: {DERIVED_VERSION}");
             EXIT_OK
         }
         Some("version") => {
@@ -1419,6 +1740,61 @@ mod tests {
             EXIT_USAGE,
             "an unknown domain name stays a usage error"
         );
+    }
+
+    #[test]
+    fn serve_list_parses_two_or_more_distinct_roles() {
+        let list = parse_serve_list(&args(&["queue-broker", "secrets-broker"]))
+            .expect("two role tokens are a list")
+            .expect("distinct roles parse");
+        assert_eq!(list, vec![ServeRole::QueueBroker, ServeRole::SecretsBroker]);
+        let list = parse_serve_list(&args(&["search", "proxy", "queue-broker"]))
+            .expect("three role tokens are a list")
+            .expect("distinct roles parse");
+        assert_eq!(
+            list,
+            vec![ServeRole::Search, ServeRole::Proxy, ServeRole::QueueBroker]
+        );
+    }
+
+    #[test]
+    fn serve_list_rejects_duplicates_and_stray_tokens() {
+        let dup = parse_serve_list(&args(&["queue-broker", "queue-broker"]))
+            .expect("role tokens are a list")
+            .expect_err("a duplicate role is an error");
+        assert!(dup.contains("duplicate role 'queue-broker'"), "{dup}");
+        let stray = parse_serve_list(&args(&["queue-broker", "secrets-broker", "--bogus"]))
+            .expect("leading role tokens are a list")
+            .expect_err("a stray token is an error");
+        assert!(stray.contains("--bogus"), "{stray}");
+    }
+
+    #[test]
+    fn serve_list_leaves_single_role_invocations_alone() {
+        // One role: not a list.
+        assert!(parse_serve_list(&args(&["queue-broker"])).is_none());
+        // A role plus its own tail (the search role's flags, a help
+        // flag after a broker role): not a list; the single-role
+        // paths keep their own argument rules for these.
+        assert!(parse_serve_list(&args(&["search", "--port", "1234"])).is_none());
+        assert!(parse_serve_list(&args(&["queue-broker", "--help"])).is_none());
+        // No role at all: not a list.
+        assert!(parse_serve_list(&args(&["--help"])).is_none());
+        assert!(parse_serve_list(&args(&[])).is_none());
+    }
+
+    #[test]
+    fn serve_set_covers_every_serve_token() {
+        // Drew's "equivalent of all" criterion (#5698, carried by
+        // #6264): the serve list can express the complete current
+        // serve set — exactly the role tokens required_capability
+        // accepts for the serve domain.
+        for token in ["queue-broker", "secrets-broker", "search", "proxy"] {
+            let role = ServeRole::from_token(token).expect("serve token has a role");
+            assert!(SERVE_SET.contains(&role), "{token} missing from SERVE_SET");
+            assert_eq!(role.token(), token);
+        }
+        assert_eq!(SERVE_SET.len(), 4);
     }
 
     #[test]

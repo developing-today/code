@@ -48,6 +48,70 @@ def parse(ts):
     return dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
 
 
+class BadInput(Exception):
+    def __init__(self, field, message):
+        super().__init__(message)
+        self.field = field
+        self.message = message
+
+
+def load_json(raw, field):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise BadInput(field, "is not valid JSON") from None
+
+
+def require_string_list(value, field):
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise BadInput(field, "must be a JSON array of strings")
+
+
+def validate_timestamp(record, name, field):
+    if field not in record:
+        return
+    value = record[field]
+    if not isinstance(value, str):
+        raise BadInput(f"{name}.{field}", "must be a parseable timestamp")
+    try:
+        parse(value)
+    except ValueError:
+        raise BadInput(f"{name}.{field}", "must be a parseable timestamp") from None
+
+
+def validate_record(value, name, *, timestamps=(), strings=(), string_lists=()):
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise BadInput(f"{name} record", "must be a JSON object or null")
+    record = value
+    for field in timestamps:
+        validate_timestamp(record, name, field)
+    for field in strings:
+        if field in record and not isinstance(record[field], str):
+            raise BadInput(f"{name}.{field}", "must be a string")
+    for field in string_lists:
+        if field in record:
+            require_string_list(record[field], f"{name}.{field}")
+    if name == "failure" and "count" in record:
+        count = record["count"]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise BadInput("failure.count", "must be a non-negative integer")
+    if name == "failure" and record.get("count", 0) > 0 and "first_timestamp" not in record:
+        raise BadInput("failure.first_timestamp", "is required when failure.count is positive")
+
+
+def could_not_read(summary, out, field, message):
+    with open(summary, "a") as f:
+        f.write(f"\n## Spec parity: ❌ could not read {field}\n\n{field}: {message}.\n")
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "status"), "w") as f:
+        f.write("error")
+    with open(os.path.join(out, "sleep"), "w") as f:
+        f.write("0")
+    return 0
+
+
 def hours(a, b):
     return (b - a).total_seconds() / 3600.0
 
@@ -186,9 +250,26 @@ def decide(mcpx, suite, now, run, success, failure, on_main, allow_mcpx=(), allo
 
 def main(argv):
     (mcpx_raw, suite_raw, now, run, succ_raw, fail_raw, on_main, summary, out) = argv[1:10]
-    allow_mcpx = json.loads(argv[10]) if len(argv) > 10 and argv[10].strip() else []
-    allow_suite = json.loads(argv[11]) if len(argv) > 11 and argv[11].strip() else []
-    mcpx, suite = json.loads(mcpx_raw), json.loads(suite_raw)
+    try:
+        allow_mcpx = load_json(argv[10], "MCPX allow list") if len(argv) > 10 and argv[10].strip() else []
+        allow_suite = load_json(argv[11], "suite allow list") if len(argv) > 11 and argv[11].strip() else []
+        mcpx = load_json(mcpx_raw, "MCPX revisions")
+        suite = load_json(suite_raw, "suite revisions")
+        require_string_list(mcpx, "MCPX revisions")
+        require_string_list(suite, "suite revisions")
+        require_string_list(allow_mcpx, "MCPX allow list")
+        require_string_list(allow_suite, "suite allow list")
+        success = load_json(succ_raw, "success record") if succ_raw.strip() else None
+        failure = load_json(fail_raw, "failure record") if fail_raw.strip() else None
+        validate_record(success, "success", timestamps=("timestamp",), strings=("run",),
+                        string_lists=("specs",))
+        validate_record(failure, "failure", timestamps=("first_timestamp", "latest_timestamp"),
+                        strings=("first_run", "latest_run"))
+        parse(now)
+    except BadInput as exc:
+        return could_not_read(summary, out, exc.field, exc.message)
+    except ValueError:
+        return could_not_read(summary, out, "now", "must be a parseable timestamp")
     if not mcpx or not suite:
         with open(summary, "a") as f:
             f.write("\n## Spec parity: ❌ could not read the lists\n\n"
@@ -198,8 +279,6 @@ def main(argv):
         open(os.path.join(out, "status"), "w").write("error")
         open(os.path.join(out, "sleep"), "w").write("0")
         return 0
-    success = json.loads(succ_raw) if succ_raw.strip() else None
-    failure = json.loads(fail_raw) if fail_raw.strip() else None
     status, sleep, new_s, new_f, lines = decide(mcpx, suite, now, run, success, failure,
                                                 on_main == "true", allow_mcpx, allow_suite)
     os.makedirs(out, exist_ok=True)

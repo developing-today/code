@@ -118,19 +118,6 @@ func writeFeatureCoverageLedger(path string, rows []featureCoverageRow) error {
 	return nil
 }
 
-func TestMain(m *testing.M) {
-	code := m.Run()
-	path := featureCoverageLedgerPath()
-	rows := featureCoverageSnapshot()
-	if err := writeFeatureCoverageLedger(path, rows); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		code = 1
-	} else {
-		fmt.Printf("feature coverage ledger: %s (%d rows)\n", path, len(rows))
-	}
-	os.Exit(code)
-}
-
 func recordSettingProbes(t *testing.T) {
 	for path, test := range settings.EffectProbes {
 		if test == t.Name() {

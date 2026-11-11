@@ -287,6 +287,21 @@ class CliTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertIn("unknown target", proc.stderr)
 
+    def test_cli_rejects_invalid_target_shape(self):
+        with tempfile.TemporaryDirectory() as state:
+            bad_defn = dict(DEFN, targets=["bad target"])
+            registry = {"svc": bad_defn}
+            reg_path = os.path.join(state, "registry.json")
+            with open(reg_path, "w", encoding="utf-8") as fh:
+                json.dump(registry, fh)
+            env = dict(os.environ, DEPLOY_STATE_DIR=state)
+            proc = subprocess.run(
+                [sys.executable, DEPLOY_PATH, "--registry", reg_path, "list"],
+                capture_output=True, text=True, env=env, timeout=30,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("targets must be host/class names matching", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])

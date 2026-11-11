@@ -189,6 +189,16 @@ describe("saas extraction (Part b)", () => {
     expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
   });
 
+  test("sources provenance: quota-view section names are literal heading text (#6848)", () => {
+    // Fly.io's spec heading is the only one with a regex escape
+    // (/^### Fly\.io$/); the displayed section name must be the literal
+    // heading, not the regex source.
+    expect(byId.get("fly-io")!.sources?.quotaViewSection).toBe("### Fly.io");
+    for (const s of services) {
+      if (s.sources) expect(s.sources.quotaViewSection).not.toContain("\\");
+    }
+  });
+
   test("free-services tracker rows preserve state, date, and guardrail text", () => {
     expect(extractUninstrumentedServices(FREE_SERVICES)).toEqual([
       {
@@ -533,6 +543,19 @@ describe("pace + freshness (§4, §1.1)", () => {
     // Happy-path control: 30 -> 40 over 2 days projects as before.
     const ok = projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 40)], "weekly")!;
     expect(ok.projectedExhaustionAt?.slice(0, 10)).toBe("2026-11-05");
+  });
+  test("pace: negative pct with a future resetsAt yields no percent-at-reset projection (#6316)", () => {
+    // The #2346 poison fixture, now with resetsAt on the last record:
+    // -1e9 -> -999999999 over 2 days, reset +7 days. Before the guard,
+    // projectPace returned projectedPercentAtReset -999999995.5.
+    const poison = projectPace(
+      [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999, "2026-10-31T00:00:00Z")],
+      "weekly",
+    )!;
+    expect(poison.projectedPercentAtReset).toBeNull();
+    expect(poison.projectedExhaustionAt).toBeNull();
+    expect(poison.slopePerDay).toBe(0.5);
+    expect(poison.points).toBe(2);
   });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();

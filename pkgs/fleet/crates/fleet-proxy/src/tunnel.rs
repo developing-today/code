@@ -235,6 +235,20 @@ pub fn connect_tunnel(
     connect_tunnel_with_deadline(egress, target_host, target_port, TRANSPORT_DEADLINE)
 }
 
+/// Open a raw stream tunnel for long-lived byte relays
+/// (the RustDesk splice, task 14926): setup is bounded by
+/// the same transport deadline as [`connect_tunnel`], but
+/// the established stream carries NO read/write timeouts —
+/// the HTTP timeouts would kill an idle-but-live raw
+/// session, which is the whole point of the raw variant.
+pub fn connect_raw_tunnel(
+    egress: Option<&Egress>,
+    target_host: &str,
+    target_port: u16,
+) -> std::io::Result<TcpStream> {
+    connect_tunnel_inner(egress, target_host, target_port, TRANSPORT_DEADLINE, false)
+}
+
 /// [`connect_tunnel`] with the transport deadline supplied — the
 /// fault-injection tests use a short deadline against a silent
 /// peer; production always passes [`TRANSPORT_DEADLINE`].
@@ -244,11 +258,21 @@ pub fn connect_tunnel_with_deadline(
     target_port: u16,
     deadline: Duration,
 ) -> std::io::Result<TcpStream> {
+    connect_tunnel_inner(egress, target_host, target_port, deadline, true)
+}
+
+fn connect_tunnel_inner(
+    egress: Option<&Egress>,
+    target_host: &str,
+    target_port: u16,
+    deadline: Duration,
+    http_timeouts: bool,
+) -> std::io::Result<TcpStream> {
     let start = Instant::now();
     match egress {
         None => {
             let stream = connect_tcp(target_host, target_port, deadline, start)?;
-            tune(&stream);
+            tune(&stream, http_timeouts);
             Ok(stream)
         }
         Some(egress) => {
@@ -298,15 +322,20 @@ pub fn connect_tunnel_with_deadline(
                     format!("CONNECT refused: {status_line}"),
                 ));
             }
-            tune(&stream);
+            tune(&stream, http_timeouts);
             Ok(stream)
         }
     }
 }
 
-fn tune(stream: &TcpStream) {
-    stream.set_read_timeout(Some(TUNNEL_READ_TIMEOUT)).ok();
-    stream.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT)).ok();
+fn tune(stream: &TcpStream, http_timeouts: bool) {
+    if http_timeouts {
+        stream.set_read_timeout(Some(TUNNEL_READ_TIMEOUT)).ok();
+        stream.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT)).ok();
+    } else {
+        stream.set_read_timeout(None).ok();
+        stream.set_write_timeout(None).ok();
+    }
     stream.set_nodelay(true).ok();
 }
 
@@ -414,5 +443,43 @@ mod tests {
         let got = connect_tunnel_with_deadline(None, "127.0.0.1", port, TRANSPORT_DEADLINE);
         assert!(got.is_err());
         assert!(t0.elapsed() < TRANSPORT_DEADLINE, "took {:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn raw_direct_tunnel_has_no_http_timeouts() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || listener.accept().unwrap());
+        let stream = connect_raw_tunnel(None, "127.0.0.1", addr.port()).unwrap();
+        let (_peer, _) = peer.join().unwrap();
+        assert_eq!(stream.read_timeout().unwrap(), None);
+        assert_eq!(stream.write_timeout().unwrap(), None);
+    }
+
+    #[test]
+    fn raw_connect_tunnel_clears_timeouts_after_handshake() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let proxy = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .unwrap();
+        });
+        let egress = Egress {
+            host: "127.0.0.1".to_string(),
+            port: addr.port(),
+            authorization: "Basic dTpw".to_string(),
+        };
+        let stream = connect_raw_tunnel(Some(&egress), "laptop", 21118).unwrap();
+        proxy.join().unwrap();
+        assert_eq!(stream.read_timeout().unwrap(), None);
+        assert_eq!(stream.write_timeout().unwrap(), None);
     }
 }

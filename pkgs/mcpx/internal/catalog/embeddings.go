@@ -99,7 +99,9 @@ func (r *RemoteEmbedder) Embed(ctx context.Context, text string) (Vector, error)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		// Contract decision 1 (#4375): an error body is an excerpt
+		// at HTTPErrorBodyLimit, never a whole read.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
 		return nil, fmt.Errorf("remote embeddings error %d: %s", resp.StatusCode, string(body))
 	}
 

@@ -2077,20 +2077,20 @@ impl LedgerBackend for ShortResultBackend {
         (0..self.keep).map(|_| Ok(())).collect()
     }
 
-    fn lookup_transfer(&self, id: TransferId) -> Option<Transfer> {
-        self.inner.lookup_transfer(id)
+    fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
+        self.inner.try_lookup_transfer(id)
     }
 
-    fn lookup_account(&self, id: AccountId) -> Option<Account> {
-        self.inner.lookup_account(id)
+    fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
+        self.inner.try_lookup_account(id)
     }
 
-    fn account_balance(&self, id: AccountId) -> Option<AccountBalance> {
-        self.inner.account_balance(id)
+    fn try_account_balance(&self, id: AccountId) -> anyhow::Result<Option<AccountBalance>> {
+        self.inner.try_account_balance(id)
     }
 
-    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
-        self.inner.transfers_with_user_data_128(value)
+    fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
+        self.inner.try_transfers_with_user_data_128(value)
     }
 }
 

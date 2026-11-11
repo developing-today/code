@@ -671,6 +671,9 @@ let
         inherit identity;
       };
       identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
+      genericRuntime = pkgs.callPackage ../pkgs/generic-containers/runtime-base.nix { };
+      genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
+      genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -693,6 +696,9 @@ let
         mcpx-container = mcpxContainer;
         identity-image = identityImage;
         identity-provider-image = identityProviderImage;
+        generic-runtime = genericRuntime;
+        generic-js-runtime = genericJsRuntime;
+        generic-python-runtime = genericPythonRuntime;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -800,17 +806,67 @@ let
           };
           nixCommon = import ../nix-common.nix { inherit pkgs; };
           inherit (nixCommon) fmtBins;
+
+          # Read excludes from treefmt.toml so we can filter passed files
+          treefmtConfig = builtins.fromTOML (builtins.readFile ../treefmt.toml);
+          excludes =
+            if treefmtConfig ? global && treefmtConfig.global ? excludes then
+              treefmtConfig.global.excludes
+            else
+              [ ];
+
           formatCheck = pkgs.writeShellScriptBin "format-check" ''
-            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
-            if [ "$#" -eq 0 ]; then
-              echo "usage: nix run .#format-check -- <changed-file>..." >&2
-              exit 2
-            fi
-            exec treefmt \
-              --config-file "$PWD/treefmt.toml" \
-              --tree-root "$PWD" \
-              --fail-on-change \
-              "$@"
+                        export PATH="${pkgs.lib.makeBinPath (fmtBins ++ [ pkgs.python3 ])}:$PATH"
+                        if [ "$#" -eq 0 ]; then
+                          echo "usage: nix run .#format-check -- <changed-file>..." >&2
+                          return 2 2>/dev/null || exit 2
+                        fi
+
+                        filter_script=$(cat << 'PYEOF'
+            import sys, fnmatch
+
+            excludes = [
+            ${builtins.concatStringsSep "\n" (map (x: "    \"${x}\",") excludes)}
+            ]
+
+            filtered = []
+            for f in sys.argv[1:]:
+                excluded = False
+                for excl in excludes:
+                    if fnmatch.fnmatch(f, excl):
+                        excluded = True
+                        break
+                    if excl.endswith("/**") and f.startswith(excl[:-2]):
+                        excluded = True
+                        break
+                    if excl.startswith("**/") and (f == excl[3:] or f.endswith("/" + excl[3:])):
+                        excluded = True
+                        break
+                    if f == excl:
+                        excluded = True
+                        break
+                if not excluded:
+                    filtered.append(f)
+
+            for f in filtered:
+                print(f + '\0', end=''')
+            PYEOF
+            )
+                        filtered_files=()
+                        while IFS= read -r -d $'\0' file; do
+                            filtered_files+=("$file")
+                        done < <(python3 -c "$filter_script" "$@")
+
+                        if [ ''${#filtered_files[@]} -eq 0 ]; then
+                          echo "No files to format after applying treefmt excludes."
+                          return 0 2>/dev/null || exit 0
+                        else
+                          exec treefmt \
+                            --config-file "$PWD/treefmt.toml" \
+                            --tree-root "$PWD" \
+                            --fail-on-change \
+                            "''${filtered_files[@]}"
+                        fi
           '';
           # Write-mode twin of format-check, for the auto-format
           # workflow (.github/workflows/auto-format.yml): same
@@ -1183,8 +1239,13 @@ let
     system:
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      # Crane libs for the dependency-split package build (code#8392):
+      # pkgs/fleet compiles its registry dependencies as a separate
+      # derivation per variant when these are passed.
+      craneLib = inputs.crane.mkLib pkgs;
       fleetPkgs = pkgs.callPackage ../pkgs/fleet {
         sourceRev = inputs.self.rev or "dirty";
+        inherit craneLib;
       };
     in
     {
@@ -1198,6 +1259,43 @@ let
       }
       // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
         inherit (fleetPkgs) fleet-connect-static fleet-static;
+      };
+    }
+  );
+
+  # pm-stack apps (pkgs/pm-*; code#8171): the projector, aggregator,
+  # dispatch, and git-sync as Nix derivations built from this repo's
+  # pm-stack source. The nixos pm-stack module callPackages the same
+  # files into its units; these outputs make `nix build .#pm-<app>`
+  # the package-level check.
+  make-pm-stack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      pmPackages = {
+        pm-projector = pkgs.callPackage ../pkgs/pm-projector/package.nix { };
+        pm-aggregator = pkgs.callPackage ../pkgs/pm-aggregator/package.nix { };
+        pm-dispatch = pkgs.callPackage ../pkgs/pm-dispatch/package.nix { };
+        pm-git-sync = pkgs.callPackage ../pkgs/pm-git-sync/package.nix { };
+      };
+      mkApp = pkg: program: {
+        type = "app";
+        program = "${pkg}/bin/${program}";
+      };
+    in
+    {
+      packages = pmPackages;
+      # One flake app per program the pm-stack services run, so every
+      # unit's ExecStart binary is also `nix run .#<name>`-able and the
+      # deploy surface is uniform: app + derivation + service (#8171).
+      apps = {
+        pm-projector = mkApp pmPackages.pm-projector "pm-projector";
+        pm-projector-cli = mkApp pmPackages.pm-projector "pm-projector-cli";
+        pm-aggregator = mkApp pmPackages.pm-aggregator "pm-aggregator";
+        pm-aggregator-gather-quota = mkApp pmPackages.pm-aggregator "pm-aggregator-gather-quota";
+        pm-aggregator-generate-digest = mkApp pmPackages.pm-aggregator "pm-aggregator-generate-digest";
+        pm-dispatch = mkApp pmPackages.pm-dispatch "pm-dispatch";
+        pm-git-sync = mkApp pmPackages.pm-git-sync "pm-git-sync";
       };
     }
   );
@@ -1292,6 +1390,30 @@ let
       unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
         {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
       '';
+      validTargetService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      invalidTargetRegistry =
+        name: target:
+        pkgs.writeText name (
+          builtins.toJSON {
+            svc = validTargetService // {
+              targets = [ target ];
+            };
+          }
+        );
+      newlineTargetRegistry = invalidTargetRegistry "deploy-targets-newline.json" "laptop\nFAKE  systemd     evil";
+      spaceTargetRegistry = invalidTargetRegistry "deploy-targets-space.json" "bad name";
     in
     {
       packages.deploy = deployPkgs.deploy;
@@ -1320,6 +1442,15 @@ let
             }
             ''
               python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-target-shape-property =
+          pkgs.runCommandLocal "check-deploy-target-shape-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_target_shape_property.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
         deploy-slice2-tests =
@@ -1409,6 +1540,21 @@ let
           expect_invalid ${duplicateTargetsRegistry} "targets must not repeat a target"
           expect_invalid ${hostlessHealthCheckRegistry} "healthCheck must be an http(s) URL with a host"
           expect_invalid ${duplicatePortsRegistry} "ports must not repeat a port"
+          expect_invalid_target() {
+            registry="$1"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > target-out.txt 2> target-err.txt; then
+              echo "deploy list accepted a target with an invalid shape: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "targets must be host/class names matching" target-err.txt; then
+              echo "deploy list did not report the targets field for $registry" >&2
+              cat target-err.txt >&2
+              exit 1
+            fi
+            test ! -s target-out.txt
+          }
+          expect_invalid_target ${newlineTargetRegistry}
+          expect_invalid_target ${spaceTargetRegistry}
           mkdir -p $out
           cp err.txt $out/errors.txt
         '';
@@ -1493,6 +1639,7 @@ let
         make-id
         make-mcpx-overlay
         make-mcpx-modules
+        make-pm-stack
         make-laptop-backups-checks
         make-fleet
         make-deploy

@@ -21,6 +21,7 @@ import {
   openPrCommands,
   runSync,
   resolveConfigPath,
+  defaultRuntimeConfigPath,
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
 } from './provider-catalog-sync.mjs';
@@ -182,6 +183,12 @@ test('prettifyModelName follows sibling display conventions', () => {
   assert.equal(prettifyModelName('deepseek/deepseek-v4-pro'), 'DeepSeek v4 Pro');
   assert.equal(prettifyModelName('gpt-6.2-sol'), 'GPT 6.2 Sol');
   assert.equal(prettifyModelName('claude-haiku-5-5'), 'Claude Haiku 5.5');
+});
+
+test('prettifyModelName treats prototype-spelling brand ids as ordinary unknown tokens', () => {
+  for (const token of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    assert.equal(prettifyModelName(token), token.charAt(0).toUpperCase() + token.slice(1));
+  }
 });
 
 test('makeEntry: name-only block yields a name-only entry with the block suffix', () => {
@@ -397,6 +404,17 @@ test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes',
 // #4588: config resolution — OPENCODE_CONFIG_PATH names the runtime overlay
 // since #4544 and must never become this tool's target
 // ---------------------------------------------------------------------------
+
+test('defaultRuntimeConfigPath: home-resolution contract probe matrix (#5762/#5763)', () => {
+  // Oracle: the contract - unset and empty HOME are both a named
+  // error; a set HOME yields exactly the historical path.
+  assert.throws(() => defaultRuntimeConfigPath({}), /HOME is not set or is empty/);
+  assert.throws(() => defaultRuntimeConfigPath({ HOME: '' }), /HOME is not set or is empty/);
+  assert.equal(
+    defaultRuntimeConfigPath({ HOME: '/home/someone' }),
+    path.join('/home/someone', '.local/state/opencode/opencode-runtime.jsonc'),
+  );
+});
 
 test('resolveConfigPath: --config beats env, catalog env beats default, OPENCODE_CONFIG_PATH ignored (#4588)', () => {
   const root = '/repo';

@@ -70,14 +70,108 @@ pub mod range;
 mod resolve;
 pub mod sync;
 mod waiting_rows;
+mod writer_set;
 
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
-pub use ingest::{Ingest, Refusal};
+pub use id_store::event_types::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
 use waiting_rows::{Mirror, Row};
+pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
+pub use id_store::event_types::{Block, BlockKind, BlockList, Chain, StoreError, FILE_NAME};
 
-/// The store's file name in its directory.
-pub const FILE_NAME: &str = "events.redb";
+impl EventStore {
+    /// Adds `block` to the operator block list, replacing any row that names
+    /// the same kind and value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the write fails.
+    pub fn add_block(&self, block: &Block) -> Result<(), StoreError> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut blocks = txn.open_table(BLOCKS)?;
+            blocks.insert(block.key().as_slice(), block.encode().as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Removes the block naming (`kind`, `value`), returning whether a row
+    /// was removed. Removing a block that does not exist is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the write fails.
+    pub fn remove_block(&self, kind: BlockKind, value: &[u8]) -> Result<bool, StoreError> {
+        let mut key = Vec::with_capacity(1 + value.len());
+        key.push(kind.tag());
+        key.extend_from_slice(value);
+        let txn = self.db.begin_write()?;
+        let removed = {
+            let mut blocks = txn.open_table(BLOCKS)?;
+            blocks.remove(key.as_slice())?.is_some()
+        };
+        txn.commit()?;
+        Ok(removed)
+    }
+
+    /// Every block on the list, expired ones included, in (kind, value)
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
+    pub fn blocks(&self) -> Result<Vec<Block>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let blocks = txn.open_table(BLOCKS)?;
+        let mut found = Vec::new();
+        for row in blocks.iter()? {
+            let (key, value) = row?;
+            found.push(Block::decode(key.value(), value.value())?);
+        }
+        Ok(found)
+    }
+
+    /// The block naming (`kind`, `value`) if one is on the list and still
+    /// enforced at `now_ms`. An expired block is not returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
+    pub fn active_block(
+        &self,
+        kind: BlockKind,
+        value: &[u8],
+        now_ms: u64,
+    ) -> Result<Option<Block>, StoreError> {
+        let mut key = Vec::with_capacity(1 + value.len());
+        key.push(kind.tag());
+        key.extend_from_slice(value);
+        let txn = self.db.begin_read()?;
+        let blocks = txn.open_table(BLOCKS)?;
+        let Some(row) = blocks.get(key.as_slice())? else {
+            return Ok(None);
+        };
+        let block = Block::decode(&key, row.value())?;
+        Ok(block.is_active(now_ms).then_some(block))
+    }
+
+    /// Whether (`kind`, `value`) is blocked at `now_ms`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
+    pub fn is_blocked(
+        &self,
+        kind: BlockKind,
+        value: &[u8],
+        now_ms: u64,
+    ) -> Result<bool, StoreError> {
+        Ok(self.active_block(kind, value, now_ms)?.is_some())
+    }
+}
+use id_store::event_types::{be_u64, corrupt, hash_of, seq_num};
+
 
 /// Where a store is built before it is renamed to [`FILE_NAME`]. A file under
 /// this name is never trusted: it is removed and built again.
@@ -109,10 +203,26 @@ const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
 const BLOCKS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("blocks");
+/// Each writer-set or rescind event's retained body, by event ID (writer-set
+/// spec §§4–5; issue #6690). Headers commit to bodies by hash but are stored
+/// without them; this table is the one place a body is kept, so a stored
+/// writer-set object can be read back and checked against its header. Written
+/// only from the ingest path, after the body has been verified against the
+/// header's payload commitment.
+const WRITER_SET_BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("writer_set_bodies");
 /// Each group operation's encoded action, by event ID. Written when the event arrives, held or
 /// stored, so a release reads it back without the caller. The resolution reads it again.
 const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("actions");
+/// Each device operation's encoded op and the group its body names, by event ID (P8.3,
+/// issue #5656). A device operation travels as a `group.event` body, which the membership
+/// body codec does not carry, so it has no [`ACTIONS`] row; this table is its storage
+/// channel to the resolution, whose bridge folds it as a group device event. Written only
+/// from the ingest path, after the body has been verified against the header's payload
+/// commitment and the body's author checked against the event's signer.
+const DEVICE_OPS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("device_ops");
 /// The IDs of the applied events, with an empty value. Written by the resolution.
 const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("applied");
@@ -120,58 +230,6 @@ const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
 
-/// Bytes in a chain row: the next sequence number, the head hash, the frozen flag.
-const CHAIN_LEN: usize = 8 + 32 + 1;
-
-/// Why the event store failed. A failure is never a refusal of an event: refused
-/// events are reported as outcomes, not errors.
-#[derive(Debug, thiserror::Error)]
-pub enum StoreError {
-    /// The directory could not be read or written.
-    #[error("event store file I/O: {0}")]
-    Io(#[from] io::Error),
-    /// redb could not open or create the database.
-    #[error("event store database: {0}")]
-    Database(#[from] DatabaseError),
-    /// A redb transaction could not begin.
-    #[error("event store transaction: {0}")]
-    Transaction(#[from] redb::TransactionError),
-    /// A table could not be opened, or it does not exist.
-    #[error("event store table: {0}")]
-    Table(#[from] redb::TableError),
-    /// A read or write failed inside a transaction.
-    #[error("event store storage: {0}")]
-    Storage(#[from] StorageError),
-    /// A commit failed.
-    #[error("event store commit: {0}")]
-    Commit(#[from] redb::CommitError),
-    /// Another process holds the store open. redb allows one opener at a time.
-    #[error("{FILE_NAME} is open in another process")]
-    InUse,
-    /// The file is there, but it is not an event store of this format.
-    #[error("{FILE_NAME} is not an event store: {0}")]
-    NotAStore(String),
-    /// The store's rows contradict each other. The file was changed outside the store.
-    #[error("event store is corrupt: {0}")]
-    Corrupt(String),
-    /// The position already holds an event, so a second one cannot be stored there.
-    #[error("sequence {seq} of this author is already stored")]
-    Occupied {
-        /// The sequence number that is taken.
-        seq: SeqNum,
-    },
-    /// A write failed, and the waiting events could not be rebuilt from disk. The store
-    /// refuses further calls. Reopening it rebuilds them.
-    #[error("event store is unusable after a failed write: reopen it")]
-    Unusable,
-    /// The reader is not a member of the group whose chat they asked to read (#3950).
-    #[error("the reader is not a member of this group")]
-    NotMember,
-}
-
-fn corrupt(message: impl Into<String>) -> StoreError {
-    StoreError::Corrupt(message.into())
-}
 
 /// Where a store's files live. [`FileStorage`] is a directory on disk. The crash
 /// model implements this trait over a simulated directory, so every step of
@@ -282,53 +340,6 @@ impl Storage for FileStorage {
     }
 }
 
-/// The applied prefix of one author's chain, as the `chains` table holds it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Chain {
-    /// The sequence number the next applied event takes: the number of applied
-    /// events. Zero for an author with none.
-    pub next_seq: SeqNum,
-    /// The hash of the last applied event, or `None` when none applies.
-    pub head: Option<Hash>,
-    /// Whether the author has forked. A frozen chain applies nothing from its
-    /// fork point on.
-    pub frozen: bool,
-}
-
-impl Chain {
-    fn encode(self) -> [u8; CHAIN_LEN] {
-        let mut row = [0u8; CHAIN_LEN];
-        row[..8].copy_from_slice(&u64::from(self.next_seq).to_be_bytes());
-        if let Some(head) = self.head {
-            row[8..40].copy_from_slice(head.as_bytes());
-        }
-        row[40] = u8::from(self.frozen);
-        row
-    }
-
-    fn decode(row: &[u8]) -> Result<Self, StoreError> {
-        let row: &[u8; CHAIN_LEN] = row
-            .try_into()
-            .map_err(|_err| corrupt("a chain row has the wrong length"))?;
-        let next_seq = seq_num(be_u64(&row[..8])?)?;
-        let head = if next_seq == 0 {
-            None
-        } else {
-            Some(hash_of(&row[8..40])?)
-        };
-        let frozen = match row[40] {
-            0 => false,
-            1 => true,
-            _ => return Err(corrupt("a chain row has an unknown frozen flag")),
-        };
-        Ok(Self {
-            next_seq,
-            head,
-            frozen,
-        })
-    }
-}
-
 /// Two conflicting headers from one author at one sequence number. Both are
 /// signed by the author, so together they prove the author forked there.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,265 +366,11 @@ pub struct EventStore {
     unusable: bool,
 }
 
-/// What an operator block names. The tag byte leads the row key in `blocks`,
-/// so rows sort by kind, then by value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockKind {
-    /// An Iroh endpoint key (the EndpointId of abuse.rs): refuse the peer's
-    /// new sessions, blob serving, and gossip subscriptions.
-    PeerKey,
-    /// An IP address, enforced at the listener only (best-effort).
-    Ip,
-    /// A topic tag, composing with the pull policy.
-    TopicTag,
-}
-
-impl BlockKind {
-    fn tag(self) -> u8 {
-        match self {
-            BlockKind::PeerKey => 0,
-            BlockKind::Ip => 1,
-            BlockKind::TopicTag => 2,
-        }
-    }
-
-    fn from_tag(tag: u8) -> Option<Self> {
-        match tag {
-            0 => Some(BlockKind::PeerKey),
-            1 => Some(BlockKind::Ip),
-            2 => Some(BlockKind::TopicTag),
-            _ => None,
-        }
-    }
-}
-
-/// One operator block-list row: the blocked value, when it was added, why,
-/// and when it stops being enforced. An `expires_at_ms` of `None` is a
-/// permanent block. An expired block stays on the list (the operator's
-/// record) but is never enforced.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Block {
-    /// What the block names.
-    pub kind: BlockKind,
-    /// The blocked value: a 32-byte endpoint key, an IP address, or a topic
-    /// tag.
-    pub value: Vec<u8>,
-    /// When the block was added, in milliseconds since the Unix epoch.
-    pub added_at_ms: u64,
-    /// The operator's reason for the block.
-    pub reason: String,
-    /// When the block stops being enforced, in milliseconds since the Unix
-    /// epoch, or `None` for a permanent block.
-    pub expires_at_ms: Option<u64>,
-}
-
-impl Block {
-    /// Whether the block is enforced at `now_ms`. Expiry is exclusive: a
-    /// block that expires at `t` is no longer enforced at `t`.
-    pub fn is_active(&self, now_ms: u64) -> bool {
-        self.expires_at_ms.map_or(true, |expiry| expiry > now_ms)
-    }
-
-    fn key(&self) -> Vec<u8> {
-        let mut key = Vec::with_capacity(1 + self.value.len());
-        key.push(self.kind.tag());
-        key.extend_from_slice(&self.value);
-        key
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + 1 + 8 + 4 + self.reason.len());
-        out.extend_from_slice(&self.added_at_ms.to_be_bytes());
-        match self.expires_at_ms {
-            Some(expiry) => {
-                out.push(1);
-                out.extend_from_slice(&expiry.to_be_bytes());
-            }
-            None => {
-                out.push(0);
-                out.extend_from_slice(&0u64.to_be_bytes());
-            }
-        }
-        out.extend_from_slice(&(self.reason.len() as u32).to_be_bytes());
-        out.extend_from_slice(self.reason.as_bytes());
-        out
-    }
-
-    fn decode(key: &[u8], value: &[u8]) -> Result<Self, StoreError> {
-        let Some((&tag, blocked)) = key.split_first() else {
-            return Err(corrupt("a block row has an empty key"));
-        };
-        let kind = BlockKind::from_tag(tag)
-            .ok_or_else(|| corrupt("a block row has an unknown kind tag"))?;
-        if value.len() < 8 + 1 + 8 + 4 {
-            return Err(corrupt("a block row is too short"));
-        }
-        let added_at_ms = u64::from_be_bytes(value[0..8].try_into().unwrap());
-        let expires_at_ms = match value[8] {
-            0 => None,
-            1 => Some(u64::from_be_bytes(value[9..17].try_into().unwrap())),
-            _ => return Err(corrupt("a block row has a bad expiry flag")),
-        };
-        let reason_len = u32::from_be_bytes(value[17..21].try_into().unwrap()) as usize;
-        if value.len() != 21 + reason_len {
-            return Err(corrupt("a block row has the wrong reason length"));
-        }
-        let reason = String::from_utf8(value[21..].to_vec())
-            .map_err(|_err| corrupt("a block row's reason is not UTF-8"))?;
-        Ok(Block {
-            kind,
-            value: blocked.to_vec(),
-            added_at_ms,
-            reason,
-            expires_at_ms,
-        })
-    }
-}
-
-impl EventStore {
-    /// Adds `block` to the operator block list, replacing any row that names
-    /// the same kind and value.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the write fails.
-    pub fn add_block(&self, block: &Block) -> Result<(), StoreError> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut blocks = txn.open_table(BLOCKS)?;
-            blocks.insert(block.key().as_slice(), block.encode().as_slice())?;
-        }
-        txn.commit()?;
-        Ok(())
-    }
-
-    /// Removes the block naming (`kind`, `value`), returning whether a row
-    /// was removed. Removing a block that does not exist is not an error.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the write fails.
-    pub fn remove_block(&self, kind: BlockKind, value: &[u8]) -> Result<bool, StoreError> {
-        let mut key = Vec::with_capacity(1 + value.len());
-        key.push(kind.tag());
-        key.extend_from_slice(value);
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut blocks = txn.open_table(BLOCKS)?;
-            blocks.remove(key.as_slice())?.is_some()
-        };
-        txn.commit()?;
-        Ok(removed)
-    }
-
-    /// Every block on the list, expired ones included, in (kind, value)
-    /// order.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
-    pub fn blocks(&self) -> Result<Vec<Block>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let blocks = txn.open_table(BLOCKS)?;
-        let mut found = Vec::new();
-        for row in blocks.iter()? {
-            let (key, value) = row?;
-            found.push(Block::decode(key.value(), value.value())?);
-        }
-        Ok(found)
-    }
-
-    /// The block naming (`kind`, `value`) if one is on the list and still
-    /// enforced at `now_ms`. An expired block is not returned.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
-    pub fn active_block(
-        &self,
-        kind: BlockKind,
-        value: &[u8],
-        now_ms: u64,
-    ) -> Result<Option<Block>, StoreError> {
-        let mut key = Vec::with_capacity(1 + value.len());
-        key.push(kind.tag());
-        key.extend_from_slice(value);
-        let txn = self.db.begin_read()?;
-        let blocks = txn.open_table(BLOCKS)?;
-        let Some(row) = blocks.get(key.as_slice())? else {
-            return Ok(None);
-        };
-        let block = Block::decode(&key, row.value())?;
-        Ok(block.is_active(now_ms).then_some(block))
-    }
-
-    /// Whether (`kind`, `value`) is blocked at `now_ms`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
-    pub fn is_blocked(
-        &self,
-        kind: BlockKind,
-        value: &[u8],
-        now_ms: u64,
-    ) -> Result<bool, StoreError> {
-        Ok(self.active_block(kind, value, now_ms)?.is_some())
-    }
-}
-
-/// The operator block list as the enforcement seams consult it (#2245).
-///
-/// A seam holds an `Arc<dyn BlockList>` and asks it about a peer, a topic
-/// tag, or an IP; it never reads the `blocks` table itself. Implementations
-/// read the list live on every call, so a block (or an unblock) lands on the
-/// next check, and they judge expiry against the wall clock
-/// ([`crate::time::unix_ms`]) — the same epoch `Block::added_at_ms` and
-/// `Block::expires_at_ms` are stamped in. That is why this trait takes no
-/// `now_ms`: the session clocks the sync seams carry are not all wall
-/// clocks (the abuse evaluator's is monotonic), and a block's expiry is a
-/// wall-clock fact.
-///
-/// The invariant from the module docs rides on this trait's callers: blocks
-/// change serving and subscribing only. No ingest path consults a
-/// `BlockList`, so an already-signed object from a blocked peer is decided
-/// by the store's ordinary rules, exactly as if the block did not exist.
-pub trait BlockList: std::fmt::Debug + Send + Sync + 'static {
-    /// Whether (`kind`, `value`) is blocked now. An expired block is not
-    /// enforced, so this is false for one, however long it stays listed.
-    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool;
-
-    /// Whether the endpoint with this 32-byte key is blocked.
-    fn peer_blocked(&self, peer: &[u8; 32]) -> bool {
-        self.is_blocked(BlockKind::PeerKey, peer)
-    }
-
-    /// Whether this topic tag is blocked. The tag is raw bytes: a pull
-    /// gate passes its world's name, the sync handshake passes the topic's
-    /// hash bytes; an operator blocks whichever form a surface names.
-    fn topic_tag_blocked(&self, tag: &[u8]) -> bool {
-        self.is_blocked(BlockKind::TopicTag, tag)
-    }
-
-    /// Whether this IP is blocked. IP rows name the address in its text
-    /// form (as the storage tests write them), so the check formats `ip`
-    /// the same way.
-    fn ip_blocked(&self, ip: &std::net::IpAddr) -> bool {
-        self.is_blocked(BlockKind::Ip, ip.to_string().as_bytes())
-    }
-}
-
 impl BlockList for EventStore {
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
         // A read error invents no block: the seam fails open, and the
         // store's error still surfaces on the store's own read paths.
         EventStore::is_blocked(self, kind, value, crate::time::unix_ms()).unwrap_or(false)
-    }
-}
-
-impl<T: BlockList + ?Sized> BlockList for std::sync::Arc<T> {
-    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
-        (**self).is_blocked(kind, value)
     }
 }
 
@@ -647,12 +404,14 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        // The blocks table is additive: stores created before it gain it here,
-        // on the write every open already performs, instead of a format change
-        // that would refuse them.
+        // The blocks, writer-set-bodies and device-ops tables are additive:
+        // stores created before them gain them here, on the write every open
+        // already performs, instead of a format change that would refuse them.
         {
             let txn = db.begin_write()?;
             txn.open_table(BLOCKS)?;
+            txn.open_table(WRITER_SET_BODIES)?;
+            txn.open_table(DEVICE_OPS)?;
             txn.commit()?;
         }
         let mut store = Self {
@@ -739,9 +498,10 @@ impl EventStore {
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
             let actions = txn.open_table(ACTIONS)?;
+            let device_ops = txn.open_table(DEVICE_OPS)?;
             let forks = txn.open_table(FORKS)?;
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &forks, &proof_headers)?
+            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
         let resolved = resolve::resolve(&stored, &forks, &headers)?;
         Ok(resolve::roster_of(&resolved, group))
@@ -966,6 +726,7 @@ impl EventStore {
             let mut hashes_table = txn.open_table(HASHES)?;
             let mut groups_table = txn.open_multimap_table(GROUPS)?;
             let mut actions_table = txn.open_table(ACTIONS)?;
+            let mut device_ops_table = txn.open_table(DEVICE_OPS)?;
             let mut applied_table = txn.open_table(APPLIED)?;
 
             for id in &to_prune {
@@ -980,6 +741,7 @@ impl EventStore {
                     if meta.has_action {
                         actions_table.remove(id.as_bytes().as_slice())?;
                     }
+                    device_ops_table.remove(id.as_bytes().as_slice())?;
                     applied_table.remove(id.as_bytes().as_slice())?;
                 }
             }
@@ -1480,25 +1242,6 @@ fn split_position(key: &[u8]) -> Result<(AuthorKey, SeqNum), StoreError> {
         .try_into()
         .map_err(|_err| corrupt("a position key has a short author"))?;
     Ok((author, seq_num(be_u64(&key[32..])?)?))
-}
-
-fn be_u64(bytes: &[u8]) -> Result<u64, StoreError> {
-    let bytes: [u8; 8] = bytes
-        .try_into()
-        .map_err(|_err| corrupt("a number is not 8 bytes"))?;
-    Ok(u64::from_be_bytes(bytes))
-}
-
-/// A stored sequence number. Stored as eight bytes, and checked to fit `SeqNum`.
-fn seq_num(value: u64) -> Result<SeqNum, StoreError> {
-    SeqNum::try_from(value).map_err(|_err| corrupt("a sequence number is out of range"))
-}
-
-fn hash_of(bytes: &[u8]) -> Result<Hash, StoreError> {
-    let bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_err| corrupt("a hash is not 32 bytes"))?;
-    Ok(Hash::from_bytes(bytes))
 }
 
 /// Decodes a stored event. A stored event decoded when it was accepted, so a
@@ -2124,5 +1867,90 @@ mod tests {
             "removing an absent block is false, not an error"
         );
         assert!(store.blocks().unwrap().is_empty());
+    }
+}
+
+// Step 2a of the crate split (#4405): the store traits in id-store are
+// generic over this backend surface (seam 3 — the traits crate holds
+// traits only and cannot name the concrete store above it). Each method
+// delegates to the inherent method of the same name above.
+impl id_store::store_traits::EventStoreBackend for EventStore {
+    fn ingest_with_body(
+        &mut self,
+        bytes: &[u8],
+        body: Option<&[u8]>,
+        now_ms: u64,
+    ) -> Result<Ingest, StoreError> {
+        self.ingest_with_body(bytes, body, now_ms)
+    }
+
+    fn ingest_batch(
+        &mut self,
+        batch: &[Vec<u8>],
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        self.ingest_batch(batch, now_ms)
+    }
+
+    fn ingest_events(
+        &mut self,
+        events: Vec<Event>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        self.ingest_events(events, now_ms)
+    }
+
+    fn sync_entries(&self) -> Result<Vec<(id_store::range::Key, id_store::range::Id)>, StoreError> {
+        self.sync_entries()
+    }
+
+    fn sync_bytes(
+        &self,
+        id: &id_store::range::Id,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.sync_bytes(id)
+    }
+
+    fn check_invariants(&self) -> Result<(), StoreError> {
+        self.check_invariants()
+    }
+
+    fn event(&self, author: &AuthorKey, seq: SeqNum) -> Result<Option<Event>, StoreError> {
+        self.event(author, seq)
+    }
+
+    fn applied_events(
+        &self,
+        author: &AuthorKey,
+        after: Option<SeqNum>,
+        until: Option<SeqNum>,
+        limit: usize,
+    ) -> Result<Vec<Event>, StoreError> {
+        self.applied_events(author, after, until, limit)
+    }
+
+    fn group_members(&self, group: &Hash) -> Result<Vec<(AuthorKey, SeqNum)>, StoreError> {
+        self.group_members(group)
+    }
+
+    fn chain(&self, author: &AuthorKey) -> Result<Option<Chain>, StoreError> {
+        self.chain(author)
+    }
+
+    fn is_blocked_at(
+        &self,
+        kind: BlockKind,
+        value: &[u8],
+        now_ms: u64,
+    ) -> Result<bool, StoreError> {
+        EventStore::is_blocked(self, kind, value, now_ms)
+    }
+
+    fn tag_claims(&self) -> Result<Vec<id_store::tag_claims::Claim>, StoreError> {
+        self.tag_claims()
+    }
+
+    fn event_by_id(&self, id: &Hash) -> Result<Option<Event>, StoreError> {
+        self.event_by_id(id)
     }
 }

@@ -397,6 +397,7 @@ export class CommentsStore {
       c.githubState = "posted";
       c.githubUrl = result.url;
       delete c.githubError;
+      delete c.githubFailedAt;
     } else {
       // An error report never moves a posted comment backwards.
       if (c.githubState === "posted") {
@@ -408,11 +409,13 @@ export class CommentsStore {
         // last error still refreshes (#1210): "last error" means the
         // newest report, not the first failure.
         c.githubError = result.error;
+        c.githubFailedAt = new Date().toISOString();
         await this.persist();
         return c;
       }
       c.githubState = "failed";
       c.githubError = result.error;
+      c.githubFailedAt = new Date().toISOString();
     }
     await this.persist();
     return c;

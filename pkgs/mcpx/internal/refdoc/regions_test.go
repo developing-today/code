@@ -94,7 +94,7 @@ func TestCommittedRegionsAreCurrent(t *testing.T) {
 	// docs/parity.md: the whole file is cli.ParityDoc over the plugin's
 	// daemon.ts.
 	{
-		ts, err := os.ReadFile("../../plugin/opencode/mcpx/daemon.ts")
+		ts, err := os.ReadFile("../../plugin/core/daemon.ts")
 		if err != nil {
 			t.Fatal(err)
 		}

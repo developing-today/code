@@ -534,6 +534,9 @@ fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
     if req.k == 0 {
         return Err(ServerError::bad_request("k must be at least 1"));
     }
+    req.parameters
+        .validate(req.expand)
+        .map_err(ServerError::bad_request)?;
     if let Some(limit) = req.page_limit
         && limit == 0
     {
@@ -627,6 +630,7 @@ where
             embedder_label: request.embedder.clone(),
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
+            parameters: request.parameters.clone(),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -809,12 +813,16 @@ where
             match_expr: query.match_expr.clone(),
             query_vector: None,
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         let vector_query = BranchQuery {
             match_expr: None,
             query_vector: query.query_vector.clone(),
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         // Fast path (Drew's usage profile, 2026-11-04): the
@@ -888,6 +896,7 @@ struct CacheKey {
     pool: usize,
     group_by_session: bool,
     expand: usize,
+    parameters: String,
     with_message: bool,
     model: String,
     embedder: String,
@@ -911,6 +920,8 @@ impl CacheKey {
             pool: req.pool,
             group_by_session: req.group_by_session,
             expand: req.expand,
+            parameters: serde_json::to_string(&req.parameters)
+                .expect("query parameters are serializable"),
             with_message: req.with_message,
             model: req.model.clone(),
             embedder: req.embedder.clone(),

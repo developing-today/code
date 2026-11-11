@@ -39,11 +39,11 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 
 ## BACKEND OUTAGE — FALLBACK MODE (2026-11-06, code#6619)
 
-If the queue backend is down —  (or any broker
+If the queue backend is down — `fleet queue health` (or any broker
 verb) fails with a broker/PostgREST error instead of returning
 state — do NOT improvise a fallback bind. Session binding is a
 database operation; the GitHub-native fallback protocol
-(, doc/fleet/queue-fallback-mode.md in this
+(see doc/fleet/queue-fallback-mode.md in this
 repo) deliberately has no claimant equivalent, because its claims
 are worked by the claiming worker itself. In an outage: record the
 failure in the fire log (the health error verbatim), launch
@@ -59,9 +59,26 @@ outage is recoverable, a double-launch's damage is not.
   `repo-health-opencode-pilot`, `repo-health-openchamber-pilot`,
   `repo-health-nix-pilot`.
 - Queue CLI on this machine: `repo-queue`
-  (`~/fleet-brokers/bin/repo-queue`; it reaches the queue-broker
-  directly — pass `--worker opencode-claimant` on every verb you
-  use).
+  (`~/.local/bin/repo-queue`, the packaged fleet binary's argv0
+  alias — the hand-built `~/fleet-brokers/bin` tree was retired by
+  the code#5362 cutover; this matches `REPO_QUEUE_CMD` in
+  claimant.py/poll.py — pass `--worker opencode-claimant` on every
+  verb you use).
+- Claim-model stamp (#8176): a session that picks up an item
+  itself (a lane section's claim, or your own direct claim) names
+  the model serving it: read your own serving leaf first with the
+  `route_usage` tool (session input; its `lastServing` names
+  provider / model / variant — the leaf that actually served your
+  last step, not your declared route) and pass it on the claim —
+  `--model-provider <provider> --model-id <model>
+  --model-variant <variant>` (variant only when lastServing
+  carries one). The broker stamps it on the task
+  (claim_provider / claim_model / claim_variant): the model AT
+  CLAIM TIME — a later failover does not rewrite it. If the
+  readout is unavailable, claim without the flags; never guess a
+  leaf. The claimant's own collection claims (`claim --handoff`)
+  predate the worker session and carry no stamp; the session's
+  own claims are the stamped ones.
 - Candidate discovery: `python3 pm-stack/opencode-claimant/poll.py`
   (run from the primary clone `~/git/code`). It prints JSON: tasks that
   are claimed, lane-assigned `opencode` in their progress, and carry no
@@ -69,19 +86,27 @@ outage is recoverable, a double-launch's damage is not.
   close — plus the live root-session count for the cap, plus a
   `stuck_bound` list: bound tasks whose sessions look
   created-but-never-prompted and dead (step 1's recovery rule, #4758).
-  Candidates ALSO include handed-off tasks sitting PARKED
-  (`status: "parked"` in the candidate entry): the handing-off lane
-  parks the task as its handoff sink (the park clears its claim and
-  stamps a default timer), so claimed-only discovery never saw them
-  and they looped claim → handoff → park → re-claim (#7907/#6533).
-  For a parked candidate, claimant.py first collects the claim by id
-  (`repo-queue claim --task <id>`, as worker `opencode-claimant`;
-  the broker takes a parked row by id only when it is a recorded
-  unbound opencode handoff), then launches exactly as for a claimed
-  candidate, with the session working under `--worker
-  opencode-claimant`. A parked candidate whose by-id claim fails or
-  lands on a different task is skipped with the reason logged —
-  never launched over a guessed claim.
+  Candidates ALSO include handed-off tasks resting in the
+  handoff sink (`status: "handed_off"` in the candidate entry,
+  #8234): the handing-off lane's handoff lands the task in the
+  sink — its own status, not a park and not a wait — so
+  claimed-only discovery never saw them and they once looped
+  claim → handoff → park → re-claim (#7907/#6533).
+  For sink candidates, claimant.py first collects their claims
+  WITHOUT naming any task id (#8097 Rule 1): one
+  `repo-queue claim --handoff --platform openchamber` per sink
+  candidate, as worker `opencode-claimant`, lets the BROKER pick
+  the next sink row (the pick only ever returns an unbound sink
+  row, never a live claim or a genuine wait park; the
+  `openchamber` family declaration keeps a `muse`-selected item
+  out of this claimant's hands, #8097 Rule 2). It then launches
+  exactly as for a claimed candidate, with the session working
+  under `--worker opencode-claimant`.
+  A sink candidate the collection did not claim is skipped
+  with the reason logged — never launched over a guessed claim.
+  (The by-id claim, `claim --task <id>`, remains only as the
+  special-case verb for one-off revivals; no default flow uses
+  it.)
   Retain the candidate list from the start of each fire; a task recovered
   during supervision is eligible on the next fire, not this one.
 - Concurrency cap: **36** active root sessions across the fleet. Count
@@ -243,7 +268,7 @@ queue task and issue>, "model": {"id": <route model>,
    terminal verbs (complete / park / block / fail) carrying
    `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`
    with the SAME session id you bound in step c. The queue CLI on
-   this machine is `repo-queue` (`~/fleet-brokers/bin/repo-queue`).
+   this machine is `repo-queue` (`~/.local/bin/repo-queue`).
    e. Post the launch agent-note on the issue (agent-note:v1,
    state=handed off) naming task id + session id.
 5. Terminal states are recorded by the worker session itself via the
@@ -282,3 +307,33 @@ queue task and issue>, "model": {"id": <route model>,
 - No credential value ever enters a prompt, log, or task record; the queue
   CLI and poll.py reach the queue-broker with the broker's client
   token — no queue credential lives on this path.
+
+## Muse→opencode send (#8210)
+
+A Muse session that holds a task can send it directly to an
+opencode session with `send_to_opencode.py` (this directory): it
+records the opencode assignment with the sender's stated reason,
+creates the session in the task's worktree, and moves the claim
+with the broker's transfer claim — `repo-queue claim --task <id>
+--from-session <sender session> --session-id <new session>
+--worker opencode-claimant` — holder -> claimer in one operation,
+never through queued, parked, or the sink, binding the new session
+atomically. The sender's notes ride in the launched session's
+prompt (SENDER NOTES section) and in `SEND_NOTES.md` in the
+worktree. A transferred task arrives already claimed by
+opencode-claimant and bound; it is not a poll candidate and must
+not be collected or launched a second time. The transfer refuses
+— leaving the sender's claim untouched — when `--from-session`
+does not match the holder's session mark, when the row is not
+under a live claim, or when it is already bound to a third
+session.
+
+A task may also carry a recorded platform limitation (lane
+ledger `platform_limit` + `platform_limit_reason`, set only
+through the lane verb with both `--limit-platform` and
+`--limit-reason`): a valid limitation binds the transfer — a
+muse-limited task refuses an opencode transfer/send, naming the
+limitation and its reason — while a stored limitation with no
+recorded reason is invalid and is cleared by the transfer claim
+instead of enforced. Default is no limitation: either platform
+may claim.

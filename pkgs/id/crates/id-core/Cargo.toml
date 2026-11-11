@@ -19,6 +19,8 @@ test-provider = []
 
 [dependencies]
 anyhow = "1"
+# Content address of a boundary declaration (boundary.rs, #7782).
+blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 futures-lite = "2"
 iroh = "1"
@@ -50,6 +52,8 @@ rqrr = { version = "0.11.0", default-features = false }
 # their own. Same pins as the parent crate. Dev only; no runtime effect.
 vt100 = "=0.16.2"
 iroh = { version = "1", features = ["test-utils"] }
+# Narrowing-only property test for boundary composition (boundary.rs, #7782).
+proptest = "1.12"
 
 [lints.rust]
 # Rust compiler lints
