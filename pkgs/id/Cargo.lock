@@ -3907,6 +3907,7 @@ dependencies = [
  "id-groups",
  "id-store",
  "id-sync",
+ "id-worlds",
  "iroh",
  "iroh-base",
  "iroh-blobs",
@@ -4122,6 +4123,24 @@ dependencies = [
  "tokio",
  "tracing",
  "unicode-normalization",
+]
+
+[[package]]
+name = "id-worlds"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "id-events",
+ "id-groups",
+ "iroh-base",
+ "iroh-blobs",
+ "libc",
+ "p2panda-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
