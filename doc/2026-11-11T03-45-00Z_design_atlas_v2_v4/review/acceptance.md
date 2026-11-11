@@ -37,3 +37,9 @@ incomplete optional expansion. This addresses the material consistency concern.
 Worker preflight passed after restoring the system PATH. No blocking acceptance
 gaps found; issue deduplication and live implementation evidence remain explicitly
 limited as described above.
+
+Follow-up review: F01 now models context inclusion and per-stage completion/errors,
+with fixtures separating context omission from unsupported answers and timeouts
+from successful empty results. This aligns the fixture with §4.1 without adding
+production commitments. The capture comparison distinguishes its primary sunset
+announcement from the secondary-reported exact date. **APPROVE remains unchanged.**
