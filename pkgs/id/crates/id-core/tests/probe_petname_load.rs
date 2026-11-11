@@ -2,6 +2,7 @@
 use id_core::petname::Petnames;
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn probe_open_replays_names_set_would_refuse() {
     let dir = std::env::temp_dir().join(format!("petname-probe-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
