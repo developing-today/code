@@ -12,10 +12,10 @@
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
 // exactly TWO ChatGPT pools — the main account (drewrypope) reached
-// through the `codex` gatherer door (pool openai.main) and the
-// alternate account (popesdrew) through the `openai.alternate` door
-// (pool openai.alternate). Separate accounts, separate allowances:
-// never collapse them into one pool.
+// through the `_openai.main` door and the alternate account
+// (popesdrew) through the `_openai.alt` door. Separate accounts,
+// separate allowances: never collapse them into one pool. (Pool ids
+// renamed to the door ids 2026-11-10, code#8163 — see POOL NAMING.)
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
 import { parseIsoDate } from "./validate.ts";
@@ -247,7 +247,7 @@ const extractCodex: Extractor = (s, now) => {
 /**
  * The alternate ChatGPT account (popesdrew). It has no dated-read
  * section in the stewardship view yet — its live windows arrive
- * through the quota gatherer (the openai.alternate credential) and
+ * through the quota gatherer (the _openai.alt credential) and
  * are overlaid onto this pool by overlayQuotaCurrent. The extractor
  * exists so a future "### ChatGPT (Alternate)" section is picked up
  * like every other pool's dated read; until then it fail-softs to
@@ -504,8 +504,8 @@ interface PoolSpec {
 }
 
 // POOL NAMING (2026-11-03, Drew): a pool's id is its OpenCode config
-// provider id whenever the config defines one — meta, openai.main,
-// openai.alternate, opencode-go.drewrypope, opencode-go.popesdrew,
+// provider id whenever the config defines one — meta, _openai.main,
+// _openai.alt, opencode-go.drewrypope, opencode-go.popesdrew,
 // opencode-go.developing-today-0, cline-pass,
 // opendesign, deepseek, commandcode. The colon-suffixed spellings these
 // replaced (meta:high-usage, openai:codex, opencode-go:drewrypope, ...)
@@ -523,7 +523,11 @@ interface PoolSpec {
 // the Antigravity pools ride under _antigravity.gemini /
 // _antigravity.claude-gpt. Per the rule above, each starts a NEW
 // snapshot series; the pre-rename series stay in the store under
-// their old ids, unrewritten.
+// their old ids, unrewritten. (2026-11-10, code#8163, Drew: "update
+// all old names to use equivalent new names": the two ChatGPT pools
+// follow the same rule — openai.main -> _openai.main and
+// openai.alternate -> _openai.alt, the self-contained door ids; the
+// pre-rename series stay in the store under the old ids.)
 // choice: the deployed config defines antigravity-agy,
 // antigravity-direct and antigravity-ls (ls/agy are the disabled
 // legacy doors; no antigravity-local provider exists), and
@@ -551,7 +555,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (console-only usage).",
   },
   {
-    id: "openai.main",
+    id: "_openai.main",
     provider: "OpenAI",
     plan: "ChatGPT (Main — drewrypope)",
     heading: /^### ChatGPT(?! \(Alternate\))/,
@@ -559,13 +563,13 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
   },
   {
-    id: "openai.alternate",
+    id: "_openai.alt",
     provider: "OpenAI",
     plan: "ChatGPT (Alternate — popesdrew)",
     heading: /^### ChatGPT \(Alternate\)/,
     extract: extractChatGptAlternate,
     shellNote:
-      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai.main); the two are never combined.",
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the _openai.alt credential — a separate pool from the main account (_openai.main); the two are never combined.",
   },
   {
     id: "opencode-go.drewrypope",

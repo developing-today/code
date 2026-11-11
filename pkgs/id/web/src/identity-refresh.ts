@@ -19,3 +19,107 @@ export function identityNeedsRefresh(refreshedAt: string | null, now: number, in
   if (elapsed < 0) return true;
   return elapsed >= intervalMs;
 }
+
+// ============================================================================
+// Identity endpoint response validation (#7839)
+// ============================================================================
+
+/** Validated `/api/identity/me` response: a rotated token and/or the current display name. */
+export interface IdentityMeResponse {
+  token: string | null;
+  name: string | null;
+}
+
+/** Validated `/api/identity/register` response: the newly issued identity. */
+export interface IdentityRegisterResponse {
+  token: string;
+  clientId: string;
+  name: string | null;
+}
+
+/** Validated `/api/identity/name` response: the stored display name. */
+export interface IdentityNameResponse {
+  name: string | null;
+}
+
+function asIdentityRecord(payload: unknown, endpoint: string): Record<string, unknown> {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error(`malformed ${endpoint} response (expected an object)`);
+  }
+  return payload as Record<string, unknown>;
+}
+
+function identityNameField(value: unknown, endpoint: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new Error(`malformed ${endpoint} response (name must be a string or null)`);
+  }
+  return value;
+}
+
+function requiredIdentityString(value: unknown, field: string, endpoint: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`malformed ${endpoint} response (${field} must be a non-empty string)`);
+  }
+  return value;
+}
+
+/**
+ * Validate a `/api/identity/me` payload at the fetch boundary (#7839).
+ *
+ * The token is optional (present only when the server rotates it) and the
+ * name is optional, but either one, when present, must be a non-empty
+ * string / a string-or-null. Anything else throws, so the caller's error
+ * path leaves the stored identity untouched: without this check a
+ * wrong-shape 200 overwrote a valid stored token with the coerced string
+ * "[object Object]".
+ */
+export function parseIdentityMeResponse(payload: unknown): IdentityMeResponse {
+  const record = asIdentityRecord(payload, "/api/identity/me");
+  const token =
+    record.token === undefined ? null : requiredIdentityString(record.token, "token", "/api/identity/me");
+  return { token, name: identityNameField(record.name, "/api/identity/me") };
+}
+
+/**
+ * Whether a `/api/identity/me` payload carries a `name` field at all
+ * (#7838). The parser maps an absent name to `null`, which is also the
+ * legitimate "no display name" value, so presence has to be checked on
+ * the raw payload: a wrong-shape 200 with no name field ({}) must never
+ * be applied as a name change, or it silently wipes the stored display
+ * name. An explicit `name: null` does count as carried — that is the
+ * server saying the name is unset.
+ */
+export function meResponseCarriesName(payload: unknown): boolean {
+  return typeof payload === "object" && payload !== null && "name" in payload;
+}
+
+/**
+ * Validate a `/api/identity/register` payload at the fetch boundary
+ * (#7839). Both `token` and `client_id` are required non-empty strings:
+ * anything else throws before the caller can persist a fake identity
+ * (the unvalidated cast stored the literal strings "undefined" /
+ * "[object Object]" in localStorage as token/client_id).
+ */
+export function parseIdentityRegisterResponse(payload: unknown): IdentityRegisterResponse {
+  const record = asIdentityRecord(payload, "/api/identity/register");
+  return {
+    token: requiredIdentityString(record.token, "token", "/api/identity/register"),
+    clientId: requiredIdentityString(record.client_id, "client_id", "/api/identity/register"),
+    name: identityNameField(record.name, "/api/identity/register"),
+  };
+}
+
+/**
+ * Validate a `/api/identity/name` payload at the fetch boundary (#7839).
+ * The response's only field is the stored display name, so it must be
+ * present and a string or null; anything else throws and the caller
+ * leaves the stored name unchanged.
+ */
+export function parseIdentityNameResponse(payload: unknown): IdentityNameResponse {
+  const record = asIdentityRecord(payload, "/api/identity/name");
+  if (!("name" in record)) {
+    throw new Error("malformed /api/identity/name response (name must be a string or null)");
+  }
+  return { name: identityNameField(record.name, "/api/identity/name") };
+}

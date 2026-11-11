@@ -39,7 +39,7 @@ Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
 `mcpx nix build`, `go modules build`, `identity build`,
 `map build`, `id bench`) are deliberately NOT renamed:
 `main-broken.yml` (the Phase 3 watcher) references them by name in
-its `workflow_run` trigger; `jules.yml` has no `workflow_run`
+its `workflow_run` trigger; `pm-dispatch.yml` has no `workflow_run`
 trigger. If branch rules
 ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
@@ -132,7 +132,13 @@ workflow before use.
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and
-its fixtures on pull requests, merge groups, and pushes to `main`. The
+its fixtures on pull requests and pushes to `main`. **Venue
+disposition (#6187 Phase 3, closed 2026-11-11): re-armed the same
+day under Drew’s #7089 ruling (commit 82377fa1ed) — the venue is
+active, its waiver is deleted above, and its push + dispatch runs
+were dispatched at the re-arm; the dispatch-only default scoped
+for it under #6185 ruling (c) was superseded for this venue by
+the #7089 ruling before the #6187 closeout landed.** The
 guard checks known metered selections (`cloudflare-*` and the direct
 PAYG `deepseek` provider) in model-route targets/fallbacks, provider-route
 selections, top-level defaults, and agent model/fallback fields. Disabled
@@ -184,7 +190,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | atlas-search                                                   | `basic: atlas-search Rust checks` on pull requests touching `pkgs/atlas-search/**`                 | —                                                                                                   | —                                                                |
 | deploy-flake-checks | `basic: deploy flake checks (deploy-list + deploy-list-malformed)` on `pull_request` (paths `pkgs/deploy/**`, `lib/default.nix`, the workflow itself) | full flake check in nix ci | — |
 | workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) | — | — |
-| id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
+| id                                                             | guard only (contract tests; matrix + full tiers are main-only)                                      | push: guard + matrix + aggregator; schedule/manual: guard + full flake check                       | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                                        | — (main covers it)                                               |
 | id bench                                                       | — (removed)                                                                                         | yes                                                                                                 | —                                                                |
 | go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                                               | —                                                                |
@@ -192,7 +198,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                                        | —                                                                |
 | mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                                             | — (main covers it)                                               |
 | mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                                            | —                                                                |
-| production-line guard (#1411)                                  | `basic: production line limit (2500)` on `pull_request`                                             | —                                                                                                   | —                                                                |
+| production-line guard (#1411)                                  | `basic: production line limit (2500)` on `pull_request`                                             | push to main (path-gated: `pkgs/**`, `apps/**`, guard files) — restored 2026-11-11 under Drew's #7089 ruling | —                                                                |
 
 ## CI-policy agreement contract (#7089, Phase 1)
 
@@ -240,11 +246,18 @@ contract tests live in
 `.github/scripts/check-ci-policy-agreement.test.sh` (oracle: for
 every in-scope workflow, tier, declared triggers, and the recorded
 waiver set must agree). Enablement is not visible from the tree:
-it is audited from the Actions API on the #6187 recurring cadence,
+it is audited from the Actions API on the #6187 recurring cadence
+(**recurring enablement re-audit — owner: the repo-health fleet
+(queue-worker lanes, venue-audit task series); cadence: monthly,
+and after any change to a workflow’s enablement; a disabled venue
+with no recorded disposition is a finding, not a default**),
 and a disabled in-scope venue is reported with its disposition.
-At Phase 1 landing, the disabled in-scope venues are exactly the
-waiver set below (opencode-config-guard and the #6981 build set
-are `disabled_manually`).
+At Phase 1 landing, the disabled in-scope venues were exactly the
+waiver set below. As of the 2026-11-11 re-arm landing under Drew's
+#7089 ruling, the waiver set is empty and no in-scope venue is
+`disabled_manually` (the #6981 build set reads active again, and
+opencode-config-guard was re-enabled via the Actions API in the
+same change).
 
 **Waivers — the recorded Phase 2–3 disagreement set.** Each waiver
 names its phase issue and awaits Drew's re-arm-vs-dispatch-only
@@ -255,9 +268,7 @@ stale waiver whose leg now agrees.
 
 | workflow                                          | missing leg(s)                                          | phase issue |
 | ------------------------------------------------- | ------------------------------------------------------- | ----------- |
-| opencode-config-guard                             | main tier (`push`); venue `disabled_manually`           | Phase 2 — #6953 |
-| production-line-guard                             | PR tier (`pull_request`)                                | Phase 3 — #6959 |
-| go-modules-build, identity-build, map-build, mcpx-nixbuild | PR tier (`pull_request`) and main tier (`push`); venues `disabled_manually` | Phase 3 — #6981 |
+| _(none — the set landed empty 2026-11-11: #6953's main leg and venue, and #6959's PR leg, were restored in the same PR that deleted these waivers)_ | | |
 
 ## Coverage rule
 
@@ -318,10 +329,12 @@ runs every 15 minutes (`*/15 * * * *`, one live run: group
 sweeper is schedule/dispatch-only) and performs the management
 duties in one deterministic pass. It replaced `auto-assign.yml`
 (assign the maintainer to open issues/PRs). Kept event-based,
-deliberately: `jules.yml` is retained because `main-broken.yml` and
-`repo-sweeper.yml` reference the path. The retained `jules` label
-starts remediation via `pm-dispatch`; Jules was decommissioned
-(#5098), and the old `workflow_run` ci-failure-fix leg is gone. This
+deliberately: `pm-dispatch.yml` is retained because `main-broken.yml` and
+`repo-sweeper.yml` reference the path. The retained `dispatch/remediate` label
+starts remediation via `pm-dispatch`; file and label carried
+Jules-era names until the 2026-11-11 rename (Jules was
+decommissioned, #5098), and the old `workflow_run` ci-failure-fix
+leg is gone. This
 is a synchronous human-initiated handoff, not management
 bookkeeping. Never
 pair `queue: max` with a cancel-in-progress expression that

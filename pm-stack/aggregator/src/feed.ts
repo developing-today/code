@@ -142,6 +142,18 @@ export interface FleetFeed {
   /** Optional collector outcomes. Older feeds have no metadata and keep
    *  their historical presence-only health/provenance behavior. */
   meta?: FeedMetadata;
+  /** #8568: Drew's answers to needs-Drew questions, read by the
+   * collector from the aggregator's needs-drew store; the fleet lane
+   * consumes this to resume blocked workers. Absent in older feeds. */
+  answers?: FleetFeedAnswer[];
+}
+
+export interface FleetFeedAnswer {
+  ledgerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  via: string;
 }
 
 export type FeedSectionStatus = "ok" | "error" | "skipped";

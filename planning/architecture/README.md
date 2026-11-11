@@ -63,6 +63,7 @@ records.
 - [Atlas / Turso data architecture — Scaler-era revision](../../doc/2026-11-04T21-27-34Z_design_atlas_scaler_revision/2026-11-04T21-27-34Z_design_atlas_scaler_revision.md)
 - [Atlas — schema-driven filter surface from the classification manifest](../../doc/2026-11-05T13-03-49Z_design_atlas_manifest_filter_surface/2026-11-05T13-03-49Z_design_atlas_manifest_filter_surface.md)
 - [Design: shared threat-list feed protocol — versioned, signed, subscribable feeds with local override lists](../../doc/2026-11-05T13-36-21Z_design_threat_list_feed_protocol/2026-11-05T13-36-21Z_design_threat_list_feed_protocol.md)
+- [Capability-certification exception policy](../../doc/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions.md)
 - [OneNote import into the ID knowledge layer (#6438)](../../doc/2026-11-08T08-53-12Z_design_onenote_importer/2026-11-08T08-53-12Z_design_onenote_importer.md)
 - [ID shader asset format — v1 design](../../doc/2026-11-08T00-57-08Z_design_shader_asset_format/2026-11-08T00-57-08Z_design_shader_asset_format.md)
 - [Knowledge-layer sharing and permissions](../../doc/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions.md)

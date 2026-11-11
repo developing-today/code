@@ -11,8 +11,13 @@ import { AutoSaveManager, type SaveResult } from "./auto-save";
 import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
-import { identityNeedsRefresh } from "./identity-refresh";
-import { parseMeBody, parseNameBody, parseRegisterBody } from "./identity-shape";
+import {
+  identityNeedsRefresh,
+  meResponseCarriesName,
+  parseIdentityMeResponse,
+  parseIdentityNameResponse,
+  parseIdentityRegisterResponse,
+} from "./identity-refresh";
 import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
@@ -146,21 +151,24 @@ async function ensureIdentity(): Promise<IdentityState | null> {
     try {
       const resp = await fetch(`/api/identity/me?token=${encodeURIComponent(stored.token)}`);
       if (resp.ok) {
-        const data: unknown = await resp.json();
-        // The body is untrusted shape (#7838): a wrong-shape 200 must
-        // never persist a bogus token or wipe the stored name.
-        const me = parseMeBody(data);
+        const rawBody: unknown = await resp.json();
+        const data = parseIdentityMeResponse(rawBody);
+        // A wrong-shape me body carrying no name field at all must not
+        // wipe the stored display name (#7838): the parser maps an
+        // absent name to null, so presence is checked on the raw body.
+        const nameCarried = meResponseCarriesName(rawBody);
         // Server returns a refreshed token on each validation, resetting the
         // 30-day expiry clock. Save it so the client stays authenticated as
         // long as they visit within every 30 days.
-        if (me.token) {
-          stored.token = me.token;
-          saveIdentity(stored.token, stored.clientId, me.nameOk ? me.name : stored.name);
+        if (data.token) {
+          stored.token = data.token;
+          saveIdentity(stored.token, stored.clientId, nameCarried ? data.name : stored.name);
         }
         // Update name from server (may have changed via another tab/session)
-        if (me.nameOk && me.name !== stored.name) {
-          updateStoredName(me.name);
-          stored.name = me.name;
+        const serverName = data.name;
+        if (nameCarried && serverName !== stored.name) {
+          updateStoredName(serverName);
+          stored.name = serverName;
         }
         console.log("[id] Identity validated:", stored.clientId, stored.name);
         return stored;
@@ -185,16 +193,11 @@ async function ensureIdentity(): Promise<IdentityState | null> {
       console.error("[id] Identity registration failed:", resp.status);
       return null;
     }
-    const data: unknown = await resp.json();
-    const parsed = parseRegisterBody(data);
-    if (!parsed) {
-      console.error("[id] Identity registration returned an unexpected shape");
-      return null;
-    }
+    const data = parseIdentityRegisterResponse(await resp.json());
     const identity: IdentityState = {
-      token: parsed.token,
-      clientId: parsed.clientId,
-      name: parsed.name,
+      token: data.token,
+      clientId: data.clientId,
+      name: data.name,
     };
     saveIdentity(identity.token, identity.clientId, identity.name);
     console.log("[id] New identity registered:", identity.clientId);
@@ -220,13 +223,8 @@ async function updateDisplayName(token: string, name: string | null): Promise<st
       console.error("[id] Name update failed:", resp.status);
       return null;
     }
-    const data: unknown = await resp.json();
-    const parsed = parseNameBody(data);
-    if (!parsed.ok) {
-      console.error("[id] Name update returned an unexpected shape");
-      return null;
-    }
-    const updatedName = parsed.name;
+    const data = parseIdentityNameResponse(await resp.json());
+    const updatedName = data.name;
     updateStoredName(updatedName);
     console.log("[id] Display name updated:", updatedName);
     return updatedName;

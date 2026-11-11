@@ -28,12 +28,18 @@ ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 # path -> removal issue
 declare -A GRANDFATHERED=(
-  # 5,325 production lines when the guard landed; split tracked by
-  # https://github.com/developing-today/code/issues/4704
-  ["pkgs/id/src/web/markdown.rs"]="https://github.com/developing-today/code/issues/4704"
-  # 2,821 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4717
-  ["pkgs/id/src/world_session/mod.rs"]="https://github.com/developing-today/code/issues/4717"
+  # Grandfathered 2026-11-11 in the #7089 re-arm landing: each file
+  # below was already over the limit when the guard's triggers were
+  # restored, so it is grandfathered with a linked split issue,
+  # per this guard's convention. The entry is deleted in the same
+  # PR that lands the split.
+  ["pkgs/fleet/crates/fleet-queue/src/client.rs"]="#8588"
+  ["pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"]="#8589"
+  ["pkgs/id/src/commands/serve.rs"]="#8590"
+  ["pkgs/id/src/directory.rs"]="#8591"
+  ["pkgs/id/src/world/actor.rs"]="#8592"
+  ["pkgs/id/src/world/core.rs"]="#8593"
+  ["pkgs/id/src/world_session/mod.rs"]="#8594"
 )
 
 # Count production lines of one file: every line that is not part of

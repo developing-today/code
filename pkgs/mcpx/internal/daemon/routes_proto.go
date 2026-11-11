@@ -146,6 +146,35 @@ func (t *askTable) beginRun(id, run, session string) *askCall {
 	return a
 }
 
+// attachRun associates an additional execution run with the call
+// registered under id: a declared script tool called through an ask
+// surface starts a fresh exec run, and the run's upstream calls join
+// through byRun, so the run must name the same owner or their
+// questions are never attributed to the caller's ask poll (Codex P2
+// on PR #8317). attachRunToRun is the same association one level
+// down, for a file-backed call made from inside a live run.
+func (t *askTable) attachRun(id, run string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a, ok := t.byID[id]
+	if !ok || run == "" {
+		return false
+	}
+	t.byRun[run] = a
+	return true
+}
+
+func (t *askTable) attachRunToRun(parent, run string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a, ok := t.byRun[parent]
+	if !ok || run == "" {
+		return false
+	}
+	t.byRun[run] = a
+	return true
+}
+
 // join records one in-flight upstream call on (server, key) as a member of
 // run, when that run is live. leave undoes exactly this entry. A call from no
 // live run registers nothing: the pool's in-flight count already sees it.
@@ -185,6 +214,14 @@ func (t *askTable) end(id string) {
 	}
 	if a.Run != "" {
 		delete(t.byRun, a.Run)
+	}
+	// Runs attached to this call after registration (declared script
+	// executions, and file-backed calls nested inside them) end with
+	// it too.
+	for run, owner := range t.byRun {
+		if owner == a {
+			delete(t.byRun, run)
+		}
 	}
 	// Every key, not just the call's own: a run's members may still be in
 	// flight after the script is gone (killed on timeout, say), and a
@@ -299,10 +336,21 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
 
-	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, effTool, effArgs, script, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 
 	if err != nil {
 		return nil, err
+	}
+	if script != nil {
+		// A script call registers exactly like an ordinary one, and
+		// carries the ask id on its context: runDeclaredScript reads
+		// it to associate the fresh exec run it starts with this
+		// call, so questions the script's upstream calls raise reach
+		// this caller's ask poll (Codex P2 on PR #8317).
+		r.beginAsk(id, server, rs.Key, cc.SessionID)
+		defer r.endAsk(id)
+		ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "ask")
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)

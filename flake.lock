@@ -128,6 +128,22 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      }
+    },
+    "crane_2": {
+      "locked": {
+        "lastModified": 1766774972,
+        "narHash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
         "type": "github"
       }
     },
@@ -2248,11 +2264,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794359376,
-        "narHash": "sha256-l9ouUdYbzOYJcgTBH6wNSJCwUCm/X8RYbRz1Tr8JrX0=",
+        "lastModified": 1794379058,
+        "narHash": "sha256-/RdOxYIRdSKHqL7Ms6gZ7JJZ2g2vpUUGK1V1pGZZs8A=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "cab6bf481b231b3b734295fc9eec12f3f68be606",
+        "rev": "94a9e531aa1525daf48aa5ee06c263e4e8b46615",
         "type": "github"
       },
       "original": {
@@ -2359,6 +2375,7 @@
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
+        "crane": "crane",
         "disko": "disko_2",
         "esp-dev": "esp-dev",
         "esp-dev-6": "esp-dev-6",
@@ -2428,7 +2445,7 @@
     },
     "rust-flake": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "nixpkgs": [
           "omnix",
           "nixpkgs"

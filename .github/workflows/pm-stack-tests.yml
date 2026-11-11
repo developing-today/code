@@ -10,6 +10,10 @@ on:
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
       - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/pad/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
   pull_request:
     paths:
@@ -19,6 +23,10 @@ on:
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
       - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/pad/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
@@ -77,6 +85,39 @@ jobs:
         run: |
           bash pm-stack/scripts/seed-smoke.test.sh
           bash pm-stack/scripts/deploy-install-smoke.test.sh
+
+      # Script suite for #5993: pm-stack/scripts/
+      # tailnet-bindings.test.sh (the #781 regression pin for the
+      # Pad/Grist tailnet bindings) was run by no workflow. The
+      # file is named explicitly and asserted to exist first, so a
+      # green run cannot be a silently skipped suite, and any
+      # failure fails the job. The suite SKIPs (exit 0) when
+      # docker compose is unavailable: ubuntu-latest runners ship
+      # it, so a SKIP here means the runner changed — fail the job
+      # rather than letting the pin lapse silently.
+      # (The other #5993 suite, pm-git-sync.test.sh, is NOT wired:
+      # PR #8171 retired the pm-git-sync redeploy machinery and
+      # deleted its harness on purpose — deploys are merge ->
+      # nixos-rebuild switch now. See the task 9866 note on #5993.)
+      - name: Test tailnet-bindings script
+        run: |
+          t=pm-stack/scripts/tailnet-bindings.test.sh
+          if [ ! -f "$t" ]; then
+            echo "::error::Missing suite file $t — the tailnet-bindings suite was not run."
+            exit 1
+          fi
+          rc=0
+          out="$(bash "$t" 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::tailnet-bindings suite failed (exit $rc)."
+            exit 1
+          fi
+          if printf '%s' "$out" | grep -q '^SKIP:'; then
+            echo "::error::tailnet-bindings suite reported SKIP (docker compose unavailable) — the #781 pin did not run."
+            exit 1
+          fi
+          echo "tailnet-bindings script suite passed."
 
       # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
       # (36 tests, the #3026 claimant session-cap gate) and

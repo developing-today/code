@@ -61,6 +61,27 @@ pub enum Purpose {
     },
 }
 
+/// Which flow a pending code was issued for.
+///
+/// A flow, rather than the account carried by [`Purpose`], selects the
+/// independent pending-code slot for an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PurposeKind {
+    /// Attach the address to an account.
+    Confirm,
+    /// Sign in to the account that owns the address.
+    SignIn,
+}
+
+impl Purpose {
+    fn kind(&self) -> PurposeKind {
+        match self {
+            Self::Confirm { .. } => PurposeKind::Confirm,
+            Self::SignIn { .. } => PurposeKind::SignIn,
+        }
+    }
+}
+
 /// Everything a request presented to prove who it is. Each field is checked
 /// by the transport or the directory before it counts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -116,7 +137,7 @@ struct SessionRecord {
 pub struct DirectoryAuth {
     /// Keyed by the SHA-256 of the token, so memory never holds a usable token.
     sessions: HashMap<[u8; 32], SessionRecord>,
-    codes: HashMap<String, PendingCode>,
+    codes: HashMap<(String, PurposeKind), PendingCode>,
 }
 
 impl DirectoryAuth {
@@ -169,11 +190,13 @@ impl DirectoryAuth {
     ///
     /// # Errors
     ///
-    /// Fails with [`Refusal::RateLimited`] if a code for this address was sent
-    /// less than a minute ago.
+    /// Fails with [`Refusal::RateLimited`] if a code for this address and flow
+    /// was sent less than a minute ago.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
         self.codes.retain(|_, pending| pending.expires_at > now);
-        if let Some(pending) = self.codes.get(address)
+        let kind = purpose.kind();
+        let key = (address.to_owned(), kind);
+        if let Some(pending) = self.codes.get(&key)
             && pending.sent_at + CODE_RESEND_MS > now
         {
             return Err(Refusal::RateLimited(
@@ -183,10 +206,10 @@ impl DirectoryAuth {
         }
         let code = format!("{:06}", rand::rng().random_range(0..1_000_000_u32));
         self.codes.insert(
-            address.to_owned(),
+            key,
             PendingCode {
                 purpose,
-                digest: code_digest(address, &code),
+                digest: code_digest(address, kind, &code),
                 expires_at: now + CODE_TTL_MS,
                 sent_at: now,
                 attempts: 0,
@@ -195,34 +218,47 @@ impl DirectoryAuth {
         Ok(code)
     }
 
-    /// Check a code for an address. A code is used up by a correct answer, by
-    /// its expiry, or by too many wrong answers.
+    /// Check a code for an address and flow. A code is used up by a correct
+    /// answer, by its expiry, or by too many wrong answers. Checking the other
+    /// flow cannot consume or count an attempt against this flow's code.
     ///
     /// # Errors
     ///
     /// Fails if no code is pending, it has expired or run out of attempts, or
     /// the answer is wrong.
-    pub fn check_code(&mut self, address: &str, code: &str, now: u64) -> Result<Purpose> {
+    pub fn check_code(
+        &mut self,
+        address: &str,
+        kind: PurposeKind,
+        code: &str,
+        now: u64,
+    ) -> Result<Purpose> {
         let refused =
             || anyhow::Error::from(Refusal::Unauthenticated("no matching code".to_owned()));
-        let pending = self.codes.get_mut(address).ok_or_else(refused)?;
+        let key = (address.to_owned(), kind);
+        let pending = self.codes.get_mut(&key).ok_or_else(refused)?;
         if pending.expires_at <= now || pending.attempts >= CODE_ATTEMPTS {
-            self.codes.remove(address);
+            self.codes.remove(&key);
             return Err(refused());
         }
-        let digest = code_digest(address, code.trim());
+        let digest = code_digest(address, kind, code.trim());
         if !bool::from(digest.ct_eq(&pending.digest)) {
             pending.attempts += 1;
             return Err(refused());
         }
-        let pending = self.codes.remove(address).context("code vanished")?;
+        let pending = self.codes.remove(&key).context("code vanished")?;
         Ok(pending.purpose)
     }
 }
 
-fn code_digest(address: &str, code: &str) -> [u8; 32] {
+fn code_digest(address: &str, kind: PurposeKind, code: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(CODE_DOMAIN.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(match kind {
+        PurposeKind::Confirm => b"confirm".as_slice(),
+        PurposeKind::SignIn => b"sign-in".as_slice(),
+    });
     hasher.update(b"\n");
     hasher.update(address.as_bytes());
     hasher.update(b"\n");
@@ -452,8 +488,114 @@ mod tests {
             account: "ab".repeat(32),
         };
         let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
-        assert_eq!(auth.check_code("a@b.co", &code, now()).unwrap(), purpose);
-        assert!(auth.check_code("a@b.co", &code, now()).is_err());
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &code, now())
+                .unwrap(),
+            purpose
+        );
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &code, now())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn confirmation_and_sign_in_codes_have_independent_slots() {
+        let mut auth = DirectoryAuth::default();
+        let confirm = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let sign_in = Purpose::SignIn {
+            account: "cd".repeat(32),
+        };
+        let confirm_code = auth.issue_code(confirm.clone(), "a@b.co", now()).unwrap();
+        // The other flow can issue during the first flow's resend window.
+        let mut sign_in_code = auth
+            .issue_code(sign_in.clone(), "a@b.co", now() + 1)
+            .unwrap();
+        let same_flow_error = auth
+            .issue_code(confirm.clone(), "a@b.co", now() + 1)
+            .unwrap_err();
+        assert!(matches!(
+            same_flow_error.downcast_ref::<Refusal>(),
+            Some(Refusal::RateLimited(_))
+        ));
+
+        // The two codes are sampled independently from the same
+        // 1,000,000-value space, so they can coincide; when they do,
+        // the sign-in code IS a correct confirmation code and the
+        // cross-flow rejections below cannot hold. Re-issue the
+        // sign-in code past its resend window until it differs, and
+        // run the remaining checks at that issuance time.
+        let mut issued_at = now() + 1;
+        while sign_in_code == confirm_code {
+            issued_at += CODE_RESEND_MS + 1;
+            sign_in_code = auth
+                .issue_code(sign_in.clone(), "a@b.co", issued_at)
+                .unwrap();
+        }
+
+        // Presenting one flow's code to the other neither consumes nor
+        // increments attempts on the code's own slot.
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &sign_in_code, issued_at)
+                .is_err()
+        );
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &confirm_code, issued_at)
+                .is_err()
+        );
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &confirm_code, issued_at)
+                .unwrap(),
+            confirm
+        );
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &sign_in_code, issued_at)
+                .unwrap(),
+            sign_in
+        );
+    }
+
+    #[test]
+    fn issuing_again_for_the_same_purpose_replaces_its_slot_at_the_resend_boundary() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let old_code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        let wrong = if old_code == "999999" {
+            "000000"
+        } else {
+            "999999"
+        };
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                .is_err()
+        );
+        let key = ("a@b.co".to_owned(), PurposeKind::Confirm);
+        assert_eq!(auth.codes[&key].attempts, 1);
+
+        let new_code = auth
+            .issue_code(purpose.clone(), "a@b.co", now() + CODE_RESEND_MS)
+            .unwrap();
+        let pending = &auth.codes[&key];
+        assert_eq!(pending.attempts, 0);
+        assert_eq!(pending.sent_at, now() + CODE_RESEND_MS);
+        assert_eq!(
+            pending.digest,
+            code_digest("a@b.co", PurposeKind::Confirm, &new_code)
+        );
+        assert_eq!(
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &new_code,
+                now() + CODE_RESEND_MS,
+            )
+            .unwrap(),
+            purpose
+        );
     }
 
     #[test]
@@ -470,9 +612,15 @@ mod tests {
             .unwrap();
         let wrong = if code == "999999" { "000000" } else { "999999" };
         for _ in 0..CODE_ATTEMPTS {
-            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+            assert!(
+                auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                    .is_err()
+            );
         }
-        assert!(auth.check_code("a@b.co", &code, now()).is_err());
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &code, now())
+                .is_err()
+        );
 
         let code = auth
             .issue_code(
@@ -484,8 +632,13 @@ mod tests {
             )
             .unwrap();
         assert!(
-            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS + CODE_TTL_MS)
-                .is_err()
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &code,
+                now() + CODE_RESEND_MS + CODE_TTL_MS,
+            )
+            .is_err()
         );
     }
 
@@ -514,15 +667,28 @@ mod tests {
         // issuing for a second address must keep it.
         auth.issue_code(purpose.clone(), "c@d.co", now() + CODE_TTL_MS - 1)
             .unwrap();
-        assert!(auth.codes.contains_key("a@b.co"));
+        assert!(
+            auth.codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::SignIn))
+        );
         // At exactly expires_at the code is expired (check_code refuses at
         // expires_at <= now), so the same issuance sweep evicts it without
         // the first address ever checking.
         auth.issue_code(purpose, "e@f.co", now() + CODE_TTL_MS)
             .unwrap();
-        assert!(!auth.codes.contains_key("a@b.co"));
-        assert!(auth.codes.contains_key("c@d.co"));
-        assert!(auth.codes.contains_key("e@f.co"));
+        assert!(
+            !auth
+                .codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::SignIn))
+        );
+        assert!(
+            auth.codes
+                .contains_key(&("c@d.co".to_owned(), PurposeKind::SignIn))
+        );
+        assert!(
+            auth.codes
+                .contains_key(&("e@f.co".to_owned(), PurposeKind::SignIn))
+        );
     }
 
     #[test]
@@ -534,7 +700,10 @@ mod tests {
         let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
         let wrong = if code == "999999" { "000000" } else { "999999" };
         for _ in 0..CODE_ATTEMPTS {
-            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+            assert!(
+                auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                    .is_err()
+            );
         }
         // Issuing for another address inside the TTL sweeps expired codes
         // only: the exhausted code stays, so the attempt limit still refuses
@@ -542,14 +711,27 @@ mod tests {
         let other = auth
             .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
             .unwrap();
-        assert!(auth.codes.contains_key("a@b.co"));
         assert!(
-            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS)
-                .is_err()
+            auth.codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::Confirm))
+        );
+        assert!(
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &code,
+                now() + CODE_RESEND_MS,
+            )
+            .is_err()
         );
         assert_eq!(
-            auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
-                .unwrap(),
+            auth.check_code(
+                "c@d.co",
+                PurposeKind::Confirm,
+                &other,
+                now() + CODE_RESEND_MS,
+            )
+            .unwrap(),
             purpose
         );
     }
@@ -827,6 +1009,226 @@ mod tests {
                     verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
                     "oracle-accepted nonce {:?} must verify", nonce
                 );
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Guess {
+        /// The target slot's own current code.
+        Own,
+        /// The other flow's current code (the #6177 confusion).
+        Other,
+        /// A code that is not the target slot's.
+        Wrong,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum PendingCodeOp {
+        Issue(usize),
+        Check(usize, Guess),
+        Advance(u64),
+    }
+
+    fn pending_code_op_strategy() -> impl proptest::strategy::Strategy<Value = PendingCodeOp> {
+        use proptest::prelude::*;
+        prop_oneof![
+            3 => (0..2usize).prop_map(PendingCodeOp::Issue),
+            4 => (0..2usize, 0..3u8).prop_map(|(idx, g)| PendingCodeOp::Check(
+                idx,
+                match g {
+                    0 => Guess::Own,
+                    1 => Guess::Other,
+                    _ => Guess::Wrong,
+                },
+            )),
+            2 => (0..90_000u64).prop_map(PendingCodeOp::Advance),
+            1 => (90_000..1_200_000u64).prop_map(PendingCodeOp::Advance),
+        ]
+    }
+
+    // Property coverage for pending-code flow isolation (Codex P1 on
+    // PR #6479): generate interleaved issuance, verification, and time
+    // advancement across both flows for one address, and check every
+    // step against an independent per-slot model. An operation on one
+    // flow's slot must preserve the other slot's code, resend window,
+    // and attempt budget exactly. The one cross-slot effect in the
+    // production code is the issuance sweep, which removes EXPIRED
+    // slots of either flow and nothing else — the model accounts for
+    // exactly that and nothing more.
+    proptest::proptest! {
+        #[test]
+        fn pending_code_slots_are_isolated_across_flows(
+            ops in proptest::collection::vec(pending_code_op_strategy(), 1..48)
+        ) {
+            #[derive(Clone, Debug)]
+            struct SlotModel {
+                code: String,
+                sent_at: u64,
+                expires_at: u64,
+                attempts: u32,
+            }
+
+            fn wrong_code(exclude: Option<&str>) -> String {
+                if exclude == Some("000000") {
+                    "000001".to_owned()
+                } else {
+                    "000000".to_owned()
+                }
+            }
+
+            let address = "a@b.co";
+            let purposes = [
+                Purpose::Confirm {
+                    account: "ab".repeat(32),
+                },
+                Purpose::SignIn {
+                    account: "cd".repeat(32),
+                },
+            ];
+            let kinds = [PurposeKind::Confirm, PurposeKind::SignIn];
+            // The full observable state of one production slot.
+            let snapshot = |auth: &DirectoryAuth, idx: usize| -> Option<([u8; 32], u64, u64, u32)> {
+                auth.codes
+                    .get(&(address.to_owned(), kinds[idx]))
+                    .map(|p| (p.digest, p.sent_at, p.expires_at, p.attempts))
+            };
+
+            let mut auth = DirectoryAuth::default();
+            let mut model: [Option<SlotModel>; 2] = [None, None];
+            let mut now = now();
+
+            for op in &ops {
+                match *op {
+                    PendingCodeOp::Advance(dt) => {
+                        now += dt;
+                    }
+                    PendingCodeOp::Issue(idx) => {
+                        let other = 1 - idx;
+                        let other_before = snapshot(&auth, other);
+                        // Post-sweep view of the target slot: issuance
+                        // sweeps expired codes first, so an expired slot
+                        // cannot rate-limit a fresh issuance.
+                        let live = match model[idx].take() {
+                            Some(slot) if slot.expires_at > now => Some(slot),
+                            _ => None,
+                        };
+                        let rate_limited = matches!(
+                            &live,
+                            Some(slot) if slot.sent_at + CODE_RESEND_MS > now
+                        );
+                        let result = auth.issue_code(purposes[idx].clone(), address, now);
+                        if rate_limited {
+                            let err = result.expect_err("model predicts the resend window");
+                            proptest::prop_assert!(
+                                matches!(
+                                    err.downcast_ref::<Refusal>(),
+                                    Some(Refusal::RateLimited(_))
+                                ),
+                                "issue inside the resend window must be rate-limited, got {err:?}"
+                            );
+                            model[idx] = live;
+                        } else {
+                            let code = result.expect("model predicts issuance");
+                            model[idx] = Some(SlotModel {
+                                code,
+                                sent_at: now,
+                                expires_at: now + CODE_TTL_MS,
+                                attempts: 0,
+                            });
+                        }
+                        // The other slot survives issuance untouched
+                        // while unexpired; an expired other slot is
+                        // removed by the sweep and only by the sweep.
+                        let expected_other = match &model[other] {
+                            Some(slot) if slot.expires_at > now => {
+                                proptest::prop_assert!(
+                                    other_before.is_some(),
+                                    "live modelled slot missing from production state"
+                                );
+                                other_before
+                            }
+                            _ => None,
+                        };
+                        proptest::prop_assert_eq!(
+                            snapshot(&auth, other),
+                            expected_other,
+                            "issue on flow {} mutated the other flow's slot",
+                            idx
+                        );
+                    }
+                    PendingCodeOp::Check(idx, guess) => {
+                        let other = 1 - idx;
+                        let other_before = snapshot(&auth, other);
+                        let guess_code = match guess {
+                            Guess::Own => model[idx]
+                                .as_ref()
+                                .map_or_else(|| wrong_code(None), |s| s.code.clone()),
+                            Guess::Other => model[other].as_ref().map_or_else(
+                                || wrong_code(model[idx].as_ref().map(|s| s.code.as_str())),
+                                |s| s.code.clone(),
+                            ),
+                            Guess::Wrong => {
+                                wrong_code(model[idx].as_ref().map(|s| s.code.as_str()))
+                            }
+                        };
+                        #[derive(PartialEq)]
+                        enum CheckExpect {
+                            Absent,
+                            Dead,
+                            Wrong,
+                            Match,
+                        }
+                        let expectation = match &model[idx] {
+                            None => CheckExpect::Absent,
+                            Some(slot)
+                                if slot.expires_at <= now
+                                    || slot.attempts >= CODE_ATTEMPTS =>
+                            {
+                                CheckExpect::Dead
+                            }
+                            Some(slot) if guess_code != slot.code => CheckExpect::Wrong,
+                            Some(_) => CheckExpect::Match,
+                        };
+                        let result = auth.check_code(address, kinds[idx], &guess_code, now);
+                        match expectation {
+                            CheckExpect::Absent => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "check with no pending code must fail"
+                                );
+                            }
+                            CheckExpect::Dead => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "expired or attempt-exhausted code must fail"
+                                );
+                                model[idx] = None;
+                            }
+                            CheckExpect::Wrong => {
+                                proptest::prop_assert!(
+                                    result.is_err(),
+                                    "a wrong code must fail"
+                                );
+                                model[idx].as_mut().expect("slot modelled live").attempts += 1;
+                            }
+                            CheckExpect::Match => {
+                                let purpose =
+                                    result.expect("model predicts the presented code matches");
+                                proptest::prop_assert_eq!(purpose, purposes[idx].clone());
+                                model[idx] = None;
+                            }
+                        }
+                        // check_code never touches the other slot — it
+                        // does not even sweep it.
+                        proptest::prop_assert_eq!(
+                            snapshot(&auth, other),
+                            other_before,
+                            "check on flow {} mutated the other flow's slot",
+                            idx
+                        );
+                    }
+                }
             }
         }
     }
