@@ -931,6 +931,34 @@ fn is_quote_content_line(line: &str) -> bool {
 /// inside a quote are the required separators and are kept: anything
 /// after the run's first content line passes through untouched, as does
 /// an all-blank run (a lone `>` with no quoted content).
+/// The body to test for a fence opening: a fenced block that is a
+/// list item's first block is rendered with the item marker in front
+/// of the opener (`- ``` `), while its closing delimiter carries no
+/// marker — so a scan that only looks at the line start misses the
+/// opener and later mistakes the closer for a new fence, whose
+/// phantom state then suppresses quote cleanup for the rest of the
+/// document (Codex P2 on PR #8678). Strip one list marker (bullet or
+/// ordered) when present; the caller applies fence_feed_line to the
+/// result, so spacing after the marker is handled there.
+fn fence_open_body(rest: &str) -> &str {
+    let body = fence_feed_line(rest);
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(after) = body.strip_prefix(marker) {
+            return after;
+        }
+    }
+    let digits = body.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 && digits <= 9 {
+        if let Some(after) = body[digits..]
+            .strip_prefix(". ")
+            .or_else(|| body[digits..].strip_prefix(") "))
+        {
+            return after;
+        }
+    }
+    body
+}
+
 fn strip_leading_blank_quote_lines(output: &str) -> String {
     let lines: Vec<&str> = output.split('\n').collect();
     let mut result: Vec<&str> = Vec::with_capacity(lines.len());
@@ -967,7 +995,7 @@ fn strip_leading_blank_quote_lines(output: &str) -> String {
                     continue;
                 }
             }
-            if fence_depth.is_none() && fence.feed(fence_feed_line(rest)) {
+            if fence_depth.is_none() && fence.feed(fence_feed_line(fence_open_body(rest))) {
                 fence_depth = Some(depth);
                 result.push(line);
                 at_quote_start = !is_blank_quote_line(line) && !is_quote_content_line(line);

@@ -1937,6 +1937,26 @@ mod tests {
     }
 
     #[test]
+    fn test_list_fence_does_not_suppress_quote_cleanup() {
+        // PR #8678 Codex P2: a list item whose first block is fenced
+        // code renders its opener behind the item marker (- ```), so
+        // the fence scan missed it and mistook the closing delimiter
+        // for a new fence; the phantom fence then suppressed the
+        // #1002 leading-blank cleanup for every later quote in the
+        // document. The rule-first quote below needs that cleanup.
+        let original = "- ```\n  code\n  ```\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+    }
+
+    #[test]
     fn test_info_less_fence_in_blockquote_trailing_content_round_trips() {
         // #1496 acceptance cases: a no-info fence inside a blockquote
         // followed by each kind of trailing quoted content must reopen
