@@ -221,6 +221,32 @@ func TestAPIAddRefusesServerNamespaceCollision(t *testing.T) {
 // the namespace `pets`, but augmentAPIs still refuses an API named
 // `backend` at load — so both names are refused before persisting
 // (Codex P1, PR #4637 round 2).
+// The resolved-namespace comparison is EXACT, matching ResolveAll:
+// an explicit namespace is preserved verbatim by Resolve, so a server
+// with mcpx.namespace "pets$" does not own the sanitized form "pets_"
+// and must not refuse an API of that name (Codex P2, PR #4637 round
+// 3 -- the check previously re-sanitized the resolved namespace
+// before comparing, inventing a collision). Oracle: ResolveAll's
+// owners map compares r.Namespace strings exactly.
+func TestAPIAddAllowsNameThatOnlySanitizesToAnExplicitNamespace(t *testing.T) {
+	s, _ := setupPersist(t, []byte(`{"mcpServers":{"backend":{"command":"/bin/true","mcpx":{"namespace":"pets$"}}}}`), false)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "apis.json")
+	if err := os.WriteFile(file, []byte(`{"apis":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.set.SetRuntime("paths.apis", file); err != nil {
+		t.Fatal(err)
+	}
+	rec := postAPI(t, s, `{"name":"pets_","spec":"./x.json"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add pets_: status %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if got := readFile(t, file); !strings.Contains(got, "pets_") {
+		t.Fatalf("the non-colliding declaration was not persisted: %s", got)
+	}
+}
+
 func TestAPIAddRefusesExactServerNameWithForeignNamespace(t *testing.T) {
 	s, _ := setupPersist(t, []byte(`{"mcpServers":{"backend":{"command":"/bin/true","mcpx":{"namespace":"pets"}}}}`), false)
 	dir := t.TempDir()

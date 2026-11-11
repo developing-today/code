@@ -1133,7 +1133,13 @@ func (s *Server) handleAPIsAdd(w http.ResponseWriter, r *http.Request) {
 			if r, rerr := cfg.Resolve(name); rerr == nil && r != nil {
 				resolved = r.Namespace
 			}
-			nsHit := resolved == want || config.SanitizeNamespace(resolved) == want
+			// Compare the RESOLVED namespace exactly, the way
+			// ResolveAll does: an explicit namespace is preserved
+			// verbatim by Resolve (a `$` stays a `$`), so sanitizing
+			// it again here would invent collisions ResolveAll never
+			// sees -- a server with explicit namespace "pets$" does
+			// NOT own "pets_" (Codex P2, PR #4637 round 3).
+			nsHit := resolved == want
 			// The EXACT server name is a collision independently of the
 			// namespace: augmentAPIs refuses an API whose name equals a
 			// configured server's name even when that server resolves
