@@ -142,7 +142,7 @@
     },
     {
       "id": "id.roc.examples",
-      "paths": ["pkgs/id/examples/roc-world/**"],
+      "paths": ["pkgs/id/examples/lounge/**", "pkgs/id/examples/roc-chat/**", "pkgs/id/examples/roc-counter/**", "pkgs/id/examples/roc-grid/**", "pkgs/id/examples/roc-screen/**", "pkgs/id/examples/roc-text-counter/**", "pkgs/id/examples/territory/**", "pkgs/id/apps/tic-tac-toe/program/**", "pkgs/id/scripts/rebuild-roc-examples.sh"],
       "invocation": "roc-examples flake check: rebuild examples, run sandbox/world tests, cargo test --test toolchain_pin",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
