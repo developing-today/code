@@ -916,7 +916,10 @@ impl WorldActor {
                 // into a successful read (#7892).
                 let count = match request.args.get("count") {
                     None => 16,
-                    Some(value) => value.as_u64().ok_or_else(CapError::bad_args)? as usize,
+                    Some(value) => value
+                        .as_u64()
+                        .ok_or_else(CapError::bad_args)?
+                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64) as usize,
                 };
                 Ok(serde_json::json!({
                     "lines": chat_history(

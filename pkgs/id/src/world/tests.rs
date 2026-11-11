@@ -1763,6 +1763,11 @@ mod tests {
                     serde_json::json!({"count": 100_000}),
                 ),
                 (
+                    "hist-u32-overflow",
+                    "chat.history",
+                    serde_json::json!({"count": 4_294_967_296_u64}),
+                ),
+                (
                     "hist-string",
                     "chat.history",
                     serde_json::json!({"count": "2"}),
@@ -1849,6 +1854,9 @@ mod tests {
         assert_eq!(lines.len(), crate::world_caps::MAX_CHAT_HISTORY_LINES);
         assert_eq!(lines[0]["text"], "line-7");
         assert_eq!(lines[63]["text"], "line-70");
+        let large = &results["hist-u32-overflow"];
+        assert_eq!(large["ok"], true, "{large}");
+        assert_eq!(large["value"]["lines"], clamped["value"]["lines"]);
         // A supplied count of the wrong JSON kind is rejected, never
         // treated as omitted (#7892).
         for id in [
