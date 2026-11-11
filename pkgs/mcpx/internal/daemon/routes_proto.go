@@ -327,6 +327,13 @@ func (r *Registry) attach(ctx context.Context, server, key string, req elicit.Re
 
 // CallAsk runs an interruptible call and registers it for correlation.
 func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {
+	// A mounted tool (#1933 slice 3) delegates to its home server
+	// through this same entry point, keeping the call's ask id.
+	if target, targetTool, merged, handled, err := r.mountCall(server, tool, cc, args); err != nil {
+		return nil, err
+	} else if handled {
+		return r.CallAsk(ctx, id, target, targetTool, cc, merged)
+	}
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
