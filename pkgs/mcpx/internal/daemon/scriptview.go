@@ -302,6 +302,18 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	// dropping them made an emit-only script return empty content
 	// despite succeeding (Codex P2 on PR #8317).
 	content := []map[string]string{{"type": "text", "text": res.Stdout}}
+	if replacement, ok := hookReplacementText(res); ok {
+		// A configured script hook replaced the run's result
+		// (applyHookResult in execsvc): res.Result is the final
+		// answer and res.Stdout still carries what the script
+		// printed, so returning stdout discards the replacement --
+		// an onSuccess transformation would answer with the
+		// untransformed text, and an onError hook that recovered
+		// from a thrown exception (clearing the error and exit
+		// status) would answer with successful empty content
+		// instead of its recovery answer (Codex P2 on PR #8317).
+		content[0] = map[string]string{"type": "text", "text": replacement}
+	}
 	for _, e := range res.Emits {
 		content = append(content, map[string]string{"type": "text", "text": string(e)})
 	}
@@ -321,6 +333,36 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 		return nil, err
 	}
 	return b, nil
+}
+
+// hookReplacementText returns the final result a script hook substituted
+// for a run's own answer, as tool text, when the run's Result is such a
+// replacement. The oracle is execsvc's own bookkeeping: a Result that is
+// still the parse of the script's stdout is not a replacement (the tool
+// text already carries that stdout verbatim), and a nil Result is the
+// script's plain stdout answer. A hook replacement differs from the
+// stdout parse by construction -- applyHookResult stores the hook's
+// value, never the printed text.
+func hookReplacementText(res *execsvc.Result) (string, bool) {
+	if res == nil || res.Result == nil {
+		return "", false
+	}
+	rb, err := json.Marshal(res.Result)
+	if err != nil {
+		return "", false
+	}
+	if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
+		var parsed any
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			if pb, err := json.Marshal(parsed); err == nil && string(pb) == string(rb) {
+				return "", false
+			}
+		}
+	}
+	if text, ok := res.Result.(string); ok {
+		return text, true
+	}
+	return string(rb), true
 }
 
 // callScriptWithLedger runs a script-backed view under the same

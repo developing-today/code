@@ -614,6 +614,17 @@ func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server
 			// earlier uncertain call might have performed.
 			return policy.Decision{}, false
 		}
+		if r.declaredReadOnly(server, tool) {
+			// The operator declared this tool read-only in local
+			// configuration (#6116). That declaration is trusted
+			// outright and needs no upstream schema to rest on --
+			// which matters here: a script-only namespace has no
+			// upstream schemas at all, so the refresh-and-scan below
+			// could never find this tool and would block a read-only
+			// inspection call behind an unknown write it cannot be
+			// (Codex P2 on PR #8317).
+			return policy.Decision{}, false
+		}
 		tools, _, at := p.CachedSchemas()
 		if at.IsZero() || p.SchemaExpired() {
 			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))

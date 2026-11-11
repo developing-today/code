@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
@@ -964,5 +965,132 @@ func TestScriptFileToolCallAskRegistersAndCleansUp(t *testing.T) {
 	srv.reg.asks.mu.Unlock()
 	if leftover != 0 {
 		t.Errorf("the ask table holds %d run registrations after the call ended", leftover)
+	}
+}
+
+// Oracle: the ledger preflight honors server-level read-only
+// declarations for script tools (Codex P2 on PR #8317, second round).
+// A script-only namespace has no upstream schemas, so the preflight's
+// refresh-and-scan could never find the tool: a script tool the
+// operator declared read-only through the server's readOnlyTools list
+// was blocked behind an unknown write outcome it cannot be, and could
+// not run to help reconcile it. The undeclared sibling tool on the
+// same server stays blocked -- the exemption is the declaration, not
+// the namespace.
+func TestLedgerPreflightHonorsServerLevelReadOnlyForScriptTool(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"ops": {Mcpx: &config.Extras{ReadOnlyTools: []string{"inspect"}, ToolViews: map[string]config.ToolView{
+			"inspect": {Command: "cat", Description: "echo the arguments"},
+			"wipe":    {Command: "cat", Description: "echo the arguments"},
+		}}},
+	})
+	if r.writeLedger == nil {
+		t.Fatal("test registry has no write ledger")
+	}
+	if err := r.writeLedger.Record(unknownWriteRecord{
+		Server: "ops", Tool: "wipe", ArgsSHA256: strings.Repeat("d", 64),
+		At: time.Now().UTC(), Surface: "call",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Call(scriptCtx(t), "ops", "wipe", config.CallContext{}, map[string]any{})
+	var unknown ErrUnknownOutcome
+	if !errors.As(err, &unknown) {
+		t.Fatalf("the undeclared tool must stay blocked by the preflight, got %v", err)
+	}
+	raw, err := r.Call(scriptCtx(t), "ops", "inspect", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("a server-declared read-only script tool must run despite the ledger record: %v", err)
+	}
+	if res := decodeCallResult(t, raw); res.IsError {
+		t.Fatalf("the declared read-only call is not an error: %s", raw)
+	}
+}
+
+// Oracle: a file-backed tool returns the final result a script hook
+// substituted, not the script's original stdout (Codex P2 on
+// PR #8317, second round). The configured onSuccess hook applies a
+// replacement result; execsvc stores it in res.Result while res.Stdout
+// keeps what the script printed, and the tool answer must be the
+// replacement.
+func TestScriptFileToolReturnsHookReplacedResult(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "total.ts")
+	if err := os.WriteFile(script, []byte("console.log(JSON.stringify({ total: 2 }));\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		Script: config.ScriptConfig{Hooks: []any{map[string]any{
+			"phase":  "onSuccess",
+			"script": "console.log(JSON.stringify({ apply: { total: 3, replaced: true } }));",
+		}}},
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"total": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "total", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a hook-replaced success is not an error: %s", raw)
+	}
+	joined := ""
+	for _, c := range res.Content {
+		joined += c.Text
+	}
+	if !strings.Contains(joined, `"total":3`) || !strings.Contains(joined, `"replaced":true`) {
+		t.Errorf("the tool result must carry the hook replacement, got: %s", raw)
+	}
+	if strings.Contains(joined, `"total":2`) {
+		t.Errorf("the tool result must not carry the pre-hook stdout as its answer, got: %s", raw)
+	}
+}
+
+// Oracle for hookReplacementText: execsvc's own bookkeeping decides
+// what counts as a replacement -- a Result still equal to the stdout
+// parse is the script's own answer (no replacement), a differing
+// Result is a hook's substitute, and an onError recovery (error
+// cleared, Result set, stdout empty) is a replacement whose text is
+// the recovery answer.
+func TestHookReplacementTextOracle(t *testing.T) {
+	if _, ok := hookReplacementText(nil); ok {
+		t.Error("a nil result has no replacement")
+	}
+	if _, ok := hookReplacementText(&execsvc.Result{Stdout: "plain"}); ok {
+		t.Error("a run with no Result has no replacement")
+	}
+	if _, ok := hookReplacementText(&execsvc.Result{
+		Stdout: `{"total":2}`, Result: map[string]any{"total": float64(2)},
+	}); ok {
+		t.Error("a Result equal to the stdout parse is not a replacement")
+	}
+	text, ok := hookReplacementText(&execsvc.Result{
+		Stdout: `{"total":2}`, Result: map[string]any{"total": float64(3)},
+	})
+	if !ok || !strings.Contains(text, `"total":3`) {
+		t.Errorf("a differing Result is a replacement: %q, %v", text, ok)
+	}
+	text, ok = hookReplacementText(&execsvc.Result{
+		Result: map[string]any{"recovered": true},
+	})
+	if !ok || !strings.Contains(text, `"recovered":true`) {
+		t.Errorf("an onError recovery Result is a replacement: %q, %v", text, ok)
+	}
+	text, ok = hookReplacementText(&execsvc.Result{
+		Stdout: "original", Result: "recovered answer",
+	})
+	if !ok || text != "recovered answer" {
+		t.Errorf("a string replacement is carried verbatim: %q, %v", text, ok)
 	}
 }
