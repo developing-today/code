@@ -134,6 +134,8 @@ describe("OIDC verification", () => {
   });
 
   test("rejects a repo outside the allowlist", async () => {
+    // The pre-rename spelling is exactly such a repo now (#6940):
+    // only the canonical dezren39/darwin-nix is allowlisted.
     const token = signJwt({ ...baseClaims, repository: "dezren39/nix" });
     await expect(verifyOidcToken(token, oidcOpts)).rejects.toThrow(/allowlist/);
   });
@@ -144,7 +146,7 @@ describe("cross-repo grants (assertCallerRepo)", () => {
     "developing-today/code",
     "developing-today/opencode",
     "developing-today/openchamber",
-    "dezren39/nix",
+    "dezren39/darwin-nix",
     "developing-today/zettel",
     "dezren39/dezren39",
   ];
@@ -158,10 +160,10 @@ describe("cross-repo grants (assertCallerRepo)", () => {
     expect(() => assertCallerRepo(openchamberCaller, "developing-today/opencode", allowlist)).not.toThrow();
   });
 
-  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/nix", () => {
+  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/darwin-nix", () => {
     const zettelCaller = { type: "oidc" as const, repository: "developing-today/zettel", actor: "dezren39" };
     expect(() => assertCallerRepo(zettelCaller, "dezren39/dezren39", allowlist)).not.toThrow();
-    expect(() => assertCallerRepo(zettelCaller, "dezren39/nix", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo(zettelCaller, "dezren39/darwin-nix", allowlist)).not.toThrow();
   });
 
   test("same-repo still allowed", () => {
@@ -179,7 +181,7 @@ describe("cross-repo grants (assertCallerRepo)", () => {
 
   test("bearer callers are unaffected by caller/target repo pairing: an allowlisted target passes", () => {
     expect(() => assertCallerRepo({ type: "bearer" }, "developing-today/opencode", allowlist)).not.toThrow();
-    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/nix", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/darwin-nix", allowlist)).not.toThrow();
   });
 
   test("bearer callers are rejected for a non-allowlisted target", () => {
