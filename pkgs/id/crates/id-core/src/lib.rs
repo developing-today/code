@@ -22,6 +22,7 @@ pub mod access;
 pub mod boundary;
 pub mod connectivity;
 pub mod discovery;
+pub mod ip_evidence;
 pub mod json_unique;
 pub mod membership;
 pub mod residency;
