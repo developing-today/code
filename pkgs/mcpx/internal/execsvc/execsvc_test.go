@@ -580,3 +580,36 @@ func TestRunWithShebangFile(t *testing.T) {
 		t.Errorf("Runtime = %q, want sh", res.Runtime)
 	}
 }
+
+// Oracle: session ownership (Codex P1 on PR #8317). A run that borrows
+// its session from a still-running caller must not release the
+// session's instances when it ends; a run that owns its session
+// releases exactly once, with that session.
+func TestBorrowedSessionIsNotReleased(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		borrow  bool
+		wantRel int
+	}{
+		{"borrowed", true, 0},
+		{"owned", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := service(t, store(t))
+			var released []string
+			svc.Release = func(_ context.Context, session string) error {
+				released = append(released, session)
+				return nil
+			}
+			run(t, svc, `console.log(JSON.stringify({ ok: true }));`, execsvc.Options{
+				Session: "outer-session", BorrowSession: tc.borrow,
+			})
+			if len(released) != tc.wantRel {
+				t.Fatalf("release calls = %v, want %d", released, tc.wantRel)
+			}
+			if tc.wantRel == 1 && released[0] != "outer-session" {
+				t.Errorf("released session = %q, want outer-session", released[0])
+			}
+		})
+	}
+}
