@@ -1211,7 +1211,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let event_sync_policy = {
         #[cfg(feature = "world")]
         {
-            serve_pull_policy(_started_server_config.as_ref())
+            serve_pull_policy(started_server_config.as_ref())
         }
         #[cfg(not(feature = "world"))]
         {
