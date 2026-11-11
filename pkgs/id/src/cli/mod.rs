@@ -113,7 +113,6 @@ pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, Rev
 #[cfg(feature = "sandbox")]
 pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
-pub use writer_sets::WriterSetCommand;
 pub use world::{
     WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs, WorldCrossWorldWriteArgs,
     WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs, WorldFileScopeArgs,
@@ -122,6 +121,7 @@ pub use world::{
     WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldRuntimeArgs,
     WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
 };
+pub use writer_sets::WriterSetCommand;
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
 ///
@@ -1568,4 +1568,3 @@ mod tests;
 #[cfg(all(test, feature = "world"))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod world_limits_args_tests;
-

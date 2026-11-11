@@ -487,8 +487,8 @@ impl WorldCache {
         // hash to the name. A corrupt file can survive a lookup eviction
         // when another key still references it; storing the fresh bytes
         // must replace it, not skip the write on existence alone.
-        let existing_ok = std::fs::read(&artifact_path)
-            .is_ok_and(|bytes| artifact_hash(&bytes) == hash);
+        let existing_ok =
+            std::fs::read(&artifact_path).is_ok_and(|bytes| artifact_hash(&bytes) == hash);
         if !existing_ok {
             let temp = self.root.join("artifacts").join(format!(".{hash}.tmp"));
             std::fs::write(&temp, artifact)
@@ -993,7 +993,13 @@ mod tests {
         let (dir, cache) = cache(1 << 20);
         let inp = input("s");
         cache
-            .store(&inp, "alice", CacheScope::Author, b"first-artifact", "roc 1")
+            .store(
+                &inp,
+                "alice",
+                CacheScope::Author,
+                b"first-artifact",
+                "roc 1",
+            )
             .unwrap();
         let first_hash = artifact_hash(b"first-artifact");
         // A second compile of the same key producing different bytes
@@ -1001,10 +1007,19 @@ mod tests {
         // artifact file must be reclaimed, not leaked outside the LRU
         // accounting.
         cache
-            .store(&inp, "alice", CacheScope::Author, b"second-artifact!", "roc 1")
+            .store(
+                &inp,
+                "alice",
+                CacheScope::Author,
+                b"second-artifact!",
+                "roc 1",
+            )
             .unwrap();
         let artifacts = dir.path().join("cache").join("artifacts");
-        assert!(!artifacts.join(&first_hash).exists(), "replaced artifact leaked");
+        assert!(
+            !artifacts.join(&first_hash).exists(),
+            "replaced artifact leaked"
+        );
         assert_eq!(cache.total_bytes(), b"second-artifact!".len() as u64);
         match cache.lookup(&inp, "alice").unwrap() {
             Lookup::Hit { artifact, .. } => assert_eq!(artifact, b"second-artifact!"),
@@ -1035,7 +1050,11 @@ mod tests {
             .unwrap();
         assert_eq!(cache.entry_count(), 1, "first entry LRU-evicted");
         assert!(cache.has_determinism_proof("compiler-a", "platform-a"));
-        assert_eq!(cache.invalidate_compiler("compiler-a"), 0, "no resident entries");
+        assert_eq!(
+            cache.invalidate_compiler("compiler-a"),
+            0,
+            "no resident entries"
+        );
         assert!(
             !cache.has_determinism_proof("compiler-a", "platform-a"),
             "proof must be revoked even with no resident entry"
@@ -1107,9 +1126,9 @@ mod tests {
             }
             match e.scope {
                 CacheScope::Author => false,
-                CacheScope::Server | CacheScope::Public => {
-                    self.proofs.contains(&(e.compiler.clone(), e.platform.clone()))
-                }
+                CacheScope::Server | CacheScope::Public => self
+                    .proofs
+                    .contains(&(e.compiler.clone(), e.platform.clone())),
             }
         }
     }
@@ -1284,4 +1303,3 @@ mod tests {
         }
     }
 }
-

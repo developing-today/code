@@ -2155,7 +2155,10 @@ mod serve_tests {
             String::from_utf8_lossy(&changed.stderr)
         );
         let changed_report: serde_json::Value = serde_json::from_slice(&changed.stdout).unwrap();
-        assert_eq!(changed_report["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert_eq!(
+            changed_report["report"]["ceiling"],
+            serde_json::json!(["time.now"])
+        );
 
         let read = world.output(&["caps", &world.node, "--capability", &world.capability]);
         assert!(

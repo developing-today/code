@@ -32,8 +32,8 @@ use std::io::{self, Write};
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Deserializer, Serialize, de};
+use sha2::{Digest, Sha256};
 
 use crate::artifact::SignedArtifact;
 
@@ -849,7 +849,10 @@ impl BoardGraph {
                     "a game challenge cannot be accepted by the game post author"
                 );
                 ensure!(
-                    post_body.participants.iter().any(|participant| participant.author == author),
+                    post_body
+                        .participants
+                        .iter()
+                        .any(|participant| participant.author == author),
                     "a game challenge can be accepted only by an assigned participant"
                 );
             }
@@ -878,10 +881,7 @@ impl BoardGraph {
                     "game turns require a signed challenge acceptance first"
                 );
                 match &value.prev_turn {
-                    None => ensure!(
-                        value.turn_index == 0,
-                        "an opening game turn has index 0"
-                    ),
+                    None => ensure!(value.turn_index == 0, "an opening game turn has index 0"),
                     Some(previous) => {
                         let previous_object =
                             self.require_scoped(previous, &value.board, "game_turn")?;
@@ -1293,8 +1293,10 @@ impl BoardGraph {
             "the game has no signed challenge acceptance"
         );
         let lineage = self.game_lineage(game_post, head)?;
-        let sandbox =
-            crate::sandbox::Sandbox::compile(package_bytes, crate::sandbox::SandboxLimits::default())?;
+        let sandbox = crate::sandbox::Sandbox::compile(
+            package_bytes,
+            crate::sandbox::SandboxLimits::default(),
+        )?;
         // The package's own initial state: the one state the
         // signed-turn schedule (participants by turn index, from 0)
         // is defined from.
@@ -1466,16 +1468,16 @@ impl BoardGraph {
                 BoardObject::GameTurn(body) => {
                     let mut dependencies = vec![body.board.clone(), body.game_post.clone()];
                     dependencies.extend(body.prev_turn.iter().cloned());
-                    dependencies.extend(self.objects.iter().filter_map(
-                        |(hash, signed)| match &signed.object {
+                    dependencies.extend(self.objects.iter().filter_map(|(hash, signed)| {
+                        match &signed.object {
                             BoardObject::GameChallengeAcceptance(acceptance)
                                 if acceptance.game_post == body.game_post =>
                             {
                                 Some(hash.clone())
                             }
                             _ => None,
-                        },
-                    ));
+                        }
+                    }));
                     dependencies
                 }
             };
@@ -4218,8 +4220,7 @@ mod tests {
         }
     }
 
-    const TIC_TAC_TOE_WASM: &[u8] =
-        include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+    const TIC_TAC_TOE_WASM: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 
     fn game_acceptance_object(
         key: &SigningKey,
@@ -4542,7 +4543,11 @@ mod tests {
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&creator)).unwrap();
         let game_hash = graph
-            .insert(wasm_game_post_object(&creator, &opponent, root_hash.clone()))
+            .insert(wasm_game_post_object(
+                &creator,
+                &opponent,
+                root_hash.clone(),
+            ))
             .unwrap();
 
         // Replay refuses a game with no signed challenge acceptance.
@@ -4605,13 +4610,10 @@ mod tests {
         );
     }
 
-
     /// Build a wasm tic-tac-toe graph with an accepted challenge and
     /// one alternating lineage over `actions` (even indices are X,
     /// odd are O), returning the graph, the game hash, and the head.
-    fn wasm_game_lineage(
-        actions: &[&str],
-    ) -> (BoardGraph, ArtifactHash, ArtifactHash) {
+    fn wasm_game_lineage(actions: &[&str]) -> (BoardGraph, ArtifactHash, ArtifactHash) {
         wasm_game_lineage_with_genesis(actions, "---------")
     }
 
@@ -4691,8 +4693,7 @@ mod tests {
 
         // A turn signed after the game is already won is ignored by
         // the package and must not extend the replayed lineage.
-        let (graph, game_hash, head) =
-            wasm_game_lineage(&["0", "4", "1", "3", "2", "5"]);
+        let (graph, game_hash, head) = wasm_game_lineage(&["0", "4", "1", "3", "2", "5"]);
         assert!(
             graph
                 .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
@@ -4823,9 +4824,10 @@ mod tests {
                 [0, 4, 8],
                 [2, 4, 6],
             ];
-            won = lines
-                .iter()
-                .any(|line| line.iter().all(|&i| board[i] == board[line[0]] && board[i] != b'-'));
+            won = lines.iter().any(|line| {
+                line.iter()
+                    .all(|&i| board[i] == board[line[0]] && board[i] != b'-')
+            });
         }
         Ok(String::from_utf8(board.to_vec()).unwrap())
     }
