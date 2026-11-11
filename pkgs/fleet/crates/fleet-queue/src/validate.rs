@@ -6,6 +6,7 @@
 //! the database RPCs remain the backstop.)
 
 use serde_json::{Value, json};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 pub const KINDS: [&str; 4] = ["pr_shepherd", "triage", "small_fix", "ci_investigation"];
@@ -506,6 +507,123 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
     errors
 }
 
+/// The not_before horizon (#6426; triage task 10871 decision): a
+/// not_before more than 366 days in the future is REJECTED, never
+/// clamped — a task gated that far out is born unclaimable while
+/// still counting as queued. The same bound applies at every layer
+/// that accepts a not_before: packet validation, the client
+/// --not-before flag, and the broker's /park and /revive gates.
+pub const NOT_BEFORE_MAX_FUTURE_SECONDS: i64 = 366 * 86_400;
+
+/// (year, month, day) -> days since 1970-01-01 (Howard Hinnant's
+/// algorithm, the same civil-date math fallback.rs and client.rs use).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = (y_adj - era * 400) as u64; // [0, 399]
+    let mp = if m > 2 { m - 3 } else { m + 9 } as u64; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + (d as u64) - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe as i64 - 719_468
+}
+
+/// Parse an RFC 3339 timestamp (`...Z` or with a numeric offset,
+/// optional fractional seconds) to epoch seconds. The day must exist
+/// in the given month and year (the fallback.rs #6667 rule):
+/// days_from_civil alone silently normalizes impossible dates.
+/// Oracle: RFC 3339 + the Gregorian calendar.
+fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (date, rest) = s.split_once('T').or_else(|| s.split_once(' '))?;
+    let mut dp = date.split('-');
+    let year: i64 = dp.next()?.parse().ok()?;
+    let month: u32 = dp.next()?.parse().ok()?;
+    let day: u32 = dp.next()?.parse().ok()?;
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if dp.next().is_some() || day < 1 || day > days_in_month {
+        return None;
+    }
+    let (time, offset_s) = if let Some(t) = rest.strip_suffix('Z') {
+        (t, 0i64)
+    } else if let Some(idx) = rest.rfind(['+', '-']) {
+        if idx == 0 {
+            return None;
+        }
+        let (t, off) = rest.split_at(idx);
+        let sign: i64 = if rest.as_bytes()[idx] == b'+' { 1 } else { -1 };
+        let mut op = off[1..].split(':');
+        let oh: i64 = op.next()?.parse().ok()?;
+        let om: i64 = op.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        (t, sign * (oh * 3600 + om * 60))
+    } else {
+        (rest, 0)
+    };
+    let time = time.split('.').next()?; // drop fractional seconds
+    let mut tp = time.split(':');
+    let hh: i64 = tp.next()?.parse().ok()?;
+    let mm: i64 = tp.next()?.parse().ok()?;
+    let ss: i64 = tp.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    if !(0..24).contains(&hh) || !(0..60).contains(&mm) || !(0..61).contains(&ss) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hh * 3600 + mm * 60 + ss - offset_s)
+}
+
+fn now_epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Validate one not_before value against the #6426 rule at a given
+/// "now" (epoch seconds): it must be a non-empty string that parses
+/// as RFC 3339 and is no more than NOT_BEFORE_MAX_FUTURE_SECONDS in
+/// the future. Past and near-future values pass unchanged. Every
+/// error names `field` (`packet.not_before`, `--not-before`, or
+/// `not_before`) so the rejection points at its source.
+pub fn validate_not_before_at(value: &Value, field: &str, now: i64) -> Result<(), String> {
+    let Some(s) = value.as_str() else {
+        return Err(format!(
+            "{field}: must be an RFC 3339 timestamp string, got {}",
+            match value {
+                Value::Number(_) => "a number",
+                Value::Bool(_) => "a boolean",
+                Value::Array(_) => "an array",
+                Value::Object(_) => "an object",
+                Value::Null => "null",
+                Value::String(_) => unreachable!(),
+            }
+        ));
+    };
+    if s.trim().is_empty() {
+        return Err(format!(
+            "{field}: must not be empty (an RFC 3339 timestamp is required)"
+        ));
+    }
+    let Some(epoch) = parse_rfc3339_epoch(s) else {
+        return Err(format!("{field}: '{s}' is not a valid RFC 3339 timestamp"));
+    };
+    if epoch - now > NOT_BEFORE_MAX_FUTURE_SECONDS {
+        return Err(format!(
+            "{field}: {s} is more than 366 days in the future — a task gated that far out is born unclaimable (#6426); rejected, not clamped"
+        ));
+    }
+    Ok(())
+}
+
+/// validate_not_before_at against the current time.
+pub fn validate_not_before(value: &Value, field: &str) -> Result<(), String> {
+    validate_not_before_at(value, field, now_epoch_seconds())
+}
+
 /// validate_packet: returns (errors, warnings).
 pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     let mut errors: Vec<String> = Vec::new();
@@ -540,6 +658,16 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
             }
         }
         Some(_) => errors.push("packet.priority: must be an integer".to_string()),
+    }
+    // not_before (#6426): absent or null keeps the historical
+    // behaviour; a present value must satisfy validate_not_before —
+    // until now it was forwarded verbatim, so garbage failed only as
+    // a downstream DB cast error and a far-future value enqueued a
+    // task the claim predicate would not admit for years.
+    if let Some(nb) = obj.get("not_before").filter(|v| !v.is_null()) {
+        if let Err(e) = validate_not_before(nb, "packet.not_before") {
+            errors.push(e);
+        }
     }
     match obj.get("body") {
         Some(Value::String(body)) if !body.trim().is_empty() => {
@@ -962,5 +1090,119 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn not_before_is_validated_against_rfc3339_and_the_366_day_horizon() {
+        // #6426: not_before was forwarded verbatim at every layer —
+        // garbage failed only as a downstream DB cast error, and a
+        // far-future value enqueued a task born unclaimable. Oracle:
+        // RFC 3339 plus the triage decision (reject beyond 366 days).
+        // Fixed "now": 2026-11-06T00:00:00Z.
+        let now = parse_rfc3339_epoch("2026-11-06T00:00:00Z").expect("test now parses");
+        // Non-string shapes are errors naming the field.
+        for bad in [
+            json!(42),
+            json!(true),
+            json!({}),
+            json!(["2026-11-06T00:00:00Z"]),
+        ] {
+            let err = validate_not_before_at(&bad, "packet.not_before", now)
+                .err()
+                .expect("non-string not_before must be rejected");
+            assert!(
+                err.contains("packet.not_before"),
+                "error names the field: {err}"
+            );
+        }
+        // Empty and unparseable strings are errors naming the field.
+        for bad in [
+            "",
+            "   ",
+            "banana",
+            "2026-13-01T00:00:00Z",
+            "2026-02-31T00:00:00Z",
+            "2026-11-06",
+        ] {
+            let err = validate_not_before_at(&json!(bad), "packet.not_before", now)
+                .err()
+                .expect("garbage not_before must be rejected");
+            assert!(
+                err.contains("packet.not_before"),
+                "error names the field: {err}"
+            );
+        }
+        // Beyond the 366-day horizon is an error (a year-9999 value
+        // must not silently enqueue as a normal queued task).
+        for far in ["9999-01-01T00:00:00Z", "2027-11-07T00:00:01Z"] {
+            let err = validate_not_before_at(&json!(far), "packet.not_before", now)
+                .err()
+                .expect("far-future not_before must be rejected");
+            assert!(
+                err.contains("packet.not_before"),
+                "error names the field: {err}"
+            );
+            assert!(err.contains("366 days"), "error names the horizon: {err}");
+        }
+        // Exactly at the horizon, near-future, past, and offset forms
+        // pass unchanged.
+        for ok in [
+            "2027-11-07T00:00:00Z",
+            "2026-11-06T00:00:01Z",
+            "2020-01-01T00:00:00Z",
+            "2026-11-06T05:30:00+05:30",
+            "2026-11-06T00:00:00.5Z",
+        ] {
+            assert!(
+                validate_not_before_at(&json!(ok), "packet.not_before", now).is_ok(),
+                "valid not_before passes: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_packet_applies_the_not_before_rule() {
+        // Packet-level wiring: a present not_before is checked by
+        // validate_packet; absent and null stay exactly as before.
+        fn packet_with(not_before: Option<Value>) -> Value {
+            let mut packet = json!({
+                "title": "t",
+                "priority": 40,
+                "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:6426",
+                "payload": payload_with(json!({"issue": {"number": 6426}})),
+            });
+            if let Some(nb) = not_before {
+                packet
+                    .as_object_mut()
+                    .expect("packet object")
+                    .insert("not_before".to_string(), nb);
+            }
+            packet
+        }
+        fn nb_errors(packet: &Value) -> Vec<String> {
+            validate_packet(packet)
+                .0
+                .into_iter()
+                .filter(|e| e.contains("not_before"))
+                .collect()
+        }
+        assert!(nb_errors(&packet_with(None)).is_empty());
+        assert!(nb_errors(&packet_with(Some(Value::Null))).is_empty());
+        assert!(nb_errors(&packet_with(Some(json!("2020-01-01T00:00:00Z")))).is_empty());
+        for bad in [
+            json!("banana"),
+            json!(""),
+            json!(42),
+            json!({}),
+            json!("9999-01-01T00:00:00Z"),
+        ] {
+            let errs = nb_errors(&packet_with(Some(bad.clone())));
+            assert_eq!(errs.len(), 1, "one not_before error for {bad}: {errs:?}");
+            assert!(
+                errs[0].contains("packet.not_before"),
+                "error names the field: {}",
+                errs[0]
+            );
+        }
     }
 }

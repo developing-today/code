@@ -609,6 +609,23 @@ fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
     }
 }
 
+/// The not_before gate (#6426): /park and /revive carry a raw
+/// not_before that dispatch forwards to the RPC (or the turso
+/// backend) — validate it BEFORE either, with the same rule the
+/// packet validator applies on /enqueue (validate_packet runs
+/// inside both /enqueue handlers ahead of their RPC call). An
+/// absent or null not_before is untouched; a present one must be a
+/// non-empty RFC 3339 timestamp no more than 366 days out.
+fn validate_request_not_before(path: &str, req: &Value) -> Result<(), String> {
+    if !matches!(path, "/park" | "/revive") {
+        return Ok(());
+    }
+    match req.get("not_before").filter(|v| !v.is_null()) {
+        Some(nb) => crate::validate::validate_not_before(nb, "not_before"),
+        None => Ok(()),
+    }
+}
+
 fn ok(fields: Value) -> Value {
     let mut m = json!({"ok": true});
     if let (Some(dst), Some(src)) = (m.as_object_mut(), fields.as_object()) {
@@ -663,7 +680,6 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
         Err(e) => fail(e.exit, e.msg),
     }
 }
-
 
 /// The GitHub token the dep rechecker authenticates with,
 /// resolved by name through the secrets broker like every other
@@ -770,10 +786,7 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
         use crate::turso_queue::DepObs;
         match self.get_json(&format!("/repos/{repo}/pulls/{number}")) {
             Ok(v) => {
-                let merged = v
-                    .get("merged")
-                    .and_then(|m| m.as_bool())
-                    .unwrap_or(false);
+                let merged = v.get("merged").and_then(|m| m.as_bool()).unwrap_or(false);
                 let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
                 if merged {
                     DepObs::Cleared("pr merged".to_string())
@@ -809,6 +822,9 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
 
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
+        return fail(2, e);
+    }
+    if let Err(e) = validate_request_not_before(path, req) {
         return fail(2, e);
     }
     if let Some(t) = &st.turso {
@@ -1427,6 +1443,36 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn park_and_revive_not_before_are_gated_before_the_rpc() {
+        // #6426: /park and /revive forwarded a raw not_before to the
+        // RPC unchecked. The dispatch gate rejects garbage and
+        // far-future values; absent/null and valid values pass, and
+        // other verbs are untouched by the gate.
+        for path in ["/park", "/revive"] {
+            for bad in [
+                json!("banana"),
+                json!(""),
+                json!(42),
+                json!("9999-01-01T00:00:00Z"),
+            ] {
+                let req = json!({"not_before": bad});
+                let err = validate_request_not_before(path, &req)
+                    .err()
+                    .expect("invalid not_before must be rejected");
+                assert!(err.contains("not_before"), "error names the field: {err}");
+            }
+            assert!(validate_request_not_before(path, &json!({})).is_ok());
+            assert!(validate_request_not_before(path, &json!({"not_before": Value::Null})).is_ok());
+            assert!(
+                validate_request_not_before(path, &json!({"not_before": "2020-01-01T00:00:00Z"}))
+                    .is_ok()
+            );
+        }
+        // A verb without a not_before surface is not gated.
+        assert!(validate_request_not_before("/claim", &json!({"not_before": "banana"})).is_ok());
+    }
 
     #[test]
     fn pre_body_refusal_decides_from_headers_alone() {
