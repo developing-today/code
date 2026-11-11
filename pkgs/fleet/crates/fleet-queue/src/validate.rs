@@ -534,7 +534,10 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// Oracle: RFC 3339 + the Gregorian calendar.
 fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
     let s = s.trim();
-    let (date, rest) = s.split_once('T').or_else(|| s.split_once(' '))?;
+    let (date, rest) = s
+        .split_once('T')
+        .or_else(|| s.split_once('t'))
+        .or_else(|| s.split_once(' '))?;
     let mut dp = date.split('-');
     let year: i64 = dp.next()?.parse().ok()?;
     let month: u32 = dp.next()?.parse().ok()?;
@@ -550,7 +553,7 @@ fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
     if dp.next().is_some() || day < 1 || day > days_in_month {
         return None;
     }
-    let (time, offset_s) = if let Some(t) = rest.strip_suffix('Z') {
+    let (time, offset_s) = if let Some(t) = rest.strip_suffix(['Z', 'z']) {
         (t, 0i64)
     } else if let Some(idx) = rest.rfind(['+', '-']) {
         if idx == 0 {
@@ -1152,6 +1155,10 @@ mod tests {
             "2020-01-01T00:00:00Z",
             "2026-11-06T05:30:00+05:30",
             "2026-11-06T00:00:00.5Z",
+            // RFC 3339 permits lowercase t/z markers; PostgreSQL's
+            // timestamptz conversion accepted them before this
+            // validation existed (Codex P2 on PR #8489).
+            "2026-11-06t00:00:00z",
         ] {
             assert!(
                 validate_not_before_at(&json!(ok), "packet.not_before", now).is_ok(),
