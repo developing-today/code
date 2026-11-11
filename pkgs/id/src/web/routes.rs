@@ -5,7 +5,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
-    Json, Router,
+    Form, Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -19,12 +19,14 @@ use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, ge
 use super::markdown::prosemirror_to_markdown;
 use super::security::{self, WebSecurity};
 use super::templates::{
-    render_binary_viewer, render_editor, render_editor_page, render_file_list,
-    render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
-    render_peers, render_peers_content, render_settings,
+    AssetUrls, hex_encode, render_binary_viewer, render_blocks, render_editor, render_editor_page,
+    render_file_list, render_file_list_content, render_main_page_wrapper, render_media_viewer,
+    render_page, render_peers, render_peers_content, render_settings,
 };
+use crate::event_store::{Block, BlockKind};
 use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use crate::tags::TagStore;
+use iroh_base::EndpointId;
 
 mod file_handlers;
 use file_handlers::*;
@@ -570,6 +572,7 @@ fn create_router_inner(state: AppState) -> Router {
         .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
+        .route("/blocks", get(blocks_page_handler))
         .route("/groups", get(super::groups::groups_page_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
         .route("/hash/{hash}", get(hash_redirect_handler))
@@ -580,6 +583,8 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/files", get(files_list_handler))
         .route("/api/home/feed", get(super::home::feed_handler))
         .route("/api/peers", get(peers_partial_handler))
+        .route("/api/blocks", get(blocks_partial_handler).post(block_create_handler))
+        .route("/api/blocks/remove", post(block_remove_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
         .route("/api/new", post(new_file_handler))
@@ -609,6 +614,9 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/tags/search", get(super::tags_ws::search_tags_handler))
         // Identity API routes
         .route("/api/identity/register", post(identity_register_handler))
+        // Seitan admission API (#8487)
+        .route("/api/seitan/invite", post(super::seitan::seitan_invite_handler))
+        .route("/api/seitan/admit", post(super::seitan::seitan_admit_handler))
         .route("/api/identity/me", get(identity_me_handler))
         .route("/api/identity/name", post(identity_update_name_handler))
         // WebSocket for collaboration
@@ -746,7 +754,7 @@ async fn peers_handler(State(state): State<AppState>, headers: HeaderMap) -> imp
         Vec::new()
     };
 
-    let content = render_peers(&peers_data);
+    let content = render_peers(&peers_data, &blocked_peer_ids(&state).await);
     if is_partial_request(&headers) {
         Html(render_main_page_wrapper(&content))
     } else {
@@ -1088,7 +1096,236 @@ async fn peers_partial_handler(State(state): State<AppState>) -> impl IntoRespon
     // Return only the inner content: fetchPartial assigns this as
     // innerHTML of #peers-content, so the wrapper must not be included
     // (issue #6956).
-    Html(render_peers_content(&peers_data))
+    Html(render_peers_content(
+        &peers_data,
+        &blocked_peer_ids(&state).await,
+    ))
+}
+
+/// Node-ID strings (peers-page form) that already name a peer-key row on
+/// the operator block list (#2245). A store read failure yields an empty
+/// set: the page still renders, just without blocked badges.
+async fn blocked_peer_ids(state: &AppState) -> std::collections::HashSet<String> {
+    match state.local_events.lock().await.blocks() {
+        Ok(rows) => rows
+            .iter()
+            .filter(|block| block.kind == BlockKind::PeerKey)
+            .map(|block| hex_encode(&block.value))
+            .collect(),
+        Err(err) => {
+            tracing::warn!("[routes] Could not read the block list: {err:#}");
+            std::collections::HashSet::new()
+        }
+    }
+}
+
+/// Which block rows a list/unblock form addresses (#2245).
+fn parse_block_kind(raw: Option<&str>) -> Result<BlockKind, String> {
+    match raw.unwrap_or("peer_key") {
+        "peer_key" => Ok(BlockKind::PeerKey),
+        "ip" => Ok(BlockKind::Ip),
+        "topic_tag" => Ok(BlockKind::TopicTag),
+        other => Err(format!(
+            "unknown block kind {other:?}; want peer_key, ip, or topic_tag"
+        )),
+    }
+}
+
+/// Raw row value for `kind` from the operator's text: a peer key parses
+/// as an endpoint ID (its 32 key bytes are the row, matching
+/// [`BlockList::peer_blocked`](crate::event_store::BlockList::peer_blocked)),
+/// an IP parses and stores in text form (the form
+/// [`BlockList::ip_blocked`](crate::event_store::BlockList::ip_blocked)
+/// checks), a topic tag stores verbatim.
+fn parse_block_value(kind: BlockKind, raw: &str) -> Result<Vec<u8>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("block value must not be empty".to_owned());
+    }
+    match kind {
+        BlockKind::PeerKey => raw
+            .parse::<EndpointId>()
+            .map(|id| id.as_bytes().to_vec())
+            .map_err(|_| "peer key must be an endpoint ID (64 hex characters)".to_owned()),
+        BlockKind::Ip => raw
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.to_string().into_bytes())
+            .map_err(|_| "IP must parse as an IP address".to_owned()),
+        BlockKind::TopicTag => Ok(raw.as_bytes().to_vec()),
+    }
+}
+
+/// Only a local path on this host is a valid post-action destination;
+/// anything else falls back to the Blocks page (no open redirects).
+fn sanitize_return_to(raw: Option<&str>) -> String {
+    match raw {
+        Some(path) if path.starts_with('/') && !path.starts_with("//") => path.to_owned(),
+        _ => "/blocks".to_owned(),
+    }
+}
+
+/// One operator block form, from a peer row or the Blocks page (#2245).
+#[derive(Debug, Deserialize)]
+struct BlockForm {
+    /// Peer endpoint ID, IP text, or topic tag (per `kind`).
+    value: String,
+    /// `peer_key` (default), `ip`, or `topic_tag`.
+    kind: Option<String>,
+    /// Operator's reason; stored on the row.
+    reason: Option<String>,
+    /// Optional expiry as unix milliseconds.
+    expires_at_ms: Option<String>,
+    /// Where to land after the write.
+    return_to: Option<String>,
+}
+
+/// Refusal page for a bad block form: the reason plus a way back. The
+/// message carries operator input, so it renders escaped.
+fn bad_block_request(message: &str, return_to: &str, assets: &AssetUrls) -> Response {
+    let content = format!(
+        "<h1>Blocks</h1><p>Could not write the block: {}</p><p><a href=\"{}\">Back</a></p>",
+        super::templates::html_escape(message),
+        super::templates::html_escape(return_to),
+    );
+    (
+        StatusCode::BAD_REQUEST,
+        Html(render_page("Blocks", &content, "", assets)),
+    )
+        .into_response()
+}
+
+/// Handler to write one operator block row (`POST /api/blocks`, #2245).
+async fn block_create_handler(
+    State(state): State<AppState>,
+    Form(form): Form<BlockForm>,
+) -> Response {
+    let return_to = sanitize_return_to(form.return_to.as_deref());
+    let kind = match parse_block_kind(form.kind.as_deref()) {
+        Ok(kind) => kind,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    let value = match parse_block_value(kind, &form.value) {
+        Ok(value) => value,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    let expires_at_ms = match form.expires_at_ms.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(ts) => Some(ts),
+            Err(_) => {
+                return bad_block_request(
+                    "expiry must be unix milliseconds, or left blank for a permanent block",
+                    &return_to,
+                    &state.assets,
+                );
+            }
+        },
+    };
+    let block = Block {
+        kind,
+        value,
+        added_at_ms: crate::time::unix_ms(),
+        reason: form.reason.as_deref().unwrap_or("").trim().to_owned(),
+        expires_at_ms,
+    };
+    match state.local_events.lock().await.add_block(&block) {
+        Ok(()) => {
+            tracing::info!("[routes] Operator block written: {kind:?}");
+            Redirect::to(&return_to).into_response()
+        }
+        Err(err) => {
+            tracing::error!("[routes] Could not write the operator block: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<h1>Blocks</h1><p>Could not write the block: {}</p>",
+                    super::templates::html_escape(&format!("{err:#}")),
+                )),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Form that names the row an unblock removes (`POST /api/blocks/remove`).
+#[derive(Debug, Deserialize)]
+struct UnblockForm {
+    /// The blocked value exactly as the Blocks page rendered it.
+    value: String,
+    /// `peer_key` (default), `ip`, or `topic_tag`.
+    kind: Option<String>,
+    /// Where to land after the removal.
+    return_to: Option<String>,
+}
+
+/// Handler to remove one operator block row (`POST /api/blocks/remove`,
+/// #2245). Removing a row that is not there still lands back on the page.
+async fn block_remove_handler(
+    State(state): State<AppState>,
+    Form(form): Form<UnblockForm>,
+) -> Response {
+    let return_to = sanitize_return_to(form.return_to.as_deref());
+    let kind = match parse_block_kind(form.kind.as_deref()) {
+        Ok(kind) => kind,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    let value = match parse_block_value(kind, &form.value) {
+        Ok(value) => value,
+        Err(message) => return bad_block_request(&message, &return_to, &state.assets),
+    };
+    match state.local_events.lock().await.remove_block(kind, &value) {
+        Ok(removed) => {
+            tracing::info!("[routes] Operator block removed: {kind:?} (row present: {removed})");
+            Redirect::to(&return_to).into_response()
+        }
+        Err(err) => {
+            tracing::error!("[routes] Could not remove the operator block: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<h1>Blocks</h1><p>Could not remove the block: {}</p>",
+                    super::templates::html_escape(&format!("{err:#}")),
+                )),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Blocks page handler - every operator block row with unblock actions.
+async fn blocks_page_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let blocks = match state.local_events.lock().await.blocks() {
+        Ok(blocks) => blocks,
+        Err(err) => {
+            let content = format!(
+                "<h1>Blocks</h1><p>Could not read the block list: {}</p>",
+                super::templates::html_escape(&format!("{err:#}")),
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_page("Blocks", &content, "", &state.assets)),
+            )
+                .into_response();
+        }
+    };
+    let content = render_blocks(&blocks);
+    if is_partial_request(&headers) {
+        Html(render_main_page_wrapper(&content)).into_response()
+    } else {
+        Html(render_page("Blocks", &content, "", &state.assets)).into_response()
+    }
+}
+
+/// API handler for the blocks partial (the Blocks page fragment).
+async fn blocks_partial_handler(State(state): State<AppState>) -> Response {
+    match state.local_events.lock().await.blocks() {
+        Ok(blocks) => Html(render_blocks(&blocks)).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not read the block list: {err:#}"),
+        )
+            .into_response(),
+    }
 }
 
 /// Static assets handler.
@@ -2071,6 +2308,238 @@ mod upload_router_tests {
         assert_eq!(root.status(), StatusCode::NOT_FOUND);
     }
 
+    // ---- Seitan admission (#8487) ----
+
+    fn seitan_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn seitan_now_ms() -> u64 {
+        u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+    }
+
+    async fn seitan_response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    /// The account a seitan proof names in these tests: a keyed
+    /// account whose id is its public key's hex, as provisioning
+    /// records it. Returns (key hex, uid) — the same string here.
+    fn seitan_account_key() -> String {
+        seitan_hex(
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .as_bytes(),
+        )
+    }
+
+    /// A router over a state whose seitan state is `seitan` (with the
+    /// test account already keyed into its directory when
+    /// `with_account`), hosting world `arena` under admin `s3cret`.
+    async fn seitan_app(
+        seitan: crate::web::SeitanState,
+        with_account: bool,
+    ) -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
+        let (_, mut state, dir, endpoint, docs) = router_with_state().await;
+        if with_account {
+            seitan.sign_up_keyed(&seitan_account_key(), "joiner").unwrap();
+        }
+        state.seitan = seitan;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        (app, state, dir, endpoint, docs)
+    }
+
+    async fn seitan_register(app: &Router, token: &str, admin: Option<&str>) -> Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/seitan/invite")
+            .header("content-type", "application/json");
+        if let Some(admin) = admin {
+            builder = builder.header("x-world-admin-token", admin);
+        }
+        let body = serde_json::json!({
+            "token": token,
+            "world": "arena",
+            "expires_ms": seitan_now_ms() + 3_600_000,
+        })
+        .to_string();
+        app.clone()
+            .oneshot(builder.body(Body::from(body)).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn seitan_admit(app: &Router, proof: &crate::seitan::Proof) -> Response {
+        let body = serde_json::json!({
+            "message": seitan_hex(&proof.message),
+            "signature": seitan_hex(&proof.signature),
+        })
+        .to_string();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/seitan/admit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_happy_path_under_a_configured_window() {
+        // (a) A non-default window (10 min, not the 5-minute default)
+        // is exercised at the boundary: a proof signed 8 minutes
+        // before the invite was created is outside the default window
+        // and inside the configured one, and it admits.
+        let seitan = crate::web::SeitanState::new(
+            crate::directory::Directory::new(),
+            std::time::Duration::from_mins(10),
+        );
+        let (app, state, _dir, _endpoint, _docs) = seitan_app(seitan, true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let uid = seitan_account_key();
+        let proof = crate::seitan::accept::sign(
+            &token,
+            &uid,
+            1,
+            seitan_now_ms().saturating_sub(480_000),
+        )
+        .unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        let body = seitan_response_json(admitted).await;
+        assert_eq!(body["uid"], uid);
+        assert_eq!(body["world"], "arena");
+        assert!(
+            state.seitan.is_verified(&uid),
+            "AccountVerified must land in the directory before the 200"
+        );
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_refuses_a_stale_proof_through_the_live_path() {
+        // (b) Under a 1-minute configured window, a proof signed 5
+        // minutes before the invite was created refuses `stale`.
+        let seitan = crate::web::SeitanState::new(
+            crate::directory::Directory::new(),
+            std::time::Duration::from_mins(1),
+        );
+        let (app, _state, _dir, _endpoint, _docs) = seitan_app(seitan, true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = crate::seitan::accept::sign(
+            &token,
+            &seitan_account_key(),
+            1,
+            seitan_now_ms().saturating_sub(300_000),
+        )
+        .unwrap();
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(seitan_response_json(refused).await["reason"], "stale");
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_no_config_default_window_admits_a_fresh_proof() {
+        // (c) The default state (no server config) admits a fresh
+        // proof under the 5-minute default window.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
+            .unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_unknown_invite_is_404() {
+        // (d) A proof for a token that was never registered names an
+        // invite the registry does not hold.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), true).await;
+        let token = crate::seitan::Token::generate();
+        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
+            .unwrap();
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_invite");
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_unknown_account_is_403_and_does_not_consume_the_invite() {
+        // (e) The account check runs before `admit`: an unknown uid
+        // refuses 403, and the same proof succeeds once the account
+        // exists — the invite was not consumed by the refusal.
+        let seitan = crate::web::SeitanState::default();
+        let (app, state, _dir, _endpoint, _docs) = seitan_app(seitan.clone(), false).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let uid = seitan_account_key();
+        let proof = crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(seitan_response_json(refused).await["reason"], "unknown_account");
+
+        state.seitan.sign_up_keyed(&uid, "joiner").unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        assert!(state.seitan.is_verified(&uid));
+    }
+
+    #[tokio::test]
+    async fn seitan_invite_registration_requires_the_admin_secret() {
+        // Minting an invite without the admin secret (or with the
+        // wrong one) is refused, like POST /api/world/invite.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), false).await;
+        let token = crate::seitan::Token::generate();
+        let no_secret = seitan_register(&app, token.as_str(), None).await;
+        assert_eq!(no_secret.status(), StatusCode::UNAUTHORIZED);
+        let wrong_secret = seitan_register(&app, token.as_str(), Some("wrong")).await;
+        assert_eq!(wrong_secret.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn seitan_duplicate_registration_does_not_reset_single_use_state() {
+        // Codex P2 on PR #8529: a retried registration after the
+        // invite was redeemed must not replace the consumed invite
+        // with a fresh one — the same proof refuses `used`, it does
+        // not admit a second time.
+        let (app, _state, _dir, _endpoint, _docs) =
+            seitan_app(crate::web::SeitanState::default(), true).await;
+        let token = crate::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof =
+            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+
+        let reregistered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(reregistered.status(), StatusCode::OK);
+
+        let refused = seitan_admit(&app, &proof).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(seitan_response_json(refused).await["reason"], "used");
+    }
+
     #[tokio::test]
     async fn public_entry_point_honours_a_configured_binding() {
         // A host that has already read its app manifest selects the
@@ -2302,6 +2771,214 @@ mod upload_router_tests {
                 }
             }
         }
+    }
+
+    async fn create_file(router: Router, name: &str) -> (StatusCode, String) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/new")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!("{{\"name\":\"{name}\"}}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // #8407: creating a name that already holds a nonempty file must
+    // conflict and leave the existing name binding untouched.
+    #[tokio::test]
+    async fn create_existing_name_conflicts_and_preserves_original() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (status, _first) = upload(
+            router.clone(),
+            multipart_body_named(
+                "existing.png",
+                "image/png",
+                b"\x89PNG\r\n\x1a\noriginal content",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let owner_before = upload_name_owner(&state.store, "existing.png")
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata_before = name_metadata(&state, "existing.png").await;
+        assert!(
+            metadata_before.iter().any(|(_, v)| v.is_some()),
+            "upload must record metadata for the existing file"
+        );
+        let (status, _body) = create_file(router.clone(), "existing.png").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let owner_after = upload_name_owner(&state.store, "existing.png")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner_before, owner_after);
+        // #8407 acceptance: metadata is left unchanged too, not just
+        // the name binding.
+        assert_eq!(metadata_before, name_metadata(&state, "existing.png").await);
+    }
+
+    async fn name_metadata(state: &AppState, name: &str) -> Vec<(String, Option<String>)> {
+        let mut out = Vec::new();
+        for key in [
+            b"created".as_slice(),
+            b"modified".as_slice(),
+            b"content-type".as_slice(),
+        ] {
+            let tags = state
+                .tag_store
+                .get_by_key(&state.tag_store.global, name.as_bytes(), key)
+                .await
+                .unwrap();
+            let value = tags
+                .first()
+                .and_then(|tag| tag.value.as_ref())
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+            out.push((String::from_utf8_lossy(key).into_owned(), value));
+        }
+        out
+    }
+
+    async fn save_file(state: AppState, name: &str, text: &str) -> (StatusCode, String) {
+        let response = save_handler(
+            State(state),
+            Json(SaveRequest {
+                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                name: name.to_owned(),
+                doc: serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
+            }),
+        )
+        .await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // #8407: a create for a name a save already claimed conflicts and
+    // leaves the saved binding and metadata intact (create vs another
+    // writer, sequential form).
+    #[tokio::test]
+    async fn create_after_save_conflicts_and_preserves_saved_file() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (status, body) = save_file(state.clone(), "saved.md", "saved text").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let saved_hash = upload_name_owner(&state.store, "saved.md")
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata_before = name_metadata(&state, "saved.md").await;
+        let (status, _body) = create_file(router.clone(), "saved.md").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            saved_hash,
+            upload_name_owner(&state.store, "saved.md")
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        assert_eq!(metadata_before, name_metadata(&state, "saved.md").await);
+    }
+
+    // #8407: a create racing a save of the same new name can never be
+    // the final binding: whichever claim lands first, the saver's
+    // explicit content is what the name resolves to afterwards, and
+    // the create either conflicts or is superseded by that save --
+    // the empty create blob never silently replaces saved content.
+    #[tokio::test]
+    async fn concurrent_create_and_save_leave_saved_content_bound() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let guard = state.upload_name_lock.lock().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let create_task = {
+            let router = router.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                create_file(router, "raced.md").await
+            })
+        };
+        let save_task = {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                save_file(state, "raced.md", "raced saved text").await
+            })
+        };
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        assert!(!create_task.is_finished());
+        assert!(!save_task.is_finished());
+        drop(guard);
+        let (create_status, _body) = create_task.await.unwrap();
+        assert!(
+            create_status == StatusCode::OK || create_status == StatusCode::CONFLICT,
+            "unexpected create status: {create_status}"
+        );
+        let (save_status, save_body) = save_task.await.unwrap();
+        assert_eq!(save_status, StatusCode::OK, "{save_body}");
+        let saved_hash: String =
+            serde_json::from_str::<serde_json::Value>(&save_body).unwrap()["hash"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        let final_owner = upload_name_owner(&state.store, "raced.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .to_string();
+        assert_eq!(final_owner, saved_hash);
+    }
+
+    // #8407: a create for a genuinely new name still succeeds.
+    #[tokio::test]
+    async fn create_unique_name_succeeds() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, _body) = create_file(router, "fresh.txt").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // #8407: two concurrent creates of the same new name -- exactly one
+    // wins; the other conflicts instead of replacing the winner's file.
+    #[tokio::test]
+    async fn concurrent_creates_same_name_exactly_one_wins() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        // Hold the shared name lock while both requests start; neither
+        // may pass its claim boundary until it is released.
+        let guard = state.upload_name_lock.lock().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            let router = router.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                create_file(router, "raced.txt").await
+            }));
+        }
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        assert!(tasks.iter().all(|task| !task.is_finished()));
+        drop(guard);
+        let mut oks = 0;
+        let mut conflicts = 0;
+        for task in tasks {
+            match task.await.unwrap().0 {
+                StatusCode::OK => oks += 1,
+                StatusCode::CONFLICT => conflicts += 1,
+                other => panic!("unexpected create status: {other}"),
+            }
+        }
+        assert_eq!((oks, conflicts), (1, 1));
     }
 
     // #1549: a second upload under the same filename with different

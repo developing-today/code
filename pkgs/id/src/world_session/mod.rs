@@ -114,10 +114,12 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
 pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     match frame {
         ClientFrame::Invite { admin_token, .. }
-        | ClientFrame::InstallBegin { admin_token, .. }
         | ClientFrame::Compile { admin_token, .. }
         | ClientFrame::CreateWorld { admin_token }
         | ClientFrame::ListWorlds { admin_token } => Some(admin_token),
+        // A joined builder's install_begin omits the token (design #835
+        // phase 3); only a supplied one is an admin credential.
+        ClientFrame::InstallBegin { admin_token, .. } => admin_token.as_deref(),
         ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
         _ => None,
@@ -543,6 +545,13 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             signature,
             seed,
         } => {
+            // The pre-join path is admin-only (design #835 phase 3):
+            // joined builder sessions are already past this point, so
+            // an omitted token here names no authority at all.
+            let Some(admin_token) = admin_token else {
+                let _ = send_error(service.frame_meter(), io, "module install denied").await;
+                return;
+            };
             if service.source_only() {
                 if service.authorize_admin(Some(&admin_token)).is_err() {
                     let _ = send_error(service.frame_meter(), io, "module install denied").await;
@@ -823,6 +832,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::DelegateToFriend { .. }
         | ClientFrame::Input { .. }
         | ClientFrame::Resize { .. }
+        | ClientFrame::Revoke { .. }
         | ClientFrame::Paste { .. } => {
             let _ = send_error(
                 service.frame_meter(),
@@ -1331,6 +1341,193 @@ async fn send_module_bytes<I: SessionIo>(
     Ok(())
 }
 
+/// The wire code carried by error frames that refuse a joined
+/// session's role/capability action (design #835 §5): one stable,
+/// non-oracular code for invalid, expired, revoked, and insufficient
+/// capabilities alike.
+const ACTOR_DENIED: &str = "actor_denied";
+
+/// Receive one upload's chunks and its terminating `install_end`,
+/// exactly as the install paths have always framed them. Shared by
+/// the pre-join admin install and the joined builder install so the
+/// upload safeguards (offsets, chunk bounds, strict frame parsing)
+/// cannot drift apart.
+#[cfg(feature = "sandbox")]
+async fn receive_module_upload<I: SessionIo>(
+    io: &mut I,
+    total_bytes: usize,
+) -> Result<Vec<u8>, &'static str> {
+    let mut bytes = Vec::with_capacity(total_bytes);
+    while bytes.len() < total_bytes {
+        let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
+            .await
+            .map_err(|_| "timed out receiving module")?;
+        let Inbound::Text(text) = incoming else {
+            return Err("invalid module chunk frame");
+        };
+        let Ok(ClientFrame::InstallChunk { offset, data_hex }) =
+            parse_json_without_duplicate_keys(&text)
+                .and_then(|value| serde_json::from_value::<ClientFrame>(value))
+        else {
+            return Err("expected module chunk frame");
+        };
+        if offset != bytes.len() || data_hex.len() > MAX_WORLD_MODULE_CHUNK_BYTES * 2 {
+            return Err("invalid module chunk offset or size");
+        }
+        let Some(chunk) = decode_hex(&data_hex) else {
+            return Err("module chunk must be hexadecimal");
+        };
+        if chunk.is_empty() || chunk.len() > total_bytes.saturating_sub(bytes.len()) {
+            return Err("invalid module chunk length");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
+        .await
+        .map_err(|_| "timed out waiting for install completion")?;
+    if !matches!(incoming, Inbound::Text(ref text) if matches!(parse_json_without_duplicate_keys(text).and_then(|value| serde_json::from_value::<ClientFrame>(value)), Ok(ClientFrame::InstallEnd)))
+    {
+        return Err("expected install_end frame");
+    }
+    Ok(bytes)
+}
+
+/// A joined builder session's module install (design #835 phase 3):
+/// the same upload sequence and safeguards as the pre-join admin
+/// install, but authorized by the session's live capability — an
+/// early `BUILDER` check before any bytes are received, and the
+/// actor's own re-check at the effect boundary inside
+/// [`WorldService::install_wasm_authorized`]. Role denials carry the
+/// `actor_denied` wire code. Returns whether the session continues.
+async fn install_module_session_joined<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    token: &JoinCapability,
+    total_bytes: usize,
+    claimed_hash: Option<&str>,
+    signature: Option<&ModuleSignature>,
+    seed: u64,
+) -> bool {
+    if service
+        .world()
+        .authorize(token.clone(), WorldScopes::BUILDER)
+        .await
+        .is_err()
+    {
+        return send_error_with_code(
+            service.frame_meter(),
+            io,
+            Some(ACTOR_DENIED),
+            "module install denied",
+        )
+        .await;
+    }
+    if total_bytes == 0
+        || total_bytes > MAX_WORLD_MODULE_BYTES
+        || claimed_hash.is_some_and(|hash| {
+            hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return send_error(
+            service.frame_meter(),
+            io,
+            "invalid module size or content hash",
+        )
+        .await;
+    }
+    let upload_permit = match service.try_reserve_module_upload() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return send_error(
+                service.frame_meter(),
+                io,
+                "world is busy installing another module",
+            )
+            .await;
+        }
+    };
+    #[cfg(not(feature = "sandbox"))]
+    {
+        let _ = (token, upload_permit, signature, seed);
+        return send_error(
+            service.frame_meter(),
+            io,
+            "module installation requires the sandbox feature",
+        )
+        .await;
+    }
+
+    #[cfg(feature = "sandbox")]
+    {
+        if !send_json(
+            service.frame_meter(),
+            io,
+            &ServerFrame::UploadReady {
+                chunk_bytes: MAX_WORLD_MODULE_CHUNK_BYTES,
+            },
+        )
+        .await
+        {
+            return false;
+        }
+        let bytes = match receive_module_upload(io, total_bytes).await {
+            Ok(bytes) => bytes,
+            Err(message) => return send_error(service.frame_meter(), io, message).await,
+        };
+        let actual_hash = module_hash(&bytes);
+        if claimed_hash.is_some_and(|claimed| actual_hash != claimed.to_ascii_lowercase()) {
+            return send_error(service.frame_meter(), io, "module content hash mismatch").await;
+        }
+        let installed = service
+            .install_wasm_authorized(
+                token.clone(),
+                bytes,
+                seed,
+                &actual_hash,
+                upload_permit,
+                signature,
+            )
+            .await;
+        match installed {
+            Ok((module_hash, sequence)) => send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::ModuleInstalled {
+                    module_hash: &module_hash,
+                    sequence,
+                },
+            )
+            .await,
+            Err(InstallError::ActorDenied) => send_error_with_code(
+                service.frame_meter(),
+                io,
+                Some(ACTOR_DENIED),
+                "module install denied",
+            )
+            .await,
+            Err(error) => {
+                let message = match error {
+                    InstallError::Disabled => "module installation is not enabled on this host",
+                    InstallError::Unauthorized | InstallError::ActorDenied => {
+                        "module install denied"
+                    }
+                    InstallError::InvalidUpload => "invalid module upload",
+                    InstallError::RawModuleDisabled => {
+                        "raw module uploads are disabled by source-only policy"
+                    }
+                    InstallError::InvalidModule => {
+                        "Wasm module failed validation or initialization"
+                    }
+                    InstallError::UntrustedModule => "module signature is not trusted",
+                    InstallError::Unavailable => "world could not activate the module",
+                };
+                send_error(service.frame_meter(), io, message).await
+            }
+        }
+    }
+}
+
 async fn install_module_session<I: SessionIo>(
     service: &WorldService,
     io: &mut I,
@@ -1375,39 +1572,7 @@ async fn install_module_session<I: SessionIo>(
         {
             return Err("connection closed");
         }
-        let mut bytes = Vec::with_capacity(total_bytes);
-        while bytes.len() < total_bytes {
-            let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
-                .await
-                .map_err(|_| "timed out receiving module")?;
-            let Inbound::Text(text) = incoming else {
-                return Err("invalid module chunk frame");
-            };
-            let Ok(ClientFrame::InstallChunk { offset, data_hex }) =
-                parse_json_without_duplicate_keys(&text)
-                    .and_then(|value| serde_json::from_value::<ClientFrame>(value))
-            else {
-                return Err("expected module chunk frame");
-            };
-            if offset != bytes.len() || data_hex.len() > MAX_WORLD_MODULE_CHUNK_BYTES * 2 {
-                return Err("invalid module chunk offset or size");
-            }
-            let Some(chunk) = decode_hex(&data_hex) else {
-                return Err("module chunk must be hexadecimal");
-            };
-            if chunk.is_empty() || chunk.len() > total_bytes.saturating_sub(bytes.len()) {
-                return Err("invalid module chunk length");
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-
-        let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
-            .await
-            .map_err(|_| "timed out waiting for install completion")?;
-        if !matches!(incoming, Inbound::Text(ref text) if matches!(parse_json_without_duplicate_keys(text).and_then(|value| serde_json::from_value::<ClientFrame>(value)), Ok(ClientFrame::InstallEnd)))
-        {
-            return Err("expected install_end frame");
-        }
+        let bytes = receive_module_upload(io, total_bytes).await?;
         let actual_hash = module_hash(&bytes);
         if claimed_hash.is_some_and(|claimed| actual_hash != claimed.to_ascii_lowercase()) {
             return Err("module content hash mismatch");
@@ -1426,7 +1591,7 @@ async fn install_module_session<I: SessionIo>(
             .await
             .map_err(|error| match error {
                 InstallError::Disabled => "module installation is not enabled on this host",
-                InstallError::Unauthorized => "module install denied",
+                InstallError::Unauthorized | InstallError::ActorDenied => "module install denied",
                 InstallError::InvalidUpload => "invalid module upload",
                 InstallError::RawModuleDisabled => {
                     "raw module uploads are disabled by source-only policy"
@@ -2189,6 +2354,96 @@ async fn handle_client_frame<I: SessionIo>(
                 }
             }
         }
+        ClientFrame::InstallBegin {
+            admin_token,
+            total_bytes,
+            module_hash,
+            signature,
+            seed,
+        } => {
+            // A joined session installs on its capability's authority
+            // (design #835 phase 3). An admin token here is mixed
+            // credentials — the frame must choose one authority — and
+            // is refused before any scope check, so the refusal cannot
+            // be read as a statement about either credential.
+            if admin_token.is_some() {
+                return send_error(
+                    service.frame_meter(),
+                    io,
+                    "install_begin in a joined session must omit the admin token",
+                )
+                .await;
+            }
+            return install_module_session_joined(
+                service,
+                io,
+                token,
+                total_bytes,
+                module_hash.as_deref(),
+                signature.as_ref(),
+                seed,
+            )
+            .await;
+        }
+        ClientFrame::InstallChunk { .. } | ClientFrame::InstallEnd => {
+            return send_error(service.frame_meter(), io, "no module upload in progress").await;
+        }
+        ClientFrame::Revoke { participant_id } => {
+            // The early scope check classifies a certain denial with
+            // the stable wire code; `revoke_authorized` re-checks
+            // inside the actor at the effect boundary and derives the
+            // audit actor from the capability, never from this frame.
+            // A denial the command itself returns — the capability
+            // expired, or a revocation landed, after the early check —
+            // is classified from the command's own error and carries
+            // the same code.
+            if world
+                .authorize(token.clone(), WorldScopes::MODERATOR)
+                .await
+                .is_err()
+            {
+                return send_error_with_code(
+                    service.frame_meter(),
+                    io,
+                    Some(ACTOR_DENIED),
+                    "revoke denied",
+                )
+                .await;
+            }
+            match world.revoke_authorized(token.clone(), participant_id).await {
+                Ok(revoked) => {
+                    return send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Revoked {
+                            participant_id,
+                            revoked,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) if crate::world::is_capability_denied(&error) => {
+                    return send_error_with_code(
+                        service.frame_meter(),
+                        io,
+                        Some(ACTOR_DENIED),
+                        "revoke denied",
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    // The in-memory revocation stands (fail-closed);
+                    // what failed is the audited success, so the reply
+                    // is a failure, never a `Revoked` frame.
+                    return send_error(
+                        service.frame_meter(),
+                        io,
+                        &format!("revoke failed: {error:#}"),
+                    )
+                    .await;
+                }
+            }
+        }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
         | ClientFrame::Directory { .. }
@@ -2201,10 +2456,7 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::DownloadModuleAdmin { .. }
-        | ClientFrame::EventHistoryAdmin { .. }
-        | ClientFrame::InstallBegin { .. }
-        | ClientFrame::InstallChunk { .. }
-        | ClientFrame::InstallEnd => {
+        | ClientFrame::EventHistoryAdmin { .. } => {
             return send_error(service.frame_meter(), io, "already joined").await;
         }
     };
@@ -2243,7 +2495,18 @@ async fn send_json<I: SessionIo>(meter: &WorldMetrics, io: &mut I, frame: &impl 
 }
 
 async fn send_error<I: SessionIo>(meter: &WorldMetrics, io: &mut I, message: &str) -> bool {
-    send_json(meter, io, &ServerFrame::Error { message }).await
+    send_error_with_code(meter, io, None, message).await
+}
+
+/// An error frame carrying a stable denial `code` (design #835 §5).
+/// Existing errors pass `None`, so their serialized shape is unchanged.
+async fn send_error_with_code<I: SessionIo>(
+    meter: &WorldMetrics,
+    io: &mut I,
+    code: Option<&str>,
+    message: &str,
+) -> bool {
+    send_json(meter, io, &ServerFrame::Error { message, code }).await
 }
 
 async fn send_delegation<I: SessionIo>(

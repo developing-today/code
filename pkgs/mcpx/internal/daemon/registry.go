@@ -120,6 +120,11 @@ type Registry struct {
 	// writeLedger persists post-dispatch calls whose outcome could not be
 	// established, so a restart cannot make a retry silently unsafe.
 	writeLedger *WriteLedger
+
+	// scriptRun executes a file-backed tool view (#1933 slice 2). It is
+	// installed by the daemon, which owns the exec service; a registry
+	// built directly by a test may leave it nil.
+	scriptRun func(ctx context.Context, tool string, view config.ToolView, values map[string]any, session string) (json.RawMessage, error)
 }
 
 // leaseState remembers which pool keys a caller created, so releasing a
@@ -256,6 +261,18 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		r.bindSecrets(s)
 
 		id := s.ProcessID()
+		if s.ScriptOnly() {
+			// A script-only namespace has no process to share: the
+			// pool exists to hand out one running child, and there
+			// is none. Two such namespaces with otherwise-default
+			// settings hash to the same ProcessID, which used to
+			// give them one pool -- and the write ledger blocks by
+			// pool, so an unknown outcome in one namespace blocked
+			// writes in the other (Codex P2 on PR #8317). Their
+			// declared scripts are the substance, not a view over
+			// a shared process, so each gets its own pool.
+			id += "\x00script:" + s.Namespace
+		}
 		p, shared := byPoolID[id]
 		if !shared {
 			p = pool.New(s)
@@ -430,7 +447,7 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 // advertised without ever being enforced.
 func ruleToolName(view *config.Resolved, name string) string {
 	if view != nil {
-		if tv, ok := view.ToolViews[name]; ok {
+		if tv, ok := view.ToolViews[name]; ok && tv.From != "" {
 			return tv.From
 		}
 	}
@@ -470,9 +487,15 @@ func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
 			continue
 		}
 		tv := view.ToolViews[name]
-		t, ok := byName[tv.From]
-		if !ok {
-			continue // load-time validation names this; listing must not invent it
+		var t mcpclient.Tool
+		if tv.Command != "" || tv.File != "" {
+			t = scriptViewTool(name, tv)
+		} else {
+			up, ok := byName[tv.From]
+			if !ok {
+				continue // load-time validation names this; listing must not invent it
+			}
+			t = up
 		}
 		t.Name = name
 		if tv.Description != "" {
@@ -1381,6 +1404,9 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 		sort.Strings(viewNames)
 		for _, vn := range viewNames {
 			tv := view.ToolViews[vn]
+			if tv.Command != "" || tv.File != "" {
+				continue // a script-backed view has no target to check (#1933 slice 2)
+			}
 			t, ok := byName[tv.From]
 			if !ok {
 				return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
@@ -1553,6 +1579,20 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, p := range pools {
+		// A script-only server has no process to list: its tools are
+		// declared views, and warming it would record a failure for a
+		// server that was never meant to start (#1933 slice 2).
+		if cfg := p.Config(); cfg != nil && cfg.ScriptOnly() {
+			// Its catalog is locally declared, so it is initialized
+			// by definition: seed the timestamp, or Namespaces
+			// reports it uncached forever and every CLI invocation
+			// pays for a global refresh that re-lists every other
+			// server too (Codex P2 on PR #8317).
+			if tools, res, at := p.CachedSchemas(); at.IsZero() {
+				p.SetSchemas(tools, res, p.CachedPrompts(), p.Instructions(), time.Now(), time.Time{}, false)
+			}
+			continue
+		}
 		_, _, at := p.CachedSchemas()
 		if !force && !at.IsZero() {
 			continue
@@ -1642,7 +1682,7 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			Sharing:         st.Sharing,
 			Scope:           st.Scope,
 			Error:           st.LastError,
-			Cached:          !at.IsZero(),
+			Cached:          !at.IsZero() || view.ScriptOnly(),
 			RequiresSecrets: view.RequiresSecrets,
 		})
 	}
@@ -2293,9 +2333,12 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, effTool, effArgs, script, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
+	}
+	if script != nil {
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "call")
 	}
 	defer r.joinAsk(ctx, server, rs.Key)()
 	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "call")
@@ -2406,13 +2449,17 @@ func (r *Registry) recordUnknownOutcome(p *pool.Pool, fallbackServer, tool strin
 // consumer policies. Every path that calls a tool goes through it: the ask
 // path once skipped both, so a destructive-tool guard was off for exactly the
 // clients that declared they could answer it.
-
-func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (config.ResolvedScope, string, any, error) {
+//
+// script is non-nil when the call names a script-backed view (#1933 slice
+// 2): the caller must run it locally with callScriptView, never through
+// the pool, so a script view cannot fall through to an upstream tool.
+func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (config.ResolvedScope, string, any, *config.ToolView, error) {
 	// A call through a declared tool view (#1933 slice 1) names the
 	// view; everything past this point -- policies, the destructive
 	// floor, the pool, history -- works with the target's real name
 	// and the effective arguments, pins merged over the caller's.
 	effTool, effArgs := tool, args
+	var script *config.ToolView
 
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
@@ -2420,16 +2467,22 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 		// started just to fail.
 		if err := r.refuseBlocked(server); err != nil {
 
-			return config.ResolvedScope{}, "", nil, err
+			return config.ResolvedScope{}, "", nil, nil, err
 		}
 		if !view.VisibleTool(tool) {
 			if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
-				return config.ResolvedScope{}, "", nil, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+				return config.ResolvedScope{}, "", nil, nil, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
 			}
-			return config.ResolvedScope{}, "", nil, HiddenTool{Server: server, Tool: tool}
+			return config.ResolvedScope{}, "", nil, nil, HiddenTool{Server: server, Tool: tool}
 		}
 		if tv, isView := view.ToolViews[tool]; isView {
-			effTool = tv.From
+			if tv.Command != "" || tv.File != "" {
+				// A script-backed view has no upstream name: the view's
+				// own name is what policies and rules identify it by.
+				script = &tv
+			} else {
+				effTool = tv.From
+			}
 			effArgs = mergePinnedArgs(args, tv.Pin)
 
 		}
@@ -2438,20 +2491,20 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
 	rs = r.disambiguate(ctx, p, cc, rs)
-	asked, err := r.applyWritePolicy(ctx, p, server, effTool, cc, effArgs)
+	asked, err := r.applyWritePolicyFor(ctx, p, server, effTool, cc, effArgs, script)
 	if err != nil {
-		return config.ResolvedScope{}, "", nil, err
+		return config.ResolvedScope{}, "", nil, nil, err
 
 	}
 	if !asked {
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
-		if err := r.confirmDestructive(ctx, p, server, effTool, cc); err != nil {
-			return config.ResolvedScope{}, "", nil, err
+		if err := r.confirmDestructiveFor(ctx, p, server, effTool, cc, script); err != nil {
+			return config.ResolvedScope{}, "", nil, nil, err
 		}
 	}
-	return rs, effTool, effArgs, nil
+	return rs, effTool, effArgs, script, nil
 
 }
 
@@ -2792,6 +2845,15 @@ func (r *Registry) Embedder() catalog.Embedder {
 		return &catalog.SubwordEmbedder{}
 	}
 	return r.embedder
+}
+
+// SetScriptToolRunner installs the daemon's executor for file-backed tool
+// views (#1933 slice 2). A registry built without one still lists and guards
+// such tools; only a call that reaches one reports that no runner is set.
+func (r *Registry) SetScriptToolRunner(fn func(ctx context.Context, tool string, view config.ToolView, values map[string]any, session string) (json.RawMessage, error)) {
+	r.mu.Lock()
+	r.scriptRun = fn
+	r.mu.Unlock()
 }
 
 // UseSettings gives the registry the daemon's resolved configuration.

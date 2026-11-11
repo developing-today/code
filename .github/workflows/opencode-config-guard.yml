@@ -3,6 +3,29 @@ name: opencode-config-guard
 # CI tier policy: see .github/ci-policy.md
 on:
   pull_request:
+    # Path-gated (#1401): this guard checks exactly one canonical file
+    # plus its own implementation, so PRs that touch none of these
+    # paths must not enqueue a queued-then-6s run behind the runner
+    # backlog. Push to main stays unfiltered, so main is always
+    # validated. (Gate covers the workflow's current check set: the
+    # route-rules and provider-catalog fixtures were added after the
+    # original #1401 gate was written. merge_group omitted - there is
+    # no merge queue; Drew ruling 2026-11-08, see ci-policy.md.)
+    paths:
+      - ".opencode/opencode.jsonc"
+      - "bin/check-opencode-metered-providers.mjs"
+      - "bin/check-opencode-metered-providers.test.mjs"
+      - "bin/check-opencode-go-seating.mjs"
+      - "bin/check-opencode-go-seating.test.mjs"
+      - "bin/check-opencode-route-rules.mjs"
+      - "bin/check-opencode-route-rules.test.mjs"
+      - "bin/provider-catalog-sync.mjs"
+      - "bin/provider-catalog-sync.test.mjs"
+      - "bin/provider-catalog-snapshot.test.mjs"
+      - "bin/snapshot-provider-catalogs.mjs"
+      - ".github/workflows/opencode-config-guard.yml"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:

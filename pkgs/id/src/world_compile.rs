@@ -93,10 +93,7 @@ impl Compiler {
     /// compiler consult it before running `roc` and store their
     /// artifacts in it afterwards (see [`compile_with_cache`]).
     #[must_use]
-    pub fn with_cache(
-        mut self,
-        cache: std::sync::Arc<crate::world_cache::WorldCache>,
-    ) -> Self {
+    pub fn with_cache(mut self, cache: std::sync::Arc<crate::world_cache::WorldCache>) -> Self {
         self.cache = Some(cache);
         self
     }
@@ -412,8 +409,7 @@ pub async fn verify_determinism(
     let Some(cache) = compiler.cache() else {
         return Ok(false);
     };
-    let (first, _, first_provenance) =
-        compile_uncached(spec, compiler, granted, timeout).await?;
+    let (first, _, first_provenance) = compile_uncached(spec, compiler, granted, timeout).await?;
     let (second, _, _) = compile_uncached(spec, compiler, granted, timeout).await?;
     let crate::world::ModuleProvenance::SourceBuild(build) = &first_provenance else {
         return Ok(false);

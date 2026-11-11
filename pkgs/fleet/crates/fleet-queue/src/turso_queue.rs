@@ -456,6 +456,140 @@ pub struct TursoBackend {
 
 type TErr = String;
 
+/// The canonical fleet lane registry (#6853, re-based on the
+/// post-rename universe under #8097): every lane id a fleet worker
+/// may claim with, the worker that owns it, and the enabled flag a
+/// missing registration is restored with. The queue binding is the
+/// one-queue default ("*": the lane may claim any stream; see
+/// lane_queue_binds).
+///
+/// The set is EXACTLY the live registry universe left by the
+/// 2026-11-11 lane rename and trims (#8097), plus one lane
+/// added later the same day: 36 lanes — code-a..j,
+/// not-code-a..g, any-a..s — 17 of them enabled. The added
+/// lane is not-code-g, the nix event-hook worker's OWN lane
+/// (Drew, 2026-11-11: the nix worker does not share a lane
+/// row with a Muse shift — it had been parked on
+/// not-code-a, the disabled Muse not-code-a shift's row;
+/// #8097 record, catch #6853). Lane ids Drew
+/// deleted (the code-k..z overhang, nix-a/b, opencode-a/b,
+/// openchamber-a/b) are deliberately ABSENT: the pre-rename seed
+/// still named them, so each schema ensure resurrected
+/// hand-deleted rows from it — openchamber-a/b came back enabled
+/// after being deleted on 2026-11-10. A lane outside this set is
+/// never seeded; a lane inside it that is deleted by hand comes
+/// back with exactly these fields. Registrations for
+/// session-scoped lanes (UUID ids) are created by their sessions
+/// and are not part of the canonical set; the OpenChamber lanes
+/// renamed out of UUID ids on 2026-11-11 are canonical under
+/// their final names below.
+fn canonical_lanes() -> Vec<(&'static str, &'static str, bool)> {
+    let mut lanes: Vec<(&'static str, &'static str, bool)> = Vec::new();
+    // code group: code-a..d (Muse) and code-f..j (OpenChamber),
+    // all owned by repo-worker-code. code-e (Muse) is disabled
+    // per the 2026-11-10 trims; the other nine are enabled.
+    for c in 'a'..='j' {
+        // Leak-free: the ids are built from a fixed alphabet by a
+        // match on the letter so the strings stay 'static.
+        lanes.push((code_lane_id(c), "repo-worker-code", c != 'e'));
+    }
+    // not-code group: not-code-d (OpenChamber) and not-code-g
+    // (the nix event-hook worker's own lane, added 2026-11-11)
+    // are enabled. Worker ids follow each lane's predecessor
+    // row: not-code-a was nix-a, not-code-b was opencode-a, and
+    // not-code-e was the opencode-project OpenChamber task.
+    for c in 'a'..='g' {
+        let worker = match c {
+            'a' | 'g' => "repo-worker-nix",
+            'b' | 'e' => "repo-worker-opencode",
+            'd' => "repo-worker-openchamber",
+            _ => "repo-worker-code",
+        };
+        lanes.push((not_code_lane_id(c), worker, c == 'd' || c == 'g'));
+    }
+    // any group: any-a..d (Muse) and any-n, any-o (OpenChamber)
+    // are enabled; any-e..m and any-p..s are disabled per the
+    // 2026-11-10 trims. All owned by repo-worker-code.
+    for c in 'a'..='s' {
+        let enabled = matches!(c, 'a' | 'b' | 'c' | 'd' | 'n' | 'o');
+        lanes.push((any_lane_id(c), "repo-worker-code", enabled));
+    }
+    lanes
+}
+
+fn code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "code-a",
+        'b' => "code-b",
+        'c' => "code-c",
+        'd' => "code-d",
+        'e' => "code-e",
+        'f' => "code-f",
+        'g' => "code-g",
+        'h' => "code-h",
+        'i' => "code-i",
+        'j' => "code-j",
+        _ => unreachable!("code lane letters are a..=j"),
+    }
+}
+
+fn not_code_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "not-code-a",
+        'b' => "not-code-b",
+        'c' => "not-code-c",
+        'd' => "not-code-d",
+        'e' => "not-code-e",
+        'f' => "not-code-f",
+        'g' => "not-code-g",
+        _ => unreachable!("not-code lane letters are a..=g"),
+    }
+}
+
+fn any_lane_id(c: char) -> &'static str {
+    match c {
+        'a' => "any-a",
+        'b' => "any-b",
+        'c' => "any-c",
+        'd' => "any-d",
+        'e' => "any-e",
+        'f' => "any-f",
+        'g' => "any-g",
+        'h' => "any-h",
+        'i' => "any-i",
+        'j' => "any-j",
+        'k' => "any-k",
+        'l' => "any-l",
+        'm' => "any-m",
+        'n' => "any-n",
+        'o' => "any-o",
+        'p' => "any-p",
+        'q' => "any-q",
+        'r' => "any-r",
+        's' => "any-s",
+        _ => unreachable!("any lane letters are a..=s"),
+    }
+}
+
+/// The registry seed statement (#6853): INSERT OR IGNORE, so it
+/// restores a missing registration with its canonical fields —
+/// including a disabled lane's enabled = 0 — and can never
+/// resurrect or re-enable a lane whose row already exists in any
+/// state. Lanes outside the canonical set are never seeded at
+/// all (#8097).
+fn lane_seed_sql() -> String {
+    let values: Vec<String> = canonical_lanes()
+        .iter()
+        .map(|(id, worker, enabled)| {
+            format!("('{id}', '{worker}', '*', {})", i32::from(*enabled))
+        })
+        .collect();
+    format!(
+        "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
+        values.join(", ")
+    )
+}
+
 impl TursoBackend {
     pub fn new(url: String, token: String, agent: ureq::Agent) -> Self {
         Self {
@@ -631,6 +765,18 @@ impl TursoBackend {
     pub fn ensure_schema(&self) -> Result<(), TErr> {
         let stmts: Vec<(&str, Vec<Arg>)> = SCHEMA.iter().map(|s| (*s, Vec::new())).collect();
         self.pipeline(&stmts)?;
+        // #6853: seed the canonical lane registry. Registrations
+        // used to be hand-inserted rows with no code-owned seed, so
+        // a store rebuild/restore silently dropped lanes that were
+        // not in whoever's seed set — openchamber-a/b were disabled
+        // on 2026-11-08 (rows present) and unknown by 2026-11-11
+        // (rows gone). INSERT OR IGNORE fills only MISSING rows: an
+        // existing registration — including a lane Drew disabled
+        // (enabled = 0) — is never overwritten by the seed.
+        // #8097: the canonical set is exactly the post-rename
+        // registry universe, so a hand-deleted legacy lane (one
+        // outside the set) is not resurrected either.
+        self.exec(&lane_seed_sql(), &[])?;
         // Additive task columns land here for databases created
         // before them: #8097 Rule 2's tasks.platform (the optional
         // coarse platform selector — existing rows read NULL: unset,
@@ -4662,6 +4808,82 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Whether a broker envelope reports success.
+fn envelope_is_ok(v: &Value) -> bool {
+    v.get("ok").and_then(|o| o.as_bool()) == Some(true)
+}
+
+/// #5757-A: claim + lane-assign + session-bind in one broker
+/// round trip — the composition of the three verbs, in order,
+/// with the same semantics as calling them in sequence: the
+/// claim step's error envelope, or an empty claim, returns
+/// verbatim and later steps are not attempted. A LANE/BIND
+/// failure is different: the claim has already committed, so it
+/// answers as a partial success (ok envelope + claimed row +
+/// `claim_flow_partial` naming the failed step), never as an
+/// error envelope — a retryable error there would make the
+/// client's call_result replay the WHOLE flow and claim a
+/// second task, leaking this one (Codex P1 on PR #8493; the
+/// PostgREST broker in queue_broker.rs follows the same rule).
+/// The caller finishes the failed step with the single-verb
+/// /lane or /bind call for this task id. The answer carries
+/// every step's row: `row` is the claimed task row (the shape
+/// /claim answers and the client's claim_output consumes);
+/// `lane_row` and `bind_row` are exactly what /lane and /bind
+/// answer in the three-verb flow.
+fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
+    if let Err(e) = crate::client::claim_flow_precheck(req) {
+        return fail(2, e);
+    }
+    let claim = verb_claim(t, req);
+    if !envelope_is_ok(&claim) {
+        return claim;
+    }
+    let row = claim.get("row").cloned().unwrap_or(Value::Null);
+    if row.is_null() {
+        return claim;
+    }
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut lane_req = req.clone();
+    if let Some(obj) = lane_req.as_object_mut() {
+        obj.insert("task_id".to_string(), json!(task_id));
+    }
+    let lane = verb_lane(t, &lane_req);
+    if !envelope_is_ok(&lane) {
+        return ok(json!({
+            "row": row,
+            "claim_flow_partial": {
+                "step": "lane",
+                "exit": lane.get("exit").cloned().unwrap_or(Value::Null),
+                "error": lane.get("error").cloned().unwrap_or(Value::Null),
+            },
+        }));
+    }
+    let bind_req = json!({
+        "task_id": task_id,
+        "worker": req.get("worker"),
+        "session_id": req.get("session_id"),
+        "launched_by": req.get("launched_by"),
+    });
+    let bind = verb_bind(t, &bind_req);
+    if !envelope_is_ok(&bind) {
+        return ok(json!({
+            "row": row,
+            "lane_row": lane.get("row").cloned().unwrap_or(Value::Null),
+            "claim_flow_partial": {
+                "step": "bind",
+                "exit": bind.get("exit").cloned().unwrap_or(Value::Null),
+                "error": bind.get("error").cloned().unwrap_or(Value::Null),
+            },
+        }));
+    }
+    ok(json!({
+        "row": row,
+        "lane_row": lane.get("row").cloned().unwrap_or(Value::Null),
+        "bind_row": bind.get("row").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 /// Shared guard for the claimed-by verbs: returns the task row or
 /// the PG-shaped refusal.
 fn claimed_by(t: &TursoBackend, task_id: i64, worker: &str, verb: &str) -> Result<Value, Value> {
@@ -6777,6 +6999,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/enqueue" => verb_enqueue(t, req),
         "/revive" => verb_revive(t, req),
         "/claim" => verb_claim(t, req),
+        "/claim-flow" => verb_claim_flow(t, req),
         "/lane" => verb_lane(t, req),
         "/bind" => verb_bind(t, req),
         "/heartbeat" => verb_heartbeat(t, req),
@@ -6812,6 +7035,119 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
+        // #8097 oracle: after the 2026-11-11 lane rename + trims,
+        // the canonical seed set is exactly the 36-lane registry
+        // (the 35 rename lanes plus not-code-g — the nix worker's
+        // own lane, added later the same day; #8097 record, #6853)
+        // universe with the end-state enabled flags — no more, no
+        // fewer. The pre-rename set named ids that no longer exist
+        // (code-k..z, nix-a/b, opencode-a/b, openchamber-a/b), and
+        // ensure_schema kept resurrecting hand-deleted rows from
+        // it: openchamber-a/b were deleted on 2026-11-10 and came
+        // back enabled at the next seed run. Seeding an empty
+        // lanes table executes lane_seed_sql() — a pure function
+        // of this set — so pinning the set and its per-lane tuples
+        // (next test) pins the seeded database exactly.
+        let lanes = canonical_lanes();
+        assert_eq!(lanes.len(), 36);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| *id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 36, "duplicate lane ids in the canonical set");
+        let expected_ids: Vec<&str> = vec![
+            "any-a", "any-b", "any-c", "any-d", "any-e", "any-f", "any-g", "any-h", "any-i",
+            "any-j", "any-k", "any-l", "any-m", "any-n", "any-o", "any-p", "any-q", "any-r",
+            "any-s", "code-a", "code-b", "code-c", "code-d", "code-e", "code-f", "code-g",
+            "code-h", "code-i", "code-j", "not-code-a", "not-code-b", "not-code-c",
+            "not-code-d", "not-code-e", "not-code-f", "not-code-g",
+        ];
+        assert_eq!(
+            ids, expected_ids,
+            "the canonical set is not the post-rename universe"
+        );
+        // No legacy id may ever be seeded again: the deleted
+        // openchamber pair, the pre-rename stream lanes, the
+        // code-k..z overhang, and the rename's tmp ids.
+        for legacy in [
+            "openchamber-a",
+            "openchamber-b",
+            "nix-a",
+            "nix-b",
+            "opencode-a",
+            "opencode-b",
+        ] {
+            assert!(
+                !ids.contains(&legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        for c in 'k'..='z' {
+            let legacy = format!("code-{c}");
+            assert!(
+                !ids.iter().any(|id| *id == legacy),
+                "legacy lane {legacy} must not be seeded"
+            );
+        }
+        assert!(
+            ids.iter().all(|id| !id.starts_with("tmp-")),
+            "tmp rename ids must not be seeded"
+        );
+        // The enabled set is exactly the 17 working lanes.
+        let mut enabled: Vec<&str> = lanes
+            .iter()
+            .filter(|(_, _, e)| *e)
+            .map(|(id, _, _)| *id)
+            .collect();
+        enabled.sort();
+        assert_eq!(
+            enabled,
+            [
+                "any-a", "any-b", "any-c", "any-d", "any-n", "any-o", "code-a", "code-b",
+                "code-c", "code-d", "code-f", "code-g", "code-h", "code-i", "code-j",
+                "not-code-d", "not-code-g",
+            ]
+        );
+        // Worker ownership: the renamed lanes keep the worker of
+        // the registry row they came from.
+        let owner = |id: &str| lanes.iter().find(|(l, _, _)| *l == id).map(|(_, w, _)| *w);
+        assert_eq!(owner("code-a"), Some("repo-worker-code"));
+        assert_eq!(owner("code-j"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-a"), Some("repo-worker-nix"));
+        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-g"), Some("repo-worker-nix"));
+        assert_eq!(owner("any-s"), Some("repo-worker-code"));
+    }
+
+    #[test]
+    fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
+        // #6853 oracle, extended under #8097: the seed can only
+        // fill missing rows — an existing registration (in
+        // particular a lane disabled via enabled = 0) is never
+        // overwritten, so seeding at every broker start cannot
+        // undo a disable — and every seeded row carries its
+        // canonical fields, so a restored disabled lane comes
+        // back disabled, and a restored enabled lane comes back
+        // with its owning worker and the one-queue binding.
+        let sql = lane_seed_sql();
+        assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
+        for (id, worker, enabled) in canonical_lanes() {
+            let tuple = format!("('{id}', '{worker}', '*', {})", i32::from(enabled));
+            assert!(sql.contains(&tuple), "seed misses {tuple}");
+        }
+        // Nothing outside the canonical set is seeded: a deleted
+        // legacy lane stays deleted across broker restarts.
+        for legacy in ["openchamber-a", "openchamber-b", "nix-a", "opencode-a", "code-z"] {
+            assert!(
+                !sql.contains(&format!("('{legacy}'")),
+                "seed must not name {legacy}"
+            );
+        }
+    }
 
     #[test]
     fn claim_lease_is_the_requested_lease_not_the_heartbeat_default() {
@@ -8454,6 +8790,51 @@ mod tests {
             .map(|r| r["id"].as_i64().unwrap())
             .collect();
         assert_eq!(ids, vec![11, 7, 42], "rows keep pick order");
+    }
+
+    #[test]
+    fn claim_flow_composes_claim_lane_bind_in_order_5757() {
+        // #5757-A oracle: /claim-flow is dispatched, prechecks
+        // before any step runs, and composes the three verbs in
+        // claim -> lane -> bind order, answering with all three
+        // rows. (The verbs themselves are covered by their own
+        // tests; this pins the composition and the route.)
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("\"/claim-flow\" => verb_claim_flow(t, req)"),
+            "dispatch routes /claim-flow"
+        );
+        let flow = seg8217(src, "fn verb_claim_flow(", "\nfn claimed_by(");
+        let pre = flow.find("claim_flow_precheck").expect("precheck present");
+        let c = flow.find("verb_claim(").expect("claim step");
+        let l = flow.find("verb_lane(").expect("lane step");
+        let b = flow.find("verb_bind(").expect("bind step");
+        assert!(pre < c && c < l && l < b, "steps run precheck -> claim -> lane -> bind");
+        assert!(flow.contains("\"bind_row\""), "answer carries the bind row");
+        assert!(flow.contains("\"lane_row\""), "answer carries the lane row");
+    }
+
+    #[test]
+    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
+        // #5757-A Codex P1 oracle (PR #8493): once the claim step
+        // has committed, a lane/bind failure must answer as a
+        // partial success carrying the claimed row and a
+        // claim_flow_partial marker for EACH step — never as the
+        // step's error envelope, which the client's retry loop
+        // would replay into a second claim.
+        let src = include_str!("turso_queue.rs");
+        let flow = seg8217(src, "fn verb_claim_flow(", "\nfn claimed_by(");
+        assert_eq!(
+            flow.matches("\"claim_flow_partial\"").count(),
+            2,
+            "lane and bind failures both carry claim_flow_partial"
+        );
+        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
+        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        assert!(
+            !flow.contains("return lane;") && !flow.contains("return bind;"),
+            "post-commit step envelopes are never returned verbatim"
+        );
     }
 
     #[test]

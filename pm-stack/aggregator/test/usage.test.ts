@@ -189,6 +189,16 @@ describe("saas extraction (Part b)", () => {
     expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
   });
 
+  test("sources provenance: quota-view section names are literal heading text (#6848)", () => {
+    // Fly.io's spec heading is the only one with a regex escape
+    // (/^### Fly\.io$/); the displayed section name must be the literal
+    // heading, not the regex source.
+    expect(byId.get("fly-io")!.sources?.quotaViewSection).toBe("### Fly.io");
+    for (const s of services) {
+      if (s.sources) expect(s.sources.quotaViewSection).not.toContain("\\");
+    }
+  });
+
   test("free-services tracker rows preserve state, date, and guardrail text", () => {
     expect(extractUninstrumentedServices(FREE_SERVICES)).toEqual([
       {

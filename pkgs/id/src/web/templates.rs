@@ -11,6 +11,7 @@ use std::fmt::Write;
 
 use super::content_mode::MediaType;
 use super::routes::{FileKind, FileListPage};
+use crate::event_store::{Block, BlockKind};
 
 /// Asset URLs for templates.
 ///
@@ -91,6 +92,7 @@ pub fn render_main_page_wrapper(content: &str) -> String {
     html.push_str("        <nav class=\"flex items-center gap-3\">\n");
     html.push_str("            <a href=\"/files\" data-nav class=\"crt-glow\">files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav class=\"crt-glow\">peers</a>\n");
+    html.push_str("            <a href=\"/blocks\" data-nav class=\"crt-glow\">blocks</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav class=\"crt-glow\">settings</a>\n");
     html.push_str("            <span class=\"flex items-center gap-1\">\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\" aria-label=\"Sneak theme\"></button>\n");
@@ -553,6 +555,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     html.push_str("            <a href=\"/files\" data-nav>files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
+    html.push_str("            <a href=\"/blocks\" data-nav>blocks</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
     html.push_str("            <span class=\"flex items-center gap-1\">\n");
     html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\" aria-label=\"Sneak theme\"></button>\n");
@@ -1104,14 +1107,19 @@ fn render_program_shell(title: &str, content: &str, assets: &AssetUrls) -> Strin
 /// # Arguments
 ///
 /// * `peers` - List of (`node_id`, `name`, `blob_count`, `age_secs`) tuples
+/// * `blocked_ids` - Node IDs (same string form as `node_id`) that already
+///   name a peer-key row on the operator block list (#2245)
 ///
 /// # Returns
 ///
 /// HTML fragment for the peers page.
-pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
+pub fn render_peers(
+    peers: &[(String, String, u64, u64)],
+    blocked_ids: &std::collections::HashSet<String>,
+) -> String {
     let mut html = String::with_capacity(2048);
     html.push_str("<div id=\"peers-content\" data-auto-refresh=\"10\">\n");
-    html.push_str(&render_peers_content(peers));
+    html.push_str(&render_peers_content(peers, blocked_ids));
     html.push_str("</div>");
     html
 }
@@ -1122,7 +1130,10 @@ pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
 /// Used by `/api/peers` for auto-refresh partial updates: the client's
 /// `fetchPartial` assigns the response as `innerHTML` of `#peers-content`,
 /// so the partial must not carry the wrapper itself (issue #6956).
-pub fn render_peers_content(peers: &[(String, String, u64, u64)]) -> String {
+pub fn render_peers_content(
+    peers: &[(String, String, u64, u64)],
+    blocked_ids: &std::collections::HashSet<String>,
+) -> String {
     let mut html = String::with_capacity(2048);
     html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
     html.push_str("    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Discovered Peers</div>\n");
@@ -1134,27 +1145,188 @@ pub fn render_peers_content(peers: &[(String, String, u64, u64)]) -> String {
     } else {
         html.push_str("        <table class=\"table table-xs\">\n");
         html.push_str(
-            "            <tr><th>Node ID</th><th>Name</th><th>Blobs</th><th>Last Seen</th></tr>\n",
+            "            <tr><th>Node ID</th><th>Name</th><th>Blobs</th><th>Last Seen</th><th>Status</th><th></th></tr>\n",
         );
         for (node_id, name, blob_count, age_secs) in peers {
             let node_id_escaped = html_escape(node_id);
             let name_escaped = html_escape(name);
             let short_id = &node_id_escaped[..12.min(node_id_escaped.len())];
             let age_str = format_age(*age_secs);
+            if blocked_ids.contains(node_id.as_str()) {
+                let _ = write!(
+                    html,
+                    "            <tr>\
+                        <td><code class=\"font-mono text-base-content/40\" title=\"{}\">{}</code></td>\
+                        <td>{}</td>\
+                        <td>{}</td>\
+                        <td>{}</td>\
+                        <td><span class=\"badge badge-warning badge-xs\">blocked</span></td>\
+                        <td><form method=\"post\" action=\"/api/blocks/remove\" class=\"inline\">\
+                            <input type=\"hidden\" name=\"kind\" value=\"peer_key\"/>\
+                            <input type=\"hidden\" name=\"value\" value=\"{}\"/>\
+                            <input type=\"hidden\" name=\"return_to\" value=\"/peers\"/>\
+                            <button type=\"submit\" class=\"btn btn-ghost btn-xs\" aria-label=\"Unblock peer {}\">unblock</button>\
+                        </form></td>\
+                    </tr>\n",
+                    node_id_escaped,
+                    short_id,
+                    name_escaped,
+                    blob_count,
+                    age_str,
+                    node_id_escaped,
+                    short_id,
+                );
+            } else {
+                let _ = write!(
+                    html,
+                    "            <tr>\
+                        <td><code class=\"font-mono text-base-content/40\" title=\"{}\">{}</code></td>\
+                        <td>{}</td>\
+                        <td>{}</td>\
+                        <td>{}</td>\
+                        <td></td>\
+                        <td><form method=\"post\" action=\"/api/blocks\" class=\"inline\">\
+                            <input type=\"hidden\" name=\"kind\" value=\"peer_key\"/>\
+                            <input type=\"hidden\" name=\"value\" value=\"{}\"/>\
+                            <input type=\"hidden\" name=\"reason\" value=\"blocked from the peers page\"/>\
+                            <input type=\"hidden\" name=\"return_to\" value=\"/peers\"/>\
+                            <button type=\"submit\" class=\"btn btn-ghost btn-xs\" aria-label=\"Block peer {}\">block</button>\
+                        </form></td>\
+                    </tr>\n",
+                    node_id_escaped,
+                    short_id,
+                    name_escaped,
+                    blob_count,
+                    age_str,
+                    node_id_escaped,
+                    short_id,
+                );
+            }
+        }
+        html.push_str("        </table>\n");
+    }
+
+    html.push_str("    </div>\n");
+    html.push_str("</div>\n");
+    html.push_str("</div>");
+
+    html
+}
+
+/// Lowercase hex of `bytes` (the block table has no hex crate; the
+/// endpoint-key rows need a readable form).
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// How one block row names its kind in the Blocks page.
+fn block_kind_label(kind: BlockKind) -> &'static str {
+    match kind {
+        BlockKind::PeerKey => "peer key",
+        BlockKind::Ip => "IP",
+        BlockKind::TopicTag => "topic tag",
+    }
+}
+
+/// Readable form of a block row's value: endpoint keys render as hex,
+/// IPs and text tags render as text, anything else as hex.
+fn block_value_display(block: &Block) -> String {
+    match block.kind {
+        BlockKind::PeerKey => hex_encode(&block.value),
+        BlockKind::Ip | BlockKind::TopicTag => String::from_utf8(block.value.clone())
+            .unwrap_or_else(|_| hex_encode(&block.value)),
+    }
+}
+
+/// Render the operator Blocks page: every block row with an unblock
+/// action, plus a form that writes a new row (#2245).
+///
+/// # Arguments
+///
+/// * `blocks` - Every row on the operator block list, expired ones included
+///
+/// # Returns
+///
+/// HTML fragment for the blocks page.
+pub fn render_blocks(blocks: &[Block]) -> String {
+    let mut html = String::with_capacity(2048);
+    html.push_str("<div id=\"blocks-content\">\n");
+    html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
+    html.push_str("    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Operator Blocks</div>\n");
+    html.push_str("    <div class=\"p-4\">\n");
+    html.push_str("        <p class=\"text-muted mb-4\">Blocked peers, IPs, and topic tags. A block stops serving and subscribing for the named value; already-signed objects are never discarded. Expired rows stay listed but are no longer enforced.</p>\n");
+
+    if blocks.is_empty() {
+        html.push_str("        <p class=\"text-muted\">No blocks. The list is empty.</p>\n");
+    } else {
+        let now_ms = crate::time::unix_ms();
+        html.push_str("        <table class=\"table table-xs\">\n");
+        html.push_str(
+            "            <tr><th>Kind</th><th>Value</th><th>Added</th><th>Reason</th><th>Expires</th><th></th></tr>\n",
+        );
+        for block in blocks {
+            let value = html_escape(&block_value_display(block));
+            let reason = html_escape(&block.reason);
+            let added = html_escape(&format_unix_timestamp(block.added_at_ms / 1000));
+            let expires = match block.expires_at_ms {
+                None => "never".to_owned(),
+                Some(ts) => format_unix_timestamp(ts / 1000),
+            };
+            let expires = html_escape(&expires);
+            let kind_label = block_kind_label(block.kind);
+            let kind_value = match block.kind {
+                BlockKind::PeerKey => "peer_key",
+                BlockKind::Ip => "ip",
+                BlockKind::TopicTag => "topic_tag",
+            };
+            let active_badge = if block.is_active(now_ms) {
+                "<span class=\"badge badge-warning badge-xs\">active</span>".to_owned()
+            } else {
+                "<span class=\"badge badge-ghost badge-xs\">expired</span>".to_owned()
+            };
             let _ = write!(
                 html,
                 "            <tr>\
-                    <td><code class=\"font-mono text-base-content/40\" title=\"{}\">{}</code></td>\
-                    <td>{}</td>\
-                    <td>{}</td>\
-                    <td>{}</td>\
+                    <td>{kind_label}</td>\
+                    <td><code class=\"font-mono text-base-content/40\">{value}</code></td>\
+                    <td>{added}</td>\
+                    <td>{reason}</td>\
+                    <td>{expires} {active_badge}</td>\
+                    <td><form method=\"post\" action=\"/api/blocks/remove\" class=\"inline\">\
+                        <input type=\"hidden\" name=\"kind\" value=\"{kind_value}\"/>\
+                        <input type=\"hidden\" name=\"value\" value=\"{value}\"/>\
+                        <input type=\"hidden\" name=\"return_to\" value=\"/blocks\"/>\
+                        <button type=\"submit\" class=\"btn btn-ghost btn-xs\" aria-label=\"Unblock {kind_label} {value}\">unblock</button>\
+                    </form></td>\
                 </tr>\n",
-                node_id_escaped, short_id, name_escaped, blob_count, age_str,
             );
         }
         html.push_str("        </table>\n");
     }
 
+    html.push_str("        <h3 class=\"text-sm font-bold mt-6 mb-2\">Add a block</h3>\n");
+    html.push_str("        <form method=\"post\" action=\"/api/blocks\" class=\"flex flex-wrap items-end gap-2\">\n");
+    html.push_str("            <label class=\"text-xs\">kind\n");
+    html.push_str("            <select name=\"kind\" class=\"select select-bordered select-xs\">\n");
+    html.push_str("                <option value=\"peer_key\">peer key</option>\n");
+    html.push_str("                <option value=\"ip\">IP</option>\n");
+    html.push_str("                <option value=\"topic_tag\">topic tag</option>\n");
+    html.push_str("            </select></label>\n");
+    html.push_str("            <label class=\"text-xs\">value (hex key, IP, or tag)\n");
+    html.push_str("            <input type=\"text\" name=\"value\" required class=\"input input-bordered input-xs\"/></label>\n");
+    html.push_str("            <label class=\"text-xs\">reason\n");
+    html.push_str("            <input type=\"text\" name=\"reason\" class=\"input input-bordered input-xs\"/></label>\n");
+    html.push_str("            <label class=\"text-xs\">expires at (unix ms, optional)\n");
+    html.push_str("            <input type=\"text\" name=\"expires_at_ms\" class=\"input input-bordered input-xs\"/></label>\n");
+    html.push_str("            <input type=\"hidden\" name=\"return_to\" value=\"/blocks\"/>\n");
+    html.push_str("            <button type=\"submit\" class=\"btn btn-warning btn-xs\">block</button>\n");
+    html.push_str("        </form>\n");
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
 
@@ -1175,7 +1347,7 @@ fn format_age(secs: u64) -> String {
 }
 
 /// Escape HTML special characters.
-pub(super) fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -1562,7 +1734,7 @@ mod tests {
 
     #[test]
     fn test_render_peers_empty() {
-        let html = render_peers(&[]);
+        let html = render_peers(&[], &std::collections::HashSet::new());
         assert!(html.contains("No peers discovered yet"));
         assert!(html.contains("Discovered Peers"));
         assert!(html.contains("data-auto-refresh=\"10\""));
@@ -1576,7 +1748,7 @@ mod tests {
             42,
             30,
         )];
-        let html = render_peers(&peers);
+        let html = render_peers(&peers, &std::collections::HashSet::new());
         assert!(html.contains("0123456789ab")); // short ID
         assert!(html.contains("test-node"));
         assert!(html.contains("42"));
@@ -1594,18 +1766,28 @@ mod tests {
             42,
             30,
         )];
-        for html in [render_peers_content(&[]), render_peers_content(&peers)] {
-            assert!(!html.contains("peers-content"), "inner partial must not contain #peers-content wrapper: {html}");
-            assert!(!html.contains("data-auto-refresh"), "inner partial must not contain data-auto-refresh: {html}");
+        for html in [
+            render_peers_content(&[], &std::collections::HashSet::new()),
+            render_peers_content(&peers, &std::collections::HashSet::new()),
+        ] {
+            assert!(
+                !html.contains("peers-content"),
+                "inner partial must not contain #peers-content wrapper: {html}"
+            );
+            assert!(
+                !html.contains("data-auto-refresh"),
+                "inner partial must not contain data-auto-refresh: {html}"
+            );
             assert!(html.contains("Discovered Peers"));
         }
-        assert!(render_peers_content(&peers).contains("test-node"));
-        assert!(render_peers_content(&[]).contains("No peers discovered yet"));
+        assert!(render_peers_content(&peers, &std::collections::HashSet::new()).contains("test-node"));
+        assert!(render_peers_content(&[], &std::collections::HashSet::new())
+            .contains("No peers discovered yet"));
     }
 
     #[test]
     fn test_render_peers_wrapper_exactly_once() {
-        let html = render_peers(&[]);
+        let html = render_peers(&[], &std::collections::HashSet::new());
         assert_eq!(html.matches("id=\"peers-content\"").count(), 1);
         assert_eq!(html.matches("data-auto-refresh").count(), 1);
     }

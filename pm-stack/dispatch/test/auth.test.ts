@@ -227,15 +227,15 @@ describe("JWKS body shape (#7565)", () => {
     resetJwksCacheForTests();
     const originalFetch = globalThis.fetch;
     let calls = 0;
-    globalThis.fetch = async () => {
+    globalThis.fetch = (async () => {
       calls++;
       return {
         ok: true,
         json: async () => {
           throw new SyntaxError("Unexpected token < in JSON");
         },
-      } as Response;
-    };
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
     try {
       await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
       await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
@@ -249,7 +249,7 @@ describe("JWKS body shape (#7565)", () => {
   test("fetchGithubJwks rejects a wrong-shape 200 body as AuthError", async () => {
     resetJwksCacheForTests();
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => ({ ok: true, json: async () => ({}) }) as Response;
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({}) }) as unknown as Response) as unknown as typeof fetch;
     try {
       await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
     } finally {

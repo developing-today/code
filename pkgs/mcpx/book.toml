@@ -15,3 +15,7 @@ create-missing = false
 
 [output.html]
 git-repository-url = "https://github.com/developing-today/code"
+
+# Render release metadata and history disclosures into the published book.
+[preprocessor.docs-history]
+command = "docs-history"

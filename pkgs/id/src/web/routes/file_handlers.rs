@@ -48,6 +48,15 @@ pub(super) async fn save_handler(
         }
     };
 
+    // #8407: this save claims the filename tag below. Serialize the
+    // claim with the create/upload name claims (same AppState lock,
+    // #2363 scope) so a create that checked the name just before this
+    // save's first tag set cannot land its empty blob on top of the
+    // saved content, and a save cannot interleave into a create's
+    // check-then-set either. Held for the whole handler: the publish,
+    // archive, tag set and metadata writes are one claim.
+    let _save_name_guard = state.upload_name_lock.lock().await;
+
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
         Ok(b) => b,
@@ -208,6 +217,25 @@ pub(super) async fn new_file_handler(
 
     if req.name.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // #8407: creating a name that is already in use must conflict, not
+    // silently replace the existing file's content with an empty blob.
+    // Hold the shared name lock across the existence check, the tag set
+    // and the filename-keyed metadata writes below -- the same critical
+    // section the upload handler uses (#2363) -- so concurrent creates,
+    // and a create racing another name-claiming write, cannot interleave
+    // between the check and the claim.
+    let _create_name_guard = state.upload_name_lock.lock().await;
+    match state.store.tags().get(&req.name).await {
+        Ok(Some(_)) => {
+            return (StatusCode::CONFLICT, "File already exists").into_response();
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::error!("[routes] Failed to look up tag: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to look up file").into_response();
+        }
     }
 
     // Create appropriate empty content based on file type
