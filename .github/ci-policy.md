@@ -132,7 +132,7 @@ workflow before use.
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and
-its fixtures on pull requests, merge groups, and pushes to `main`. The
+its fixtures on pull requests and pushes to `main`. The
 guard checks known metered selections (`cloudflare-*` and the direct
 PAYG `deepseek` provider) in model-route targets/fallbacks, provider-route
 selections, top-level defaults, and agent model/fallback fields. Disabled
@@ -192,7 +192,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                                        | —                                                                |
 | mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                                             | — (main covers it)                                               |
 | mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                                            | —                                                                |
-| production-line guard (#1411)                                  | `basic: production line limit (2500)` on `pull_request`                                             | —                                                                                                   | —                                                                |
+| production-line guard (#1411)                                  | `basic: production line limit (2500)` on `pull_request`                                             | push to main (path-gated: `pkgs/**`, `apps/**`, guard files) — restored 2026-11-11 under Drew's #7089 ruling | —                                                                |
 
 ## CI-policy agreement contract (#7089, Phase 1)
 
@@ -242,9 +242,12 @@ every in-scope workflow, tier, declared triggers, and the recorded
 waiver set must agree). Enablement is not visible from the tree:
 it is audited from the Actions API on the #6187 recurring cadence,
 and a disabled in-scope venue is reported with its disposition.
-At Phase 1 landing, the disabled in-scope venues are exactly the
-waiver set below (opencode-config-guard and the #6981 build set
-are `disabled_manually`).
+At Phase 1 landing, the disabled in-scope venues were exactly the
+waiver set below. As of the 2026-11-11 re-arm landing under Drew's
+#7089 ruling, the waiver set is empty and no in-scope venue is
+`disabled_manually` (the #6981 build set reads active again, and
+opencode-config-guard was re-enabled via the Actions API in the
+same change).
 
 **Waivers — the recorded Phase 2–3 disagreement set.** Each waiver
 names its phase issue and awaits Drew's re-arm-vs-dispatch-only
@@ -255,8 +258,7 @@ stale waiver whose leg now agrees.
 
 | workflow                                          | missing leg(s)                                          | phase issue |
 | ------------------------------------------------- | ------------------------------------------------------- | ----------- |
-| opencode-config-guard                             | main tier (`push`); venue `disabled_manually`           | Phase 2 — #6953 |
-| production-line-guard                             | PR tier (`pull_request`)                                | Phase 3 — #6959 |
+| _(none — the set landed empty 2026-11-11: #6953's main leg and venue, and #6959's PR leg, were restored in the same PR that deleted these waivers)_ | | |
 
 ## Coverage rule
 
