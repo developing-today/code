@@ -1004,10 +1004,15 @@
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
-      "venue": null,
-      "status": "uncovered",
+      "venue": {
+        "workflow": ".github/workflows/atlas-search-pr.yml",
+        "job_step": "atlas-search / Test atlas-search, Test atlas-core, Test atlas-proto, Test atlas-embed",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
       "phase2_issue": 6185,
-      "reason": "Flake checks.default exists, but no workflow invocation was confirmed; Phase 2 follow-up must be filed."
+      "reason": "Wired by #7825: atlas-search-pr.yml runs all four crates with --all-targets on pull_request, push to main, and workflow_dispatch. gate_a's model test remains #[ignore]d (requires ATLAS_ORT_LIB and the pinned model snapshot)."
     },
     {
       "id": "fleet.rust",
