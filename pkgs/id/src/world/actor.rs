@@ -3063,6 +3063,156 @@ mod replication_feed_tests {
         ]
     }
 
+    // ---- Property coverage for the oversized scanner (#7890 Codex P1) ----
+    // Oracle for both properties: an independent first-over-bound-line scan
+    // of the serialized journal lines — a line (entry bytes including the
+    // trailing newline) is oversized iff its length exceeds
+    // MAX_REPLICATION_PAYLOAD_BYTES, and the scanner must name the FIRST
+    // such line's ordinal and length, or None when there is none.
+
+    fn prop_filler(len: usize, special: u8) -> String {
+        // Mostly plain bytes, with JSON-escaped and multibyte characters
+        // mixed in so serialized sizes differ from char counts.
+        let mut out = String::with_capacity(len);
+        for i in 0..len {
+            out.push(match (i as u8).wrapping_add(special) % 16 {
+                0 => '"',
+                1 => '\\',
+                2 => '\u{e9}',
+                3 => '\u{1f980}',
+                _ => 'x',
+            });
+        }
+        out
+    }
+
+    fn prop_checkpoint(snapshot: String) -> JournalEntry {
+        JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "prop-module".to_owned(),
+            seed: 0,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            lease: None,
+            snapshot,
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        }
+    }
+
+    fn prop_entry() -> impl proptest::strategy::Strategy<Value = JournalEntry> {
+        use proptest::prelude::*;
+        prop_oneof![
+            any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                participant_id,
+                by: None,
+            }),
+            proptest::collection::vec((0..24_usize, any::<u8>()), 0..=4).prop_map(|parts| {
+                JournalEntry::CapsGranted {
+                    granted: parts
+                        .into_iter()
+                        .map(|(len, special)| prop_filler(len, special))
+                        .collect(),
+                }
+            }),
+            // Snapshot sizes straddle the payload bound: below, around, above.
+            prop_oneof![
+                (0..=200_usize, any::<u8>()),
+                (
+                    super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES - 600
+                        ..=super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 600,
+                    any::<u8>(),
+                ),
+                (
+                    super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 1
+                        ..=super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES + 8192,
+                    any::<u8>(),
+                ),
+            ]
+            .prop_map(|(len, special)| prop_checkpoint(prop_filler(len, special))),
+        ]
+    }
+
+    fn prop_bounded_entry() -> impl proptest::strategy::Strategy<Value = JournalEntry> {
+        use proptest::prelude::*;
+        // Every entry bounded far below the payload limit by construction;
+        // the journal TOTAL still ranges past it via the entry count.
+        prop_oneof![
+            any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                participant_id,
+                by: None,
+            }),
+            (0..=20_000_usize, any::<u8>())
+                .prop_map(|(len, special)| prop_checkpoint(prop_filler(len, special))),
+        ]
+    }
+
+    #[test]
+    fn scanner_matches_first_over_bound_line_oracle() {
+        use proptest::prelude::*;
+        proptest!(ProptestConfig::with_cases(48), |(entries in proptest::collection::vec(prop_entry(), 1..=10))| {
+            let lines: Vec<Vec<u8>> = entries.iter().map(journal_entry_line).collect();
+            let oracle = lines
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.len() > super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES)
+                .map(|(ordinal, line)| (ordinal, line.len()));
+            let bytes: Vec<u8> = lines.into_iter().flatten().collect();
+            let source = JournalSnapshotSource::from_reader(1, bytes.len() as u64, Cursor::new(bytes));
+            let scanned = source.first_oversized_entry().unwrap();
+            prop_assert_eq!(scanned, oracle);
+        });
+    }
+
+    #[test]
+    fn bounded_journals_never_compact_at_feed_build() {
+        use proptest::prelude::*;
+        proptest!(ProptestConfig::with_cases(24), |(entries in proptest::collection::vec(prop_bounded_entry(), 1..=24))| {
+            // Oracle first: no serialized line may exceed the bound.
+            let lines: Vec<Vec<u8>> = entries.iter().map(journal_entry_line).collect();
+            prop_assert!(lines
+                .iter()
+                .all(|line| line.len() <= super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let compactions = Arc::new(AtomicUsize::new(0));
+                let source_captures = Arc::new(AtomicUsize::new(0));
+                let journal = FeedJournal {
+                    version: 1,
+                    entries,
+                    compactions: Arc::clone(&compactions),
+                    source_captures: Arc::clone(&source_captures),
+                };
+                let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+                core.active_module_hash = Some("prop-module".to_owned());
+                let mut actor = WorldActor::for_test(
+                    core,
+                    Box::new(SnapshotProgram),
+                    Some(Box::new(journal)),
+                );
+                let (reply, response) = oneshot::channel();
+                actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+                let (_world_id, _source, probe_source, _updates) =
+                    response.await.unwrap().expect("feed capture");
+                if let Some(probe) = probe_source {
+                    // The caller-side scan (WorldHandle::replication_feed's
+                    // step) must find nothing, so no ReplicationCompact is
+                    // ever sent for a bounded journal.
+                    let scanned = probe.first_oversized_entry().unwrap();
+                    assert_eq!(scanned, None);
+                }
+                assert_eq!(compactions.load(Ordering::SeqCst), 0);
+            });
+        });
+    }
+
     struct BumpingJournal {
         version: u32,
         entries: Vec<JournalEntry>,
