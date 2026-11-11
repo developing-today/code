@@ -174,7 +174,13 @@ pub struct GameChallengeAcceptance {
 /// participant's role — so a lineage cannot advance on one player's
 /// signatures alone. Two valid turns may name the same `prev_turn`: they
 /// are competing branches of the game, kept as forks in the graph, never
-/// erased or overwritten by acceptance.
+/// erased or overwritten by acceptance. Two authorization extensions
+/// sit on top of rotation, both recorded as signed objects in the
+/// graph: a turn in a [`GameFork`] instance names the fork in
+/// `fork_ref` and resolves against the fork's own participants, and
+/// on a line an accepted [`GameHandoff`] governs, the recipient may
+/// sign a base-line turn under the seat role rotation assigns (the
+/// recipient's leg — design #2054 section 4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GameTurn {
@@ -188,8 +194,125 @@ pub struct GameTurn {
     pub turn_index: u64,
     /// The prior turn in this lineage; `None` for the opening turn.
     pub prev_turn: Option<ArtifactHash>,
+    /// The [`GameFork`] instance this turn belongs to, when it
+    /// continues a fork rather than the game post's base line. A
+    /// fork turn builds on the fork's cited save-point frontier or
+    /// on another turn of the same fork, and its signer resolves
+    /// against the fork's own participant list. Absent (the base
+    /// line) in objects written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_ref: Option<ArtifactHash>,
     /// Package-defined action data, carried as data; replay interprets it.
     pub action: serde_json::Value,
+}
+
+/// A signed save point in one game line: the pinned package, the
+/// frontier turn it saves, and the hash of the replayed state at
+/// that frontier.
+///
+/// A save point is signed by an assigned participant of the line
+/// it saves: the post's participants for a base-line frontier, or
+/// the fork's own participants when the frontier is a fork turn.
+/// post and must name that post's exact pinned package (hash and
+/// version) — a save recorded against different package bytes is a
+/// save of a different game. The state hash is the saver's signed
+/// claim about [`BoardGraph::replay_game_lineage`]'s snapshot at
+/// the frontier; peers can recompute it from the same lineage and
+/// the same bytes. Save blobs themselves stay content-addressed
+/// references: this record carries hashes, never state bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameSavePoint {
+    /// Board root hash.
+    pub board: ArtifactHash,
+    /// Hash of the immutable `BoardObject::GamePost` this save belongs to.
+    pub game_post: ArtifactHash,
+    /// The pinned package the saved line replays through; must equal
+    /// the game post's package reference exactly.
+    pub package: GamePackageRef,
+    /// Hash of the [`GameTurn`] at the saved frontier.
+    pub frontier: ArtifactHash,
+    /// SHA-256 hash of the replayed package state at the frontier.
+    pub state_hash: ArtifactHash,
+}
+
+/// Signed handoff of a saved game line to a named recipient.
+///
+/// Only the save point's own author may hand it off, and the
+/// recipient must be an assigned participant of the game post —
+/// turn validation binds continuation turns to the participant
+/// list, so a handoff to anyone else could never be continued.
+/// Competing handoffs of one save point are all kept as signed
+/// history; an accepted handoff selects the social main line (see
+/// [`BoardGraph::game_main_line_head`]) and the alternatives are
+/// never deleted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameHandoff {
+    /// Board root hash.
+    pub board: ArtifactHash,
+    /// Hash of the immutable `BoardObject::GamePost` this handoff belongs to.
+    pub game_post: ArtifactHash,
+    /// Hash of the `BoardObject::GameSavePoint` being handed off.
+    pub save_point: ArtifactHash,
+    /// Canonical Ed25519 public key of the named recipient.
+    pub recipient: String,
+    /// Handoff terms, carried as data.
+    pub terms: serde_json::Value,
+}
+
+/// Signed acceptance of a [`GameHandoff`] by its named recipient.
+///
+/// Only the recipient the handoff names may accept it. Acceptance
+/// is effective by existence, never by a first-arrival-wins check —
+/// the same rule [`GameChallengeAcceptance`] documents — so peers
+/// holding the same signed set converge in any arrival order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameHandoffAcceptance {
+    /// Board root hash.
+    pub board: ArtifactHash,
+    /// Hash of the immutable `BoardObject::GamePost` this acceptance belongs to.
+    pub game_post: ArtifactHash,
+    /// Hash of the `BoardObject::GameHandoff` being accepted.
+    pub handoff: ArtifactHash,
+}
+
+/// A signed fork of a game from a cited save point, by any author.
+///
+/// The fork record starts an independent continuation: turns that
+/// build on the save point's frontier are a branch of the game
+/// (see [`GameTurn`]), replayed independently of the source line
+/// through [`BoardGraph::replay_game_lineage`]. The citation
+/// preserves source-line attribution — the save point, its author,
+/// and the lineage behind its frontier stay named in the graph.
+/// Board-level [`BoardFork`] is a different feature (whole-board
+/// provenance); this is a game-level fork inside one board. The
+/// fork carries its own participant list: fork turns resolve their
+/// signers against it, not the game post's, so a third-party fork
+/// actually proceeds as an alternate instance (design #2054
+/// section 4). Seating is phase-aligned to the absolute turn
+/// index — a fork turn's seat is `participants[turn_index % len]`,
+/// matching the move count already inside the saved state — so a
+/// fork opened mid-rotation continues the saved state's rotation
+/// instead of restarting it. For the same reason the participant
+/// list must preserve the saved instance's seat layout: the same
+/// number of seats with the same role at each seat; only the
+/// assigned authors may change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameFork {
+    /// Board root hash.
+    pub board: ArtifactHash,
+    /// Hash of the immutable `BoardObject::GamePost` this fork belongs to.
+    pub game_post: ArtifactHash,
+    /// Hash of the `BoardObject::GameSavePoint` the fork cites.
+    pub save_point: ArtifactHash,
+    /// Authors assigned to package-defined roles in the fork
+    /// instance, in fork-turn rotation order. The fork's own
+    /// author must hold one of the assignments: a fork its author
+    /// cannot play in does not proceed.
+    pub participants: Vec<GameParticipant>,
 }
 
 /// Stable identity root for one public board.
@@ -477,6 +600,14 @@ pub enum BoardObject {
     GameChallengeAcceptance(GameChallengeAcceptance),
     /// Signed asynchronous game turn.
     GameTurn(GameTurn),
+    /// Signed save point in a game line.
+    GameSavePoint(GameSavePoint),
+    /// Signed handoff of a saved game line to a named recipient.
+    GameHandoff(GameHandoff),
+    /// Signed acceptance of a game handoff by its named recipient.
+    GameHandoffAcceptance(GameHandoffAcceptance),
+    /// Signed game fork from a cited save point.
+    GameFork(GameFork),
     /// Signed opt-in host listing / withdrawal.
     BoardListing(BoardListing),
 }
@@ -500,6 +631,10 @@ impl BoardObject {
             Self::GamePost(_) => "game_post",
             Self::GameChallengeAcceptance(_) => "game_challenge_acceptance",
             Self::GameTurn(_) => "game_turn",
+            Self::GameSavePoint(_) => "game_save_point",
+            Self::GameHandoff(_) => "game_handoff",
+            Self::GameHandoffAcceptance(_) => "game_handoff_acceptance",
+            Self::GameFork(_) => "game_fork",
             Self::BoardListing(_) => "board_listing",
         }
     }
@@ -521,6 +656,10 @@ impl BoardObject {
             Self::GamePost(value) => Some(&value.board),
             Self::GameChallengeAcceptance(value) => Some(&value.board),
             Self::GameTurn(value) => Some(&value.board),
+            Self::GameSavePoint(value) => Some(&value.board),
+            Self::GameHandoff(value) => Some(&value.board),
+            Self::GameHandoffAcceptance(value) => Some(&value.board),
+            Self::GameFork(value) => Some(&value.board),
         }
     }
 
@@ -614,28 +753,29 @@ impl BoardObject {
                     value.package.version.len() <= 128,
                     "game package version is at most 128 bytes"
                 );
-                ensure!(
-                    !value.participants.is_empty()
-                        && value.participants.len() <= MAX_GAME_PARTICIPANTS,
-                    "a game post assigns 1 to {MAX_GAME_PARTICIPANTS} participants"
-                );
-                let mut participant_roles = BTreeSet::new();
-                for participant in &value.participants {
-                    ensure!(
-                        is_public_key(&participant.author),
-                        "game participant is not a canonical Ed25519 key"
-                    );
-                    validate_game_role(&participant.role)?;
-                    ensure!(
-                        participant_roles
-                            .insert((participant.author.as_str(), participant.role.as_str())),
-                        "duplicate game participant (author, role) assignment"
-                    );
-                }
+                validate_game_participants("game post", &value.participants)?;
                 validate_game_data("game configuration", &value.configuration)?;
                 validate_game_data("game genesis state", &value.genesis)?;
             }
             Self::GameChallengeAcceptance(_) => {}
+            Self::GameSavePoint(value) => {
+                validate_text("game package version", &value.package.version, false)?;
+                ensure!(
+                    value.package.version.len() <= 128,
+                    "game package version is at most 128 bytes"
+                );
+            }
+            Self::GameHandoff(value) => {
+                ensure!(
+                    is_public_key(&value.recipient),
+                    "game handoff recipient is not a canonical Ed25519 key"
+                );
+                validate_game_data("game handoff terms", &value.terms)?;
+            }
+            Self::GameHandoffAcceptance(_) => {}
+            Self::GameFork(value) => {
+                validate_game_participants("game fork", &value.participants)?;
+            }
             Self::GameTurn(value) => {
                 validate_game_role(&value.role)?;
                 validate_game_data("game turn action", &value.action)?;
@@ -865,13 +1005,110 @@ impl BoardGraph {
                     post_body.mode == GameMode::AsyncTurns,
                     "game turns require the async-turns play mode"
                 );
-                let acting = &post_body.participants[usize::try_from(value.turn_index)
-                    .unwrap_or(usize::MAX)
-                    % post_body.participants.len()];
-                ensure!(
-                    acting.author == author && acting.role == value.role,
-                    "a game turn must be signed by the participant whose turn its index names, under that participant's assigned role"
-                );
+                // Authorization: who may sign this turn. A base-line
+                // turn is signed by the participant its index names
+                // in the game post's rotation — or, on a line an
+                // accepted handoff governs, by that handoff's
+                // recipient under the seat role rotation assigns
+                // (the recipient's leg: the acceptance is what
+                // begins it, design #2054 section 4). A fork turn is
+                // signed under the fork instance's own participants.
+                match &value.fork_ref {
+                    Some(fork_hash) => {
+                        let fork_object =
+                            self.require_scoped(fork_hash, &value.board, "game_fork")?;
+                        let BoardObject::GameFork(fork_body) = &fork_object.object else {
+                            unreachable!("require_scoped checked game fork kind")
+                        };
+                        ensure!(
+                            fork_body.game_post == value.game_post,
+                            "a game turn's fork belongs to a different game"
+                        );
+                        let save_object = self
+                            .objects
+                            .get(&fork_body.save_point)
+                            .context("game fork save point reference is missing")?;
+                        let BoardObject::GameSavePoint(save_body) = &save_object.object else {
+                            bail!("game fork save point reference is not a save point object");
+                        };
+                        let frontier_object = self
+                            .objects
+                            .get(&save_body.frontier)
+                            .context("game fork frontier reference is missing")?;
+                        let BoardObject::GameTurn(frontier_body) = &frontier_object.object else {
+                            bail!("game fork frontier reference is not a game turn");
+                        };
+                        let previous_hash = value.prev_turn.as_ref().context(
+                            "a fork turn builds on the fork frontier or a turn of the same fork",
+                        )?;
+                        if previous_hash != &save_body.frontier {
+                            let previous_object = self
+                                .objects
+                                .get(previous_hash)
+                                .context("game turn's prior turn is missing")?;
+                            let BoardObject::GameTurn(previous_body) = &previous_object.object
+                            else {
+                                bail!("game turn's prior turn is not a game turn");
+                            };
+                            ensure!(
+                                previous_body.fork_ref.as_ref() == Some(fork_hash),
+                                "a fork turn's prior turn belongs to a different fork instance"
+                            );
+                        }
+                        ensure!(
+                            value.turn_index > frontier_body.turn_index,
+                            "a fork turn's index does not follow the fork frontier"
+                        );
+                        // Fork seating is phase-aligned to the
+                        // absolute turn index: the move count inside
+                        // the saved state is part of what the fork
+                        // replays from, so a fork turn's seat is the
+                        // one its absolute index names. Resetting
+                        // the rotation at the frontier would
+                        // attribute the saved state's next move to
+                        // the wrong seat (Codex P1 on PR #8552).
+                        let position = value.turn_index;
+                        let acting = &fork_body.participants[usize::try_from(position)
+                            .unwrap_or(usize::MAX)
+                            % fork_body.participants.len()];
+                        let rotation_authorized =
+                            acting.author == author && acting.role == value.role;
+                        // Handoffs govern fork instances too: the
+                        // recipient of an accepted handoff of a
+                        // fork-line save may sign fork turns under
+                        // the scheduled seat's role, exactly as on
+                        // the base line (Codex P2 on PR #8552).
+                        let leg_authorized = !rotation_authorized
+                            && acting.role == value.role
+                            && fork_body
+                                .participants
+                                .iter()
+                                .any(|participant| participant.author == author)
+                            && self.leg_recipients(value).contains(author);
+                        ensure!(
+                            rotation_authorized || leg_authorized,
+                            "a fork turn must be signed by the fork participant its fork-turn position names, under that participant's assigned role, or by an accepted handoff recipient under that seat role on the handed-off fork line"
+                        );
+                    }
+                    None => {
+                        let acting = &post_body.participants[usize::try_from(value.turn_index)
+                            .unwrap_or(usize::MAX)
+                            % post_body.participants.len()];
+                        let rotation_authorized =
+                            acting.author == author && acting.role == value.role;
+                        let leg_authorized = !rotation_authorized
+                            && acting.role == value.role
+                            && post_body
+                                .participants
+                                .iter()
+                                .any(|participant| participant.author == author)
+                            && self.leg_recipients(value).contains(author);
+                        ensure!(
+                            rotation_authorized || leg_authorized,
+                            "a game turn must be signed by the participant whose turn its index names, under that participant's assigned role, or by an accepted handoff recipient under that seat role on the handed-off line"
+                        );
+                    }
+                }
                 ensure!(
                     self.objects.values().any(|signed| matches!(
                         &signed.object,
@@ -892,12 +1129,209 @@ impl BoardGraph {
                             previous_body.game_post == value.game_post,
                             "a game turn's prior turn belongs to a different game"
                         );
+                        // Instance continuity: a base-line turn
+                        // builds only on base-line turns. Building
+                        // on a fork turn without naming the fork
+                        // would continue the fork instance's state
+                        // while silently switching authorization
+                        // back to the original roster; crossing
+                        // instances takes the explicit fork path
+                        // (the fork branch above validates fork
+                        // turns' predecessors against their fork)
+                        // (Codex P2 on PR #8552).
+                        ensure!(
+                            value.fork_ref.is_some() || previous_body.fork_ref.is_none(),
+                            "a base-line game turn cannot build on a fork turn: instance transitions use an explicit game fork"
+                        );
                         ensure!(
                             previous_body.turn_index.checked_add(1) == Some(value.turn_index),
                             "a game turn's index must follow its prior turn"
                         );
                     }
                 }
+            }
+            BoardObject::GameSavePoint(value) => {
+                let post = self.require_scoped(&value.game_post, &value.board, "game_post")?;
+                let BoardObject::GamePost(post_body) = &post.object else {
+                    unreachable!("require_scoped checked game post kind")
+                };
+                ensure!(
+                    value.package == post_body.package,
+                    "a game save point must name the game post's pinned package and version"
+                );
+                let frontier_object =
+                    self.require_scoped(&value.frontier, &value.board, "game_turn")?;
+                let BoardObject::GameTurn(frontier_body) = &frontier_object.object else {
+                    unreachable!("require_scoped checked game turn kind")
+                };
+                ensure!(
+                    frontier_body.game_post == value.game_post,
+                    "a game save point's frontier turn belongs to a different game"
+                );
+                // A save on a fork line is authorized against the
+                // fork's participants — the seating of the instance
+                // being saved — so a fork's players can save (and
+                // fork again) without an original participant's
+                // intervention; a base-line save uses the post's
+                // participants.
+                let save_participants: &[GameParticipant] =
+                    if let Some(fork_hash) = &frontier_body.fork_ref {
+                        let Some(fork_object) = self.get(fork_hash) else {
+                            bail!("a game save point's frontier fork is missing");
+                        };
+                        let BoardObject::GameFork(fork_body) = &fork_object.object else {
+                            bail!("a game save point's frontier fork is not a game fork object");
+                        };
+                        ensure!(
+                            fork_body.game_post == value.game_post,
+                            "a game save point's frontier fork belongs to a different game"
+                        );
+                        &fork_body.participants
+                    } else {
+                        &post_body.participants
+                    };
+                ensure!(
+                    save_participants
+                        .iter()
+                        .any(|participant| participant.author == author),
+                    "a game save point can be signed only by an assigned participant"
+                );
+            }
+            BoardObject::GameHandoff(value) => {
+                let post = self.require_scoped(&value.game_post, &value.board, "game_post")?;
+                let BoardObject::GamePost(post_body) = &post.object else {
+                    unreachable!("require_scoped checked game post kind")
+                };
+                let save_object =
+                    self.require_scoped(&value.save_point, &value.board, "game_save_point")?;
+                let BoardObject::GameSavePoint(save_body) = &save_object.object else {
+                    unreachable!("require_scoped checked game save point kind")
+                };
+                ensure!(
+                    save_body.game_post == value.game_post,
+                    "a game handoff's save point belongs to a different game"
+                );
+                ensure!(
+                    save_object.artifact.author == author,
+                    "a game handoff must be signed by the save point's author"
+                );
+                ensure!(
+                    value.recipient != author,
+                    "a game handoff cannot name its own author as recipient"
+                );
+                // The recipient must belong to the instance the
+                // save point belongs to — the fork's participants
+                // for a fork-line save, the post's for a base-line
+                // save — mirroring save-point authorization: a
+                // handoff into an instance the recipient cannot
+                // play in is meaningless, and a fork's own players
+                // must be reachable without the original game's
+                // roster (Codex P2 on PR #8552).
+                let frontier_object = self
+                    .objects
+                    .get(&save_body.frontier)
+                    .context("game handoff save point frontier reference is missing")?;
+                let BoardObject::GameTurn(frontier_body) = &frontier_object.object else {
+                    bail!("game handoff save point frontier reference is not a game turn");
+                };
+                let instance_participants: &[GameParticipant] = if let Some(fork_hash) =
+                    &frontier_body.fork_ref
+                {
+                    let Some(fork_object) = self.objects.get(fork_hash) else {
+                        bail!("game handoff save point frontier fork is missing");
+                    };
+                    let BoardObject::GameFork(fork_body) = &fork_object.object else {
+                        bail!("game handoff save point frontier fork is not a game fork object");
+                    };
+                    &fork_body.participants
+                } else {
+                    &post_body.participants
+                };
+                ensure!(
+                    instance_participants
+                        .iter()
+                        .any(|participant| participant.author == value.recipient),
+                    "a game handoff recipient must be an assigned participant of the line the save point belongs to"
+                );
+            }
+            BoardObject::GameHandoffAcceptance(value) => {
+                let handoff_object =
+                    self.require_scoped(&value.handoff, &value.board, "game_handoff")?;
+                let BoardObject::GameHandoff(handoff_body) = &handoff_object.object else {
+                    unreachable!("require_scoped checked game handoff kind")
+                };
+                ensure!(
+                    handoff_body.game_post == value.game_post,
+                    "a game handoff acceptance's handoff belongs to a different game"
+                );
+                ensure!(
+                    handoff_body.recipient == author,
+                    "a game handoff can be accepted only by its named recipient"
+                );
+            }
+            BoardObject::GameFork(value) => {
+                let save_object =
+                    self.require_scoped(&value.save_point, &value.board, "game_save_point")?;
+                let BoardObject::GameSavePoint(save_body) = &save_object.object else {
+                    unreachable!("require_scoped checked game save point kind")
+                };
+                ensure!(
+                    save_body.game_post == value.game_post,
+                    "a game fork's save point belongs to a different game"
+                );
+                // The fork continues the saved state, whose move
+                // count already fixes which seat moves next: the
+                // fork's assignments must preserve the saved
+                // instance's seat layout — the same number of
+                // seats, with the same role at each seat — or the
+                // absolute-index seating would attribute saved-state
+                // moves to the wrong role (a one-seat fork of a
+                // two-seat game would let its only participant sign
+                // every index while replay executes the moves under
+                // alternating seats). Authors may change freely;
+                // seats and their roles may not (Codex P1 on
+                // PR #8552).
+                let frontier_object = self
+                    .objects
+                    .get(&save_body.frontier)
+                    .context("game fork frontier reference is missing")?;
+                let BoardObject::GameTurn(frontier_body) = &frontier_object.object else {
+                    bail!("game fork frontier reference is not a game turn");
+                };
+                let source_participants: &[GameParticipant] = if let Some(source_fork_hash) =
+                    &frontier_body.fork_ref
+                {
+                    let source_fork_object = self
+                        .objects
+                        .get(source_fork_hash)
+                        .context("game fork source fork reference is missing")?;
+                    let BoardObject::GameFork(source_fork_body) = &source_fork_object.object else {
+                        bail!("game fork source fork reference is not a game fork object");
+                    };
+                    &source_fork_body.participants
+                } else {
+                    let post = self.require_scoped(&value.game_post, &value.board, "game_post")?;
+                    let BoardObject::GamePost(post_body) = &post.object else {
+                        unreachable!("require_scoped checked game post kind")
+                    };
+                    &post_body.participants
+                };
+                ensure!(
+                    value.participants.len() == source_participants.len()
+                        && value
+                            .participants
+                            .iter()
+                            .zip(source_participants.iter())
+                            .all(|(fork_seat, source_seat)| fork_seat.role == source_seat.role),
+                    "a game fork must preserve the saved instance's seat layout: the same number of seats with the same role at each seat (authors may change)"
+                );
+                ensure!(
+                    value
+                        .participants
+                        .iter()
+                        .any(|participant| participant.author == author),
+                    "a game fork must assign its own author a role in the fork instance"
+                );
             }
             BoardObject::Attachment(value) => {
                 self.require_board(&value.board)?;
@@ -1091,6 +1525,71 @@ impl BoardGraph {
         Ok(object)
     }
 
+    /// The recipients whose accepted handoffs authorize legs on a
+    /// prospective turn's chain, within the turn's own instance:
+    /// the union of the named recipients of every accepted handoff
+    /// whose save point's frontier lies on the turn's prior chain
+    /// and belongs to the same instance (the base line, or the
+    /// same fork) as the turn.
+    ///
+    /// The union — never only the deepest handoff — is what makes
+    /// authorization monotone in the evidence: accepting a later
+    /// handoff can add a recipient but can never revoke a leg an
+    /// earlier accepted handoff began, so the same signed set
+    /// converges to the same verdicts in any arrival order
+    /// (Codex P1 on PR #8552). Empty when no accepted handoff
+    /// touches the chain, in which case plain rotation authorizes
+    /// the turn.
+    fn leg_recipients(&self, turn: &GameTurn) -> BTreeSet<String> {
+        // The chain's hashes, frontier-first.
+        let mut chain = BTreeSet::new();
+        let mut cursor = turn.prev_turn.clone();
+        while let Some(hash) = cursor {
+            let Some(previous) = self.objects.get(&hash) else {
+                break;
+            };
+            let BoardObject::GameTurn(previous_body) = &previous.object else {
+                break;
+            };
+            chain.insert(hash);
+            cursor = previous_body.prev_turn.clone();
+        }
+        let mut recipients = BTreeSet::new();
+        if chain.is_empty() {
+            return recipients;
+        }
+        for (save_hash, save) in self.game_save_points(&turn.game_post) {
+            if !chain.contains(&save.frontier) {
+                continue;
+            }
+            // Instance scoping: only a handoff whose save frontier
+            // belongs to the prospective turn's own instance
+            // governs it. A fork's chain runs back through the
+            // source line behind its frontier, but the fork is an
+            // independent instance — a source-line handoff must
+            // not override the fork's own assignments (Codex P2
+            // on PR #8552). Base-line turns only ever chain
+            // base-line frontiers, so this is a no-op for them.
+            let Some(frontier_object) = self.objects.get(&save.frontier) else {
+                continue;
+            };
+            let BoardObject::GameTurn(frontier_body) = &frontier_object.object else {
+                continue;
+            };
+            if frontier_body.fork_ref != turn.fork_ref {
+                continue;
+            }
+            for (handoff_hash, handoff) in self.game_handoffs(&turn.game_post) {
+                if handoff.save_point == save_hash
+                    && !self.game_handoff_acceptances(&handoff_hash).is_empty()
+                {
+                    recipients.insert(handoff.recipient.clone());
+                }
+            }
+        }
+        recipients
+    }
+
     fn require_scoped(
         &self,
         reference: &ArtifactHash,
@@ -1196,6 +1695,109 @@ impl BoardGraph {
             .filter(|(hash, _)| !built_on.contains(hash))
             .map(|(hash, _)| hash)
             .collect()
+    }
+
+    /// The signed save points recorded for one game post, in
+    /// content-hash order.
+    pub fn game_save_points(
+        &self,
+        game_post: &ArtifactHash,
+    ) -> Vec<(ArtifactHash, &GameSavePoint)> {
+        self.objects
+            .iter()
+            .filter_map(|(hash, signed)| match &signed.object {
+                BoardObject::GameSavePoint(save) if &save.game_post == game_post => {
+                    Some((hash.clone(), save))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The signed handoffs recorded for one game post, in
+    /// content-hash order. Competing handoffs of one save point are
+    /// all present; see [`Self::game_main_line_head`] for how an
+    /// accepted one is selected.
+    pub fn game_handoffs(&self, game_post: &ArtifactHash) -> Vec<(ArtifactHash, &GameHandoff)> {
+        self.objects
+            .iter()
+            .filter_map(|(hash, signed)| match &signed.object {
+                BoardObject::GameHandoff(handoff) if &handoff.game_post == game_post => {
+                    Some((hash.clone(), handoff))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The signed acceptances recorded for one handoff, in
+    /// content-hash order.
+    pub fn game_handoff_acceptances(&self, handoff: &ArtifactHash) -> Vec<&SignedBoardObject> {
+        self.objects
+            .values()
+            .filter(|signed| {
+                matches!(
+                    &signed.object,
+                    BoardObject::GameHandoffAcceptance(acceptance)
+                        if &acceptance.handoff == handoff
+                )
+            })
+            .collect()
+    }
+
+    /// The signed game forks recorded for one game post, in
+    /// content-hash order. Concurrent forks citing the same save
+    /// point are all present.
+    pub fn game_forks(&self, game_post: &ArtifactHash) -> Vec<(ArtifactHash, &GameFork)> {
+        self.objects
+            .iter()
+            .filter_map(|(hash, signed)| match &signed.object {
+                BoardObject::GameFork(fork) if &fork.game_post == game_post => {
+                    Some((hash.clone(), fork))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The frontier of the social main line of one game: the
+    /// frontier turn of the furthest-along save point that an
+    /// accepted handoff cites.
+    ///
+    /// Handoffs are how a line changes hands socially: the saver
+    /// names a recipient, the recipient accepts, and that accepted
+    /// chain — not arrival order — selects the main line. Among
+    /// accepted save points the one whose frontier has the highest
+    /// turn index wins; ties break to the greater frontier hash,
+    /// the same tie-break current-rules selection documents.
+    /// Unaccepted handoffs and their save points stay in the graph
+    /// as alternatives; this query only reads. `None` when no
+    /// handoff of this game has been accepted.
+    pub fn game_main_line_head(&self, game_post: &ArtifactHash) -> Option<ArtifactHash> {
+        let mut best: Option<(u64, ArtifactHash)> = None;
+        for (save_hash, save) in self.game_save_points(game_post) {
+            let accepted = self
+                .game_handoffs(game_post)
+                .iter()
+                .any(|(handoff_hash, handoff)| {
+                    handoff.save_point == save_hash
+                        && !self.game_handoff_acceptances(handoff_hash).is_empty()
+                });
+            if !accepted {
+                continue;
+            }
+            let Some(frontier_object) = self.objects.get(&save.frontier) else {
+                continue;
+            };
+            let BoardObject::GameTurn(frontier_body) = &frontier_object.object else {
+                continue;
+            };
+            let candidate = (frontier_body.turn_index, save.frontier.clone());
+            if best.as_ref().map_or(true, |current| candidate > *current) {
+                best = Some(candidate);
+            }
+        }
+        best.map(|(_, frontier)| frontier)
     }
 
     /// One lineage of a game, from its opening turn to `head`, in play
@@ -1325,13 +1927,51 @@ impl BoardGraph {
                 .objects
                 .get(hash)
                 .context("game lineage reference is missing")?;
-            let position = post_body
-                .participants
-                .iter()
-                .position(|participant| {
-                    participant.author == signed.artifact.author && participant.role == turn.role
-                })
-                .context("game turn signer is not assigned in the game post")?;
+            let fork_participants;
+            let participants: &[GameParticipant] = match &turn.fork_ref {
+                Some(fork_hash) => {
+                    let fork_object = self
+                        .objects
+                        .get(fork_hash)
+                        .context("game fork reference is missing")?;
+                    let BoardObject::GameFork(fork_body) = &fork_object.object else {
+                        bail!("game fork reference is not a game fork object");
+                    };
+                    fork_participants = fork_body.participants.clone();
+                    &fork_participants
+                }
+                None => &post_body.participants,
+            };
+            // The participant ID the package executes under. For a
+            // handoff leg turn — on the base line or inside a fork
+            // instance — this is the scheduled seat
+            // (the seat the turn's index names in rotation): the
+            // recipient substitutes into that seat, so resolving by
+            // the recipient's own assignment — or by first role
+            // match, ambiguous when participants share a role —
+            // would execute the move under the wrong player
+            // (Codex P2 on PR #8552). Ordinary turns resolve to the
+            // same seat through their signer, so the leg lookup
+            // only runs when the direct resolution is not the seat.
+            let seat = usize::try_from(turn.turn_index).unwrap_or(usize::MAX) % participants.len();
+            let direct = participants.iter().position(|participant| {
+                participant.author == signed.artifact.author && participant.role == turn.role
+            });
+            let position = match direct {
+                Some(found) if found == seat => found,
+                _ if participants[seat].role == turn.role
+                    && self.leg_recipients(turn).contains(&signed.artifact.author) =>
+                {
+                    seat
+                }
+                Some(found) => found,
+                None if turn.fork_ref.is_some() => {
+                    bail!("game turn signer is not assigned in the fork instance");
+                }
+                None => {
+                    bail!("game turn signer is not assigned in the game post");
+                }
+            };
             let participant = u64::try_from(position + 1)?;
             let action_bytes = match &turn.action {
                 serde_json::Value::String(text) => text.clone().into_bytes(),
@@ -1465,12 +2105,59 @@ impl BoardGraph {
                 BoardObject::GameChallengeAcceptance(body) => {
                     vec![body.board.clone(), body.game_post.clone()]
                 }
+                BoardObject::GameSavePoint(body) => vec![
+                    body.board.clone(),
+                    body.game_post.clone(),
+                    body.frontier.clone(),
+                ],
+                BoardObject::GameHandoff(body) => vec![
+                    body.board.clone(),
+                    body.game_post.clone(),
+                    body.save_point.clone(),
+                ],
+                BoardObject::GameHandoffAcceptance(body) => vec![
+                    body.board.clone(),
+                    body.game_post.clone(),
+                    body.handoff.clone(),
+                ],
+                BoardObject::GameFork(body) => vec![
+                    body.board.clone(),
+                    body.game_post.clone(),
+                    body.save_point.clone(),
+                ],
                 BoardObject::GameTurn(body) => {
                     let mut dependencies = vec![body.board.clone(), body.game_post.clone()];
                     dependencies.extend(body.prev_turn.iter().cloned());
+                    dependencies.extend(body.fork_ref.iter().cloned());
                     dependencies.extend(self.objects.iter().filter_map(|(hash, signed)| {
                         match &signed.object {
                             BoardObject::GameChallengeAcceptance(acceptance)
+                                if acceptance.game_post == body.game_post =>
+                            {
+                                Some(hash.clone())
+                            }
+                            _ => None,
+                        }
+                    }));
+                    // A turn on a handed-off line is authorized by
+                    // the game's save points, handoffs, and handoff
+                    // acceptances; without them a replica holding
+                    // the turn could not re-verify it (Codex P2 on
+                    // PR #8552). They travel with every turn of the
+                    // game, like its challenge acceptances.
+                    dependencies.extend(self.objects.iter().filter_map(|(hash, signed)| {
+                        match &signed.object {
+                            BoardObject::GameSavePoint(save)
+                                if save.game_post == body.game_post =>
+                            {
+                                Some(hash.clone())
+                            }
+                            BoardObject::GameHandoff(handoff)
+                                if handoff.game_post == body.game_post =>
+                            {
+                                Some(hash.clone())
+                            }
+                            BoardObject::GameHandoffAcceptance(acceptance)
                                 if acceptance.game_post == body.game_post =>
                             {
                                 Some(hash.clone())
@@ -2144,6 +2831,26 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn validate_game_participants(name: &str, participants: &[GameParticipant]) -> Result<()> {
+    ensure!(
+        !participants.is_empty() && participants.len() <= MAX_GAME_PARTICIPANTS,
+        "a {name} assigns 1 to {MAX_GAME_PARTICIPANTS} participants"
+    );
+    let mut participant_roles = BTreeSet::new();
+    for participant in participants {
+        ensure!(
+            is_public_key(&participant.author),
+            "game participant is not a canonical Ed25519 key"
+        );
+        validate_game_role(&participant.role)?;
+        ensure!(
+            participant_roles.insert((participant.author.as_str(), participant.role.as_str())),
+            "duplicate game participant (author, role) assignment"
+        );
+    }
+    Ok(())
 }
 
 fn validate_game_data(name: &str, value: &serde_json::Value) -> Result<()> {
@@ -4256,6 +4963,7 @@ mod tests {
                 role: role.to_owned(),
                 turn_index,
                 prev_turn,
+                fork_ref: None,
                 action: serde_json::Value::String(action.to_owned()),
             }),
         )
@@ -4663,6 +5371,1562 @@ mod tests {
             );
         }
         (graph, game_hash, prev.unwrap())
+    }
+
+    fn game_save_point_object(
+        key: &SigningKey,
+        board: ArtifactHash,
+        game_post: ArtifactHash,
+        package: GamePackageRef,
+        frontier: ArtifactHash,
+        state_hash: ArtifactHash,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::GameSavePoint(GameSavePoint {
+                board,
+                game_post,
+                package,
+                frontier,
+                state_hash,
+            }),
+        )
+        .unwrap()
+    }
+
+    fn game_handoff_object(
+        key: &SigningKey,
+        board: ArtifactHash,
+        game_post: ArtifactHash,
+        save_point: ArtifactHash,
+        recipient: String,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::GameHandoff(GameHandoff {
+                board,
+                game_post,
+                save_point,
+                recipient,
+                terms: serde_json::json!({"mode": "succession"}),
+            }),
+        )
+        .unwrap()
+    }
+
+    fn game_handoff_acceptance_object(
+        key: &SigningKey,
+        board: ArtifactHash,
+        game_post: ArtifactHash,
+        handoff: ArtifactHash,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::GameHandoffAcceptance(GameHandoffAcceptance {
+                board,
+                game_post,
+                handoff,
+            }),
+        )
+        .unwrap()
+    }
+
+    fn game_fork_object(
+        key: &SigningKey,
+        board: ArtifactHash,
+        game_post: ArtifactHash,
+        save_point: ArtifactHash,
+        participants: Vec<GameParticipant>,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::GameFork(GameFork {
+                board,
+                game_post,
+                save_point,
+                participants,
+            }),
+        )
+        .unwrap()
+    }
+
+    fn game_fork_turn_object(
+        key: &SigningKey,
+        board: ArtifactHash,
+        game_post: ArtifactHash,
+        fork_ref: ArtifactHash,
+        role: &str,
+        turn_index: u64,
+        prev_turn: Option<ArtifactHash>,
+        action: &str,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::GameTurn(GameTurn {
+                board,
+                game_post,
+                role: role.to_owned(),
+                turn_index,
+                prev_turn,
+                fork_ref: Some(fork_ref),
+                action: serde_json::Value::String(action.to_owned()),
+            }),
+        )
+        .unwrap()
+    }
+
+    fn fork_participants(first: &SigningKey, second: &SigningKey) -> Vec<GameParticipant> {
+        vec![
+            GameParticipant {
+                author: hex_encode(&first.verifying_key().to_bytes()),
+                role: "x".to_owned(),
+            },
+            GameParticipant {
+                author: hex_encode(&second.verifying_key().to_bytes()),
+                role: "o".to_owned(),
+            },
+        ]
+    }
+
+    /// Build a three-participant game (roles x / o / reserve) with an
+    /// accepted challenge and two turns played (x, then o), returning
+    /// the graph, the board and game hashes, both turn hashes, the
+    /// game post body, and the three participant keys.
+    fn three_participant_game() -> (
+        BoardGraph,
+        ArtifactHash,
+        ArtifactHash,
+        ArtifactHash,
+        ArtifactHash,
+        GamePost,
+        SigningKey,
+        SigningKey,
+        SigningKey,
+    ) {
+        let creator = key(81);
+        let opponent = key(82);
+        let third = key(83);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let participants = vec![
+            GameParticipant {
+                author: hex_encode(&creator.verifying_key().to_bytes()),
+                role: "x".to_owned(),
+            },
+            GameParticipant {
+                author: hex_encode(&opponent.verifying_key().to_bytes()),
+                role: "o".to_owned(),
+            },
+            GameParticipant {
+                author: hex_encode(&third.verifying_key().to_bytes()),
+                role: "reserve".to_owned(),
+            },
+        ];
+        let post_body = game_post_body(
+            root_hash.clone(),
+            "0.1.0".to_owned(),
+            serde_json::json!({"board_size": 3}),
+            participants,
+            serde_json::json!("---------"),
+        );
+        let game_hash = graph
+            .insert(
+                SignedBoardObject::sign(&creator, 1, "", BoardObject::GamePost(post_body.clone()))
+                    .unwrap(),
+            )
+            .unwrap();
+        graph
+            .insert(game_acceptance_object(
+                &opponent,
+                1,
+                root_hash.clone(),
+                game_hash.clone(),
+            ))
+            .unwrap();
+        let turn0 = graph
+            .insert(game_turn_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                "x",
+                0,
+                None,
+                "0",
+            ))
+            .unwrap();
+        let turn1 = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "o",
+                1,
+                Some(turn0.clone()),
+                "4",
+            ))
+            .unwrap();
+        (
+            graph, root_hash, game_hash, turn0, turn1, post_body, creator, opponent, third,
+        )
+    }
+
+    #[test]
+    fn game_save_handoff_accept_and_continue_selects_main_line() {
+        // Oracle: issue #6161 acceptance — a tic-tac-toe line can be
+        // saved, handed to a named recipient, accepted by that
+        // recipient, and continued; the accepted chain selects the
+        // social main line and handoff alternatives are kept.
+        let (mut graph, root_hash, game_hash, _turn0, turn1, post_body, creator, opponent, third) =
+            three_participant_game();
+        let state_hash = ArtifactHash::new("a".repeat(64)).unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                post_body.package.clone(),
+                turn1.clone(),
+                state_hash,
+            ))
+            .unwrap();
+        assert_eq!(graph.game_save_points(&game_hash).len(), 1);
+
+        // The saver hands the line to the third participant, and —
+        // as a competing alternative that must be kept — to the
+        // opponent as well.
+        let handoff_hash = graph
+            .insert(game_handoff_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                hex_encode(&third.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        graph
+            .insert(game_handoff_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                hex_encode(&opponent.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        assert_eq!(graph.game_handoffs(&game_hash).len(), 2);
+        assert_eq!(graph.game_main_line_head(&game_hash), None);
+
+        // Only the accepted handoff selects the main line.
+        graph
+            .insert(game_handoff_acceptance_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                handoff_hash.clone(),
+            ))
+            .unwrap();
+        assert_eq!(graph.game_handoff_acceptances(&handoff_hash).len(), 1);
+        assert_eq!(graph.game_main_line_head(&game_hash), Some(turn1.clone()));
+
+        // The recipient continues the line: turn 2 belongs to the
+        // third participant by rotation.
+        let turn2 = graph
+            .insert(game_turn_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                "reserve",
+                2,
+                Some(turn1),
+                "1",
+            ))
+            .unwrap();
+        assert_eq!(graph.game_heads(&game_hash), vec![turn2]);
+    }
+
+    #[test]
+    fn game_save_point_handoff_and_fork_rejections() {
+        // Oracle: issue #6161 acceptance — bad signer, package /
+        // version mismatch, bad frontier, and unresolvable
+        // save-point references are each rejected.
+        let (mut graph, root_hash, game_hash, _turn0, turn1, post_body, creator, opponent, third) =
+            three_participant_game();
+        let outsider = key(89);
+        let state_hash = ArtifactHash::new("a".repeat(64)).unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                post_body.package.clone(),
+                turn1.clone(),
+                state_hash.clone(),
+            ))
+            .unwrap();
+
+        // Bad signer: a non-participant cannot save the line.
+        assert!(
+            graph
+                .insert(game_save_point_object(
+                    &outsider,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    post_body.package.clone(),
+                    turn1.clone(),
+                    ArtifactHash::new("b".repeat(64)).unwrap(),
+                ))
+                .is_err()
+        );
+
+        // Package mismatch: a different version is a different game.
+        let err = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                GamePackageRef {
+                    hash: post_body.package.hash.clone(),
+                    version: "9.9.9".to_owned(),
+                },
+                turn1.clone(),
+                ArtifactHash::new("b".repeat(64)).unwrap(),
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("pinned package"), "{err}");
+
+        // Package mismatch: a different package hash, same version.
+        assert!(
+            graph
+                .insert(game_save_point_object(
+                    &creator,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    GamePackageRef {
+                        hash: ArtifactHash::new("b".repeat(64)).unwrap(),
+                        version: post_body.package.version.clone(),
+                    },
+                    turn1.clone(),
+                    ArtifactHash::new("b".repeat(64)).unwrap(),
+                ))
+                .is_err()
+        );
+
+        // Bad frontier: the cited frontier is not a game turn.
+        assert!(
+            graph
+                .insert(game_save_point_object(
+                    &creator,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    post_body.package.clone(),
+                    game_hash.clone(),
+                    ArtifactHash::new("b".repeat(64)).unwrap(),
+                ))
+                .is_err()
+        );
+
+        // Bad frontier: the cited frontier does not resolve at all.
+        assert!(
+            graph
+                .insert(game_save_point_object(
+                    &creator,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    post_body.package.clone(),
+                    ArtifactHash::new("c".repeat(64)).unwrap(),
+                    ArtifactHash::new("b".repeat(64)).unwrap(),
+                ))
+                .is_err()
+        );
+
+        // A handoff must be signed by the save point's author.
+        assert!(
+            graph
+                .insert(game_handoff_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    save_hash.clone(),
+                    hex_encode(&third.verifying_key().to_bytes()),
+                ))
+                .is_err()
+        );
+
+        // A handoff citing an unresolvable save point is rejected.
+        assert!(
+            graph
+                .insert(game_handoff_object(
+                    &creator,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    ArtifactHash::new("d".repeat(64)).unwrap(),
+                    hex_encode(&third.verifying_key().to_bytes()),
+                ))
+                .is_err()
+        );
+
+        // A valid handoff, accepted by the wrong participant, is
+        // rejected: only the named recipient may accept.
+        let handoff_hash = graph
+            .insert(game_handoff_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                hex_encode(&third.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        assert!(
+            graph
+                .insert(game_handoff_acceptance_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    handoff_hash,
+                ))
+                .is_err()
+        );
+
+        // A fork citing an unresolvable save point is rejected.
+        assert!(
+            graph
+                .insert(game_fork_object(
+                    &outsider,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    ArtifactHash::new("f".repeat(64)).unwrap(),
+                    fork_participants(&outsider, &creator),
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn game_fork_from_save_point_replays_both_lines_independently() {
+        // Oracle: issue #6161 acceptance + design #2054 section 4
+        // and Codex P1 on PR #8552 — a third author can fork from a
+        // save point into an alternate instance with its own
+        // participant resolution; both source and fork replay
+        // independently with attribution intact; valid concurrent
+        // forks remain visible.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0", "4"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let third = key(73);
+        let fourth = key(74);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+
+        // The saver records the real replayed state hash at the
+        // frontier, recomputed from the same lineage and bytes.
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+
+        // Two third authors fork from the same save point, each
+        // seating an instance of their own; both records visible.
+        let fork_hash = graph
+            .insert(game_fork_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                fork_participants(&third, &opponent),
+            ))
+            .unwrap();
+        graph
+            .insert(game_fork_object(
+                &fourth,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                fork_participants(&fourth, &opponent),
+            ))
+            .unwrap();
+        let forks = graph.game_forks(&game_hash);
+        assert_eq!(forks.len(), 2);
+        assert!(forks.iter().all(|(_, fork)| fork.save_point == save_hash));
+
+        // The forker cannot sign turns in the base line, and a fork
+        // turn signed out of the fork's own rotation is rejected.
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &third,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    "x",
+                    2,
+                    Some(head.clone()),
+                    "1",
+                ))
+                .is_err()
+        );
+        assert!(
+            graph
+                .insert(game_fork_turn_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    fork_hash.clone(),
+                    "o",
+                    2,
+                    Some(head.clone()),
+                    "3",
+                ))
+                .is_err()
+        );
+
+        // The fork instance proceeds under its own participants:
+        // fork position 0 is the forker (as x), position 1 the
+        // opponent (as o).
+        let fork_turn1 = graph
+            .insert(game_fork_turn_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash.clone(),
+                "x",
+                2,
+                Some(head.clone()),
+                "1",
+            ))
+            .unwrap();
+        let fork_head = graph
+            .insert(game_fork_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash.clone(),
+                "o",
+                3,
+                Some(fork_turn1),
+                "8",
+            ))
+            .unwrap();
+
+        // The source line continues in parallel under the game
+        // post's own rotation, unchanged by the fork.
+        let source_head = graph
+            .insert(game_turn_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                "x",
+                2,
+                Some(head),
+                "2",
+            ))
+            .unwrap();
+        let heads = graph.game_heads(&game_hash);
+        assert_eq!(heads.len(), 2);
+        assert!(heads.contains(&fork_head) && heads.contains(&source_head));
+
+        // Both lines replay independently and deterministically,
+        // to different states.
+        let fork_state = graph
+            .replay_game_lineage(&game_hash, &fork_head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let source_state = graph
+            .replay_game_lineage(&game_hash, &source_head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        assert_ne!(fork_state, source_state);
+        assert_eq!(
+            graph
+                .replay_game_lineage(&game_hash, &fork_head, TIC_TAC_TOE_WASM)
+                .unwrap(),
+            fork_state
+        );
+
+        // Attribution is intact: the fork lineage is the source
+        // line's signed turns plus the fork instance's turns, and
+        // the fork record cites a save point authored by the
+        // source player.
+        let lineage = graph.game_lineage(&game_hash, &fork_head).unwrap();
+        let authors: Vec<String> = lineage
+            .iter()
+            .map(|(hash, _)| graph.get(hash).unwrap().artifact.author.clone())
+            .collect();
+        assert_eq!(
+            authors,
+            vec![
+                hex_encode(&creator.verifying_key().to_bytes()),
+                hex_encode(&opponent.verifying_key().to_bytes()),
+                hex_encode(&third.verifying_key().to_bytes()),
+                hex_encode(&opponent.verifying_key().to_bytes()),
+            ]
+        );
+        assert_eq!(
+            graph.get(&save_hash).unwrap().artifact.author,
+            hex_encode(&creator.verifying_key().to_bytes())
+        );
+    }
+
+    #[test]
+    fn game_handoff_acceptance_begins_the_recipients_leg() {
+        // Oracle: design #2054 section 4 + Codex P1 on PR #8552 —
+        // after turn 1 of a two-player game the creator hands the
+        // save to the opponent; once the opponent accepts, the
+        // opponent begins their leg: they may sign the next turn
+        // under the seat role rotation assigns (here the creator's
+        // x seat), and the line replays with the recipient
+        // substituted into that seat. Before the acceptance, the
+        // same signature is rejected by rotation alone.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0", "4"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+
+        // Before any handoff, the opponent signing turn 2 under
+        // the creator's seat role is rejected.
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    "x",
+                    2,
+                    Some(head.clone()),
+                    "1",
+                ))
+                .is_err()
+        );
+
+        let handoff_hash = graph
+            .insert(game_handoff_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                hex_encode(&opponent.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        graph
+            .insert(game_handoff_acceptance_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                handoff_hash,
+            ))
+            .unwrap();
+
+        // The leg plays the seat, not the recipient's old seat:
+        // under their own role the signature is still rejected.
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    "o",
+                    2,
+                    Some(head.clone()),
+                    "1",
+                ))
+                .is_err()
+        );
+        let leg_head = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "x",
+                2,
+                Some(head.clone()),
+                "1",
+            ))
+            .unwrap();
+
+        // The leg replays deterministically with the recipient in
+        // the seat, and the accepted save's frontier is the social
+        // main line's head.
+        let leg_state = graph
+            .replay_game_lineage(&game_hash, &leg_head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        assert_eq!(
+            graph
+                .replay_game_lineage(&game_hash, &leg_head, TIC_TAC_TOE_WASM)
+                .unwrap(),
+            leg_state
+        );
+        assert_eq!(graph.game_main_line_head(&game_hash), Some(head));
+    }
+
+    #[test]
+    fn game_handoff_chain_keeps_earlier_legs_authorized() {
+        // Oracle: Codex P1 on PR #8552 — authorization is monotone
+        // in the evidence. A hands the turn-1 save to B; B legs
+        // turn 2 (x seat) and plays turn 3 (own o seat, rotation),
+        // saves turn 2, and hands that save back to A, who accepts.
+        // B's turn 4 under the x seat must stay authorized by the
+        // earlier handoff even though a deeper accepted save now
+        // names A — otherwise the same signed set would verdict
+        // differently by arrival order.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0", "4"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save1 = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package.clone(),
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let handoff1 = graph
+            .insert(game_handoff_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                save1,
+                hex_encode(&opponent.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        graph
+            .insert(game_handoff_acceptance_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                handoff1,
+            ))
+            .unwrap();
+        let turn2 = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "x",
+                2,
+                Some(head),
+                "1",
+            ))
+            .unwrap();
+        // B saves turn 2 and hands that save back to A; A accepts.
+        let snapshot2 = graph
+            .replay_game_lineage(&game_hash, &turn2, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save2 = graph
+            .insert(game_save_point_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                turn2.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot2)).unwrap(),
+            ))
+            .unwrap();
+        let handoff2 = graph
+            .insert(game_handoff_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                save2,
+                hex_encode(&creator.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        graph
+            .insert(game_handoff_acceptance_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                handoff2,
+            ))
+            .unwrap();
+        let turn3 = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "o",
+                3,
+                Some(turn2),
+                "8",
+            ))
+            .unwrap();
+        // The contested turn: B signs turn 4 under the x seat,
+        // authorized by the FIRST handoff; the deeper accepted
+        // save naming A must not revoke it.
+        let turn4 = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "x",
+                4,
+                Some(turn3),
+                "2",
+            ))
+            .unwrap();
+        graph
+            .replay_game_lineage(&game_hash, &turn4, TIC_TAC_TOE_WASM)
+            .unwrap();
+    }
+
+    #[test]
+    fn game_fork_preserves_the_saved_states_seat_phase() {
+        // Oracle: Codex P1 on PR #8552 — a save taken mid-rotation
+        // (after turn 0: X has moved, the saved state says O moves
+        // next) forks with seating phase-aligned to the absolute
+        // turn index: fork turn 1 belongs to fork participant 1
+        // (the o seat), not to a reset participant 0.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let third = key(73);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let fork_hash = graph
+            .insert(game_fork_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash,
+                fork_participants(&third, &opponent),
+            ))
+            .unwrap();
+        // Turn 1 is the o seat by absolute phase: the forker
+        // signing it as x is rejected even though the forker
+        // holds position 0 of the fork's own list.
+        assert!(
+            graph
+                .insert(game_fork_turn_object(
+                    &third,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    fork_hash.clone(),
+                    "x",
+                    1,
+                    Some(head.clone()),
+                    "1",
+                ))
+                .is_err()
+        );
+        let fork_turn = graph
+            .insert(game_fork_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash.clone(),
+                "o",
+                1,
+                Some(head),
+                "4",
+            ))
+            .unwrap();
+        // Turn 2 returns to position 0: the forker, as x.
+        let fork_head = graph
+            .insert(game_fork_turn_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash,
+                "x",
+                2,
+                Some(fork_turn),
+                "1",
+            ))
+            .unwrap();
+        let state = graph
+            .replay_game_lineage(&game_hash, &fork_head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        assert_eq!(
+            graph
+                .replay_game_lineage(&game_hash, &fork_head, TIC_TAC_TOE_WASM)
+                .unwrap(),
+            state
+        );
+    }
+
+    #[test]
+    fn game_save_point_on_a_fork_line_uses_fork_participants() {
+        // Oracle: Codex P2 on PR #8552 — a fork's own participants
+        // can save their continuation (so it can be forked again)
+        // without an original participant; conversely a base-line
+        // participant who holds no fork seat cannot save the fork
+        // line.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let third = key(73);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package.clone(),
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let fork_hash = graph
+            .insert(game_fork_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash,
+                fork_participants(&third, &opponent),
+            ))
+            .unwrap();
+        let fork_turn = graph
+            .insert(game_fork_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash.clone(),
+                "o",
+                1,
+                Some(head),
+                "4",
+            ))
+            .unwrap();
+        let fork_head = graph
+            .insert(game_fork_turn_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash,
+                "x",
+                2,
+                Some(fork_turn),
+                "1",
+            ))
+            .unwrap();
+        let fork_snapshot = graph
+            .replay_game_lineage(&game_hash, &fork_head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let fork_state = ArtifactHash::new(sha256_hex(&fork_snapshot)).unwrap();
+        // The fork's own participant saves the fork line.
+        graph
+            .insert(game_save_point_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                package.clone(),
+                fork_head.clone(),
+                fork_state.clone(),
+            ))
+            .unwrap();
+        // The base-line creator holds no fork seat: rejected.
+        assert!(
+            graph
+                .insert(game_save_point_object(
+                    &creator,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    package,
+                    fork_head,
+                    fork_state,
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn game_fork_must_preserve_the_saved_seat_layout() {
+        // Oracle: Codex P1 on PR #8552 — a fork that changes the
+        // seat count defeats phase-aligned seating: a one-seat
+        // fork [C:x] of a two-seat game would authorize C at every
+        // index while replay executes odd moves as O. Fork
+        // assignments must keep the saved instance's seats and
+        // per-seat roles; only authors may change.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0"]);
+        let creator = key(71);
+        let third = key(73);
+        let fourth = key(74);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                head,
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let layout = fork_participants(&third, &fourth);
+        // One seat instead of two: rejected.
+        assert!(
+            graph
+                .insert(game_fork_object(
+                    &third,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    save_hash.clone(),
+                    layout.iter().take(1).cloned().collect(),
+                ))
+                .is_err()
+        );
+        // Two seats, roles swapped between seats: rejected.
+        let mut swapped = layout.clone();
+        swapped.reverse();
+        assert!(
+            graph
+                .insert(game_fork_object(
+                    &fourth,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    save_hash.clone(),
+                    swapped,
+                ))
+                .is_err()
+        );
+        // Same seats and roles, different authors: accepted.
+        graph
+            .insert(game_fork_object(
+                &third, root_hash, game_hash, save_hash, layout,
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn game_handoff_leg_inside_a_fork_instance() {
+        // Oracle: Codex P2 on PR #8552 — accepted handoffs govern
+        // fork instances too. Fork [C:x, B:o] (B also an original
+        // participant): B plays fork turn 1, C saves it, hands the
+        // save to B; once B accepts, B may sign fork turn 2 under
+        // the x seat, and replay executes it as X (participant 1).
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let third = key(73);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package.clone(),
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let fork_hash = graph
+            .insert(game_fork_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash,
+                fork_participants(&third, &opponent),
+            ))
+            .unwrap();
+        let fork_turn1 = graph
+            .insert(game_fork_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash.clone(),
+                "o",
+                1,
+                Some(head),
+                "4",
+            ))
+            .unwrap();
+        let fork_snapshot = graph
+            .replay_game_lineage(&game_hash, &fork_turn1, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let fork_save = graph
+            .insert(game_save_point_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                package.clone(),
+                fork_turn1.clone(),
+                ArtifactHash::new(sha256_hex(&fork_snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let handoff = graph
+            .insert(game_handoff_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_save,
+                hex_encode(&opponent.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        // Before acceptance the leg does not exist: B signing the
+        // x seat is rejected.
+        assert!(
+            graph
+                .insert(game_fork_turn_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    fork_hash.clone(),
+                    "x",
+                    2,
+                    Some(fork_turn1.clone()),
+                    "1",
+                ))
+                .is_err()
+        );
+        graph
+            .insert(game_handoff_acceptance_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                handoff,
+            ))
+            .unwrap();
+        let fork_turn2 = graph
+            .insert(game_fork_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash,
+                "x",
+                2,
+                Some(fork_turn1),
+                "1",
+            ))
+            .unwrap();
+        graph
+            .replay_game_lineage(&game_hash, &fork_turn2, TIC_TAC_TOE_WASM)
+            .unwrap();
+    }
+
+    #[test]
+    fn game_handoff_recipient_resolves_against_the_saved_instance() {
+        // Oracle: Codex P2 on PR #8552 — for an independently
+        // seated fork [C:x, D:o] of [A:x, B:o], C can hand a
+        // fork-line save to D (a fork participant), while B — an
+        // original participant with no fork seat — is not a valid
+        // recipient for that save; symmetrically a base-line save
+        // cannot be handed to a non-participant of the post.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let third = key(73);
+        let fourth = key(74);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package.clone(),
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        // Base-line save to a non-participant of the post: rejected.
+        assert!(
+            graph
+                .insert(game_handoff_object(
+                    &creator,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    save_hash.clone(),
+                    hex_encode(&third.verifying_key().to_bytes()),
+                ))
+                .is_err()
+        );
+        let fork_hash = graph
+            .insert(game_fork_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash,
+                fork_participants(&third, &fourth),
+            ))
+            .unwrap();
+        let fork_turn = graph
+            .insert(game_fork_turn_object(
+                &fourth,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash.clone(),
+                "o",
+                1,
+                Some(head),
+                "4",
+            ))
+            .unwrap();
+        let fork_snapshot = graph
+            .replay_game_lineage(&game_hash, &fork_turn, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let fork_save = graph
+            .insert(game_save_point_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                fork_turn,
+                ArtifactHash::new(sha256_hex(&fork_snapshot)).unwrap(),
+            ))
+            .unwrap();
+        // Fork-line save to the fork's other participant: accepted.
+        graph
+            .insert(game_handoff_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_save.clone(),
+                hex_encode(&fourth.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        // Fork-line save to an original participant with no fork
+        // seat: rejected.
+        assert!(
+            graph
+                .insert(game_handoff_object(
+                    &third,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    fork_save,
+                    hex_encode(&opponent.verifying_key().to_bytes()),
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn game_source_line_handoff_does_not_govern_a_fork() {
+        // Oracle: Codex P2 on PR #8552 — instance scoping of leg
+        // authorization. A-to-B handoff accepted on the source
+        // line; a fork [C:x, B:o] cites that save. B must not sign
+        // fork turn 2 as X on the source handoff's authority: the
+        // fork seat belongs to C, and the fork has no handoff of
+        // its own.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0", "4"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let third = key(73);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let handoff = graph
+            .insert(game_handoff_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                hex_encode(&opponent.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        graph
+            .insert(game_handoff_acceptance_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                handoff,
+            ))
+            .unwrap();
+        let fork_hash = graph
+            .insert(game_fork_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash,
+                fork_participants(&third, &opponent),
+            ))
+            .unwrap();
+        assert!(
+            graph
+                .insert(game_fork_turn_object(
+                    &opponent,
+                    root_hash.clone(),
+                    game_hash.clone(),
+                    fork_hash.clone(),
+                    "x",
+                    2,
+                    Some(head.clone()),
+                    "1",
+                ))
+                .is_err()
+        );
+        let fork_turn = graph
+            .insert(game_fork_turn_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash,
+                "x",
+                2,
+                Some(head),
+                "1",
+            ))
+            .unwrap();
+        graph
+            .replay_game_lineage(&game_hash, &fork_turn, TIC_TAC_TOE_WASM)
+            .unwrap();
+    }
+
+    #[test]
+    fn game_base_turn_cannot_build_on_a_fork_turn() {
+        // Oracle: Codex P2 on PR #8552 — omitting fork_ref must
+        // not let an original participant append a base-line turn
+        // directly onto a fork turn, continuing the fork's state
+        // under the original roster without an explicit fork or
+        // handoff.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0"]);
+        let creator = key(71);
+        let third = key(73);
+        let fourth = key(74);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let fork_hash = graph
+            .insert(game_fork_object(
+                &third,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash,
+                fork_participants(&third, &fourth),
+            ))
+            .unwrap();
+        let fork_turn = graph
+            .insert(game_fork_turn_object(
+                &fourth,
+                root_hash.clone(),
+                game_hash.clone(),
+                fork_hash,
+                "o",
+                1,
+                Some(head),
+                "4",
+            ))
+            .unwrap();
+        // The original creator appending turn 2 as a base-line
+        // turn on top of the fork turn: rejected.
+        assert!(
+            graph
+                .insert(game_turn_object(
+                    &creator,
+                    root_hash,
+                    game_hash,
+                    "x",
+                    2,
+                    Some(fork_turn),
+                    "1",
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn game_leg_evidence_travels_with_a_board_fork_citation() {
+        // Oracle: Codex P2 on PR #8552 — a BoardFork citing a
+        // handoff-authorized turn in its source frontier pulls the
+        // save point, handoff, and handoff acceptance that
+        // authorize it into the fork board's replication set, so
+        // replication into a fresh graph can insert the cited
+        // turn instead of stalling on missing evidence.
+        let (mut graph, game_hash, head) = wasm_game_lineage(&["0", "4"]);
+        let creator = key(71);
+        let opponent = key(72);
+        let forker = key(93);
+        let BoardObject::GamePost(post_body) = &graph.get(&game_hash).unwrap().object else {
+            panic!("game post body expected");
+        };
+        let root_hash = post_body.board.clone();
+        let package = post_body.package.clone();
+        let snapshot = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap();
+        let save_hash = graph
+            .insert(game_save_point_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                package,
+                head.clone(),
+                ArtifactHash::new(sha256_hex(&snapshot)).unwrap(),
+            ))
+            .unwrap();
+        let handoff_hash = graph
+            .insert(game_handoff_object(
+                &creator,
+                root_hash.clone(),
+                game_hash.clone(),
+                save_hash.clone(),
+                hex_encode(&opponent.verifying_key().to_bytes()),
+            ))
+            .unwrap();
+        let acceptance_hash = graph
+            .insert(game_handoff_acceptance_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                handoff_hash.clone(),
+            ))
+            .unwrap();
+        let leg_turn = graph
+            .insert(game_turn_object(
+                &opponent,
+                root_hash.clone(),
+                game_hash.clone(),
+                "x",
+                2,
+                Some(head),
+                "1",
+            ))
+            .unwrap();
+        let fork_root = graph
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::Board(Board {
+                        board_id: "fork-of-game".to_owned(),
+                        forked_from: Some(root_hash.clone()),
+                        theme_ref: None,
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let fork_record = graph
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::BoardFork(BoardFork {
+                        source_board: root_hash.clone(),
+                        fork_board: fork_root.clone(),
+                        source_frontier: vec![root_hash, leg_turn.clone()],
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let fork_set = graph.board_object_set(&fork_root);
+        assert!(fork_set.contains(&fork_record));
+        assert!(fork_set.contains(&leg_turn));
+        assert!(fork_set.contains(&save_hash));
+        assert!(fork_set.contains(&handoff_hash));
+        assert!(fork_set.contains(&acceptance_hash));
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&graph, &fork_root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(replica.get(&leg_turn).is_some());
     }
 
     #[test]
