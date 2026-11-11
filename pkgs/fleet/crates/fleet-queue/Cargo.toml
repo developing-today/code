@@ -53,6 +53,11 @@ name = "broker_bin_args"
 path = "tests/broker_bin_args.rs"
 required-features = ["queue-broker", "secrets-broker"]
 
+[[test]]
+name = "chunked_list"
+path = "tests/chunked_list.rs"
+required-features = ["client"]
+
 
 [dev-dependencies]
 # Property-based tests for the client parser invariants (#5939),

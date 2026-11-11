@@ -151,8 +151,66 @@ fn direct_token() -> Result<String, String> {
     Ok(token.trim().to_string())
 }
 
+/// Decode one complete HTTP chunked body. The direct transports read
+/// through connection close, so an incomplete chunk is a definite
+/// truncation rather than a request for more bytes.
+fn decode_chunked_body(mut rest: &[u8]) -> Result<Vec<u8>, String> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| {
+                "queue-broker response truncated inside a chunk-size line".to_string()
+            })?;
+        let line = std::str::from_utf8(&rest[..line_end])
+            .map_err(|_| "queue-broker response has a non-ASCII chunk-size line".to_string())?;
+        let size_field = line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_field, 16).map_err(|_| {
+            format!("queue-broker response has malformed chunk size {size_field:?}")
+        })?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            loop {
+                if rest.starts_with(b"\r\n") {
+                    rest = &rest[2..];
+                    if !rest.is_empty() {
+                        return Err(
+                            "queue-broker response has bytes after the terminal chunk".into()
+                        );
+                    }
+                    return Ok(decoded);
+                }
+                let trailer_end = rest
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                    .ok_or_else(|| {
+                        "queue-broker response truncated inside chunk trailers".to_string()
+                    })?;
+                if !rest[..trailer_end].contains(&b':') {
+                    return Err("queue-broker response has a malformed chunk trailer".into());
+                }
+                rest = &rest[trailer_end + 2..];
+            }
+        }
+        let chunk_end = size
+            .checked_add(2)
+            .ok_or_else(|| "queue-broker response chunk size overflow".to_string())?;
+        if rest.len() < chunk_end {
+            return Err("queue-broker response truncated inside a chunk".into());
+        }
+        if &rest[size..chunk_end] != b"\r\n" {
+            return Err("queue-broker response chunk is missing its CRLF terminator".into());
+        }
+        decoded.extend_from_slice(&rest[..size]);
+        rest = &rest[chunk_end..];
+    }
+}
+
 /// The response handling both direct legs share: status line,
-/// JSON body, 401 and >=400 die with exit 3 exactly as before.
+/// transfer framing, JSON body, 401 and >=400 die with exit 3 exactly
+/// as before. A malformed successful JSON body is never converted to
+/// `Value::Null`: callers must not mistake it for an empty result.
 fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
     let split = raw
         .windows(4)
@@ -163,12 +221,67 @@ fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
         .split_whitespace()
         .nth(1)
         .and_then(|c| c.parse().ok())
-        .unwrap_or(0);
-    let resp_body: Value = serde_json::from_slice(&raw[split + 4..]).unwrap_or(Value::Null);
+        .ok_or_else(|| "queue-broker answered with a malformed status line".to_string())?;
+    let mut transfer_codings = Vec::new();
+    let mut content_length = None;
+    for line in head_txt.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("transfer-encoding") {
+                transfer_codings.extend(
+                    value
+                        .split(',')
+                        .map(|coding| coding.trim().to_ascii_lowercase())
+                        .filter(|coding| !coding.is_empty()),
+                );
+            } else if name.eq_ignore_ascii_case("content-length") {
+                for part in value.split(',') {
+                    let length: usize = part.trim().parse().map_err(|_| {
+                        format!("queue-broker response has malformed Content-Length {value:?}")
+                    })?;
+                    match content_length {
+                        None => content_length = Some(length),
+                        Some(previous) if previous == length => {}
+                        Some(previous) => {
+                            return Err(format!(
+                                "queue-broker response has conflicting Content-Length values {previous} and {length}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let wire_body = &raw[split + 4..];
+    let decoded_body = match (content_length, transfer_codings.as_slice()) {
+        (Some(expected), []) => {
+            if wire_body.len() != expected {
+                return Err(format!(
+                    "queue-broker response truncated: Content-Length {expected}, received {} body bytes",
+                    wire_body.len()
+                ));
+            }
+            wire_body.to_vec()
+        }
+        (None, []) => wire_body.to_vec(),
+        (None, [coding]) if coding == "chunked" => decode_chunked_body(wire_body)?,
+        (Some(_), _) => {
+            return Err(
+                "queue-broker response has both Content-Length and Transfer-Encoding".into(),
+            );
+        }
+        _ => {
+            return Err(format!(
+                "queue-broker response has unsupported Transfer-Encoding: {}",
+                transfer_codings.join(", ")
+            ));
+        }
+    };
+    let parsed_body: Result<Value, _> = serde_json::from_slice(&decoded_body);
     if status == 401 {
         die(3, "queue-broker rejected the client token (HTTP 401)");
     }
     if status >= 400 {
+        let resp_body: Value = parsed_body.unwrap_or(Value::Null);
         let msg = resp_body
             .get("error")
             .and_then(|e| e.as_str())
@@ -176,7 +289,9 @@ fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
             .to_string();
         die(3, &msg);
     }
-    Ok(resp_body)
+    parsed_body.map_err(|error| {
+        format!("queue-broker answered HTTP {status} with invalid JSON body: {error}")
+    })
 }
 
 fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
@@ -3601,6 +3716,37 @@ mod tests {
     }
 
     #[test]
+    fn finish_direct_response_dechunks_and_rejects_invalid_success_json() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"ok\r\n4\r\n\":tr\r\n3\r\nue}\r\n0\r\n\r\n";
+        assert_eq!(
+            finish_direct_response(response).unwrap(),
+            json!({"ok": true})
+        );
+
+        let malformed = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nnope!";
+        let error = finish_direct_response(malformed).unwrap_err();
+        assert!(error.contains("invalid JSON body"), "{error}");
+
+        let truncated = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n[]";
+        let error = finish_direct_response(truncated).unwrap_err();
+        assert!(error.contains("response truncated"), "{error}");
+    }
+
+    #[test]
+    fn chunk_decoder_rejects_truncated_and_malformed_chunks() {
+        assert!(
+            decode_chunked_body(b"5\r\nabc")
+                .unwrap_err()
+                .contains("truncated")
+        );
+        assert!(
+            decode_chunked_body(b"x\r\nabc\r\n0\r\n\r\n")
+                .unwrap_err()
+                .contains("malformed chunk size")
+        );
+    }
+
+    #[test]
     fn token_file_empty_env_values_use_home_default() {
         let home_dir = "/home/test";
         let default = format!("{home_dir}/.config/queue-broker/token");
@@ -3763,7 +3909,8 @@ mod tests {
         assert_eq!(out["id"], 4242);
         assert_eq!(out["claim_flow_partial"]["step"], "bind");
         assert_eq!(out["claim_flow_partial"]["exit"], 4);
-        let full = json!({"row": {"id": 4242, "status": "claimed"}, "lane_row": {}, "bind_row": {}});
+        let full =
+            json!({"row": {"id": 4242, "status": "claimed"}, "lane_row": {}, "bind_row": {}});
         let (out, code) = claim_output(&full);
         assert_eq!(code, 0);
         assert!(out.get("claim_flow_partial").is_none());
