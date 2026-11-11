@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_minimum_above_maximum_amount() {
+    fn test_rejects_minimum_above_maximum_amount() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.min_amount = auth.max_amount + 1;
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_expiry_at_or_before_not_before() {
+    fn test_rejects_expiry_at_or_before_not_before() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.not_before = 2_000;
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_fee_above_ten_thousand_basis_points() {
+    fn test_rejects_fee_above_ten_thousand_basis_points() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.fee_bps = Some(10_001);
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_source_ledger() {
+    fn test_rejects_empty_source_ledger() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.source_ledger.clear();
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_destination_ledger() {
+    fn test_rejects_empty_destination_ledger() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.dest_ledger.clear();
@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_equal_source_and_destination_ledgers() {
+    fn test_rejects_equal_source_and_destination_ledgers() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.dest_ledger = auth.source_ledger.clone();
@@ -628,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_rate_numerator() {
+    fn test_rejects_zero_rate_numerator() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.rate_num = 0;
@@ -639,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_total_cap() {
+    fn test_rejects_zero_total_cap() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.total_cap = 0;
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_caller_allowlist() {
+    fn test_rejects_empty_caller_allowlist() {
         let author = issuer_id(&lp_key());
         let mut auth = forward();
         auth.authorised_callers = AuthorisedCallers::Allowlist(vec![]);
@@ -655,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn fold_ignores_invalid_higher_version_and_keeps_prior_valid_body() {
+    fn test_fold_ignores_invalid_higher_version_and_keeps_prior_valid_body() {
         let author = issuer_id(&lp_key());
         let valid = forward();
         let mut invalid = valid.clone();
