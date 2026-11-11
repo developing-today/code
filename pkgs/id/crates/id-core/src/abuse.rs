@@ -52,7 +52,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use crate::block_list::BlockList;
+use crate::block_list::{BlockList, BlockLookup};
 
 /// A remote endpoint identity: the 32 bytes of its verifying key,
 /// the same bytes the event store uses as an author key.
@@ -1138,16 +1138,37 @@ impl AbuseEvaluator {
         direct_ip: Option<IpAddr>,
         now_ms: u64,
     ) -> Result<ConnectionId, Refusal> {
-        if self
-            .blocks
-            .as_ref()
-            .is_some_and(|blocks| blocks.peer_blocked(&endpoint))
-        {
-            return Err(Refusal::blocked_by_operator());
-        }
-        if let (Some(blocks), Some(ip)) = (&self.blocks, direct_ip) {
-            if blocks.ip_blocked(&ip) {
-                return Err(Refusal::blocked_by_operator());
+        if let Some(blocks) = &self.blocks {
+            // Explicit indeterminate-result policy (#8750): this seam
+            // fails open — a block store that cannot answer must not
+            // become a silent connection refusal — and the failure is
+            // logged for the operator instead of being treated as a
+            // clean "not blocked". Only a definite block refuses.
+            match blocks.peer_lookup(&endpoint) {
+                BlockLookup::Blocked => {
+                    return Err(Refusal::blocked_by_operator());
+                }
+                BlockLookup::Indeterminate(failure) => {
+                    tracing::warn!(
+                        "block-list peer lookup for a new connection failed ({}); failing open",
+                        failure.as_str()
+                    );
+                }
+                BlockLookup::Unblocked => {}
+            }
+            if let Some(ip) = direct_ip {
+                match blocks.ip_lookup(&ip) {
+                    BlockLookup::Blocked => {
+                        return Err(Refusal::blocked_by_operator());
+                    }
+                    BlockLookup::Indeterminate(failure) => {
+                        tracing::warn!(
+                            "block-list IP lookup for a new connection failed ({}); failing open",
+                            failure.as_str()
+                        );
+                    }
+                    BlockLookup::Unblocked => {}
+                }
             }
         }
         let cap = self.policy.max_connections_per_peer;
@@ -1477,6 +1498,39 @@ mod tests {
         assert_eq!(eval.active_connection_count(&endpoint(7)), 0);
         eval.open_connection(endpoint(8), 0)
             .expect("an unblocked endpoint still connects");
+    }
+
+    /// A block list whose lookup never answers (#8750): every check is
+    /// indeterminate, as a failed store read is at the real seams.
+    #[derive(Debug)]
+    struct FailingBlocks;
+
+    impl crate::block_list::BlockList for FailingBlocks {
+        fn is_blocked(&self, _kind: crate::block_list::BlockKind, _value: &[u8]) -> bool {
+            false
+        }
+
+        fn lookup(
+            &self,
+            _kind: crate::block_list::BlockKind,
+            _value: &[u8],
+        ) -> crate::block_list::BlockLookup {
+            crate::block_list::BlockLookup::Indeterminate(
+                crate::block_list::BlockLookupFailure::Unavailable,
+            )
+        }
+    }
+
+    #[test]
+    fn an_indeterminate_block_lookup_fails_open_at_the_connection_seam() {
+        // #8750 policy, stated at the seam: an indeterminate block
+        // lookup fails open (and is logged) — the connection is
+        // admitted, not silently refused, and the failure stays
+        // visible through `lookup` instead of posing as "not blocked".
+        let mut eval = evaluator().with_block_list(Arc::new(FailingBlocks));
+        eval.open_connection(endpoint(7), 0)
+            .expect("an indeterminate block lookup must fail open");
+        assert_eq!(eval.active_connection_count(&endpoint(7)), 1);
     }
 
     #[test]
