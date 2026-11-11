@@ -249,6 +249,88 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn export_exact_retry_returns_the_stored_receipt() {
+        let (mut actor, _, journal, _, _) = transfer_actor(b"entity".to_vec(), false);
+        let receipt = export(&mut actor).await.unwrap();
+        let entries_after_first = journal.entries().len();
+        let retry = export(&mut actor).await.unwrap();
+        assert_eq!(retry, receipt);
+        assert_eq!(journal.entries().len(), entries_after_first);
+
+        // A conflicting reuse of the handoff ID is not a retry.
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ExportEntity {
+                handoff_id: "ab".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-a".to_owned(),
+                target_region: "region-c".to_owned(),
+                prior_owner_epoch: 7,
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn entity_input_on_a_read_only_replica_never_reaches_the_program() {
+        let (mut actor, token, _, _, applied) = transfer_actor(b"entity".to_vec(), false);
+        actor.read_only = true;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::EntityInput {
+                token,
+                entity_ref: "entity-1".to_owned(),
+                input: b"mutate".to_vec(),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_err());
+        assert!(applied.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bound_author_participant_cannot_use_unsigned_entity_input() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let mut core = WorldCore::new(
+            "sharded-bound",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, token) = join(&mut core, "bound-user");
+        let key = SigningKey::from_bytes(Hash::digest(b"bound user").as_bytes());
+        core.bind_author_key(&token, *key.verifying_key().as_bytes())
+            .unwrap();
+        assert!(
+            core.prepare_entity_input(&token, "entity-1", b"scoped")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn region_sharded_world_rejects_signed_unscoped_input() {
+        let mut core = WorldCore::new(
+            "sharded-signed",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, token) = join(&mut core, "user");
+        let result = core.prepare_input_signed(&token, b"legacy", b"not-a-signed-move");
+        let error = result.err().expect("signed unscoped input must be refused");
+        assert!(
+            format!("{error:#}").contains("entity-addressed"),
+            "unexpected refusal: {error:#}"
+        );
+    }
+
     #[test]
     fn region_sharded_world_rejects_unscoped_input() {
         let mut core = WorldCore::new(

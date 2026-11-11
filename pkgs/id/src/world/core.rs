@@ -2063,6 +2063,10 @@ impl WorldCore {
         signed_move: &[u8],
     ) -> Result<(WorldEvent, crate::chain::Event)> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.limits.region_sharded,
+            "region-sharded worlds require entity-addressed input"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
@@ -2197,6 +2201,10 @@ impl WorldCore {
     ) -> Result<WorldEvent> {
         validate_entity_ref(entity_ref)?;
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.author_keys.contains_key(&participant_id),
+            "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,

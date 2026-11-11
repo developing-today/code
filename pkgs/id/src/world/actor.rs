@@ -699,6 +699,22 @@ impl WorldActor {
             .active_module_hash
             .clone()
             .context("world has no installed program for entity export")?;
+        // Exact-retry recovery: if this export already committed (its reply
+        // was lost, or the actor restarted and replayed it), return the
+        // stored receipt instead of preparing a duplicate the core would
+        // refuse. A stored export whose fields differ from the request is
+        // not a retry — it falls through and validate_entity_export
+        // rejects the conflicting handoff ID / entity.
+        if let Some(existing) = self.core.handoff_transfers.iter().find(|transfer| {
+            transfer.direction == HandoffDirection::Export && transfer.handoff_id == handoff_id
+        }) && existing.entity_ref == entity_ref
+            && existing.source_region == source_region
+            && existing.target_region == target_region
+            && existing.prior_owner_epoch == prior_owner_epoch
+            && existing.program_module_hash == program_module_hash
+        {
+            return Ok(existing.clone());
+        }
         let request = EntityTransferRequest::Export {
             handoff_id: handoff_id.clone(),
             entity_ref: entity_ref.clone(),
@@ -1819,6 +1835,12 @@ impl WorldActor {
                 input,
                 reply,
             } => {
+                // Refuse before touching the program: a replica must not
+                // run entity inputs through its program instance.
+                if let Err(error) = self.check_writable() {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
                 let result = match self.core.prepare_entity_input(&token, &entity_ref, &input) {
                     Ok(_) if self.storage_failed => Err(anyhow::anyhow!(
                         "world storage failed; the world is read-only"
