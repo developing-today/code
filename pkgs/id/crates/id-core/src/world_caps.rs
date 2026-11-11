@@ -1092,6 +1092,16 @@ impl CapError {
         }
     }
 
+    /// The acting participant lacks the scope for the effect, and `reason`
+    /// says why.
+    #[must_use]
+    pub fn actor_denied_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::ActorDenied,
+            reason: Some(reason.into()),
+        }
+    }
+
     /// A ceiling excludes the capability, even if granted.
     #[must_use]
     pub const fn outside_ceiling() -> Self {
