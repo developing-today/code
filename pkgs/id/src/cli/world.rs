@@ -578,6 +578,22 @@ pub struct WorldDevArgs {
     /// sequences, each applied to a fresh scratch world).
     #[arg(long, default_value_t = 32)]
     pub fuzz_cases: u32,
+    /// Watch the app's declared sources and hot-swap each debounced
+    /// change into the scratch world (Phase 2): a bounded,
+    /// long-running session that polls for edits, compiles one
+    /// candidate per snapshot, and promotes it only when the
+    /// fixture gates and the F12.9 migration commit pass — a failed
+    /// or stale candidate leaves the last-good program running.
+    #[arg(long)]
+    pub watch: bool,
+    /// Bounded watch poll budget (the session ends on its own
+    /// after this many polls).
+    #[arg(long, default_value_t = 1000)]
+    pub watch_max_cycles: u32,
+    /// Debounce window for watch polls, in milliseconds: change
+    /// events inside the window coalesce into one candidate.
+    #[arg(long, default_value_t = 150)]
+    pub watch_debounce_ms: u64,
 }
 
 /// The arguments of `id world logs`, extracted into
