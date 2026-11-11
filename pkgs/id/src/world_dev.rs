@@ -29,9 +29,22 @@
 //! reproducible counterexample. Fuzzing is a separate, opt-in check:
 //! it never runs on the edit-to-running path.
 //!
-//! Later phases (watch/debounce + F12.9 hot-swap) build on
-//! [`DevScratchWorld`] and [`discover_sources`]; they are
-//! deliberately not stubbed here.
+//! Phase 2 (this module): watch, rebuild, and transactional
+//! hot-swap. Declared inputs carry a source snapshot identity
+//! ([`DevSources::snapshot_id`], invariant 2); a [`Debouncer`]
+//! coalesces change bursts and a bounded rescan produces the next
+//! candidate snapshot. Promotion into the live session is
+//! transactional ([`DevSession::promote`]): stale candidates are
+//! discarded, the Phase 3 fixture gates run first, the state
+//! transition goes through F12.9's probe/migrate/commit
+//! ([`crate::world::upgrade_program`], invariant 4), and the
+//! candidate must replay the session's input history to the
+//! migrated records before it becomes active — every failure
+//! leaves the last-good program running, with the diagnostic in
+//! the session's last-good record (invariant 3).
+//!
+//! Later phases (latency benchmark + authoring docs) build on
+//! [`DevSession`] and [`run_dev_watch`].
 
 use std::path::{Path, PathBuf};
 
@@ -504,6 +517,750 @@ pub async fn run_dev_once(
     // discards its state, which is the Phase 1 lifecycle guarantee.
     drop(world);
     Ok(report)
+}
+
+/// Default debounce window for the watch loop (Phase 2): filesystem
+/// events inside the window coalesce into one candidate build.
+pub const DEFAULT_WATCH_DEBOUNCE_MS: u64 = 150;
+/// Hard cap on watch polls per session (invariant 7: bounded work —
+/// a watch session always terminates on its own).
+pub const MAX_WATCH_CYCLES: u32 = 10_000;
+/// Hard cap on the watch debounce window, in milliseconds.
+pub const MAX_WATCH_DEBOUNCE_MS: u64 = 10_000;
+
+impl DevSources {
+    /// The source snapshot identity of this input set (invariant 2:
+    /// one source snapshot per candidate). A deterministic content
+    /// identifier over the length-prefixed `(name, content)` pairs in
+    /// compile order, using the same canonical content hash as module
+    /// identity ([`crate::world_session::module_hash`]). Compiler,
+    /// fixture, and migration diagnostics for one candidate all name
+    /// this snapshot; an edit anywhere in the set changes it, and the
+    /// same set in a different order is a different snapshot.
+    #[must_use]
+    pub fn snapshot_id(&self) -> String {
+        let mut bytes = Vec::new();
+        for (name, content) in &self.files {
+            bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&(content.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(content.as_bytes());
+        }
+        crate::world_session::module_hash(&bytes)
+    }
+}
+
+/// Rescan `dir` (bounded, via [`discover_sources`]) and return the
+/// fresh sources only when their snapshot differs from
+/// `known_snapshot_id` — the watch loop's change test. `Ok(None)`
+/// means the declared inputs are unchanged.
+///
+/// # Errors
+///
+/// Discovery fails exactly as [`discover_sources`] does; the caller
+/// records the diagnostic and keeps the last-good snapshot.
+pub fn rescan_changed(dir: &Path, known_snapshot_id: &str) -> Result<Option<DevSources>> {
+    let sources = discover_sources(dir)?;
+    if sources.snapshot_id() == known_snapshot_id {
+        Ok(None)
+    } else {
+        Ok(Some(sources))
+    }
+}
+
+/// The watch debouncer (Phase 2): a pure state machine over a
+/// logical millisecond clock, so its behaviour is deterministic in
+/// tests. Events noted inside the window coalesce; the pending
+/// change becomes due one full window after the *last* event, so a
+/// burst of saves yields one candidate build, not one per save.
+#[derive(Clone, Debug)]
+pub struct Debouncer {
+    window_ms: u64,
+    last_event_ms: Option<u64>,
+    pending_events: usize,
+    total_coalesced: usize,
+}
+
+impl Debouncer {
+    /// A debouncer with the given window.
+    #[must_use]
+    pub fn new(window_ms: u64) -> Self {
+        Self {
+            window_ms,
+            last_event_ms: None,
+            pending_events: 0,
+            total_coalesced: 0,
+        }
+    }
+
+    /// Record one change event at `now_ms`. An event arriving while
+    /// another is already pending is coalesced into it.
+    pub fn note_event(&mut self, now_ms: u64) {
+        if self.pending_events > 0 {
+            self.total_coalesced += 1;
+        }
+        self.pending_events += 1;
+        self.last_event_ms = Some(now_ms);
+    }
+
+    /// True while a noted change has not been taken yet.
+    #[must_use]
+    pub fn is_pending(&self) -> bool {
+        self.pending_events > 0
+    }
+
+    /// True when a change is pending and a full window has passed
+    /// since the last event.
+    #[must_use]
+    pub fn due(&self, now_ms: u64) -> bool {
+        match self.last_event_ms {
+            Some(last) => self.pending_events > 0 && now_ms.saturating_sub(last) >= self.window_ms,
+            None => false,
+        }
+    }
+
+    /// Take the pending change, returning how many events it
+    /// coalesced (at least 1 when one was pending).
+    pub fn take(&mut self) -> usize {
+        let taken = self.pending_events;
+        self.pending_events = 0;
+        self.last_event_ms = None;
+        taken
+    }
+
+    /// Total events coalesced into an earlier pending change, over
+    /// this debouncer's life.
+    #[must_use]
+    pub fn total_coalesced(&self) -> usize {
+        self.total_coalesced
+    }
+}
+
+/// The last-good diagnostics of a dev session (Phase 2): the active
+/// candidate's identity plus the most recent promotion failure, if
+/// any. A failed candidate never moves these values except
+/// `last_failure` — that is what "last-good preservation" means
+/// observably (invariant 3).
+#[derive(Clone, Debug, Serialize)]
+pub struct LastGood {
+    /// Source snapshot identity of the active candidate.
+    pub snapshot_id: String,
+    /// Module hash of the active candidate.
+    pub module_hash: String,
+    /// Program version of the active candidate (bumps on each
+    /// committed F12.9 upgrade).
+    pub version: u32,
+    /// Records sequence the active world has reached.
+    pub records_sequence: u64,
+    /// The most recent promotion failure's diagnostic, or `None`
+    /// when the last promotion committed (or none was attempted).
+    pub last_failure: Option<String>,
+}
+
+/// The outcome of one candidate promotion attempt (Phase 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionOutcome {
+    /// The candidate passed the fixture gates and the F12.9 upgrade
+    /// commit, replayed the session's input history to the migrated
+    /// records, and is now the active program.
+    Promoted,
+    /// The candidate is the already-active snapshot; nothing to do.
+    Unchanged,
+    /// The sources changed again while the candidate was being
+    /// built or validated, so the candidate was discarded without
+    /// being promoted (invariant 2). The newest snapshot is built
+    /// next instead.
+    StaleDiscarded,
+    /// A fixture gate blocked the candidate (Phase 3); the
+    /// last-good program keeps running.
+    FixtureBlocked,
+    /// The F12.9 upgrade failed on its probe; the upgrade rolled
+    /// back and the last-good program keeps running untouched.
+    MigrationFailed,
+    /// The candidate launched but replaying the session's input
+    /// history did not reproduce the migrated records, so it was
+    /// discarded; the last-good program keeps running.
+    RecordsDiverged,
+    /// The candidate module failed to launch in the sandbox; the
+    /// last-good program keeps running.
+    LaunchFailed,
+}
+
+impl PromotionOutcome {
+    /// The outcome's report name (the serde snake_case form).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Promoted => "promoted",
+            Self::Unchanged => "unchanged",
+            Self::StaleDiscarded => "stale_discarded",
+            Self::FixtureBlocked => "fixture_blocked",
+            Self::MigrationFailed => "migration_failed",
+            Self::RecordsDiverged => "records_diverged",
+            Self::LaunchFailed => "launch_failed",
+        }
+    }
+}
+
+/// The outcome of one promotion attempt against a [`DevSession`].
+#[derive(Clone, Debug, Serialize)]
+pub struct PromotionReport {
+    /// What happened to the candidate.
+    pub outcome: PromotionOutcome,
+    /// Source snapshot the candidate was built from.
+    pub candidate_snapshot_id: String,
+    /// Module hash of the candidate module.
+    pub candidate_module_hash: String,
+    /// Source snapshot of the active program after the attempt.
+    pub active_snapshot_id: String,
+    /// Program version of the active program after the attempt.
+    pub active_version: u32,
+    /// Fixture gates run against the candidate (empty when the
+    /// candidate was discarded before validation).
+    pub fixture_gates: Vec<FixtureGate>,
+    /// The failure diagnostic, for non-committed outcomes.
+    pub detail: Option<String>,
+}
+
+/// Run the F12.9 upgrade gate for a promotion: encode the active
+/// records as the running program's state snapshot and upgrade the
+/// program one version through [`crate::world::upgrade_program`].
+///
+/// The scratch world's guest exposes no `migrate` export through
+/// the local actor seam, so the state is carried byte-for-byte
+/// (`UpgradeOutcome::CarriedUnchanged` semantics); what the gate
+/// contributes is F12.9's probe/commit contract — the migrated
+/// state must round-trip through the current snapshot format
+/// before anything commits, and any failure leaves the passed
+/// program bit-for-bit unchanged (invariant 4: no alternate direct
+/// state replacement).
+///
+/// # Errors
+///
+/// The records do not encode, or the F12.9 upgrade fails on its
+/// probe (for example the state exceeds the snapshot bound); the
+/// caller's active program is untouched either way.
+fn migrate_active_state(
+    records: &Records,
+    from_version: u32,
+) -> Result<crate::world::RunningProgram> {
+    let state =
+        serde_json::to_vec(records).context("encode the active records as upgrade state")?;
+    let snapshot = crate::world::ProgramSnapshot::new(state)
+        .encode()
+        .context("encode the active program snapshot")?;
+    let mut program = crate::world::RunningProgram {
+        version: from_version,
+        snapshot,
+    };
+    crate::world::upgrade_program(&mut program, from_version + 1, None)
+        .context("F12.9 upgrade of the active program")?;
+    Ok(program)
+}
+
+/// A live dev session (Phase 2): one active scratch world, the
+/// input history applied to it, and the promotion machinery that
+/// hot-swaps it to a new candidate without losing its state.
+///
+/// Promotion is transactional, in the design's order: stale check
+/// (invariant 2) → fixture gates (Phase 3) → F12.9 probe/migrate/
+/// commit over the active records (invariant 4) → candidate launch
+/// and replay of the input history, which must reproduce the
+/// migrated records exactly. Any failure discards the candidate and
+/// records the diagnostic in the last-good diagnostics; the active
+/// world is only replaced after every step has passed.
+pub struct DevSession {
+    world: DevScratchWorld,
+    seed: u64,
+    snapshot_id: String,
+    module_hash: String,
+    version: u32,
+    inputs: Vec<Vec<u8>>,
+    last_failure: Option<String>,
+}
+
+impl DevSession {
+    /// Launch a session whose active program is `module`, built
+    /// from the source snapshot `snapshot_id`. The program starts
+    /// at version 1.
+    ///
+    /// # Errors
+    ///
+    /// The module fails to launch as a scratch world.
+    pub async fn launch(module: &[u8], seed: u64, snapshot_id: String) -> Result<Self> {
+        let world = DevScratchWorld::launch(module, seed).await?;
+        Ok(Self {
+            world,
+            seed,
+            snapshot_id,
+            module_hash: crate::world_session::module_hash(module),
+            version: 1,
+            inputs: Vec::new(),
+            last_failure: None,
+        })
+    }
+
+    /// The active world's current view.
+    ///
+    /// # Errors
+    ///
+    /// The actor refuses or the guest call fails.
+    pub async fn view(&self) -> Result<Option<String>> {
+        self.world.view().await
+    }
+
+    /// Send one input to the active world and record it in the
+    /// session history a future candidate must replay.
+    ///
+    /// # Errors
+    ///
+    /// The actor refuses or the guest call fails; a failed input is
+    /// not recorded.
+    pub async fn input(&mut self, input: &[u8]) -> Result<()> {
+        self.world.input(input).await?;
+        self.inputs.push(input.to_vec());
+        Ok(())
+    }
+
+    /// The active world's current records.
+    #[must_use]
+    pub fn records(&self) -> Records {
+        self.world.records()
+    }
+
+    /// The active program's version.
+    #[must_use]
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// The active candidate's source snapshot identity.
+    #[must_use]
+    pub fn snapshot_id(&self) -> &str {
+        &self.snapshot_id
+    }
+
+    /// The session's last-good diagnostics.
+    #[must_use]
+    pub fn last_good(&self) -> LastGood {
+        LastGood {
+            snapshot_id: self.snapshot_id.clone(),
+            module_hash: self.module_hash.clone(),
+            version: self.version,
+            records_sequence: self.world.records_sequence(),
+            last_failure: self.last_failure.clone(),
+        }
+    }
+
+    /// Attempt to hot-swap the active program to the candidate
+    /// `module`, which was built from `candidate_snapshot_id` while
+    /// the freshest rescan reports `current_snapshot_id`. See the
+    /// type's docs for the step order; the returned report names the
+    /// outcome and, on failure, the diagnostic — the active world is
+    /// observably untouched in every failure case.
+    pub async fn promote(
+        &mut self,
+        module: &[u8],
+        candidate_snapshot_id: &str,
+        current_snapshot_id: &str,
+        fixtures: &[(String, Fixture)],
+    ) -> PromotionReport {
+        let candidate_module_hash = crate::world_session::module_hash(module);
+        let report = |outcome: PromotionOutcome,
+                      fixture_gates: Vec<FixtureGate>,
+                      detail: Option<String>,
+                      this: &Self| PromotionReport {
+            outcome,
+            candidate_snapshot_id: candidate_snapshot_id.to_owned(),
+            candidate_module_hash: candidate_module_hash.clone(),
+            active_snapshot_id: this.snapshot_id.clone(),
+            active_version: this.version,
+            fixture_gates,
+            detail,
+        };
+        // Invariant 2: a candidate built from a superseded snapshot
+        // is never promoted, however good it is.
+        if candidate_snapshot_id != current_snapshot_id {
+            let detail = format!(
+                "candidate snapshot {candidate_snapshot_id} is stale; the sources are at {current_snapshot_id}"
+            );
+            self.last_failure = Some(detail.clone());
+            return report(
+                PromotionOutcome::StaleDiscarded,
+                Vec::new(),
+                Some(detail),
+                self,
+            );
+        }
+        if candidate_snapshot_id == self.snapshot_id {
+            return report(PromotionOutcome::Unchanged, Vec::new(), None, self);
+        }
+        // Phase 3 promotion gates, unchanged: a mismatching fixture
+        // blocks the candidate before anything migrates.
+        let mut fixture_gates = Vec::with_capacity(fixtures.len());
+        for (label, fixture) in fixtures {
+            match fixture_gate(module, self.seed, label, fixture) {
+                Ok(gate) => fixture_gates.push(gate),
+                Err(err) => {
+                    let detail = format!("fixture gate error: {err:#}");
+                    self.last_failure = Some(detail.clone());
+                    return report(
+                        PromotionOutcome::FixtureBlocked,
+                        fixture_gates,
+                        Some(detail),
+                        self,
+                    );
+                }
+            }
+        }
+        if fixture_gates.iter().any(|gate| gate.blocks_promotion) {
+            let blocking: Vec<&str> = fixture_gates
+                .iter()
+                .filter(|gate| gate.blocks_promotion)
+                .map(|gate| gate.fixture.as_str())
+                .collect();
+            let detail = format!(
+                "fixture gate blocked the candidate; mismatching fixture(s): {}",
+                blocking.join(", ")
+            );
+            self.last_failure = Some(detail.clone());
+            return report(
+                PromotionOutcome::FixtureBlocked,
+                fixture_gates,
+                Some(detail),
+                self,
+            );
+        }
+        // Invariant 4: the state transition goes through F12.9's
+        // probe/migrate/commit, or it does not happen at all.
+        let program = match migrate_active_state(&self.world.records(), self.version) {
+            Ok(program) => program,
+            Err(err) => {
+                let detail = format!("{err:#}");
+                self.last_failure = Some(detail.clone());
+                return report(
+                    PromotionOutcome::MigrationFailed,
+                    fixture_gates,
+                    Some(detail),
+                    self,
+                );
+            }
+        };
+        let migrated_records: Records =
+            match crate::world::ProgramSnapshot::decode(&program.snapshot).and_then(|snapshot| {
+                serde_json::from_slice(&snapshot.state).context("decode the migrated records")
+            }) {
+                Ok(records) => records,
+                Err(err) => {
+                    let detail = format!("migrated state does not decode: {err:#}");
+                    self.last_failure = Some(detail.clone());
+                    return report(
+                        PromotionOutcome::MigrationFailed,
+                        fixture_gates,
+                        Some(detail),
+                        self,
+                    );
+                }
+            };
+        // Launch the candidate and replay the session history: the
+        // migrated state is only real if the new program reaches
+        // exactly those records from the recorded inputs.
+        let candidate = match DevScratchWorld::launch(module, self.seed).await {
+            Ok(world) => world,
+            Err(err) => {
+                let detail = format!("candidate launch failed: {err:#}");
+                self.last_failure = Some(detail.clone());
+                return report(
+                    PromotionOutcome::LaunchFailed,
+                    fixture_gates,
+                    Some(detail),
+                    self,
+                );
+            }
+        };
+        let mut replay_error: Option<String> = None;
+        for input in &self.inputs {
+            if let Err(err) = candidate.input(input).await {
+                replay_error = Some(format!("candidate replay of an input failed: {err:#}"));
+                break;
+            }
+        }
+        if let Some(detail) = replay_error {
+            self.last_failure = Some(detail.clone());
+            drop(candidate);
+            return report(
+                PromotionOutcome::LaunchFailed,
+                fixture_gates,
+                Some(detail),
+                self,
+            );
+        }
+        if candidate.records() != migrated_records {
+            let detail =
+                "candidate replay does not reproduce the migrated records; candidate discarded"
+                    .to_owned();
+            self.last_failure = Some(detail.clone());
+            drop(candidate);
+            return report(
+                PromotionOutcome::RecordsDiverged,
+                fixture_gates,
+                Some(detail),
+                self,
+            );
+        }
+        // Commit: the single point where the active program changes.
+        self.world = candidate;
+        self.version = program.version;
+        self.snapshot_id = candidate_snapshot_id.to_owned();
+        self.module_hash = candidate_module_hash.clone();
+        self.last_failure = None;
+        report(PromotionOutcome::Promoted, fixture_gates, None, self)
+    }
+}
+
+/// One recorded change cycle of a watch session (Phase 2).
+#[derive(Clone, Debug, Serialize)]
+pub struct WatchCycle {
+    /// Poll index at which the change was detected.
+    pub cycle: u32,
+    /// Source snapshot the cycle built (or tried to build).
+    pub snapshot_id: String,
+    /// Change events the debouncer coalesced into this cycle.
+    pub coalesced_events: usize,
+    /// The cycle's outcome: a [`PromotionOutcome`] name, or
+    /// `rescan_failed` / `compile_failed` for cycles that never
+    /// reached promotion.
+    pub outcome: String,
+    /// The diagnostic, for failed cycles.
+    pub detail: Option<String>,
+}
+
+/// The outcome of a bounded watch session (Phase 2).
+#[derive(Clone, Debug, Serialize)]
+pub struct WatchReport {
+    /// The scratch world's id (always [`DEV_WORLD_ID`]).
+    pub world_id: &'static str,
+    /// The app directory that was watched.
+    pub dir: PathBuf,
+    /// Seed the guest was initialized with.
+    pub seed: u64,
+    /// Source snapshot the session started from.
+    pub initial_snapshot_id: String,
+    /// True when the initial candidate was launched. False only
+    /// when a fixture gate blocked it: nothing was launched and no
+    /// watch cycle ran.
+    pub initial_promoted: bool,
+    /// Fixture gates run against the initial candidate.
+    pub fixture_gates: Vec<FixtureGate>,
+    /// Polls performed (bounded by the caller's cycle budget).
+    pub polls: u32,
+    /// Distinct source snapshots detected across the polls.
+    pub changes: u32,
+    /// One entry per detected change, in order.
+    pub cycles: Vec<WatchCycle>,
+    /// Source snapshot of the active program at the end.
+    pub active_snapshot_id: String,
+    /// Program version of the active program at the end.
+    pub active_version: u32,
+    /// Last-good diagnostics at the end of the session.
+    pub last_good: LastGood,
+}
+
+/// Compile one candidate from already-discovered `sources`,
+/// returning the module, diagnostics, and provenance — the setup
+/// [`run_dev_once`] performs, factored for the watch driver.
+///
+/// # Errors
+///
+/// Platform resolution, compiler setup, or compilation fails.
+async fn compile_sources(
+    sources: &DevSources,
+    platform: Option<&Path>,
+    roc: Option<&str>,
+    seed: u64,
+) -> Result<(Vec<u8>, String, serde_json::Value)> {
+    let platform_dir = resolve_platform_dir(&sources.dir, platform, sources.main_source())?;
+    let roc_bin = match roc {
+        Some(roc) => roc.to_owned(),
+        None => crate::world_compile::locate_roc()?,
+    };
+    let compiler = Compiler::new(platform_dir.clone(), roc_bin)?;
+    let granted = platform_module_names(&platform_dir)?;
+    let (module, diagnostics, provenance) =
+        crate::world_compile::compile(&sources.spec(seed), &compiler, &granted, COMPILE_TIMEOUT)
+            .await?;
+    let provenance = serde_json::to_value(&provenance)?;
+    Ok((module, diagnostics, provenance))
+}
+
+/// Run a bounded watch session (Phase 2): launch the initial
+/// candidate (behind the Phase 3 fixture gates), apply `inputs`,
+/// then poll the declared inputs for changes. Each detected change
+/// is debounced and coalesced, rescanned within the compiler's
+/// bounds, compiled once, and promoted through [`DevSession`]'s
+/// transactional hot-swap; a snapshot that fails any stage is
+/// recorded in the cycle log and never retried (invariant 7: an
+/// error does not create an infinite rebuild loop) — the next poll
+/// watches for the *next* change from the last known snapshot.
+///
+/// The session is bounded by `max_cycles` polls of `debounce_ms`
+/// (plus one debounce window per change); it is a long-running
+/// session shape with a deterministic end, not an unbounded daemon.
+///
+/// # Errors
+///
+/// The budgets are out of bounds, or the initial discovery,
+/// compilation, fixture gate, or launch fails. Per-change failures
+/// after launch are cycle outcomes, not errors.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_dev_watch(
+    dir: &Path,
+    platform: Option<&Path>,
+    roc: Option<&str>,
+    seed: u64,
+    inputs: &[String],
+    fixtures: &[(String, Fixture)],
+    max_cycles: u32,
+    debounce_ms: u64,
+) -> Result<WatchReport> {
+    ensure!(
+        (1..=MAX_WATCH_CYCLES).contains(&max_cycles),
+        "the watch cycle budget {max_cycles} is outside 1..={MAX_WATCH_CYCLES}"
+    );
+    ensure!(
+        debounce_ms <= MAX_WATCH_DEBOUNCE_MS,
+        "the watch debounce {debounce_ms}ms exceeds the bound {MAX_WATCH_DEBOUNCE_MS}ms"
+    );
+    let sources = discover_sources(dir)?;
+    let initial_snapshot_id = sources.snapshot_id();
+    let (module, _, _) = compile_sources(&sources, platform, roc, seed).await?;
+    let mut fixture_gates = Vec::with_capacity(fixtures.len());
+    for (label, fixture) in fixtures {
+        fixture_gates.push(fixture_gate(&module, seed, label, fixture)?);
+    }
+    if fixture_gates.iter().any(|gate| gate.blocks_promotion) {
+        return Ok(WatchReport {
+            world_id: DEV_WORLD_ID,
+            dir: dir.to_path_buf(),
+            seed,
+            initial_snapshot_id: initial_snapshot_id.clone(),
+            initial_promoted: false,
+            fixture_gates,
+            polls: 0,
+            changes: 0,
+            cycles: Vec::new(),
+            active_snapshot_id: initial_snapshot_id.clone(),
+            active_version: 0,
+            last_good: LastGood {
+                snapshot_id: initial_snapshot_id,
+                module_hash: crate::world_session::module_hash(&module),
+                version: 0,
+                records_sequence: 0,
+                last_failure: Some("fixture gate blocked the initial candidate".to_owned()),
+            },
+        });
+    }
+    let mut session = DevSession::launch(&module, seed, initial_snapshot_id.clone()).await?;
+    for input in inputs {
+        session.input(input.as_bytes()).await?;
+    }
+    let started = std::time::Instant::now();
+    let now_ms = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let mut known_snapshot_id = initial_snapshot_id.clone();
+    let mut polls: u32 = 0;
+    let mut changes: u32 = 0;
+    let mut cycles: Vec<WatchCycle> = Vec::new();
+    for cycle in 0..max_cycles {
+        tokio::time::sleep(std::time::Duration::from_millis(debounce_ms.max(1))).await;
+        polls += 1;
+        let changed = match rescan_changed(dir, &known_snapshot_id) {
+            Ok(changed) => changed,
+            Err(err) => {
+                cycles.push(WatchCycle {
+                    cycle,
+                    snapshot_id: known_snapshot_id.clone(),
+                    coalesced_events: 0,
+                    outcome: "rescan_failed".to_owned(),
+                    detail: Some(format!("{err:#}")),
+                });
+                continue;
+            }
+        };
+        let Some(mut sources) = changed else {
+            continue;
+        };
+        changes += 1;
+        // Debounce + coalesce: keep rescanning inside the window;
+        // the candidate is built from the newest snapshot only.
+        let mut debouncer = Debouncer::new(debounce_ms);
+        debouncer.note_event(now_ms());
+        while !debouncer.due(now_ms()) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if let Ok(Some(newer)) = rescan_changed(dir, &sources.snapshot_id()) {
+                sources = newer;
+                debouncer.note_event(now_ms());
+            }
+        }
+        let coalesced_events = debouncer.take().saturating_sub(1);
+        let candidate_snapshot_id = sources.snapshot_id();
+        // The newest known snapshot moves first, whatever happens
+        // next: a failing snapshot is reported once, never rebuilt
+        // in a loop (invariant 7).
+        known_snapshot_id = candidate_snapshot_id.clone();
+        let module = match compile_sources(&sources, platform, roc, seed).await {
+            Ok((module, _, _)) => module,
+            Err(err) => {
+                let detail = format!("{err:#}");
+                session.last_failure = Some(detail.clone());
+                cycles.push(WatchCycle {
+                    cycle,
+                    snapshot_id: candidate_snapshot_id,
+                    coalesced_events,
+                    outcome: "compile_failed".to_owned(),
+                    detail: Some(detail),
+                });
+                continue;
+            }
+        };
+        // Fresh rescan for the stale check: what the sources are at
+        // *now*, after the compile, is what the candidate must match.
+        let current_snapshot_id = discover_sources(dir)
+            .map(|fresh| fresh.snapshot_id())
+            .unwrap_or_else(|_| candidate_snapshot_id.clone());
+        if current_snapshot_id != candidate_snapshot_id {
+            known_snapshot_id = current_snapshot_id.clone();
+        }
+        let promotion = session
+            .promote(
+                &module,
+                &candidate_snapshot_id,
+                &current_snapshot_id,
+                fixtures,
+            )
+            .await;
+        cycles.push(WatchCycle {
+            cycle,
+            snapshot_id: candidate_snapshot_id,
+            coalesced_events,
+            outcome: promotion.outcome.as_str().to_owned(),
+            detail: promotion.detail,
+        });
+    }
+    Ok(WatchReport {
+        world_id: DEV_WORLD_ID,
+        dir: dir.to_path_buf(),
+        seed,
+        initial_snapshot_id,
+        initial_promoted: true,
+        fixture_gates,
+        polls,
+        changes,
+        cycles,
+        active_snapshot_id: session.snapshot_id().to_owned(),
+        active_version: session.version(),
+        last_good: session.last_good(),
+    })
 }
 
 /// Largest fuzz declaration file the parser accepts, in bytes.
@@ -1263,5 +2020,218 @@ mod fuzz_tests {
             world.input(input.as_bytes()).await.unwrap();
         }
         assert_eq!(world.records().get("count"), Some(&serde_json::json!(3)));
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    fn sources(files: Vec<(&str, &str)>) -> DevSources {
+        DevSources {
+            dir: PathBuf::from("/tmp/dev-watch-test"),
+            files: files
+                .into_iter()
+                .map(|(name, content)| (name.to_owned(), content.to_owned()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn snapshot_id_is_deterministic_and_content_sensitive() {
+        // Oracle: invariant 2 — the same input set in the same
+        // order is the same snapshot on every call; any content
+        // edit, and any reordering, is a different snapshot.
+        let a = sources(vec![("main.roc", "app x\n"), ("b.roc", "B := [].\n")]);
+        let same = sources(vec![("main.roc", "app x\n"), ("b.roc", "B := [].\n")]);
+        let edited = sources(vec![("main.roc", "app y\n"), ("b.roc", "B := [].\n")]);
+        let reordered = sources(vec![("b.roc", "B := [].\n"), ("main.roc", "app x\n")]);
+        assert_eq!(a.snapshot_id(), same.snapshot_id());
+        assert_ne!(a.snapshot_id(), edited.snapshot_id());
+        assert_ne!(a.snapshot_id(), reordered.snapshot_id());
+    }
+
+    #[test]
+    fn debouncer_coalesces_a_burst_into_one_due_change() {
+        // Oracle: the design's debounce contract — events inside
+        // the window coalesce, nothing is due before a full quiet
+        // window after the last event, and taking resets the state.
+        let mut debouncer = Debouncer::new(150);
+        assert!(!debouncer.due(1_000));
+        debouncer.note_event(1_000);
+        debouncer.note_event(1_050);
+        debouncer.note_event(1_100);
+        assert!(debouncer.is_pending());
+        assert!(!debouncer.due(1_200));
+        assert!(!debouncer.due(1_249));
+        assert!(debouncer.due(1_250));
+        assert_eq!(debouncer.take(), 3);
+        assert_eq!(debouncer.total_coalesced(), 2);
+        assert!(!debouncer.is_pending());
+        assert!(!debouncer.due(9_999));
+        assert_eq!(debouncer.take(), 0);
+    }
+
+    #[test]
+    fn rescan_changed_reports_only_a_real_change() {
+        // Oracle: a rescan over an unchanged directory finds no new
+        // snapshot; editing a declared source produces the fresh
+        // set whose snapshot differs.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n").unwrap();
+        let known = discover_sources(dir.path()).unwrap().snapshot_id();
+        assert!(rescan_changed(dir.path(), &known).unwrap().is_none());
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n\nx = 1\n").unwrap();
+        let changed = rescan_changed(dir.path(), &known)
+            .unwrap()
+            .expect("an edit must rescan as a change");
+        assert_ne!(changed.snapshot_id(), known);
+    }
+
+    #[test]
+    fn migrate_active_state_carries_records_through_the_f12_9_gate() {
+        // Oracle: F12.9's own invariant — the upgrade commits a
+        // program whose snapshot decodes to exactly the migrated
+        // state (here: the records, carried byte-for-byte), at the
+        // next version. An over-bound state fails on the probe and
+        // commits nothing.
+        let mut records = Records::new();
+        records.insert("count".to_owned(), serde_json::json!(2));
+        let program = migrate_active_state(&records, 1).unwrap();
+        assert_eq!(program.version, 2);
+        let decoded = crate::world::ProgramSnapshot::decode(&program.snapshot).unwrap();
+        let round_tripped: Records = serde_json::from_slice(&decoded.state).unwrap();
+        assert_eq!(round_tripped, records);
+
+        let mut huge = Records::new();
+        huge.insert(
+            "blob".to_owned(),
+            serde_json::json!("x".repeat(crate::world::MAX_PROGRAM_STATE_BYTES + 1)),
+        );
+        assert!(migrate_active_state(&huge, 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn promote_hot_swaps_and_preserves_the_session_state() {
+        // Oracle: the counter world's records after two `inc`
+        // inputs are the migrated state; a same-behaviour candidate
+        // built from the current snapshot must promote, bump the
+        // F12.9 version, and keep count=2 live — a restart-from-zero
+        // (count=0) would prove the swap discarded the state.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
+            .await
+            .unwrap();
+        session.input(b"inc").await.unwrap();
+        session.input(b"inc").await.unwrap();
+        assert_eq!(session.records().get("count"), Some(&serde_json::json!(2)));
+
+        let report = session.promote(wasm, "snap-b", "snap-b", &[]).await;
+        assert_eq!(report.outcome, PromotionOutcome::Promoted, "{report:?}");
+        assert_eq!(report.active_version, 2);
+        assert_eq!(session.version(), 2);
+        assert_eq!(session.snapshot_id(), "snap-b");
+        assert_eq!(session.records().get("count"), Some(&serde_json::json!(2)));
+        assert!(
+            session
+                .view()
+                .await
+                .unwrap()
+                .is_some_and(|view| view.contains("count=2"))
+        );
+        assert_eq!(session.last_good().last_failure, None);
+
+        // The now-active snapshot promoted again is a no-op.
+        let report = session.promote(wasm, "snap-b", "snap-b", &[]).await;
+        assert_eq!(report.outcome, PromotionOutcome::Unchanged);
+        assert_eq!(session.version(), 2);
+    }
+
+    #[tokio::test]
+    async fn promote_discards_a_stale_candidate_and_keeps_last_good() {
+        // Oracle: invariant 2 + 3 — a candidate built from snap-b
+        // while the sources already sit at snap-c is discarded
+        // without touching the active world, and the discard is
+        // recorded in the last-good diagnostics.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
+            .await
+            .unwrap();
+        session.input(b"inc").await.unwrap();
+        let report = session.promote(wasm, "snap-b", "snap-c", &[]).await;
+        assert_eq!(report.outcome, PromotionOutcome::StaleDiscarded);
+        assert_eq!(session.snapshot_id(), "snap-a");
+        assert_eq!(session.version(), 1);
+        assert_eq!(session.records().get("count"), Some(&serde_json::json!(1)));
+        assert!(
+            session
+                .last_good()
+                .last_failure
+                .is_some_and(|failure| failure.contains("stale"))
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_keeps_last_good_when_a_fixture_gate_blocks() {
+        // Oracle: the Phase 3 gate inside promotion — a fixture
+        // whose recorded expectation the candidate cannot reproduce
+        // blocks the swap; the active world keeps its records and
+        // version.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
+            .await
+            .unwrap();
+        session.input(b"inc").await.unwrap();
+        session.input(b"inc").await.unwrap();
+        let mut expected = session.records();
+        expected.insert("gate-oracle".to_owned(), serde_json::json!("tampered"));
+        let fixture = Fixture {
+            header: crate::world_fixture::FixtureHeader {
+                world_id: DEV_WORLD_ID.to_owned(),
+                module_hash: Some(crate::world_session::module_hash(wasm)),
+                current_sequence: 2,
+                complete: true,
+                records: Some(expected),
+            },
+            events: vec![
+                crate::world_fixture::FixtureEvent::Input {
+                    sequence: 1,
+                    participant_id: 1,
+                    bytes: b"inc".to_vec(),
+                },
+                crate::world_fixture::FixtureEvent::Input {
+                    sequence: 2,
+                    participant_id: 1,
+                    bytes: b"inc".to_vec(),
+                },
+            ],
+        };
+        let fixtures = vec![("counter.jsonl".to_owned(), fixture)];
+        let report = session.promote(wasm, "snap-b", "snap-b", &fixtures).await;
+        assert_eq!(
+            report.outcome,
+            PromotionOutcome::FixtureBlocked,
+            "{report:?}"
+        );
+        assert_eq!(session.snapshot_id(), "snap-a");
+        assert_eq!(session.version(), 1);
+        assert_eq!(session.records().get("count"), Some(&serde_json::json!(2)));
+    }
+
+    #[tokio::test]
+    async fn promote_keeps_last_good_when_the_candidate_cannot_launch() {
+        // Oracle: invariant 3 for the launch stage — module bytes
+        // the sandbox refuses never become the active program.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let mut session = DevSession::launch(wasm, 7, "snap-a".to_owned())
+            .await
+            .unwrap();
+        session.input(b"inc").await.unwrap();
+        let report = session
+            .promote(b"not a wasm module", "snap-b", "snap-b", &[])
+            .await;
+        assert_eq!(report.outcome, PromotionOutcome::LaunchFailed, "{report:?}");
+        assert_eq!(session.snapshot_id(), "snap-a");
+        assert_eq!(session.records().get("count"), Some(&serde_json::json!(1)));
     }
 }

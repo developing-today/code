@@ -2764,3 +2764,29 @@ fn test_cli_parse_world_dev() {
         other => panic!("unexpected: {other:?}"),
     }
 }
+
+#[test]
+fn test_cli_parse_world_dev_watch() {
+    let cli = Cli::parse_from([
+        "id",
+        "world",
+        "dev",
+        "apps/ping",
+        "--watch",
+        "--watch-max-cycles",
+        "25",
+        "--watch-debounce-ms",
+        "300",
+    ]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Dev(args) => {
+                assert!(args.watch);
+                assert_eq!(args.watch_max_cycles, 25);
+                assert_eq!(args.watch_debounce_ms, 300);
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}

@@ -748,6 +748,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 fuzz,
                 fuzz_seed,
                 fuzz_cases,
+                watch,
+                watch_max_cycles,
+                watch_debounce_ms,
             } = args;
             let mut fixture_inputs = Vec::with_capacity(fixtures.len());
             for fixture_path in &fixtures {
@@ -781,6 +784,33 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 if let Some(summary) = report.failure_summary() {
                     anyhow::bail!("{summary}");
+                }
+                return Ok(());
+            }
+            if watch {
+                let report = crate::world_dev::run_dev_watch(
+                    &dir,
+                    platform.as_deref(),
+                    roc.as_deref(),
+                    seed,
+                    &inputs,
+                    &fixture_inputs,
+                    watch_max_cycles,
+                    watch_debounce_ms,
+                )
+                .await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                if !report.initial_promoted {
+                    let blocking: Vec<&str> = report
+                        .fixture_gates
+                        .iter()
+                        .filter(|gate| gate.blocks_promotion)
+                        .map(|gate| gate.fixture.as_str())
+                        .collect();
+                    anyhow::bail!(
+                        "fixture gate: candidate not promoted; fixture(s) mismatched: {}",
+                        blocking.join(", ")
+                    );
                 }
                 return Ok(());
             }
