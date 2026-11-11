@@ -2831,25 +2831,6 @@ fn unescape_md(text: &str) -> String {
     out
 }
 
-/// Strip blockquote markers and up to three leading spaces, repeatedly,
-/// so a definition inside a blockquote is still a candidate.
-fn strip_container_prefixes(line: &str) -> &str {
-    let mut s = line;
-    loop {
-        let mut t = s;
-        let mut spaces = 0;
-        while t.starts_with(' ') && spaces < 3 {
-            t = &t[1..];
-            spaces += 1;
-        }
-        if let Some(rest) = t.strip_prefix('>') {
-            s = rest.strip_prefix(' ').unwrap_or(rest);
-        } else {
-            return t;
-        }
-    }
-}
-
 enum TailParse {
     Parsed { url: String, title: Option<String>, end: usize },
     Incomplete,
@@ -2901,7 +2882,11 @@ fn parse_link_ref_tail(tail: &str) -> TailParse {
         let mut depth = 0i32;
         while pos < b.len() {
             match b[pos] {
-                b'\\' => pos += 2,
+                // Clamp at the buffer end: a trailing backslash
+                // must not advance past the end, or the
+                // tail[start..pos] slice below panics (Codex P1
+                // on #7170).
+                b'\\' => pos = (pos + 2).min(b.len()),
                 b'(' => {
                     depth += 1;
                     pos += 1;
@@ -2968,7 +2953,7 @@ fn parse_link_ref_tail(tail: &str) -> TailParse {
 /// order, first definition per normalized label winning (the
 /// CommonMark rule). Fenced code blocks are skipped — definition-shaped
 /// text inside a fence is literal code, not a definition.
-fn collect_link_reference_definitions(markdown: &str) -> Vec<LinkReferenceDefinition> {
+fn scan_link_reference_definitions(markdown: &str) -> Vec<LinkReferenceDefinition> {
     let lines: Vec<&str> = markdown.split_inclusive('\n').collect();
     let line_text: Vec<&str> = lines
         .iter()
@@ -2980,14 +2965,21 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<LinkReferenceDefini
     let mut i = 0;
     while i < lines.len() {
         let raw = line_text[i];
-        // Fence tracking, mirroring protect_newline_destinations.
+        // Fence tracking, mirroring protect_newline_destinations,
+        // but on the container-stripped line: a fence inside a
+        // blockquote or list starts with `>` / a list marker, so
+        // checking the raw line never enters in_fence, and the
+        // strip_container_prefixes call below would then expose
+        // definition-shaped lines inside quoted code and collect
+        // them as real definitions (Codex P2 on #7170).
         {
+            let fence_line = strip_container_prefixes(raw);
             let mut j = 0;
-            let bytes = raw.as_bytes();
+            let bytes = fence_line.as_bytes();
             while j < bytes.len() && bytes[j] == b' ' && j < 3 {
                 j += 1;
             }
-            if raw[j..].starts_with("```") || raw[j..].starts_with("~~~") {
+            if fence_line[j..].starts_with("```") || fence_line[j..].starts_with("~~~") {
                 in_fence = !in_fence;
                 i += 1;
                 continue;
@@ -3113,14 +3105,17 @@ fn link_reference_used_labels(
             chars.len()
         };
         let line: String = chars[*start..end].iter().collect();
+        // Fence detection on the container-stripped line, matching
+        // collect_link_reference_definitions (Codex P2 on #7170).
+        let fence_line = strip_container_prefixes(&line);
         let mut spaces = 0;
         let mut k = 0;
-        let lb = line.as_bytes();
+        let lb = fence_line.as_bytes();
         while k < lb.len() && lb[k] == b' ' && spaces < 3 {
             k += 1;
             spaces += 1;
         }
-        if line[k..].starts_with("```") || line[k..].starts_with("~~~") {
+        if fence_line[k..].starts_with("```") || fence_line[k..].starts_with("~~~") {
             in_fence = !in_fence;
             blank(&mut scrub, *start, end);
             continue;
@@ -3176,6 +3171,56 @@ fn link_reference_used_labels(
             }
         }
     }
+    // Precompute bracket matches in ONE pass (stack): the matching
+    // ']' for every '['. The per-opener depth scan this replaces
+    // rescanned the whole suffix for every unmatched '[', making
+    // bracket-heavy files quadratic (Codex P2 on #7170: 2.81s at
+    // 80k unmatched brackets). Stack pairing finds the same ']'
+    // the depth scan finds: a ']' closes the most recent opener.
+    let mut bracket_match: Vec<Option<usize>> = vec![None; scrub.len()];
+    {
+        let mut stack: Vec<usize> = Vec::new();
+        let mut idx = 0;
+        while idx < scrub.len() {
+            match scrub[idx] {
+                '\\' => {
+                    idx += 2;
+                    continue;
+                }
+                '[' => stack.push(idx),
+                ']' => {
+                    if let Some(open_idx) = stack.pop() {
+                        bracket_match[open_idx] = Some(idx);
+                    }
+                }
+                _ => {}
+            }
+            idx += 1;
+        }
+    }
+    // First unescaped ']' at or after each position, for the
+    // full/collapsed-reference second bracket (same escape pairing
+    // as the forward scan it replaces).
+    let mut next_close: Vec<Option<usize>> = vec![None; scrub.len() + 1];
+    {
+        let mut escaped = vec![false; scrub.len()];
+        let mut idx = 0;
+        while idx < scrub.len() {
+            if scrub[idx] == '\\' && idx + 1 < scrub.len() {
+                escaped[idx + 1] = true;
+                idx += 2;
+            } else {
+                idx += 1;
+            }
+        }
+        let mut seen: Option<usize> = None;
+        for idx in (0..scrub.len()).rev() {
+            if scrub[idx] == ']' && !escaped[idx] {
+                seen = Some(idx);
+            }
+            next_close[idx] = seen;
+        }
+    }
     // Scan for reference usages.
     let def_norms: Vec<String> = defs.iter().map(|d| normalize_link_label(&d.label)).collect();
     let mut used: Vec<String> = Vec::new();
@@ -3192,29 +3237,9 @@ fn link_reference_used_labels(
             continue;
         }
         let open = if is_image { i + 1 } else { i };
-        // Find the ']' matching this '[' (balanced, escapes honoured).
-        let mut depth = 0i32;
-        let mut j = open;
-        let mut close = None;
-        while j < scrub.len() {
-            match scrub[j] {
-                '\\' => {
-                    j += 2;
-                    continue;
-                }
-                '[' => depth += 1,
-                ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        close = Some(j);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            j += 1;
-        }
-        let Some(close) = close else {
+        // The ']' matching this '[' (balanced, escapes honoured),
+        // precomputed above in one pass.
+        let Some(close) = bracket_match[open] else {
             i = open + 1;
             continue;
         };
@@ -3222,19 +3247,7 @@ fn link_reference_used_labels(
         let after = close + 1;
         if after < scrub.len() && scrub[after] == '[' {
             // Full or collapsed reference: find its ']'.
-            let mut k = after + 1;
-            let mut close2 = None;
-            while k < scrub.len() {
-                if scrub[k] == '\\' {
-                    k += 2;
-                    continue;
-                }
-                if scrub[k] == ']' {
-                    close2 = Some(k);
-                    break;
-                }
-                k += 1;
-            }
+            let close2 = next_close[after + 1];
             if let Some(close2) = close2 {
                 let second: String = scrub[after + 1..close2].iter().collect();
                 let label = if second.trim().is_empty() { &inner } else { &second };
@@ -3259,7 +3272,7 @@ fn link_reference_used_labels(
 /// Append a `link_reference_definition` PM node for every definition
 /// in `markdown` that no reference link or image uses (#1004).
 fn preserve_unused_link_reference_definitions(doc: &mut Value, markdown: &str) {
-    let defs = collect_link_reference_definitions(markdown);
+    let defs = scan_link_reference_definitions(markdown);
     if defs.is_empty() {
         return;
     }
@@ -6124,8 +6137,22 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "link_reference_definition" => {
             let label = json["attrs"]["label"].as_str().unwrap_or("");
             let url = json["attrs"]["url"].as_str().unwrap_or("");
-            let dest = if url.is_empty() || url.chars().any(char::is_whitespace) {
-                format!("<{url}>")
+            // Bare destinations cannot carry whitespace, an empty
+            // string, or punctuation such as an unbalanced `)`: a
+            // collected `<foo)>` written back bare as `[x]: foo)`
+            // no longer parses as a definition (Codex P2 on
+            // #7170). Use angle syntax for those, escaping the
+            // characters an angle destination cannot hold raw
+            // (`\`, `<`, `>`) so the parse direction's unescape
+            // restores the url exactly.
+            let dest = if url.is_empty()
+                || url.chars().any(|c| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '\\'))
+            {
+                let escaped = url
+                    .replace('\\', "\\\\")
+                    .replace('<', "\\<")
+                    .replace('>', "\\>");
+                format!("<{escaped}>")
             } else {
                 url.to_owned()
             };
@@ -8347,6 +8374,64 @@ mod tests {
         let (first, second) = two_saves(original);
         assert!(first.contains("[unused]: https://example.com"), "definition emitted: {first:?}");
         assert_eq!(first, second, "unused definition round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_trailing_backslash_destination_does_not_panic() {
+        // Codex P1 on #7170: a definition-shaped line ending in a
+        // single backslash advanced the bare-destination scan past
+        // the buffer end and panicked the slice.
+        let doc = markdown_to_prosemirror("[x]: https://example.com\\");
+        assert!(doc["content"].is_array(), "document opens: {doc:?}");
+    }
+
+    #[test]
+    fn test_link_reference_definition_in_blockquote_fence_not_synthesized() {
+        // Codex P2 on #7170: fences inside blockquotes start with
+        // `>`, so raw-line fence tracking missed them and the
+        // definition-shaped code inside was collected as real.
+        let original = "> ```\n> [x]: https://x.com\n> ```\n\n[y]: https://y.com\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let labels: Vec<&str> = top
+            .iter()
+            .filter(|n| n["type"] == "link_reference_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["y"], "only the real definition is carried: {top:?}");
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "blockquote fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_reference_definition_paren_destination_uses_angle_form() {
+        // Codex P2 on #7170: `<foo)>` collected as url `foo)` was
+        // written back bare and stopped parsing as a definition.
+        let original = "[x]: <foo)>\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let def = top
+            .iter()
+            .find(|n| n["type"] == "link_reference_definition")
+            .expect("definition node present");
+        assert_eq!(def["attrs"]["url"], "foo)");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("[x]: <foo)>"), "angle form emitted: {first:?}");
+        assert_eq!(first, second, "paren destination round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_many_unmatched_brackets_still_preserve_definition() {
+        // Codex P2 on #7170: the usage scan rescanned the suffix
+        // per unmatched `[` (quadratic). Correctness here; the
+        // one-pass match is what keeps this input cheap.
+        let original = format!("{}\n\n[x]: /url\n", "[".repeat(5000));
+        let doc = markdown_to_prosemirror(&original);
+        let top = doc["content"].as_array().unwrap();
+        assert!(
+            top.iter().any(|n| n["type"] == "link_reference_definition"),
+            "definition preserved behind bracket run: {top:?}"
+        );
     }
 
     #[test]
