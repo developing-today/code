@@ -157,55 +157,10 @@ impl FileJournal {
             .open(path)
             .with_context(|| format!("open world journal {}", path.display()))?;
 
-        let mut entries = Vec::new();
-        let mut good_len: u64 = 0;
-        let mut torn = false;
-        {
+        let (mut entries, good_len, torn) = {
             let mut reader = BufReader::new(&file);
-            let mut line = Vec::new();
-            loop {
-                line.clear();
-                let read = reader.read_until(b'\n', &mut line)?;
-                if read == 0 {
-                    break;
-                }
-                let complete = line.last() == Some(&b'\n');
-                if line == b"\n" {
-                    // Empty lines carry no entry. Preserve their bytes so a
-                    // later torn-tail repair cannot truncate past them.
-                    good_len += read as u64;
-                    continue;
-                }
-                match serde_json::from_slice::<JournalEntry>(&line) {
-                    Ok(entry) if complete => {
-                        entries.push(entry);
-                        good_len += read as u64;
-                    }
-                    parsed => {
-                        // An unterminated last line is a torn append: the crash
-                        // came before the entry was acknowledged. A newline-
-                        // terminated line that does not parse was fully written,
-                        // so it is corruption or an entry from a newer binary,
-                        // and it must never be dropped silently, even as the
-                        // last line.
-                        let mut rest = Vec::new();
-                        reader.read_to_end(&mut rest)?;
-                        if complete || !rest.is_empty() {
-                            bail!(
-                                "world journal {} is corrupt at byte {good_len}: {}",
-                                path.display(),
-                                parsed.err().map_or_else(
-                                    || "unterminated entry".to_owned(),
-                                    |e| e.to_string()
-                                )
-                            );
-                        }
-                        torn = true;
-                        break;
-                    }
-                }
-            }
-        }
+            Self::scan_entries(&mut reader, path)?
+        };
         if torn {
             tracing::warn!(
                 "world journal {}: dropping torn final entry at byte {good_len}",
@@ -266,6 +221,76 @@ impl FileJournal {
         self.version = new_version;
         Ok(())
     }
+    /// Scan journal entries from `reader` (the recovery half of
+    /// [`FileJournal::open`], split out so tests can drive it with
+    /// bounded readers). Returns the entries, the byte length of the
+    /// good prefix, and whether an unterminated torn tail was found.
+    ///
+    /// A malformed newline-terminated line is corruption and is
+    /// reported WITHOUT reading the rest of the journal (#8728): the
+    /// old code drained the remainder into memory first, so an early
+    /// bad line in a large journal cost a whole-file allocation (or
+    /// an unrelated I/O error) before the corruption was reported.
+    /// An unterminated line is torn only when nothing follows it;
+    /// that is probed with a single byte, never a drain.
+    fn scan_entries<R: BufRead>(
+        reader: &mut R,
+        path: &Path,
+    ) -> Result<(Vec<JournalEntry>, u64, bool)> {
+        let mut entries = Vec::new();
+        let mut good_len: u64 = 0;
+        let mut torn = false;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let read = reader.read_until(b'\n', &mut line)?;
+            if read == 0 {
+                break;
+            }
+            let complete = line.last() == Some(&b'\n');
+            if line == b"\n" {
+                // Empty lines carry no entry. Preserve their bytes so a
+                // later torn-tail repair cannot truncate past them.
+                good_len += read as u64;
+                continue;
+            }
+            match serde_json::from_slice::<JournalEntry>(&line) {
+                Ok(entry) if complete => {
+                    entries.push(entry);
+                    good_len += read as u64;
+                }
+                parsed => {
+                    // An unterminated last line is a torn append: the crash
+                    // came before the entry was acknowledged. A newline-
+                    // terminated line that does not parse was fully written,
+                    // so it is corruption or an entry from a newer binary,
+                    // and it must never be dropped silently, even as the
+                    // last line.
+                    let corruption = || {
+                        anyhow::anyhow!(
+                            "world journal {} is corrupt at byte {good_len}: {}",
+                            path.display(),
+                            parsed.err().map_or_else(
+                                || "unterminated entry".to_owned(),
+                                |e| e.to_string()
+                            )
+                        )
+                    };
+                    if complete {
+                        return Err(corruption());
+                    }
+                    let mut probe = [0u8; 1];
+                    if reader.read(&mut probe)? > 0 {
+                        return Err(corruption());
+                    }
+                    torn = true;
+                    break;
+                }
+            }
+        }
+        Ok((entries, good_len, torn))
+    }
+
 }
 
 impl WorldJournal for FileJournal {
@@ -952,6 +977,114 @@ mod tests {
     use super::*;
     use crate::world::{Authority, CapabilityBounds, FileScope, Isolation, WorldScopes};
     use crate::world_limits::RuntimeLimits;
+
+    // #8728: the journal scan reports a malformed complete line
+    // without reading the rest of the journal. The oracle is a
+    // counting reader under a small-buffer BufReader: a scan that
+    // drained the remainder (the old read_to_end) would serve every
+    // byte of the tail; the bounded scan serves at most one buffer
+    // past the malformed line.
+    struct CountingRead {
+        inner: std::io::Cursor<Vec<u8>>,
+        served: usize,
+    }
+
+    impl std::io::Read for CountingRead {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.served += n;
+            Ok(n)
+        }
+    }
+
+    fn journal_line(entry: &JournalEntry) -> Vec<u8> {
+        let mut line = serde_json::to_vec(entry).unwrap();
+        line.push(b'\n');
+        line
+    }
+
+    fn scan(data: Vec<u8>) -> (anyhow::Result<(Vec<JournalEntry>, u64, bool)>, usize) {
+        let counting = CountingRead {
+            inner: std::io::Cursor::new(data),
+            served: 0,
+        };
+        let mut reader = BufReader::with_capacity(64, counting);
+        let result = FileJournal::scan_entries(&mut reader, Path::new("journal.jsonl"));
+        (result, reader.into_inner().served)
+    }
+
+    #[test]
+    fn journal_scan_reports_complete_corruption_without_reading_the_remainder() {
+        let good = journal_line(&JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        });
+        let mut data = good.clone();
+        data.extend_from_slice(b"{\"not\":\"an entry\"}\n");
+        let tail_start = data.len();
+        data.extend(std::iter::repeat_n(b'x', 1 << 20));
+        let (result, served) = scan(data);
+        let err = result
+            .err()
+            .expect("a malformed complete line is corruption, not a torn tail");
+        assert!(
+            err.to_string()
+                .contains(&format!("corrupt at byte {}", good.len())),
+            "diagnostic keeps the path/offset form: {err}"
+        );
+        assert!(
+            served <= tail_start + 64,
+            "scan served {served} bytes of a {}-byte journal: it drained the remainder",
+            tail_start + (1 << 20)
+        );
+    }
+
+    #[test]
+    fn journal_scan_complete_corrupt_last_line_is_corruption_not_torn() {
+        let good = journal_line(&JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        });
+        let mut data = good.clone();
+        data.extend_from_slice(b"garbage\n");
+        let (result, _) = scan(data);
+        let err = result.err().expect("complete corrupt line must fail");
+        assert!(
+            err.to_string()
+                .contains(&format!("corrupt at byte {}", good.len())),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn journal_scan_recovers_a_torn_unterminated_tail() {
+        let good = journal_line(&JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        });
+        let mut data = good.clone();
+        data.extend_from_slice(b"{\"Created\":{\"wor");
+        let (result, _) = scan(data);
+        let (entries, good_len, torn) = result.expect("a torn tail recovers");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(good_len, good.len() as u64);
+        assert!(torn);
+    }
+
+    #[test]
+    fn journal_scan_reads_a_clean_journal_to_eof() {
+        let first = journal_line(&JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        });
+        let mut data = first.clone();
+        data.extend_from_slice(&first);
+        let (result, _) = scan(data);
+        let (entries, good_len, torn) = result.expect("clean journal scans");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(good_len, (first.len() * 2) as u64);
+        assert!(!torn);
+    }
 
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
         let admin = admin.map(str::to_owned);
