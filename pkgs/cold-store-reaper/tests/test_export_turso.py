@@ -192,6 +192,25 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertIn("skipped (TURSO_PLATFORM_API_TOKEN not set)", result.stdout)
         self.assertEqual(list(self.capture.glob("argv-*.log")), [])
 
+    def test_work_dir_is_named_wiped_at_start_and_removed_on_exit(self):
+        # darwin-nix#373 regression: scratch must live in ONE named
+        # directory. A previous run killed mid-flight (SIGKILL defeats
+        # the EXIT trap) leaves its files there; the next run wipes
+        # them at startup instead of starting a second anonymous
+        # mktemp dir, and a clean exit removes the directory.
+        work = Path(self.tmp.name) / "named-work"
+        work.mkdir()
+        (work / "stale-from-a-killed-run.sql").write_text("leftover")
+        env = {**self.env, "EXPORT_TURSO_WORK_DIR": str(work)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        # the named location was used (its lock file exists) ...
+        self.assertTrue(Path(f"{work}.lock").exists())
+        # ... and the directory itself is gone after a clean exit,
+        # stale leftovers included.
+        self.assertFalse(work.exists())
+
 
 BROKEN_SCHEMA_INSERT = (
     b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
