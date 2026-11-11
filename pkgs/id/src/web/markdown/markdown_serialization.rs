@@ -904,8 +904,7 @@ fn is_blank_quote_line(line: &str) -> bool {
         return false;
     }
     let rest = &line[indent..];
-    rest.contains('>')
-        && rest.chars().all(|c| c == '>' || c == ' ' || c == '\t')
+    rest.contains('>') && rest.chars().all(|c| c == '>' || c == ' ' || c == '\t')
 }
 
 /// Whether a rendered line is quoted content (as opposed to a blank

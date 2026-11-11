@@ -1870,8 +1870,7 @@ mod tests {
         let unpadded = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
         let saved = prosemirror_to_markdown(&markdown_to_prosemirror(unpadded)).unwrap();
         assert_eq!(
-            saved,
-            "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
+            saved, "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
             "table canonicalized without leading blanks: {saved:?}"
         );
         assert_eq!(
