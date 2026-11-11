@@ -1,4 +1,9 @@
-import { createExecutionContext, env, fetchMock, waitOnExecutionContext } from "cloudflare:test";
+import {
+  createExecutionContext,
+  env,
+  fetchMock,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import worker from "../src/index";
 
@@ -14,17 +19,33 @@ async function sign(body: string): Promise<string> {
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-  return "sha256=" + [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(body),
+  );
+  return (
+    "sha256=" +
+    [...new Uint8Array(sig)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+  );
 }
 
 function tursoOk() {
   return JSON.stringify({
-    results: [{ type: "success", response: { type: "execute", result: { rows: [] } } }, { type: "success" }],
+    results: [
+      { type: "success", response: { type: "execute", result: { rows: [] } } },
+      { type: "success" },
+    ],
   });
 }
 
-async function post(body: string, event: string, sig?: string): Promise<Response> {
+async function post(
+  body: string,
+  event: string,
+  sig?: string,
+): Promise<Response> {
   const req = new Request("https://github-ci.test/", {
     method: "POST",
     headers: {
@@ -34,7 +55,10 @@ async function post(body: string, event: string, sig?: string): Promise<Response
     body,
   });
   const ctx = createExecutionContext();
-  const res = await worker.fetch(req, env as unknown as Parameters<typeof worker.fetch>[1]);
+  const res = await worker.fetch(
+    req,
+    env as unknown as Parameters<typeof worker.fetch>[1],
+  );
   await waitOnExecutionContext(ctx);
   return res;
 }
@@ -94,10 +118,15 @@ describe("github-ci worker", () => {
   });
 
   it("fails the delivery (500) when Turso answers a results-less 200 for the ci_events insert (#6949)", async () => {
-    fetchMock.get(PLATFORM).intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, "{}");
+    fetchMock
+      .get(PLATFORM)
+      .intercept({ path: "/v2/pipeline", method: "POST" })
+      .reply(200, "{}");
     const res = await post(runPayload, "workflow_run", await sign(runPayload));
     expect(res.status).toBe(500);
-    expect(await res.text()).toContain("turso pipeline failed: malformed response");
+    expect(await res.text()).toContain(
+      "turso pipeline failed: malformed response",
+    );
   });
 
   it("skips non-completed runs without touching Turso", async () => {
@@ -108,11 +137,15 @@ describe("github-ci worker", () => {
     });
     const res = await post(p, "workflow_run", await sign(p));
     expect(res.status).toBe(200);
-    expect((await res.json()) as { skipped?: string }).toMatchObject({ skipped: "not_completed" });
+    expect((await res.json()) as { skipped?: string }).toMatchObject({
+      skipped: "not_completed",
+    });
   });
 
   it("ignores unknown events with 202", async () => {
-    const p = JSON.stringify({ repository: { full_name: "developing-today/code" } });
+    const p = JSON.stringify({
+      repository: { full_name: "developing-today/code" },
+    });
     const res = await post(p, "star", await sign(p));
     expect(res.status).toBe(202);
   });
@@ -140,5 +173,70 @@ describe("github-ci worker", () => {
     expect(all).toContain("agent_repo_snapshots");
     expect(all).toContain("INSERT INTO events");
     expect(all).toContain("github-webhook");
+  });
+
+  it("issues on a fleet repo upserts the #8580 mirror row", async () => {
+    const seen: string[] = [];
+    const queueMock = fetchMock.get(QUEUE);
+    // sink event insert (1) + watermark (1) + mirror batch (1)
+    for (let i = 0; i < 3; i++) {
+      queueMock
+        .intercept({ path: "/v2/pipeline", method: "POST" })
+        .reply(200, (opts) => {
+          seen.push(String(opts.body));
+          return tursoOk();
+        });
+    }
+    const p = JSON.stringify({
+      action: "opened",
+      issue: {
+        number: 8580,
+        title: "Fleet unification slice 2",
+        body: "mirror everything",
+        state: "open",
+        labels: [{ name: "task/small-fix" }],
+        assignees: [],
+        comments: 0,
+        user: { login: "dezren39" },
+        html_url: "https://example.invalid/issues/8580",
+        created_at: "2026-11-11T01:00:00Z",
+        updated_at: "2026-11-11T01:00:00Z",
+      },
+      repository: { full_name: "developing-today/code" },
+    });
+    const res = await post(p, "issues", await sign(p));
+    expect(res.status).toBe(200);
+    const all = seen.join("\n");
+    expect(all).toContain("INSERT INTO github_mirror_issues");
+    expect(all).toContain("INSERT INTO github_mirror_meta");
+    expect(all).toContain("Fleet unification slice 2");
+  });
+
+  it("issue_comment refreshes the mirror comments count and agent-note pointer", async () => {
+    const seen: string[] = [];
+    const queueMock = fetchMock.get(QUEUE);
+    for (let i = 0; i < 3; i++) {
+      queueMock
+        .intercept({ path: "/v2/pipeline", method: "POST" })
+        .reply(200, (opts) => {
+          seen.push(String(opts.body));
+          return tursoOk();
+        });
+    }
+    const p = JSON.stringify({
+      action: "created",
+      issue: { number: 8580, comments: 7 },
+      comment: {
+        id: 31337,
+        html_url: "https://example.invalid/issues/8580#c31337",
+        body: "🤖 **Agent note** · checkpoint\n<!-- agent-note:v1 agent=repo-worker-code -->",
+      },
+      repository: { full_name: "developing-today/code" },
+    });
+    const res = await post(p, "issue_comment", await sign(p));
+    expect(res.status).toBe(200);
+    const all = seen.join("\n");
+    expect(all).toContain("UPDATE github_mirror_issues SET comments");
+    expect(all).toContain("31337");
   });
 });
