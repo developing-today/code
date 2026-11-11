@@ -160,8 +160,17 @@ func callScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.
 	stderr := &cappedBuffer{max: defaults.ExecStderrLimit}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = scriptWaitDelay
-	mcpclient.NoteToolCallDispatched(ctx)
-	runErr := cmd.Run()
+	// Dispatch is noted only after the program has actually started:
+	// a command that cannot start (a missing executable, a permission
+	// failure) never ran, so its outcome is known -- it performed no
+	// write -- and noting dispatch first would record an unknown
+	// write outcome and persistently block later writes in the
+	// namespace (Codex P2 on PR #8317).
+	runErr := cmd.Start()
+	if runErr == nil {
+		mcpclient.NoteToolCallDispatched(ctx)
+		runErr = cmd.Wait()
+	}
 	if errors.Is(runErr, exec.ErrWaitDelay) {
 		// The program exited and only its inherited pipes were still open.
 		runErr = nil

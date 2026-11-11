@@ -591,6 +591,36 @@ func TestScriptViewReadOnlyTimeoutRecordsNothing(t *testing.T) {
 	}
 }
 
+// Oracle: the write ledger (Codex P2 on PR #8317, fifth pass). A
+// non-read-only command-backed script tool whose program cannot
+// start -- the executable does not exist -- never ran, so its
+// outcome is known: the caller sees the plain could-not-run error,
+// NOT an unknown outcome, the ledger holds no record, and a retry
+// is not refused by the ledger preflight.
+func TestScriptViewUnstartableCommandRecordsNothing(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"ops": {Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"missing": {Command: "mcpx-no-such-executable-14190", Description: "does not exist"},
+		}}},
+	})
+	if r.writeLedger == nil {
+		t.Fatal("the test registry must carry a write ledger")
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := r.Call(scriptCtx(t), "ops", "missing", config.CallContext{}, map[string]any{})
+		var unknown ErrUnknownOutcome
+		if errors.As(err, &unknown) {
+			t.Fatalf("attempt %d: an unstartable command must not record an unknown outcome, got %v", attempt, err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "could not run") {
+			t.Fatalf("attempt %d: want the plain could-not-run error, got %v", attempt, err)
+		}
+		if _, blocked := r.writeLedger.Lookup("ops"); blocked {
+			t.Fatalf("attempt %d: an unstartable command must not write the ledger", attempt)
+		}
+	}
+}
+
 // Oracle: shell-safe argument handling (Codex P1 on PR #8317). A
 // schema-valid argument that is a shell command substitution must
 // reach a shell-backed tool as data: the rendered body carries it
