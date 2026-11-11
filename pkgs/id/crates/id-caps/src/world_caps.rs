@@ -940,6 +940,20 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
         ticks <= MAX_TICK_INTERVALS,
         "at most {MAX_TICK_INTERVALS} tick intervals"
     );
+    // The location-watch bound is enforced here, at parse time,
+    // exactly like the tick bound above: the registry's
+    // ProviderBound::Items(MAX_LOC_WATCHES) is the advertised
+    // sampling/delivery budget, not a description (#2341, PR #8643
+    // Codex P2).
+    let loc_watches = wants
+        .subscribe
+        .iter()
+        .filter(|sub| matches!(sub, Subscription::LocWatch(_)))
+        .count();
+    ensure!(
+        loc_watches <= MAX_LOC_WATCHES,
+        "at most {MAX_LOC_WATCHES} location watches"
+    );
     Ok(wants)
 }
 

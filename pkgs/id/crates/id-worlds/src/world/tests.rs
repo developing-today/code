@@ -4687,6 +4687,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loc_watch_disarms_when_capability_authority_is_removed() {
+        // Oracle: PR #8643 Codex P1 — revoking `loc.watch` authority
+        // (here via SetCapsCeiling) stops location delivery: the
+        // armed watch is disarmed by reconcile, and no reading is
+        // delivered afterwards even though consent still stands.
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("loc-watch-revoke", WorldLimits::default(), clock.clone())
+                .unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["loc.watch".to_owned()]));
+        let mut allowed = crate::world_caps::default_ceiling_names();
+        allowed.insert("loc.watch".to_owned());
+        core.ledger.set_allowed(allowed);
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(LocWatchRecorder::default()), None);
+        let reading = crate::world_caps::LocationReading {
+            lat: 52.5,
+            lon: 13.4,
+            accuracy_m: 12.0,
+            fix_age_ms: 250,
+            source: crate::world_caps::LocationSource::Gnss,
+        };
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        actor.location_fix = Some(reading);
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        assert!(
+            actor.loc_watches.contains_key(&5000),
+            "a granted, consented watch arms on presence"
+        );
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        assert_eq!(
+            loc_events(&actor),
+            vec![crate::world_caps::loc_watch_reading_event(&reading)],
+            "the open watch delivers before authority is removed"
+        );
+
+        // Remove loc.watch from the ceiling: authority is gone.
+        let ceiling: Vec<String> = crate::world_caps::default_ceiling_names()
+            .into_iter()
+            .collect();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling { ceiling, reply })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        assert!(
+            actor.loc_watches.is_empty(),
+            "the watch disarms when its capability authority is removed"
+        );
+
+        clock.advance(5000);
+        actor.fire_loc_watches().await;
+        assert_eq!(
+            loc_events(&actor),
+            vec![crate::world_caps::loc_watch_reading_event(&reading)],
+            "no reading is delivered after authority removal"
+        );
+    }
+
+    #[test]
+    fn parse_wants_refuses_more_than_max_loc_watches() {
+        // Oracle: PR #8643 Codex P2 — the advertised MAX_LOC_WATCHES
+        // bound is enforced at wants parse time, like the tick bound.
+        let over: Vec<String> = (0..=crate::world_caps::MAX_LOC_WATCHES)
+            .map(|i| format!("loc.watch:{}", 5000 + i * 1000))
+            .collect();
+        let text = serde_json::json!({"v": 1, "subscribe": over}).to_string();
+        assert!(
+            crate::world_caps::parse_wants(&text).is_err(),
+            "more than MAX_LOC_WATCHES location watches must not parse"
+        );
+        let at: Vec<String> = (0..crate::world_caps::MAX_LOC_WATCHES)
+            .map(|i| format!("loc.watch:{}", 5000 + i * 1000))
+            .collect();
+        let text = serde_json::json!({"v": 1, "subscribe": at}).to_string();
+        assert!(
+            crate::world_caps::parse_wants(&text).is_ok(),
+            "exactly MAX_LOC_WATCHES location watches must parse"
+        );
+    }
+
+    #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
         let mut core = WorldCore::new_with_clock(

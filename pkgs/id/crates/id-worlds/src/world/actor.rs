@@ -1376,6 +1376,16 @@ impl WorldActor {
             .map(|(ms, _)| *ms)
             .collect();
         for ms in due {
+            // A watch that is no longer an active, granted
+            // subscription is stale (its authority was removed after
+            // it armed): disarm it without delivering a reading.
+            if !self.active_subs.contains(&Subscription::LocWatch(ms))
+                || !self.core.ledger.is_granted("loc.watch")
+            {
+                self.loc_watches.remove(&ms);
+                self.active_subs.remove(&Subscription::LocWatch(ms));
+                continue;
+            }
             if self.location_consent != crate::world_caps::LocationConsent::Granted {
                 self.loc_watches.remove(&ms);
                 self.active_subs.remove(&Subscription::LocWatch(ms));
@@ -1512,10 +1522,11 @@ impl WorldActor {
         let Some(reading) = self.location_fix else {
             return Err(CapError::no_fix());
         };
-        if let Some(ceiling) = args
-            .get("max_accuracy_m")
-            .and_then(serde_json::Value::as_u64)
-        {
+        // A supplied ceiling that is not an unsigned integer is
+        // malformed, not absent: refuse it instead of silently
+        // dropping the precision check (#2341, PR #8643 Codex P2).
+        if let Some(raw_ceiling) = args.get("max_accuracy_m") {
+            let ceiling = raw_ceiling.as_u64().ok_or_else(CapError::bad_args)?;
             reading.refuse_beyond_ceiling(ceiling as f64)?;
         }
         Ok(reading.to_json())
@@ -1878,6 +1889,12 @@ impl WorldActor {
         let active = &self.active_subs;
         self.ticks
             .retain(|ms, _| active.contains(&Subscription::Tick(*ms)));
+        // Location watches disarm alongside ticks (#2341, PR #8643
+        // Codex P1): a watch whose capability authority was removed
+        // must stop delivering readings, not merely lose its
+        // subscription record.
+        self.loc_watches
+            .retain(|ms, _| active.contains(&Subscription::LocWatch(*ms)));
     }
 
     /// The capability report an admin sees.
@@ -4051,6 +4068,24 @@ mod device_info_tests {
             .execute(&loc_request(serde_json::json!({"max_accuracy_m": 20})))
             .unwrap();
         assert_eq!(value, sample_reading().to_json());
+    }
+
+    #[test]
+    fn loc_position_refuses_a_malformed_accuracy_ceiling() {
+        // Oracle: PR #8643 Codex P2 — a supplied `max_accuracy_m`
+        // that is not an unsigned integer (5.5, "5") is `bad_args`,
+        // never a silently disabled precision check: with consent
+        // granted and a 12-metre fix available, the malformed
+        // requests must not succeed with the imprecise reading.
+        let mut actor = loc_actor();
+        actor.location_consent = crate::world_caps::LocationConsent::Granted;
+        actor.location_fix = Some(sample_reading());
+        for bad in [serde_json::json!(5.5), serde_json::json!("5")] {
+            let error = actor
+                .execute(&loc_request(serde_json::json!({"max_accuracy_m": bad})))
+                .unwrap_err();
+            assert_eq!(error.code(), CapError::bad_args().code());
+        }
     }
 }
 
