@@ -46,10 +46,10 @@ build_tree() { # build_tree <root>: the current-main shape
   wf "$root" opencode-config-guard.yml pull_request workflow_dispatch
   wf "$root" mcpx-fix-test-guard.yml pull_request push workflow_dispatch
   wf "$root" production-line-guard.yml workflow_dispatch
-  wf "$root" go-modules-build.yml workflow_dispatch
-  wf "$root" identity-build.yml workflow_dispatch
-  wf "$root" map-build.yml workflow_dispatch
-  wf "$root" mcpx-nixbuild.yml workflow_dispatch
+  wf "$root" go-modules-build.yml pull_request push workflow_dispatch
+  wf "$root" identity-build.yml pull_request push workflow_dispatch
+  wf "$root" map-build.yml pull_request push workflow_dispatch
+  wf "$root" mcpx-nixbuild.yml pull_request push workflow_dispatch
 }
 
 # Agreeing-with-waivers tree: exactly the recorded Phase 2-3
@@ -58,8 +58,8 @@ build_tree() { # build_tree <root>: the current-main shape
 build_tree "$TMP/ok"
 bash "$SCRIPT" "$TMP/ok" >"$TMP/ok.out"
 grep -q "ci-policy-agreement: OK" "$TMP/ok.out"
-grep -q "WAIVED go-modules-build.yml: main tier" "$TMP/ok.out"
-grep -q "issue #6981" "$TMP/ok.out"
+grep -q "WAIVED opencode-config-guard.yml: main tier" "$TMP/ok.out"
+grep -q "issue #6953" "$TMP/ok.out"
 echo "pass: tree with exactly the waived disagreement set passes"
 
 # Unwaived disagreement: workflow-lint loses its pull_request leg.
@@ -72,15 +72,15 @@ fi
 grep -q "DISAGREEMENT workflow-lint.yml: pr tier requires trigger 'pull_request'" "$TMP/bad.out"
 echo "pass: unwaived disagreement fails naming the workflow and leg"
 
-# Stale waiver: mcpx-nixbuild gains its main-tier push leg, so the
-# #6981 main waiver for it must be deleted, not left behind.
+# Stale waiver: opencode-config-guard gains its main-tier push leg, so the
+# #6953 main waiver for it must be deleted, not left behind.
 build_tree "$TMP/stale"
-wf "$TMP/stale" mcpx-nixbuild.yml workflow_dispatch push
+wf "$TMP/stale" opencode-config-guard.yml pull_request workflow_dispatch push
 if bash "$SCRIPT" "$TMP/stale" >"$TMP/stale.out" 2>&1; then
   echo "FAIL: checker accepted a stale waiver" >&2
   exit 1
 fi
-grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/stale.out"
+grep -q "STALE WAIVER opencode-config-guard.yml: main leg now agrees" "$TMP/stale.out"
 echo "pass: a waiver whose leg now agrees fails as stale"
 
 # Missing policy row: production-line guard's row vanishes.
