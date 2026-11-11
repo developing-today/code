@@ -602,7 +602,7 @@ fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
 /// own checks as defense in depth.
 fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
     match path {
-        "/claim" => lease_seconds(req).map(|_| ()),
+        "/claim" | "/claim-flow" => lease_seconds(req).map(|_| ()),
         "/heartbeat" => extend_seconds(req).map(|_| ()),
         "/park" => delay_seconds(req).map(|_| ()),
         _ => Ok(()),
@@ -903,6 +903,94 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 args["p_lane_id"] = lane.clone();
             }
             simple_rpc(st, "claim_repo_task", args)
+        }
+        "/claim-flow" => {
+            // #5757-A: claim + lane-assign + session-bind in one
+            // broker round trip. Each step is the corresponding
+            // single-verb RPC with the same arguments the three
+            // verbs pass. A claim-step failure — or an empty claim —
+            // returns that step's answer verbatim and later steps
+            // are not attempted (the three-verb flow's semantics,
+            // one trip). A LANE/BIND failure is different: the claim
+            // RPC has already COMMITTED, so it answers as a partial
+            // success (ok envelope + claimed row +
+            // `claim_flow_partial`), never as an error — a retryable
+            // error here (57014 / PGRST002) would make the client's
+            // call_result replay the WHOLE flow and claim a second
+            // task, leaking this one (Codex P1 on PR #8493). The
+            // caller finishes the failed step with the single-verb
+            // /lane or /bind call for this task id. The answer
+            // carries every step's row:
+            // `row` is the claimed task row (the shape /claim
+            // answers and the client's claim_output consumes);
+            // `lane_row` / `bind_row` are what /lane and /bind
+            // answer in the three-verb flow.
+            let lease = match lease_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
+            if let Err(e) = crate::client::claim_flow_precheck(req) {
+                return fail(2, e);
+            }
+            let mut args = json!({
+                "p_worker": req.get("worker"),
+                "p_queue": req.get("queue"),
+                "p_lease_seconds": lease,
+            });
+            if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
+                args["p_lane_id"] = lane.clone();
+            }
+            let row = match st.rpc("claim_repo_task", args) {
+                Ok(row) => row,
+                Err(e) => return fail(e.exit, e.msg),
+            };
+            if row.is_null() {
+                return ok(json!({"row": row}));
+            }
+            let task_id = row.get("id").cloned().unwrap_or(Value::Null);
+            let lane_row = match st.rpc(
+                "assign_repo_task_lane",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_exclusion_reason": req.get("exclusion_reason"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "claim_flow_partial": {
+                            "step": "lane",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            let bind_row = match st.rpc(
+                "bind_repo_task_lane_session",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_session_id": req.get("session_id"),
+                    "p_launched_by": req.get("launched_by"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "lane_row": lane_row,
+                        "claim_flow_partial": {
+                            "step": "bind",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            ok(json!({"row": row, "lane_row": lane_row, "bind_row": bind_row}))
         }
         "/lane" => simple_rpc(
             st,
@@ -1451,6 +1539,35 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
+        // #5757-A Codex P1 oracle (PR #8493): in the PostgREST
+        // broker's /claim-flow handler, the lane and bind RPC
+        // failures answer with claim_flow_partial inside an ok
+        // envelope — never `return fail(...)`, whose retryable
+        // error text the client would replay into a second claim
+        // after the first claim already committed.
+        let src = include_str!("queue_broker.rs");
+        let start = src.find("\"/claim-flow\" => {").expect("claim-flow handler");
+        let end = src[start..].find("\"/lane\" =>").expect("lane handler follows") + start;
+        let flow = &src[start..end];
+        assert_eq!(
+            flow.matches("\"claim_flow_partial\"").count(),
+            2,
+            "lane and bind failures both carry claim_flow_partial"
+        );
+        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
+        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        // The claim RPC's own `return fail(...)` is pre-commit and
+        // legitimate; the invariant binds everything from the lane
+        // RPC onward (post-commit).
+        let lane_at = flow.find("assign_repo_task_lane").expect("lane RPC present");
+        assert!(
+            !flow[lane_at..].contains("return fail(e.exit, e.msg)"),
+            "no post-claim step returns the raw retryable error"
+        );
+    }
 
     #[test]
     fn park_and_revive_not_before_are_gated_before_the_rpc() {
