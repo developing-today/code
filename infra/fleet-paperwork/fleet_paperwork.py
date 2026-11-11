@@ -250,16 +250,33 @@ class AppClient:
 
     def installations(self) -> list[dict]:
         if self._installations is None:
-            _, data = http(
-                "GET", "/app/installations?per_page=100", self.jwt, expect=list
-            )
-            for inst in data:
-                if not isinstance(inst, dict):
-                    die(
-                        "installation entry is not a JSON object "
-                        f"(got {_shape_name(inst)})"
-                    )
-            self._installations = data
+            # /app/installations is paginated: fetching only the first
+            # per_page=100 page silently drops every installation past
+            # 100 (#7930 - the developing-today org sits on page 2, so
+            # the App rate-limit fallback reported no installation for
+            # it). Page through all of them, stopping at a short or
+            # empty page, mirroring assert_repo_in_scope below; the
+            # endpoint returns a top-level array with no total_count.
+            collected: list[dict] = []
+            page = 1
+            while True:
+                _, data = http(
+                    "GET",
+                    f"/app/installations?per_page=100&page={page}",
+                    self.jwt,
+                    expect=list,
+                )
+                for inst in data:
+                    if not isinstance(inst, dict):
+                        die(
+                            "installation entry is not a JSON object "
+                            f"(got {_shape_name(inst)})"
+                        )
+                collected.extend(data)
+                if len(data) < 100:
+                    break
+                page += 1
+            self._installations = collected
         return self._installations
 
     def installation_for(self, owner: str) -> dict:
@@ -463,10 +480,53 @@ def cmd_create(args) -> int:
             f"create in {args.repo} returned no issue number (response keys: "
             f"{sorted(created) if isinstance(created, dict) else type(created)})"
         )
-    # Verify by readback — an unverified create counts as a failure.
+    # Verify by readback — an unverified create counts as a failure. The
+    # README promises the comparison covers (title, body, state) and the
+    # labels that were sent (#6901): a create whose body was dropped or
+    # mangled, or whose labels were not applied, must not report success.
     _, got = http("GET", f"/repos/{args.repo}/issues/{number}", token)
     if got.get("title") != title or got.get("number") != number:
         die(f"readback mismatch for {args.repo}#{number}: title={got.get('title')!r}")
+    readback_body = got.get("body")
+    if readback_body != body:
+        sent_chars = len(body) if isinstance(body, str) else "n/a"
+        readback_chars = (
+            len(readback_body) if isinstance(readback_body, str) else "n/a"
+        )
+        die(
+            f"readback mismatch for {args.repo}#{number}: body sent "
+            f"{sent_chars} chars, read back {readback_chars} chars "
+            f"(body={_shape_name(readback_body)})"
+        )
+    if got.get("state") != "open":
+        die(
+            f"readback mismatch for {args.repo}#{number}: state={got.get('state')!r}, "
+            f"expected 'open' for a freshly created issue"
+        )
+    if args.label:
+        readback_labels = got.get("labels", [])
+        if not isinstance(readback_labels, list):
+            die(
+                f"readback mismatch for {args.repo}#{number}: labels have invalid "
+                f"shape (expected array, got {_shape_name(readback_labels)})"
+            )
+        have = set()
+        for label in readback_labels:
+            name = label if isinstance(label, str) else (
+                label.get("name") if isinstance(label, dict) else None
+            )
+            if not isinstance(name, str):
+                die(
+                    f"readback mismatch for {args.repo}#{number}: label entry has "
+                    f"no string name (got {_shape_name(label)})"
+                )
+            have.add(name)
+        missing = sorted(set(args.label) - have)
+        if missing:
+            die(
+                f"readback mismatch for {args.repo}#{number}: labels not applied: "
+                f"{missing} (read back {sorted(have)})"
+            )
     ledger_append("create", args.repo, str(number), title)
     print(f"created+verified: {args.repo}#{number} {created.get('html_url')}")
     return 0
@@ -549,6 +609,12 @@ def cmd_close(args) -> int:
     client.assert_repo_in_scope(args.repo)
     token = client.token_for(args.repo.split("/")[0])
     _, current = http("GET", f"/repos/{args.repo}/issues/{args.issue}", token)
+    if "pull_request" in current:
+        die(
+            f"refusing to close {args.repo}#{args.issue}: that number is a "
+            "pull request, not an issue (the issues API returns PRs as "
+            "issues); close it through the pull request workflow instead"
+        )
     if current.get("state") == "closed":
         print(f"already closed: {args.repo}#{args.issue}")
         return 0

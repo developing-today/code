@@ -357,14 +357,27 @@ READY_ROOT="$TMP/ready-src"
 READY_HOME="$TMP/ready-home"
 mkdir -p "$READY_ROOT/systemd" "$READY_HOME/.local/bin"
 cp "$READY_INSTALL" "$READY_ROOT/install.sh"
-printf '%s\n' '[Service]' >"$READY_ROOT/systemd/ready-for-agent.service"
+cp "$PM_STACK_DIR/ready-for-agent/systemd/ready-for-agent.service" "$READY_ROOT/systemd/ready-for-agent.service"
+# install.sh runs ./apply-config.sh unconditionally once the new process is
+# verified serving (#1203). Mirror the sibling harness (ready-for-agent/
+# test-install.sh, #5368): a recording stub plus the config it would read,
+# so the smoke proves the call happens instead of dying on a missing file.
+cat >"$READY_ROOT/apply-config.sh" <<'APPLY_CONFIG'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'apply-config\n' >>"${PM_TEST_COMMAND_LOG:?}"
+APPLY_CONFIG
+chmod +x "$READY_ROOT/apply-config.sh"
+cat >"$READY_ROOT/config.json" <<'JSON'
+{"repositories":[{"projectPath":"developing-today/code","localDir":"code","cloneUrl":"https://github.com/developing-today/code.git"}]}
+JSON
 cat >"$READY_HOME/.local/bin/ready-for-agent" <<'FAKE'
 #!/usr/bin/env bash
 printf 'ready-for-agent 1.1.0\n'
 FAKE
 chmod +x "$READY_HOME/.local/bin/ready-for-agent"
 READY_OUTPUT="$TMP/ready-install.out"
-if env HOME="$READY_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
+if env HOME="$READY_HOME" XDG_STATE_HOME="$READY_HOME/.local/state" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_COMMAND_LOG="$COMMAND_LOG" \
   "$BASH_BIN" "$READY_ROOT/install.sh" >"$READY_OUTPUT" 2>&1; then
   pass 'ready-for-agent install smoke completes using temporary HOME and stubs'
@@ -373,11 +386,13 @@ else
   fail 'ready-for-agent install smoke completes using temporary HOME and stubs'
 fi
 if [[ -f "$READY_HOME/.config/systemd/user/ready-for-agent.service" ]] &&
+  cmp -s "$READY_HOME/.config/systemd/user/ready-for-agent.service" "$PM_STACK_DIR/ready-for-agent/systemd/ready-for-agent.service" &&
   contains "$READY_OUTPUT" 'is running after restart'; then
   pass 'ready-for-agent copies its unit and passes the fake UI health check'
 else
   fail 'ready-for-agent copies its unit and passes the fake UI health check'
 fi
+if grep -Fxq 'apply-config' "$COMMAND_LOG"; then pass 'ready-for-agent smoke invokes apply-config.sh after verified serving'; else fail 'ready-for-agent smoke invokes apply-config.sh after verified serving'; fi
 if ! grep -Fq 'npm ' "$COMMAND_LOG"; then pass 'ready-for-agent smoke makes no package-manager call'; else fail 'ready-for-agent smoke makes no package-manager call'; fi
 
 if ((FAILURES)); then

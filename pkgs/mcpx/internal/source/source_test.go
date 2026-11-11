@@ -279,6 +279,44 @@ func TestDirectorySkipsDanglingLinkAndFollowsLinkOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestDirectorySkipsSymlinkLoop(t *testing.T) {
+	// Oracle (#7693): a symlink loop entry is skipped like a dangling
+	// link — it can never resolve to a regular target, so the rest of
+	// the tree still resolves instead of the loop aborting the walk.
+	root := t.TempDir()
+	regular := filepath.Join(root, "regular.ts")
+	loop := filepath.Join(root, "loop.ts")
+	if err := os.WriteFile(regular, []byte("regular"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("loop.ts", loop); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	// A two-link loop as well: whichever entry the walk stats first,
+	// the loop must not abort the resolve.
+	loopA := filepath.Join(root, "loop-a.ts")
+	loopB := filepath.Join(root, "loop-b.ts")
+	if err := os.Symlink("loop-b.ts", loopA); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if err := os.Symlink("loop-a.ts", loopB); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	o := opts(root)
+	o.Recursive = true
+	got, err := source.Resolve("@dir:"+root, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0] != regular {
+		t.Fatalf("got files %v, want exactly the regular file", got.Files)
+	}
+	if !strings.Contains(got.Text, "regular") {
+		t.Errorf("got text %q, want the regular file's contents", got.Text)
+	}
+}
+
 func TestResolveAllJoinsInOrder(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "second.ts"), []byte("SECOND"), 0o644)

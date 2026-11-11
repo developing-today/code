@@ -9,6 +9,10 @@ on:
       - "pm-stack/opencode-usage-export/**"
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
+      - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
   pull_request:
     paths:
@@ -17,6 +21,10 @@ on:
       - "pm-stack/opencode-usage-export/**"
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
+      - "pm-stack/meta-exporter/**"
+      - "pm-stack/dispatch/**"
+      - "pm-stack/grist/**"
+      - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
@@ -85,7 +93,7 @@ jobs:
       - name: Test claimant and grist Python suites
         run: |
           fail=0
-          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/opencode-claimant/test_claimant.py pm-stack/grist/test_update_choice_options.py; do
+          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/opencode-claimant/test_claimant.py pm-stack/opencode-claimant/test/test_claimant.py pm-stack/grist/test_update_choice_options.py; do
             if [ ! -f "$t" ]; then
               echo "::error::Missing suite file $t — the pm-stack Python suites were not run in full."
               fail=1
@@ -96,12 +104,13 @@ jobs:
           fi
           python3 -m unittest pm-stack/opencode-claimant/test_poll.py || fail=1
           python3 -m unittest pm-stack/opencode-claimant/test_claimant.py || fail=1
+          python3 -m unittest pm-stack/opencode-claimant/test/test_claimant.py || fail=1
           python3 -m unittest discover -s pm-stack/grist -p 'test_*.py' || fail=1
           if [ "$fail" -ne 0 ]; then
             echo "::error::pm-stack Python suites: at least one suite failed (see above)."
             exit 1
           fi
-          echo "pm-stack Python suites: test_poll.py + test_claimant.py + grist discovery passed."
+          echo "pm-stack Python suites: test_poll.py + test_claimant.py + test/test_claimant.py (#7670) + grist discovery passed."
 
       # Python suite for #6217: pm-stack/external-comms/
       # test_push_quarantine.py (6 tests, the pinning suite for the
@@ -147,3 +156,15 @@ jobs:
             exit 1
           fi
           bun test
+
+      # meta-exporter: node --test (suite for #6344; the explicit file
+      # path is required — the directory form fails on Node 24). The
+      # file is asserted to exist first, so a green run cannot be a
+      # silently skipped suite; any failure fails the job.
+      - name: Test meta-exporter suite
+        run: |
+          if [ ! -f pm-stack/meta-exporter/meta-quota-export.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/meta-exporter/meta-quota-export.test.mjs — the meta-exporter suite was not run."
+            exit 1
+          fi
+          node --test pm-stack/meta-exporter/meta-quota-export.test.mjs

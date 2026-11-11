@@ -39,7 +39,7 @@ Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
 `mcpx nix build`, `go modules build`, `identity build`,
 `map build`, `id bench`) are deliberately NOT renamed:
 `main-broken.yml` (the Phase 3 watcher) references them by name in
-its `workflow_run` trigger; `jules.yml` has no `workflow_run`
+its `workflow_run` trigger; `pm-dispatch.yml` has no `workflow_run`
 trigger. If branch rules
 ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
@@ -64,6 +64,20 @@ check stays `basic: proxy port fallbacks`, which the dedicated
 `.github/workflows/proxy-port-fallbacks.yml` runs on `pull_request`
 events. `gh pr merge` merges a PR directly; there is no
 merge-pending queue state.
+
+## Deploy flake checks (#7322)
+
+`.github/workflows/deploy-flake-checks.yml` is a **basic-tier** check
+(job `basic: deploy flake checks (deploy-list + deploy-list-malformed)`):
+on pull requests touching `pkgs/deploy/**`, `lib/default.nix`, or the
+workflow itself, it builds exactly the two root flake checks
+`checks.x86_64-linux.deploy-list` and
+`checks.x86_64-linux.deploy-list-malformed`. Before #7322 those checks
+ran only in the full flake check on main / the nix-ci schedule, so the
+deploy registry validation was unenforced at the merge gate. This is a
+targeted build of two `runCommandLocal` checks — never a full flake
+check on a PR (class 4 above). No `merge_group` trigger: main has no
+merge queue (ruling above).
 
 ## mcpx fix-test guard (#1969)
 
@@ -118,7 +132,13 @@ workflow before use.
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and
-its fixtures on pull requests, merge groups, and pushes to `main`. The
+its fixtures on pull requests and pushes to `main`. **Venue
+disposition (#6187 Phase 3, closed 2026-11-11): re-armed the same
+day under Drew’s #7089 ruling (commit 82377fa1ed) — the venue is
+active, its waiver is deleted above, and its push + dispatch runs
+were dispatched at the re-arm; the dispatch-only default scoped
+for it under #6185 ruling (c) was superseded for this venue by
+the #7089 ruling before the #6187 closeout landed.** The
 guard checks known metered selections (`cloudflare-*` and the direct
 PAYG `deepseek` provider) in model-route targets/fallbacks, provider-route
 selections, top-level defaults, and agent model/fallback fields. Disabled
@@ -167,14 +187,88 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | nix ci                                                         | — (PR proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
 | proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request`                                                          | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
+| atlas-search                                                   | `basic: atlas-search Rust checks` on pull requests touching `pkgs/atlas-search/**`                 | —                                                                                                   | —                                                                |
+| deploy-flake-checks | `basic: deploy flake checks (deploy-list + deploy-list-malformed)` on `pull_request` (paths `pkgs/deploy/**`, `lib/default.nix`, the workflow itself) | full flake check in nix ci | — |
 | workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) | — | — |
 | id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                                        | — (main covers it)                                               |
 | id bench                                                       | — (removed)                                                                                         | yes                                                                                                 | —                                                                |
 | go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                                               | —                                                                |
+| container images                                               | Nix-build mcpx, identity and Lab Ops Hub images on their package/flake paths                        | same path-gated image build on push to main                                                          | —                                                                |
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                                        | —                                                                |
 | mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                                             | — (main covers it)                                               |
 | mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                                            | —                                                                |
+| production-line guard (#1411)                                  | `basic: production line limit (2500)` on `pull_request`                                             | push to main (path-gated: `pkgs/**`, `apps/**`, guard files) — restored 2026-11-11 under Drew's #7089 ruling | —                                                                |
+
+## CI-policy agreement contract (#7089, Phase 1)
+
+For every workflow in this contract's scope, three records must
+agree: the tier this policy assigns, the triggers the workflow
+declares, and the Actions enablement state. A disagreement in any
+leg is a defect with exactly one recorded disposition — **re-arm**
+(triggers restored to the mapping + venue enabled + a completed run
+on main as proof), **fold** (the check moves into a named venue that
+satisfies the contract), or **retire** (workflow, policy row, and
+header promises removed in the same change) — never a state that
+persists by default. "Dispatch-only and nobody dispatches" is not a
+disposition.
+
+**Tier → trigger mapping** (the checker below enforces exactly
+this):
+
+| tier             | satisfied by                                                                 |
+| ---------------- | ---------------------------------------------------------------------------- |
+| PR (basic) tier  | a `pull_request` trigger (with the workflow's path gate where one exists)    |
+| main tier        | a `push` trigger on `branches: [main]` (path gates as before), or a named equivalent main-tier venue running the same check |
+| nightly tier     | a `schedule` trigger                                                         |
+
+A `workflow_dispatch:`-only block satisfies **no** tier, and
+`merge_group` satisfies no tier either: there is no merge queue
+(Drew ruling, 2026-11-08, above), which supersedes the #7089
+design's original merge_group pin for basic-tier guards — the
+guards that ran only on `merge_group` now run on `pull_request`,
+and this contract's mapping follows that ruling.
+
+**Scope.** The guard/build workflows this policy names outside the
+test-suite estate (#6185's registry owns suite venues):
+`workflow-lint`, `proxy-port-fallbacks`, and
+`fleet-search-parity-guard` (the conforming basic-tier guards),
+`opencode-config-guard`, `mcpx-fix-test-guard`,
+`production-line-guard`, and the build set `go-modules-build`,
+`identity-build`, `map-build`, `mcpx-nixbuild`. Phase 4 of #7089
+inventories widening this scope to every workflow this policy
+names.
+
+**Checking.** `.github/scripts/check-ci-policy-agreement.sh`
+compares each in-scope workflow's tier assignment against its
+declared triggers in the tree and runs in `workflow-lint`; shell
+contract tests live in
+`.github/scripts/check-ci-policy-agreement.test.sh` (oracle: for
+every in-scope workflow, tier, declared triggers, and the recorded
+waiver set must agree). Enablement is not visible from the tree:
+it is audited from the Actions API on the #6187 recurring cadence
+(**recurring enablement re-audit — owner: the repo-health fleet
+(queue-worker lanes, venue-audit task series); cadence: monthly,
+and after any change to a workflow’s enablement; a disabled venue
+with no recorded disposition is a finding, not a default**),
+and a disabled in-scope venue is reported with its disposition.
+At Phase 1 landing, the disabled in-scope venues were exactly the
+waiver set below. As of the 2026-11-11 re-arm landing under Drew's
+#7089 ruling, the waiver set is empty and no in-scope venue is
+`disabled_manually` (the #6981 build set reads active again, and
+opencode-config-guard was re-enabled via the Actions API in the
+same change).
+
+**Waivers — the recorded Phase 2–3 disagreement set.** Each waiver
+names its phase issue and awaits Drew's re-arm-vs-dispatch-only
+ruling on #7089; a waiver is a record, not a disposition. When a
+phase lands or is ruled, the waiver is deleted in the same PR that
+changes the triggers or strikes the tier — the checker fails on a
+stale waiver whose leg now agrees.
+
+| workflow                                          | missing leg(s)                                          | phase issue |
+| ------------------------------------------------- | ------------------------------------------------------- | ----------- |
+| _(none — the set landed empty 2026-11-11: #6953's main leg and venue, and #6959's PR leg, were restored in the same PR that deleted these waivers)_ | | |
 
 ## Coverage rule
 
@@ -235,10 +329,12 @@ runs every 15 minutes (`*/15 * * * *`, one live run: group
 sweeper is schedule/dispatch-only) and performs the management
 duties in one deterministic pass. It replaced `auto-assign.yml`
 (assign the maintainer to open issues/PRs). Kept event-based,
-deliberately: `jules.yml` is retained because `main-broken.yml` and
-`repo-sweeper.yml` reference the path. The retained `jules` label
-starts remediation via `pm-dispatch`; Jules was decommissioned
-(#5098), and the old `workflow_run` ci-failure-fix leg is gone. This
+deliberately: `pm-dispatch.yml` is retained because `main-broken.yml` and
+`repo-sweeper.yml` reference the path. The retained `dispatch/remediate` label
+starts remediation via `pm-dispatch`; file and label carried
+Jules-era names until the 2026-11-11 rename (Jules was
+decommissioned, #5098), and the old `workflow_run` ci-failure-fix
+leg is gone. This
 is a synchronous human-initiated handoff, not management
 bookkeeping. Never
 pair `queue: max` with a cancel-in-progress expression that

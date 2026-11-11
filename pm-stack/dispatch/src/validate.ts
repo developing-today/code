@@ -144,10 +144,17 @@ export interface SessionRequest {
   wait: boolean;
 }
 
+/** Minimum spec floor for a session prompt with no explicit title (#4925):
+ * a prompt shorter than this cannot name any work, so accepting it would mint
+ * a spec-less repo issue that costs a triage lane. 40 chars is the value the
+ * stalled #4948 carried; an explicit title exempts the request (the caller
+ * named the work). */
+export const MIN_PROMPT_SPEC_CHARS = 40;
+
 export function parseSessionRequest(body: unknown): SessionRequest {
   if (typeof body !== "object" || body === null) throw new ValidationError("body: must be a JSON object");
   const b = body as Record<string, unknown>;
-  return {
+  const req: SessionRequest = {
     repo: reqString(b, "repo"),
     prompt: reqString(b, "prompt"),
     title: optNonBlankString(b, "title"),
@@ -157,6 +164,15 @@ export function parseSessionRequest(body: unknown): SessionRequest {
     issue: optBool(b, "issue", true),
     wait: optBool(b, "wait", true),
   };
+  // Minimum-spec gate (#4925). It runs after every field validation above so
+  // existing per-field errors keep precedence; an explicit title is the
+  // caller naming the work, so it exempts the request.
+  if (req.title === undefined && req.prompt.length < MIN_PROMPT_SPEC_CHARS) {
+    throw new ValidationError(
+      `prompt: too short to name any work (${req.prompt.length} < ${MIN_PROMPT_SPEC_CHARS} chars) and no title given — describe the work in the prompt or pass an explicit title`,
+    );
+  }
+  return req;
 }
 
 /** Session-directory scoping for POST /v1/sessions (issues #2903, #2664).

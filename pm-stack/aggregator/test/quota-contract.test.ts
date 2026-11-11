@@ -31,7 +31,7 @@ const USAGE_UNITS = [
 const SAAS_GROUPS = ["database", "object-storage", "compute", "dev-platform", "domains", "account-tooling"];
 const SAAS_STATUSES = ["active", "candidate", "no-account", "unknown"];
 const SOURCE_CLASSES = ["api", "console", "manual", "estimate", "invoice"];
-const ATTENTION_KINDS = ["credential-lifecycle", "over-limit", "payg-unbilled", "unmatched-charge"];
+const ATTENTION_KINDS = ["credential-lifecycle", "over-limit", "payg-unbilled", "unmatched-charge", "quota-action"];
 
 const isNumOrNull = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v));
 const isStrOrNull = (v: unknown) => v === null || typeof v === "string";

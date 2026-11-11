@@ -23,7 +23,7 @@ Each direction is also held by a test:
 A command marked *generated* is built from the operation's declaration --
 flags from its parameters, positionals for its path -- so it exists the
 moment the operation does. The plugin reaches every operation through
-`DaemonClient.ops` (`plugin/opencode/mcpx/ops.gen.ts`, generated the same way);
+`DaemonClient.ops` (`plugin/core/ops.gen.ts`, generated the same way);
 the named methods beside it are conveniences with typed answers.
 
 Privileged operations are offered rather than hidden. A caller that can reach

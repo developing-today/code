@@ -50,6 +50,29 @@ const KEEPALIVE_S: u64 = 180;
 /// short configured idle is observable in tests.
 const IDLE_TICK_S: u64 = 5;
 
+/// Dial a colocated service's Unix socket bounded by `deadline`
+/// (#6219, Codex review on PR #8388). `UnixStream::connect` has no
+/// timeout variant and can block on a listener that stopped
+/// accepting with a full backlog, so the connect runs on a scratch
+/// thread and the caller waits only for the deadline: on expiry
+/// the caller falls back to TCP while the scratch thread stays
+/// parked in the kernel until the connect resolves or errors
+/// (bounded by the listener coming back or going away, and never
+/// holding broker state). The dial IS the probe here -- a socket
+/// that answers within the deadline is used, any other outcome
+/// selects TCP within the same attempt.
+fn connect_unix_bounded(path: &std::path::Path, deadline: Duration) -> Option<UnixStream> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(UnixStream::connect(&path));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(Ok(stream)) => Some(stream),
+        _ => None,
+    }
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -452,16 +475,43 @@ impl Broker {
 
     fn open_conn_raw(&self, port: u16) -> Result<HttpConn, String> {
         let target = self.config.target_host();
-        let stream: TcpStream = if self.config.proxy_direct() {
-            connect_tunnel(None, target, port)
-        } else {
-            let egress = self
-                .egress
-                .as_ref()
-                .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
-            connect_tunnel(Some(egress), target, port)
+        if self.config.proxy_direct() {
+            // Colocated direct mode (#6219): when the service on
+            // this port is a broker role whose Unix socket answers,
+            // dial the socket instead of TCP loopback. A socket
+            // that does not answer (absent or stale, or a failed
+            // connect) falls back to the TCP dial below within the
+            // same attempt; non-colocated ports never take this
+            // path, and the tunnel (non-direct) path is unchanged.
+            if let Some((socket, pref)) = self.config.service_socket_resolution(port) {
+                // A "tcp" preference skips the socket entirely; any
+                // other case dials it, bounded by the same setup
+                // deadline the tunnel path enforces (Codex review
+                // on PR #8388: a wedged listener with a full backlog
+                // can block a bare connect indefinitely, and the
+                // read/write timeouts only apply after connect).
+                if pref.as_deref() != Some("tcp") {
+                    if let Some(stream) =
+                        connect_unix_bounded(&socket, crate::tunnel::TRANSPORT_DEADLINE)
+                    {
+                        let _ = stream.set_read_timeout(Some(crate::tunnel::TUNNEL_READ_TIMEOUT));
+                        let _ = stream.set_write_timeout(Some(crate::tunnel::TUNNEL_WRITE_TIMEOUT));
+                        return HttpConn::from_unix(stream).map_err(|e| {
+                            format!("socket {} for port {port}: {e}", socket.display())
+                        });
+                    }
+                }
+            }
+            let stream: TcpStream = connect_tunnel(None, target, port)
+                .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
+            return HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"));
         }
-        .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
+        let egress = self
+            .egress
+            .as_ref()
+            .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
+        let stream: TcpStream = connect_tunnel(Some(egress), target, port)
+            .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
         HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"))
     }
 
@@ -637,10 +687,23 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
     }
     let body = frame.get("body").filter(|b| !b.is_null()).cloned();
     let port = parse_port(frame)?;
-    let token_file = frame
-        .get("token_file")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let token_file = match frame.get("token_file") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(path)) => Some(path.clone()),
+        Some(value) => {
+            let shape = match value {
+                serde_json::Value::Bool(_) => "boolean",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => "object",
+                serde_json::Value::Null => "null",
+                serde_json::Value::String(_) => "string",
+            };
+            return Err(format!(
+                "request \"token_file\" must be a string or null, got {shape}"
+            ));
+        }
+    };
     Ok(Request {
         method,
         path,
@@ -938,6 +1001,76 @@ mod tests {
     }
 
     const PORT: u16 = 4799;
+
+    #[test]
+    fn parse_request_validates_token_file_shape() {
+        let mut absent = serde_json::json!({"method": "GET", "path": "/health"});
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::Value::Null;
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::json!("/tmp/request-token");
+        assert_eq!(
+            parse_request(&absent).unwrap().token_file.as_deref(),
+            Some("/tmp/request-token")
+        );
+
+        for (value, shape) in [
+            (serde_json::json!(123), "number"),
+            (serde_json::json!(true), "boolean"),
+            (serde_json::json!({"path": "token"}), "object"),
+            (serde_json::json!(["token"]), "array"),
+        ] {
+            let frame = serde_json::json!({
+                "method": "GET",
+                "path": "/health",
+                "token_file": value,
+            });
+            let error = parse_request(&frame).unwrap_err();
+            assert!(
+                error.contains(shape),
+                "expected token_file error to name {shape}, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_request_token_file_matches_the_shape_model_on_generated_values() {
+        use proptest::prelude::*;
+        // Oracle: the #6518 acceptance rules stated as a model over the
+        // JSON value. Absent and null yield None; an arbitrary string is
+        // preserved verbatim; every other shape -- numbers, floats,
+        // bools, containers -- is refused.
+        fn model(value: Option<&serde_json::Value>) -> Result<Option<String>, ()> {
+            match value {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+                Some(_) => Err(()),
+            }
+        }
+        let shapes = prop_oneof![
+            Just(None),
+            Just(Some(serde_json::Value::Null)),
+            any::<String>().prop_map(|s| Some(serde_json::json!(s))),
+            any::<i64>().prop_map(|n| Some(serde_json::json!(n))),
+            (-1e6f64..=1e6).prop_map(|f| Some(serde_json::json!(f))),
+            any::<bool>().prop_map(|b| Some(serde_json::json!(b))),
+            prop::collection::vec(any::<String>(), 0..4).prop_map(|v| Some(serde_json::json!(v))),
+            prop::collection::btree_map(any::<String>(), any::<String>(), 0..4)
+                .prop_map(|m| Some(serde_json::json!(m))),
+        ];
+        proptest!(|(value in shapes)| {
+            let mut frame = serde_json::json!({"method": "GET", "path": "/health"});
+            if let Some(v) = &value {
+                frame["token_file"] = v.clone();
+            }
+            let got = parse_request(&frame)
+                .map(|req| req.token_file)
+                .map_err(|_| ());
+            prop_assert_eq!(got, model(value.as_ref()), "token_file value: {:?}", value);
+        });
+    }
 
     #[test]
     fn checkout_grows_below_ceiling_then_reuses_idle() {
@@ -1346,8 +1479,7 @@ mod tests {
     fn parse_request_absent_port_means_the_default() {
         // No "port" key at all: None, which do_request turns into
         // PORT_LAPTOP_AGENT (4799) -- the absent-port route.
-        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"}))
-            .unwrap();
+        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"})).unwrap();
         assert_eq!(req.port, None);
         // An explicit null is absent too, mirroring `body`.
         let req = parse_request(&frame_with_port(serde_json::Value::Null)).unwrap();
@@ -1399,9 +1531,7 @@ mod tests {
             match value {
                 serde_json::Value::Null => Ok(None),
                 serde_json::Value::Number(n) => match n.as_u64() {
-                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => {
-                        Ok(Some(u as u16))
-                    }
+                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => Ok(Some(u as u16)),
                     _ => Err(()),
                 },
                 _ => Err(()),

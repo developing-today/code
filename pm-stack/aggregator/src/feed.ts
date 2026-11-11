@@ -128,10 +128,10 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
-  /** Project #4 coverage census (#1220): per-repo open-issue and
-   * gate-label counts from the collector's Search API reads, embedded
-   * beside the projects section. Absent when the collector had no
-   * GitHub token or the census failed. */
+  /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
+   * gate-label, and timestamped >90-day untouched-issue counts from the
+   * collector's Search API reads, embedded beside the projects section.
+   * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
@@ -142,6 +142,18 @@ export interface FleetFeed {
   /** Optional collector outcomes. Older feeds have no metadata and keep
    *  their historical presence-only health/provenance behavior. */
   meta?: FeedMetadata;
+  /** #8568: Drew's answers to needs-Drew questions, read by the
+   * collector from the aggregator's needs-drew store; the fleet lane
+   * consumes this to resume blocked workers. Absent in older feeds. */
+  answers?: FleetFeedAnswer[];
+}
+
+export interface FleetFeedAnswer {
+  ledgerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  via: string;
 }
 
 export type FeedSectionStatus = "ok" | "error" | "skipped";
@@ -565,7 +577,7 @@ export function isQuotaWindow(v: unknown): v is QuotaWindow {
   );
 }
 
-const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale", "lapsed"];
 
 /** One quota pool whose own shape is safe to hand to the renderers
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
@@ -583,7 +595,7 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error", "lapsed"];
 
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (

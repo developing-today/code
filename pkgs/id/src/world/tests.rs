@@ -3,7 +3,7 @@ use crate::world::*;
 use std::sync::Arc;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +40,313 @@ mod tests {
     fn join(core: &mut WorldCore, name: &str) -> (Participant, JoinCapability) {
         core.issue_capability(name, WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct TransferJournal(Arc<std::sync::Mutex<Vec<JournalEntry>>>);
+
+    impl TransferJournal {
+        fn for_world(world_id: &str) -> Self {
+            Self(Arc::new(std::sync::Mutex::new(vec![
+                JournalEntry::Created {
+                    world_id: world_id.to_owned(),
+                    version: JOURNAL_VERSION_REGION_HANDOFF,
+                },
+            ])))
+        }
+
+        fn entries(&self) -> Vec<JournalEntry> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl WorldJournal for TransferJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            self.0.lock().unwrap().push(entry.clone());
+            Ok(())
+        }
+    }
+
+    struct TransferProgram {
+        payload: Vec<u8>,
+        fail_apply: bool,
+        journal: TransferJournal,
+        saw_durable_export_before_apply: Arc<std::sync::Mutex<bool>>,
+        applied_events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for TransferProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                let envelope: serde_json::Value = serde_json::from_str(event)?;
+                self.applied_events.lock().unwrap().push(
+                    envelope["app_event"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+                let durable = self
+                    .journal
+                    .entries()
+                    .iter()
+                    .any(|entry| matches!(entry, JournalEntry::EntityExported { .. }));
+                *self.saw_durable_export_before_apply.lock().unwrap() = durable;
+                ensure!(durable, "export event applied before it was journaled");
+                if self.fail_apply {
+                    bail!("injected export-apply failure");
+                }
+            }
+            Ok(())
+        }
+
+        fn prepare_entity_transfer(
+            &self,
+            request: &EntityTransferRequest,
+        ) -> Result<EntityTransferPlan> {
+            match request {
+                EntityTransferRequest::Export { .. } => Ok(EntityTransferPlan::Export {
+                    payload_schema: "test/v1".to_owned(),
+                    payload: self.payload.clone(),
+                    app_event: "remove-entity".to_owned(),
+                }),
+                EntityTransferRequest::Import { .. } => Ok(EntityTransferPlan::Import {
+                    app_event: "add-entity".to_owned(),
+                }),
+            }
+        }
+    }
+
+    fn transfer_actor(
+        payload: Vec<u8>,
+        fail_apply: bool,
+    ) -> (
+        WorldActor,
+        JoinCapability,
+        TransferJournal,
+        Arc<std::sync::Mutex<bool>>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let mut core = WorldCore::new(
+            "source",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        core.active_module_hash = Some("module-hash".to_owned());
+        let (_, token) = join(&mut core, "source-user");
+        let journal = TransferJournal::for_world("source");
+        let saw_durable_export_before_apply = Arc::new(std::sync::Mutex::new(false));
+        let applied_events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let program = TransferProgram {
+            payload,
+            fail_apply,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: saw_durable_export_before_apply.clone(),
+            applied_events: applied_events.clone(),
+        };
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (
+            actor,
+            token,
+            journal,
+            saw_durable_export_before_apply,
+            applied_events,
+        )
+    }
+
+    async fn export(actor: &mut WorldActor) -> Result<HandoffTransferState> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ExportEntity {
+                handoff_id: "ab".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-a".to_owned(),
+                target_region: "region-b".to_owned(),
+                prior_owner_epoch: 7,
+                reply,
+            })
+            .await;
+        response.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn export_is_journaled_before_apply_replayed_and_fences_later_writes() {
+        let (mut actor, token, journal, saw_durable, applied) =
+            transfer_actor(b"entity".to_vec(), false);
+        let receipt = export(&mut actor).await.unwrap();
+        assert_eq!(receipt.payload.as_deref(), Some(b"entity".as_slice()));
+        assert!(*saw_durable.lock().unwrap());
+        assert!(actor.core.entity_is_fenced("entity-1"));
+
+        let entries = journal.entries();
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::EntityExported { .. })
+        ));
+        let restored = WorldCore::restore(
+            "source",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+            entries,
+        )
+        .unwrap();
+        assert_eq!(restored.core.handoff_transfers(), &[receipt.clone()]);
+        assert!(restored.core.entity_is_fenced("entity-1"));
+        assert_eq!(restored.replay, vec![receipt.event.clone()]);
+        let replayed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut replay_program = TransferProgram {
+            payload: b"entity".to_vec(),
+            fail_apply: false,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: Arc::new(std::sync::Mutex::new(false)),
+            applied_events: replayed.clone(),
+        };
+        replay_program.update(&restored.replay[0]).unwrap();
+        assert_eq!(*replayed.lock().unwrap(), *applied.lock().unwrap());
+
+        let before = journal.entries().len();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::EntityInput {
+                token,
+                entity_ref: "entity-1".to_owned(),
+                input: b"mutate".to_vec(),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_err());
+        assert_eq!(journal.entries().len(), before);
+    }
+
+    #[tokio::test]
+    async fn oversized_export_is_refused_before_a_durable_fence() {
+        let payload = vec![0; MAX_ENTITY_TRANSFER_PAYLOAD_BYTES + 1];
+        let (mut actor, _, journal, _, _) = transfer_actor(payload, false);
+        assert!(export(&mut actor).await.is_err());
+        assert!(actor.core.handoff_transfers().is_empty());
+        assert!(
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::EntityExported { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_post_append_apply_withholds_receipt_and_keeps_fence() {
+        let (mut actor, _, journal, saw_durable, _) = transfer_actor(b"entity".to_vec(), true);
+        assert!(export(&mut actor).await.is_err());
+        assert!(*saw_durable.lock().unwrap());
+        assert!(actor.core.entity_is_fenced("entity-1"));
+        assert!(!actor.program_healthy);
+        assert!(matches!(
+            journal.entries().last(),
+            Some(JournalEntry::EntityExported { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn export_exact_retry_returns_the_stored_receipt() {
+        let (mut actor, _, journal, _, _) = transfer_actor(b"entity".to_vec(), false);
+        let receipt = export(&mut actor).await.unwrap();
+        let entries_after_first = journal.entries().len();
+        let retry = export(&mut actor).await.unwrap();
+        assert_eq!(retry, receipt);
+        assert_eq!(journal.entries().len(), entries_after_first);
+
+        // A conflicting reuse of the handoff ID is not a retry.
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ExportEntity {
+                handoff_id: "ab".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-a".to_owned(),
+                target_region: "region-c".to_owned(),
+                prior_owner_epoch: 7,
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn entity_input_on_a_read_only_replica_never_reaches_the_program() {
+        let (mut actor, token, _, _, applied) = transfer_actor(b"entity".to_vec(), false);
+        actor.read_only = true;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::EntityInput {
+                token,
+                entity_ref: "entity-1".to_owned(),
+                input: b"mutate".to_vec(),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_err());
+        assert!(applied.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bound_author_participant_cannot_use_unsigned_entity_input() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let mut core = WorldCore::new(
+            "sharded-bound",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, token) = join(&mut core, "bound-user");
+        let key = SigningKey::from_bytes(Hash::digest(b"bound user").as_bytes());
+        core.bind_author_key(&token, *key.verifying_key().as_bytes())
+            .unwrap();
+        assert!(
+            core.prepare_entity_input(&token, "entity-1", b"scoped")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn region_sharded_world_rejects_signed_unscoped_input() {
+        let mut core = WorldCore::new(
+            "sharded-signed",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, token) = join(&mut core, "user");
+        let result = core.prepare_input_signed(&token, b"legacy", b"not-a-signed-move");
+        let error = result.err().expect("signed unscoped input must be refused");
+        assert!(
+            format!("{error:#}").contains("entity-addressed"),
+            "unexpected refusal: {error:#}"
+        );
+    }
+
+    #[test]
+    fn region_sharded_world_rejects_unscoped_input() {
+        let mut core = WorldCore::new(
+            "sharded",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, token) = join(&mut core, "user");
+        assert!(core.prepare_input(&token, b"legacy").is_err());
+        assert!(
+            core.prepare_entity_input(&token, "entity-1", b"scoped")
+                .is_ok()
+        );
     }
 
     fn sample_source_provenance() -> ModuleProvenance {
@@ -196,6 +503,58 @@ mod tests {
     }
 
     #[test]
+    fn restore_committed_sequence_does_not_wrap_at_u64_max() {
+        // #8370 (design #4000 decision 2): the Committed arm's succession
+        // predicate must be checked_add. With saturating_add, a core
+        // already at u64::MAX would accept a further committed event with
+        // sequence MAX — the saturated successor equals the current
+        // sequence, so the "advance by one" check passes without
+        // advancing, and repeated MAX events would each pass it again.
+        // Oracle: the succession contract itself — after a checkpoint at
+        // MAX, no committed event can legitimately follow.
+        fn chat(sequence: u64) -> WorldEvent {
+            WorldEvent {
+                sequence,
+                participant_id: 0,
+                kind: WorldEventKind::Chat("committed boundary test".to_owned()),
+            }
+        }
+
+        let journal = |committed: WorldEvent| {
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::Checkpoint {
+                    sequence: u64::MAX,
+                    module_hash: "h".to_owned(),
+                    seed: 1,
+                    provenance: None,
+                    execution_profile: None,
+                    caps_ceiling: None,
+                    schedules: None,
+                    transfers: None,
+                    lease: None,
+                    snapshot: "s".to_owned(),
+                    events: vec![chat(u64::MAX - 1), chat(u64::MAX)],
+                    open_presence: None,
+                    admin_history: None,
+                },
+                JournalEntry::Committed { event: committed },
+            ]
+        };
+
+        let error = WorldCore::restore("w", WorldLimits::default(), journal(chat(u64::MAX)))
+            .err()
+            .expect("a committed event at u64::MAX must not pass as the successor of MAX");
+        assert!(
+            error.to_string().contains("journal sequence jumps"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn restore_accepts_v1_through_v6_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
@@ -284,7 +643,7 @@ mod tests {
             payload_schema: "entity/v1".to_owned(),
             program_module_hash: "module".to_owned(),
             payload: vec![1, 2, 3],
-            payload_digest: "digest".to_owned(),
+            payload_digest: hex_encode(blake3::hash(&[1, 2, 3]).as_bytes()),
         }
     }
 
@@ -1829,6 +2188,81 @@ mod tests {
         let oversized_result = &results["records-oversized"];
         assert_eq!(oversized_result["ok"], false, "{oversized_result}");
         assert_eq!(oversized_result["error"], "bad_args");
+    }
+
+    /// #7942: `device.info` driven through the public `WorldHandle`
+    /// spawn path — the manifest supplied at spawn comes back in the
+    /// result event, twice (the cached copy serves repeated requests;
+    /// nothing re-enumerates), with no direct field mutation.
+    #[tokio::test]
+    async fn device_info_through_the_public_spawn_path_returns_the_supplied_manifest() {
+        use std::sync::Mutex;
+
+        #[derive(Debug, Default)]
+        struct DeviceProbe {
+            results: Arc<Mutex<Vec<serde_json::Value>>>,
+        }
+
+        impl WorldProgram for DeviceProbe {
+            fn snapshot(&mut self) -> Result<Option<String>> {
+                Ok(Some("{}".to_owned()))
+            }
+
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value =
+                        serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                    if value["cap"] == "result" {
+                        self.results.lock().unwrap().push(value);
+                    }
+                }
+                Ok(())
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({
+                        "v": 1,
+                        "requests": [
+                            {"id": "device-1", "cap": "device.info", "args": {}},
+                            {"id": "device-2", "cap": "device.info", "args": {}},
+                        ],
+                    })
+                    .to_string(),
+                ))
+            }
+        }
+
+        let manifest = crate::world_caps::DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        };
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["device.info".to_owned()]));
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let probe = DeviceProbe {
+            results: Arc::clone(&results),
+        };
+        let _world =
+            WorldHandle::spawn_with_device_manifest(core, Box::new(probe), Some(manifest.clone()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if results.lock().unwrap().len() >= 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "device.info was not answered");
+            tokio::task::yield_now().await;
+        }
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 2);
+        for result in results.iter() {
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["value"], manifest.to_json(), "{result}");
+        }
     }
 
     #[tokio::test]
@@ -3509,6 +3943,170 @@ mod tests {
         let usage = actor.core.ledger.usage()["chat.say"];
         assert_eq!(usage.allowed, 1, "the tick spoke for the world");
         assert_eq!(usage.denied, 0, "a tick was refused for a participant");
+    }
+
+    /// A program whose wanted request id flips from `say-stale` to `say-fresh`
+    /// once it hears the first result: one `after_change` run proves both
+    /// halves of the restart rule, with every delivered result recorded in
+    /// `heard` for the test to inspect.
+    struct ReopenSay {
+        heard: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for ReopenSay {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.heard.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let (id, text) = if self.heard.lock().unwrap().is_empty() {
+                ("say-stale", "before-restart")
+            } else {
+                ("say-fresh", "after-restart")
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": id,
+                        "cap": "chat.say",
+                        "args": {"text": text},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    /// A program that always wants the same `chat.say` request.
+    struct FixedSay;
+
+    impl WorldProgram for FixedSay {
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": "say-open",
+                        "cap": "chat.say",
+                        "args": {"text": "at-open"},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    fn core_chat_texts(core: &WorldCore) -> Vec<String> {
+        chat_texts(&core.events.iter().cloned().collect::<Vec<_>>())
+    }
+
+    /// Restart semantics (#839): requests the program already listed when a
+    /// restored world opened are refused with `actor_denied` / `restarted`,
+    /// never re-executed — `handled_requests` is memory-only, so the actor
+    /// cannot tell done from never-run, and a repeat would run unattributed
+    /// with world authority.
+    #[tokio::test]
+    async fn reopened_wants_are_refused_not_reexecuted() {
+        let mut core = world(16);
+        core.ledger
+            .set_granted(BTreeSet::from(["chat.say".to_owned()]));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(ReopenSay {
+                heard: heard.clone(),
+            }),
+            None,
+        );
+        // What `WorldHandle::spawn_restored` captures at a restored open: the
+        // program's current wants predate the restart.
+        actor.stale_wants_at_open = BTreeSet::from(["say-stale".to_owned()]);
+
+        actor.after_change().await;
+
+        // The pre-existing request never ran: its side effect is absent ...
+        let texts = core_chat_texts(&actor.core);
+        assert!(
+            texts.iter().all(|text| !text.contains("before-restart")),
+            "stale request re-executed: {texts:?}"
+        );
+        // ... while the request the program issued after the open did.
+        assert!(
+            texts.iter().any(|text| text.contains("after-restart")),
+            "fresh request did not execute: {texts:?}"
+        );
+        // The refusal never reached the ledger: exactly one execution was
+        // counted, the fresh one.
+        assert_eq!(actor.core.ledger.usage()["chat.say"].allowed, 1);
+        // The stale id is settled: it stays in `handled_requests`, so a later
+        // pass with the same wants cannot execute it.
+        assert!(actor.handled_requests.contains("say-stale"));
+        // The program heard the refusal first, with the restart reason, then
+        // the fresh result.
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.len(), 2, "unexpected deliveries: {heard:?}");
+        let refusal: serde_json::Value = serde_json::from_str(&heard[0]).unwrap();
+        assert_eq!(refusal["cap"], "result");
+        assert_eq!(refusal["id"], "say-stale");
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["error"], "actor_denied");
+        assert_eq!(refusal["reason"], "restarted");
+        let fresh: serde_json::Value = serde_json::from_str(&heard[1]).unwrap();
+        assert_eq!(fresh["id"], "say-fresh");
+        assert_eq!(fresh["ok"], true);
+    }
+
+    /// The capture half of the restart rule: `spawn_restored` refuses the
+    /// requests present in `wants` at open, while a fresh spawn executes the
+    /// same wants.
+    #[tokio::test]
+    async fn spawn_restored_refuses_open_time_wants() {
+        for restored in [false, true] {
+            let mut core = world(16);
+            core.ledger
+                .set_granted(BTreeSet::from(["chat.say".to_owned()]));
+            let world = if restored {
+                WorldHandle::spawn_restored(core, Box::new(FixedSay), None, None)
+            } else {
+                WorldHandle::spawn_with_program(core, Box::new(FixedSay))
+            };
+            let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let seen = loop {
+                let snapshot = world.snapshot(token.clone()).await.unwrap();
+                let seen = snapshot.events.iter().any(|event| {
+                    matches!(&event.kind, WorldEventKind::Chat(text) if text.contains("at-open"))
+                });
+                if seen || Instant::now() >= deadline {
+                    break seen;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            let usage = world.caps_report().await.unwrap().usage;
+            if restored {
+                assert!(!seen, "restored world re-executed its open-time wants");
+                assert!(
+                    usage.get("chat.say").is_none_or(|use_| use_.allowed == 0),
+                    "restored world executed its open-time wants: {usage:?}"
+                );
+            } else {
+                assert!(seen, "fresh world did not execute its wants");
+            }
+            world.shutdown().await.unwrap();
+        }
+    }
+
+    #[test]
+    fn stale_wants_capture_reads_the_current_wants() {
+        let mut program = FixedSay;
+        assert_eq!(
+            WorldHandle::stale_wants_from(&mut program),
+            BTreeSet::from(["say-open".to_owned()])
+        );
     }
 
     #[tokio::test]
@@ -6668,9 +7266,16 @@ mod schedule_tests {
             WorldCore::new_with_clock(id, WorldLimits::default(), clock.clone()).unwrap();
         core.ledger
             .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
-        let (_, token) = core
+        let (ann, token) = core
             .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
+        // Production issuance goes through the actor, which journals the
+        // `Issued` entry as it mints (`record_issued`). Minting directly on
+        // the core must record the same entry: without it the journal uses
+        // the participant before it was issued -- a state no live path can
+        // write, and restore refuses it (#2894).
+        let issued = core.issued_entry(ann.id).unwrap();
+        journal.0.lock().unwrap().push(issued);
         let program = Scheduler {
             refuse_fires,
             ..Scheduler::default()

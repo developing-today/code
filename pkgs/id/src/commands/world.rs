@@ -517,6 +517,13 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             client.close();
             endpoint.close().await;
             print!("{}", crate::world_manifest::diff(&manifest, &state));
+            // Diff stays informational: report drift an apply would refuse.
+            if let Err(error) = crate::world_manifest::check_schedule_horizon(
+                &crate::world_manifest::plan(&manifest, &state),
+                crate::time::unix_ms(),
+            ) {
+                eprintln!("warning: `world apply` would refuse this manifest: {error:#}");
+            }
             Ok(())
         }
         WorldCommand::Apply(args) => {
@@ -535,6 +542,15 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             let (endpoint, client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let state = current_world_state(&client, &capability, Some(&admin_token)).await?;
             let steps = crate::world_manifest::plan(&manifest, &state);
+            // Refuse before any step runs: schedules apply last, so the
+            // host's horizon refusal would otherwise abort a partial apply (#6486).
+            if let Err(error) =
+                crate::world_manifest::check_schedule_horizon(&steps, crate::time::unix_ms())
+            {
+                client.close();
+                endpoint.close().await;
+                return Err(error);
+            }
             if steps.is_empty() {
                 println!("no drift");
             } else {
@@ -720,6 +736,51 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             } = args;
             verify_fixture(&module, &fixture, seed, allow_partial)
         }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::Dev(args) => {
+            let crate::cli::WorldDevArgs {
+                dir,
+                platform,
+                roc,
+                seed,
+                inputs,
+                fixtures,
+            } = args;
+            let mut fixture_inputs = Vec::with_capacity(fixtures.len());
+            for fixture_path in &fixtures {
+                let text = String::from_utf8(read_bounded(
+                    fixture_path,
+                    crate::world_fixture::MAX_FIXTURE_BYTES,
+                    "fixture",
+                )?)
+                .context("the fixture is not UTF-8")?;
+                let fixture = crate::world_fixture::decode(&text)?;
+                fixture_inputs.push((fixture_path.display().to_string(), fixture));
+            }
+            let report = crate::world_dev::run_dev_once(
+                &dir,
+                platform.as_deref(),
+                roc.as_deref(),
+                seed,
+                &inputs,
+                &fixture_inputs,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.promoted {
+                let blocking: Vec<&str> = report
+                    .fixture_gates
+                    .iter()
+                    .filter(|gate| gate.blocks_promotion)
+                    .map(|gate| gate.fixture.as_str())
+                    .collect();
+                anyhow::bail!(
+                    "fixture gate: candidate not promoted; fixture(s) mismatched: {}",
+                    blocking.join(", ")
+                );
+            }
+            Ok(())
+        }
         WorldCommand::List(args) => {
             let crate::cli::WorldListArgs {
                 node,
@@ -804,7 +865,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     let (endpoint, client) =
                         connect(&node, &addrs, no_relay, world.as_deref()).await?;
                     let (conn, send, recv) = client.into_parts();
-                    let result = pump(recv, send, &first, command_mode, json, &capability).await;
+                    let replay = terminal_probe_replay(command_mode).await;
+                    let result =
+                        pump(recv, send, &first, command_mode, json, &capability, replay).await;
                     conn.close(0_u32.into(), b"done");
                     endpoint.close().await;
                     result
@@ -996,14 +1059,19 @@ async fn join_over_ssh(
     let check = match ssh_host_key {
         Some(fingerprint) => HostKeyCheck::Fingerprint(fingerprint),
         None => {
+            // Home-resolution contract (issues #5762 / #5763): empty
+            // HOME is unset - the old code let Some("") through and
+            // joined a CWD-relative ".ssh/known_hosts".
             let home = std::env::var_os("HOME")
-                .context("no HOME for ~/.ssh/known_hosts; pass --ssh-host-key")?;
+                .filter(|home| !home.is_empty())
+                .context("no HOME (unset or empty) for ~/.ssh/known_hosts; pass --ssh-host-key")?;
             HostKeyCheck::KnownHosts(PathBuf::from(home).join(".ssh").join("known_hosts"))
         }
     };
     let (_connection, stream) = connect_frames(&target, check).await?;
     let (recv, send) = tokio::io::split(stream);
-    pump(recv, send, first, command_mode, json, capability).await
+    let replay = terminal_probe_replay(command_mode).await;
+    pump(recv, send, first, command_mode, json, capability, replay).await
 }
 
 /// `id world ssh-tunnel`: forward a local TCP listener (or stdio, as an SSH
@@ -1851,11 +1919,67 @@ impl Replica {
     }
 }
 
+/// One bounded probe of an interactive local TTY, returning the bytes that
+/// were typed while it ran so the pump can replay them in order.
+///
+/// F13.4 Phase 2 enables only the Tier 3 safe fallback: the probe result never
+/// changes the presenter, and a piped or scripted caller (no TTY) sends no
+/// probe bytes at all and keeps the JSON-lines behavior.
+async fn terminal_probe_replay(command_mode: bool) -> Vec<u8> {
+    if command_mode {
+        return Vec::new();
+    }
+    match tokio::task::spawn_blocking(crate::world_terminal::probe_local_tty).await {
+        Ok(Some(outcome)) => outcome.replay,
+        Ok(None) | Err(_) => Vec::new(),
+    }
+}
+
+/// Stdin that yields bytes captured during the startup terminal probe first.
+///
+/// The probe runs before the line pump takes stdin, so keystrokes typed while
+/// the terminal was answering are replayed here, in order, ahead of live input.
+struct PreloadedStdin {
+    preload: std::io::Cursor<Vec<u8>>,
+    stdin: tokio::io::Stdin,
+}
+
+impl PreloadedStdin {
+    fn new(preload: Vec<u8>) -> Self {
+        Self {
+            preload: std::io::Cursor::new(preload),
+            stdin: tokio::io::stdin(),
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for PreloadedStdin {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if (self.preload.position() as usize) < self.preload.get_ref().len() {
+            let target = buffer.initialize_unfilled();
+            return match std::io::Read::read(&mut self.preload, target) {
+                Ok(read) => {
+                    buffer.advance(read);
+                    std::task::Poll::Ready(Ok(()))
+                }
+                Err(error) => std::task::Poll::Ready(Err(error)),
+            };
+        }
+        std::pin::Pin::new(&mut self.stdin).poll_read(context, buffer)
+    }
+}
+
 /// Print server frames as JSON lines while sending stdin lines as chat.
 /// Local command responses go to stderr unless JSON transcript mode is enabled.
 ///
 /// The transport is any byte stream carrying the length-prefixed envelope
 /// (an iroh stream or an SSH exec channel); `first` is the join frame.
+/// `replay` holds bytes captured by the optional startup terminal probe, which
+/// are fed to the line reader before live stdin so typing order is preserved.
 async fn pump<R, W>(
     mut recv: R,
     mut send: W,
@@ -1863,6 +1987,7 @@ async fn pump<R, W>(
     command_mode: bool,
     json: bool,
     capability: &str,
+    replay: Vec<u8>,
 ) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1875,7 +2000,7 @@ where
         }
         anyhow::Ok(())
     });
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut lines = BufReader::new(PreloadedStdin::new(replay)).lines();
     let result = loop {
         tokio::select! {
             line = lines.next_line() => match line? {
@@ -2301,7 +2426,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.5"
+            "3 frames conform to shell contract v1.6"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

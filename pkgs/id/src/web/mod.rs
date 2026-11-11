@@ -55,6 +55,7 @@ mod identity;
 mod markdown;
 mod routes;
 mod security;
+mod seitan;
 mod tags_ws;
 mod templates;
 pub mod world_ws;
@@ -82,6 +83,7 @@ pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
 pub use routes::{create_program_router, create_router, create_router_for_app};
+pub use seitan::SeitanState;
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
@@ -228,9 +230,11 @@ pub struct AppState {
     pub tag_store: Arc<TagStore>,
     /// Per-file save rate limiter.
     pub save_limiter: SaveRateLimiter,
-    /// Serializes upload name resolution, tag assignment and metadata writes
-    /// across clones of this state. Independently constructed states, other
-    /// processes and non-upload tag writers do not participate in this lock.
+    /// Serializes filename-tag claims (upload name resolution, create
+    /// existence check, save tag assignment) and the filename-keyed
+    /// metadata writes across clones of this state (#2363, #8407).
+    /// Independently constructed states, other processes and tag writers
+    /// outside these handlers do not participate in this lock.
     pub(crate) upload_name_lock: Arc<Mutex<()>>,
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
@@ -257,6 +261,12 @@ pub struct AppState {
     /// (`id serve` passes its `--groups-log` resolution); `None` reads
     /// the default `groups.jsonl`, as the group CLI does.
     pub groups_log: Option<std::path::PathBuf>,
+    /// Seitan admission state for `/api/seitan/*` (#8487): the invite
+    /// registry, the directory admissions append to, and the freshness
+    /// window. `id serve` replaces the default (empty in-memory
+    /// directory, default window) with the server-config directory
+    /// journal and the configured window; see [`SeitanState`].
+    pub seitan: SeitanState,
 }
 
 impl std::fmt::Debug for AppState {
@@ -274,6 +284,7 @@ impl std::fmt::Debug for AppState {
             .field("world", &self.world)
             .field("cookie_secure", &self.cookie_secure)
             .field("groups_log", &self.groups_log)
+            .field("seitan", &self.seitan)
             .finish()
     }
 }
@@ -343,6 +354,7 @@ impl AppState {
             program_world: None,
             cookie_secure: false,
             groups_log: None,
+            seitan: SeitanState::default(),
         })
     }
 }
@@ -431,7 +443,15 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure, None, groups_log))
+    Ok(finish_router(
+        state,
+        security,
+        world,
+        cookie_secure,
+        None,
+        groups_log,
+        SeitanState::default(),
+    ))
 }
 
 /// Like [`web_router`], but over a caller-opened, shared `local_events` store (see
@@ -460,7 +480,15 @@ pub async fn web_router_with_local_events(
         local_events,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure, None, groups_log))
+    Ok(finish_router(
+        state,
+        security,
+        world,
+        cookie_secure,
+        None,
+        groups_log,
+        SeitanState::default(),
+    ))
 }
 
 /// Build one router per listener security over a SINGLE shared
@@ -487,6 +515,7 @@ pub async fn web_routers(
     local_events: Option<Arc<Mutex<crate::local_events::LocalEvents>>>,
     surfaces: Vec<Option<String>>,
     groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
 ) -> anyhow::Result<Vec<Router>> {
     let state = match local_events {
         Some(events) => {
@@ -524,6 +553,7 @@ pub async fn web_routers(
                 cookie_secure,
                 surface,
                 groups_log.clone(),
+                seitan.clone(),
             )
         })
         .collect())
@@ -542,9 +572,11 @@ fn finish_router(
     cookie_secure: bool,
     surface: Option<String>,
     groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
 ) -> Router {
     state.world = world;
     state.groups_log = groups_log;
+    state.seitan = seitan;
     state.cookie_secure = cookie_secure;
     let security = WebSecurity {
         cookie_secure,
@@ -560,6 +592,75 @@ fn finish_router(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    type WorldClient = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    async fn serve_test_router(router: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        addr
+    }
+
+    async fn connect_world(addr: std::net::SocketAddr, capability: &str) -> WorldClient {
+        use futures_util::SinkExt as _;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+            .await
+            .unwrap();
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "join",
+                    "capability": capability,
+                    "world": "arena",
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        client
+    }
+
+    async fn next_world_frame(client: &mut WorldClient) -> serde_json::Value {
+        use futures_util::StreamExt as _;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let message = tokio::time::timeout(Duration::from_secs(10), client.next())
+            .await
+            .expect("timed out waiting for a world frame")
+            .expect("world socket closed before a frame")
+            .expect("world socket failed");
+        match message {
+            Message::Text(text) => serde_json::from_str(&text).unwrap(),
+            other => panic!("expected a text world frame, got {other:?}"),
+        }
+    }
+
+    async fn broadcast_chat(sender: &mut WorldClient, other: &mut WorldClient, text: &str) {
+        use futures_util::SinkExt as _;
+        use tokio_tungstenite::tungstenite::Message;
+
+        sender
+            .send(Message::Text(
+                serde_json::json!({"type": "chat", "text": text})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        for receiver in [sender, other] {
+            let event = next_world_frame(receiver).await;
+            assert_eq!(event["type"], "event");
+            assert!(event.to_string().contains(text), "{event}");
+        }
+    }
 
     #[tokio::test]
     async fn test_save_limiter_refuses_within_the_cooldown_only_for_that_file() {
@@ -682,5 +783,136 @@ mod tests {
             "styles_css should start with /assets/: {}",
             urls.styles_css
         );
+    }
+
+    #[tokio::test]
+    async fn mixed_listener_surfaces_serve_their_pages_and_share_world_sessions() {
+        use iroh::endpoint::{Endpoint, RelayMode, presets};
+        use iroh_blobs::store::mem::MemStore;
+        use iroh_docs::protocol::Docs;
+        use iroh_gossip::net::Gossip;
+        use tower::ServiceExt as _;
+
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "mixed-listener-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let world = crate::world::WorldHandle::spawn(
+            crate::world::WorldCore::new("arena", crate::world::WorldLimits::default()).unwrap(),
+        );
+        let hub = crate::world_hub::WorldHub::single_named(
+            "arena",
+            crate::world_session::WorldService::new(world.clone(), None),
+        );
+        let routers = web_routers(
+            store,
+            None,
+            "mixed-listener-test".to_owned(),
+            tags,
+            [9; 32],
+            dir.path().join(".identity.redb"),
+            (0..2)
+                .map(|_| WebSecurity::for_bind("127.0.0.1".parse().unwrap(), None, &[]))
+                .collect(),
+            Some(hub),
+            false,
+            None,
+            vec![None, Some("arena".to_owned())],
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(routers.len(), 2, "one router is returned per listener");
+        let explorer = routers[0].clone();
+        let program = routers[1].clone();
+
+        let explorer_page = explorer
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/world")
+                    .header(axum::http::header::HOST, "127.0.0.1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(explorer_page.status(), axum::http::StatusCode::OK);
+        let program_page = program
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .header(axum::http::header::HOST, "127.0.0.1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(program_page.status(), axum::http::StatusCode::OK);
+        let program_html = axum::body::to_bytes(program_page.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&program_html).contains("data-world-program=\"arena\""),
+            "program listener should serve its configured world"
+        );
+
+        for (router, path, expected) in [
+            (&explorer, "/files", axum::http::StatusCode::OK),
+            (&program, "/files", axum::http::StatusCode::NOT_FOUND),
+            (&explorer, "/world", axum::http::StatusCode::OK),
+            (&program, "/world", axum::http::StatusCode::NOT_FOUND),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .header(axum::http::header::HOST, "127.0.0.1")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{path}");
+        }
+
+        let explorer_addr = serve_test_router(explorer).await;
+        let program_addr = serve_test_router(program).await;
+        let (_, explorer_capability) = world
+            .issue(
+                "explorer-guest".to_owned(),
+                crate::world::WorldScopes::GUEST,
+            )
+            .await
+            .unwrap();
+        let (_, program_capability) = world
+            .issue("program-guest".to_owned(), crate::world::WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut explorer_client = connect_world(explorer_addr, explorer_capability.expose()).await;
+        let mut program_client = connect_world(program_addr, program_capability.expose()).await;
+        for client in [&mut explorer_client, &mut program_client] {
+            let snapshot = next_world_frame(client).await;
+            assert_eq!(snapshot["type"], "snapshot");
+            assert_eq!(snapshot["snapshot"]["world_id"], "arena");
+        }
+
+        broadcast_chat(&mut explorer_client, &mut program_client, "from-explorer").await;
+        broadcast_chat(&mut program_client, &mut explorer_client, "from-program").await;
     }
 }

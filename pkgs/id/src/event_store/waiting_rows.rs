@@ -19,7 +19,7 @@
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
-use super::{be_u64, corrupt, hash_of, row_event, seq_num, StoreError, WAITING, WAITING_BY_DEP};
+use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num};
 use crate::chain::Event;
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 
@@ -339,7 +339,12 @@ impl Mirror<'_> {
     }
 
     /// Removes the row of an event the pool has released, once it is decided for good.
-    pub fn drop_row(&self, id: &Hash) -> Result<(), StoreError> {
+    /// The event is decided for good here: it reaches neither `release` nor
+    /// `restore` after this, so its handed-out mark in the pool is finalized
+    /// too (#7724) -- otherwise every released-then-refused event would leak
+    /// one mark for the life of the pool.
+    pub fn drop_row(&mut self, id: &Hash) -> Result<(), StoreError> {
+        self.pool.forget(id);
         delete(self.txn, id)
     }
 }

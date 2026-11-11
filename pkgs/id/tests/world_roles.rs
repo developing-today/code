@@ -8,8 +8,9 @@
 use std::sync::{Arc, Mutex};
 
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldHandle, WorldJournal,
-    WorldLimits, WorldProgram, WorldScopes,
+    CapabilityBounds, JoinCapability, JournalEntry, TrustBasis, TrustDecision, WorldCore,
+    WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+    is_capability_denied,
 };
 
 /// A capturing journal for asserting what a world records.
@@ -153,6 +154,200 @@ async fn a_moderator_revoke_is_audited() {
                 if *participant_id == 1 && *by == 2
         )),
         "expected a Revoked audit record naming the moderator: {entries:?}"
+    );
+
+    handle.shutdown().await.unwrap();
+}
+
+// --- Design #835 phase 2: actor-authorized operations (task 9611) ---
+// The actor authorizes the live capability itself and derives the audit
+// actor from it; caller-supplied actor IDs are never trusted on this path.
+
+#[tokio::test]
+async fn a_moderator_capability_revokes_and_a_guest_capability_is_denied() {
+    let mut core = WorldCore::new("roles-authz", WorldLimits::default()).unwrap();
+    let (victim, _victim_token) = core
+        .issue_capability("victim", WorldScopes::GUEST, CapabilityBounds::default())
+        .unwrap();
+    let (moderator, moderator_token) = core
+        .issue_capability(
+            "mod",
+            WorldScopes::from_role("moderator").unwrap(),
+            CapabilityBounds::default(),
+        )
+        .unwrap();
+    let (_guest, guest_token) = core
+        .issue_capability("guest", WorldScopes::GUEST, CapabilityBounds::default())
+        .unwrap();
+    let journal = Capturing::default();
+    let handle = WorldHandle::spawn_durable(
+        core,
+        Box::<Empty>::default(),
+        Some(Box::new(journal.clone())),
+    );
+
+    // A plain guest capability carries no MODERATOR authority.
+    assert!(
+        handle
+            .revoke_authorized(guest_token, victim.id)
+            .await
+            .is_err(),
+        "guest capability must be denied the authorized revoke"
+    );
+    assert!(
+        !journal.entries().iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Revoked { participant_id, .. } if *participant_id == victim.id
+        )),
+        "a denied revoke must not journal a Revoked entry"
+    );
+
+    // The moderator's live capability revokes, attributed to the moderator
+    // ID the actor derived from the capability — never a supplied ID.
+    let revoked = handle
+        .revoke_authorized(moderator_token.clone(), victim.id)
+        .await
+        .unwrap();
+    assert!(revoked);
+    let entries = journal.entries();
+    assert!(
+        entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Revoked { participant_id, by: Some(by) }
+                if *participant_id == victim.id && *by == moderator.id
+        )),
+        "expected a Revoked audit record naming the derived moderator: {entries:?}"
+    );
+
+    // A second revoke of the same participant reports no change.
+    let revoked_again = handle
+        .revoke_authorized(moderator_token, victim.id)
+        .await
+        .unwrap();
+    assert!(!revoked_again);
+
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_builder_capability_installs_and_a_revoked_builder_is_denied() {
+    let mut core = WorldCore::new("roles-authz", WorldLimits::default()).unwrap();
+    let (builder, builder_token) = core
+        .issue_capability(
+            "builder",
+            WorldScopes::from_role("builder").unwrap(),
+            CapabilityBounds::default(),
+        )
+        .unwrap();
+    let (_guest, guest_token) = core
+        .issue_capability("guest", WorldScopes::GUEST, CapabilityBounds::default())
+        .unwrap();
+    let journal = Capturing::default();
+    let handle = WorldHandle::spawn_durable(
+        core,
+        Box::<Empty>::default(),
+        Some(Box::new(journal.clone())),
+    );
+
+    // A plain guest capability carries no BUILDER authority.
+    let guest_error = handle
+        .install_program_authorized(
+            guest_token,
+            "guest-hash".to_owned(),
+            1,
+            None,
+            None,
+            Box::<Empty>::default(),
+        )
+        .await
+        .expect_err("guest capability must be denied the authorized install");
+    assert!(
+        is_capability_denied(&guest_error),
+        "the denial must be classifiable from the command's own error: {guest_error:#}"
+    );
+    assert!(
+        !journal
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry, JournalEntry::BuilderInstalled { .. })),
+        "a denied install must not journal a BuilderInstalled entry"
+    );
+
+    // The builder's live capability installs, attributed to the builder ID
+    // the actor derived from the capability. The caller's trust decision
+    // is carried through to the durable install event, as on the admin
+    // path: a verified publisher stays attributable in the journal.
+    let trust = TrustDecision {
+        basis: TrustBasis::SignatureVerified,
+        publisher: Some("publisher-key".to_owned()),
+    };
+    handle
+        .install_program_authorized(
+            builder_token,
+            "builder-hash".to_owned(),
+            7,
+            None,
+            Some(trust.clone()),
+            Box::<Empty>::default(),
+        )
+        .await
+        .unwrap();
+    let entries = journal.entries();
+    assert!(
+        entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::BuilderInstalled { by, module_hash, seed }
+                if *by == builder.id && module_hash == "builder-hash" && *seed == 7
+        )),
+        "expected a BuilderInstalled audit record naming the derived builder: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Committed { event }
+                if matches!(
+                    &event.kind,
+                    WorldEventKind::ProgramInstalled { trust: recorded, .. }
+                        if recorded.as_ref() == Some(&trust)
+                )
+        )),
+        "the authorized install must journal the caller's trust decision: {entries:?}"
+    );
+
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_revoked_moderator_capability_is_denied() {
+    let mut core = WorldCore::new("roles-authz", WorldLimits::default()).unwrap();
+    let (victim, _victim_token) = core
+        .issue_capability("victim", WorldScopes::GUEST, CapabilityBounds::default())
+        .unwrap();
+    let (moderator, moderator_token) = core
+        .issue_capability(
+            "mod",
+            WorldScopes::from_role("moderator").unwrap(),
+            CapabilityBounds::default(),
+        )
+        .unwrap();
+    let journal = Capturing::default();
+    let handle = WorldHandle::spawn_durable(
+        core,
+        Box::<Empty>::default(),
+        Some(Box::new(journal.clone())),
+    );
+
+    // The moderator is revoked by the admin path; its capability must stop
+    // authorizing at the actor boundary (the check is at mutation time,
+    // not at some earlier session check).
+    assert!(handle.revoke(moderator.id).await.unwrap());
+    let revoke_error = handle
+        .revoke_authorized(moderator_token, victim.id)
+        .await
+        .expect_err("a revoked moderator capability must be denied");
+    assert!(
+        is_capability_denied(&revoke_error),
+        "the denial must be classifiable from the command's own error: {revoke_error:#}"
     );
 
     handle.shutdown().await.unwrap();

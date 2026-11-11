@@ -15,6 +15,22 @@
 //!              {"id":"r2","cap":"chat.say","args":{"text":"hello"}}]}
 //! ```
 //!
+//! Asking what device the program is rendering on is the same shape —
+//! `device.info` (#2338) is a one-shot request whose result is the
+//! device capability manifest (taxonomy doc 2026-10-29, §3.1):
+//!
+//! ```json
+//! {"v":1,
+//!  "requests":[{"id":"d1","cap":"device.info"}]}
+//! ```
+//!
+//! The server answers with the manifest as the result value:
+//! `{"manifest":{"v":1},"display":{...},"input":{...},"sensors":{...},"audio":{...},"network":{...}}`.
+//! A program may name the manifest version it understands
+//! (`{"id":"d1","cap":"device.info","args":{"v":1}}`); an unsupported
+//! version is refused with `bad_args`, never silently interpreted. A
+//! host that cannot describe its device refuses with `unknown_cap`.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -229,8 +245,11 @@ macro_rules! define_provider_registry {
             default_ceiling: $default_ceiling:expr,
         },
     )+) => {
-        /// All statically registered providers, in stable catalog order.
-        pub const CATALOG_ENTRIES: &[ProviderManifest] = &[
+        /// All statically registered production providers, in stable catalog
+        /// order. The registry assembles [`CATALOG_ENTRIES`] from this list so
+        /// feature-gated, registry-only providers can join without touching
+        /// the production entries.
+        pub const PRODUCTION_CATALOG_ENTRIES: &[ProviderManifest] = &[
             $(ProviderManifest {
                 name: $name,
                 version: $version,
@@ -336,6 +355,14 @@ const LOC_POSITION_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
     value_type: ArgumentType::UnsignedInteger,
     required: false,
 }];
+/// Argument schema for `device.info`: an optional manifest version
+/// the program understands. An unsupported version is refused rather
+/// than silently interpreted (#2338).
+const DEVICE_INFO_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "v",
+    value_type: ArgumentType::UnsignedInteger,
+    required: false,
+}];
 /// Bounds for `loc.position`: the argument byte cap.
 const LOC_POSITION_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARGS_BYTES)];
 /// Bounds for `loc.watch`: the concurrent-watch cap. The interval
@@ -432,6 +459,14 @@ define_provider_registry! {
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
     },
+    "device.info" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(DEVICE_INFO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
     // Sensor caps (#2341): excluded from default ceilings, so a world
     // reaches them only through an explicit ceiling entry and an
     // explicit grant, and each use passes the consent seam.
@@ -500,6 +535,67 @@ define_provider_registry! {
         default_ceiling: DefaultCeiling::Included,
     },
 }
+
+/// Name of the registry-only test provider (#1061 exit proof).
+///
+/// Only present with the `test-provider` feature, which production builds
+/// never enable. It is a plain platform-module name so the compile gate can
+/// recognize an `import` of it as a module import.
+#[cfg(feature = "test-provider")]
+pub const TEST_PROVIDER_NAME: &str = "RegistryProbe";
+
+/// The registry-only test provider (#1061 exit proof).
+///
+/// It registers exactly like a production provider — one manifest entry — and
+/// deliberately opts out of every default ceiling: adding a provider must
+/// never widen a world's authority by itself (#838).
+#[cfg(feature = "test-provider")]
+const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
+    name: TEST_PROVIDER_NAME,
+    version: 1,
+    kind: ProviderKind::PlatformModule,
+    argument_schema: ArgumentSchema::NotApplicable,
+    bounds: &[],
+    required_scope: RequiredScope::Join,
+    default_ceiling: DefaultCeiling::Excluded,
+};
+
+/// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
+#[cfg(feature = "test-provider")]
+const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[TEST_PROVIDER_MANIFEST];
+/// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
+#[cfg(not(feature = "test-provider"))]
+const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[];
+
+/// Number of manifests in the assembled provider registry.
+const CATALOG_ENTRY_COUNT: usize = PRODUCTION_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len();
+
+/// Assemble the production manifests plus any feature-gated registry-only
+/// additions into one array.
+///
+/// This is the only place the registry grows. Adding a provider means adding a
+/// manifest — never editing dispatch or core files (#1061).
+const fn assemble_catalog_entries() -> [ProviderManifest; CATALOG_ENTRY_COUNT] {
+    let mut entries = [PRODUCTION_CATALOG_ENTRIES[0]; CATALOG_ENTRY_COUNT];
+    let mut index = 0;
+    while index < PRODUCTION_CATALOG_ENTRIES.len() {
+        entries[index] = PRODUCTION_CATALOG_ENTRIES[index];
+        index += 1;
+    }
+    let mut extra = 0;
+    while extra < EXTRA_CATALOG_ENTRIES.len() {
+        entries[PRODUCTION_CATALOG_ENTRIES.len() + extra] = EXTRA_CATALOG_ENTRIES[extra];
+        extra += 1;
+    }
+    entries
+}
+
+/// The assembled registry storage, in stable catalog order.
+static ASSEMBLED_CATALOG_ENTRIES: [ProviderManifest; CATALOG_ENTRY_COUNT] =
+    assemble_catalog_entries();
+
+/// All statically registered providers, in stable catalog order.
+pub const CATALOG_ENTRIES: &[ProviderManifest] = &ASSEMBLED_CATALOG_ENTRIES;
 
 /// A registry view over the statically registered provider manifests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -799,6 +895,21 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
                 .get("args")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            // A request's args are a JSON object or absent/null (#7929):
+            // handlers read named fields from them, so any other JSON
+            // value silently collapsed to "no arguments" — for
+            // records.read that widened the read to every record.
+            ensure!(
+                args.is_null() || args.is_object(),
+                "request args must be a JSON object or null, not {}",
+                match &args {
+                    serde_json::Value::Number(_) => "a number",
+                    serde_json::Value::String(_) => "a string",
+                    serde_json::Value::Array(_) => "an array",
+                    serde_json::Value::Bool(_) => "a boolean",
+                    _ => "a non-object value",
+                }
+            );
             ensure!(
                 serde_json::to_vec(&args).map_or(usize::MAX, |bytes| bytes.len()) <= MAX_ARGS_BYTES,
                 "request args exceed {MAX_ARGS_BYTES} bytes"
@@ -846,7 +957,7 @@ pub fn result_event(id: &str, outcome: Result<serde_json::Value, CapError>) -> S
 
 /// The event delivered when a subscription is refused.
 #[must_use]
-pub fn subscription_refused_event(spec: &str, error: CapError) -> String {
+pub fn subscription_refused_event(spec: &str, error: &CapError) -> String {
     let mut event =
         serde_json::json!({"cap":"subscription","spec":spec,"ok":false,"error":error.code()});
     if let Some(reason) = error.reason() {
@@ -993,6 +1104,16 @@ impl CapError {
         Self {
             code: CapErrorCode::ActorDenied,
             reason: None,
+        }
+    }
+
+    /// The acting participant lacks the scope for the effect, and `reason`
+    /// says why.
+    #[must_use]
+    pub fn actor_denied_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::ActorDenied,
+            reason: Some(reason.into()),
         }
     }
 
@@ -1150,6 +1271,126 @@ impl LocationReading {
             return Err(CapError::precision_ceiling());
         }
         Ok(())
+    }
+}
+
+/// The manifest version this host speaks for `device.info` (#2338).
+/// A manifest — or a request — naming any other version is refused,
+/// never silently interpreted.
+pub const DEVICE_MANIFEST_VERSION: u64 = 1;
+
+/// One device's capability manifest (#2338): the typed shape every
+/// `device.info` result carries, in the v1 form the capability
+/// taxonomy (2026-10-29, §3.1) specifies. The five sections are opaque
+/// JSON objects on purpose: display kinds, sensor sets and transports
+/// vary per device family, and the wire contract is the section
+/// presence plus the version, not an enumeration of affordances.
+///
+/// The manifest is per-device, not per-program: the adapter boundary
+/// enumerates the device once and caches the manifest, and the world
+/// actor serves that cached copy to whoever asks (taxonomy §8 open
+/// question 4). Enumeration never happens per request.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceManifest {
+    /// Display affordances object (e.g. `{"kind":"pixel","width":128}`).
+    pub display: serde_json::Value,
+    /// Input affordances object (e.g. `{"keys":8,"encoder":true}`).
+    pub input: serde_json::Value,
+    /// Sensor affordances object (e.g. `{"gnss":{"accuracy_m":5}}`).
+    pub sensors: serde_json::Value,
+    /// Audio affordances object (e.g. `{"out":"pcm","in":null}`).
+    pub audio: serde_json::Value,
+    /// Network affordances object (e.g. `{"transport":"mqtt"}`).
+    pub network: serde_json::Value,
+}
+
+impl DeviceManifest {
+    /// The wire object: exactly
+    /// `{"manifest":{"v":1},"display":...,"input":...,"sensors":...,"audio":...,"network":...}`.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "manifest": {"v": DEVICE_MANIFEST_VERSION},
+            "display": self.display,
+            "input": self.input,
+            "sensors": self.sensors,
+            "audio": self.audio,
+            "network": self.network,
+        })
+    }
+
+    /// Parse and validate a manifest in wire form. The oracle is the
+    /// declared v1 manifest contract: `manifest.v` must equal
+    /// [`DEVICE_MANIFEST_VERSION`] and every section must be present
+    /// as a JSON object.
+    ///
+    /// # Errors
+    ///
+    /// [`CapError::bad_args`] naming the defect: an unsupported
+    /// manifest version, a missing section, or a section that is not
+    /// an object.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, CapError> {
+        let version = value
+            .get("manifest")
+            .and_then(|manifest| manifest.get("v"))
+            .and_then(serde_json::Value::as_u64);
+        match version {
+            Some(DEVICE_MANIFEST_VERSION) => {}
+            Some(_) => {
+                return Err(CapError::bad_args_with(
+                    "unsupported device manifest version",
+                ));
+            }
+            None => {
+                return Err(CapError::bad_args_with(
+                    "device manifest carries no version",
+                ));
+            }
+        }
+        let section = |name: &str| -> Result<serde_json::Value, CapError> {
+            match value.get(name) {
+                Some(section) if section.is_object() => Ok(section.clone()),
+                Some(_) => Err(CapError::bad_args_with(format!(
+                    "device manifest section {name} is not an object"
+                ))),
+                None => Err(CapError::bad_args_with(format!(
+                    "device manifest is missing section {name}"
+                ))),
+            }
+        };
+        Ok(Self {
+            display: section("display")?,
+            input: section("input")?,
+            sensors: section("sensors")?,
+            audio: section("audio")?,
+            network: section("network")?,
+        })
+    }
+
+    /// The manifest version a `device.info` request asks for: the
+    /// optional `v` argument, defaulting to
+    /// [`DEVICE_MANIFEST_VERSION`]. A program asking for a version
+    /// this host does not speak is refused, never silently served a
+    /// manifest it may misinterpret.
+    ///
+    /// # Errors
+    ///
+    /// [`CapError::bad_args`] for a non-integer or unsupported `v`.
+    pub fn requested_version(args: &serde_json::Value) -> Result<u64, CapError> {
+        let Some(version) = args.get("v") else {
+            return Ok(DEVICE_MANIFEST_VERSION);
+        };
+        let Some(version) = version.as_u64() else {
+            return Err(CapError::bad_args_with(
+                "device.info v is not an unsigned integer",
+            ));
+        };
+        if version != DEVICE_MANIFEST_VERSION {
+            return Err(CapError::bad_args_with(
+                "unsupported device manifest version",
+            ));
+        }
+        Ok(version)
     }
 }
 
@@ -1486,6 +1727,31 @@ mod tests {
     }
 
     #[test]
+    fn non_object_request_args_are_rejected() {
+        // #7929: a present args that is neither an object nor null used
+        // to collapse to no arguments in every handler, silently
+        // widening records.read to every record.
+        for bad in ["42", "\"text\"", "[1,2]", "true"] {
+            let doc =
+                format!(r#"{{"requests":[{{"id":"r1","cap":"records.read","args":{bad}}}]}}"#);
+            let error = parse_wants(&doc).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("args must be a JSON object"),
+                "{error:#}"
+            );
+        }
+        // Absent args and args:null behave exactly as before.
+        parse_wants(r#"{"requests":[{"id":"r1","cap":"records.read"}]}"#).unwrap();
+        parse_wants(r#"{"requests":[{"id":"r1","cap":"records.read","args":null}]}"#).unwrap();
+        // An object args is carried through unchanged.
+        let wants = parse_wants(
+            r#"{"requests":[{"id":"r1","cap":"records.read","args":{"prefix":"co"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(wants.requests[0].args, serde_json::json!({"prefix": "co"}));
+    }
+
+    #[test]
     fn an_empty_document_wants_nothing() {
         assert_eq!(parse_wants("{}").unwrap(), Wants::default());
     }
@@ -1766,12 +2032,28 @@ mod tests {
     #[test]
     fn test_provider_registry_matches_the_legacy_catalog_and_carries_manifests() {
         let entry_names = PROVIDER_REGISTRY.ordered_names();
+        // The registry assembles the production catalog plus any
+        // feature-gated registry-only entries. Under `test-provider`
+        // that is exactly one extra — the RegistryProbe (#1061),
+        // whose manifest default is Excluded. The root package's
+        // dev-dependencies enable the feature, and workspace test
+        // builds (the Nix check phase among them) unify it into this
+        // test binary, so the production expectations below are stated
+        // against the catalog with the probe removed again.
+        #[cfg(feature = "test-provider")]
+        let production_names: Vec<&str> = entry_names
+            .iter()
+            .copied()
+            .filter(|name| *name != TEST_PROVIDER_NAME)
+            .collect();
+        #[cfg(not(feature = "test-provider"))]
+        let production_names: Vec<&str> = entry_names.clone();
         assert_eq!(
-            entry_names, CATALOG,
+            production_names, CATALOG,
             "legacy catalog derives from manifests"
         );
         assert_eq!(
-            entry_names,
+            production_names,
             vec![
                 "time.now",
                 "time.tick",
@@ -1784,6 +2066,7 @@ mod tests {
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
+                "device.info",
                 "loc.position",
                 "loc.watch",
                 "Key",
@@ -1793,9 +2076,12 @@ mod tests {
                 "RocCap",
                 "RocText",
             ],
-            "registry retains the catalog names and order (17 pre-#2341 names plus loc.position/loc.watch)"
+            "registry retains the catalog names and order (17 pre-#2341 names plus loc.position/loc.watch and device.info)"
         );
-        assert_eq!(PROVIDER_REGISTRY.entries().len(), 19);
+        assert_eq!(
+            PROVIDER_REGISTRY.entries().len(),
+            production_names.len() + EXTRA_CATALOG_ENTRIES.len()
+        );
         assert!(
             PROVIDER_REGISTRY
                 .entries()
@@ -1835,11 +2121,16 @@ mod tests {
         // Every non-sensor provider opted in explicitly. The sensor
         // caps (#2341) registered as Excluded, so the default ceiling
         // is the catalog minus loc.* — registering them widened no
-        // existing world's authority.
+        // existing world's authority. The RegistryProbe is Excluded
+        // for the same reason (#838), so under `test-provider` it is
+        // subtracted the same way.
+        let mut excluded_from_ceiling = names(&["loc.position", "loc.watch"]);
+        #[cfg(feature = "test-provider")]
+        excluded_from_ceiling.insert(TEST_PROVIDER_NAME.to_owned());
         assert_eq!(
             default_ceiling_names(),
             catalog_names()
-                .difference(&names(&["loc.position", "loc.watch"]))
+                .difference(&excluded_from_ceiling)
                 .cloned()
                 .collect::<BTreeSet<String>>()
         );
@@ -1853,6 +2144,72 @@ mod tests {
         assert_eq!(
             PROVIDER_REGISTRY.get("loc.watch").unwrap().default_ceiling,
             DefaultCeiling::Excluded
+        );
+    }
+
+    #[test]
+    fn device_manifest_round_trips_through_its_wire_form() {
+        // Oracle: the declared v1 manifest contract (taxonomy §3.1) —
+        // the wire object carries manifest.v plus the five sections,
+        // and parsing it returns the same manifest.
+        let manifest = DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        };
+        let wire = manifest.to_json();
+        assert_eq!(wire["manifest"]["v"], DEVICE_MANIFEST_VERSION);
+        for section in ["display", "input", "sensors", "audio", "network"] {
+            assert!(wire[section].is_object(), "section {section} present");
+        }
+        assert_eq!(DeviceManifest::from_json(&wire).unwrap(), manifest);
+    }
+
+    #[test]
+    fn device_manifest_refuses_unsupported_versions_and_missing_sections() {
+        // Oracle: the declared v1 manifest contract — an unsupported
+        // version is refused, never silently interpreted.
+        let mut wire = DeviceManifest {
+            display: serde_json::json!({}),
+            input: serde_json::json!({}),
+            sensors: serde_json::json!({}),
+            audio: serde_json::json!({}),
+            network: serde_json::json!({}),
+        }
+        .to_json();
+        wire["manifest"]["v"] = serde_json::json!(2);
+        let error = DeviceManifest::from_json(&wire).unwrap_err();
+        assert_eq!(error.code(), CapError::bad_args().code());
+        assert!(
+            error
+                .reason()
+                .is_some_and(|reason| reason.contains("unsupported")),
+            "{error:?}"
+        );
+        let mut missing = DeviceManifest {
+            display: serde_json::json!({}),
+            input: serde_json::json!({}),
+            sensors: serde_json::json!({}),
+            audio: serde_json::json!({}),
+            network: serde_json::json!({}),
+        }
+        .to_json();
+        missing.as_object_mut().unwrap().remove("audio");
+        assert!(DeviceManifest::from_json(&missing).is_err());
+        // The request side negotiates by the same rule.
+        assert_eq!(
+            DeviceManifest::requested_version(&serde_json::json!({})).unwrap(),
+            DEVICE_MANIFEST_VERSION
+        );
+        assert_eq!(
+            DeviceManifest::requested_version(&serde_json::json!({"v": 1})).unwrap(),
+            DEVICE_MANIFEST_VERSION
+        );
+        assert!(
+            DeviceManifest::requested_version(&serde_json::json!({"v": 2})).is_err(),
+            "a request for an unsupported version is refused"
         );
     }
 

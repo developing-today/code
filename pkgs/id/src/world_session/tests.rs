@@ -4,6 +4,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use ed25519_dalek::{Signer, SigningKey};
+    use iroh_blobs::api::Store;
 
     use super::*;
     use crate::directory::{Actor, Level, Member};
@@ -12,8 +13,10 @@ mod tests {
         Participant, WorldCore, WorldEvent, WorldHandle, WorldLimits, WorldScopes, hex_encode,
         unix_ms,
     };
+    use crate::world_compile::Compiler;
     use crate::world_hub::WorldHub;
     use crate::world_session::*;
+    use std::sync::Arc;
     use std::time::Duration;
 
     /// In-memory transport: tests push frames in and read frames out.
@@ -84,6 +87,40 @@ mod tests {
                 .await
                 .map(|frame| serde_json::from_str(&frame).unwrap())
         }
+
+        async fn close(self) {
+            let Self {
+                to_server,
+                from_server,
+                task,
+            } = self;
+            let _ = to_server.send(Inbound::Closed).await;
+            drop(from_server);
+            task.await.unwrap();
+        }
+    }
+
+    async fn admin_history(service: WorldService) -> (Vec<serde_json::Value>, serde_json::Value) {
+        let mut admin = Peer::connect(service, SessionConfig::default());
+        admin
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+            }))
+            .await;
+        let begin = admin.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        let event_count = usize::try_from(begin["event_count"].as_u64().unwrap()).unwrap();
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let frame = admin.next().await.unwrap();
+            assert_eq!(frame["type"], "event_history_event");
+            events.push(frame);
+        }
+        let records = admin.next().await.unwrap();
+        assert_eq!(records["type"], "records");
+        admin.close().await;
+        (events, records)
     }
 
     /// A program that does nothing, for tests that only install one.
@@ -227,6 +264,18 @@ mod tests {
             "the join event must not enter the participant stream"
         );
 
+        // A second session for this already-present participant, and closing
+        // just that session, must not create extra presence journal entries.
+        let mut repeat_joiner = Peer::connect(service.clone(), SessionConfig::default());
+        repeat_joiner
+            .say(serde_json::json!({
+                "type": "join",
+                "capability": capability.expose(),
+            }))
+            .await;
+        assert_eq!(repeat_joiner.next().await.unwrap()["type"], "snapshot");
+        repeat_joiner.close().await;
+
         let mut missing = Peer::connect(service.clone(), SessionConfig::default());
         missing
             .say(serde_json::json!({"type": "event_history_admin"}))
@@ -250,18 +299,21 @@ mod tests {
         assert_eq!(input["type"], "event");
         assert_eq!(input["event"]["kind"]["kind"], "input");
 
-        let mut admin = Peer::connect(service, SessionConfig::default());
-        admin
-            .say(serde_json::json!({
-                "type": "event_history_admin",
-                "admin_token": "admin",
-            }))
-            .await;
-        let begin = admin.next().await.unwrap();
-        assert_eq!(begin["type"], "event_history_begin");
-        assert_eq!(begin["event_count"], 2);
-        let joined = admin.next().await.unwrap();
-        assert_eq!(joined["type"], "event_history_event");
+        // Closing the final Ann session emits exactly one last-presence event.
+        joiner.close().await;
+        let mut history = Vec::new();
+        let mut records = serde_json::Value::Null;
+        // PresenceGuard schedules the final decrement when its session ends;
+        // retry the history snapshot until that actor command is observed.
+        for _ in 0..100 {
+            (history, records) = admin_history(service.clone()).await;
+            if history.len() == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(history.len(), 3, "one join, one input, and one final leave");
+        let joined = &history[0];
         assert_eq!(joined["event"]["kind"]["kind"], "system");
         assert!(
             joined["event"]["kind"]["data"]["event"]
@@ -269,11 +321,14 @@ mod tests {
                 .unwrap()
                 .contains("joined")
         );
-        let input = admin.next().await.unwrap();
-        assert_eq!(input["type"], "event_history_event");
+        let input = &history[1];
         assert_eq!(input["event"]["kind"]["kind"], "input");
-        let records = admin.next().await.unwrap();
-        assert_eq!(records["type"], "records");
+        let left = &history[2];
+        assert_eq!(left["event"]["kind"]["kind"], "system");
+        let left_event: serde_json::Value =
+            serde_json::from_str(left["event"]["kind"]["data"]["event"].as_str().unwrap()).unwrap();
+        assert_eq!(left_event["event"], "left");
+        assert_eq!(left_event["participant"]["name"], "ann");
         assert_eq!(records["sequence"], 1);
     }
 
@@ -958,10 +1013,11 @@ mod tests {
         let target = format!("/world/{}/isolation", lease.name());
         let now = unix_ms();
 
-        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged");
+        let mut forged = sign_request(&key, "PUT", &target, b"unisolated", now, "forged").unwrap();
         let last = forged.signature.pop().unwrap();
         forged.signature.push(if last == '0' { '1' } else { '0' });
-        let other_body = sign_request(&key, "PUT", &target, b"isolated", now, "other-body");
+        let other_body =
+            sign_request(&key, "PUT", &target, b"isolated", now, "other-body").unwrap();
         for signed in [&forged, &other_body] {
             assert!(
                 set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(signed))
@@ -974,7 +1030,7 @@ mod tests {
             Isolation::Isolated
         );
 
-        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good");
+        let signed = sign_request(&key, "PUT", &target, b"unisolated", now, "good").unwrap();
         assert_eq!(
             set_isolation_frame(&hub, &lease, Isolation::Unisolated, None, Some(&signed))
                 .await
@@ -2501,6 +2557,497 @@ mod tests {
         assert_eq!(
             reading.next().await.unwrap()["message"],
             "world event rejected"
+        );
+    }
+
+    // ---- Design #835 phase 3 (#8036): joined builder/moderator frames ----
+
+    /// A journal the test can inspect, so session tests can assert the
+    /// audit records a frame wrote — and, for denials, did not write.
+    #[derive(Clone, Default)]
+    struct CapturingJournal(
+        std::sync::Arc<std::sync::Mutex<Vec<crate::world::JournalEntry>>>,
+    );
+
+    impl CapturingJournal {
+        fn entries(&self) -> Vec<crate::world::JournalEntry> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::world::WorldJournal for CapturingJournal {
+        fn append(&mut self, entry: &crate::world::JournalEntry) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(entry.clone());
+            Ok(())
+        }
+
+        fn append_transaction(
+            &mut self,
+            entries: &[crate::world::JournalEntry],
+        ) -> anyhow::Result<()> {
+            self.0.lock().unwrap().extend_from_slice(entries);
+            Ok(())
+        }
+    }
+
+    /// A durable world behind a session service with a blob store, so
+    /// joined installs can pin their module and journal their audit.
+    fn durable_service() -> (WorldHandle, WorldService, CapturingJournal) {
+        use iroh_blobs::store::mem::MemStore;
+
+        let journal = CapturingJournal::default();
+        let world = WorldHandle::spawn_durable(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(NoProgram),
+            Some(Box::new(journal.clone())),
+        );
+        let blobs: Store = MemStore::new().into();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs);
+        (world, service, journal)
+    }
+
+    async fn join_as(service: &WorldService, token: &JoinCapability) -> Peer {
+        let mut peer = Peer::connect(service.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type": "join", "capability": token.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer
+    }
+
+    /// Read until a frame of `wanted` type arrives (broadcasts and view
+    /// frames interleave freely in a joined session).
+    async fn next_of_type(peer: &mut Peer, wanted: &str) -> serde_json::Value {
+        for _ in 0..32 {
+            let frame = peer.next().await.unwrap();
+            if frame["type"] == wanted {
+                return frame;
+            }
+        }
+        panic!("no {wanted} frame arrived");
+    }
+
+    /// Send an upload's chunks after its `upload_ready`, then
+    /// `install_end`; returns nothing — the caller reads the outcome.
+    async fn upload_chunks(peer: &mut Peer, ready: &serde_json::Value, bytes: &[u8]) {
+        let chunk_bytes = usize::try_from(ready["chunk_bytes"].as_u64().unwrap()).unwrap();
+        for (index, chunk) in bytes.chunks(chunk_bytes).enumerate() {
+            peer.say(serde_json::json!({
+                "type": "install_chunk",
+                "offset": index * chunk_bytes,
+                "data_hex": encode_hex(chunk),
+            }))
+            .await;
+        }
+        peer.say(serde_json::json!({"type": "install_end"})).await;
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_installs_and_journals_builder_installed() {
+        let (world, service, journal) = durable_service();
+        let (builder, builder_token) = world
+            .issue(
+                "builder".to_owned(),
+                WorldScopes::from_role("builder").unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut peer = join_as(&service, &builder_token).await;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        let hash = module_hash(wasm);
+        // No `admin_token` field at all: the joined path must not need
+        // one, and serde must accept its absence.
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": wasm.len(),
+            "module_hash": hash,
+            "seed": 12,
+        }))
+        .await;
+        let ready = next_of_type(&mut peer, "upload_ready").await;
+        upload_chunks(&mut peer, &ready, wasm).await;
+        let ack = next_of_type(&mut peer, "module_installed").await;
+        assert_eq!(ack["module_hash"], hash);
+
+        let entries = journal.entries();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::BuilderInstalled { by, module_hash, .. }
+                if *by == builder.id && *module_hash == hash
+            )),
+            "install must be journal-attributed to the builder: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::Committed { event }
+                    if matches!(
+                        &event.kind,
+                        crate::world::WorldEventKind::ProgramInstalled { trust: Some(decision), .. }
+                            if decision.basis == crate::world::TrustBasis::NoTrustList
+                                && decision.publisher.is_none()
+                    )
+            )),
+            "the install event must record the no-trust-list decision: {entries:?}"
+        );
+
+        // The installed program is live for ordinary participants.
+        let (_, guest) = world.issue("ada".to_owned(), WorldScopes::GUEST).await.unwrap();
+        assert!(
+            world
+                .view(guest)
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0")),
+            "the builder-installed program must serve views"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_install_with_trusted_signer_journals_signature_decision() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let journal = CapturingJournal::default();
+        let world = WorldHandle::spawn_durable(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(NoProgram),
+            Some(Box::new(journal.clone())),
+        );
+        let signer = SigningKey::from_bytes(&[42; 32]);
+        let publisher = hex_encode(&signer.verifying_key().to_bytes());
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into())
+            .with_module_trust_keys(vec![signer.verifying_key().to_bytes()]);
+        let (builder, builder_token) = world
+            .issue(
+                "builder".to_owned(),
+                WorldScopes::from_role("builder").unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut peer = join_as(&service, &builder_token).await;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        let hash = module_hash(wasm);
+        let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+        message.extend_from_slice(blake3::hash(wasm).as_bytes());
+        let signature = hex_encode(&signer.sign(&message).to_bytes());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": wasm.len(),
+            "module_hash": hash,
+            "seed": 12,
+            "signature": {"public_key": publisher, "signature": signature},
+        }))
+        .await;
+        let ready = next_of_type(&mut peer, "upload_ready").await;
+        upload_chunks(&mut peer, &ready, wasm).await;
+        let ack = next_of_type(&mut peer, "module_installed").await;
+        assert_eq!(ack["module_hash"], hash);
+
+        let entries = journal.entries();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::BuilderInstalled { by, .. } if *by == builder.id
+            )),
+            "install must be journal-attributed to the builder: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::Committed { event }
+                    if matches!(
+                        &event.kind,
+                        crate::world::WorldEventKind::ProgramInstalled { trust: Some(decision), .. }
+                            if decision.basis == crate::world::TrustBasis::SignatureVerified
+                                && decision.publisher.as_deref() == Some(publisher.as_str())
+                    )
+            )),
+            "the install event must record the verified publisher: {entries:?}"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_guest_install_is_actor_denied_and_journals_nothing() {
+        let (world, service, journal) = durable_service();
+        let (_, guest_token) = world
+            .issue("guest".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut peer = join_as(&service, &guest_token).await;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": wasm.len(),
+            "module_hash": module_hash(wasm),
+            "seed": 12,
+        }))
+        .await;
+        let denied = next_of_type(&mut peer, "error").await;
+        assert_eq!(denied["code"], "actor_denied", "{denied}");
+        assert_eq!(denied["message"], "module install denied");
+
+        // A denial is not a disconnect: the session still serves the
+        // participant's ordinary frames.
+        peer.say(serde_json::json!({
+            "type": "metrics",
+            "capability": guest_token.expose(),
+        }))
+        .await;
+        assert_eq!(next_of_type(&mut peer, "metrics").await["type"], "metrics");
+
+        assert!(
+            !journal.entries().iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::BuilderInstalled { .. }
+            )),
+            "a denied install must not journal a BuilderInstalled entry"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_install_begin_with_admin_token_is_mixed_credentials() {
+        let (world, service, journal) = durable_service();
+        let (_, builder_token) = world
+            .issue(
+                "builder".to_owned(),
+                WorldScopes::from_role("builder").unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut peer = join_as(&service, &builder_token).await;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "admin_token": "admin",
+            "total_bytes": wasm.len(),
+            "module_hash": module_hash(wasm),
+            "seed": 12,
+        }))
+        .await;
+        let refused = next_of_type(&mut peer, "error").await;
+        assert_eq!(
+            refused["message"],
+            "install_begin in a joined session must omit the admin token"
+        );
+        assert!(
+            refused["code"].is_null(),
+            "mixed credentials is not a role denial: {refused}"
+        );
+        assert!(
+            !journal.entries().iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::BuilderInstalled { .. }
+            )),
+            "a mixed-credentials frame must not install anything"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_revoked_mid_upload_cannot_activate() {
+        let (world, service, journal) = durable_service();
+        let (builder, builder_token) = world
+            .issue(
+                "builder".to_owned(),
+                WorldScopes::from_role("builder").unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut peer = join_as(&service, &builder_token).await;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": wasm.len(),
+            "module_hash": module_hash(wasm),
+            "seed": 12,
+        }))
+        .await;
+        let ready = next_of_type(&mut peer, "upload_ready").await;
+
+        // The revocation lands while the upload is in flight; the
+        // session is inside the upload, so only the install's effect
+        // boundary can still refuse — and it must.
+        assert!(world.revoke(builder.id).await.unwrap());
+        upload_chunks(&mut peer, &ready, wasm).await;
+        let denied = next_of_type(&mut peer, "error").await;
+        assert_eq!(denied["code"], "actor_denied", "{denied}");
+        assert!(
+            !journal.entries().iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::BuilderInstalled { .. }
+            )),
+            "a revoked builder's upload must not activate or journal"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_native_upload_is_refused() {
+        let (world, service, journal) = durable_service();
+        let (_, builder_token) = world
+            .issue(
+                "builder".to_owned(),
+                WorldScopes::from_role("builder").unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut peer = join_as(&service, &builder_token).await;
+
+        // An ELF image: builder authority is Wasm-only, even on hosts
+        // where the admin path may install native artifacts.
+        let mut elf = b"\x7fELF".to_vec();
+        elf.extend_from_slice(&[0u8; 60]);
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": elf.len(),
+            "module_hash": module_hash(&elf),
+            "seed": 12,
+        }))
+        .await;
+        let ready = next_of_type(&mut peer, "upload_ready").await;
+        upload_chunks(&mut peer, &ready, &elf).await;
+        let refused = next_of_type(&mut peer, "error").await;
+        assert_eq!(
+            refused["message"],
+            "Wasm module failed validation or initialization"
+        );
+        assert!(
+            !journal.entries().iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::BuilderInstalled { .. }
+            )),
+            "a native upload must not install or journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn prejoin_install_begin_without_admin_token_is_denied() {
+        let (_world, service, _journal) = durable_service();
+        let mut peer = Peer::connect(service, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": 4,
+            "module_hash": null,
+            "seed": 12,
+        }))
+        .await;
+        let denied = peer.next().await.unwrap();
+        assert_eq!(denied["type"], "error");
+        assert_eq!(denied["message"], "module install denied");
+        assert!(
+            peer.next().await.is_none(),
+            "the pre-join path ends the session after the refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn joined_moderator_revoke_disconnects_and_journals() {
+        let (world, service, journal) = durable_service();
+        let (moderator, moderator_token) = world
+            .issue(
+                "mod".to_owned(),
+                WorldScopes::from_role("moderator").unwrap(),
+            )
+            .await
+            .unwrap();
+        let (victim, victim_token) = world
+            .issue("victim".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut mod_peer = join_as(&service, &moderator_token).await;
+        let mut victim_peer = join_as(&service, &victim_token).await;
+
+        mod_peer
+            .say(serde_json::json!({"type": "revoke", "participant_id": victim.id}))
+            .await;
+        let ack = next_of_type(&mut mod_peer, "revoked").await;
+        assert_eq!(ack["participant_id"], victim.id);
+        assert_eq!(ack["revoked"], true);
+
+        // The victim's session is closed by the revocation.
+        let closed = next_of_type(&mut victim_peer, "error").await;
+        assert_eq!(closed["message"], "world capability revoked");
+
+        let entries = journal.entries();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::Revoked { participant_id, by: Some(by) }
+                if *participant_id == victim.id && *by == moderator.id
+            )),
+            "revoke must be journal-attributed to the moderator: {entries:?}"
+        );
+
+        // Revoking an inactive target is a no-op reply, not an error,
+        // and writes no second journal record.
+        mod_peer
+            .say(serde_json::json!({"type": "revoke", "participant_id": victim.id}))
+            .await;
+        let noop = next_of_type(&mut mod_peer, "revoked").await;
+        assert_eq!(noop["revoked"], false);
+        assert_eq!(
+            journal
+                .entries()
+                .iter()
+                .filter(|entry| matches!(
+                    entry,
+                    crate::world::JournalEntry::Revoked { .. }
+                ))
+                .count(),
+            1,
+            "a no-op revoke must not journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn joined_guest_revoke_is_actor_denied() {
+        let (world, service, journal) = durable_service();
+        let (moderator, moderator_token) = world
+            .issue(
+                "mod".to_owned(),
+                WorldScopes::from_role("moderator").unwrap(),
+            )
+            .await
+            .unwrap();
+        let (_, guest_token) = world
+            .issue("guest".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut mod_peer = join_as(&service, &moderator_token).await;
+        let mut guest_peer = join_as(&service, &guest_token).await;
+
+        guest_peer
+            .say(serde_json::json!({"type": "revoke", "participant_id": moderator.id}))
+            .await;
+        let denied = next_of_type(&mut guest_peer, "error").await;
+        assert_eq!(denied["code"], "actor_denied", "{denied}");
+
+        // The target is untouched: the moderator session still serves.
+        mod_peer
+            .say(serde_json::json!({
+                "type": "metrics",
+                "capability": moderator_token.expose(),
+            }))
+            .await;
+        assert_eq!(next_of_type(&mut mod_peer, "metrics").await["type"], "metrics");
+        assert!(
+            !journal.entries().iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::Revoked { .. }
+            )),
+            "a denied revoke must not journal"
         );
     }
 }

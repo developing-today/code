@@ -50,6 +50,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::Compiled { .. } => "compiled",
         ServerFrame::UploadReady { .. } => "upload_ready",
         ServerFrame::ModuleInstalled { .. } => "module_installed",
+        ServerFrame::Revoked { .. } => "revoked",
         ServerFrame::ProgramChanged { .. } => "program_changed",
         ServerFrame::EventHistoryBegin { .. } => "event_history_begin",
         ServerFrame::EventHistoryEvent { .. } => "event_history_event",
@@ -81,6 +82,7 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "compiled",
     "upload_ready",
     "module_installed",
+    "revoked",
     "program_changed",
     "event_history_begin",
     "event_history_event",
@@ -203,7 +205,18 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         ServerFrame::EventHistoryEvent {
             event: &history_event,
         },
-        ServerFrame::Error { message: "no" },
+        ServerFrame::Error {
+            message: "no",
+            code: None,
+        },
+        ServerFrame::Error {
+            message: "denied",
+            code: Some("actor_denied"),
+        },
+        ServerFrame::Revoked {
+            participant_id: 7,
+            revoked: true,
+        },
         ServerFrame::ModuleInfo {
             world_id: "w".to_owned(),
             active_module_hash: None,
@@ -436,6 +449,35 @@ fn a_transcript_follows_the_session_phases() {
     check.server(&json!({"type": "upload_ready", "chunk_bytes": 6144}));
     check.client(&json!({"type": "install_chunk", "offset": 0, "data_hex": "0000"}));
     check.client(&json!({"type": "install_end"}));
+    assert!(check.violations().is_empty(), "{:?}", check.violations());
+
+    // A joined upload (design #835 phase 3): install_begin from the
+    // joined phase enters the upload phase, and install_end returns
+    // to joined — not closed — so the session continues.
+    let mut check = Conformance::new(contract);
+    check.client(&json!({"type": "join", "capability": "c", "after": null}));
+    check.server(&json!({"type": "snapshot", "snapshot": {}}));
+    assert_eq!(check.phase(), Phase::Joined);
+    check.client(&json!({"type": "install_begin", "total_bytes": 2, "seed": 1}));
+    assert_eq!(check.phase(), Phase::Install);
+    check.server(&json!({"type": "upload_ready", "chunk_bytes": 6144}));
+    check.client(&json!({"type": "install_chunk", "offset": 0, "data_hex": "0000"}));
+    check.client(&json!({"type": "install_end"}));
+    assert_eq!(check.phase(), Phase::Joined);
+    check.client(&json!({"type": "chat", "text": "hi"}));
+    assert!(check.violations().is_empty(), "{:?}", check.violations());
+
+    // A refused joined upload (an error instead of upload_ready)
+    // likewise leaves the session joined, not closed.
+    let mut check = Conformance::new(contract);
+    check.client(&json!({"type": "join", "capability": "c", "after": null}));
+    check.server(&json!({"type": "snapshot", "snapshot": {}}));
+    check.client(&json!({"type": "install_begin", "total_bytes": 2, "seed": 1}));
+    assert_eq!(check.phase(), Phase::Install);
+    check.server(
+        &json!({"type": "error", "message": "module install denied", "code": "actor_denied"}),
+    );
+    assert_eq!(check.phase(), Phase::Joined);
     assert!(check.violations().is_empty(), "{:?}", check.violations());
 
     assert!(check_transcript(contract, "not json").is_err());

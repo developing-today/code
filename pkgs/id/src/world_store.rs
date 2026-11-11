@@ -24,19 +24,21 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
-    WorldHandle, WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
+    WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
 /// Append-only, fsynced JSON-lines journal.
 #[derive(Debug)]
 pub struct FileJournal {
-    file: File,
+    writer: JournalWriter,
     path: PathBuf,
     /// Set when a compaction left durability uncertain; appends then fail so
     /// no acknowledged event can be lost.
@@ -44,6 +46,92 @@ pub struct FileJournal {
     /// The version in the journal's `Created` header, kept in step with the
     /// bump-on-first-write contract (see `world::JOURNAL_VERSION`).
     version: u32,
+}
+
+#[derive(Debug)]
+struct JournalWriter {
+    sender: Option<Sender<JournalWriterRequest>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+enum JournalWriterRequest {
+    Append {
+        line: Vec<u8>,
+        reply: SyncSender<std::io::Result<()>>,
+    },
+    Replace {
+        file: File,
+        reply: SyncSender<()>,
+    },
+}
+
+impl JournalWriter {
+    fn new(file: File) -> Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("world-journal-writer".to_owned())
+            .spawn(move || journal_writer_loop(file, receiver))
+            .context("spawn world journal writer")?;
+        Ok(Self {
+            sender: Some(sender),
+            thread: Some(thread),
+        })
+    }
+
+    fn append(&self, line: Vec<u8>) -> Result<()> {
+        let (reply, result) = mpsc::sync_channel(0);
+        self.send(JournalWriterRequest::Append { line, reply })?;
+        result
+            .recv()
+            .context("world journal writer stopped before append completed")?
+            .context("write and sync world journal")
+    }
+
+    fn replace(&self, file: File) -> Result<()> {
+        let (reply, result) = mpsc::sync_channel(0);
+        self.send(JournalWriterRequest::Replace { file, reply })?;
+        result
+            .recv()
+            .context("world journal writer stopped before replacing its file")
+    }
+
+    fn send(&self, request: JournalWriterRequest) -> Result<()> {
+        self.sender
+            .as_ref()
+            .context("world journal writer is stopped")?
+            .send(request)
+            .context("world journal writer stopped")
+    }
+}
+
+impl Drop for JournalWriter {
+    fn drop(&mut self) {
+        // Closing the channel lets the writer finish any queued request and
+        // exit before its file descriptor is released.
+        drop(self.sender.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>) {
+    while let Ok(request) = receiver.recv() {
+        match request {
+            JournalWriterRequest::Append { line, reply } => {
+                let result = file.write_all(&line).and_then(|()| file.sync_data());
+                let _ = reply.send(result);
+            }
+            JournalWriterRequest::Replace {
+                file: replacement,
+                reply,
+            } => {
+                file = replacement;
+                let _ = reply.send(());
+            }
+        }
+    }
 }
 
 impl FileJournal {
@@ -133,7 +221,7 @@ impl FileJournal {
             _ => JOURNAL_VERSION,
         };
         let mut journal = Self {
-            file,
+            writer: JournalWriter::new(file)?,
             path: path.to_owned(),
             broken: false,
             version,
@@ -198,8 +286,7 @@ impl WorldJournal for FileJournal {
         }
         let mut line = serde_json::to_vec(entry).context("encode journal entry")?;
         line.push(b'\n');
-        self.file.write_all(&line).context("write world journal")?;
-        self.file.sync_data().context("sync world journal")?;
+        self.writer.append(line)?;
         Ok(())
     }
 
@@ -307,7 +394,10 @@ impl WorldJournal for FileJournal {
         // The new file is now the journal, and the open handle follows its
         // inode. If the directory entry cannot be made durable, a crash could
         // resurrect the old journal and lose later appends: refuse them.
-        self.file = file;
+        if let Err(error) = self.writer.replace(file) {
+            self.broken = true;
+            return Err(error.context("replace world journal writer file"));
+        }
         let synced = self.path.parent().map_or(Ok(()), |parent| {
             File::open(parent).and_then(|dir| dir.sync_all())
         });
@@ -498,7 +588,12 @@ pub async fn open_world(
         },
     };
     report.sequence = restored.core.current_sequence();
-    let handle = WorldHandle::spawn_durable(restored.core, program, Some(Box::new(journal)));
+    let handle = WorldHandle::spawn_restored(
+        restored.core,
+        program,
+        Some(Box::new(journal)),
+        Some(WorldHandle::host_device_manifest()),
+    );
     let service = service(handle).with_module_dir(modules).with_outbox(outbox);
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
@@ -2281,7 +2376,7 @@ mod tests {
             matches!(
                 entries[0],
                 JournalEntry::Created {
-                    version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                    version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                     ..
                 }
             ),
@@ -2327,7 +2422,7 @@ mod tests {
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -2335,7 +2430,7 @@ mod tests {
         assert!(matches!(
             on_disk[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));

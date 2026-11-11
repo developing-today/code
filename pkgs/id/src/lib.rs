@@ -195,8 +195,9 @@ pub mod envelope_outbox;
 pub mod event_store;
 pub mod event_sync;
 pub mod fileops;
+pub mod foreign_libsql;
 pub mod frames;
-pub mod serve_proxy;
+pub mod grants;
 pub mod groups;
 pub mod helpers;
 pub mod hosted_binding;
@@ -211,6 +212,7 @@ pub mod local_claims;
 pub mod local_events;
 pub mod log_sync;
 mod peer_announcement;
+pub mod serve_proxy;
 pub use id_core::membership;
 pub mod match_audit;
 pub mod meta_client;
@@ -220,6 +222,7 @@ pub mod notes;
 pub use id_core::petname;
 pub mod protocol;
 pub mod publications;
+pub mod publications_runtime;
 pub mod pull_policy;
 pub use id_core::residency;
 pub mod references;
@@ -227,6 +230,8 @@ pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+#[cfg(feature = "sandbox")]
+pub mod world_dev;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
@@ -254,6 +259,7 @@ pub mod world;
 #[cfg(feature = "world")]
 pub use id_core::world_caps;
 #[cfg(feature = "world")]
+pub mod world_cache;
 pub mod world_compile;
 #[cfg(feature = "world")]
 pub mod world_doctor;

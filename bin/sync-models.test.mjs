@@ -305,3 +305,128 @@ test('--dry-run still exits 0 writing nothing', () => {
   assert.equal(after, before);
   assert.equal(backupExists, false);
 });
+// --- #2832: shape validation at the parse boundary (design #3068 Phase 2) ---
+
+const { validateConfigShape } = new Function(
+  `${extractFunction('validateConfigShape')}\nreturn { validateConfigShape };`,
+)();
+
+const editorStart = source.indexOf('const lineIndent');
+assert.notEqual(editorStart, -1, 'JSONC tree editor block not found');
+const editorEnd = source.indexOf('// Removes the member at', editorStart);
+assert.notEqual(editorEnd, -1, 'JSONC tree editor block end not found');
+const { setJsoncPath } = new Function(
+  `${extractFunction('parseJsoncTree')}\n${source.slice(editorStart, editorEnd)}\nreturn { setJsoncPath };`,
+)();
+
+test('validateConfigShape names a scalar provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: 'oops' } }, 'cfg.jsonc'),
+    /invalid config shape in cfg\.jsonc: provider\.google: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names an array provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: [1, 2] } }, 'cfg.jsonc'),
+    /provider\.google: expected object, got array/,
+  );
+});
+
+test('validateConfigShape names a scalar models container (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: { models: 'oops' } } }, 'cfg.jsonc'),
+    /provider\.google\.models: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names a wrong-shaped provider container and root (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: 'oops' }, 'cfg.jsonc'),
+    /provider: expected object, got string/,
+  );
+  assert.throws(
+    () => validateConfigShape(['oops'], 'cfg.jsonc'),
+    /\(root\): expected object, got array/,
+  );
+});
+
+test('validateConfigShape treats a missing provider key as nothing to sync (#2832)', () => {
+  assert.doesNotThrow(() => validateConfigShape({}, 'cfg.jsonc'));
+  assert.doesNotThrow(() =>
+    validateConfigShape({ provider: { google: { models: { m1: {} } } } }, 'cfg.jsonc'));
+});
+
+test('setJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => setJsoncPath(text, ['provider', 'google', 'models', 'm1'], {}),
+    /cannot set provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
+  const arrayText = '{\n  "provider": { "google": [1, 2] }\n}';
+  assert.throws(
+    () => setJsoncPath(arrayText, ['provider', 'google', 'models', 'm1'], {}),
+    /provider\/google is a array, expected object|provider\/google is an array, expected object/,
+  );
+});
+
+test('setJsoncPath well-formed control still inserts the key (#2832)', () => {
+  const text = '{\n  "provider": { "google": { "models": {} } }\n}';
+  const out = setJsoncPath(text, ['provider', 'google', 'models', 'm1'], { name: 'M1' });
+  assert.deepEqual(parseJsonc(out).provider.google.models.m1, { name: 'M1' });
+});
+
+test('removeJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => removeJsoncPath(text, ['provider', 'google', 'models', 'm1']),
+    /cannot remove provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
+});
+
+// --- #7333: an absent target section is migrated from a legacy id or named
+// as skipped - never silently passed over while the run reports in-sync ---
+
+const legacyIdsStart = source.indexOf('const LEGACY_PROVIDER_IDS = {');
+assert.notEqual(legacyIdsStart, -1, 'LEGACY_PROVIDER_IDS not found in sync-models.mjs');
+const legacyIdsEnd = source.indexOf('};', legacyIdsStart);
+assert.notEqual(legacyIdsEnd, -1, 'LEGACY_PROVIDER_IDS not terminated as expected');
+const defineValueStart = source.indexOf('const defineValue = ');
+assert.notEqual(defineValueStart, -1, 'defineValue not found in sync-models.mjs');
+const defineValueEnd = source.indexOf('};', defineValueStart);
+assert.notEqual(defineValueEnd, -1, 'defineValue not terminated as expected');
+const { resolveTargetProvider } = new Function(
+  `${source.slice(defineValueStart, defineValueEnd + 2)}\n` +
+  `${source.slice(legacyIdsStart, legacyIdsEnd + 2)}\n` +
+  `${extractFunction('resolveTargetProvider')}\n` +
+  'return { resolveTargetProvider };',
+)();
+
+test('resolveTargetProvider: present target is left untouched (#7333)', () => {
+  const config = { provider: { _antigravity: { models: { m1: {} } } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'present' });
+  assert.deepEqual(Object.keys(config.provider), ['_antigravity']);
+});
+
+test('resolveTargetProvider: legacy section migrates onto the renamed target (#7333)', () => {
+  const legacy = { models: { 'gemini-x': { name: 'Gemini X' } } };
+  const config = { provider: { 'antigravity-direct': legacy } };
+  const resolution = resolveTargetProvider(config, '_antigravity');
+  assert.equal(resolution.outcome, 'migrated');
+  assert.equal(resolution.from, 'antigravity-direct');
+  assert.equal(config.provider._antigravity, legacy);
+  assert.equal('antigravity-direct' in config.provider, false);
+});
+
+test('resolveTargetProvider: target present wins over a legacy section (#7333)', () => {
+  const config = { provider: { _antigravity: { models: {} }, 'antigravity-direct': { models: { old: {} } } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'present' });
+  assert.deepEqual(config.provider['antigravity-direct'], { models: { old: {} } });
+});
+
+test('resolveTargetProvider: no target and no legacy is absent, never in sync (#7333)', () => {
+  const config = { provider: { openai: { models: {} } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'absent' });
+  assert.deepEqual(Object.keys(config.provider), ['openai']);
+  assert.deepEqual(resolveTargetProvider({}, '_antigravity'), { outcome: 'absent' });
+});
