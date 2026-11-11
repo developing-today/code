@@ -564,6 +564,13 @@ fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
         let mut op = off[1..].split(':');
         let oh: i64 = op.next()?.parse().ok()?;
         let om: i64 = op.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        // RFC 3339 time-numoffset is a time-hour (00-23) and
+        // time-minute (00-59): an unbounded offset would let the
+        // epoch arithmetic wrap a far-future date back into the
+        // accepted range (Codex P2 on PR #8489).
+        if !(0..=23).contains(&oh) || !(0..=59).contains(&om) {
+            return None;
+        }
         (t, sign * (oh * 3600 + om * 60))
     } else {
         (rest, 0)
@@ -1126,6 +1133,12 @@ mod tests {
             "2026-13-01T00:00:00Z",
             "2026-02-31T00:00:00Z",
             "2026-11-06",
+            // Offsets outside the RFC 3339 ranges are not valid
+            // timestamps — and an unbounded one must not be able to
+            // wrap a far-future date past the horizon check.
+            "2026-11-06T00:00:00+24:00",
+            "2026-11-06T00:00:00+00:60",
+            "9999-01-01T00:00:00+70000000:00",
         ] {
             let err = validate_not_before_at(&json!(bad), "packet.not_before", now)
                 .err()
