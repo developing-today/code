@@ -597,6 +597,33 @@ pub fn rescan_changed(dir: &Path, known_snapshot_id: &str) -> Result<Option<DevS
     }
 }
 
+/// The verdict of the post-compile freshness rescan in
+/// [`run_dev_watch`]: what the sources are at *now*, after the
+/// candidate was compiled. `Failed` carries the discovery diagnostic
+/// — freshness could not be established, so the candidate must not
+/// be promoted (issue #8781: a failed rescan was previously replaced
+/// with the candidate's own snapshot id, which made the stale check
+/// in [`DevSession::promote`] pass by construction and let the
+/// candidate replace the last-good program while the sources were
+/// undiscoverable).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FreshnessVerdict {
+    /// Discovery succeeded; the current snapshot id.
+    Current(String),
+    /// Discovery failed; the diagnostic.
+    Failed(String),
+}
+
+/// Rescan `dir` for the post-compile freshness verdict. This never
+/// substitutes any other snapshot id for a failed discovery: the
+/// caller records a failed cycle and retains the active world.
+fn freshness_verdict(dir: &Path) -> FreshnessVerdict {
+    match discover_sources(dir) {
+        Ok(fresh) => FreshnessVerdict::Current(fresh.snapshot_id()),
+        Err(err) => FreshnessVerdict::Failed(format!("{err:#}")),
+    }
+}
+
 /// The watch debouncer (Phase 2): a pure state machine over a
 /// logical millisecond clock, so its behaviour is deterministic in
 /// tests. Events noted inside the window coalesce; the pending
@@ -1083,8 +1110,9 @@ pub struct WatchCycle {
     /// Change events the debouncer coalesced into this cycle.
     pub coalesced_events: usize,
     /// The cycle's outcome: a [`PromotionOutcome`] name, or
-    /// `rescan_failed` / `compile_failed` for cycles that never
-    /// reached promotion.
+    /// `rescan_failed` / `compile_failed` /
+    /// `freshness_rescan_failed` for cycles that never reached
+    /// promotion.
     pub outcome: String,
     /// The diagnostic, for failed cycles.
     pub detail: Option<String>,
@@ -1284,9 +1312,24 @@ pub async fn run_dev_watch(
         };
         // Fresh rescan for the stale check: what the sources are at
         // *now*, after the compile, is what the candidate must match.
-        let current_snapshot_id = discover_sources(dir)
-            .map(|fresh| fresh.snapshot_id())
-            .unwrap_or_else(|_| candidate_snapshot_id.clone());
+        // A failed rescan establishes nothing about freshness, so it
+        // must never be treated as "unchanged": record a failed
+        // cycle and retain the active world instead of promoting
+        // (issue #8781).
+        let current_snapshot_id = match freshness_verdict(dir) {
+            FreshnessVerdict::Current(current_snapshot_id) => current_snapshot_id,
+            FreshnessVerdict::Failed(detail) => {
+                session.last_failure = Some(detail.clone());
+                cycles.push(WatchCycle {
+                    cycle,
+                    snapshot_id: candidate_snapshot_id,
+                    coalesced_events,
+                    outcome: "freshness_rescan_failed".to_owned(),
+                    detail: Some(detail),
+                });
+                continue;
+            }
+        };
         if current_snapshot_id != candidate_snapshot_id {
             known_snapshot_id = current_snapshot_id.clone();
         }
@@ -2609,6 +2652,33 @@ mod watch_tests {
             .unwrap()
             .expect("an edit must rescan as a change");
         assert_ne!(changed.snapshot_id(), known);
+    }
+
+    #[test]
+    fn freshness_verdict_fails_when_sources_become_undiscoverable() {
+        // Oracle: issue #8781's acceptance — when the post-compile
+        // freshness rescan cannot discover the sources (here:
+        // main.roc deleted during compilation), the verdict is
+        // Failed carrying the diagnostic, never a snapshot id the
+        // candidate could match; run_dev_watch records a
+        // `freshness_rescan_failed` cycle on this verdict and does
+        // not promote, so the active world is retained.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.roc"), "app [main!] {}\n").unwrap();
+        let known = discover_sources(dir.path()).unwrap().snapshot_id();
+        assert_eq!(
+            freshness_verdict(dir.path()),
+            FreshnessVerdict::Current(known)
+        );
+        std::fs::remove_file(dir.path().join("main.roc")).unwrap();
+        match freshness_verdict(dir.path()) {
+            FreshnessVerdict::Failed(detail) => {
+                assert!(detail.contains("main.roc"), "{detail}");
+            }
+            FreshnessVerdict::Current(id) => {
+                panic!("a failed discovery must not report a current snapshot, got {id}")
+            }
+        }
     }
 
     #[test]
