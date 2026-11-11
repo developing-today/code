@@ -677,6 +677,50 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_split_main.out"
 echo "pass: split inline push mapping with branches: [main] satisfies the main leg"
 
+# Codex P2 regression on #8513 round 11: a double-quoted YAML
+# scalar's escapes decode before pattern matching -- "ma\u0069n"
+# is the branch main, in flow lists and block items alike. A
+# single-quoted scalar keeps its backslashes literally.
+build_tree "$TMP/filter-dq_escape_flow"
+wf_raw "$TMP/filter-dq_escape_flow" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ["ma\u0069n"]
+EOF
+if bash "$SCRIPT" "$TMP/filter-dq_escape_flow" >"$TMP/filter-dq_escape_flow.out" 2>&1; then
+  echo "FAIL: checker missed a \u-escaped main in a flow list" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-dq_escape_flow.out"
+echo "pass: double-quoted \u escape in a flow list satisfies the main leg"
+
+build_tree "$TMP/filter-dq_escape_block"
+wf_raw "$TMP/filter-dq_escape_block" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches:
+      - "ma\u0069n"
+EOF
+if bash "$SCRIPT" "$TMP/filter-dq_escape_block" >"$TMP/filter-dq_escape_block.out" 2>&1; then
+  echo "FAIL: checker missed a \u-escaped main in a block item" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-dq_escape_block.out"
+echo "pass: double-quoted \u escape in a block item satisfies the main leg"
+
+build_tree "$TMP/filter-dq_escape_hex"
+wf_raw "$TMP/filter-dq_escape_hex" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ["m\x61in", 'lit\u0065ral']
+EOF
+if bash "$SCRIPT" "$TMP/filter-dq_escape_hex" >"$TMP/filter-dq_escape_hex.out" 2>&1; then
+  echo "FAIL: checker missed a \x-escaped main in a flow list" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-dq_escape_hex.out"
+echo "pass: double-quoted \x escape in a flow list satisfies the main leg"
+
 # Codex P1 regression on #8513: generated coverage for the parser.
 # Equivalent YAML representations of the same logical push filter
 # must yield the same verdict. Oracle: an independent Python

@@ -135,23 +135,81 @@ triggers_of() {
 push_targets_main() {
   local file="$1"
   awk '
+    function hexval(str,   v, i, d) {
+      v = 0
+      for (i = 1; i <= length(str); i++) {
+        d = index("0123456789abcdef", tolower(substr(str, i, 1))) - 1
+        if (d < 0) return -1
+        v = v * 16 + d
+      }
+      return v
+    }
+    function codepoint_char(cp,   b1, b2, b3, b4) {
+      if (cp < 128) return sprintf("%c", cp)
+      if (cp < 2048) return sprintf("%c%c", 192 + int(cp / 64), 128 + (cp % 64))
+      if (cp < 65536) return sprintf("%c%c%c", 224 + int(cp / 4096), 128 + (int(cp / 64) % 64), 128 + (cp % 64))
+      return sprintf("%c%c%c%c", 240 + int(cp / 262144), 128 + (int(cp / 4096) % 64), 128 + (int(cp / 64) % 64), 128 + (cp % 64))
+    }
+    function decode_dq(str,   out, i, c, n, dn, cp) {
+      # Decode the escapes of a YAML double-quoted scalar: the simple
+      # escapes and the \xXX / \uXXXX / \UXXXXXXXX forms. An
+      # unrecognized or truncated escape keeps its backslash;
+      # decoding never invents characters.
+      out = ""
+      for (i = 1; i <= length(str); i++) {
+        c = substr(str, i, 1)
+        if (c != "\\") { out = out c; continue }
+        if (i == length(str)) { out = out "\\"; break }
+        n = substr(str, i + 1, 1)
+        if (n == "0") { out = out sprintf("%c", 0); i++ }
+        else if (n == "a") { out = out sprintf("%c", 7); i++ }
+        else if (n == "b") { out = out sprintf("%c", 8); i++ }
+        else if (n == "t") { out = out "\t"; i++ }
+        else if (n == "n") { out = out "\n"; i++ }
+        else if (n == "v") { out = out sprintf("%c", 11); i++ }
+        else if (n == "f") { out = out sprintf("%c", 12); i++ }
+        else if (n == "r") { out = out "\r"; i++ }
+        else if (n == "e") { out = out sprintf("%c", 27); i++ }
+        else if (n == " ") { out = out " "; i++ }
+        else if (n == "\"") { out = out "\""; i++ }
+        else if (n == "/") { out = out "/"; i++ }
+        else if (n == "\\") { out = out "\\"; i++ }
+        else if (n == "N") { out = out codepoint_char(133); i++ }
+        else if (n == "_") { out = out codepoint_char(160); i++ }
+        else if (n == "L") { out = out codepoint_char(8232); i++ }
+        else if (n == "P") { out = out codepoint_char(8233); i++ }
+        else if (n == "x" || n == "u" || n == "U") {
+          dn = (n == "x") ? 2 : (n == "u") ? 4 : 8
+          if (i + 1 + dn <= length(str) && (cp = hexval(substr(str, i + 2, dn))) >= 0) { out = out codepoint_char(cp); i += 1 + dn }
+          else out = out "\\"
+        }
+        else out = out "\\"
+      }
+      return out
+    }
     function clean(tok) {
       sub(/^[[:space:]]+/, "", tok)
       sub(/[[:space:]]+$/, "", tok)
       if (length(tok) >= 2) {
-        if ((substr(tok, 1, 1) == "\047" && substr(tok, length(tok), 1) == "\047") || (substr(tok, 1, 1) == "\"" && substr(tok, length(tok), 1) == "\"")) tok = substr(tok, 2, length(tok) - 2)
+        if (substr(tok, 1, 1) == "\047" && substr(tok, length(tok), 1) == "\047") tok = substr(tok, 2, length(tok) - 2)
+        else if (substr(tok, 1, 1) == "\"" && substr(tok, length(tok), 1) == "\"") tok = decode_dq(substr(tok, 2, length(tok) - 2))
       }
       return tok
     }
-    function add_tokens(str,   i, c, q, tok, out) {
+    function add_tokens(str,   i, c, q, tok, seg, out) {
       sub(/^[[:space:]]*\[/, "", str)
       sub(/\][[:space:]]*$/, "", str)
       out = ""
       tok = ""
+      seg = ""
       q = ""
       for (i = 1; i <= length(str); i++) {
         c = substr(str, i, 1)
-        if (q != "") {
+        if (q == "\"") {
+          if (c == "\"") { tok = tok decode_dq(seg); seg = ""; q = "" }
+          else if (c == "\\" && i < length(str)) { seg = seg c substr(str, i + 1, 1); i++ }
+          else seg = seg c
+        } else if (q != "") {
           if (c == q) q = ""
           else tok = tok c
         } else if (c == "\047" || c == "\"") {
@@ -162,6 +220,7 @@ push_targets_main() {
           tok = tok c
         }
       }
+      if (q == "\"") tok = tok decode_dq(seg)
       if (tok != "") out = out " " tok
       return out
     }
