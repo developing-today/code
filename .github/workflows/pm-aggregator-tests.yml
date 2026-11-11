@@ -54,6 +54,13 @@ jobs:
     name: aggregator tests and typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The aggregator suite's contract is the fixture environment
+    # (#5557): without it, `bun test` boots the live sources and the
+    # run depends on whatever the runner can reach. Job-level env so
+    # every step (tests and typecheck) sees the same world.
+    env:
+      PM_AGG_SOURCE: fixtures
+      PM_AGG_DEV: "1"
     defaults:
       run:
         working-directory: pm-stack/aggregator
