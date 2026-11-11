@@ -328,4 +328,54 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-ignore_plus_tags.out"
 echo "pass: branches-ignore (not main) plus tags still satisfies the main leg"
 
+
+# Codex P2 regressions on #8513 round 3: GitHub filter patterns use
+# quantifiers, not shell glob — 'main?' excludes main (the ? makes
+# the preceding n optional), and 'ma+in' matches it.
+build_tree "$TMP/filter-ignore_quantifier"
+wf_raw "$TMP/filter-ignore_quantifier" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: ['main?']
+EOF
+bash "$SCRIPT" "$TMP/filter-ignore_quantifier" >"$TMP/filter-ignore_quantifier.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-ignore_quantifier.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-ignore_quantifier.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-ignore_quantifier.out"; then
+  echo "FAIL: branches-ignore: ['main?'] was certified as main-tier agreement" >&2
+  exit 1
+fi
+echo "pass: branches-ignore: ['main?'] keeps the main leg waived, not stale"
+
+build_tree "$TMP/filter-plus_quantifier"
+wf_raw "$TMP/filter-plus_quantifier" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: ['ma+in']
+EOF
+if bash "$SCRIPT" "$TMP/filter-plus_quantifier" >"$TMP/filter-plus_quantifier.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a ma+in pattern push" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-plus_quantifier.out"
+echo "pass: branches: ['ma+in'] satisfies the main leg (waiver stale)"
+
+# Multiline flow sequences: the entries live on their own lines
+# between the [ and ] lines and must all be collected.
+build_tree "$TMP/filter-flow_multiline"
+wf_raw "$TMP/filter-flow_multiline" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches: [
+      release,
+      main
+    ]
+EOF
+if bash "$SCRIPT" "$TMP/filter-flow_multiline" >"$TMP/filter-flow_multiline.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a multiline flow branches list" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-flow_multiline.out"
+echo "pass: multiline flow branches list including main satisfies the main leg"
+
 echo "check-ci-policy-agreement.test: all contract tests passed"

@@ -147,13 +147,29 @@ push_targets_main() {
       }
       return out
     }
-    function glob_regex(pat,   out, i, c) {
+    function glob_regex(pat,   out, i, c, cls) {
+      # GitHub filter-pattern syntax (workflow-syntax cheat sheet),
+      # not shell glob: ? and + quantify the preceding character,
+      # * matches within a path segment, ** across segments.
       out = "^"
       for (i = 1; i <= length(pat); i++) {
         c = substr(pat, i, 1)
-        if (c == "*") out = out ".*"
-        else if (c == "?") out = out "."
-        else if (c ~ /[.+()|^${}]/) out = out "\\" c
+        if (c == "*") {
+          if (substr(pat, i + 1, 1) == "*") { out = out ".*"; i++ }
+          else out = out "[^/]*"
+        }
+        else if (c == "?" || c == "+") out = out c
+        else if (c == "[") {
+          cls = "["
+          i++
+          if (substr(pat, i, 1) == "!") { cls = cls "^"; i++ }
+          for (; i <= length(pat); i++) {
+            cls = cls substr(pat, i, 1)
+            if (substr(pat, i, 1) == "]") break
+          }
+          out = out cls
+        }
+        else if (c ~ /[.^$()|{}]/) out = out "\\" c
         else out = out c
       }
       return out "$"
@@ -216,6 +232,7 @@ push_targets_main() {
       val = line
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
+      if ((subkey == "branches" || subkey == "branches-ignore") && val ~ /\[/ && val !~ /\]/) flow_key = subkey
       if (subkey == "branches") {
         seen_branches = 1
         seen_branch_filter = 1
@@ -225,6 +242,21 @@ push_targets_main() {
         ignore_list = add_tokens(val)
       } else if (subkey == "tags" || subkey == "tags-ignore") {
         seen_tags = 1
+      }
+      next
+    }
+    inpush && flow_key != "" {
+      seg = $0
+      sub(/[[:space:]]#.*/, "", seg)
+      if (seg ~ /\]/) {
+        sub(/\].*/, "", seg)
+        if (flow_key == "branches") branches_list = branches_list add_tokens(seg)
+        else if (flow_key == "branches-ignore") ignore_list = ignore_list add_tokens(seg)
+        flow_key = ""
+      } else if (flow_key == "branches") {
+        branches_list = branches_list add_tokens(seg)
+      } else if (flow_key == "branches-ignore") {
+        ignore_list = ignore_list add_tokens(seg)
       }
       next
     }
