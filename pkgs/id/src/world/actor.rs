@@ -767,7 +767,7 @@ impl WorldActor {
                         "time.tick interval {ms}ms is below the world minimum {}ms",
                         self.core.limits.min_tick_ms
                     ));
-                    self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                    self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                         .await;
                 }
                 continue;
@@ -784,7 +784,7 @@ impl WorldActor {
                 Decision::Deny(error) => {
                     let spec = sub.spec();
                     if self.denied_subs.insert(spec.clone()) {
-                        self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                        self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                             .await;
                     }
                 }
