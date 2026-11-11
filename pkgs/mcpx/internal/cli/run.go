@@ -52,7 +52,9 @@ func (e Env) Lookup(key string) (string, bool) {
 // exactly like the binary. Stage 1: Run's own dispatch-level output
 // (version, unknown command/flag, handler errors) goes to these
 // streams; commands still write to the os streams directly until the
-// threading in stage 2 lands.
+// threading in stage 2 lands. In is not read yet: nothing in Run's
+// dispatch consumes input, and commands and remote scripts read
+// os.Stdin directly until the same stage-2 threading lands.
 type Stdio struct {
 	In  io.Reader
 	Out io.Writer
@@ -225,6 +227,15 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 		// is still the right answer for a pipe; for a person at a prompt,
 		// a wall of usage is a worse first impression than the thing itself.
 		if err := app.CmdTUI(ctx, nil); err != nil {
+			// At a terminal the TUI was the requested outcome, so its
+			// failure is this command's failure -- printing help over
+			// it and returning success would mask it. Away from a
+			// terminal the TUI cannot have been meant, and help with
+			// success stays the answer for a pipe.
+			if isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+				fmt.Fprintln(stdio.err(), "mcpx:", err)
+				return 1
+			}
 			_ = app.CmdHelp(ctx, nil)
 		}
 		return 0

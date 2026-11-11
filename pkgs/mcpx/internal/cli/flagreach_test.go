@@ -100,7 +100,8 @@ func TestEverySettingFlagReachesTheResolvedValue(t *testing.T) {
 			path string
 			arg  string
 		}
-		var canonical, aliases []flagCase
+		var canonical []flagCase
+		var aliasRounds [][]flagCase
 		for _, s := range sch.ForCommand(cmdName) {
 			val := nonDefault(s)
 			if val == "" {
@@ -109,11 +110,18 @@ func TestEverySettingFlagReachesTheResolvedValue(t *testing.T) {
 			if !handFlagsMeaningOther[cmd][s.FlagName()] {
 				canonical = append(canonical, flagCase{s.Path, "--" + s.FlagName() + "=" + val})
 			}
-			for _, name := range s.FlagAliases {
+			// Aliases go in rounds -- round i carries the i-th alias
+			// of every setting -- so a setting with several aliases
+			// appears at most once per batch invocation and one
+			// alias's folding can never mask or overwrite another's.
+			for i, name := range s.FlagAliases {
 				if handFlagsMeaningOther[cmd][name] {
 					continue
 				}
-				aliases = append(aliases, flagCase{s.Path, "--" + name + "=" + val})
+				for len(aliasRounds) <= i {
+					aliasRounds = append(aliasRounds, nil)
+				}
+				aliasRounds[i] = append(aliasRounds[i], flagCase{s.Path, "--" + name + "=" + val})
 			}
 		}
 		checkSingle := func(path, arg string) {
@@ -162,7 +170,9 @@ func TestEverySettingFlagReachesTheResolvedValue(t *testing.T) {
 			}
 		}
 		checkBatch(canonical)
-		checkBatch(aliases)
+		for _, round := range aliasRounds {
+			checkBatch(round)
+		}
 	}
 	if checked < 100 {
 		t.Fatalf("only %d (command, flag) pairs checked; the probe is not reaching the commands", checked)
