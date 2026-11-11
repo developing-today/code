@@ -813,6 +813,7 @@ mod tests {
             false,
             None,
             vec![None, Some("arena".to_owned())],
+            None,
         )
         .await
         .unwrap();
