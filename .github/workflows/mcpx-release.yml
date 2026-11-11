@@ -19,6 +19,9 @@ name: mcpx release
 # without publishing a release. That run is the proof the release path works,
 # and it is how a person checks a change before tagging.
 on:
+  push:
+    tags:
+      - "mcpx/v*"
   workflow_dispatch:
     inputs:
       version:

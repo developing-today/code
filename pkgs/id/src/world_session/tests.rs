@@ -4,6 +4,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use ed25519_dalek::{Signer, SigningKey};
+    use iroh_blobs::api::Store;
 
     use super::*;
     use crate::directory::{Actor, Level, Member};
@@ -12,8 +13,10 @@ mod tests {
         Participant, WorldCore, WorldEvent, WorldHandle, WorldLimits, WorldScopes, hex_encode,
         unix_ms,
     };
+    use crate::world_compile::Compiler;
     use crate::world_hub::WorldHub;
     use crate::world_session::*;
+    use std::sync::Arc;
     use std::time::Duration;
 
     /// In-memory transport: tests push frames in and read frames out.

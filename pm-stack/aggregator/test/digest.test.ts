@@ -265,6 +265,29 @@ describe("buildDigest", () => {
     expect(outlook.staleNote).toContain("Down");
   });
 
+  test("quota outlook marks a lapsed-only provider degraded (#8124)", () => {
+    const lapsed: QuotaView = {
+      ...quota,
+      pools: [
+        {
+          id: "pool-lapsed",
+          provider: "Lapsed",
+          plan: "Plan",
+          state: "lapsed",
+          freshness: { measuredAt: "2026-11-02T06:00:00Z", source: "gatherer", state: "lapsed" },
+          windows: [
+            { name: "weekly", unit: "tokens", limit: 1000, used: 100, resetsAt: "2026-11-09T00:00:00Z", percent: 10 },
+          ],
+        },
+      ],
+    };
+    const d = buildDigest(inputs({ quota: lapsed }));
+    const outlook = section(d, "quota");
+    expect(outlook.stale).toBe(true);
+    expect(outlook.staleNote).toContain("Lapsed");
+    expect(outlook.staleNote).toContain("provider reads degraded");
+  });
+
   test("chat text states freshness and links every section item", () => {
     const text = digestText(buildDigest(inputs()));
     expect(text).toContain("PM daily digest — 2026-11-02");
