@@ -1174,6 +1174,8 @@ export interface DashComment {
   objectRef: string;
   kind: DashCommentKind;
   author: DashAuthor;
+  /** True only when a privileged Drew/Muse author supplied the configured operator token. */
+  authorVerified?: boolean;
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
