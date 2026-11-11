@@ -164,6 +164,40 @@ describe("mirror builders (#8580)", () => {
       agentNoteUrl: null,
     });
   });
+
+  it("buildCommentTouch never assigns the note pointer from a deletion", () => {
+    const deleted = buildCommentTouch(
+      {
+        action: "deleted",
+        issue: { number: 8580, comments: 2 },
+        comment: {
+          id: 555,
+          html_url: "https://example.invalid/issues/8580#c555",
+          body: "🤖 **Agent note** · old\n<!-- agent-note:v1 agent=repo-worker-code -->",
+        },
+      },
+      REPO,
+    );
+    expect(deleted).toMatchObject({
+      agentNoteId: null,
+      agentNoteUrl: null,
+      deletedNoteId: 555,
+      comments: 2,
+    });
+    const created = buildCommentTouch(
+      {
+        action: "created",
+        issue: { number: 8580, comments: 3 },
+        comment: {
+          id: 556,
+          html_url: "https://example.invalid/issues/8580#c556",
+          body: "🤖 **Agent note** · new\n<!-- agent-note:v1 agent=repo-worker-code -->",
+        },
+      },
+      REPO,
+    );
+    expect(created).toMatchObject({ agentNoteId: 556, deletedNoteId: null });
+  });
 });
 
 describe("mirror writers (#8580)", () => {
@@ -174,6 +208,10 @@ describe("mirror writers (#8580)", () => {
     expect(sql).toContain("CREATE TABLE IF NOT EXISTS github_mirror_issues");
     expect(sql).toContain("INSERT INTO github_mirror_issues");
     expect(sql).toContain("ON CONFLICT(repo, number) DO UPDATE");
+    // Out-of-order deliveries must not overwrite a newer stored snapshot.
+    expect(sql).toContain(
+      "excluded.gh_updated_at >= github_mirror_issues.gh_updated_at",
+    );
     expect(sql).toContain("INSERT INTO github_mirror_meta");
     const upsert = stmts.find((s) =>
       s.sql.includes("INSERT INTO github_mirror_issues"),
@@ -195,6 +233,9 @@ describe("mirror writers (#8580)", () => {
       s.sql.includes("INSERT INTO github_mirror_pull_requests"),
     );
     expect(upsert).toBeDefined();
+    expect(upsert?.sql).toContain(
+      "excluded.gh_updated_at >= github_mirror_pull_requests.gh_updated_at",
+    );
     const values = (upsert?.args ?? []).map((a) => a.value);
     expect(values).toContain("8601");
     expect(values).toContain("abc123");
@@ -227,5 +268,39 @@ describe("mirror writers (#8580)", () => {
     const values = (update?.args ?? []).map((a) => a.value);
     expect(values).toContain("777");
     expect(values).toContain("4");
+  });
+
+  it("mirrorCommentEvent clears a pointer naming the deleted note", async () => {
+    const stmts = capturePipeline();
+    await mirrorCommentEvent(
+      env,
+      {
+        action: "deleted",
+        issue: { number: 8580, comments: 2 },
+        comment: {
+          id: 777,
+          html_url: "https://example.invalid/issues/8580#c777",
+          body: "🤖 **Agent note** · checkpoint\n<!-- agent-note:v1 agent=repo-worker-code -->",
+        },
+        repository: { full_name: REPO },
+      },
+      REPO,
+    );
+    const clear = stmts.find((s) =>
+      s.sql.includes("latest_agent_note_id = NULL"),
+    );
+    expect(clear).toBeDefined();
+    const clearValues = (clear?.args ?? []).map((a) => a.value);
+    expect(clearValues).toContain("777");
+    expect(clearValues).toContain("8580");
+    // The comments update itself assigns no pointer for a deletion:
+    // its COALESCE note args carry no value.
+    const update = stmts.find((s) =>
+      s.sql.startsWith("UPDATE github_mirror_issues SET comments"),
+    );
+    const updateValues = (update?.args ?? []).map((a) => a.value);
+    expect(updateValues).not.toContain(
+      "https://example.invalid/issues/8580#c777",
+    );
   });
 });

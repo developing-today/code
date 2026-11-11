@@ -15,6 +15,12 @@
  * same batch as each upsert (CREATE TABLE IF NOT EXISTS; the DDL also
  * ships as mirror.sql) so a fresh or rebuilt database self-heals from
  * any single webhook delivery.
+ *
+ * Webhook delivery order can differ from event order, so the issue/PR
+ * upserts refuse a snapshot whose gh_updated_at is older than the
+ * stored row's (an equal timestamp re-applies, keeping redelivery
+ * idempotent; a NULL stored timestamp — a comment-seeded row — always
+ * accepts the first full snapshot).
  */
 import { Turso, iArg, tArg, type TursoArg } from "./turso";
 import { queueNow, type SinkEnv } from "./sink";
@@ -153,6 +159,13 @@ export interface CommentTouch {
   /** Set only when the comment carries the fleet agent-note marker. */
   agentNoteId: number | null;
   agentNoteUrl: string | null;
+  /**
+   * Set only on a `deleted` delivery whose comment was an agent note:
+   * the pointer must never be assigned from a deletion, and a stored
+   * pointer naming this comment is cleared (the sweep re-derives the
+   * latest surviving note on its next pass).
+   */
+  deletedNoteId: number | null;
 }
 
 /** Agent notes carry the machine marker; the emoji header is the fallback. */
@@ -167,13 +180,15 @@ export function buildCommentTouch(payload: Obj, repo: string): CommentTouch {
   const issue = (payload.issue ?? {}) as Obj;
   const comment = (payload.comment ?? {}) as Obj;
   const note = isAgentNote(str(comment, "body"));
+  const deleted = payload.action === "deleted";
   return {
     repo,
     number: num(issue, "number"),
     isPr: !!issue.pull_request,
     comments: Number(issue.comments ?? 0) || 0,
-    agentNoteId: note ? num(comment, "id") : null,
-    agentNoteUrl: note ? str(comment, "html_url") : null,
+    agentNoteId: note && !deleted ? num(comment, "id") : null,
+    agentNoteUrl: note && !deleted ? str(comment, "html_url") : null,
+    deletedNoteId: note && deleted ? num(comment, "id") : null,
   };
 }
 
@@ -244,7 +259,10 @@ export async function mirrorIssueEvent(
               author = excluded.author, html_url = excluded.html_url,
               gh_created_at = excluded.gh_created_at,
               gh_updated_at = excluded.gh_updated_at,
-              mirrored_at = excluded.mirrored_at`,
+              mirrored_at = excluded.mirrored_at
+            WHERE excluded.gh_updated_at IS NULL
+               OR github_mirror_issues.gh_updated_at IS NULL
+               OR excluded.gh_updated_at >= github_mirror_issues.gh_updated_at`,
       args: [
         tArg(row.repo),
         iArg(row.number),
@@ -292,7 +310,10 @@ export async function mirrorPrEvent(
               html_url = excluded.html_url,
               gh_created_at = excluded.gh_created_at,
               gh_updated_at = excluded.gh_updated_at,
-              mirrored_at = excluded.mirrored_at`,
+              mirrored_at = excluded.mirrored_at
+            WHERE excluded.gh_updated_at IS NULL
+               OR github_mirror_pull_requests.gh_updated_at IS NULL
+               OR excluded.gh_updated_at >= github_mirror_pull_requests.gh_updated_at`,
       args: [
         tArg(row.repo),
         iArg(row.number),
@@ -353,5 +374,22 @@ export async function mirrorCommentEvent(
         iArg(touch.number),
       ],
     },
+    // A deleted agent note never becomes the pointer (above), and a
+    // stored pointer naming the deleted comment is cleared here.
+    ...(touch.deletedNoteId !== null
+      ? [
+          {
+            sql: `UPDATE ${table} SET latest_agent_note_id = NULL,
+                    latest_agent_note_url = NULL, mirrored_at = ?
+                  WHERE repo = ? AND number = ? AND latest_agent_note_id = ?`,
+            args: [
+              tArg(queueNow()),
+              tArg(touch.repo),
+              iArg(touch.number),
+              iArg(touch.deletedNoteId),
+            ],
+          },
+        ]
+      : []),
   ]);
 }
