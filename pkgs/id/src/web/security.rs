@@ -336,6 +336,47 @@ mod tests {
         assert_eq!(host_only("[::1]:3000"), "::1");
     }
 
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn bracketed_authority_collapses_only_for_valid_tails(
+            host in proptest::sample::select(vec!["::1", "::", "fe80::1", "2001:db8::1"]),
+            tail in "[!-~]{0,12}",
+        ) {
+            // Oracle (#8776): host_only of a bracketed authority returns the
+            // bracketed host ONLY when the tail after the closing bracket is
+            // empty or a colon followed by a non-empty all-digit port. Every
+            // other tail leaves the authority unreduced, so it can never
+            // match an allowed host. The fixed examples in
+            // host_only_rejects_malformed_bracketed_authorities are the
+            // regression smoke tests for this generated invariant.
+            let authority = format!("[{host}]{tail}");
+            let valid_tail = tail.is_empty()
+                || tail
+                    .strip_prefix(':')
+                    .is_some_and(|port| {
+                        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                    });
+            if valid_tail {
+                prop_assert_eq!(host_only(&authority), host.to_owned(), "{}", authority);
+            } else {
+                prop_assert_ne!(host_only(&authority), host.to_owned(), "{}", authority);
+            }
+        }
+
+        #[test]
+        fn bracketed_authority_with_numeric_port_always_extracts_host(
+            host in proptest::sample::select(vec!["::1", "::", "fe80::1", "2001:db8::1"]),
+            port in any::<u16>(),
+        ) {
+            prop_assert_eq!(host_only(&format!("[{host}]:{port}")), host.to_owned());
+            prop_assert_eq!(host_only(&format!("[{host}]")), host.to_owned());
+        }
+    }
+
     #[test]
     fn ct_eq_behaves_like_eq() {
         assert!(ct_eq(b"abc", b"abc"));
