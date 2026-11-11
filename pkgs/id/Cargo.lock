@@ -3901,6 +3901,7 @@ dependencies = [
  "futures-util",
  "hkdf 0.13.0",
  "hmac 0.13.0",
+ "id-caps",
  "id-core",
  "iroh",
  "iroh-base",
@@ -3956,6 +3957,17 @@ dependencies = [
  "wat",
  "webpki-roots",
  "zeroize",
+]
+
+[[package]]
+name = "id-caps"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id-core",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
