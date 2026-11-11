@@ -1074,7 +1074,18 @@ func (c *Config) mountTarget(self, view, from string) (string, string, error) {
 	if best == self {
 		return "", "", fmt.Errorf("server %q: toolView %q: from %q mounts the namespace from itself", self, view, from)
 	}
-	if tgt := c.MCPServers[best]; isVirtualEntry(tgt) {
+	// The process a mount runs on is the target entry's own, or --
+	// when the target is an alias -- the entry the alias points at:
+	// an alias of a virtual namespace is as processless as the
+	// namespace itself, and accepting it would mount a catalogue
+	// that can never fill.
+	owner := c.MCPServers[best]
+	if owner.AliasOf != "" {
+		if base, ok := c.MCPServers[owner.AliasOf]; ok {
+			owner = base
+		}
+	}
+	if isVirtualEntry(owner) {
 		return "", "", fmt.Errorf("server %q: toolView %q: from %q mounts from %q, which is itself a virtual namespace; mount from a server with a process", self, view, from, best)
 	}
 	return best, tool, nil

@@ -123,3 +123,24 @@ func TestAliasViewFromIsNotAMount(t *testing.T) {
 		t.Errorf("an alias view's bare From must not split into a mount: %+v", got)
 	}
 }
+
+// A mount may name an alias of a server with a process, but an
+// alias of a virtual namespace is as processless as the namespace
+// itself and must be refused (Codex P2 on PR #8632).
+func TestVirtualMountThroughAlias(t *testing.T) {
+	c := virtualConfig()
+	c.MCPServers["alphaAlias"] = &Server{Name: "alphaAlias", AliasOf: "alpha"}
+	c.MCPServers["comboAlias"] = &Server{Name: "comboAlias", AliasOf: "combo"}
+	c.MCPServers["combo"].Mcpx.ToolViews = map[string]ToolView{
+		"viaAlias": {From: "alphaAlias.echo"},
+	}
+	if _, err := c.Resolve("combo"); err != nil {
+		t.Fatalf("mounting through an alias of a real server must resolve: %v", err)
+	}
+	c.MCPServers["combo"].Mcpx.ToolViews = map[string]ToolView{
+		"viaAlias": {From: "comboAlias.alphaEcho"},
+	}
+	if _, err := c.Resolve("combo"); err == nil {
+		t.Fatal("mounting through an alias of a virtual namespace must be refused")
+	}
+}

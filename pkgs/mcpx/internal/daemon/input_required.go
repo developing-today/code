@@ -68,6 +68,13 @@ type InputQuestion struct {
 // under id, so a question the server raises is attributed to it and can be
 // reported rather than waited on.
 func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {
+	// A mounted tool (#1933 slice 3) delegates to its home server
+	// through this same entry point, keeping the call's id.
+	if target, targetTool, merged, handled, err := r.mountCall(server, tool, cc, args); err != nil {
+		return nil, err
+	} else if handled {
+		return r.CallReporting(ctx, id, target, targetTool, cc, merged)
+	}
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, UnknownServer{Name: server}

@@ -212,3 +212,86 @@ func TestVirtualValidationNamesUnknownMountTarget(t *testing.T) {
 		t.Fatalf("validation must name the unknown mount target, got %v", err)
 	}
 }
+
+// A mount the namespace hides (here via excludeTools) is hidden
+// from calls too, on every entry point -- visibility is enforced
+// before delegation, not just in listings (Codex P1 on PR #8632).
+func TestVirtualHiddenMountIsNotCallable(t *testing.T) {
+	tools := []mcpclient.Tool{echoTool(), searchTool()}
+	alpha := newEchoUpstream(t, "alpha", tools)
+	beta := newEchoUpstream(t, "beta", tools)
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"alpha": {Name: "alpha", URL: alpha.URL},
+		"beta":  {Name: "beta", URL: beta.URL},
+		"combo": {Name: "combo", Mcpx: &config.Extras{
+			ExcludeTools: []string{"betaEcho"},
+			ToolViews: map[string]config.ToolView{
+				"alphaEcho": {From: "alpha.echo"},
+				"betaEcho":  {From: "beta.echo"},
+			}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cc := config.CallContext{}
+	if _, err := r.Call(ctx, "combo", "betaEcho", cc, map[string]any{}); err == nil {
+		t.Error("an excluded mount must not be callable through Call")
+	}
+	if _, err := r.CallAsk(ctx, "ask-hidden", "combo", "betaEcho", cc, map[string]any{}); err == nil {
+		t.Error("an excluded mount must not be callable through CallAsk")
+	}
+	if _, err := r.CallReporting(ctx, "rep-hidden", "combo", "betaEcho", cc, map[string]any{}); err == nil {
+		t.Error("an excluded mount must not be callable through CallReporting")
+	}
+	// The visible mount still routes on the ask path.
+	res, err := r.CallAsk(ctx, "ask-visible", "combo", "alphaEcho", cc, map[string]any{"q": "x"})
+	if err != nil {
+		t.Fatalf("CallAsk on a visible mount: %v", err)
+	}
+	if !strings.Contains(string(res), `\"server\":\"alpha\"`) {
+		t.Errorf("CallAsk must route the mount to its home server: %s", res)
+	}
+}
+
+// Mount validation defers per source: with only beta's catalogue
+// cached, alpha's mounts are unchecked rather than unknown
+// (Codex P2 on PR #8632).
+func TestVirtualValidationDefersUncachedSource(t *testing.T) {
+	r, _, _ := virtualRegistry(t)
+	now := time.Now()
+	r.pools["beta"].SetSchemas([]mcpclient.Tool{echoTool(), searchTool()}, nil, nil, "", now, now.Add(10*time.Minute), false)
+	if err := r.validateViews(); err != nil {
+		t.Fatalf("an uncached source's mounts must defer, got %v", err)
+	}
+}
+
+// The schema advertised for a mount carries the home server's
+// argument rules, because the delegated call enforces them
+// (Codex P2 on PR #8632).
+func TestVirtualMountedSchemaCarriesSourceArgumentRules(t *testing.T) {
+	r, _, _ := virtualRegistry(t)
+	set, err := config.CompileArgumentRules([]config.ArgumentRuleSource{
+		{Key: "echo", Origin: "test config", Schema: json.RawMessage(`{"properties":{"q":{"maxLength":3}}}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.views["alpha"].ArgumentRules = set
+	now := time.Now()
+	for _, srv := range []string{"alpha", "beta"} {
+		r.pools[srv].SetSchemas([]mcpclient.Tool{echoTool(), searchTool()}, nil, nil, "",
+			now, now.Add(10*time.Minute), false)
+	}
+	for _, ti := range r.Tools([]string{"combo"}) {
+		if ti.Tool == "alphaEcho" && !strings.Contains(string(ti.InputSchema), "maxLength") {
+			t.Errorf("alpha's rule on echo must be advertised on the mount: %s", ti.InputSchema)
+		}
+		if ti.Tool == "betaEcho" && strings.Contains(string(ti.InputSchema), "maxLength") {
+			t.Errorf("alpha's rule must not leak onto beta's mount: %s", ti.InputSchema)
+		}
+	}
+}

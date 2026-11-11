@@ -460,6 +460,15 @@ func virtualCatalogue(view *config.Resolved, views map[string]*config.Resolved, 
 		}
 		tall, _, _ := tp.CachedSchemas()
 		for _, t := range visibleTools(views[tv.MountServer], tall) {
+			// The advertised schema is the one the call will be
+			// judged against: bake the home server's own
+			// effective schema for the tool (its view's pins
+			// removed, its argument rules applied -- the rules
+			// the delegated call enforces) into the assembled
+			// catalogue; the mounting view's own presentation
+			// (its pins, its renames) applies on top, in
+			// viewTools, exactly as for an alias.
+			t.InputSchema = effectiveViewSchema(views[tv.MountServer], t.Name, t.InputSchema)
 			t.Name = tv.MountServer + "." + t.Name
 			out = append(out, t)
 		}
@@ -1435,11 +1444,30 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 			continue
 		}
 		all, _, _ := p.CachedSchemas()
+		deferred := map[string]bool{}
 		if view.Virtual() {
 			// A virtual namespace validates its mounts against the
-			// assembled catalogue; an empty assembly means no mount
-			// source has a catalogue yet, so validation defers
-			// exactly as an uncached server's does.
+			// assembled catalogue, per source: a mount is checked
+			// only when its own source's catalogue is cached and
+			// unexpired. One uncached source must not make its
+			// mounts read as unknown merely because another
+			// source filled the assembly, and a stale source must
+			// not reject tools it has since gained; when every
+			// source defers, the whole view defers exactly as an
+			// uncached server's does.
+			for _, tv := range view.ToolViews {
+				if tv.MountServer == "" || deferred[tv.MountServer] {
+					continue
+				}
+				sp, ok := pools[tv.MountServer]
+				if !ok || sp == nil {
+					deferred[tv.MountServer] = true
+					continue
+				}
+				if _, _, sat := sp.CachedSchemas(); sat.IsZero() || sp.SchemaExpired() {
+					deferred[tv.MountServer] = true
+				}
+			}
 			all = virtualCatalogue(view, views, pools)
 			if len(all) == 0 {
 				continue
@@ -1460,6 +1488,9 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 			tv := view.ToolViews[vn]
 			if tv.Command != "" || tv.File != "" {
 				continue // a script-backed view has no target to check (#1933 slice 2)
+			}
+			if tv.MountServer != "" && deferred[tv.MountServer] {
+				continue // this mount's source has no fresh catalogue; it defers
 			}
 			t, ok := byName[tv.From]
 			if !ok {
@@ -2343,6 +2374,41 @@ func failureStatus(err error) int {
 
 // Call dispatches a tool call, resolving the server's scope against the
 // caller's context to pick the instance.
+// mountCall resolves a call addressed to a tool of a virtual
+// namespace (#1933 slice 3). handled is false when the addressed
+// tool is not a mount (an ordinary tool, or a script view of the
+// namespace), and the caller proceeds as usual. For a mount it
+// returns the home server, the tool's real name there, and the
+// arguments with the mount's pins merged over the caller's. The
+// namespace's own gate runs here, before the call leaves it --
+// visibility (its include/exclude lists) and preconditions -- so a
+// mount the namespace hides is not callable by name either; the
+// home server's views, policies and process then see the call
+// exactly as if it had been addressed there, so history and the
+// write ledger record the home server and the real tool name, and
+// the target's argument rules are the ones that apply. Every call
+// entry point (Call, CallAsk, CallReporting) routes through here,
+// so a mount behaves the same however it is invoked.
+func (r *Registry) mountCall(server, tool string, cc config.CallContext, args any) (string, string, any, bool, error) {
+	view, ok := r.View(server)
+	if !ok || !view.Virtual() {
+		return "", "", nil, false, nil
+	}
+	tv, ok := view.ToolViews[tool]
+	if !ok || tv.MountServer == "" {
+		return "", "", nil, false, nil
+	}
+	if !view.VisibleTool(tool) {
+		// The same answer resolveAndGuard gives for a tool the
+		// addressed namespace does not expose.
+		if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
+			return "", "", nil, false, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+		}
+		return "", "", nil, false, HiddenTool{Server: server, Tool: tool}
+	}
+	return tv.MountServer, tv.MountTool, mergePinnedArgs(args, tv.Pin), true, nil
+}
+
 func (r *Registry) Call(ctx context.Context, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {
 	if server == "" {
 		if idx := strings.IndexAny(tool, ":."); idx > 0 {
@@ -2392,10 +2458,10 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	// addressed the mount. The home server is never itself virtual
 	// (config validation refuses a mount of a mount), so this
 	// delegation is exactly one hop.
-	if view, ok := r.View(server); ok && view.Virtual() {
-		if tv, isView := view.ToolViews[tool]; isView && tv.From != "" {
-			return r.Call(ctx, tv.MountServer, tv.MountTool, cc, mergePinnedArgs(args, tv.Pin))
-		}
+	if target, targetTool, merged, handled, err := r.mountCall(server, tool, cc, args); err != nil {
+		return nil, err
+	} else if handled {
+		return r.Call(ctx, target, targetTool, cc, merged)
 	}
 
 	p, ok := r.Pool(server)
