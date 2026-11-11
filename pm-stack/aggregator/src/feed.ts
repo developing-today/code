@@ -146,6 +146,11 @@ export interface FleetFeed {
    * collector from the aggregator's needs-drew store; the fleet lane
    * consumes this to resume blocked workers. Absent in older feeds. */
   answers?: FleetFeedAnswer[];
+  /** #8766: Drew's per-question resolutions from the decisions page
+   * (answers AND defer-to-orchestrator records), read by the collector
+   * from the aggregator's decision-set store; the dropped-thread
+   * catcher applies them to the decisions ledger. Absent in older feeds. */
+  decisionResolutions?: FleetFeedDecisionResolution[];
 }
 
 export interface FleetFeedAnswer {
@@ -153,6 +158,26 @@ export interface FleetFeedAnswer {
   optionId?: string;
   freeText?: string;
   answeredAt: string;
+  via: string;
+}
+
+export interface FleetFeedDecisionResolution {
+  setId: string;
+  ledgerId: string;
+  qid: string;
+  /** 1-based index of the question within its ledger item. */
+  questionIndex: number;
+  kind: "answered" | "deferred" | "request-info";
+  optionId?: string;
+  optionLabel?: string;
+  freeText?: string;
+  /** Deferred only: the lean recorded with the defer. */
+  lean?: "none" | "skeptical" | "approve";
+  /** Request-info only: what Drew said is missing (optional). */
+  note?: string;
+  /** Any kind: Drew's remark attached to the resolution. */
+  comment?: string;
+  at: string;
   via: string;
 }
 

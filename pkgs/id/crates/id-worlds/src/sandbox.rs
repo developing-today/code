@@ -939,8 +939,8 @@ mod tests {
     #[test]
     fn checked_in_roc_examples_export_abi_version_one() {
         for wasm in [
-            include_bytes!("../examples/roc-counter/counter.wasm").as_slice(),
-            include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm").as_slice(),
+            include_bytes!("../../../examples/roc-counter/counter.wasm").as_slice(),
+            include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm").as_slice(),
         ] {
             let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
             let mut store = Store::new(&runner.engine, ());
@@ -967,20 +967,20 @@ mod tests {
     // Every failure names the offending export or module so a future ABI
     // change fails loudly instead of drifting silently.
 
-    const ABI_MD: &str = include_str!("../examples/roc-world/ABI.md");
+    const ABI_MD: &str = include_str!("../../../examples/roc-world/ABI.md");
 
     const CONFORMANCE_MODULES: [(&str, &[u8]); 3] = [
         (
             "roc-counter",
-            include_bytes!("../examples/roc-counter/counter.wasm"),
+            include_bytes!("../../../examples/roc-counter/counter.wasm"),
         ),
         (
             "rust-counter",
-            include_bytes!("../examples/rust-counter/counter.wasm"),
+            include_bytes!("../../../examples/rust-counter/counter.wasm"),
         ),
         (
             "tic-tac-toe",
-            include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
+            include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
         ),
     ];
 
@@ -1105,7 +1105,7 @@ mod tests {
         // allocates guest-owned input, writes the event, frees the exact
         // allocation after the call, and reads outputs through the one
         // shared pointer + `plaza_out_len` slot.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let (mut store, instance) = conformance_raw_instance(&runner);
         let memory = instance.get_memory(&mut store, "memory").unwrap();
@@ -1278,7 +1278,7 @@ mod tests {
         use crate::world::{WorldEvent, WorldEventKind, WorldProgram};
         use crate::world_fixture::{Fixture, FixtureEvent, FixtureHeader, Verdict};
 
-        let wasm = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let wasm = include_bytes!("../../../examples/roc-chat/roc-chat.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         let mut events: Vec<FixtureEvent> = Vec::new();
@@ -1399,7 +1399,7 @@ mod tests {
 
     #[test]
     fn checked_in_roc_counter_compiles_and_initializes_in_the_import_free_sandbox() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         assert!(
@@ -1425,7 +1425,7 @@ mod tests {
     async fn checked_in_roc_counter_runs_as_the_authoritative_world_program() {
         use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
 
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let guest = runner.instantiate(7).unwrap();
         let actor = WorldHandle::spawn_with_program(
@@ -1470,7 +1470,7 @@ mod tests {
 
     #[test]
     fn checked_in_roc_counter_publishes_records() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":0}"#);
@@ -1488,7 +1488,7 @@ mod tests {
 
     #[test]
     fn checked_in_tic_tac_toe_plays_a_full_game() {
-        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         let records = |world: &mut WorldInstance| {
@@ -1535,7 +1535,7 @@ mod tests {
     #[test]
     fn checked_in_apps_snapshot_and_restore_faithfully() {
         // Counter: the model is its count.
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         for _ in 0..3 {
@@ -1567,7 +1567,7 @@ mod tests {
         );
 
         // Tic-tac-toe: the board alone carries the ply count and the winner.
-        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
@@ -1594,7 +1594,7 @@ mod tests {
 
     #[test]
     fn checked_in_roc_screen_renders_structured_surface() {
-        let wasm = include_bytes!("../examples/roc-screen/roc-screen.wasm");
+        let wasm = include_bytes!("../../../examples/roc-screen/roc-screen.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         live.update(1, b"+").unwrap();
@@ -1618,7 +1618,7 @@ mod tests {
 
     #[test]
     fn checked_in_grid_example_uses_bounded_get_set() {
-        let wasm = include_bytes!("../examples/roc-grid/roc-grid.wasm");
+        let wasm = include_bytes!("../../../examples/roc-grid/roc-grid.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         let render = |world: &mut WorldInstance| -> String {
@@ -1656,7 +1656,7 @@ mod tests {
     fn checked_in_chat_example_sends_and_reads_history() {
         use crate::world::{WorldEvent, WorldEventKind};
 
-        let wasm = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let wasm = include_bytes!("../../../examples/roc-chat/roc-chat.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut chat = runner.instantiate(7).unwrap();
         fn wants_of(chat: &mut WorldInstance) -> String {
@@ -1735,7 +1735,7 @@ mod tests {
 
     #[test]
     fn checked_in_roc_screen_reflows_for_a_wider_viewport() {
-        let wasm = include_bytes!("../examples/roc-screen/roc-screen.wasm");
+        let wasm = include_bytes!("../../../examples/roc-screen/roc-screen.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         let width_of = |bytes: Vec<u8>| -> u16 {
@@ -1765,30 +1765,30 @@ mod tests {
         // Rerun with:
         //   cd pkgs/id && cargo test --lib bytes_per_frame_baseline -- --nocapture
         const EXAMPLES: [(&str, &[u8]); 7] = [
-            ("lounge", include_bytes!("../examples/lounge/lounge.wasm")),
+            ("lounge", include_bytes!("../../../examples/lounge/lounge.wasm")),
             (
                 "roc-chat",
-                include_bytes!("../examples/roc-chat/roc-chat.wasm"),
+                include_bytes!("../../../examples/roc-chat/roc-chat.wasm"),
             ),
             (
                 "roc-counter",
-                include_bytes!("../examples/roc-counter/counter.wasm"),
+                include_bytes!("../../../examples/roc-counter/counter.wasm"),
             ),
             (
                 "roc-grid",
-                include_bytes!("../examples/roc-grid/roc-grid.wasm"),
+                include_bytes!("../../../examples/roc-grid/roc-grid.wasm"),
             ),
             (
                 "roc-screen",
-                include_bytes!("../examples/roc-screen/roc-screen.wasm"),
+                include_bytes!("../../../examples/roc-screen/roc-screen.wasm"),
             ),
             (
                 "territory",
-                include_bytes!("../examples/territory/territory.wasm"),
+                include_bytes!("../../../examples/territory/territory.wasm"),
             ),
             (
                 "tic-tac-toe",
-                include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
+                include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
             ),
         ];
         println!("| example | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |");
@@ -1819,7 +1819,7 @@ mod tests {
 
     #[test]
     fn checked_in_territory_renders_a_styled_screen_within_the_default_fuel() {
-        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let wasm = include_bytes!("../../../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         live.update(1, b"l ").unwrap();
@@ -1837,7 +1837,7 @@ mod tests {
 
     #[test]
     fn checked_in_territory_plays_persists_and_rejoins() {
-        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let wasm = include_bytes!("../../../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let joined = |id: u64, name: &str| {
             format!(
@@ -1940,7 +1940,7 @@ mod tests {
     #[test]
     fn wasm_actor_call_order_records_update_records_view() {
         use crate::world::{WorldEvent, WorldEventKind};
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut program = runner.instantiate(7).unwrap();
         let view =
@@ -1966,7 +1966,7 @@ mod tests {
     fn the_lounge_uses_the_capability_protocol() {
         use crate::world::{WorldEvent, WorldEventKind};
 
-        let wasm = include_bytes!("../examples/lounge/lounge.wasm");
+        let wasm = include_bytes!("../../../examples/lounge/lounge.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut lounge = runner.instantiate(7).unwrap();
         fn wants_of(lounge: &mut WorldInstance) -> String {
@@ -2449,47 +2449,47 @@ mod tests {
         [
             Example {
                 name: "roc-counter",
-                wasm: include_bytes!("../examples/roc-counter/counter.wasm"),
+                wasm: include_bytes!("../../../examples/roc-counter/counter.wasm"),
                 drive: drive_counter,
             },
             Example {
                 name: "roc-text-counter",
-                wasm: include_bytes!("../examples/roc-text-counter/text-counter.wasm"),
+                wasm: include_bytes!("../../../examples/roc-text-counter/text-counter.wasm"),
                 drive: drive_text_counter,
             },
             Example {
                 name: "tic-tac-toe",
-                wasm: include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
+                wasm: include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
                 drive: drive_tic_tac_toe,
             },
             Example {
                 name: "roc-screen",
-                wasm: include_bytes!("../examples/roc-screen/roc-screen.wasm"),
+                wasm: include_bytes!("../../../examples/roc-screen/roc-screen.wasm"),
                 drive: drive_screen,
             },
             Example {
                 name: "roc-grid",
-                wasm: include_bytes!("../examples/roc-grid/roc-grid.wasm"),
+                wasm: include_bytes!("../../../examples/roc-grid/roc-grid.wasm"),
                 drive: drive_grid,
             },
             Example {
                 name: "roc-chat",
-                wasm: include_bytes!("../examples/roc-chat/roc-chat.wasm"),
+                wasm: include_bytes!("../../../examples/roc-chat/roc-chat.wasm"),
                 drive: drive_chat,
             },
             Example {
                 name: "lounge",
-                wasm: include_bytes!("../examples/lounge/lounge.wasm"),
+                wasm: include_bytes!("../../../examples/lounge/lounge.wasm"),
                 drive: drive_lounge,
             },
             Example {
                 name: "territory",
-                wasm: include_bytes!("../examples/territory/territory.wasm"),
+                wasm: include_bytes!("../../../examples/territory/territory.wasm"),
                 drive: drive_territory,
             },
             Example {
                 name: "territory-full",
-                wasm: include_bytes!("../examples/territory/territory.wasm"),
+                wasm: include_bytes!("../../../examples/territory/territory.wasm"),
                 drive: drive_territory_full,
             },
         ]
@@ -2640,7 +2640,7 @@ mod tests {
 
     #[test]
     fn territory_view_fits_the_default_fuel_with_every_seat_taken() {
-        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let wasm = include_bytes!("../../../examples/territory/territory.wasm");
         let limits = SandboxLimits::default();
         let runner = Sandbox::compile(wasm, limits).unwrap();
         let mut live = runner.instantiate(7).unwrap();
@@ -2673,7 +2673,7 @@ mod tests {
 
     #[test]
     fn territory_scoreboard_lines_are_cut_at_the_screen_width() {
-        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let wasm = include_bytes!("../../../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         host_event(
@@ -2706,7 +2706,7 @@ mod tests {
         // `TERRITORY_WASM=FILE` measures a variant build instead.
         let wasm = match std::env::var_os("TERRITORY_WASM") {
             Some(path) => std::fs::read(path).unwrap(),
-            None => include_bytes!("../examples/territory/territory.wasm").to_vec(),
+            None => include_bytes!("../../../examples/territory/territory.wasm").to_vec(),
         };
         let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
         for (seats, per_seat) in [(0, 0), (1, 1), (2, 14), (4, 14), (8, 1), (8, 14)] {

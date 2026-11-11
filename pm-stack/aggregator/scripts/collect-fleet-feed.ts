@@ -110,6 +110,7 @@ import {
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import { defaultNeedsDrewFile, listAnswers } from "../src/needs-drew.ts";
+import { defaultDecisionsFile, listDecisionResolutions } from "../src/decisions.ts";
 import type {
   AaBatchSummary,
   AaFeedSection,
@@ -1244,9 +1245,19 @@ async function main(): Promise<void> {
     answers = [];
   }
 
+  // #8766: Drew's decisions-page resolutions (answers + defers), from
+  // the aggregator's decision-set store. Fail-soft like `answers`.
+  let decisionResolutions: NonNullable<FleetFeed["decisionResolutions"]> = [];
+  try {
+    decisionResolutions = await listDecisionResolutions(defaultDecisionsFile());
+  } catch {
+    decisionResolutions = [];
+  }
+
   const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     answers,
+    decisionResolutions,
     checkout,
     meta: { sections: sectionStatuses },
     quota: { pools, burn: burnSegments, choices: computeChoices(pools, now.getTime()) },

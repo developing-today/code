@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// The contract document, embedded at build time.
-pub const SHELL_CONTRACT_JSON: &str = include_str!("../contract/shell-contract.v1.json");
+pub const SHELL_CONTRACT_JSON: &str = include_str!("../../../contract/shell-contract.v1.json");
 
 /// The contract's wire version; it matches the `/id-world/1` ALPN.
 pub const SHELL_CONTRACT_VERSION: u32 = 1;

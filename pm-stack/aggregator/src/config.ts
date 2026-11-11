@@ -63,6 +63,8 @@ export interface Config {
   notificationsFile: string;
   /** Needs-Drew question store (#8568): fleet workers blocked on Drew. */
   needsDrewFile: string;
+  /** Decision-set store (#8766): batched decisions-page sets. */
+  decisionsFile: string;
   /** Stack-health state written by the sentinel intake extension (#8568). */
   stackHealthFile: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
@@ -185,6 +187,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     needsDrewFile: s(
       env.PM_AGG_NEEDS_DREW_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json"),
+    ),
+    decisionsFile: s(
+      env.PM_AGG_DECISIONS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "decisions.json"),
     ),
     stackHealthFile: s(
       env.PM_AGG_STACK_HEALTH_FILE,

@@ -1821,7 +1821,7 @@ impl Directory {
         }
     }
 
-    pub(crate) fn apply(&mut self, entry: &DirectoryEntry) -> Result<()> {
+    pub fn apply(&mut self, entry: &DirectoryEntry) -> Result<()> {
         self.apply_mode(entry, true)
     }
 
@@ -2494,7 +2494,7 @@ fn clean_description_mode(description: &str, refuse_format: bool) -> Result<Stri
     Ok(description.to_owned())
 }
 
-pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
     // Every byte must be an ASCII hex digit (#2517): u8::from_str_radix
     // also accepts a leading '+', so without this gate a byte 0x00-0x0f
     // has two accepted spellings ('0x' and '+x') and key strings stop

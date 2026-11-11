@@ -79,11 +79,11 @@ pub(crate) enum PresentationTier {
 
 /// Profile plus input bytes that were not complete matching query replies.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ProbeOutcome {
+pub struct ProbeOutcome {
     /// Locally selected terminal profile.
     pub(crate) profile: TerminalProfile,
     /// Unmatched or incomplete bytes, preserved byte-for-byte for key input.
-    pub(crate) replay: Vec<u8>,
+    pub replay: Vec<u8>,
     /// At least one capability received contradictory complete reports.
     pub(crate) conflicted: bool,
 }
@@ -181,7 +181,7 @@ impl ProbeDemux {
 /// switched to the non-canonical mode needed to read replies. Only the Tier 3
 /// fallback presenter consumes this result in the current slice.
 #[cfg(unix)]
-pub(crate) fn probe_local_tty() -> Option<ProbeOutcome> {
+pub fn probe_local_tty() -> Option<ProbeOutcome> {
     use std::io::IsTerminal;
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
@@ -194,7 +194,7 @@ pub(crate) fn probe_local_tty() -> Option<ProbeOutcome> {
 
 /// Non-Unix builds have no TTY probe; callers keep the piped behavior.
 #[cfg(not(unix))]
-pub(crate) fn probe_local_tty() -> Option<ProbeOutcome> {
+pub fn probe_local_tty() -> Option<ProbeOutcome> {
     None
 }
 

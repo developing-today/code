@@ -50,8 +50,9 @@ mod types;
 /// World-service constructors and module lifecycle (split from this module, #4717).
 mod service;
 
+pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+    CAPS_CEILING_NOTICE, ClientFrame, MAX_CAPABILITY_BYTES,
     MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
 };
 pub use types::{

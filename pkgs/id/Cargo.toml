@@ -16,14 +16,14 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
-members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-native-shell"]
+members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds", "crates/id-native-shell"]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
 exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
-default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync"]
+default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-groups", "crates/id-sync", "crates/id-worlds"]
 
 # =============================================================================
 # Features
@@ -31,7 +31,7 @@ default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["dep:wasmtime", "world", "id-core/sandbox", "id-caps/sandbox"]
+sandbox = ["world", "id-core/sandbox", "id-caps/sandbox", "id-worlds/sandbox"]
 world = [
   "dep:subtle",
   "dep:hmac",
@@ -83,6 +83,9 @@ id-sync = { path = "crates/id-sync", default-features = false }
 # Groups-family modules extracted in step 4 of the crate split (#4407).
 # Re-exported at their historical crate:: paths in src/lib.rs.
 id-groups = { path = "crates/id-groups", default-features = false }
+# Worlds-family modules extracted in step 5 of the crate split (#4408).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-worlds = { path = "crates/id-worlds", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -176,11 +179,8 @@ hmac = { version = "0.13", optional = true }
 # scrypt for the Seitan V2 stretch (P6.1). Already in the lock as a transitive dependency.
 scrypt = { version = "0.12", optional = true }
 subtle = { version = "2", optional = true }
-wasmtime = { version = "=48.0.7", default-features = false, features = [
-  "cranelift",
-  "runtime",
-  "std",
-], optional = true }
+# wasmtime moved to id-worlds in step 5b of the crate split (#4408):
+# the `sandbox` feature above forwards to `id-worlds/sandbox`.
 russh = { version = "=0.65.0", optional = true }
 
 [dev-dependencies]

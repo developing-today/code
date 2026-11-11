@@ -28,6 +28,7 @@ import type { HealthView } from "./health.ts";
 import type { QuotaView, TierItem, TieredEntry } from "./model.ts";
 import type { NotificationSendRow } from "./alerts.ts";
 import type { NeedsDrewQuestion } from "./needs-drew.ts";
+import { decisionSetProgress, type DecisionSet } from "./decisions.ts";
 import { SENTINEL_SERVICE_IDS, type StackHealthRecord } from "./stack-health.ts";
 
 export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
@@ -155,6 +156,10 @@ export interface NotificationCandidate {
   /** #8568: a raised needs-Drew question rides its candidate so the
    * push payload can carry tappable answer actions. */
   needsDrew?: { ledgerId: string; question: string; options: Array<{ id: string; label: string }> };
+  /** #8766: a decision set rides its candidate so the push payload can
+   * point at the token-carrying decisions page (no tappable answers —
+   * the page is the answer surface). */
+  decisionSet?: { setId: string };
 }
 
 export interface NotificationHistoryEntry {
@@ -190,6 +195,8 @@ export interface NotificationSnapshot {
   drewActivity?: Array<{ objectRef: string; at: string }>;
   /** #8568: open needs-Drew questions (unanswered, < 7 days old). */
   needsDrewRaised?: NeedsDrewQuestion[];
+  /** #8766: open decision sets (at least one unresolved question). */
+  decisionSets?: DecisionSet[];
   /** #8568: sentinel services currently down. */
   stackHealthDown?: StackHealthRecord[];
   /** #8568: full sentinel state map (up AND down) — decides when the
@@ -485,6 +492,28 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
         actedRefs: [`needs-drew:${item.ledgerId}`],
         state: { raisedAt: item.raisedAt },
         needsDrew: { ledgerId: item.ledgerId, question: item.question, options: item.options },
+      }),
+    );
+  }
+
+  // #8766: open decision sets — ONE push per set, never one per item
+  // or question. The fingerprint is the set's raise time alone, so
+  // resolutions landing later do not re-push; a fully resolved set
+  // stops candidating (listOpenDecisionSets already filtered it out).
+  for (const set of snapshot.decisionSets ?? []) {
+    const progress = decisionSetProgress(set);
+    candidates.push(
+      candidate({
+        class: "needs-drew",
+        objectRef: `decision-set:${set.setId}`,
+        title: `${progress.openItems} decision${progress.openItems === 1 ? "" : "s"} waiting for you`,
+        body: `${set.title} — ${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open. Tap to open the decisions page.`,
+        url: `/decisions/${encodeURIComponent(set.setId)}`,
+        observedAt: set.createdAt,
+        breakthrough: true,
+        actedRefs: [`decision-set:${set.setId}`],
+        state: { raisedAt: set.createdAt },
+        decisionSet: { setId: set.setId },
       }),
     );
   }

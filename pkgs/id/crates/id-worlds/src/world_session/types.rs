@@ -28,7 +28,7 @@ pub const MAX_WORLD_MODULE_CHUNK_BYTES: usize = 6 * 1024;
 pub(crate) const MAX_CAPABILITY_BYTES: usize = 256;
 
 /// Longest accepted admin secret, in bytes.
-pub(crate) const MAX_ADMIN_TOKEN_BYTES: usize = 256;
+pub const MAX_ADMIN_TOKEN_BYTES: usize = 256;
 /// Sent with a capability ceiling change: unlike a profile, it takes effect now.
 pub(crate) const CAPS_CEILING_NOTICE: &str =
     "ceiling saved; it applies immediately to new uses and active subscriptions";

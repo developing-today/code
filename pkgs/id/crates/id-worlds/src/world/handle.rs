@@ -340,7 +340,7 @@ impl WorldHandle {
     /// ([`WorldCommand::ReplicationCompact`]); the feed is then rebuilt from
     /// the compacted image (the compaction publishes a reset to the first
     /// subscription, so it is replaced, exactly as the in-actor flow did).
-    pub(crate) async fn replication_feed(
+    pub async fn replication_feed(
         &self,
     ) -> Result<(
         String,

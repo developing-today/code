@@ -65,6 +65,21 @@ import {
   type NeedsDrewCensus,
   type NeedsDrewQuestion,
 } from "./needs-drew.ts";
+import {
+  decisionSetOpenState,
+  decisionSetProgress,
+  deferWithSubmissions,
+  getDecisionSet,
+  isDeferLean,
+  listOpenDecisionSets,
+  raiseDecisionSet,
+  recordResolutions,
+  requestInfoOpenQuestions,
+  validateDecisionSet,
+  type DecisionItem,
+  type DecisionSet,
+  type DecisionSubmission,
+} from "./decisions.ts";
 import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
   buildHealth,
@@ -649,6 +664,334 @@ function renderAnswerForbidden(): string {
 <p class="context">This answer link is unknown or its token does not match. Nothing about the question is shown without the correct link.</p>
 </main></body></html>`;
 }
+
+// --- Decision sets (#8766) -------------------------------------------------
+
+/** The token-carrying decisions-page URL for a raised set. */
+function decisionsPageUrl(set: DecisionSet): string {
+  return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+}
+
+/** Parse a decisions submissions array — shared by /submit and by
+ * /defer's filled-answers-win payload (#8766). */
+function parseDecisionSubmissions(
+  raw: unknown,
+): { ok: true; value: DecisionSubmission[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 256) {
+    return { ok: false, error: "submissions must be an array of 1-256 entries" };
+  }
+  const submissions: DecisionSubmission[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: false, error: "submissions entries must be objects" };
+    }
+    const s = entry as Record<string, unknown>;
+    const ledgerId = typeof s.ledgerId === "string" ? s.ledgerId : "";
+    const qid = typeof s.qid === "string" ? s.qid : "";
+    const kind = s.kind;
+    if (!ledgerId || !qid || (kind !== "answered" && kind !== "deferred" && kind !== "request-info")) {
+      return { ok: false, error: "submissions entries require ledgerId, qid and kind answered|deferred|request-info" };
+    }
+    if (kind === "deferred" && !isDeferLean(s.lean)) {
+      return { ok: false, error: "deferred submissions require a lean of none|skeptical|approve" };
+    }
+    submissions.push({
+      ledgerId,
+      qid,
+      kind,
+      ...(typeof s.optionId === "string" ? { optionId: s.optionId } : {}),
+      ...(typeof s.freeText === "string" ? { freeText: s.freeText } : {}),
+      ...(isDeferLean(s.lean) ? { lean: s.lean } : {}),
+      ...(typeof s.note === "string" ? { note: s.note } : {}),
+      ...(typeof s.comment === "string" ? { comment: s.comment } : {}),
+    });
+  }
+  return { ok: true, value: submissions };
+}
+
+const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
+  .group { color: #9da7b1; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.85rem; margin: 1.6rem 0 0.4rem; }
+  .item { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 0.8rem 0; background: #11161d; }
+  .item h2 { font-size: 1.1rem; margin: 0 0 0.3rem; line-height: 1.35; }
+  .q { border-top: 1px solid #21262d; padding: 0.8rem 0 0.2rem; margin-top: 0.8rem; }
+  .q p.qq { font-weight: 600; margin: 0 0 0.3rem; }
+  .opt { display: block; padding: 0.45rem 0; cursor: pointer; }
+  .opt input { margin-right: 0.5rem; }
+  select.defer { width: 100%; box-sizing: border-box; margin-top: 0.5rem; padding: 0.55rem; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; }
+  .done { color: #3fb950; font-size: 0.92rem; padding: 0.35rem 0; }
+  .bar { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 1.2rem 0; background: #11161d; }
+  .bar button { margin: 0.3rem 0.4rem 0.3rem 0; }
+  button.sendback { background: #6e3feb; }
+  .provided { border: 1px solid #1f6feb; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1b2e; }
+  .provided .ph { color: #58a6ff; font-weight: 600; margin: 0 0 0.3rem; }
+  .provided p { margin: 0; white-space: pre-wrap; }
+  button.reqinfo { background: #8250df; margin-top: 0.4rem; }
+  .bulkchk { font-size: 0.92rem; color: #9da7b1; }
+  #status { min-height: 1.2em; }
+</style>`;
+
+/** Render GET /decisions/<setId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the set. Only open
+ * questions are interactive; resolved ones show as a compact recorded
+ * line, and an item whose questions are all resolved is not rendered
+ * at all — it has gone away, per the spec. */
+function renderDecisionsPage(set: DecisionSet): string {
+  const progress = decisionSetProgress(set);
+  const groups: string[] = [];
+  for (const item of set.items) if (!groups.includes(item.group)) groups.push(item.group);
+  const itemCard = (item: DecisionItem): string => {
+    const open = item.questions.filter((q) => !q.resolution);
+    if (open.length === 0) return "";
+    const links = item.links
+      .filter((l) => /^https?:\/\//.test(l))
+      .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+      .join("");
+    const resolvedLines = item.questions
+      .filter((q) => q.resolution)
+      .map((q) => {
+        const r = q.resolution!;
+        const what =
+          r.kind === "deferred"
+            ? `deferred to the orchestrator${r.lean && r.lean !== "none" ? ` (lean: ${esc(r.lean)})` : ""}${r.optionLabel ? ` — your tentative pick: ${esc(r.optionLabel)}` : ""}${r.comment ? ` — comment: ${esc(r.comment)}` : ""}`
+            : r.kind === "request-info"
+              ? `more information requested${r.note ? ` — you said: ${esc(r.note)}` : ""}`
+              : `answered${r.optionLabel ? `: ${esc(r.optionLabel)}` : r.freeText ? `: ${esc(r.freeText)}` : ""}`;
+        return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
+      })
+      .join("");
+    const questionBlocks = open
+      .map((q) => {
+        const radios = q.options
+          .map(
+            (o) =>
+              `<label class="opt"><input type="radio" name="opt-${esc(q.qid)}" value="${esc(o.id)}">${esc(o.label)}</label>`,
+          )
+          .join("");
+        return `<div class="q" data-ledger="${esc(item.ledgerId)}" data-qid="${esc(q.qid)}">
+<p class="qq">${esc(q.question)}</p>
+${q.infoProvided ? `<div class="provided"><p class="ph">Information you requested</p><p>${esc(q.infoProvided)}</p></div>` : ""}
+${q.context ? `<p class="context">${esc(q.context)}</p>` : ""}
+${radios}
+<textarea class="ft" placeholder="Answer in your own words, or a comment (sent back with any action on this question)"></textarea>
+<select class="defer">
+<option value="">I'll answer this one</option>
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<textarea class="infonote" placeholder="Need more information first? Say what's missing (optional)"></textarea>
+<button class="reqinfo" type="button" data-reqinfo>Request more information</button>
+</div>`;
+      })
+      .join("");
+    return `<section class="item" data-ledger="${esc(item.ledgerId)}">
+<label class="bulkchk"><input type="checkbox" class="bulk"> select this item for a bulk action below (defer or request info)</label>
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+${questionBlocks}
+<button class="submit" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>
+</section>`;
+  };
+  const body = groups
+    .map((g) => {
+      const cards = set.items
+        .filter((i) => i.group === g)
+        .map(itemCard)
+        .join("");
+      return cards ? `<div class="group">${esc(g)}</div>${cards}` : "";
+    })
+    .join("");
+  const caughtUp = progress.openQuestions === 0;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decisions — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>${esc(set.title)}</h1>
+<p class="context">${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open across ${progress.openItems} item${progress.openItems === 1 ? "" : "s"} · ${progress.answered} answered · ${progress.deferred} deferred · ${progress.infoRequested} sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.</p>
+${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : body}
+<div class="bar">
+<p class="context">Bulk actions</p>
+<button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
+<p class="context">Defer checked items to the orchestrator instead of answering — they leave this page and become the orchestrator's job. Precedence per question: (1) the question's own defer setting wins, with its tentative pick and comment riding along as guidance; (2) a filled-in answer submits as an answer; (3) only a question nobody touched uses the default flavor picked here:</p>
+<select class="defer" id="bulkLean">
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<button class="submit sendback" type="button" id="deferChecked">Defer checked to orchestrator</button>
+<button class="submit sendback" type="button" id="deferAll">Defer ALL remaining</button>
+<p class="context">Or request more information for the checked items — they leave this page and come back in a later set once the information has been gathered:</p>
+<textarea class="infonote" id="bulkInfoNote" placeholder="Comment for the bulk actions — rides back with the checked items (for request-info: say what's missing)"></textarea>
+<button class="submit reqinfo" type="button" id="reqinfoChecked">Request more info for checked items</button>
+</div>
+<p id="status" class="context"></p>
+<script>
+var TOKEN = ${JSON.stringify(set.token)};
+var SET_ID = ${JSON.stringify(set.setId)};
+function status(msg) { document.getElementById('status').textContent = msg; }
+function collect(scopeLedger) {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeLedger && ledger !== scopeLedger) return;
+    var qid = block.getAttribute('data-qid');
+    var lean = block.querySelector('select.defer').value;
+    if (lean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: lean };
+      var dpick = block.querySelector('input[type=radio]:checked');
+      if (dpick) dsub.optionId = dpick.value;
+      var dtext = block.querySelector('textarea.ft').value.trim();
+      if (dtext) dsub.comment = dtext;
+      subs.push(dsub); return;
+    }
+    var picked = block.querySelector('input[type=radio]:checked');
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (picked || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      if (picked) sub.optionId = picked.value;
+      if (text) sub.freeText = text;
+      subs.push(sub);
+    }
+  });
+  return subs;
+}
+function applyOpenState(state) {
+  var openByItem = {};
+  state.items.forEach(function (i) { openByItem[i.ledgerId] = i.openQids; });
+  document.querySelectorAll('.q').forEach(function (block) {
+    var open = openByItem[block.getAttribute('data-ledger')] || [];
+    if (open.indexOf(block.getAttribute('data-qid')) === -1) block.remove();
+  });
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (!card.querySelector('.q')) card.remove();
+  });
+  if (!document.querySelector('section.item')) {
+    status('All caught up — every question in this set is recorded. You can close this page.');
+  }
+}
+async function post(path, payload) {
+  var res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(Object.assign({ token: TOKEN }, payload)) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+async function submit(scopeLedger) {
+  var subs = collect(scopeLedger);
+  if (subs.length === 0) { status('Nothing filled in yet — pick an option, write an answer, or choose a defer.'); return; }
+  status('Sending…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function sendBack(all) {
+  // The flavor picked here is only the DEFAULT for questions nobody
+  // touched: the gather below sends each question's own defer setting
+  // and each filled answer as submissions, the server records those
+  // first, and this payload lean reaches only what is still open.
+  var lean = document.getElementById('bulkLean').value;
+  var payload;
+  var scopeIds = null;
+  if (all) { payload = { lean: lean, allRemaining: true }; }
+  else {
+    var ids = [];
+    document.querySelectorAll('section.item').forEach(function (card) {
+      if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+    });
+    if (ids.length === 0) { status('Check at least one item first, or use ALL remaining.'); return; }
+    payload = { lean: lean, ledgerIds: ids };
+    scopeIds = ids;
+  }
+  // Filled answers win over the bulk defer: everything already filled
+  // in inside the scope rides along as submissions — the server records
+  // them first (answers stay rulings, per-question defers keep their
+  // own lean and comment) and defers only what is still unanswered.
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeIds && scopeIds.indexOf(ledger) === -1) return;
+    var qid = block.getAttribute('data-qid');
+    var qlean = block.querySelector('select.defer').value;
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (qlean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: qlean };
+      var dpick = block.querySelector('input[type=radio]:checked');
+      if (dpick) dsub.optionId = dpick.value;
+      if (text) dsub.comment = text;
+      subs.push(dsub); return;
+    }
+    var picked = block.querySelector('input[type=radio]:checked');
+    if (picked || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      if (picked) sub.optionId = picked.value;
+      if (text) sub.freeText = text;
+      subs.push(sub);
+    }
+  });
+  if (subs.length) payload.submissions = subs;
+  var bulkComment = document.getElementById('bulkInfoNote').value.trim();
+  if (bulkComment) payload.comment = bulkComment;
+  status('Sending back…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/defer', payload);
+    applyOpenState(out);
+    var recorded = (out.outcomes || []).filter(function (o) { return o.applied; }).length;
+    var msg = 'Deferred ' + out.deferredCount + ' question(s) to the orchestrator';
+    if (recorded) msg = 'Recorded ' + recorded + ' filled-in answer(s) first; deferred the rest — ' + out.deferredCount + ' question(s) deferred to the orchestrator';
+    status(msg + ' — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-submit-item]').forEach(function (b) {
+  b.addEventListener('click', function () { submit(b.getAttribute('data-submit-item')); });
+});
+document.getElementById('submitAll').addEventListener('click', function () { submit(null); });
+document.getElementById('deferChecked').addEventListener('click', function () { sendBack(false); });
+document.getElementById('deferAll').addEventListener('click', function () { sendBack(true); });
+async function requestInfoOne(block) {
+  var note = block.querySelector('textarea.infonote').value.trim();
+  var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'request-info' };
+  if (note) sub.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: [sub] });
+    applyOpenState(out);
+    status('Recorded — that question will come back in a later set with the information added. ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function requestInfoChecked() {
+  var ids = [];
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+  });
+  if (ids.length === 0) { status('Check at least one item first.'); return; }
+  var note = document.getElementById('bulkInfoNote').value.trim();
+  var payload = { ledgerIds: ids };
+  if (note) payload.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/request-info', payload);
+    applyOpenState(out);
+    status('Recorded ' + out.requestedCount + ' question(s) to come back with more information — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-reqinfo]').forEach(function (b) {
+  b.addEventListener('click', function () { requestInfoOne(b.closest('.q')); });
+});
+document.getElementById('reqinfoChecked').addEventListener('click', requestInfoChecked);
+</script>
+</main></body></html>`;
+}
+
+function renderDecisionsForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Decisions link not available</h1>
+<p class="context">This decisions link is unknown or its token does not match. Nothing about the set is shown without the correct link.</p>
+</main></body></html>`;
+}
+
 
 /** The PWA manifest (#3315 slice a, landed with #3676): start_url is
  * the attention view per the design; icons incl. maskable + iOS. */
@@ -2501,8 +2844,8 @@ async function handler(req: Request): Promise<Response> {
       if (!parsed.ok) return json({ error: parsed.error }, 400);
       const { incident, created } = await store.postIncident(parsed.value);
       const status = created ? 201 : 200;
-      // #8568 producer extensions: exactly one of needsDrew /
-      // stackHealth may ride an incident post. The incident insert
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post. The incident insert
       // above is unchanged; a VALIDATION failure of an extension is a
       // 400 (the poster's bug should be loud at the poster), while a
       // store failure is logged and never fails the incident post.
@@ -2512,8 +2855,9 @@ async function handler(req: Request): Promise<Response> {
           : {};
       const hasNeedsDrew = ext.needsDrew !== undefined;
       const hasStackHealth = ext.stackHealth !== undefined;
-      if (hasNeedsDrew && hasStackHealth) {
-        return json({ error: "needsDrew and stackHealth are mutually exclusive" }, 400);
+      const hasDecisionSet = ext.decisionSet !== undefined;
+      if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
+        return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
       }
       if (hasNeedsDrew) {
         const v = validateNeedsDrew(ext.needsDrew);
@@ -2547,6 +2891,23 @@ async function handler(req: Request): Promise<Response> {
           );
         }
         return json({ incident, created }, status);
+      }
+      if (hasDecisionSet) {
+        const v = validateDecisionSet(ext.decisionSet);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const set = await raiseDecisionSet(cfg.decisionsFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json(
+            { incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } },
+            status,
+          );
+        } catch (err) {
+          console.error(
+            `alerts intake: decisionSet raise failed (${err instanceof Error ? err.message : "error"})`,
+          );
+          return json({ incident, created }, status);
+        }
       }
       return json({ incident, created }, status);
     } catch (err) {
@@ -2606,6 +2967,121 @@ async function handler(req: Request): Promise<Response> {
     // never rendered — the token is the only authority here.
     if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
     return html(renderAnswerPage(item));
+  }
+  // --- Decision sets (#8766) -------------------------------------------
+  const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && decisionsPageMatch) {
+    const setId = decodePathSegment(decisionsPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const set = setId === null ? null : await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    // Unknown set or token mismatch: 403, and the set is never rendered
+    // — the per-set token is the only authority here.
+    if (!set || !token || token !== set.token) return html(renderDecisionsForbidden(), 403);
+    return html(renderDecisionsPage(set));
+  }
+  const decisionsSubmitMatch = /^\/api\/decisions\/([^/]+)\/submit$/.exec(path);
+  if (req.method === "POST" && decisionsSubmitMatch) {
+    const setId = decodePathSegment(decisionsSubmitMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; submissions?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedSubs = parseDecisionSubmissions(body.submissions);
+    if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+    const result = await recordResolutions(cfg.decisionsFile, setId, parsedSubs.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ outcomes: result.outcomes, ...decisionSetOpenState(result.set) });
+  }
+  const decisionsDeferMatch = /^\/api\/decisions\/([^/]+)\/defer$/.exec(path);
+  if (req.method === "POST" && decisionsDeferMatch) {
+    const setId = decodePathSegment(decisionsDeferMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: {
+      token?: unknown;
+      lean?: unknown;
+      ledgerIds?: unknown;
+      allRemaining?: unknown;
+      submissions?: unknown;
+      comment?: unknown;
+    };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid defer body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!isDeferLean(body.lean)) {
+      return json({ error: "lean must be none|skeptical|approve" }, 400);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    // Filled answers win over the bulk defer (#8766): submissions the
+    // page gathered from filled-in fields are recorded FIRST, and only
+    // the still-unanswered questions in scope are deferred.
+    let submissions: DecisionSubmission[] = [];
+    if (body.submissions !== undefined) {
+      const parsedSubs = parseDecisionSubmissions(body.submissions);
+      if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+      submissions = parsedSubs.value;
+    }
+    const result = await deferWithSubmissions(
+      cfg.decisionsFile,
+      setId,
+      submissions,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      body.lean,
+      typeof body.comment === "string" ? body.comment : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ outcomes: result.outcomes, deferredCount: result.deferredCount, ...decisionSetOpenState(result.set) });
+  }
+  const decisionsReqInfoMatch = /^\/api\/decisions\/([^/]+)\/request-info$/.exec(path);
+  if (req.method === "POST" && decisionsReqInfoMatch) {
+    const setId = decodePathSegment(decisionsReqInfoMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; note?: unknown; ledgerIds?: unknown; allRemaining?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid request-info body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    const result = await requestInfoOpenQuestions(
+      cfg.decisionsFile,
+      setId,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      typeof body.note === "string" ? body.note : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
   if (req.method === "POST" && alertActionMatch) {
@@ -2921,7 +3397,7 @@ if (source.ingestSnapshots) {
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
 startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
-  const [attention, quota, health, actions, comments, needsDrewRaised, stackHealthDown, stackHealthStates] =
+  const [attention, quota, health, actions, comments, needsDrewRaised, decisionSets, stackHealthDown, stackHealthStates] =
     await Promise.all([
       attentionContext(),
       source.quota().catch(() => emptyQuotaView()),
@@ -2929,6 +3405,7 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
       actionsStore.all().catch(() => []),
       commentsStore.all().catch(() => []),
       listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+      listOpenDecisionSets(cfg.decisionsFile).catch(() => []),
       listStackHealthDown(cfg.stackHealthFile).catch(() => []),
       readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
     ]);
@@ -2943,6 +3420,7 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     drewActivity,
     soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
     needsDrewRaised,
+    decisionSets,
     stackHealthDown,
     stackHealthStates,
   };

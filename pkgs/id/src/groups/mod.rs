@@ -8,9 +8,9 @@
 //! their historical paths. Step 4 (#4407) extracted the
 //! policy/enforcement remainder — [`actions`], [`log`], [`warnings`] —
 //! into `id-groups` over `id-events`, re-exported here likewise.
-//! [`worlds`] alone stays in the facade: seam 6 of the design sends
-//! the cross-world bridge to `id-worlds` in step 5, and it is the
-//! only submodule still defined in this directory.
+//! [`worlds`] was the last submodule defined in this directory:
+//! seam 6 of the design sends the cross-world bridge to `id-worlds`
+//! (step 5, #4408), and this module re-exports it from there.
 //!
 //! A group changes only by events. [`fold`] computes its state from
 //! the whole set of events, so the result does not depend on the order
@@ -26,7 +26,7 @@
 //! Authority and the cap are checked against the events that come before each event in the
 //! canonical order. See [`fold`].
 
-pub mod worlds;
+pub use id_worlds::groups::worlds;
 
 pub use id_groups::groups::{actions, log, warnings};
 

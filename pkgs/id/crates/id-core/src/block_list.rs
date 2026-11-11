@@ -42,6 +42,60 @@ impl BlockKind {
     }
 }
 
+/// The outcome of one block-list lookup (#8750): a definite answer, or
+/// the explicit admission that the lookup itself failed.
+///
+/// The bool seam ([`BlockList::is_blocked`]) erases a failed lookup (a
+/// corrupt block row, a storage error, a poisoned lock) to `false`, so
+/// enforcement could not tell it from an ordinary unblocked result and
+/// no diagnostic existed anywhere. A seam that needs the distinction
+/// asks for a `BlockLookup` and chooses its indeterminate-result policy
+/// explicitly; the store implementations report their real failures
+/// here instead of erasing them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockLookup {
+    /// An active block names this value.
+    Blocked,
+    /// The lookup succeeded and no active block names this value.
+    Unblocked,
+    /// The lookup itself failed, so no answer exists. The failure is a
+    /// category, never a storage detail: nothing about the store's
+    /// internals may leak to a remote peer through this value.
+    Indeterminate(BlockLookupFailure),
+}
+
+impl BlockLookup {
+    /// The bool verdict: only a definite block blocks. An indeterminate
+    /// lookup fails open, exactly as the bool seam always has.
+    #[must_use]
+    pub fn is_blocked(&self) -> bool {
+        matches!(self, BlockLookup::Blocked)
+    }
+}
+
+/// Why a block-list lookup could not answer (#8750), in operator terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockLookupFailure {
+    /// A stored block row does not decode.
+    Corrupt,
+    /// The storage layer failed to answer the read.
+    Storage,
+    /// The lookup could not run at all (a poisoned lock, a closed store).
+    Unavailable,
+}
+
+impl BlockLookupFailure {
+    /// The failure's operator-facing label, for logs and diagnostics.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BlockLookupFailure::Corrupt => "corrupt block row",
+            BlockLookupFailure::Storage => "block storage read failed",
+            BlockLookupFailure::Unavailable => "block list unavailable",
+        }
+    }
+}
+
 /// The operator block list as the enforcement seams consult it (#2245).
 ///
 /// A seam holds an `Arc<dyn BlockList>` and asks it about a peer, a topic
@@ -61,7 +115,45 @@ impl BlockKind {
 pub trait BlockList: std::fmt::Debug + Send + Sync + 'static {
     /// Whether (`kind`, `value`) is blocked now. An expired block is not
     /// enforced, so this is false for one, however long it stays listed.
+    ///
+    /// The bool seam fails open by design — the documented default
+    /// availability behaviour: a lookup that cannot answer (see
+    /// [`BlockList::lookup`]) is `false` here, so serving never depends
+    /// on the block store answering. A caller that must tell a failed
+    /// lookup from an unblocked answer uses `lookup` and states its
+    /// indeterminate-result policy explicitly (#8750).
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool;
+
+    /// The distinguishing form of [`BlockList::is_blocked`]: the same
+    /// question, with a failed lookup preserved as
+    /// [`BlockLookup::Indeterminate`] instead of erased to `false`.
+    ///
+    /// The default derives from `is_blocked`, so an implementation
+    /// that cannot report failures answers only the definite outcomes;
+    /// the store implementations override it with their real errors,
+    /// and log the failure for the operator when it happens.
+    fn lookup(&self, kind: BlockKind, value: &[u8]) -> BlockLookup {
+        if self.is_blocked(kind, value) {
+            BlockLookup::Blocked
+        } else {
+            BlockLookup::Unblocked
+        }
+    }
+
+    /// The [`BlockLookup`] form of [`BlockList::peer_blocked`].
+    fn peer_lookup(&self, peer: &[u8; 32]) -> BlockLookup {
+        self.lookup(BlockKind::PeerKey, peer)
+    }
+
+    /// The [`BlockLookup`] form of [`BlockList::topic_tag_blocked`].
+    fn topic_tag_lookup(&self, tag: &[u8]) -> BlockLookup {
+        self.lookup(BlockKind::TopicTag, tag)
+    }
+
+    /// The [`BlockLookup`] form of [`BlockList::ip_blocked`].
+    fn ip_lookup(&self, ip: &std::net::IpAddr) -> BlockLookup {
+        self.lookup(BlockKind::Ip, ip.to_string().as_bytes())
+    }
 
     /// Whether the endpoint with this 32-byte key is blocked.
     fn peer_blocked(&self, peer: &[u8; 32]) -> bool {
@@ -86,5 +178,9 @@ pub trait BlockList: std::fmt::Debug + Send + Sync + 'static {
 impl<T: BlockList + ?Sized> BlockList for std::sync::Arc<T> {
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
         (**self).is_blocked(kind, value)
+    }
+
+    fn lookup(&self, kind: BlockKind, value: &[u8]) -> BlockLookup {
+        (**self).lookup(kind, value)
     }
 }

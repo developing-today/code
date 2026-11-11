@@ -21,7 +21,9 @@ use p2panda_store::topics::TopicStore;
 use id::event_store::EventStore;
 use id_core::waiting::{AuthorKey, WaitingLimits};
 use id_store::chain::{ChainExt, Event, sign};
-use id_store::event_types::{BlockKind, Ingest, StoreError};
+use id_store::event_types::{
+    Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Ingest, StoreError,
+};
 use id_store::store_traits::{ChainLog, LogEntries, SharedEventStore, TraitStoreError};
 
 
@@ -699,4 +701,51 @@ async fn test_a_poisoned_lock_is_reported_not_unwrapped() {
         store.ingest(&[], None, 0),
         Err(TraitStoreError::Poisoned)
     ));
+}
+
+/// #8750: the shared store's block lookup distinguishes a definite
+/// block and a definite unblocked answer from a lookup that could not
+/// run at all — a poisoned lock is `Indeterminate(Unavailable)`, never
+/// the same answer an unblocked peer gets. The bool seam keeps its
+/// documented fail-open meaning.
+#[test]
+#[allow(clippy::panic)]
+fn test_shared_store_block_lookup_distinguishes_blocked_unblocked_and_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+    backend
+        .add_block(&Block {
+            kind: BlockKind::PeerKey,
+            value: vec![7u8; 32],
+            added_at_ms: 1_000,
+            reason: "test block".to_owned(),
+            expires_at_ms: None,
+        })
+        .unwrap();
+    let store = SharedEventStore::new(backend);
+    let list: &dyn BlockList = &store;
+    assert_eq!(
+        list.lookup(BlockKind::PeerKey, &[7u8; 32]),
+        BlockLookup::Blocked
+    );
+    assert_eq!(
+        list.lookup(BlockKind::PeerKey, &[8u8; 32]),
+        BlockLookup::Unblocked
+    );
+    let poisoner = store.clone();
+    let panicked = std::thread::spawn(move || {
+        let _guard = poisoner.write_guard_for_test();
+        panic!("poisoning the store lock on purpose");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!(
+        list.lookup(BlockKind::PeerKey, &[8u8; 32]),
+        BlockLookup::Indeterminate(BlockLookupFailure::Unavailable),
+        "a poisoned lock must not read as an ordinary unblocked result"
+    );
+    assert!(
+        !list.is_blocked(BlockKind::PeerKey, &[8u8; 32]),
+        "the bool seam fails open on an indeterminate lookup"
+    );
 }
