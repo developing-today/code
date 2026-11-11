@@ -109,6 +109,7 @@ import {
 } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import { assembleCollectorFeed } from "../src/feed-contract.ts";
+import { defaultNeedsDrewFile, listAnswers } from "../src/needs-drew.ts";
 import type {
   AaBatchSummary,
   AaFeedSection,
@@ -1220,8 +1221,26 @@ async function main(): Promise<void> {
     markSection("burnHistory", "error", err);
   }
 
+  // #8568: Drew's answers to needs-Drew questions, from the
+  // aggregator's needs-drew store (same default path logic as
+  // src/config.ts). Fail-soft: an absent store = no answers yet.
+  let answers: NonNullable<FleetFeed["answers"]> = [];
+  try {
+    const answered = await listAnswers(defaultNeedsDrewFile());
+    answers = answered.map((item) => ({
+      ledgerId: item.ledgerId,
+      ...(item.answer?.optionId !== undefined ? { optionId: item.answer.optionId } : {}),
+      ...(item.answer?.freeText !== undefined ? { freeText: item.answer.freeText } : {}),
+      answeredAt: item.answer?.at ?? "",
+      via: item.answer?.via ?? "api",
+    }));
+  } catch {
+    answers = [];
+  }
+
   const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
+    answers,
     checkout,
     meta: { sections: sectionStatuses },
     quota: { pools, burn: burnSegments, choices: computeChoices(pools, now.getTime()) },
