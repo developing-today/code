@@ -34,6 +34,26 @@ export interface TaskRow {
   [k: string]: unknown;
 }
 
+/** A parsed PostgREST body element is a task row only when it is a
+ * plain object with a numeric id (#7299). PostgREST 200 bodies are
+ * shape-untrusted: a bare cast lets a string body resolve as a
+ * phantom TaskRow and a null body escape as a raw TypeError. */
+function isTaskRow(v: unknown): v is TaskRow {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    typeof (v as { id?: unknown }).id === "number"
+  );
+}
+
+/** The first row of a parsed rows body, or null when the body is
+ * not an array, is empty, or its first element is not a task row. */
+function firstTaskRow(body: unknown): TaskRow | null {
+  if (!Array.isArray(body) || body.length === 0) return null;
+  return isTaskRow(body[0]) ? body[0] : null;
+}
+
 export class QueueClient {
   constructor(
     private baseUrl: string,
@@ -106,9 +126,24 @@ export class QueueClient {
     if (!res.ok) {
       throw new QueueError(`task PATCH ${id} failed (HTTP ${res.status}): ${text.slice(0, 300)}`, res.status);
     }
-    const rows = text.trim() ? (JSON.parse(text) as TaskRow[]) : [];
-    if (!rows[0]) throw new QueueError(`task PATCH ${id} matched no row`);
-    return rows[0];
+    let parsed: unknown = null;
+    if (text.trim()) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new QueueError(`task PATCH ${id} returned a non-JSON body: ${text.slice(0, 300)}`);
+      }
+    }
+    const rows: unknown[] = Array.isArray(parsed) ? parsed : [];
+    if (text.trim() && !Array.isArray(parsed)) {
+      throw new QueueError(`task PATCH ${id} returned an unexpected shape: expected an array of task rows`);
+    }
+    if (rows.length > 0 && !isTaskRow(rows[0])) {
+      throw new QueueError(`task PATCH ${id} returned an unexpected shape: first element is not a task row`);
+    }
+    const row = firstTaskRow(rows);
+    if (!row) throw new QueueError(`task PATCH ${id} matched no row`);
+    return row;
   }
 
   async getTask(id: number): Promise<TaskRow | null> {
@@ -121,8 +156,24 @@ export class QueueClient {
     if (!res.ok) {
       throw new QueueError(`task GET ${id} failed (HTTP ${res.status})`, res.status);
     }
-    const rows = (await res.json()) as TaskRow[];
-    return rows[0] ?? null;
+    // A malformed 200 body is a lookup failure, not a missing task
+    // (#7299): null is reserved for a successful EMPTY array, as with
+    // the session lookup below — anything else (non-JSON, non-array,
+    // or an array whose first element is not a task row) throws
+    // QueueError, so the read route reports a lookup failure instead
+    // of a 404 for a task that may exist. Never a raw SyntaxError
+    // from res.json(), never a phantom non-object row.
+    const body: unknown = await res.json().catch(() => {
+      throw new QueueError(`task GET ${id} returned a non-JSON body`);
+    });
+    if (!Array.isArray(body)) {
+      throw new QueueError(`task GET ${id} returned an unexpected shape: expected an array of task rows`);
+    }
+    const row = firstTaskRow(body);
+    if (body.length > 0 && !row) {
+      throw new QueueError(`task GET ${id} returned an unexpected shape: first element is not a task row`);
+    }
+    return row;
   }
 
   /** Session -> task lookup (issue #5555): the dispatch-launched task
@@ -150,8 +201,21 @@ export class QueueClient {
     if (!res.ok) {
       throw new QueueError('task lookup by session failed (HTTP ' + res.status + ')', res.status);
     }
-    const rows = (await res.json()) as TaskRow[];
-    return rows[0] ?? null;
+    // This lookup backs the session route's repo gate, so a
+    // malformed 200 body fails closed with QueueError (#7299),
+    // exactly like a non-OK response — never a raw SyntaxError,
+    // never a phantom row the gate would trust.
+    const body: unknown = await res.json().catch(() => {
+      throw new QueueError("task lookup by session returned a non-JSON body");
+    });
+    if (!Array.isArray(body)) {
+      throw new QueueError("task lookup by session returned an unexpected shape: expected an array of task rows");
+    }
+    const row = firstTaskRow(body);
+    if (body.length > 0 && !row) {
+      throw new QueueError("task lookup by session returned an unexpected shape: first element is not a task row");
+    }
+    return row;
   }
 
   /** Pre-enqueue dedupe-key lookup (issue #4661): the row, if any, that
@@ -167,8 +231,11 @@ export class QueueClient {
       { headers: this.headers(false) },
     );
     if (!res.ok) return null;
-    const rows = (await res.json()) as TaskRow[];
-    return rows[0] ?? null;
+    // Lookup failures resolve null by contract (see above), and a
+    // malformed 200 body is a lookup failure (#7299): never a raw
+    // SyntaxError, never a phantom non-object row.
+    const body: unknown = await res.json().catch(() => null);
+    return firstTaskRow(body);
   }
 
   async cancelTask(id: number, reason: string, worker = "dispatch"): Promise<void> {

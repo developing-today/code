@@ -64,6 +64,62 @@ describe("getTask / findTaskBySessionId failure mapping (#5555)", () => {
   });
 });
 
+// Row-body shape validation (#7299): a PostgREST 200 body is
+// shape-untrusted in all three row readers. Null, scalar, object,
+// and non-JSON bodies must land in the module's own vocabulary —
+// QueueError for patchTask and getTask, null ("unknown") only for
+// the degrade-by-contract dedupe lookup —
+// never a raw TypeError/SyntaxError and never a phantom row.
+describe("row body shape validation (#7299)", () => {
+  const ROW = { id: 7, queue: "q", status: "queued", dedupe_key: "k" };
+  const badBodies: Array<[string, () => Response]> = [
+    ["null", () => new Response("null")],
+    ["string", () => Response.json("x")],
+    ["object", () => Response.json(ROW)],
+    ["non-JSON", () => new Response("not json{")],
+    ["array of non-object", () => Response.json(["x"])],
+  ];
+
+  for (const [name, make] of badBodies) {
+    test(`patchTask throws QueueError on a ${name} body`, async () => {
+      stubFetch(async () => make());
+      const client = new QueueClient("http://queue.test", "test-key");
+      await expect(client.patchTask(7, { status: "claimed" })).rejects.toBeInstanceOf(QueueError);
+    });
+
+    // A malformed body is a lookup failure, not a missing task:
+    // null is reserved for a successful empty array (Codex P2 on
+    // PR #8706 — the read route turns null into a definitive 404).
+    test(`getTask throws QueueError on a ${name} body`, async () => {
+      stubFetch(async () => make());
+      const client = new QueueClient("http://queue.test", "test-key");
+      await expect(client.getTask(7)).rejects.toBeInstanceOf(QueueError);
+    });
+
+    test(`findByDedupeKey resolves null on a ${name} body`, async () => {
+      stubFetch(async () => make());
+      const client = new QueueClient("http://queue.test", "test-key");
+      expect(await client.findByDedupeKey("k")).toBeNull();
+    });
+  }
+
+  test("the control array body resolves the row in all three methods", async () => {
+    const client = new QueueClient("http://queue.test", "test-key");
+    stubFetch(async () => Response.json([ROW]));
+    expect((await client.patchTask(7, { status: "claimed" }))?.id).toBe(7);
+    stubFetch(async () => Response.json([ROW]));
+    expect((await client.getTask(7))?.id).toBe(7);
+    stubFetch(async () => Response.json([ROW]));
+    expect((await client.findByDedupeKey("k"))?.id).toBe(7);
+  });
+
+  test("findTaskBySessionId fails closed with QueueError on a malformed body", async () => {
+    stubFetch(async () => new Response("not json{"));
+    const client = new QueueClient("http://queue.test", "test-key");
+    await expect(client.findTaskBySessionId("ses_1")).rejects.toBeInstanceOf(QueueError);
+  });
+});
+
 afterEach(() => {
   globalThis.fetch = realFetch;
 });

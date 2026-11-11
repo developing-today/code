@@ -215,9 +215,23 @@ struct HubInner {
 }
 
 /// Registry of worlds. Cheap to clone.
+///
+/// A hub may carry a *pin* (#5728): a view of the same registry that
+/// names exactly one world. Every world-resolving operation on a
+/// pinned view — [`WorldHub::lease`], [`WorldHub::create`],
+/// [`WorldHub::list`], [`WorldHub::default_world`] — is confined to
+/// the pinned world; naming any other world behaves exactly as if
+/// that world did not exist. The program-only router
+/// (`create_program_router`) serves its session bridge through a
+/// pinned view, so a listener bound to one world cannot be used to
+/// reach another, whichever bridge entry point a request takes
+/// (HTTP handlers, explore pages, websocket sessions). The pin lives
+/// here, at the one choke point every bridge path resolves through,
+/// rather than as a check each handler must remember to make.
 #[derive(Clone)]
 pub struct WorldHub {
     inner: Arc<HubInner>,
+    pin: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for WorldHub {
@@ -430,6 +444,7 @@ impl WorldHub {
         limits: HubLimits,
     ) -> Self {
         Self {
+            pin: None,
             inner: Arc::new(HubInner {
                 opener,
                 admin_token,
@@ -445,10 +460,37 @@ impl WorldHub {
         }
     }
 
-    /// Name sessions get when they name no world.
+    /// A view of this hub pinned to `name` (#5728): the same
+    /// registry, sessions, and admin token, but every resolution is
+    /// confined to the one world (see the type's docs). The unpinned
+    /// hub is unaffected.
+    #[must_use]
+    pub fn pinned_to(&self, name: &str) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            pin: Some(Arc::from(name)),
+        }
+    }
+
+    /// The world this view is pinned to, if any.
+    #[must_use]
+    pub fn pinned_world(&self) -> Option<&str> {
+        self.pin.as_deref()
+    }
+
+    /// Whether this view may resolve `name`: always true unpinned;
+    /// on a pinned view only the pinned world itself resolves.
+    fn pin_allows(&self, name: &str) -> bool {
+        self.pin.as_deref().is_none_or(|pin| pin == name)
+    }
+
+    /// Name sessions get when they name no world: the pinned world
+    /// on a pinned view, the hub's default otherwise.
     #[must_use]
     pub fn default_world(&self) -> &str {
-        &self.inner.default_world
+        self.pin
+            .as_deref()
+            .unwrap_or(&self.inner.default_world)
     }
 
     /// Whether `token` is the process-wide admin token.
@@ -511,7 +553,14 @@ impl WorldHub {
         name: Option<&str>,
         admin: Option<&str>,
     ) -> Result<WorldLease, ResolveError> {
-        let name = name.unwrap_or(&self.inner.default_world);
+        let name = name.unwrap_or_else(|| self.default_world());
+        // A pinned view resolves only its own world (#5728): any
+        // other name is UnknownWorld, exactly as if the world did
+        // not exist — and it is refused here, before any slot is
+        // claimed, so a refused name is never leased or created.
+        if !self.pin_allows(name) {
+            return Err(ResolveError::UnknownWorld);
+        }
         validate_world_name(name).map_err(|_| ResolveError::InvalidName)?;
         let permit = Arc::clone(&self.inner.sessions)
             .try_acquire_owned()
@@ -655,6 +704,10 @@ impl WorldHub {
     ///
     /// See [`ResolveError`]; hubs without an opener cannot create worlds.
     pub async fn create(&self, name: &str) -> Result<bool, ResolveError> {
+        // A pinned view may create only its own world (#5728).
+        if !self.pin_allows(name) {
+            return Err(ResolveError::UnknownWorld);
+        }
         validate_world_name(name).map_err(|_| ResolveError::InvalidName)?;
         let opener = self
             .inner
@@ -674,7 +727,9 @@ impl WorldHub {
         Ok(!existed)
     }
 
-    /// Worlds in storage plus any open ones, sorted by name.
+    /// Worlds in storage plus any open ones, sorted by name. A
+    /// pinned view lists only its own world (#5728): other worlds'
+    /// names are not disclosed through it.
     #[must_use]
     pub fn list(&self) -> Vec<WorldInfo> {
         let mut names: std::collections::BTreeMap<String, (bool, usize)> = self
@@ -695,6 +750,7 @@ impl WorldHub {
         }
         names
             .into_iter()
+            .filter(|(name, _)| self.pin_allows(name))
             .map(|(name, (open, presence))| WorldInfo {
                 name,
                 open,
@@ -746,7 +802,7 @@ impl WorldHub {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let closed = Self { inner }.evict_idle(idle).await;
+                let closed = Self { inner, pin: None }.evict_idle(idle).await;
                 if closed > 0 {
                     tracing::info!("world hub: closed {closed} idle world(s)");
                 }
@@ -766,7 +822,7 @@ impl WorldHub {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                Self { inner }.flush_outboxes(&endpoint).await;
+                Self { inner, pin: None }.flush_outboxes(&endpoint).await;
             }
         })
     }
@@ -875,6 +931,59 @@ mod tests {
     fn new_hub(opener: &Arc<MemoryOpener>, limits: HubLimits) -> WorldHub {
         let opener: Arc<dyn WorldOpener> = opener.clone();
         WorldHub::new(opener, Some("admin".to_owned()), "lobby", limits)
+    }
+
+    /// Oracle (#5728): a pinned view resolves only its own world.
+    /// Leasing or creating another world is `UnknownWorld` — with no
+    /// opener call, so nothing is leased or created as a side
+    /// effect — an unnamed lease lands on the pinned world (not the
+    /// hub default), the listing shows only the pinned world, and
+    /// the unpinned hub is unchanged.
+    #[tokio::test]
+    async fn pinned_view_resolves_only_its_world() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(&opener, HubLimits::default());
+        hub.create("arena").await.unwrap();
+        hub.create("vault").await.unwrap();
+        let opens_before = opener.opens.load(Ordering::SeqCst);
+
+        let view = hub.pinned_to("arena");
+        assert_eq!(view.pinned_world(), Some("arena"));
+        assert_eq!(view.default_world(), "arena");
+
+        // Other worlds do not resolve, and refusing them opens nothing.
+        assert_eq!(
+            view.lease(Some("vault"), None).await.unwrap_err(),
+            ResolveError::UnknownWorld
+        );
+        assert_eq!(
+            view.lease(Some("vault"), Some("admin")).await.unwrap_err(),
+            ResolveError::UnknownWorld
+        );
+        assert_eq!(
+            view.create("vault").await.unwrap_err(),
+            ResolveError::UnknownWorld
+        );
+        assert_eq!(opener.opens.load(Ordering::SeqCst), opens_before);
+
+        // The pinned world resolves, named or unnamed.
+        let lease = view.lease(Some("arena"), None).await.unwrap();
+        drop(lease);
+        let lease = view.lease(None, None).await.unwrap();
+        drop(lease);
+
+        // The listing discloses only the pinned world.
+        let listed = view.list();
+        let names: Vec<&str> = listed.iter().map(|info| info.name.as_str()).collect();
+        assert_eq!(names, ["arena"]);
+
+        // The unpinned hub still resolves and lists everything.
+        assert_eq!(hub.default_world(), "lobby");
+        let lease = hub.lease(Some("vault"), None).await.unwrap();
+        drop(lease);
+        let listed = hub.list();
+        let names: Vec<&str> = listed.iter().map(|info| info.name.as_str()).collect();
+        assert!(names.contains(&"arena") && names.contains(&"vault"), "{names:?}");
     }
 
     #[test]

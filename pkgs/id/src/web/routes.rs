@@ -548,8 +548,13 @@ pub fn create_program_router(
         .web_socket
         .clone()
         .unwrap_or_else(|| "/ws/world".to_owned());
+    // The bridge is pinned to the bound world (#5728): the shared
+    // bridge state carries a pinned hub view, so every bridge entry
+    // point (invite, host-view, metrics, directory, explore,
+    // websocket sessions) resolves only this world and refuses any
+    // other by name — the program surface is one listener, one world.
     let world_state = super::world_ws::WorldWebState {
-        hub: state.world.clone(),
+        hub: state.world.as_ref().map(|hub| hub.pinned_to(world_name)),
         cookie_secure: state.cookie_secure,
     };
     let router = Router::new()
@@ -2281,6 +2286,121 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Oracle (#5728 acceptance): with a hub hosting two worlds, a
+    /// program router bound to one of them refuses the other on
+    /// every bridge entry point that names a world — invite,
+    /// host-view, directory read and directory write answer 404
+    /// without leasing or creating it — and serves the bound world
+    /// on the same entry points.
+    #[tokio::test]
+    async fn program_router_bridge_is_pinned_to_the_bound_world() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> =
+            opener.clone();
+        let hub = crate::world_hub::WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "arena",
+            crate::world_hub::HubLimits::default(),
+        );
+        // Host both worlds before the program router exists.
+        hub.create("arena").await.unwrap();
+        hub.create("vault").await.unwrap();
+        state.world = Some(hub);
+        let app = create_program_router(state, "arena", WebSecurity::default());
+
+        let post = |uri: &str, body: String| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("x-world-admin-token", "admin")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let get_admin = |uri: &str| {
+            Request::builder()
+                .uri(uri)
+                .header("x-world-admin-token", "admin")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // Invite: the other world is refused, the bound world and
+        // the defaulted (unnamed) invite are served.
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/api/world/invite",
+                r#"{"display_name":"guest","world":"vault"}"#.to_owned(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "invite vault");
+        for body in [
+            r#"{"display_name":"guest","world":"arena"}"#,
+            r#"{"display_name":"guest"}"#,
+        ] {
+            let res = app
+                .clone()
+                .oneshot(post("/api/world/invite", body.to_owned()))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "invite {body}");
+        }
+
+        // Host-view: the other world is refused, the bound world served.
+        let res = app
+            .clone()
+            .oneshot(get_admin("/api/world/host-view?world=vault"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "host-view vault");
+        let res = app
+            .clone()
+            .oneshot(get_admin("/api/world/host-view?world=arena"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "host-view arena");
+
+        // Directory read: the other world is refused, the bound
+        // world is served.
+        let res = app
+            .clone()
+            .oneshot(get_admin("/api/world/directory?world=vault"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "directory read vault");
+        let res = app
+            .clone()
+            .oneshot(get_admin("/api/world/directory?world=arena"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "directory read arena");
+
+        // Directory write: the other world is refused (no account is
+        // created there), the bound world accepts the sign-up.
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/api/world/directory",
+                r#"{"world":"vault","action":"sign_up","name":"Mallory"}"#.to_owned(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "directory write vault");
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/api/world/directory",
+                r#"{"world":"arena","action":"sign_up","name":"Ada"}"#.to_owned(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "directory write arena");
     }
 
     #[tokio::test]
