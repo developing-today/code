@@ -214,7 +214,11 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
 
         match &publication.placement {
             Placement::Listener { addr } => {
-                let listener = staged.expect("listener placements stage a listener");
+                // `staged` holds a listener exactly for listener
+                // placements: the staging match above binds it
+                // before the save. Surface the impossible None as
+                // an error, never a panic.
+                let listener = staged.context("listener placements stage a listener")?;
                 self.listeners.insert(*addr, listener);
             }
             Placement::PathMount { path } => {
@@ -346,6 +350,7 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::publications::KNOWN_EXPLORER_ROUTES;
