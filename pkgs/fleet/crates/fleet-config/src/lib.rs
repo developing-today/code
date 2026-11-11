@@ -1521,6 +1521,80 @@ mod tests {
         assert_eq!(services[1].port, 4801);
     }
 
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// PBT (#6397, testing doctrine): load acceptance for a
+        /// generated [[proxy.services]] table is decided by an
+        /// independent predicate over the four invariants — every
+        /// port nonzero, every name nonblank after trimming, ports
+        /// unique, names unique — never by the loader's own say-so.
+        /// The generators draw ports and names from small pools so
+        /// collisions, zeroes, and blank/whitespace names occur in
+        /// arbitrary row orders; a table the predicate accepts must
+        /// load verbatim, and one it rejects must fail with a Parse
+        /// error.
+        #[test]
+        fn services_tables_load_exactly_when_the_invariants_hold(
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![
+                        Just(0_u16),
+                        Just(4799_u16),
+                        Just(4800_u16),
+                        Just(4801_u16),
+                        any::<u16>(),
+                    ],
+                    prop_oneof![
+                        Just(String::new()),
+                        Just(" ".to_string()),
+                        Just("laptop-agent".to_string()),
+                        Just("queue-broker".to_string()),
+                        "[a-z]{1,6}",
+                    ],
+                ),
+                0..6,
+            )
+        ) {
+            let mut text = String::new();
+            for (port, name) in &rows {
+                text.push_str(&format!(
+                    "[[proxy.services]]\nport = {port}\nname = \"{name}\"\n"
+                ));
+            }
+            let valid = rows.iter().all(|(port, name)| *port != 0 && !name.trim().is_empty())
+                && rows.iter().map(|(port, _)| *port).collect::<std::collections::HashSet<_>>().len() == rows.len()
+                && rows.iter().map(|(_, name)| name.as_str()).collect::<std::collections::HashSet<_>>().len() == rows.len();
+            let (_dir, path) = write_temp(&text);
+            match (valid, Config::load_from(&path)) {
+                (true, Ok(cfg)) => {
+                    let services = cfg.services();
+                    if rows.is_empty() {
+                        // No declared rows is the documented "empty
+                        // means the built-in table" case (see the
+                        // services field doc), not a verbatim load.
+                        prop_assert_eq!(services.len(), Config::default().services().len());
+                    } else {
+                        prop_assert_eq!(services.len(), rows.len());
+                        for (service, (port, name)) in services.iter().zip(&rows) {
+                            prop_assert_eq!(service.port, *port);
+                            prop_assert_eq!(&service.name, name);
+                        }
+                    }
+                }
+                (true, Err(e)) => {
+                    prop_assert!(false, "predicate-valid table rejected: {e}");
+                }
+                (false, Err(ConfigError::Parse { .. })) => {}
+                (false, other) => {
+                    prop_assert!(false, "predicate-invalid table not rejected with Parse: {other:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn env_paths_ignore_empty_values_and_resolve_under_home() {
         // #5473: an empty env value is unset, never a literal path —
