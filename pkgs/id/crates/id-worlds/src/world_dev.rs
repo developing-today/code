@@ -1116,6 +1116,10 @@ pub struct WatchCycle {
     pub outcome: String,
     /// The diagnostic, for failed cycles.
     pub detail: Option<String>,
+    /// The active world's rendered view after this cycle, when the
+    /// cycle promoted a new program (issue #8782); `None` for cycles
+    /// that did not promote, and when the guest renders no view.
+    pub view: Option<String>,
 }
 
 /// The outcome of a bounded watch session (Phase 2).
@@ -1133,6 +1137,15 @@ pub struct WatchReport {
     /// when a fixture gate blocked it: nothing was launched and no
     /// watch cycle ran.
     pub initial_promoted: bool,
+    /// The view before any initial input was sent (`null` when a
+    /// fixture gate blocked the initial candidate: nothing was
+    /// launched).
+    pub initial_view: Option<String>,
+    /// Initial inputs applied, in order, each with its resulting
+    /// view -- the watch counterpart of [`DevReport`]'s steps, so a
+    /// `--watch --input` user can observe the private scratch world
+    /// after their inputs (issue #8782).
+    pub steps: Vec<DevStep>,
     /// Fixture gates run against the initial candidate.
     pub fixture_gates: Vec<FixtureGate>,
     /// Polls performed (bounded by the caller's cycle budget).
@@ -1250,6 +1263,8 @@ pub async fn run_dev_watch(
             seed,
             initial_snapshot_id: initial_snapshot_id.clone(),
             initial_promoted: false,
+            initial_view: None,
+            steps: Vec::new(),
             fixture_gates,
             polls: 0,
             changes: 0,
@@ -1266,8 +1281,35 @@ pub async fn run_dev_watch(
         });
     }
     let mut session = DevSession::launch(&module, seed, initial_snapshot_id.clone()).await?;
+    // Rendering failures before the first poll are captured, not
+    // fatal (Codex P2 on PR #8792): the program stays healthy after
+    // a failed view, and exiting here would stop the user repairing
+    // the rendering code through the watch -- an initial input can
+    // even be what makes the view render again. The diagnostic
+    // surfaces in the report through last_good.last_failure, the
+    // same channel as the other recoverable session failures;
+    // a later successful promotion clears it.
+    let initial_view = match session.view().await {
+        Ok(view) => view,
+        Err(err) => {
+            session.last_failure = Some(format!("initial view failed: {err:#}"));
+            None
+        }
+    };
+    let mut steps = Vec::with_capacity(inputs.len());
     for input in inputs {
         session.input(input.as_bytes()).await?;
+        let view = match session.view().await {
+            Ok(view) => view,
+            Err(err) => {
+                session.last_failure = Some(format!("view failed after input: {err:#}"));
+                None
+            }
+        };
+        steps.push(DevStep {
+            input: input.clone(),
+            view,
+        });
     }
     let started = std::time::Instant::now();
     let now_ms = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1287,6 +1329,7 @@ pub async fn run_dev_watch(
                     coalesced_events: 0,
                     outcome: "rescan_failed".to_owned(),
                     detail: Some(format!("{err:#}")),
+                    view: None,
                 });
                 continue;
             }
@@ -1328,6 +1371,7 @@ pub async fn run_dev_watch(
                     coalesced_events,
                     outcome: "compile_failed".to_owned(),
                     detail: Some(detail),
+                    view: None,
                 });
                 continue;
             }
@@ -1368,12 +1412,32 @@ pub async fn run_dev_watch(
                 fixtures,
             )
             .await;
+        // A rendering failure after a successful promotion is a
+        // cycle diagnostic, not a session failure (Codex P2 on
+        // PR #8792): the program stays healthy after a failed view,
+        // so record the error on the cycle and keep polling -- the
+        // `?` form terminated the watch and discarded the whole
+        // report. The promotion itself stands; only the view is
+        // missing, and the next change can fix the rendering code.
+        let mut detail = promotion.detail;
+        let view = if promotion.outcome == PromotionOutcome::Promoted {
+            match session.view().await {
+                Ok(view) => view,
+                Err(err) => {
+                    detail = Some(format!("view failed after promotion: {err:#}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         cycles.push(WatchCycle {
             cycle,
             snapshot_id: candidate_snapshot_id,
             coalesced_events,
             outcome: promotion.outcome.as_str().to_owned(),
-            detail: promotion.detail,
+            detail,
+            view,
         });
     }
     Ok(WatchReport {
@@ -1382,6 +1446,8 @@ pub async fn run_dev_watch(
         seed,
         initial_snapshot_id,
         initial_promoted: true,
+        initial_view,
+        steps,
         fixture_gates,
         polls,
         changes,
@@ -2803,6 +2869,141 @@ mod watch_tests {
         let report = session.promote(wasm, "snap-b", "snap-b", &[]).await;
         assert_eq!(report.outcome, PromotionOutcome::Unchanged);
         assert_eq!(session.version(), 2);
+    }
+
+    #[test]
+    fn watch_report_serializes_the_views_it_carries() {
+        // Oracle: issue #8782 at the output boundary -- the CLI
+        // prints the watch report as JSON, so a view the report
+        // carries must appear in that JSON under `initial_view`,
+        // `steps[].view`, and `cycles[].view`; a fixture-blocked
+        // report carries `initial_view: null` and no steps.
+        let report = WatchReport {
+            world_id: DEV_WORLD_ID,
+            dir: PathBuf::from("/tmp/dev-watch-test"),
+            seed: 7,
+            initial_snapshot_id: "snap-a".to_owned(),
+            initial_promoted: true,
+            initial_view: Some("count=0".to_owned()),
+            steps: vec![DevStep {
+                input: "inc".to_owned(),
+                view: Some("count=1".to_owned()),
+            }],
+            fixture_gates: Vec::new(),
+            polls: 3,
+            changes: 1,
+            cycles: vec![WatchCycle {
+                cycle: 0,
+                snapshot_id: "snap-b".to_owned(),
+                coalesced_events: 0,
+                outcome: "promoted".to_owned(),
+                detail: None,
+                view: Some("count=1".to_owned()),
+            }],
+            active_snapshot_id: "snap-b".to_owned(),
+            active_version: 2,
+            last_good: LastGood {
+                snapshot_id: "snap-b".to_owned(),
+                module_hash: "hash".to_owned(),
+                version: 2,
+                records_sequence: 1,
+                last_failure: None,
+            },
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["initial_view"], "count=0");
+        assert_eq!(json["steps"][0]["input"], "inc");
+        assert_eq!(json["steps"][0]["view"], "count=1");
+        assert_eq!(json["cycles"][0]["view"], "count=1");
+    }
+
+    #[tokio::test]
+    async fn watch_report_carries_views_after_inputs_and_promotion() {
+        // Oracle: issue #8782 -- the checked-in Roc counter example
+        // renders `count=N`; a `--watch --input inc` user must see
+        // that rendering in the watch output, first after the
+        // initial inputs and again after a promotion, because the
+        // scratch world is private and never served. Skips where
+        // the roc toolchain or the built platform host is absent,
+        // like the world_compile tests.
+        if crate::world_compile::locate_roc().is_err() {
+            eprintln!("skipping: no roc toolchain located");
+            return;
+        }
+        let platform_src = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/roc-world"
+        ));
+        if !platform_src.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!("skipping: roc-world platform host.wasm not built");
+            return;
+        }
+        let counter_main = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/roc-counter/main.roc"
+        ))
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("main.roc"), &counter_main).unwrap();
+        std::os::unix::fs::symlink(&platform_src, root.path().join("roc-world")).unwrap();
+
+        // Edit the source while the watch polls: a comment-only
+        // change is a new snapshot that compiles to the same
+        // behaviour, so the promotion must succeed and its cycle
+        // must carry the preserved state's view (count=2).
+        let editor_app = app.clone();
+        let editor = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut text = std::fs::read_to_string(editor_app.join("main.roc")).unwrap();
+            text.push_str("\n# watch views test edit\n");
+            std::fs::write(editor_app.join("main.roc"), text).unwrap();
+        });
+
+        let inputs = vec!["inc".to_owned(), "inc".to_owned()];
+        let report = run_dev_watch(&app, None, None, 7, &inputs, &[], 200, 20)
+            .await
+            .unwrap();
+        editor.await.unwrap();
+
+        assert!(report.initial_promoted, "{report:?}");
+        assert!(
+            report
+                .initial_view
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0")),
+            "initial_view: {:?}",
+            report.initial_view
+        );
+        assert_eq!(report.steps.len(), 2, "{report:?}");
+        assert!(
+            report.steps[1]
+                .view
+                .as_deref()
+                .is_some_and(|view| view.contains("count=2")),
+            "step view after inputs: {:?}",
+            report.steps[1].view
+        );
+        let promoted: Vec<&WatchCycle> = report
+            .cycles
+            .iter()
+            .filter(|cycle| cycle.outcome == "promoted")
+            .collect();
+        assert!(!promoted.is_empty(), "cycles: {:?}", report.cycles);
+        assert!(
+            promoted[0]
+                .view
+                .as_deref()
+                .is_some_and(|view| view.contains("count=2")),
+            "promoted cycle view: {:?}",
+            promoted[0].view
+        );
+        // The serialized report is the CLI's output: the views must
+        // survive into it under their field names.
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"initial_view\""), "{json}");
+        assert!(json.contains("\"view\""), "{json}");
     }
 
     #[tokio::test]
