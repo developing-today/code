@@ -1595,8 +1595,14 @@ mod tests {
             30,
         )];
         for html in [render_peers_content(&[]), render_peers_content(&peers)] {
-            assert!(!html.contains("peers-content"), "inner partial must not contain #peers-content wrapper: {html}");
-            assert!(!html.contains("data-auto-refresh"), "inner partial must not contain data-auto-refresh: {html}");
+            assert!(
+                !html.contains("peers-content"),
+                "inner partial must not contain #peers-content wrapper: {html}"
+            );
+            assert!(
+                !html.contains("data-auto-refresh"),
+                "inner partial must not contain data-auto-refresh: {html}"
+            );
             assert!(html.contains("Discovered Peers"));
         }
         assert!(render_peers_content(&peers).contains("test-node"));
