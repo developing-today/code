@@ -37,6 +37,18 @@
  * snapshot strictly newer than the marker (the issue genuinely
  * recreated or restored afterwards) is not blocked.
  *
+ * The agent-note pointer keeps the same per-comment discipline for
+ * deletions: clearing the pointer on a note's "deleted" delivery is
+ * not enough, because the clear erases the only ordering state and a
+ * delayed created/edited redelivery of that same comment would be
+ * accepted through the empty-pointer branch and resurrect it. A
+ * deleted delivery therefore also records the comment id in
+ * github_mirror_deleted_notes, and the pointer CASE refuses any id
+ * with a marker — statement-local, like the tombstone guard, so the
+ * check is atomic with the update it guards (Codex P2, PR #8604).
+ * (A genuinely recreated note always carries a new, higher comment
+ * id, so the marker can never suppress a live note.)
+ *
  * Comment counts carry their own version, stored separately from the
  * snapshot version (comments_gh_updated_at, NOT gh_updated_at): an
  * issue_comment delivery sets the count only when the carrying
@@ -91,6 +103,11 @@ export const MIRROR_DDL: string[] = [
      gh_updated_at TEXT,
      mirrored_at TEXT NOT NULL,
      PRIMARY KEY (repo, number))`,
+  `CREATE TABLE IF NOT EXISTS github_mirror_deleted_notes (
+     repo TEXT NOT NULL, number INTEGER NOT NULL,
+     comment_id INTEGER NOT NULL,
+     mirrored_at TEXT NOT NULL,
+     PRIMARY KEY (repo, number, comment_id))`,
 ];
 
 type Obj = Record<string, unknown>;
@@ -567,11 +584,17 @@ export async function mirrorCommentEvent(
               mirrored_at = ?,
               latest_agent_note_id = CASE
                 WHEN ? IS NOT NULL
+                 AND NOT EXISTS (
+                       SELECT 1 FROM github_mirror_deleted_notes d
+                       WHERE d.repo = ? AND d.number = ? AND d.comment_id = ?)
                  AND (latest_agent_note_id IS NULL
                       OR ? >= latest_agent_note_id)
                 THEN ? ELSE latest_agent_note_id END,
               latest_agent_note_url = CASE
                 WHEN ? IS NOT NULL
+                 AND NOT EXISTS (
+                       SELECT 1 FROM github_mirror_deleted_notes d
+                       WHERE d.repo = ? AND d.number = ? AND d.comment_id = ?)
                  AND (latest_agent_note_id IS NULL
                       OR ? >= latest_agent_note_id)
                 THEN ? ELSE latest_agent_note_url END
@@ -585,8 +608,14 @@ export async function mirrorCommentEvent(
         tArg(touch.ghUpdatedAt),
         tArg(queueNow()),
         iArg(touch.agentNoteId),
+        tArg(touch.repo),
+        iArg(touch.number),
         iArg(touch.agentNoteId),
         iArg(touch.agentNoteId),
+        iArg(touch.agentNoteId),
+        iArg(touch.agentNoteId),
+        tArg(touch.repo),
+        iArg(touch.number),
         iArg(touch.agentNoteId),
         iArg(touch.agentNoteId),
         tArg(touch.agentNoteUrl),
@@ -602,6 +631,21 @@ export async function mirrorCommentEvent(
     // stored pointer naming the deleted comment is cleared here.
     ...(touch.deletedNoteId !== null
       ? [
+          {
+            // Record the deletion itself: a delayed created/edited
+            // redelivery of this comment must not resurrect the
+            // pointer through the empty-pointer branch (Codex P2).
+            sql: `INSERT INTO github_mirror_deleted_notes
+                    (repo, number, comment_id, mirrored_at)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(repo, number, comment_id) DO NOTHING`,
+            args: [
+              tArg(touch.repo),
+              iArg(touch.number),
+              iArg(touch.deletedNoteId),
+              tArg(queueNow()),
+            ],
+          },
           {
             sql: `UPDATE ${table} SET latest_agent_note_id = NULL,
                     latest_agent_note_url = NULL, mirrored_at = ?

@@ -407,7 +407,7 @@ describe("mirror writers (#8580)", () => {
     expect(update?.sql).toContain("latest_agent_note_url = CASE");
     expect(update?.sql).toContain("OR ? >= latest_agent_note_id");
     const values = (update?.args ?? []).map((a) => a.value);
-    expect(values.filter((v) => v === "777")).toHaveLength(5);
+    expect(values.filter((v) => v === "777")).toHaveLength(7); // 5 ordering binds + 2 deleted-note marker guard binds
   });
 
   it("mirrorCommentEvent versions the count by the object updated_at", async () => {
@@ -516,5 +516,58 @@ describe("mirror writers (#8580)", () => {
     expect(updateValues).not.toContain(
       "https://example.invalid/issues/8580#c777",
     );
+  });
+
+  it("a deleted note leaves a marker the pointer CASE consults (Codex P2)", async () => {
+    const stmts = capturePipeline();
+    const noteComment = {
+      id: 777,
+      html_url: "https://example.invalid/issues/8580#c777",
+      body: "🤖 **Agent note** · checkpoint\n<!-- agent-note:v1 agent=repo-worker-code -->",
+    };
+    await mirrorCommentEvent(
+      env,
+      {
+        action: "deleted",
+        issue: { number: 8580, comments: 2 },
+        comment: noteComment,
+        repository: { full_name: REPO },
+      },
+      REPO,
+    );
+    // The deletion records a per-comment marker naming the deleted id.
+    const marker = stmts.find((s) =>
+      s.sql.includes("INSERT INTO github_mirror_deleted_notes"),
+    );
+    expect(marker).toBeDefined();
+    const markerValues = (marker?.args ?? []).map((a) => a.value);
+    expect(markerValues).toContain("777");
+    expect(markerValues).toContain("8580");
+    // The schema ships with every batch, like the other mirror tables.
+    const sql = stmts.map((s) => s.sql).join("\n");
+    expect(sql).toContain(
+      "CREATE TABLE IF NOT EXISTS github_mirror_deleted_notes",
+    );
+    // And the pointer assignment itself refuses a marked id, in the
+    // same statement: a delayed created redelivery of comment 777
+    // cannot resurrect the pointer through the empty-pointer branch.
+    const created = capturePipeline();
+    await mirrorCommentEvent(
+      env,
+      {
+        action: "created",
+        issue: { number: 8580, comments: 3 },
+        comment: noteComment,
+        repository: { full_name: REPO },
+      },
+      REPO,
+    );
+    const update = created.find((s) =>
+      s.sql.startsWith("UPDATE github_mirror_issues SET"),
+    );
+    expect(update?.sql).toContain("github_mirror_deleted_notes");
+    expect(update?.sql).toContain("d.comment_id = ?");
+    const updateValues = (update?.args ?? []).map((a) => a.value);
+    expect(updateValues).toContain("777");
   });
 });

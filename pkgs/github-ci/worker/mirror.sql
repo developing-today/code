@@ -53,3 +53,15 @@ CREATE TABLE IF NOT EXISTS github_mirror_tombstones (
   gh_updated_at TEXT,
   mirrored_at TEXT NOT NULL,
   PRIMARY KEY (repo, number));
+
+-- Deleted agent-note markers: an agent note's "deleted" delivery
+-- clears the latest-note pointer AND records the comment id here, so
+-- a delayed created/edited redelivery of the same comment cannot
+-- resurrect the pointer through the empty-pointer branch (Codex P2
+-- on PR #8604). A recreated note always has a new comment id, so a
+-- marker never suppresses a live note.
+CREATE TABLE IF NOT EXISTS github_mirror_deleted_notes (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  comment_id INTEGER NOT NULL,
+  mirrored_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number, comment_id));
