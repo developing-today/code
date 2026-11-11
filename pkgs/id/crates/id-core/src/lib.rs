@@ -12,16 +12,19 @@
 //!   too, so the definition moved here; `directory` re-exports it.
 //! - `world_limits` aggregates the limit types of the sandbox, native
 //!   and session layers, so `SandboxLimits`, `NativeLimits` and
-//!   `MAX_WORLD_MODULE_BYTES` are defined in [`world_limits`] and
-//!   re-exported at their historical paths, and
-//!   [`world_limits::RuntimeLimits::from_args`] takes a
-//!   [`world_limits::WorldLimitArgs`] trait the binary crate implements
-//!   for its CLI argument struct.
+//!   `MAX_WORLD_MODULE_BYTES` are defined there and re-exported at their
+//!   historical paths, and its `RuntimeLimits::from_args` takes a
+//!   `WorldLimitArgs` trait the binary crate implements for its CLI
+//!   argument struct. Since step 1 of the split (#4403) `world_limits`
+//!   lives in the `id-caps` crate together with `world_caps` and
+//!   `world_manifest`; `id-caps` depends on this crate (for
+//!   `json_unique`), never the reverse.
 
 pub mod access;
 pub mod boundary;
 pub mod connectivity;
 pub mod discovery;
+pub mod ip_evidence;
 pub mod json_unique;
 pub mod membership;
 pub mod residency;
@@ -35,10 +38,6 @@ pub mod waiting;
 
 #[cfg(feature = "world")]
 pub mod petname;
-#[cfg(feature = "world")]
-pub mod world_caps;
-#[cfg(feature = "world")]
-pub mod world_limits;
 #[cfg(feature = "world")]
 pub mod world_presentation;
 

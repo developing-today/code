@@ -27,6 +27,8 @@ import type { AttentionView } from "./derive.ts";
 import type { HealthView } from "./health.ts";
 import type { QuotaView, TierItem, TieredEntry } from "./model.ts";
 import type { NotificationSendRow } from "./alerts.ts";
+import type { NeedsDrewQuestion } from "./needs-drew.ts";
+import { SENTINEL_SERVICE_IDS, type StackHealthRecord } from "./stack-health.ts";
 
 export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   incident: true,
@@ -150,6 +152,9 @@ export interface NotificationCandidate {
   escalationStep?: 24 | 48 | "weekly";
   /** Dashboard object-ref aliases used to stop escalation after Drew acts. */
   actedRefs?: string[];
+  /** #8568: a raised needs-Drew question rides its candidate so the
+   * push payload can carry tappable answer actions. */
+  needsDrew?: { ledgerId: string; question: string; options: Array<{ id: string; label: string }> };
 }
 
 export interface NotificationHistoryEntry {
@@ -183,6 +188,13 @@ export interface NotificationSnapshot {
   soleDoorPoolIds?: ReadonlySet<string>;
   /** Drew-authored dashboard actions/comments, with their event times. */
   drewActivity?: Array<{ objectRef: string; at: string }>;
+  /** #8568: open needs-Drew questions (unanswered, < 7 days old). */
+  needsDrewRaised?: NeedsDrewQuestion[];
+  /** #8568: sentinel services currently down. */
+  stackHealthDown?: StackHealthRecord[];
+  /** #8568: full sentinel state map (up AND down) — decides when the
+   * sentinel is authoritative over the health-derived candidate. */
+  stackHealthStates?: Record<string, StackHealthRecord>;
 }
 
 interface LocalClock {
@@ -436,6 +448,15 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
 
   for (const service of snapshot.health.services) {
     if (service.ok !== false) continue;
+    // #8568: the sentinel is authoritative for its service set — when
+    // it holds any record (up or down) for this service, its candidate
+    // (from stackHealthDown below) replaces the health-derived one.
+    if (
+      (SENTINEL_SERVICE_IDS as readonly string[]).includes(service.def.id) &&
+      snapshot.stackHealthStates?.[service.def.id]
+    ) {
+      continue;
+    }
     candidates.push(
       candidate({
         class: "stack-health",
@@ -445,6 +466,40 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
         url: "/health",
         observedAt: service.probedAt ?? new Date(now).toISOString(),
         state: { state: service.state },
+      }),
+    );
+  }
+
+  // #8568: raised needs-Drew questions — a fleet worker is actively
+  // waiting, so these break through like the 48h blocked-age case.
+  for (const item of snapshot.needsDrewRaised ?? []) {
+    candidates.push(
+      candidate({
+        class: "needs-drew",
+        objectRef: `needs-drew:${item.ledgerId}`,
+        title: item.question,
+        body: item.context ?? "A fleet worker is blocked on your answer.",
+        url: `/answer/${encodeURIComponent(item.ledgerId)}`,
+        observedAt: item.raisedAt,
+        breakthrough: true,
+        actedRefs: [`needs-drew:${item.ledgerId}`],
+        state: { raisedAt: item.raisedAt },
+        needsDrew: { ledgerId: item.ledgerId, question: item.question, options: item.options },
+      }),
+    );
+  }
+
+  // #8568: sentinel-reported down services.
+  for (const svc of snapshot.stackHealthDown ?? []) {
+    candidates.push(
+      candidate({
+        class: "stack-health",
+        objectRef: `service:${svc.serviceId}`,
+        title: `Stack health: ${svc.name}`,
+        body: svc.detail ?? "The monitored service is failing.",
+        url: "/health",
+        observedAt: svc.since,
+        state: { state: "down", since: svc.since },
       }),
     );
   }

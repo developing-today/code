@@ -13,12 +13,34 @@
 # binary must stay <= 2 MiB (target <= 1.5 MiB) so it can be
 # dropped onto any host. The gate is enforced in postFixup below,
 # against the final, stripped artifact.
+#
+# Dependency compilation is split from the package build when a
+# craneLib is supplied (the root flake's make-fleet passes one):
+# crane's buildDepsOnly compiles every registry dependency as its
+# OWN derivation keyed on the workspace manifests + Cargo.lock, so
+# a fleet source change rebuilds just the workspace crates instead
+# of the whole dependency tree — previously every variant below
+# recompiled the same dependency set from scratch on any change
+# (code#8392). Callers that do not pass craneLib keep the
+# monolithic buildRustPackage build. The two musl static variants
+# stay monolithic too: under pkgsStatic, crane's cargo environment
+# applies crt-static to host build scripts as well (a libc build
+# script fails to link against glibc's dynamic objects) — the
+# statics need crane's cross-toolchain treatment (build-platform
+# toolchain with a musl target plus per-target CC wiring for the
+# -sys crates) before they can split. fleet-brokers stays on
+# buildRustPackage either way: it is the queue pilot's rollback
+# inventory under historical names (it retires at the epic's
+# close), and its build/test flag split (--bins to build, lib
+# tests to check) does not map onto crane's single cargoExtraArgs
+# without changing which tests run.
 {
   lib,
   rustPlatform,
   pkgsStatic,
   binutils,
   callPackage,
+  craneLib ? null,
   sourceRev ? "unknown",
 }:
 
@@ -58,22 +80,17 @@ let
       platform ? rustPlatform,
       static ? false,
     }:
-    platform.buildRustPackage {
-      inherit pname;
-      version = "0.1.0";
-      src = fleetSrc;
-      sourceRoot = "${fleetSrc.name}/fleet";
-      cargoLock.lockFile = ./Cargo.lock;
-
-      cargoBuildFlags = [
-        "-p"
-        "fleet"
-      ]
-      ++ lib.optionals (features != null) [ "--no-default-features" ]
-      ++ lib.optionals (features != null && features != [ ]) [
-        "--features"
-        (lib.concatStringsSep "," features)
-      ];
+    let
+      cargoFlags =
+        [
+          "-p"
+          "fleet"
+        ]
+        ++ lib.optionals (features != null) [ "--no-default-features" ]
+        ++ lib.optionals (features != null && features != [ ]) [
+          "--features"
+          (lib.concatStringsSep "," features)
+        ];
 
       # ONNX Runtime is dynamically loaded (atlas-embed's ort
       # load-dynamic) and never downloaded; the search serve role
@@ -83,7 +100,7 @@ let
       # variants (no search-serve) nor the musl static ones (a glibc
       # libonnxruntime cannot be dlopen'd from a static binary; the
       # role there needs ATLAS_ORT_LIB).
-      env = {
+      envAttrs = {
         FLEET_SOURCE_REV = sourceRev;
       }
       // lib.optionalAttrs (features != [ ] && !static) {
@@ -113,7 +130,7 @@ let
         fi
       '';
 
-      meta = {
+      metaAttrs = {
         description = "Fleet multicall binary (${pname} variant): one binary for the queue, proxy, secrets, search and dispatch domains";
         license = with lib.licenses; [
           mit
@@ -121,7 +138,69 @@ let
         ];
         mainProgram = "fleet";
       };
-    };
+
+      craneLibFor = if static then null else craneLib;
+    in
+    if craneLibFor != null then
+      let
+        commonArgs = {
+          inherit pname;
+          version = "0.1.0";
+          src = fleetSrc;
+          sourceRoot = "${fleetSrc.name}/fleet";
+          # The workspace root is the fleet/ subdir of the source,
+          # and so is its lockfile; crane vendors from the lockfile
+          # path it is given, not from the source root.
+          cargoLock = ./Cargo.lock;
+          strictDeps = true;
+          cargoExtraArgs = "--locked " + lib.concatStringsSep " " cargoFlags;
+          env = envAttrs;
+        };
+
+        # The dependency layer for this variant's feature set.
+        # (crane's dummy source keeps the real source's name, so
+        # both layers unpack under the same sourceRoot.)
+        cargoArtifacts = craneLibFor.buildDepsOnly commonArgs;
+      in
+      craneLibFor.buildPackage (
+        commonArgs
+        // {
+          inherit cargoArtifacts;
+
+          # Preserve the buildRustPackage behaviour: the workspace
+          # test suite runs in the check phase (it did under
+          # buildRustPackage — the store's build logs show a
+          # checkPhase with passing test results). The old check
+          # phase ran flagless (the whole workspace, default
+          # features), while crane's default check appends
+          # cargoExtraArgs — which here carries "-p fleet" and
+          # would narrow the run to the fleet crate's 27 tests.
+          # Override the check command to keep the workspace-wide
+          # run; the build keeps the -p fleet scope via
+          # cargoExtraArgs.
+          doCheck = true;
+          checkPhaseCargoCommand = "cargoWithProfile test --locked";
+
+          inherit postInstall postFixup;
+          meta = metaAttrs;
+        }
+      )
+    else
+      platform.buildRustPackage {
+        inherit pname;
+        version = "0.1.0";
+        src = fleetSrc;
+        sourceRoot = "${fleetSrc.name}/fleet";
+        cargoLock.lockFile = ./Cargo.lock;
+
+        cargoBuildFlags = cargoFlags;
+
+        env = envAttrs;
+
+        inherit postInstall postFixup;
+
+        meta = metaAttrs;
+      };
 in
 {
   # Full profile: every domain compiled in.

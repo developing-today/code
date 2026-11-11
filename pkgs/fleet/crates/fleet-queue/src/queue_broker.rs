@@ -820,6 +820,57 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
     }
 }
 
+/// #8568 (PM-stack notifications Phase 1): after a block lands,
+/// if it was an escalated-to-user block carrying a needs_drew
+/// payload, raise the alert into the PM aggregator's throat from
+/// inside the broker process — the same fixed wire contract the
+/// CLI half posts (crate::needs_drew). The intake token resolves
+/// by name through the in-process secrets source this broker
+/// already uses for every other credential (DirectSecrets: the
+/// colocated secrets broker). Fire-and-forget on a spawned
+/// thread: the block response never waits on the throat, and a
+/// failure is logged to stderr only — it never fails the block.
+/// The throat dedupes by (source, key), so the CLI half and this
+/// half posting for the same block is safe. This half goes live
+/// only when the broker binary is replaced (the coordinated
+/// switch); until then the CLI half is the live path.
+fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
+    if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return;
+    }
+    if req.get("reason_class").and_then(|v| v.as_str()) != Some("escalated-to-user") {
+        return;
+    }
+    let blocker = req.get("blocker").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(nd) = crate::needs_drew::from_block_request(req, blocker) else {
+        return;
+    };
+    let secrets_url = st.secrets_url.clone();
+    let secrets_token = st.secrets_token.clone();
+    let agent = st.agent.clone();
+    std::thread::spawn(move || {
+        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+            url: secrets_url,
+            token: secrets_token,
+            agent: agent.clone(),
+        })]);
+        let raised = resolver
+            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .map_err(|e| e.to_string())
+            .and_then(|token| crate::needs_drew::post_needs_drew(token.expose(), &nd));
+        match raised {
+            Ok(_) => crate::log::info(
+                "queue-broker",
+                &format!("needs-drew raised for ledger item {}", nd.ledger_id),
+            ),
+            Err(e) => crate::log::info(
+                "queue-broker",
+                &format!("needs-drew throat post failed: {e}"),
+            ),
+        }
+    });
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -829,7 +880,14 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     }
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
-            return crate::turso_queue::dispatch(t, path, req);
+            let resp = crate::turso_queue::dispatch(t, path, req);
+            // #8568: the Turso backend answers /block before the
+            // Postgres match below, so the broker-side needs-drew
+            // raise hooks here too — same condition, same helper.
+            if path == "/block" {
+                maybe_raise_needs_drew(st, req, &resp);
+            }
+            return resp;
         }
     }
     match path {
@@ -1058,17 +1116,26 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
             verb_with_execution(st, "park_task", args, req)
         }
-        "/block" => simple_rpc(
-            st,
-            "block_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_reason_class": req.get("reason_class"),
-                "p_blocker": req.get("blocker"),
-                "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
-            }),
-        ),
+        "/block" => {
+            let resp = simple_rpc(
+                st,
+                "block_task",
+                json!({
+                    "p_task_id": req.get("task_id"),
+                    "p_worker": req.get("worker"),
+                    "p_reason_class": req.get("reason_class"),
+                    "p_blocker": req.get("blocker"),
+                    "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
+                }),
+            );
+            // #8568: broker-side needs-drew raise, fire-and-forget
+            // (see maybe_raise_needs_drew). NOTE: this arm is the
+            // Postgres backend's route — dispatch() hands /block
+            // to the Turso backend before reaching here when
+            // QUEUE_BROKER_BACKEND=turso.
+            maybe_raise_needs_drew(st, req, &resp);
+            resp
+        }
         "/cancel" => simple_rpc(
             st,
             "cancel_repo_task",

@@ -527,6 +527,42 @@ pub struct WorldMeasureArgs {
     pub height: Option<u16>,
 }
 
+/// The arguments of `id world dev`, extracted into
+/// their own `Args` struct for the same reason as `ServeArgs`
+/// (#4751): keeping clap's derive-generated construction in its
+/// own function bounds the stack frame of the parent enum's
+/// `augment_subcommands`.
+#[derive(Args, Debug)]
+pub struct WorldDevArgs {
+    /// App directory holding the app's `main.roc` and its sibling
+    /// `.roc` sources.
+    pub dir: PathBuf,
+    /// World platform directory (or its `platform.roc` file). Default:
+    /// the platform path `main.roc` declares, resolved against the
+    /// app directory.
+    #[arg(long, value_name = "DIR")]
+    pub platform: Option<PathBuf>,
+    /// Roc compiler binary. Default: `ID_ROC_BIN`, then the bundled
+    /// toolchain lookup the host compiler uses.
+    #[arg(long, value_name = "BIN")]
+    pub roc: Option<String>,
+    /// Deterministic seed for the scratch world's guest initializer.
+    #[arg(long, default_value_t = 1)]
+    pub seed: u64,
+    /// Input to send to the scratch world after launch, as the dev
+    /// guest (repeatable, in order). The view is reported after each.
+    #[arg(long = "input", value_name = "TEXT")]
+    pub inputs: Vec<String>,
+    /// Fixture to replay against the compiled candidate before
+    /// launch (repeatable, in order). A fixture whose replayed
+    /// records mismatch its recorded expectation blocks promotion:
+    /// the candidate is not launched and the command fails. Fixtures
+    /// recorded under an earlier module hash still replay (the dev
+    /// cross-module regression mode) and the report says so.
+    #[arg(long = "fixture", value_name = "FILE")]
+    pub fixtures: Vec<PathBuf>,
+}
+
 /// The arguments of `id world logs`, extracted into
 /// their own `Args` struct for the same reason as `ServeArgs`
 /// (#4751): keeping clap's derive-generated construction in its
@@ -809,6 +845,16 @@ pub enum WorldCommand {
     /// The host rewrites the app's `pf: platform "..."` path to its staged
     /// copy of the world platform, so any relative path works.
     Compile(WorldCompileArgs),
+    /// Compile a Roc world app locally and launch it in a disposable
+    /// in-memory scratch world — the `id world dev` authoring loop
+    /// (F12.15, phase 1: one-shot compile + launch).
+    ///
+    /// Fully offline: no host is contacted, nothing is installed into
+    /// a named world, and the scratch world is discarded when the
+    /// session ends. Prints one JSON report: the compiled module's
+    /// provenance, the initial view, and the view after each `--input`.
+    #[cfg(feature = "sandbox")]
+    Dev(WorldDevArgs),
     /// Show (and, with `--grant`/`--revoke`/`--ceiling`, change) a world's capabilities.
     ///
     /// Without `--grant`/`--revoke`/`--ceiling` this needs only a guest capability and

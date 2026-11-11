@@ -34,6 +34,7 @@ import {
   type NotificationSnapshot,
 } from "./notifications.ts";
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
+import { getNeedsDrew } from "./needs-drew.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -270,6 +271,9 @@ export interface PushPayload {
   body: string;
   escalation?: boolean;
   items?: Array<{ class: string; objectRef: string; title: string; url: string }>;
+  /** #8568: tappable answers for a needs-Drew question push; `url` is
+   * the absolute answer-page URL including the per-question token. */
+  answer?: { ledgerId: string; options: Array<{ id: string; label: string }>; url: string };
 }
 
 export function buildIncidentPayload(incident: Incident, origin: string, escalation: boolean): PushPayload {
@@ -553,6 +557,21 @@ export class AlertsStore {
       return { incident: rows[0], transitioned: true };
     }
     return { incident: await this.getIncident(id), transitioned: false };
+  }
+
+  /** #8568: close the open incident for a (source, key) pair — the
+   * sentinel's "up" transition resolves the incident its "down" post
+   * opened. Reuses closeIncident for the transition + event. */
+  async closeOpenIncidentByKey(
+    source: string,
+    key: string,
+  ): Promise<{ incident: Incident | null; transitioned: boolean }> {
+    const rows = await this.db.query<Incident>(
+      `select * from alerts.incidents where source = ${sqlStr(source)} and incident_key = ${sqlStr(key)} and status <> 'closed' order by first_seen_at limit 1`,
+    );
+    const open = rows[0];
+    if (!open) return { incident: null, transitioned: false };
+    return this.closeIncident(open.id);
   }
 
   async closeIncident(id: string): Promise<{ incident: Incident | null; transitioned: boolean }> {
@@ -1013,6 +1032,22 @@ async function runDashboardNotificationTick(
         body: candidate.body,
         ...(candidate.escalationStep ? { escalation: true } : {}),
       };
+      // #8568: a needs-Drew candidate pushes with tappable answers —
+      // the payload url becomes the token-carrying answer page.
+      if (candidate.needsDrew) {
+        try {
+          const item = await getNeedsDrew(cfg.needsDrewFile, candidate.needsDrew.ledgerId);
+          if (item) {
+            const answerUrl = `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+            payload.answer = { ledgerId: item.ledgerId, options: item.options, url: answerUrl };
+            payload.url = answerUrl;
+          }
+        } catch (err) {
+          console.error(
+            `alerts engine: needs-drew answer payload lookup failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+      }
       const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
       const result = await push(target, payload);
       const outcome = result.ok ? "sent" : result.gone ? "gone" : "error";
@@ -1142,6 +1177,18 @@ export async function runAlertTick(
 }
 
 let engineStarted = false;
+let alertTickHook: (() => void) | null = null;
+
+/** #8568: ask the running engine to tick promptly (e.g. a needs-Drew
+ * question or a stack-health transition just landed at the intake).
+ * The engine's own in-flight guard dedupes; no-op when not started. */
+export function requestAlertTick(): void {
+  try {
+    alertTickHook?.();
+  } catch {
+    // A prompt tick is best-effort; the 60s loop remains the backstop.
+  }
+}
 
 /** Start the ~60s engine loop (live mode only; fail-soft per tick). */
 export function startAlertEngine(cfg: Config, dashboardSnapshot?: () => Promise<NotificationSnapshot>): void {
@@ -1159,6 +1206,9 @@ export function startAlertEngine(cfg: Config, dashboardSnapshot?: () => Promise<
     } finally {
       ticking = false;
     }
+  };
+  alertTickHook = () => {
+    void tick();
   };
   setTimeout(tick, 10_000);
   setInterval(tick, cfg.alerts.tickMs);

@@ -1177,6 +1177,18 @@ fn serve_pull_policy(started: Option<&StartedServerConfig>) -> crate::pull_polic
     })
 }
 
+/// The freshness window seitan admission serves under (#8487): the loaded
+/// server config's `[policy] freshness_window_seconds`, resolved through
+/// [`crate::server_config::ServerConfig::freshness`], when a config was
+/// loaded, else [`crate::seitan::DEFAULT_WINDOW`] — so a `serve` without
+/// `--server-config` behaves exactly as before.
+#[cfg(feature = "world")]
+fn serve_freshness_window(started: Option<&StartedServerConfig>) -> std::time::Duration {
+    started.map_or(crate::seitan::DEFAULT_WINDOW, |started| {
+        started.config.freshness().window()
+    })
+}
+
 /// The world protocol serve registers for a hub: the loaded operator
 /// config's #2247 budget policy when a server config was given, the
 /// coded defaults when none was. Before this wire, the budgets
@@ -1953,6 +1965,21 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     WebContentTarget::Program(world) => Some(world.clone()),
                 })
                 .collect();
+            // #8487: the seitan admission state the web surface
+            // serves: the freshness window resolved from the loaded
+            // server config (the code default without one), and the
+            // server-config directory journal beside the groups log
+            // opened after provisioning persisted into it, so the
+            // admit path's account check sees the provisioned
+            // accounts and its `AccountVerified` appends land in the
+            // same journal.
+            #[cfg(feature = "world")]
+            let seitan_state = crate::web::SeitanState::new(
+                crate::directory::Directory::open(&server_config_directory_path(&groups_log))?,
+                serve_freshness_window(started_server_config.as_ref()),
+            );
+            #[cfg(not(feature = "world"))]
+            let seitan_state = crate::web::SeitanState::default();
             let web_routers = crate::web::web_routers(
                 store_handle.clone(),
                 Some(peer_discovery.clone()),
@@ -1966,6 +1993,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 event_events.as_ref().map(Arc::clone),
                 surfaces,
                 Some(groups_log.clone()),
+                seitan_state,
             )
             .await?;
             for ((listener_addr, listener, target), web_router) in
@@ -3768,6 +3796,34 @@ mod tests {
         assert_eq!(
             serve_pull_policy(Some(&started)),
             crate::pull_policy::PullPolicy::Members
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #8487: without a server config, seitan admission serves under
+    /// the code default window (5 minutes), exactly as before.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_freshness_window_defaults_without_a_config() {
+        assert_eq!(
+            serve_freshness_window(None),
+            crate::seitan::DEFAULT_WINDOW
+        );
+    }
+
+    /// #8487: the live admission path takes its window from the
+    /// loaded config's `[policy] freshness_window_seconds`, not from
+    /// the code default.
+    #[cfg(feature = "world")]
+    #[test]
+    fn serve_freshness_window_reads_the_configured_window() {
+        let dir = serve_config_dir("freshness-window");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[policy]\nfreshness_window_seconds = 60\n").unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(
+            serve_freshness_window(Some(&started)),
+            std::time::Duration::from_secs(60)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,8 +1,7 @@
 name: pm-dispatch
 
 # pm-dispatch dispatch hub -- fires a tracked OpenCode session on the
-# laptop (via pm-dispatch) from any GitHub event. This workflow was
-# previously backed by the Jules service; it now uses the reusable
+# laptop (via pm-dispatch) from any GitHub event. It uses the reusable
 # pm-dispatch starter action
 # (./.github/actions/pm-dispatch-start, loaded from a checkout of
 # this repo), which creates the tracking issue, enqueues the task,
@@ -11,10 +10,13 @@ name: pm-dispatch
 # No repository secret is required: each job grants
 # `permissions: id-token: write`, and the starter action mints a GitHub
 # Actions OIDC token (audience pm-dispatch) to authenticate to
-# pm-dispatch. The filename stays jules.yml because other workflows
-# (main-broken.yml, repo-sweeper.yml) reference that path, and the
-# `jules` label name is unchanged -- applying it still starts
-# remediation, now via this dispatch flow instead of Jules.
+# pm-dispatch.
+#
+# This file was named jules.yml, and the remediation label below was
+# named `jules`, until the 2026-11-11 rename: the hub was previously
+# backed by the Jules service (decommissioned, #5098). The label is
+# now `dispatch/remediate`; applying it starts remediation via this
+# dispatch flow.
 #
 # Dispatch launches sessions promptly, so the cron schedules below are
 # deliberately infrequent to avoid flooding the laptop session pool.
@@ -81,12 +83,12 @@ jobs:
             certain the PR is correct and low-risk; otherwise leave it open
             and state your confidence and what a human should check.
 
-  # Triggered by applying the `jules` label to an issue. The label name is
-  # kept from the Jules era (main-broken.yml applies it under its
-  # remediation budget); it now starts an OpenCode session via pm-dispatch
-  # instead of a Jules session.
+  # Triggered by applying the `dispatch/remediate` label to an issue
+  # (main-broken.yml applies it under its remediation budget); it starts
+  # an OpenCode session via pm-dispatch. The label was named `jules`
+  # until the 2026-11-11 rename.
   issue-labeled:
-    if: github.event_name == 'issues' && github.event.label.name == 'jules'
+    if: github.event_name == 'issues' && github.event.label.name == 'dispatch/remediate'
     concurrency:
       group: ${{ github.workflow }}-issue-${{ github.event.issue.number }}
       cancel-in-progress: false

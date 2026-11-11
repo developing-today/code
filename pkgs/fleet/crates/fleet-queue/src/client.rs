@@ -2215,6 +2215,77 @@ fn cmd_wake(rest: &[String]) -> i32 {
     0
 }
 
+/// #8568: resolve the PM aggregator's alerts-intake token by
+/// name, through the same in-process route the fleet binary's
+/// `fleet secrets get` verb uses — fleet-secrets'
+/// `Resolver::default_chain` over the loaded fleet config (the
+/// direct secrets-broker source on the laptop, the session-proxy
+/// broker source in the sandbox, the `bws` CLI as fallback). The
+/// queue client has no other named-secret resolution of its own;
+/// this is that machinery, reused in-process (no shelling out).
+/// The token value is used for the one POST and dropped — never
+/// printed, never filed.
+fn resolve_alerts_intake_token() -> Result<String, String> {
+    let config = fleet_config::Config::load().unwrap_or_default();
+    fleet_secrets::Resolver::default_chain(&config)
+        .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+        .map(|v| v.expose().to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// #8568: parse cmd_block's --options-json flag: a JSON array of
+/// {"id": ..., "label": ...} objects. Bad shapes are usage errors
+/// at the caller's terminal, like --progress.
+fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrewOption> {
+    let Some(raw) = args.get("options-json") else {
+        return Vec::new();
+    };
+    let val: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => die(2, &format!("block: --options-json is not valid JSON: {e}")),
+    };
+    let Some(arr) = val.as_array() else {
+        die(2, "block: --options-json must be a JSON array");
+    };
+    arr.iter()
+        .map(|o| {
+            let id = o.get("id").and_then(|v| v.as_str());
+            let label = o.get("label").and_then(|v| v.as_str());
+            match (id, label) {
+                (Some(id), Some(label)) => crate::needs_drew::NeedsDrewOption {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                },
+                _ => die(
+                    2,
+                    "block: --options-json entries must be {\"id\": ..., \"label\": ...} objects",
+                ),
+            }
+        })
+        .collect()
+}
+
+/// #8568: parse cmd_block's --links-json flag: a JSON array of
+/// strings.
+fn block_links_arg(args: &Args) -> Vec<String> {
+    let Some(raw) = args.get("links-json") else {
+        return Vec::new();
+    };
+    let val: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => die(2, &format!("block: --links-json is not valid JSON: {e}")),
+    };
+    let Some(arr) = val.as_array() else {
+        die(2, "block: --links-json must be a JSON array");
+    };
+    arr.iter()
+        .map(|l| match l.as_str() {
+            Some(s) => s.to_string(),
+            None => die(2, "block: --links-json entries must be strings"),
+        })
+        .collect()
+}
+
 fn cmd_block(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -2224,6 +2295,15 @@ fn cmd_block(rest: &[String]) -> i32 {
             "blocker",
             "progress",
             "progress-file",
+            // #8568: needs-drew payload for an escalated-to-user
+            // block (PM-stack notifications Phase 1). All optional;
+            // without --ledger-id + --question an escalated block
+            // behaves exactly as before.
+            "ledger-id",
+            "question",
+            "context",
+            "options-json",
+            "links-json",
             // #8276: typed dependency blocks — the broker watches
             // these and releases the task itself when they clear
             // (or when the max TTL expires). Comma-separated for
@@ -2244,13 +2324,67 @@ fn cmd_block(rest: &[String]) -> i32 {
     let blocker = args
         .get("blocker")
         .unwrap_or_else(|| die(2, "block: --blocker is required"));
+    // #8568: the needs-drew payload is live only for an
+    // escalated-to-user block that names its ledger item and its
+    // question; every other block keeps today's shape exactly.
+    let needs_drew = if rc == "escalated-to-user" {
+        match (args.get("ledger-id"), args.get("question")) {
+            (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
+                ledger_id,
+                question,
+                context: args.get("context"),
+                options: block_options_arg(&args),
+                links: block_links_arg(&args),
+                blocker: blocker.clone(),
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut progress = progress_arg(&args).unwrap_or(json!({}));
+    if let Some(nd) = &needs_drew {
+        // Stamp the ledger id onto the task row through the
+        // progress the CURRENT broker already persists — no
+        // broker change needed for the ledger-id half. Any
+        // caller-supplied progress content is preserved; only a
+        // caller-set needs_drew.ledger_id of their own would be
+        // overwritten, and the flag is the authoritative source.
+        let mut stamp = json!({"ledger_id": nd.ledger_id});
+        if let Some(existing) = progress.get("needs_drew").and_then(|v| v.as_object()) {
+            for (k, v) in existing {
+                stamp[k] = v.clone();
+            }
+            stamp["ledger_id"] = json!(nd.ledger_id);
+        }
+        progress["needs_drew"] = stamp;
+    }
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
         "reason_class": rc,
         "blocker": blocker,
-        "progress": progress_arg(&args).unwrap_or(json!({})),
+        "progress": progress,
     });
+    if let Some(nd) = &needs_drew {
+        // Snake_case keys, matching the /block body's own style;
+        // the broker (and, later, the broker-side raise) reads
+        // this shape back via needs_drew::from_block_request.
+        let mut nd_json = json!({
+            "ledger_id": nd.ledger_id,
+            "question": nd.question,
+            "options": nd
+                .options
+                .iter()
+                .map(|o| json!({"id": o.id, "label": o.label}))
+                .collect::<Vec<_>>(),
+            "links": nd.links,
+        });
+        if let Some(context) = &nd.context {
+            nd_json["context"] = json!(context);
+        }
+        body["needs_drew"] = nd_json;
+    }
     let deps = dep_flags(&args);
     if !deps.is_empty() {
         body["deps"] = json!(deps);
@@ -2263,6 +2397,25 @@ fn cmd_block(rest: &[String]) -> i32 {
     }
     let resp = unwrap_ok(call("/block", &body));
     print_json(&require_row(&resp, "block_task"));
+    // #8568: the live raise path — after the block lands, post
+    // the needs-drew alert to the PM throat. Emission failure
+    // must NOT fail the block (the block already succeeded and
+    // the throat dedupes, so a later retry / the broker-side
+    // raise can still land it): warn on stderr, exit 0. Stdout
+    // above keeps its current JSON shape exactly.
+    if let Some(nd) = &needs_drew {
+        let raised = resolve_alerts_intake_token()
+            .and_then(|token| crate::needs_drew::post_needs_drew(&token, nd));
+        match raised {
+            Ok(_) => eprint(&format!(
+                "repo-queue: needs-drew raised for ledger item {}",
+                nd.ledger_id
+            )),
+            Err(e) => eprint(&format!(
+                "repo-queue: WARNING: needs-drew throat post failed: {e}"
+            )),
+        }
+    }
     0
 }
 

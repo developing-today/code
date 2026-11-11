@@ -2704,3 +2704,32 @@ fn test_cli_parse_world_profile() {
         other => panic!("unexpected: {other:?}"),
     }
 }
+
+    #[test]
+    fn test_cli_parse_world_dev() {
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "dev",
+            "apps/ping",
+            "--seed",
+            "7",
+            "--input",
+            "inc",
+            "--input",
+            "dec",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Dev(args) => {
+                    assert!(args.dir.ends_with("apps/ping"));
+                    assert_eq!(args.seed, 7);
+                    assert_eq!(args.inputs, ["inc", "dec"]);
+                    assert!(args.platform.is_none());
+                    assert!(args.roc.is_none());
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }

@@ -234,6 +234,7 @@ impl WorldHandle {
             storage_failed: false,
             read_only,
             program_healthy,
+            pending_transfer_replays: Vec::new(),
             view_failures: 0,
             compaction_off: false,
             event_sender: events.clone(),
@@ -988,6 +989,46 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped entity export response")?
+    }
+
+    /// Import an entity into this destination shard. The envelope is
+    /// validated (module hash, payload schema, payload digest) before any
+    /// mutation; the actor journals the import event in one
+    /// `EntityImported` entry before applying it and returns the durable
+    /// receipt only after application succeeds. An exact retry returns
+    /// the existing receipt; a conflicting reuse of the handoff ID fails
+    /// closed.
+    pub async fn import_entity(
+        &self,
+        handoff_id: impl Into<String>,
+        entity_ref: impl Into<String>,
+        source_region: impl Into<String>,
+        target_region: impl Into<String>,
+        prior_owner_epoch: u64,
+        program_module_hash: impl Into<String>,
+        payload_schema: impl Into<String>,
+        payload: Vec<u8>,
+        payload_digest: impl Into<String>,
+    ) -> Result<HandoffTransferState> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ImportEntity {
+                handoff_id: handoff_id.into(),
+                entity_ref: entity_ref.into(),
+                source_region: source_region.into(),
+                target_region: target_region.into(),
+                prior_owner_epoch,
+                program_module_hash: program_module_hash.into(),
+                payload_schema: payload_schema.into(),
+                payload,
+                payload_digest: payload_digest.into(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped entity import response")?
     }
 
     /// Read a world snapshot.

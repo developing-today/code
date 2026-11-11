@@ -262,6 +262,55 @@ fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
 /// Validate the invariants shared by standalone handoff entries and
 /// checkpoint-carried transfer state. `prior_transfers` are the already
 /// admitted records, so callers validate a checkpoint's list in list order.
+/// The owner epoch an entity sits at after a transfer: an export leaves
+/// at the epoch it records as prior (ownership departs at that epoch), an
+/// import lands at its new epoch. A subsequent crossing for the same
+/// entity must chain from exactly this epoch; anything else is a stale
+/// ownership claim and must never supersede the recorded state (#3902).
+fn owner_epoch_after(transfer: &HandoffTransferState) -> u64 {
+    match transfer.direction {
+        HandoffDirection::Export => transfer.prior_owner_epoch,
+        HandoffDirection::Import => transfer
+            .new_owner_epoch
+            .unwrap_or(transfer.prior_owner_epoch),
+    }
+}
+
+/// Enforce the epoch chain against the transfers already recorded for
+/// the entity, if any. While the entity is local (its latest transfer is
+/// an import), the next crossing must depart from exactly the epoch the
+/// import landed at. While it is away (its latest transfer is an
+/// export), ownership advances abroad - one step per crossing on other
+/// shards - so a returning transfer may chain from any epoch at or
+/// beyond the one the export left at, but never an older one: a stale
+/// epoch would supersede the fence with an outdated ownership claim.
+/// First crossings are unconstrained (the epoch originates with the
+/// caller's ownership claim).
+fn ensure_epoch_chains(
+    transfer: &HandoffTransferState,
+    prior_transfers: &[HandoffTransferState],
+) -> Result<()> {
+    if let Some(latest) = prior_transfers
+        .iter()
+        .rev()
+        .find(|prior| prior.entity_ref == transfer.entity_ref)
+    {
+        let chained = match latest.direction {
+            HandoffDirection::Export => transfer.prior_owner_epoch >= latest.prior_owner_epoch,
+            HandoffDirection::Import => transfer.prior_owner_epoch == owner_epoch_after(latest),
+        };
+        ensure!(
+            chained,
+            "handoff {:?} claims prior owner epoch {} for entity {:?}, but the latest recorded transfer leaves it at epoch {}",
+            transfer.handoff_id,
+            transfer.prior_owner_epoch,
+            transfer.entity_ref,
+            owner_epoch_after(latest)
+        );
+    }
+    Ok(())
+}
+
 fn validate_handoff_transfer(
     transfer: &HandoffTransferState,
     prior_transfers: &[HandoffTransferState],
@@ -295,6 +344,54 @@ fn validate_handoff_transfer(
         }),
         "journal {name}s handoff {:?} twice",
         transfer.handoff_id
+    );
+    ensure_epoch_chains(transfer, prior_transfers)?;
+    Ok(())
+}
+
+/// Verify a journaled destination event carries the import envelope for
+/// `payload_digest` (#3870 phase 3, design #2818 \§3): the payload rides
+/// hex-encoded inside the versioned system event, and its BLAKE3 digest
+/// must match the digest the journal entry records \— a tampered or
+/// mismatched envelope is refused at restore, never applied.
+fn validate_import_envelope(event: &WorldEvent, payload_digest: &str) -> Result<()> {
+    let text = match &event.kind {
+        WorldEventKind::System { event } => event,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "journal import event is not a host system event"
+            ));
+        }
+    };
+    let envelope: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| anyhow::anyhow!("journal import event is not a transfer envelope"))?;
+    ensure!(
+        envelope["protocol"] == "world.entity-transfer.v1" && envelope["direction"] == "import",
+        "journal import event is not an import envelope"
+    );
+    ensure!(
+        envelope["payload_digest"] == payload_digest,
+        "journal import envelope digest does not match the journal entry"
+    );
+    let payload_hex = envelope["payload_hex"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("journal import envelope carries no payload"))?;
+    ensure!(
+        payload_hex.len() % 2 == 0 && payload_hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "journal import envelope payload is not hex"
+    );
+    let payload: Vec<u8> = (0..payload_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&payload_hex[i..i + 2], 16))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| anyhow::anyhow!("journal import envelope payload is not hex"))?;
+    ensure!(
+        payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+        "journal import payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+    );
+    ensure!(
+        hex_encode(blake3::hash(&payload).as_bytes()) == payload_digest,
+        "journal import payload digest does not match"
     );
     Ok(())
 }
@@ -634,6 +731,17 @@ impl WorldCore {
                         "participant {} issued twice",
                         participant.id
                     );
+                    let active = core
+                        .capabilities
+                        .values()
+                        .filter(|record| !record.revoked)
+                        .count();
+                    ensure!(
+                        active < core.limits.participants,
+                        "participant {} exceeds world participant limit {}",
+                        participant.id,
+                        core.limits.participants
+                    );
                     ensure!(
                         parent.is_none_or(|parent| core.capabilities.contains_key(&parent)),
                         "participant {} delegated from an unknown capability",
@@ -806,11 +914,12 @@ impl WorldCore {
                     );
                     ensure!(
                         !core.handoff_transfers.iter().any(|t| {
-                            (t.handoff_id == handoff_id && t.direction == HandoffDirection::Export)
-                                || (t.entity_ref == entity_ref
-                                    && t.direction == HandoffDirection::Export)
-                        }),
-                        "journal exports handoff {handoff_id:?} or entity {entity_ref:?} twice"
+                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
+                        }) && !matches!(
+                            core.latest_transfer(&entity_ref),
+                            Some(latest) if latest.direction == HandoffDirection::Export
+                        ),
+                        "journal exports handoff {handoff_id:?} twice or entity {entity_ref:?} while an export is active"
                     );
                     let transfer = HandoffTransferState {
                         handoff_id,
@@ -846,8 +955,8 @@ impl WorldCore {
                     destination_event,
                 } => {
                     let transfer = HandoffTransferState {
-                        handoff_id,
-                        entity_ref,
+                        handoff_id: handoff_id.clone(),
+                        entity_ref: entity_ref.clone(),
                         source_region,
                         target_region,
                         direction: HandoffDirection::Import,
@@ -855,11 +964,20 @@ impl WorldCore {
                         new_owner_epoch: Some(new_owner_epoch),
                         program_module_hash,
                         payload_schema,
-                        payload_digest,
+                        payload_digest: payload_digest.clone(),
                         payload: None,
                         event: destination_event.clone(),
                     };
                     validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    validate_entity_ref(&entity_ref)?;
+                    ensure!(
+                        !matches!(
+                            core.latest_transfer(&entity_ref),
+                            Some(latest) if latest.direction == HandoffDirection::Import
+                        ),
+                        "journal imports entity {entity_ref:?} while an import is active"
+                    );
+                    validate_import_envelope(&destination_event, &payload_digest)?;
                     core.handoff_transfers.push(transfer);
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
@@ -1001,7 +1119,23 @@ impl WorldCore {
                                 snapshot: None,
                                 provenance: provenance.clone(),
                             });
-                            replay.clear();
+                            // Transfer receipts outlive the install (the
+                            // dedupe ledger is retained whole), so their
+                            // events survive the slate wipe too: the
+                            // replacement program has not applied them,
+                            // and dropping them would leave a stored
+                            // receipt acknowledgable for a transfer the
+                            // current program never saw (#3902). Rebuild
+                            // the replay from the ledger instead of
+                            // filtering the events already replayed: a
+                            // transfer compacted into a checkpoint sits
+                            // in the ledger without ever entering the
+                            // replay, and filtering would lose it here.
+                            replay = core
+                                .handoff_transfers
+                                .iter()
+                                .map(|transfer| transfer.event.clone())
+                                .collect();
                         }
                         WorldEventKind::Input(_) => replay.push(event.clone()),
                         WorldEventKind::EntityInput { entity_ref, .. } => {
@@ -2229,10 +2363,27 @@ impl WorldCore {
         })
     }
 
+    /// The most recent ownership transfer recorded for `entity_ref`, if
+    /// any. The ledger is append-only and chronological, so the last entry
+    /// for an entity is its current ownership state; earlier entries are
+    /// history, retained for handoff-ID deduplication.
+    pub(crate) fn latest_transfer(&self, entity_ref: &str) -> Option<&HandoffTransferState> {
+        self.handoff_transfers
+            .iter()
+            .rev()
+            .find(|transfer| transfer.entity_ref == entity_ref)
+    }
+
+    /// An entity is fenced while its latest ownership transfer is an
+    /// export: the fence derives from the current ownership state, not
+    /// from any historical export. An entity imported back (design #2818
+    /// §3 permits later crossings) is writable again; every historical
+    /// receipt stays in the ledger for deduplication.
     pub(crate) fn entity_is_fenced(&self, entity_ref: &str) -> bool {
-        self.handoff_transfers.iter().any(|transfer| {
-            transfer.direction == HandoffDirection::Export && transfer.entity_ref == entity_ref
-        })
+        matches!(
+            self.latest_transfer(entity_ref),
+            Some(transfer) if transfer.direction == HandoffDirection::Export
+        )
     }
 
     /// Install a durable source export in the in-memory transfer ledger. The
@@ -2260,19 +2411,71 @@ impl WorldCore {
             "entity transfer payload digest does not match"
         );
         ensure!(
-            !self.handoff_transfers.iter().any(|existing| {
-                existing.handoff_id == transfer.handoff_id
-                    || (existing.direction == HandoffDirection::Export
-                        && existing.entity_ref == transfer.entity_ref)
-            }),
+            !self
+                .handoff_transfers
+                .iter()
+                .any(|existing| existing.handoff_id == transfer.handoff_id)
+                && !matches!(
+                    self.latest_transfer(&transfer.entity_ref),
+                    Some(latest) if latest.direction == HandoffDirection::Export
+                ),
             "entity already has an active export or handoff ID is duplicated"
         );
+        ensure_epoch_chains(transfer, &self.handoff_transfers)?;
         Ok(())
     }
 
     /// Install a source fence after its matching journal record is durable.
     pub(crate) fn record_entity_export(&mut self, transfer: HandoffTransferState) {
         debug_assert!(self.validate_entity_export(&transfer).is_ok());
+        self.handoff_transfers.push(transfer);
+        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
+    }
+
+    /// Validate a destination import against the dedupe ledger (#3870
+    /// phase 3). The actor has already verified the envelope's module
+    /// hash, schema and payload digest before mutation; this checks the
+    /// durable-state invariants: direction, owner-epoch advance, no
+    /// duplicate payload copy, and that neither the handoff ID nor the
+    /// entity already carries an import.
+    pub(crate) fn validate_entity_import(&self, transfer: &HandoffTransferState) -> Result<()> {
+        ensure!(
+            self.limits.region_sharded,
+            "entity import requires a region-sharded world"
+        );
+        ensure!(
+            transfer.direction == HandoffDirection::Import,
+            "destination import has the wrong transfer direction"
+        );
+        validate_entity_ref(&transfer.entity_ref)?;
+        ensure!(
+            transfer.new_owner_epoch.is_some_and(|new_owner_epoch| {
+                transfer.prior_owner_epoch.checked_add(1) == Some(new_owner_epoch)
+            }),
+            "destination import does not advance the owner epoch"
+        );
+        ensure!(
+            transfer.payload.is_none(),
+            "destination import carries a duplicate payload outside its event"
+        );
+        ensure!(
+            !self
+                .handoff_transfers
+                .iter()
+                .any(|existing| existing.handoff_id == transfer.handoff_id)
+                && !matches!(
+                    self.latest_transfer(&transfer.entity_ref),
+                    Some(latest) if latest.direction == HandoffDirection::Import
+                ),
+            "entity already has an active import or handoff ID is duplicated"
+        );
+        ensure_epoch_chains(transfer, &self.handoff_transfers)?;
+        Ok(())
+    }
+
+    /// Install an import receipt after its matching journal record is durable.
+    pub(crate) fn record_entity_import(&mut self, transfer: HandoffTransferState) {
+        debug_assert!(self.validate_entity_import(&transfer).is_ok());
         self.handoff_transfers.push(transfer);
         self.since_checkpoint = self.since_checkpoint.saturating_add(1);
     }

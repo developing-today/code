@@ -48,7 +48,17 @@ import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS } from "./aa.ts";
-import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  raiseNeedsDrew,
+  recordAnswer,
+  shouldFetchNeedsDrewCensus,
+  validateNeedsDrew,
+  type NeedsDrewCensus,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -121,6 +131,7 @@ import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type D
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
+  requestAlertTick,
   sendClassTestPush,
   sendTestPush,
   startAlertEngine,
@@ -524,6 +535,99 @@ async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// --- Needs-Drew questions (#8568) ------------------------------------------
+
+/** The token-carrying answer-page URL for a raised question. */
+function needsDrewAnswerUrl(item: NeedsDrewQuestion): string {
+  return `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+}
+
+const ANSWER_PAGE_STYLE = `<style>
+  body { font-family: system-ui, sans-serif; background: #0e1117; color: #e6edf3; margin: 0; padding: 2rem 1rem; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; line-height: 1.35; }
+  .context { color: #9da7b1; white-space: pre-wrap; }
+  .links a { color: #58a6ff; display: block; margin: 0.35rem 0; overflow-wrap: anywhere; }
+  .options { display: grid; gap: 0.6rem; margin: 1.2rem 0; }
+  button.option { text-align: left; padding: 0.8rem 1rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; }
+  button.option:hover { border-color: #58a6ff; }
+  textarea { width: 100%; min-height: 4.5rem; box-sizing: border-box; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; padding: 0.6rem; }
+  button.submit { margin-top: 0.6rem; padding: 0.7rem 1.2rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
+  .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
+</style>`;
+
+/** Render GET /answer/<ledgerId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the question. */
+function renderAnswerPage(item: NeedsDrewQuestion): string {
+  const links = item.links
+    .filter((l) => /^https?:\/\//.test(l))
+    .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+    .join("");
+  if (item.answer) {
+    const chosen = item.answer.optionId
+      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      : null;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+<div class="confirm"><p>Answered${chosen ? `: <strong>${esc(chosen)}</strong>` : ""}.</p>
+${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
+<p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
+</main></body></html>`;
+  }
+  const buttons = item.options
+    .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs Drew — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+${item.context ? `<p class="context">${esc(item.context)}</p>` : ""}
+${links ? `<div class="links">${links}</div>` : ""}
+<div class="options">${buttons}</div>
+<label>Or answer in your own words (optional, sent with a tapped option or on its own):
+<textarea id="freeText" placeholder="Free-text answer"></textarea></label>
+<button class="submit" type="button" id="sendText">Send free-text answer</button>
+<p id="status" class="context"></p>
+<script>
+const token = ${JSON.stringify(item.token)};
+const endpoint = ${JSON.stringify(`/api/needs-drew/${encodeURIComponent(item.ledgerId)}/answer`)};
+async function answer(payload) {
+  const status = document.getElementById('status');
+  status.textContent = 'Sending…';
+  try {
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, ...payload }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    status.textContent = 'Answer recorded — thank you. The fleet worker has been unblocked.';
+    document.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  } catch { status.textContent = 'Sending failed — please try again.'; }
+}
+document.querySelectorAll('button.option').forEach((b) => {
+  b.addEventListener('click', () => {
+    const freeText = document.getElementById('freeText').value.trim();
+    answer({ optionId: b.dataset.option, ...(freeText ? { freeText } : {}) });
+  });
+});
+document.getElementById('sendText').addEventListener('click', () => {
+  const freeText = document.getElementById('freeText').value.trim();
+  if (!freeText) { document.getElementById('status').textContent = 'Write an answer first, or tap an option above.'; return; }
+  answer({ freeText });
+});
+</script>
+</main></body></html>`;
+}
+
+function renderAnswerForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Answer link not available</h1>
+<p class="context">This answer link is unknown or its token does not match. Nothing about the question is shown without the correct link.</p>
+</main></body></html>`;
+}
 
 /** The PWA manifest (#3315 slice a, landed with #3676): start_url is
  * the attention view per the design; icons incl. maskable + iOS. */
@@ -2350,13 +2454,116 @@ async function handler(req: Request): Promise<Response> {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     try {
-      const parsed = validateNewIncident(await readJsonBody(req));
+      const rawBody: unknown = await readJsonBody(req);
+      const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
       const { incident, created } = await store.postIncident(parsed.value);
-      return json({ incident, created }, created ? 201 : 200);
+      const status = created ? 201 : 200;
+      // #8568 producer extensions: exactly one of needsDrew /
+      // stackHealth may ride an incident post. The incident insert
+      // above is unchanged; a VALIDATION failure of an extension is a
+      // 400 (the poster's bug should be loud at the poster), while a
+      // store failure is logged and never fails the incident post.
+      const ext =
+        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody)
+          ? (rawBody as Record<string, unknown>)
+          : {};
+      const hasNeedsDrew = ext.needsDrew !== undefined;
+      const hasStackHealth = ext.stackHealth !== undefined;
+      if (hasNeedsDrew && hasStackHealth) {
+        return json({ error: "needsDrew and stackHealth are mutually exclusive" }, 400);
+      }
+      if (hasNeedsDrew) {
+        const v = validateNeedsDrew(ext.needsDrew);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          requestAlertTick();
+          return json(
+            { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
+            status,
+          );
+        } catch (err) {
+          console.error(
+            `alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`,
+          );
+          return json({ incident, created }, status);
+        }
+      }
+      if (hasStackHealth) {
+        const v = validateStackHealth(ext.stackHealth);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          await setStackHealth(cfg.stackHealthFile, v.value);
+          if (v.value.state === "up") {
+            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+          }
+          requestAlertTick();
+        } catch (err) {
+          console.error(
+            `alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+        return json({ incident, created }, status);
+      }
+      return json({ incident, created }, status);
     } catch (err) {
       return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  // --- Needs-Drew answers (#8568) --------------------------------------
+  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  if (req.method === "POST" && needsDrewAnswerMatch) {
+    const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid answer body" }, 400);
+    }
+    // No bearer: the per-question token is the authority.
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item || typeof body.token !== "string" || body.token !== item.token) {
+      return json({ error: "unknown question or bad token" }, 403);
+    }
+    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
+    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+      return json({ error: "optionId is not one of the question options" }, 400);
+    }
+    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
+    if (body.freeText !== undefined && freeText === undefined) {
+      return json({ error: "freeText must be a string" }, 400);
+    }
+    if (optionId === undefined && !freeText?.trim()) {
+      return json({ error: "optionId or freeText required" }, 400);
+    }
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
+      ...(optionId !== undefined ? { optionId } : {}),
+      ...(freeText !== undefined ? { freeText } : {}),
+      via: "api",
+    });
+    if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    return json({
+      ledgerId,
+      answered: true,
+      answer: {
+        ...(updated.answer.optionId !== undefined ? { optionId: updated.answer.optionId } : {}),
+        ...(updated.answer.freeText !== undefined ? { freeText: updated.answer.freeText } : {}),
+        at: updated.answer.at,
+        via: updated.answer.via,
+      },
+    });
+  }
+  const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && answerPageMatch) {
+    const ledgerId = decodePathSegment(answerPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const item = ledgerId === null ? null : await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    // Unknown question or token mismatch: 403, and the question is
+    // never rendered — the token is the only authority here.
+    if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
+    return html(renderAnswerPage(item));
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
   if (req.method === "POST" && alertActionMatch) {
@@ -2672,16 +2879,29 @@ if (source.ingestSnapshots) {
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
 startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
-  const [attention, quota, health, actions, comments] = await Promise.all([
-    attentionContext(),
-    source.quota().catch(() => emptyQuotaView()),
-    healthContext(false),
-    actionsStore.all().catch(() => []),
-    commentsStore.all().catch(() => []),
-  ]);
+  const [attention, quota, health, actions, comments, needsDrewRaised, stackHealthDown, stackHealthStates] =
+    await Promise.all([
+      attentionContext(),
+      source.quota().catch(() => emptyQuotaView()),
+      healthContext(false),
+      actionsStore.all().catch(() => []),
+      commentsStore.all().catch(() => []),
+      listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+      listStackHealthDown(cfg.stackHealthFile).catch(() => []),
+      readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
+    ]);
   const drewActivity = [
     ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
     ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
   ];
-  return { attention: attention.view, quota, health, drewActivity, soleDoorPoolIds: deriveSoleDoorPoolIds(quota) };
+  return {
+    attention: attention.view,
+    quota,
+    health,
+    drewActivity,
+    soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
+    needsDrewRaised,
+    stackHealthDown,
+    stackHealthStates,
+  };
 });

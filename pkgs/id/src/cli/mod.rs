@@ -115,7 +115,7 @@ pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
 pub use world::{
     WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs, WorldCrossWorldWriteArgs,
-    WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs, WorldFileScopeArgs,
+    WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs, WorldFileScopeArgs,
     WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs, WorldIsolationArgs,
     WorldJoinArgs, WorldListArgs, WorldLogsArgs, WorldMeasureArgs, WorldMirrorArgs,
     WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldRuntimeArgs,

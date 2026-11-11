@@ -322,6 +322,7 @@ RULES
 - Revalidate fresh state (GitHub issue/PR, current main, queue task) before acting; the recorded progress below may be stale.
 - Respect hard stops: if the issue/PR carries `held`, `user/owned`, `do-not-merge`, or `do-not-auto-edit`, do not edit it; park or block with the reason.
 - Follow {repo}'s AGENTS.md. For code changes use a dedicated worktree; never modify the primary clone's working tree. Preserve unrelated dirty/untracked files.
+- Build discipline on the laptop: run every heavy cargo build/test through the cargo target broker, so the build uses a leased, pooled target dir instead of a per-worktree one (code#6797): `~/tools/cargo-target-broker exec --repo <short repo name, e.g. code> --profile <test for cargo test/bench, release for --release builds, else dev> -- cargo ...`. Never set CARGO_TARGET_DIR to a per-worktree dir, and never blank RUSTC_WRAPPER (that bypasses the shared sccache every other lane benefits from). `~/tools/fleet-build-lock <command>` is an accepted equivalent wrapper for cargo (it leases from the same broker) and is the wrapper for nix builds.
 - Never put a credential value in a prompt, log, PR, issue, or task record.
 - The task is already claimed and lane-bound to this session. It must not be claimed again.
 

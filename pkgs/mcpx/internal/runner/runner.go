@@ -38,6 +38,13 @@ import (
 type Options struct {
 	// Source is the TypeScript to run. Exactly one of Source or File.
 	Source string
+	// SourceName is the name of the file Source was rendered from,
+	// when the caller rendered a declared file's body itself (a
+	// script-backed tool view, #1933 slice 2). It is language
+	// evidence only -- the runner executes Source, never a file by
+	// this name -- so a .py declaration with no shebang is Python
+	// even though its rendered body arrives as text.
+	SourceName string
 	// File is a path to a script. Its directory is used as the working dir.
 	File string
 	// ClientSource is the generated client module of the default target,
@@ -372,6 +379,16 @@ func workDirKeyMaterial(kind string, opts Options) string {
 	return material
 }
 
+// evidenceFile names the file whose extension may speak for the
+// script's language: the execution target when there is one, else the
+// file Source was rendered from.
+func (o Options) evidenceFile() string {
+	if o.File != "" {
+		return o.File
+	}
+	return o.SourceName
+}
+
 // Run generates the client, writes the script and executes it.
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
@@ -399,7 +416,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if ScriptLanguage(opts.File, opts.Source) == codegen.Python.Name {
+	} else if ScriptLanguage(opts.evidenceFile(), opts.Source) == codegen.Python.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a

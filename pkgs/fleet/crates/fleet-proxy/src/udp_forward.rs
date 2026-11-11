@@ -38,6 +38,35 @@ pub const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Poll cadence for the forwarding loops: how often a blocked
 /// read wakes to reap idle peers.
 const POLL: Duration = Duration::from_millis(250);
+/// Maximum concurrent peer sessions per listen socket (#6152).
+/// Each peer holds one CONNECT-UDP session — one thread plus
+/// one socket on each side — so an uncapped peer table lets a
+/// burst of one-datagram sources pin unbounded threads and
+/// sockets for the full [`PEER_IDLE_TIMEOUT`]. Past the cap a
+/// new source is refused loudly (its datagram is dropped, the
+/// peer and the cap are named in the log) and no session opens
+/// for it.
+pub const MAX_PEERS: usize = 64;
+/// Minimum interval between reaps on the datagram path: the
+/// receive-timeout arm already reaps on every quiet poll, so
+/// the busy path reaps at most this often to bound the reap
+/// cost under sustained traffic (#6152).
+pub const REAP_CADENCE: Duration = Duration::from_secs(5);
+
+/// True when the datagram path owes a reap: `now` is at least
+/// [`REAP_CADENCE`] past the last reap. Split out so the
+/// cadence is pinned by unit test rather than by timing.
+fn reap_due(last_reap: Instant, now: Instant) -> bool {
+    now.duration_since(last_reap) >= REAP_CADENCE
+}
+
+/// True when a newly seen source may open a session: the peer
+/// table has room under [`MAX_PEERS`]. Split out so the cap
+/// wiring is pinned by unit test rather than by thread
+/// counting.
+fn peer_admitted(peer_count: usize) -> bool {
+    peer_count < MAX_PEERS
+}
 
 /// One forwarding rule: datagrams arriving on `listen` are
 /// wrapped into CONNECT-UDP sessions to `target_host:target_port`.
@@ -192,15 +221,31 @@ fn reap(peers: &mut HashMap<SocketAddr, Peer>) {
 fn serve_socket(proxy_addr: &str, fwd: &Forward, socket: Arc<UdpSocket>) {
     let mut peers: HashMap<SocketAddr, Peer> = HashMap::new();
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
+    let mut last_reap = Instant::now();
     loop {
         match socket.recv_from(&mut buf) {
             Ok((n, peer_addr)) => {
+                // Sustained traffic never visits the quiet arm,
+                // so reap here too — at a bounded cadence, so
+                // idle peers die during a burst, not only after
+                // it (#6152).
+                if reap_due(last_reap, Instant::now()) {
+                    reap(&mut peers);
+                    last_reap = Instant::now();
+                }
                 let live = peers
                     .get(&peer_addr)
                     .map(|p| p.alive.load(Ordering::SeqCst))
                     .unwrap_or(false);
                 if !live {
                     peers.remove(&peer_addr);
+                    if !peer_admitted(peers.len()) {
+                        eprintln!(
+                            "fleet udp-forward: at peer cap ({MAX_PEERS} peers) on {}; refusing new source {peer_addr}: dropping datagram, no session opened",
+                            fwd.listen
+                        );
+                        continue;
+                    }
                     match open_peer(proxy_addr, fwd, &socket, peer_addr) {
                         Ok(p) => {
                             peers.insert(peer_addr, p);
@@ -354,5 +399,68 @@ mod tests {
             let (n, _) = client.recv_from(&mut buf).unwrap();
             assert_eq!(&buf[..n], payload);
         }
+    }
+
+    #[test]
+    fn reap_cadence_and_peer_cap_wiring() {
+        let now = Instant::now();
+        assert!(!reap_due(now, now));
+        assert!(reap_due(now, now + REAP_CADENCE));
+        assert!(reap_due(now, now + REAP_CADENCE + Duration::from_secs(1)));
+        assert!(peer_admitted(0));
+        assert!(peer_admitted(MAX_PEERS - 1));
+        assert!(!peer_admitted(MAX_PEERS));
+        assert!(!peer_admitted(MAX_PEERS + 100));
+    }
+
+    /// The shim cap (#6152): distinct sources well past
+    /// [`MAX_PEERS`] each send one datagram; exactly the cap
+    /// count gets an echo, the rest are refused (no session, no
+    /// reply). The endpoint here is uncapped relative to the
+    /// probe size, so every refusal is the shim's.
+    #[test]
+    fn peer_cap_refuses_beyond_max() {
+        let echo_port = spawn_echo();
+        let listener = crate::connect_udp::listen("127.0.0.1:0").unwrap();
+        let proxy_addr = listener.local_addr().unwrap().to_string();
+        // Keep the endpoint cap above this probe's source count;
+        // otherwise its own limit could make the shim-cap test pass.
+        std::thread::spawn(move || crate::connect_udp::serve_with_cap(listener, MAX_PEERS + 6));
+
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let fwd_addr = sock.local_addr().unwrap();
+        let fwd = Forward {
+            listen: fwd_addr,
+            target_host: "127.0.0.1".to_string(),
+            target_port: echo_port,
+        };
+        std::thread::spawn(move || serve_socket(&proxy_addr, &fwd, sock));
+
+        let sources: Vec<UdpSocket> = (0..MAX_PEERS + 6)
+            .map(|_| {
+                let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+                s.set_read_timeout(Some(Duration::from_millis(300)))
+                    .unwrap();
+                s
+            })
+            .collect();
+        for (i, s) in sources.iter().enumerate() {
+            let payload = format!("cap-probe-{i}");
+            s.send_to(payload.as_bytes(), fwd_addr).unwrap();
+        }
+        // Session opens are handshake round-trips; give all of
+        // them a beat before draining the replies.
+        std::thread::sleep(Duration::from_secs(3));
+        let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
+        let mut echoed = 0;
+        for s in &sources {
+            if s.recv_from(&mut buf).is_ok() {
+                echoed += 1;
+            }
+        }
+        assert_eq!(
+            echoed, MAX_PEERS,
+            "exactly the cap admits sessions; the rest are refused"
+        );
     }
 }
