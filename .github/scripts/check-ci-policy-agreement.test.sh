@@ -183,6 +183,42 @@ fi
 grep -q "DISAGREEMENT mcpx-fix-test-guard.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-unwaived.out"
 echo "pass: unwaived main leg with branches-ignore: [main] fails as disagreement"
 
+# Codex P2 (PR #8513): block-sequence items indented deeper than
+# key+2 are valid YAML and must still be read — a branches-ignore
+# key at four spaces with its item at eight excludes main exactly
+# like the six-space form above.
+build_tree "$TMP/filter-unwaived-deep"
+wf_raw "$TMP/filter-unwaived-deep" mcpx-fix-test-guard.yml <<'EOF'
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+        - main
+EOF
+if bash "$SCRIPT" "$TMP/filter-unwaived-deep" >"$TMP/filter-unwaived-deep.out" 2>&1; then
+  echo "FAIL: checker certified an unwaived main leg whose deep-indented branches-ignore excludes main" >&2
+  exit 1
+fi
+grep -q "DISAGREEMENT mcpx-fix-test-guard.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-unwaived-deep.out"
+echo "pass: deep-indented block-sequence branches-ignore item still excludes main"
+
+# And the mirror image: a deep-indented branches block list that
+# includes main satisfies the main leg (the waiver goes stale).
+build_tree "$TMP/filter-main-list-deep"
+wf_raw "$TMP/filter-main-list-deep" mcpx-nixbuild.yml <<'EOF'
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches:
+        - main
+EOF
+if bash "$SCRIPT" "$TMP/filter-main-list-deep" >"$TMP/filter-main-list-deep.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a deep-indented block-sequence branches: [main]" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-main-list-deep.out"
+echo "pass: deep-indented block-sequence branches including main satisfies the main leg"
+
 # Missing policy row: production-line guard's row vanishes.
 build_tree "$TMP/norow"
 grep -v "production-line guard" "$TMP/norow/.github/ci-policy.md" >"$TMP/norow/policy.tmp"

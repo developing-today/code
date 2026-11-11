@@ -330,6 +330,8 @@ push_targets_main() {
       ind = RLENGTH
       if (child_indent == 0) child_indent = ind
       if (ind != child_indent) next
+      seq_key_indent = ind
+      seq_indent = 0
       subkey = substr(line, ind + 1)
       sub(/:.*/, "", subkey)
       gsub(/["\047]/, "", subkey)
@@ -369,7 +371,11 @@ push_targets_main() {
       item = $0
       match(item, /^ +/)
       ind = RLENGTH
-      if (child_indent == 0 || (ind != child_indent && ind != child_indent + 2)) next
+      if (seq_indent == 0) {
+        if (ind < seq_key_indent) next
+        seq_indent = ind
+      }
+      if (ind != seq_indent) next
       sub(/^ +-[[:space:]]*/, "", item)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", item)
       if (subkey == "branches") {
