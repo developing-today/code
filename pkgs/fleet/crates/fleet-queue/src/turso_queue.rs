@@ -864,7 +864,7 @@ impl Clone for Arg {
     }
 }
 
-const SCHEMA: [&str; 16] = [
+const SCHEMA: [&str; 17] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -934,6 +934,9 @@ const SCHEMA: [&str; 16] = [
         id INTEGER PRIMARY KEY CHECK (id = 1), \
         consecutive_rate_limits INTEGER NOT NULL DEFAULT 0, \
         open_until TEXT, last_error_class TEXT, updated_at TEXT NOT NULL)",
+    // #8582 increment 2: the merge-intent table, DDL of record in
+    // the pure core module.
+    crate::merge_intent::MERGE_INTENT_DDL,
 ];
 
 // ---------------------------------------------------------------------------
@@ -6427,6 +6430,192 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Merge-intent stack storage (#8582 increment 2) — broker endpoints
+// over the merge_intents table (DDL of record:
+// crate::merge_intent::MERGE_INTENT_DDL, applied via SCHEMA above).
+// Record/list only: the replay executor is a later increment. The
+// append rules themselves (position, base tip) are the pure core's
+// (plan_append), so storage cannot drift from replay semantics, and
+// a stack's full state — branches, order, owners — reads back from
+// this database alone while GitHub is down.
+// ---------------------------------------------------------------------------
+
+const MERGE_INTENT_COLS: &str = "id, stack_id, position, repo, branch, base_branch, \
+    head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+    state, conflict_detail, created_at, updated_at";
+
+fn merge_intent_core(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
+    Some(crate::merge_intent::MergeIntent {
+        stack_id: row.get("stack_id")?.as_str()?.to_string(),
+        position: row.get("position")?.as_i64()?,
+        repo: row.get("repo")?.as_str()?.to_string(),
+        branch: row.get("branch")?.as_str()?.to_string(),
+        base_branch: row.get("base_branch")?.as_str()?.to_string(),
+        head_sha: row
+            .get("head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        issue_number: row.get("issue_number").and_then(|v| v.as_i64()),
+        pr_number: row.get("pr_number").and_then(|v| v.as_i64()),
+        owner_lane: row.get("owner_lane")?.as_str()?.to_string(),
+        owner_worker: row.get("owner_worker")?.as_str()?.to_string(),
+        owner_session: row
+            .get("owner_session")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        state: crate::merge_intent::IntentState::parse(row.get("state")?.as_str()?)?,
+    })
+}
+
+fn stack_rows(t: &TursoBackend, stack_id: &str) -> Result<Vec<Value>, TErr> {
+    t.query_objs(
+        &format!(
+            "SELECT {MERGE_INTENT_COLS} FROM merge_intents \
+             WHERE stack_id = ? ORDER BY position ASC"
+        ),
+        &[Arg::Text(stack_id.to_string())],
+        &[],
+    )
+}
+
+/// The stack state the list endpoint answers: every recorded intent
+/// in merge order, plus the core's derived view (the replay walk,
+/// and where the next append lands) — all from the database alone.
+fn stack_state(stack_id: &str, rows: &[Value]) -> Value {
+    let core: Vec<crate::merge_intent::MergeIntent> =
+        rows.iter().filter_map(merge_intent_core).collect();
+    let walk: Vec<Value> = crate::merge_intent::replay_prefix(&core, stack_id)
+        .iter()
+        .map(|i| {
+            json!({
+                "position": i.position,
+                "branch": i.branch,
+                "base_branch": i.base_branch,
+            })
+        })
+        .collect();
+    json!({
+        "stack_id": stack_id,
+        "intents": rows,
+        "replay_prefix": walk,
+        "next_position": crate::merge_intent::next_position(&core, stack_id),
+        "next_base_branch": crate::merge_intent::next_base_branch(&core, stack_id),
+    })
+}
+
+fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
+    let append = crate::merge_intent::AppendRequest {
+        stack_id: req_str(req, "stack_id").unwrap_or("").to_string(),
+        repo: req_str(req, "repo").unwrap_or("").to_string(),
+        branch: req_str(req, "branch").unwrap_or("").to_string(),
+        base_branch: req_str(req, "base_branch").map(|s| s.to_string()),
+        head_sha: req_str(req, "head_sha").map(|s| s.to_string()),
+        issue_number: req_i64(req, "issue_number"),
+        pr_number: req_i64(req, "pr_number"),
+        owner_lane: req_str(req, "owner_lane").unwrap_or("").to_string(),
+        owner_worker: req_str(req, "owner_worker").unwrap_or("").to_string(),
+        owner_session: req_str(req, "owner_session").map(|s| s.to_string()),
+    };
+    if let Err(e) = crate::merge_intent::validate_append(&append) {
+        return fail(2, e);
+    }
+    // One stack, one repository (#8582): refuse a cross-repo append
+    // before planning — plan_append would otherwise base the new
+    // branch on a tip from the other repository (CodeRabbit finding,
+    // PR #8660). A read failure here is not a verdict: the work
+    // closure below re-reads under the retry loop and surfaces it.
+    if let Ok(pre_rows) = stack_rows(t, &append.stack_id) {
+        let pre_existing: Vec<crate::merge_intent::MergeIntent> =
+            pre_rows.iter().filter_map(merge_intent_core).collect();
+        if let Err(e) = crate::merge_intent::validate_append_against_stack(&pre_existing, &append) {
+            return fail(2, e);
+        }
+    }
+    let work = (|| -> Result<Value, TErr> {
+        // Concurrent lanes recording into the same stack can read the
+        // same rows and plan the same next position; the loser's INSERT
+        // then hits UNIQUE(stack_id, position). Retry the whole
+        // read/plan/insert cycle on that conflict so position AND base
+        // branch are recalculated from the winner's row (Codex P2 on
+        // PR #8660). Other errors — including the UNIQUE(repo, branch)
+        // duplicate-branch refusal — return immediately.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let existing_rows = stack_rows(t, &append.stack_id)?;
+            let existing: Vec<crate::merge_intent::MergeIntent> =
+                existing_rows.iter().filter_map(merge_intent_core).collect();
+            // Safety net for a cross-repo row landing between the
+            // pre-check below and this read: never plan on its tip.
+            crate::merge_intent::validate_append_against_stack(&existing, &append)?;
+            let planned = crate::merge_intent::plan_append(&existing, &append);
+            let now = now_iso();
+            let res = t.exec(
+                "INSERT INTO merge_intents (stack_id, position, repo, branch, base_branch, \
+                 head_sha, issue_number, pr_number, owner_lane, owner_worker, owner_session, \
+                 state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &[
+                    Arg::Text(planned.stack_id.clone()),
+                    Arg::Int(planned.position),
+                    Arg::Text(planned.repo.clone()),
+                    Arg::Text(planned.branch.clone()),
+                    Arg::Text(planned.base_branch.clone()),
+                    arg_str(planned.head_sha.as_deref()),
+                    planned.issue_number.map(Arg::Int).unwrap_or(Arg::Null),
+                    planned.pr_number.map(Arg::Int).unwrap_or(Arg::Null),
+                    Arg::Text(planned.owner_lane.clone()),
+                    Arg::Text(planned.owner_worker.clone()),
+                    arg_str(planned.owner_session.as_deref()),
+                    Arg::Text(planned.state.as_str().to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Text(now),
+                ],
+            );
+            let res = match res {
+                Ok(res) => res,
+                Err(e)
+                    if attempt < 5
+                        && e.contains("UNIQUE constraint failed")
+                        && e.contains("stack_id") =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            let rows = stack_rows(t, &append.stack_id)?;
+            let inserted = rows
+                .iter()
+                .find(|r| r.get("id").and_then(|v| v.as_i64()) == res.last_insert_rowid)
+                .cloned()
+                .unwrap_or(Value::Null);
+            return Ok(json!({
+                "intent": inserted,
+                "stack": stack_state(&append.stack_id, &rows),
+            }));
+        }
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+fn verb_stack_list(t: &TursoBackend, req: &Value) -> Value {
+    let Some(stack_id) = req_str(req, "stack_id") else {
+        return fail(2, "stack_id is required".to_string());
+    };
+    let stack_id = stack_id.to_string();
+    let work = (|| -> Result<Value, TErr> {
+        let rows = stack_rows(t, &stack_id)?;
+        Ok(stack_state(&stack_id, &rows))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
 fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
     let queue = req_str(req, "queue").unwrap_or("").to_string();
     let work = (|| -> Result<Value, TErr> {
@@ -7016,6 +7205,8 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/list" => verb_list(t, req),
         "/health" => verb_health(t, req),
         "/signal-count" => verb_signal_count(t, req),
+        "/stack-record" => verb_stack_record(t, req),
+        "/stack-list" => verb_stack_list(t, req),
         "/events-append" => verb_events_append(t, req),
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
@@ -7035,6 +7226,36 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn stack_storage_wiring_8582() {
+        // Source oracle for increment 2 of #8582: the schema applies
+        // the core's DDL of record, dispatch routes both stack
+        // verbs, and the record verb decides validation + append
+        // planning in the pure core (never in SQL).
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("crate::merge_intent::MERGE_INTENT_DDL"),
+            "schema applies the merge_intents DDL of record"
+        );
+        let dispatch_seg = seg8217(src, "pub fn dispatch(", "\n#[cfg(test)]");
+        assert!(
+            dispatch_seg.contains("\"/stack-record\" => verb_stack_record(t, req)"),
+            "dispatch routes /stack-record"
+        );
+        assert!(
+            dispatch_seg.contains("\"/stack-list\" => verb_stack_list(t, req)"),
+            "dispatch routes /stack-list"
+        );
+        let record = seg8217(src, "fn verb_stack_record(", "\nfn verb_stack_list(");
+        assert!(
+            record.contains("validate_append("),
+            "record validates via the core"
+        );
+        assert!(record.contains("plan_append("), "record plans via the core");
+        let list = seg8217(src, "fn verb_stack_list(", "\nfn verb_signal_count(");
+        assert!(list.contains("stack_state("), "list answers the derived stack state");
+    }
 
     #[test]
     fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
