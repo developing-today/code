@@ -379,10 +379,18 @@ pub fn fold_authorisation(
 
 /// Signs a rate authorisation as a `currency.rate_authorisation` event.
 ///
+/// The authorisation is validated against the signing key's issuer
+/// before anything is signed (#6422): a body the fold would always
+/// ignore — one naming another issuer, a zero rate denominator, and
+/// the rest of [`RateAuthorisation::validate`]'s rules — is refused
+/// here instead of signing successfully and being dead on arrival.
+///
 /// # Errors
 ///
-/// Returns a chain error if the extension or backlink is invalid, or a
-/// JSON error if the authorisation cannot be serialized.
+/// Returns a validation error if the authorisation fails
+/// [`RateAuthorisation::validate`] for the signing key's issuer, a
+/// chain error if the extension or backlink is invalid, or a JSON
+/// error if the authorisation cannot be serialized.
 pub fn sign_authorisation(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -390,6 +398,7 @@ pub fn sign_authorisation(
     authorisation: &RateAuthorisation,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    authorisation.validate(&issuer_id(key))?;
     let body = authorisation.body()?;
     Ok(chain::sign(
         key,
@@ -456,6 +465,10 @@ pub enum SignError {
     Json(serde_json::Error),
     /// The chain refused the event (extension or backlink rules).
     Chain(chain::ChainError),
+    /// The authorisation failed validation for the signing issuer
+    /// (#6422): signing it would produce an event the fold always
+    /// ignores.
+    Validate(ValidateError),
 }
 
 impl From<serde_json::Error> for SignError {
@@ -470,11 +483,18 @@ impl From<chain::ChainError> for SignError {
     }
 }
 
+impl From<ValidateError> for SignError {
+    fn from(err: ValidateError) -> Self {
+        Self::Validate(err)
+    }
+}
+
 impl std::fmt::Display for SignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Json(err) => write!(f, "currency object would not serialize: {err}"),
             Self::Chain(err) => write!(f, "chain refused the currency event: {err:?}"),
+            Self::Validate(err) => write!(f, "authorisation failed validation: {err}"),
         }
     }
 }
@@ -842,6 +862,38 @@ mod tests {
                 revoked_version_from: 2,
                 effective_at: 100,
             })
+        );
+    }
+
+    #[test]
+    fn sign_authorisation_refuses_an_authorisation_for_another_issuer() {
+        // Oracle: #6422 — the fold ignores any authorisation whose
+        // body names an issuer other than the event author, so
+        // signing one with a different key must refuse at sign time
+        // instead of succeeding silently.
+        let auth = forward();
+        let error = sign_authorisation(&other_key(), 0, None, &auth, vec![])
+            .expect_err("an authorisation naming another issuer must not sign");
+        assert!(
+            matches!(error, SignError::Validate(ValidateError::IssuerMismatch)),
+            "expected SignError::Validate(IssuerMismatch), got {error:?}"
+        );
+    }
+
+    #[test]
+    fn sign_authorisation_refuses_a_zero_rate_denominator() {
+        // Oracle: #6422 — a rate_den of 0 is dead on arrival in the
+        // fold (validate's ZeroRateDenominator); signing must refuse.
+        let mut auth = forward();
+        auth.rate_den = 0;
+        let error = sign_authorisation(&lp_key(), 0, None, &auth, vec![])
+            .expect_err("a zero rate denominator must not sign");
+        assert!(
+            matches!(
+                error,
+                SignError::Validate(ValidateError::ZeroRateDenominator)
+            ),
+            "expected SignError::Validate(ZeroRateDenominator), got {error:?}"
         );
     }
 
