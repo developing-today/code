@@ -51,7 +51,7 @@ Flow:
    issue, task, or session created (issue #2903).
 1. Create the tracking GitHub issue (`source/dispatch` label; body = the
    prompt + a dispatch footer). Skipped with a `warnings` entry for
-   dezren39/nix, where the pm-stack GitHub App is not installed.
+   developing-today/zettel, where the pm-stack GitHub App is not installed.
 2. Enqueue a repo-task/v1 queue task (`small_fix` with the canonical
    `repo-health:v1:fix:<repo>:issue:<n>` dedupe key when an issue exists,
    else `triage` with a unique `repo-health:v1:triage:<repo>:dispatch:<rand8>`
@@ -117,10 +117,10 @@ comment naming the task id plus the `queue/queued` and
 `source/dispatch` labels. The response is `201 {task_id,
 issue_number, issue_url, queue}`, where `issue_url` is
 `https://github.com/<repo>/issues/<issue_number>`. `issue_number`
-takes precedence over `issue` when both are sent. For dezren39/nix,
-where the GitHub App is not installed, the attach is skipped with a
-`warnings` entry; the task is still enqueued and `issue_number` is
-still returned.
+takes precedence over `issue` when both are sent. For
+developing-today/zettel, where the GitHub App is not installed, the
+attach is skipped with a `warnings` entry; the task is still enqueued
+and `issue_number` is still returned.
 
 ### `GET /v1/tasks/:id` — task status (issue #5555)
 
@@ -518,7 +518,7 @@ touching any caller.
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                                                                                       |
 
 GitHub issue creation uses the pm-stack GitHub App (installed on code,
-opencode, openchamber and dezren39/nix — **not** developing-today/zettel
+opencode, openchamber and dezren39/darwin-nix — **not** developing-today/zettel
 or dezren39/dezren39, where issue creation is skipped with a warning).
 If the app route is unusable, the laptop's
 authenticated `gh` CLI is the fallback; if both fail, the request
