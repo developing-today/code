@@ -172,6 +172,18 @@ push_targets_main() {
       }
       return 0
     }
+    function flow_unclosed(str,   j, c, q, open) {
+      q = ""
+      open = 0
+      for (j = 1; j <= length(str); j++) {
+        c = substr(str, j, 1)
+        if (q != "") { if (c == q) q = "" }
+        else if (c == "\047" || c == "\"") q = c
+        else if (c == "[") open = 1
+        else if (c == "]" && open) open = 0
+      }
+      return open
+    }
     function flow_span(str, key,   i, start, seg) {
       i = index(str, key)
       if (i == 0) return ""
@@ -272,6 +284,7 @@ push_targets_main() {
       sub(/^  /, "", key)
       sub(/:.*/, "", key)
       inpush = (key == "push")
+      if (!inpush) child_indent = 0
       if (inpush) {
         seen_push = 1
         rest = $0
@@ -281,16 +294,19 @@ push_targets_main() {
       subkey = ""
       next
     }
-    inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0 }
-    inpush && /^    [a-z-]+:/ {
+    inblock && /^[^[:space:]#]/ { inblock = 0; inpush = 0; child_indent = 0 }
+    inpush && /^ +[a-z-]+:/ {
       line = $0
-      subkey = line
-      sub(/^    /, "", subkey)
+      match(line, /^ +/)
+      ind = RLENGTH
+      if (child_indent == 0) child_indent = ind
+      if (ind != child_indent) next
+      subkey = substr(line, ind + 1)
       sub(/:.*/, "", subkey)
-      val = line
+      val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
-      if ((subkey == "branches" || subkey == "branches-ignore") && val ~ /\[/ && val !~ /\]/) flow_key = subkey
+      if ((subkey == "branches" || subkey == "branches-ignore") && flow_unclosed(val)) flow_key = subkey
       if (subkey == "branches") {
         seen_branches = 1
         seen_branch_filter = 1
@@ -319,9 +335,12 @@ push_targets_main() {
       }
       next
     }
-    inpush && /^    (  )?-[[:space:]]/ {
+    inpush && /^ +-[[:space:]]/ {
       item = $0
-      sub(/^    (  )?-[[:space:]]*/, "", item)
+      match(item, /^ +/)
+      ind = RLENGTH
+      if (child_indent == 0 || (ind != child_indent && ind != child_indent + 2)) next
+      sub(/^ +-[[:space:]]*/, "", item)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", item)
       if (subkey == "branches") {
         seen_branches = 1

@@ -500,4 +500,194 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-inline_class.out"
 echo "pass: inline push mapping with a quoted character class satisfies the main leg"
 
+
+
+# Codex P2 regression on #8513 round 6: push children may sit at
+# any consistent indentation depth, not only four spaces.
+build_tree "$TMP/filter-deep_indent"
+wf_raw "$TMP/filter-deep_indent" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+      branches: [release]
+EOF
+bash "$SCRIPT" "$TMP/filter-deep_indent" >"$TMP/filter-deep_indent.out"
+grep -q "ci-policy-agreement: OK" "$TMP/filter-deep_indent.out"
+grep -q "WAIVED mcpx-nixbuild.yml: main tier requires a push trigger on branches: \[main\]" "$TMP/filter-deep_indent.out"
+if grep -q "STALE WAIVER mcpx-nixbuild.yml" "$TMP/filter-deep_indent.out"; then
+  echo "FAIL: a six-space branches filter was treated as an unfiltered push" >&2
+  exit 1
+fi
+echo "pass: six-space-deep branches: [release] keeps the main leg waived"
+
+build_tree "$TMP/filter-deep_indent_list"
+wf_raw "$TMP/filter-deep_indent_list" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+      branches:
+        - main
+EOF
+if bash "$SCRIPT" "$TMP/filter-deep_indent_list" >"$TMP/filter-deep_indent_list.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a deep-indented branches list" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-deep_indent_list.out"
+echo "pass: deep-indented branches list including main satisfies the main leg"
+
+# Codex P1 regression on #8513: generated coverage for the parser.
+# Equivalent YAML representations of the same logical push filter
+# must yield the same verdict. Oracle: an independent Python
+# reference for GitHub filter-pattern semantics over the single
+# branch name "main" (ordered branches evaluation with negation,
+# any-match branches-ignore, branch-filter presence beats the
+# tags-only rule) — expectations are computed by the oracle from
+# the case definitions, never copied from the awk implementation.
+# Representations generated per case: flow list, indented block
+# sequence, indentless block sequence, multiline flow list.
+python3 - "$SCRIPT" "$TMP" <<'PYEOF'
+import os, re, subprocess, sys
+
+script, tmp = sys.argv[1], sys.argv[2]
+
+def translate(pat):
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if c == '*':
+            if pat[i:i+2] == '**':
+                if pat[i+2:i+3] == '/':
+                    out.append('(?:.*/)?'); i += 3
+                else:
+                    out.append('.*'); i += 2
+            else:
+                out.append('[^/]*'); i += 1
+        elif c in '?+':
+            out.append(c); i += 1
+        elif c == '[':
+            j = i + 1
+            if pat[j:j+1] == '!':
+                j += 1
+            while j < len(pat) and pat[j] != ']':
+                j += 1
+            cls = pat[i+1:j]
+            if cls.startswith('!'):
+                cls = '^' + cls[1:]
+            out.append('[' + cls + ']'); i = j + 1
+        else:
+            out.append(re.escape(c)); i += 1
+    return '^' + ''.join(out) + '$'
+
+def matches(pat):
+    return re.match(translate(pat), 'main') is not None
+
+def verdict(branches=None, ignore=None, tags=False):
+    if ignore and any(matches(p) for p in ignore):
+        return 'no'
+    if branches is not None:
+        allow = False
+        for p in branches:
+            if p.startswith('!'):
+                if matches(p[1:]):
+                    allow = False
+            elif matches(p):
+                allow = True
+        return 'yes' if allow else 'no'
+    if ignore is not None:
+        return 'yes'
+    return 'no' if tags else 'yes'
+
+def q(p):
+    if any(ch in p for ch in ',#[] ') or p.startswith('!'):
+        return "'" + p + "'"
+    return p
+
+def render(kind, pats, style):
+    if style == 'flow':
+        return [f"    {kind}: [{', '.join(q(x) for x in pats)}]"]
+    if style == 'block':
+        return [f"    {kind}:"] + [f"      - {q(x)}" for x in pats]
+    if style == 'indentless':
+        return [f"    {kind}:"] + [f"    - {q(x)}" for x in pats]
+    if style == 'multiline':
+        lines = [f"    {kind}: ["]
+        lines += [f"      {q(x)}," for x in pats[:-1]]
+        if pats:
+            lines.append(f"      {q(pats[-1])}")
+        lines.append("    ]")
+        return lines
+    raise ValueError(style)
+
+POLICY = """| workflow-lint | basic | — | — |
+| proxy-port-fallbacks | basic | — | — |
+| fleet-search-parity-guard | basic | — | — |
+| opencode-config-guard | basic | main | — |
+| mcpx fix-test guard (#1969) | basic | main | — |
+| production-line guard (#1411) | basic | — | — |
+| go modules build / identity build / map build / mcpx nix build | class-3 | main | — |
+"""
+BASE = {
+    'workflow-lint.yml': ['pull_request', 'workflow_dispatch'],
+    'proxy-port-fallbacks.yml': ['pull_request'],
+    'fleet-search-parity-guard.yml': ['pull_request', 'workflow_dispatch'],
+    'opencode-config-guard.yml': ['pull_request', 'workflow_dispatch'],
+    'mcpx-fix-test-guard.yml': ['pull_request', 'push', 'workflow_dispatch'],
+    'production-line-guard.yml': ['workflow_dispatch'],
+    'go-modules-build.yml': ['workflow_dispatch'],
+    'identity-build.yml': ['workflow_dispatch'],
+    'map-build.yml': ['workflow_dispatch'],
+}
+
+def build(case_root, push_lines):
+    os.makedirs(case_root + '/.github/workflows', exist_ok=True)
+    with open(case_root + '/.github/ci-policy.md', 'w') as f:
+        f.write(POLICY)
+    for name, triggers in BASE.items():
+        with open(f'{case_root}/.github/workflows/{name}', 'w') as f:
+            f.write(f'name: {name}\non:\n')
+            for tr in triggers:
+                f.write(f'  {tr}:\n')
+            f.write('jobs: {}\n')
+    with open(case_root + '/.github/workflows/mcpx-nixbuild.yml', 'w') as f:
+        f.write('name: mcpx-nixbuild.yml\non:\n  workflow_dispatch:\n  push:\n')
+        f.write('\n'.join(push_lines) + '\njobs: {}\n')
+
+BRANCH_CASES = [
+    ['main'], ['release'], ['main', '!main'], ['!main', 'main'],
+    ['m*'], ['*'], ['**/main'], ['ma+in'], ['main?'], ['[a-z]ain'],
+    ['[!a]ain'], ['release,main'], ['mai'], [],
+]
+IGNORE_CASES = [
+    ['main'], ['release'], ['*'], ['**/main'], ['main?'], ['[a-z]ain'],
+]
+STYLES = ['flow', 'block', 'indentless', 'multiline']
+
+cases = []
+for pats in BRANCH_CASES:
+    cases.append((f'branches {pats}', render('branches', pats, 'flow'), verdict(branches=pats)))
+    for style in STYLES[1:]:
+        cases.append((f'branches {pats} [{style}]', render('branches', pats, style), verdict(branches=pats)))
+for pats in IGNORE_CASES:
+    for style in STYLES:
+        cases.append((f'branches-ignore {pats} [{style}]', render('branches-ignore', pats, style), verdict(ignore=pats)))
+cases.append(('tags only', render('tags', ['v*'], 'flow'), verdict(tags=True)))
+cases.append(('ignore + tags', render('branches-ignore', ['release'], 'flow') + render('tags', ['v*'], 'flow'), verdict(ignore=['release'], tags=True)))
+
+failures = 0
+for idx, (name, push_lines, want) in enumerate(cases):
+    root = f'{tmp}/gen-{idx}'
+    build(root, push_lines)
+    proc = subprocess.run(['bash', script, root], capture_output=True, text=True)
+    out = proc.stdout + proc.stderr
+    if want == 'yes':
+        ok = proc.returncode != 0 and 'STALE WAIVER mcpx-nixbuild.yml: main leg now agrees' in out
+    else:
+        ok = proc.returncode == 0 and 'WAIVED mcpx-nixbuild.yml: main tier' in out and 'STALE WAIVER mcpx-nixbuild.yml' not in out
+    if not ok:
+        failures += 1
+        print(f'GEN FAIL {name}: want verdict {want}, rc={proc.returncode}')
+        print(out[:600])
+print(f'generated coverage: {len(cases)} cases, {failures} failures')
+sys.exit(1 if failures else 0)
+PYEOF
+echo "pass: generated representation/pattern coverage agrees with the oracle"
+
 echo "check-ci-policy-agreement.test: all contract tests passed"
