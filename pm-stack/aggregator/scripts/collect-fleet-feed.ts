@@ -126,6 +126,7 @@ import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
+import { deriveExhaustionForecasts } from "../src/quota-exhaustion.ts";
 import {
   deriveBurnHistory,
   deriveMeasuredRatesFromPoolTokens,
@@ -1211,6 +1212,9 @@ async function main(): Promise<void> {
         ratesSet += 1;
       }
     }
+    // Exhaustion intervals (#3983) compose the same observations:
+    // per-pool forecasts ride on the pool like burnTokensPerMin.
+    deriveExhaustionForecasts(pools, mergedObservations, now);
     markSection("burnHistory", burnSegments.length || ratesSet ? "ok" : "skipped");
   } catch (err) {
     console.error("collector: burn-history derivation failed; burn stays empty this run");
