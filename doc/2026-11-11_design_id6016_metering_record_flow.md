@@ -79,7 +79,7 @@ One event per binding invocation, emitted at invocation end (including trapped i
 
 ### 3.2 Compile event shape
 
-One event per compile job, sharing `schema`, `tick`-free identity (`world` replaced by the compile's target artifact hash where a world does not exist yet), `actor`, and versions. Distinct fields, per #5965 §5:
+One event per compile job, sharing `schema`, `actor`, and versions. A compile event's identity is the **compile job id plus the input-derived cache key** (#5965 §2.1: the BLAKE3 key over platform tree hash, source closure hash, DLL closure hash, compiler digest, and target) — both known before the job runs. The output **artifact hash is an optional field, present only when an artifact exists** (`success`, `hit`); a `failed` or `delayed` compile of a not-yet-existing world has neither a world id nor an artifact, and its event is identified by job + cache key alone. Distinct fields, per #5965 §5:
 
 | Field | Meaning |
 | --- | --- |
@@ -124,12 +124,12 @@ Any future field is admitted only by naming its consumer in this table in the sa
 
 ### 5.2 Per-session
 
-- **Where:** the world session (one world instance's lifetime on one host). Session rollup is a running fold of tick entries by `(binding, function_class, outcome)`: fuel totals, invocation counts, trap counts, host-charge totals by kind.
+- **Where:** the world session (one world instance's lifetime on one host). Session rollup is a running fold of tick entries by `(utc_day, binding, function_class, outcome)`: fuel totals, invocation counts, trap counts, host-charge totals by kind. The **UTC-day bucket is preserved at this fold, before any summarising**: a session spanning UTC midnight produces one summary segment per day, because §5.3's ledger rows are daily and a fold that combined both days could never be split back — and assigning the processing day instead would misattribute consumption after a rollup outage. `utc_day` here is rollup grouping metadata only (derived from tick order at flush time); it is not an event field and no fairness or adjudication rule reads it (§3.1's no-wall-clock rule stands).
 - **Flush:** one session summary record at session close; plus a **spill record every 1024 ticks** for long sessions, so a crashed host loses at most 1023 ticks of session-level detail — and loses **no totals**, because the tick log (§5.1) is already durable and the session rollup is re-derivable from it. The session rollup is a cache of the tick log, never its replacement.
 
 ### 5.3 Per-account (durable ledger)
 
-- **Key:** `(actor, world, function, function_class, day, kind, engine_version, cost_table_version)` — day is a UTC calendar bucket used only for rollup grouping; it is a ledger key, not an event field, and no fairness or adjudication rule reads it.
+- **Key:** `(actor, world, function, function_class, day, kind, engine_version, cost_table_version)` — day is a UTC calendar bucket used only for rollup grouping; it is a ledger key, not an event field, and no fairness or adjudication rule reads it. The day in the key is the consumption day segment carried by the session summary (§5.2), never the day the rollup job runs — a delayed rollup rewrites the original days' rows (§5.3 flush), it does not move consumption to its own day. Compile rows carry no `world`/`function` (their identity is job + cache key, §3.2) and group by `(actor, day, kind, tier_at_compile)` instead.
 - **Flush mechanism:** an asynchronous rollup job folds session summary records (and, for compile events, the compile event stream) into ledger rows. It is **at-least-once with idempotent rows**: each ledger row carries the `(session, last tick)` / event-range watermark it covers, and re-folding the same range rewrites the identical row. A rollup outage delays visibility; it cannot lose or double-count, because the tick log and session records are the source and the watermark is the cursor.
 - **Retention:** events (tick entries) follow tick-log retention; ledger rows are retained indefinitely (they are the smallest durable form: one row per key per day).
 
