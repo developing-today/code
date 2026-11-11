@@ -6,6 +6,9 @@ import { esc } from "../src/render.ts";
 import {
   decisionSetOpenState,
   decisionSetProgress,
+  getDecisionDrafts,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
   deferOpenQuestions,
   deferWithSubmissions,
   getDecisionSet,
@@ -426,5 +429,129 @@ describe("decisions page crash hardening (#8777)", () => {
     // is what prunes their drafts so a stale draft can never resurrect.
     expect(js).toContain("MutationObserver(draftSave)");
     expect(js).toContain("draftRestore()");
+  });
+});
+
+// --- Server-side drafts (#8766 both-layers upgrade) --------------------
+// Drafts mirror the page's in-progress form state server-side so work
+// survives the device it was typed on. They are NOT resolutions: they
+// never enter the feed the catcher consumes, and a question's draft
+// dies the moment the question resolves, on every resolution path.
+describe("decisions server drafts", () => {
+  test("upsert, read back, and clear-on-answer", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    const up = await upsertDecisionDrafts(file, "set-test-1", {
+      questions: {
+        "item-a#1": { opt: "opt-2", ft: "draft words", updatedAt: "2026-11-11T20:00:00.000Z" },
+        "item-a#2": { note: "need the numbers", updatedAt: "2026-11-11T20:00:00.000Z" },
+      },
+      bulk: ["item-b"],
+      bulkLean: "skeptical",
+      bulkNote: "",
+    });
+    expect(up?.applied.slice().sort()).toEqual(["item-a#1", "item-a#2"]);
+    const drafts = await getDecisionDrafts(file, "set-test-1");
+    expect(drafts?.questions["item-a#1"]).toMatchObject({ opt: "opt-2", ft: "draft words" });
+    expect(drafts?.questions["item-a#2"]).toMatchObject({ note: "need the numbers" });
+    expect(drafts?.bulk).toEqual(["item-b"]);
+    expect(drafts?.bulkLean).toBe("skeptical");
+    // Answering item-a#1 kills only its own draft.
+    await recordResolutions(file, "set-test-1", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-1" },
+    ]);
+    const after = await getDecisionDrafts(file, "set-test-1");
+    expect(after?.questions["item-a#1"]).toBeUndefined();
+    expect(after?.questions["item-a#2"]).toMatchObject({ note: "need the numbers" });
+  });
+
+  test("drafts never enter the resolutions feed", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    await upsertDecisionDrafts(file, "set-test-1", {
+      questions: { "item-a#1": { ft: "unsubmitted", updatedAt: "2026-11-11T20:00:00.000Z" } },
+    });
+    expect(await listDecisionResolutions(file)).toEqual([]);
+    await recordResolutions(file, "set-test-1", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "deferred", lean: "none" },
+    ]);
+    const feed = await listDecisionResolutions(file);
+    expect(feed).toHaveLength(1);
+    expect(feed[0]).toMatchObject({ qid: "item-a#1", kind: "deferred" });
+  });
+
+  test("ghost qids are skipped and resolved questions never resurrect", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    const ghost = await upsertDecisionDrafts(file, "set-test-1", {
+      questions: { "nope#9": { ft: "boo", updatedAt: "2026-11-11T20:00:00.000Z" } },
+    });
+    expect(ghost?.applied).toEqual([]);
+    expect(ghost?.skipped).toEqual([{ qid: "nope#9", reason: "unknown-question" }]);
+    await recordResolutions(file, "set-test-1", [
+      { ledgerId: "item-a", qid: "item-a#1", kind: "answered", freeText: "done" },
+    ]);
+    const zombie = await upsertDecisionDrafts(file, "set-test-1", {
+      questions: { "item-a#1": { ft: "too late", updatedAt: "2026-11-11T21:00:00.000Z" } },
+    });
+    expect(zombie?.skipped).toEqual([{ qid: "item-a#1", reason: "already-resolved" }]);
+    expect((await getDecisionDrafts(file, "set-test-1"))?.questions["item-a#1"]).toBeUndefined();
+  });
+
+  test("tombstones delete; defer and request-info clear drafts too", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    await upsertDecisionDrafts(file, "set-test-1", {
+      questions: {
+        "item-a#1": { ft: "x", updatedAt: "2026-11-11T20:00:00.000Z" },
+        "item-a#2": { ft: "y", updatedAt: "2026-11-11T20:00:00.000Z" },
+        "item-b#1": { ft: "z", updatedAt: "2026-11-11T20:00:00.000Z" },
+      },
+    });
+    const del = await upsertDecisionDrafts(file, "set-test-1", { questions: { "item-a#1": null } });
+    expect(del?.applied).toEqual(["item-a#1"]);
+    expect((await getDecisionDrafts(file, "set-test-1"))?.questions["item-a#1"]).toBeUndefined();
+    await deferOpenQuestions(file, "set-test-1", { ledgerIds: ["item-a"] }, "approve");
+    expect((await getDecisionDrafts(file, "set-test-1"))?.questions["item-a#2"]).toBeUndefined();
+    await requestInfoOpenQuestions(file, "set-test-1", { ledgerIds: ["item-b"] });
+    expect((await getDecisionDrafts(file, "set-test-1"))?.questions["item-b#1"]).toBeUndefined();
+  });
+
+  test("newest updatedAt wins at the store; a stale push is skipped", async () => {
+    await raiseDecisionSet(file, sampleInput());
+    await upsertDecisionDrafts(file, "set-test-1", {
+      questions: { "item-a#1": { ft: "newer", updatedAt: "2026-11-11T21:00:00.000Z" } },
+    });
+    const stale = await upsertDecisionDrafts(file, "set-test-1", {
+      questions: { "item-a#1": { ft: "older", updatedAt: "2026-11-11T20:00:00.000Z" } },
+    });
+    expect(stale?.skipped).toEqual([{ qid: "item-a#1", reason: "stale" }]);
+    expect((await getDecisionDrafts(file, "set-test-1"))?.questions["item-a#1"]?.ft).toBe("newer");
+  });
+
+  test("an unknown set reads back null", async () => {
+    expect(await getDecisionDrafts(file, "no-such-set")).toBeNull();
+    expect(
+      await upsertDecisionDrafts(file, "no-such-set", { questions: {} }),
+    ).toBeNull();
+  });
+
+  test("validateDecisionDraftUpsert rejects malformed payloads", () => {
+    expect(validateDecisionDraftUpsert(null).ok).toBe(false);
+    expect(validateDecisionDraftUpsert({}).ok).toBe(false);
+    expect(validateDecisionDraftUpsert({ questions: { "item-a#1": { updatedAt: "x" } } }).ok).toBe(false);
+    expect(validateDecisionDraftUpsert({ questions: { "item-a#1": { lean: "bogus" } } }).ok).toBe(false);
+    expect(validateDecisionDraftUpsert({ questions: { "item-a#1": null } }).ok).toBe(true);
+    const okRes = validateDecisionDraftUpsert({
+      questions: { "item-a#1": { ft: "hi", lean: "approve", updatedAt: "2026-11-11T20:00:00.000Z" } },
+      bulk: ["item-a"],
+    });
+    expect(okRes.ok).toBe(true);
+  });
+
+  test("draft script wires IndexedDB, the server drafts API and the merge", () => {
+    const js = decisionsDraftScript("set-a");
+    expect(js).toContain("indexedDB.open");
+    expect(js).toContain("/drafts");
+    expect(js).toContain("visibilitychange");
+    expect(js).toContain("draftMergeServer");
+    expect(js).toContain("draftFetchServer");
+    expect(() => new Function(js)).not.toThrow();
   });
 });

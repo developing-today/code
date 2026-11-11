@@ -256,21 +256,64 @@ export function validateDecisionSet(
 interface DecisionsFileShape {
   version: 1;
   sets: DecisionSet[];
+  /** Server-side drafts, keyed by setId. A separate top-level map so
+   * drafts can never be mistaken for resolutions; store files written
+   * before the drafts layer simply lack the key. */
+  drafts?: Record<string, DecisionSetDrafts>;
 }
 
-async function readDecisionSets(file: string): Promise<DecisionSet[]> {
+interface DecisionsData {
+  sets: DecisionSet[];
+  drafts: Record<string, DecisionSetDrafts>;
+}
+
+function sanitizeSetDrafts(raw: unknown): DecisionSetDrafts | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const questions: Record<string, DecisionQuestionDraft> = {};
+  if (r.questions && typeof r.questions === "object" && !Array.isArray(r.questions)) {
+    for (const [qid, qRaw] of Object.entries(r.questions as Record<string, unknown>)) {
+      const entry = sanitizeDraftEntry(qRaw);
+      if (entry) questions[qid] = entry;
+    }
+  }
+  return {
+    questions,
+    bulk: Array.isArray(r.bulk) ? r.bulk.filter((x): x is string => typeof x === "string") : [],
+    bulkLean: typeof r.bulkLean === "string" ? r.bulkLean : "",
+    bulkNote: typeof r.bulkNote === "string" ? r.bulkNote : "",
+    updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : "",
+  };
+}
+
+async function readDecisionsData(file: string): Promise<DecisionsData> {
   try {
     const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
     if (parsed && typeof parsed === "object" && Array.isArray((parsed as DecisionsFileShape).sets)) {
-      return (parsed as DecisionsFileShape).sets.filter(
-        (s): s is DecisionSet =>
-          !!s && typeof s === "object" && typeof s.setId === "string" && typeof s.token === "string" && Array.isArray(s.items),
-      );
+      const shape = parsed as DecisionsFileShape;
+      const drafts: Record<string, DecisionSetDrafts> = {};
+      if (shape.drafts && typeof shape.drafts === "object") {
+        for (const [setId, raw] of Object.entries(shape.drafts)) {
+          const d = sanitizeSetDrafts(raw);
+          if (d) drafts[setId] = d;
+        }
+      }
+      return {
+        sets: shape.sets.filter(
+          (s): s is DecisionSet =>
+            !!s && typeof s === "object" && typeof s.setId === "string" && typeof s.token === "string" && Array.isArray(s.items),
+        ),
+        drafts,
+      };
     }
-    return [];
+    return { sets: [], drafts: {} };
   } catch {
-    return []; // absent/corrupt store reads as empty; a raise rewrites it
+    return { sets: [], drafts: {} }; // absent/corrupt store reads as empty; a raise rewrites it
   }
+}
+
+async function readDecisionSets(file: string): Promise<DecisionSet[]> {
+  return (await readDecisionsData(file)).sets;
 }
 
 let decisionsWriteSeq = 0;
@@ -286,12 +329,39 @@ function serializeDecisions<T>(file: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function writeDecisionSets(file: string, sets: DecisionSet[]): Promise<void> {
+async function writeDecisionsData(file: string, data: DecisionsData): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${++decisionsWriteSeq}`;
-  const data: DecisionsFileShape = { version: 1, sets };
-  await writeFile(tmp, JSON.stringify(data, null, 2));
+  const shape: DecisionsFileShape = { version: 1, sets: data.sets, drafts: data.drafts };
+  await writeFile(tmp, JSON.stringify(shape, null, 2));
   await rename(tmp, file);
+}
+
+/** Delete stored drafts for questions that now carry a resolution.
+ * Returns how many were removed. */
+function pruneResolvedDrafts(set: DecisionSet, drafts: DecisionSetDrafts | undefined): number {
+  if (!drafts) return 0;
+  let removed = 0;
+  for (const item of set.items) {
+    for (const q of item.questions) {
+      if (q.resolution && drafts.questions[q.qid]) {
+        delete drafts.questions[q.qid];
+        removed++;
+      }
+    }
+  }
+  return removed;
+}
+
+/** The sets write shared by every existing writer (raise / record /
+ * defer / request-info): it preserves all sets' server drafts and
+ * prunes the drafts of any question the write just resolved, so a
+ * draft can never outlive its question on the server layer. Callers
+ * are inside serializeDecisions, so the re-read here is consistent. */
+async function writeDecisionSets(file: string, sets: DecisionSet[]): Promise<void> {
+  const { drafts } = await readDecisionsData(file);
+  for (const set of sets) pruneResolvedDrafts(set, drafts[set.setId]);
+  await writeDecisionsData(file, { sets, drafts });
 }
 
 /** Raise a decision set. Idempotent: an existing setId keeps its token
@@ -334,6 +404,111 @@ export async function raiseDecisionSet(
 export async function getDecisionSet(file: string, setId: string): Promise<DecisionSet | null> {
   const sets = await readDecisionSets(file);
   return sets.find((s) => s.setId === setId) ?? null;
+}
+
+
+// --- Decision drafts (server layer, #8766 both-layers upgrade) --------
+//
+// Drafts are Drew's in-progress form state, mirrored server-side so a
+// draft survives the device or browser it was typed on. They live in
+// the same store file as the sets, under a separate top-level `drafts`
+// map, and are NOT resolutions: nothing here ever reaches
+// listDecisionResolutions or the fleet feed. A question's draft is
+// deleted the moment the question resolves (any kind), and an upsert
+// for an already-resolved or unknown question is a no-op, so a stale
+// client can never resurrect a settled question. Per question, the
+// newest updatedAt wins — a slow tab's late push cannot clobber a
+// newer draft of the same question.
+
+export interface DecisionQuestionDraft {
+  /** Selected option id (the page radio's value). */
+  opt?: string;
+  /** The question's text box: the answer text, or the comment that
+   * rides with a defer — the page uses one field for both. */
+  ft?: string;
+  /** Defer pick: a DeferLean value when the defer select is set. */
+  lean?: string;
+  /** Request-info note text. */
+  note?: string;
+  /** Client-stamped last-edit time (ISO); newest wins per question. */
+  updatedAt: string;
+}
+
+export interface DecisionSetDrafts {
+  questions: Record<string, DecisionQuestionDraft>;
+  /** Ledger ids checked for a bulk action. */
+  bulk: string[];
+  bulkLean: string;
+  bulkNote: string;
+  /** Last write to any part of this set's drafts (ISO). */
+  updatedAt: string;
+}
+
+/** Wire shape for a draft upsert: per-question entries; `null` deletes. */
+export interface DecisionDraftUpsert {
+  questions: Record<string, DecisionQuestionDraft | null>;
+  bulk?: string[];
+  bulkLean?: string;
+  bulkNote?: string;
+}
+
+const DRAFT_TEXT_MAX = 16384;
+
+function sanitizeDraftEntry(raw: unknown): DecisionQuestionDraft | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const entry: DecisionQuestionDraft = { updatedAt: "" };
+  if (typeof r.opt === "string" && r.opt) entry.opt = r.opt.slice(0, 200);
+  if (typeof r.ft === "string" && r.ft) entry.ft = r.ft.slice(0, DRAFT_TEXT_MAX);
+  if (isDeferLean(r.lean)) entry.lean = r.lean;
+  if (typeof r.note === "string" && r.note) entry.note = r.note.slice(0, DRAFT_TEXT_MAX);
+  const at = typeof r.updatedAt === "string" ? Date.parse(r.updatedAt) : NaN;
+  entry.updatedAt = Number.isFinite(at) ? new Date(at).toISOString() : "";
+  if (!entry.opt && !entry.ft && !entry.lean && !entry.note) return null;
+  return entry;
+}
+
+/** Validate the POST /api/decisions/<setId>/drafts payload body. */
+export function validateDecisionDraftUpsert(
+  value: unknown,
+): { ok: true; value: DecisionDraftUpsert } | { ok: false; error: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "drafts must be an object" };
+  }
+  const b = value as Record<string, unknown>;
+  if (!b.questions || typeof b.questions !== "object" || Array.isArray(b.questions)) {
+    return { ok: false, error: "drafts.questions must be an object keyed by qid" };
+  }
+  const qEntries = Object.entries(b.questions as Record<string, unknown>);
+  if (qEntries.length > 64) return { ok: false, error: "drafts.questions has too many entries (max 64)" };
+  const questions: Record<string, DecisionQuestionDraft | null> = {};
+  for (const [qid, raw] of qEntries) {
+    if (raw === null) {
+      questions[qid] = null;
+      continue;
+    }
+    const entry = sanitizeDraftEntry(raw);
+    if (!entry) return { ok: false, error: `draft for ${qid} has no usable fields` };
+    questions[qid] = entry;
+  }
+  const out: DecisionDraftUpsert = { questions };
+  if (b.bulk !== undefined) {
+    if (!Array.isArray(b.bulk) || b.bulk.length > 64 || (b.bulk as unknown[]).some((x) => typeof x !== "string")) {
+      return { ok: false, error: "drafts.bulk must be an array of up to 64 strings" };
+    }
+    out.bulk = [...(b.bulk as string[])];
+  }
+  if (b.bulkLean !== undefined) {
+    if (typeof b.bulkLean !== "string" || (b.bulkLean !== "" && !isDeferLean(b.bulkLean))) {
+      return { ok: false, error: "drafts.bulkLean must be '' or a defer lean" };
+    }
+    out.bulkLean = b.bulkLean;
+  }
+  if (b.bulkNote !== undefined) {
+    if (typeof b.bulkNote !== "string") return { ok: false, error: "drafts.bulkNote must be a string" };
+    out.bulkNote = b.bulkNote.slice(0, DRAFT_TEXT_MAX);
+  }
+  return { ok: true, value: out };
 }
 
 export interface DecisionSubmission {
@@ -648,6 +823,116 @@ export async function listDecisionResolutions(file: string): Promise<DecisionRes
   return out;
 }
 
+
+function emptySetDrafts(): DecisionSetDrafts {
+  return { questions: {}, bulk: [], bulkLean: "", bulkNote: "", updatedAt: "" };
+}
+
+/** The stored server drafts for a set (null: unknown set). Drafts for
+ * questions that have since resolved are filtered out — belt and
+ * braces on top of the prune-on-resolve in the writers. */
+export async function getDecisionDrafts(file: string, setId: string): Promise<DecisionSetDrafts | null> {
+  const data = await readDecisionsData(file);
+  const set = data.sets.find((s) => s.setId === setId);
+  if (!set) return null;
+  const stored = data.drafts[setId];
+  if (!stored) return emptySetDrafts();
+  const out = emptySetDrafts();
+  out.bulk = stored.bulk;
+  out.bulkLean = stored.bulkLean;
+  out.bulkNote = stored.bulkNote;
+  out.updatedAt = stored.updatedAt;
+  for (const item of set.items) {
+    for (const q of item.questions) {
+      if (q.resolution) continue;
+      const d = stored.questions[q.qid];
+      if (d) out.questions[q.qid] = d;
+    }
+  }
+  return out;
+}
+
+/**
+ * Upsert a set's server drafts from the page's debounced push. Each
+ * entry is judged independently: unknown qids are skipped, drafts for
+ * already-resolved questions are dropped (never resurrected), a null
+ * entry deletes, and a stale entry (older updatedAt than the stored
+ * draft) loses. The file is rewritten only when something changed,
+ * so a no-op push leaves the store byte-identical.
+ */
+export async function upsertDecisionDrafts(
+  file: string,
+  setId: string,
+  upsert: DecisionDraftUpsert,
+): Promise<{ drafts: DecisionSetDrafts; applied: string[]; skipped: Array<{ qid: string; reason: string }> } | null> {
+  return serializeDecisions(file, async () => {
+    const data = await readDecisionsData(file);
+    const set = data.sets.find((s) => s.setId === setId);
+    if (!set) return null;
+    const stored: DecisionSetDrafts = data.drafts[setId] ?? emptySetDrafts();
+    const applied: string[] = [];
+    const skipped: Array<{ qid: string; reason: string }> = [];
+    let changed = false;
+    for (const [qid, entry] of Object.entries(upsert.questions)) {
+      const cut = qid.lastIndexOf("#");
+      const ledgerId = cut > 0 ? qid.slice(0, cut) : "";
+      const q = ledgerId ? findQuestion(set, ledgerId, qid) : null;
+      if (!q) {
+        skipped.push({ qid, reason: "unknown-question" });
+        continue;
+      }
+      if (q.resolution) {
+        if (stored.questions[qid]) {
+          delete stored.questions[qid];
+          changed = true;
+        }
+        skipped.push({ qid, reason: "already-resolved" });
+        continue;
+      }
+      if (entry === null) {
+        if (stored.questions[qid]) {
+          delete stored.questions[qid];
+          changed = true;
+          applied.push(qid);
+        }
+        continue;
+      }
+      const existing = stored.questions[qid];
+      if (existing && existing.updatedAt && entry.updatedAt && entry.updatedAt < existing.updatedAt) {
+        skipped.push({ qid, reason: "stale" });
+        continue;
+      }
+      const stamped: DecisionQuestionDraft = {
+        ...entry,
+        updatedAt: entry.updatedAt || new Date().toISOString(),
+      };
+      if (JSON.stringify(existing) !== JSON.stringify(stamped)) {
+        stored.questions[qid] = stamped;
+        changed = true;
+      }
+      applied.push(qid);
+    }
+    if (upsert.bulk !== undefined && JSON.stringify(upsert.bulk) !== JSON.stringify(stored.bulk)) {
+      stored.bulk = upsert.bulk;
+      changed = true;
+    }
+    if (upsert.bulkLean !== undefined && upsert.bulkLean !== stored.bulkLean) {
+      stored.bulkLean = upsert.bulkLean;
+      changed = true;
+    }
+    if (upsert.bulkNote !== undefined && upsert.bulkNote !== stored.bulkNote) {
+      stored.bulkNote = upsert.bulkNote;
+      changed = true;
+    }
+    if (changed) {
+      stored.updatedAt = new Date().toISOString();
+      data.drafts[setId] = stored;
+      await writeDecisionsData(file, data);
+    }
+    return { drafts: stored, applied, skipped };
+  });
+}
+
 // --- Decisions-page draft persistence (#8777) ---------------------------
 //
 // The 2026-11-11 "front end crashed" incident: pm-aggregator was killed
@@ -660,6 +945,17 @@ export async function listDecisionResolutions(file: string): Promise<DecisionRes
 // MutationObserver re-save. Storage is best-effort: any localStorage
 // failure (private mode, quota) leaves the page exactly as functional
 // as before, just without drafts.
+//
+// Both-layers upgrade (#8766, later the same day, Drew: "probably
+// both"): the local layer moved from localStorage to IndexedDB — a
+// localStorage draft written by the build above is migrated into
+// IndexedDB on first load and the localStorage copy retired
+// (localStorage remains the fallback when IndexedDB is unavailable) —
+// and a server layer was added through the drafts endpoints above, so
+// a draft also survives the device it was typed on. The page saves
+// locally on every change, pushes to the server debounced (flushed
+// when the tab hides or closes), and on load merges the two layers
+// per question: newest updatedAt wins.
 
 /** localStorage key prefix for one set's decisions-page draft. */
 export const DECISIONS_DRAFT_KEY_PREFIX = "decisions-drafts:";
@@ -679,47 +975,223 @@ export function decisionsDraftKey(setId: string): string {
  */
 export function decisionsDraftScript(setId: string): string {
   const key = JSON.stringify(decisionsDraftKey(setId));
+  const sid = JSON.stringify(setId);
   return `
-// --- Draft persistence (#8777): in-progress work survives a crash ---
+
+// --- Draft persistence: IndexedDB local layer + server layer ---
+// Two layers (#8766, extended after #8777): IndexedDB on this device
+// (localStorage before it — drafts saved by the previous build are
+// migrated on first load, never orphaned, and localStorage remains the
+// fallback when IndexedDB is unavailable), plus a server copy pushed
+// to the aggregator so a draft survives the device or browser it was
+// typed on. Local saves are immediate; the server push is debounced
+// and flushed when the tab hides or closes. On load the layers merge
+// per question — newest edit wins — and drafts apply only to question
+// blocks still on the page, so a settled question never resurrects
+// from a draft on either layer. Best-effort throughout: any storage or
+// network failure leaves the page exactly as functional as before.
 var DRAFT_KEY = ${key};
-function draftSave() {
-  try {
-    var d = { q: {}, bulk: [], bulkLean: '', bulkNote: '' };
-    document.querySelectorAll('.q').forEach(function (block) {
-      var entry = {};
-      var picked = block.querySelector('input[type=radio]:checked');
-      if (picked) entry.opt = picked.value;
-      var ft = block.querySelector('textarea.ft').value;
-      if (ft) entry.ft = ft;
-      var lean = block.querySelector('select.defer').value;
-      if (lean) entry.lean = lean;
-      var note = block.querySelector('textarea.infonote').value;
-      if (note) entry.note = note;
-      if (Object.keys(entry).length) d.q[block.getAttribute('data-qid')] = entry;
-    });
-    document.querySelectorAll('section.item').forEach(function (card) {
-      var box = card.querySelector('input.bulk');
-      if (box && box.checked) d.bulk.push(card.getAttribute('data-ledger'));
-    });
-    var bl = document.getElementById('bulkLean');
-    if (bl) d.bulkLean = bl.value;
-    var bn = document.getElementById('bulkInfoNote');
-    if (bn) d.bulkNote = bn.value;
-    if (!Object.keys(d.q).length && !d.bulk.length && !d.bulkNote && !d.bulkLean) {
-      localStorage.removeItem(DRAFT_KEY);
-    } else {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+var DRAFT_SET_ID = ${sid};
+var draftState = { q: {}, bulk: [], bulkLean: '', bulkNote: '', updatedAt: 0 };
+var draftGone = {};
+var draftFromServer = 0;
+var draftServerKnown = false;
+var draftDb = null;
+var draftDbReady = false;
+
+function draftNormalize(d) {
+  var out = { q: {}, bulk: [], bulkLean: '', bulkNote: '', updatedAt: 0 };
+  if (!d || typeof d !== 'object') return out;
+  if (d.q && typeof d.q === 'object') out.q = d.q;
+  if (Array.isArray(d.bulk)) out.bulk = d.bulk;
+  if (typeof d.bulkLean === 'string') out.bulkLean = d.bulkLean;
+  if (typeof d.bulkNote === 'string') out.bulkNote = d.bulkNote;
+  if (typeof d.updatedAt === 'number') out.updatedAt = d.updatedAt;
+  return out;
+}
+function draftIsEmpty() {
+  return !Object.keys(draftState.q).length && !draftState.bulk.length && !draftState.bulkLean && !draftState.bulkNote;
+}
+function draftDbOpen() {
+  return new Promise(function (resolve) {
+    try {
+      if (!window.indexedDB) { resolve(false); return; }
+      var rq = indexedDB.open('decisions-drafts-db', 1);
+      rq.onupgradeneeded = function () { rq.result.createObjectStore('drafts'); };
+      rq.onsuccess = function () { draftDb = rq.result; draftDbReady = true; resolve(true); };
+      rq.onerror = function () { resolve(false); };
+      rq.onblocked = function () { resolve(false); };
+    } catch (e) { resolve(false); }
+  });
+}
+function draftLocalPersist() {
+  if (draftIsEmpty()) { draftLocalClear(); return; }
+  var payload = JSON.stringify(draftState);
+  if (draftDbReady && draftDb) {
+    try {
+      draftDb.transaction('drafts', 'readwrite').objectStore('drafts').put(payload, DRAFT_SET_ID);
+      return;
+    } catch (e) { /* fall through to the localStorage fallback */ }
+  }
+  try { localStorage.setItem(DRAFT_KEY, payload); } catch (e) { /* best-effort */ }
+}
+function draftLocalClear() {
+  if (draftDbReady && draftDb) {
+    try { draftDb.transaction('drafts', 'readwrite').objectStore('drafts').delete(DRAFT_SET_ID); } catch (e) {}
+  }
+  try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+}
+function draftLocalRead() {
+  // IndexedDB is the local layer now. A localStorage copy can also
+  // exist — written by the previous build, or by this one while
+  // IndexedDB was unavailable. When both exist the newer blob wins;
+  // a localStorage-only draft is migrated into IndexedDB on first
+  // sight and the localStorage copy is retired, never orphaned.
+  return new Promise(function (resolve) {
+    var lsData = null;
+    try {
+      var raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) lsData = draftNormalize(JSON.parse(raw));
+    } catch (e) {}
+    if (!draftDbReady || !draftDb) { resolve(lsData); return; }
+    try {
+      var rq = draftDb.transaction('drafts', 'readonly').objectStore('drafts').get(DRAFT_SET_ID);
+      rq.onsuccess = function () {
+        var idbData = null;
+        try { if (rq.result) idbData = draftNormalize(JSON.parse(rq.result)); } catch (e) {}
+        if (idbData && !lsData) { resolve(idbData); return; }
+        if (!idbData && !lsData) { resolve(null); return; }
+        var winner = idbData;
+        if (lsData && (!idbData || (lsData.updatedAt || 0) > (idbData.updatedAt || 0))) {
+          winner = lsData;
+          var now = Date.now();
+          Object.keys(winner.q).forEach(function (qid) {
+            if (!winner.q[qid].updatedAt) winner.q[qid].updatedAt = now;
+          });
+          if (!winner.updatedAt) winner.updatedAt = now;
+        }
+        draftState = winner;
+        draftLocalPersist();
+        try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+        resolve(winner);
+      };
+      rq.onerror = function () { resolve(lsData); };
+    } catch (e) { resolve(lsData); }
+  });
+}
+function draftCollect() {
+  var seen = {};
+  document.querySelectorAll('.q').forEach(function (block) {
+    var entry = {};
+    var picked = block.querySelector('input[type=radio]:checked');
+    if (picked) entry.opt = picked.value;
+    var ft = block.querySelector('textarea.ft').value;
+    if (ft) entry.ft = ft;
+    var lean = block.querySelector('select.defer').value;
+    if (lean) entry.lean = lean;
+    var note = block.querySelector('textarea.infonote').value;
+    if (note) entry.note = note;
+    if (Object.keys(entry).length) {
+      var qid = block.getAttribute('data-qid');
+      seen[qid] = true;
+      var prev = draftState.q[qid];
+      if (!prev || prev.opt !== entry.opt || prev.ft !== entry.ft || prev.lean !== entry.lean || prev.note !== entry.note) {
+        entry.updatedAt = Date.now();
+      } else {
+        entry.updatedAt = prev.updatedAt || Date.now();
+      }
+      draftState.q[qid] = entry;
     }
-  } catch (e) { /* storage unavailable: drafts are best-effort */ }
+  });
+  // A question whose block left the DOM was recorded; a question whose
+  // fields were cleared is intentionally blank. Either way its draft
+  // is gone locally and tombstoned for the next server push.
+  Object.keys(draftState.q).forEach(function (qid) {
+    if (!seen[qid]) { delete draftState.q[qid]; draftGone[qid] = true; }
+  });
+  draftState.bulk = [];
+  document.querySelectorAll('section.item').forEach(function (card) {
+    var box = card.querySelector('input.bulk');
+    if (box && box.checked) draftState.bulk.push(card.getAttribute('data-ledger'));
+  });
+  var bl = document.getElementById('bulkLean');
+  draftState.bulkLean = bl ? bl.value : '';
+  var bn = document.getElementById('bulkInfoNote');
+  draftState.bulkNote = bn ? bn.value : '';
+  draftState.updatedAt = Date.now();
+}
+var draftPushTimer = null;
+function draftPush() {
+  if (draftPushTimer) return;
+  draftPushTimer = setTimeout(function () { draftPushTimer = null; draftPushNow(false); }, 900);
+}
+function draftPushNow(keepalive) {
+  if (typeof TOKEN === 'undefined') return;
+  var questions = {};
+  Object.keys(draftState.q).forEach(function (qid) {
+    var e = draftState.q[qid];
+    var out = {};
+    if (e.opt) out.opt = e.opt;
+    if (e.ft) out.ft = e.ft;
+    if (e.lean) out.lean = e.lean;
+    if (e.note) out.note = e.note;
+    out.updatedAt = new Date(e.updatedAt || Date.now()).toISOString();
+    questions[qid] = out;
+  });
+  Object.keys(draftGone).forEach(function (qid) { questions[qid] = null; });
+  if (!Object.keys(questions).length && !draftState.bulk.length && !draftState.bulkLean && !draftState.bulkNote && !draftServerKnown) return;
+  var payload = { token: TOKEN, drafts: { questions: questions, bulk: draftState.bulk, bulkLean: draftState.bulkLean, bulkNote: draftState.bulkNote } };
+  try {
+    fetch('/api/decisions/' + encodeURIComponent(DRAFT_SET_ID) + '/drafts', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload), keepalive: !!keepalive
+    }).then(function (r) { if (r && r.ok) { draftGone = {}; draftServerKnown = true; } }).catch(function () {});
+  } catch (e) { /* drafts are best-effort */ }
+}
+function draftSave() {
+  draftCollect();
+  draftLocalPersist();
+  if (!draftIsEmpty() || Object.keys(draftGone).length || draftServerKnown) draftPush();
+}
+function draftFetchServer() {
+  if (typeof TOKEN === 'undefined') return Promise.resolve(null);
+  return fetch('/api/decisions/' + encodeURIComponent(DRAFT_SET_ID) + '/drafts?t=' + encodeURIComponent(TOKEN))
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (j && j.drafts) { draftServerKnown = true; return j.drafts; }
+      return null;
+    })
+    .catch(function () { return null; });
+}
+function draftMergeServer(sv) {
+  if (!sv || typeof sv !== 'object') return;
+  var sq = sv.questions || {};
+  Object.keys(sq).forEach(function (qid) {
+    var s = sq[qid];
+    if (!s) return;
+    var sAt = Date.parse(s.updatedAt) || 0;
+    var l = draftState.q[qid];
+    var lAt = l ? (l.updatedAt || 0) : -1;
+    if (sAt > lAt) {
+      var e = {};
+      if (s.opt) e.opt = s.opt;
+      if (s.ft) e.ft = s.ft;
+      if (s.lean) e.lean = s.lean;
+      if (s.note) e.note = s.note;
+      e.updatedAt = sAt || Date.now();
+      draftState.q[qid] = e;
+      draftFromServer++;
+    }
+  });
+  var svAt = Date.parse(sv.updatedAt) || 0;
+  if (svAt > (draftState.updatedAt || 0)) {
+    draftState.bulk = Array.isArray(sv.bulk) ? sv.bulk : [];
+    draftState.bulkLean = typeof sv.bulkLean === 'string' ? sv.bulkLean : '';
+    draftState.bulkNote = typeof sv.bulkNote === 'string' ? sv.bulkNote : '';
+  }
 }
 function draftRestore() {
-  var d;
-  try {
-    var raw = localStorage.getItem(DRAFT_KEY);
-    if (!raw) return;
-    d = JSON.parse(raw);
-  } catch (e) { return; }
-  if (!d || typeof d !== 'object') return;
+  var d = draftState;
   var restored = 0;
   document.querySelectorAll('.q').forEach(function (block) {
     var entry = (d.q || {})[block.getAttribute('data-qid')];
@@ -741,12 +1213,26 @@ function draftRestore() {
   });
   if (d.bulkLean) { var bl2 = document.getElementById('bulkLean'); if (bl2) bl2.value = d.bulkLean; }
   if (d.bulkNote) { var bn2 = document.getElementById('bulkInfoNote'); if (bn2) { bn2.value = d.bulkNote; restored++; } }
-  if (restored) status('Restored your in-progress work from before the interruption — nothing you typed was lost.');
+  if (restored) {
+    status(draftFromServer
+      ? 'Restored your in-progress work — including drafts synced from the server (started on another device or browser). Nothing you typed was lost.'
+      : 'Restored your in-progress work from before the interruption — nothing you typed was lost.');
+  }
 }
 document.addEventListener('input', draftSave);
 document.addEventListener('change', draftSave);
 new MutationObserver(draftSave).observe(document.querySelector('main'), { childList: true, subtree: true });
-draftRestore();
-draftSave();
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'hidden') draftPushNow(true);
+});
+window.addEventListener('beforeunload', function () { draftPushNow(true); });
+draftDbOpen().then(function () { return draftLocalRead(); }).then(function (local) {
+  if (local) draftState = local;
+  return draftFetchServer();
+}).then(function (serverDrafts) {
+  draftMergeServer(serverDrafts);
+  draftRestore();
+  draftSave();
+}).catch(function () { draftRestore(); draftSave(); });
 `;
 }
