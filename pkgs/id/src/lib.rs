@@ -152,8 +152,8 @@
 //! id get abc123... myfile.txt
 //! ```
 
+pub use id_core::abuse;
 pub use id_core::access;
-pub mod abuse;
 pub mod aliases;
 pub mod app_manifest;
 #[cfg(feature = "world")]
@@ -196,7 +196,7 @@ pub use id_events::event_store;
 pub use id_events::event_sync;
 pub mod fileops;
 pub mod foreign_libsql;
-pub mod frames;
+pub use id_core::frames;
 pub mod grant_service;
 pub mod grants;
 pub mod groups;
