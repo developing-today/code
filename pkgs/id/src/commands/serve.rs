@@ -447,13 +447,16 @@ impl Default for WebContentTarget {
 }
 
 impl WebContentTarget {
-    /// Build a `Program` target, validating the world name the same
-    /// way the #2147 publication registry validates its world names:
-    /// non-empty once trimmed. The stored name is the trimmed one.
+    /// Build a `Program` target, validating the world name against
+    /// the world-name rule ([`crate::world_hub::validate_world_name`]):
+    /// a program target names a world, so it must be a name a world
+    /// can bear -- 1 to 64 bytes of `a-z`, `0-9`, `-` and `_`, never
+    /// a path segment. The stored name is the trimmed one.
     ///
     /// # Errors
     ///
-    /// Fails on an empty or all-whitespace world name.
+    /// Fails on an empty or all-whitespace world name, or on any
+    /// name the world-name rule rejects.
     pub fn program(world: impl Into<String>) -> Result<Self> {
         let world = world.into();
         let world = world.trim();
@@ -461,6 +464,9 @@ impl WebContentTarget {
             !world.is_empty(),
             "program target world name must not be empty (expected program:<world-name>)"
         );
+        crate::world_hub::validate_world_name(world).map_err(|e| {
+            anyhow::anyhow!("invalid program target world name {world:?}: {e}")
+        })?;
         Ok(Self::Program(world.to_owned()))
     }
 
@@ -473,8 +479,8 @@ impl WebContentTarget {
     ///
     /// # Errors
     ///
-    /// Fails on an unknown spec or an empty program world name,
-    /// naming the spec.
+    /// Fails on an unknown spec or a program world name the
+    /// world-name rule rejects, naming the spec.
     pub fn parse(spec: &str) -> Result<Self> {
         match spec {
             "explorer" => Ok(Self::Explorer),
@@ -526,7 +532,8 @@ impl WebBinding {
     ///
     /// # Errors
     ///
-    /// Fails on an empty or all-whitespace world name.
+    /// Fails on an empty or all-whitespace world name, or on any
+    /// name the world-name rule rejects.
     pub fn program(addr: SocketAddr, world: impl Into<String>) -> Result<Self> {
         Ok(Self {
             addr,
@@ -2767,6 +2774,8 @@ fn select_stale_probe_batch(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
     use super::*;
 
     fn stale_test_peer(seed: u8) -> crate::discovery::PeerInfo {
@@ -3600,6 +3609,104 @@ mod tests {
             WebContentTarget::Explorer
         );
         assert!(WebContentTarget::parse("document:readme").is_err());
+    }
+
+    #[test]
+    fn test_web_content_target_program_validates_world_name_rule() {
+        // #5711: a program target names a world, so program()/parse
+        // reject every name crate::world_hub::validate_world_name
+        // rejects -- a target no world can bear could never resolve.
+        for bad in [
+            "Arena",               // uppercase
+            ".",                   // dot segment
+            "..",                  // parent segment
+            "a/b",                 // slash
+            "a.b",                 // embedded dot
+            "has space",           // interior whitespace survives trim
+            "caf\u{e9}",          // non-ASCII
+            &"a".repeat(65),       // over the 64-byte cap
+        ] {
+            assert!(
+                WebContentTarget::program(bad).is_err(),
+                "program target accepted {bad:?}"
+            );
+            let spec = format!("program:{bad}");
+            let err = WebContentTarget::parse(&spec).unwrap_err();
+            assert!(
+                err.to_string().contains(&spec),
+                "parse error must name the spec {spec:?}: {err}"
+            );
+        }
+        // Legal names keep working: exactly at the byte cap, and
+        // hyphen/underscore/digit mixes, with trim preserved.
+        let max = "a".repeat(64);
+        assert_eq!(
+            WebContentTarget::program(max.clone()).unwrap(),
+            WebContentTarget::Program(max)
+        );
+        assert_eq!(
+            WebContentTarget::program(" my-world_2 ").unwrap(),
+            WebContentTarget::Program("my-world_2".to_owned())
+        );
+        assert_eq!(
+            WebContentTarget::parse("program:my-world_2")
+                .unwrap()
+                .describe(),
+            "program:my-world_2"
+        );
+    }
+
+    #[test]
+    fn prop_program_target_acceptance_matches_world_name_oracle() {
+        // Oracle (AGENTS.md testing doctrine; Codex finding on PR #8682):
+        // crate::world_hub::validate_world_name applied to the trimmed
+        // input decides acceptance. program() and parse("program:<input>")
+        // must agree with the oracle, and on acceptance the stored name
+        // is exactly the trimmed input.
+        fn check(input: &str) -> Result<(), TestCaseError> {
+            let trimmed = input.trim();
+            let oracle_ok = crate::world_hub::validate_world_name(trimmed).is_ok();
+            let program = WebContentTarget::program(input.to_owned());
+            prop_assert!(
+                program.is_ok() == oracle_ok,
+                "program({:?}) disagrees with validate_world_name({:?})",
+                input,
+                trimmed
+            );
+            if oracle_ok {
+                prop_assert_eq!(
+                    program.expect("oracle-accepted program target"),
+                    WebContentTarget::Program(trimmed.to_owned())
+                );
+            }
+            let spec = format!("program:{input}");
+            let parsed = WebContentTarget::parse(&spec);
+            prop_assert!(
+                parsed.is_ok() == oracle_ok,
+                "parse({:?}) disagrees with validate_world_name({:?})",
+                spec,
+                trimmed
+            );
+            if oracle_ok {
+                prop_assert_eq!(
+                    parsed.expect("oracle-accepted parse").describe(),
+                    format!("program:{trimmed}")
+                );
+            }
+            Ok(())
+        }
+        let config = ProptestConfig {
+            cases: 256,
+            ..ProptestConfig::default()
+        };
+        proptest!(config, |(input in proptest::string::string_regex(".{0,70}").expect("input strategy"))| {
+            check(&input)?;
+        });
+        // Targeted alphabet: characters at the rule boundary (case, dot,
+        // slash, separators, whitespace) at boundary lengths.
+        proptest!(config, |(input in proptest::string::string_regex("[a-zA-Z0-9._/ -]{0,70}").expect("boundary strategy"))| {
+            check(&input)?;
+        });
     }
 
     #[test]
