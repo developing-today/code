@@ -92,7 +92,7 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
         let mut present = 0usize;
         let mut matched = 0usize;
         for leg in &record.legs {
-            if let Some(found) = backend.lookup_transfer(leg.id) {
+            if let Some(found) = backend.try_lookup_transfer(leg.id)? {
                 present += 1;
                 if found == *leg {
                     matched += 1;

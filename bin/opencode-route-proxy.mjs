@@ -251,8 +251,8 @@ const expandEnv = (s) =>
 // config fields (options included) win key by key; the built-in
 // table only fills what the block omits.
 const mergedDef = (cfg, id) => {
-  const raw = cfg.providers[id];
-  const builtin = BUILTIN_PROVIDERS[id];
+  const raw = Object.hasOwn(cfg.providers, id) ? cfg.providers[id] : undefined;
+  const builtin = Object.hasOwn(BUILTIN_PROVIDERS, id) ? BUILTIN_PROVIDERS[id] : undefined;
   if (!raw) return builtin || null;
   if (!builtin) return raw;
   return {
@@ -723,7 +723,7 @@ const weightedOrder = (targets, weights) => {
 // A concrete provider always wins a reference: an id that names a
 // config provider block (or a built-in) is never treated as a group.
 const providerRouteDef = (cfg, id) => {
-  if (cfg.providers[id] || BUILTIN_PROVIDERS[id]) return null;
+  if (Object.hasOwn(cfg.providers, id) || Object.hasOwn(BUILTIN_PROVIDERS, id)) return null;
   const g = cfg.providerRoutes?.[id];
   if (!g || !Array.isArray(g.providers)) return null;
   return g;
@@ -743,7 +743,7 @@ const expandProviderRoute = (cfg, t, variant, out) => {
     (m) =>
       typeof m === "string" &&
       m !== "opencode-route" &&
-      (cfg.providers[m] || BUILTIN_PROVIDERS[m]) &&
+      (Object.hasOwn(cfg.providers, m) || Object.hasOwn(BUILTIN_PROVIDERS, m)) &&
       !cfg.disabled.has(m),
   );
   let leaves = [];

@@ -15,6 +15,7 @@ fn hash(n: u8) -> Hash {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn test_expansion_public_exclusion_admits_nobody() {
     let set = WriterSet {
         set_id: hash(90),
@@ -36,6 +37,7 @@ fn test_expansion_public_exclusion_admits_nobody() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn test_expansion_key_exclusion_wins() {
     let set = WriterSet {
         set_id: hash(90),
@@ -59,6 +61,7 @@ fn test_expansion_key_exclusion_wins() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn test_expansion_group_one_level_frontier_pinned() {
     let group = hash(10);
     let frontier = vec![hash(11)];
@@ -90,6 +93,7 @@ fn test_expansion_group_one_level_frontier_pinned() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn test_expansion_retro_only_history_marked_entries() {
     let group = hash(10);
     let frontier = vec![hash(11)];

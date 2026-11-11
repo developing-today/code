@@ -39,4 +39,5 @@ pub mod recovery;
 pub mod tb_ledger;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;
