@@ -170,6 +170,14 @@ impl MoveChain {
         input: &[u8],
         author: &[u8; 32],
     ) -> Result<Event> {
+        // #6447, defense in depth for the witness-replay path (#4346):
+        // the same acceptance domain sign_move refuses to sign. A move
+        // for a blank world verifies against that same blank ID, yet no
+        // WorldCore can ever bear it; an empty input can never commit.
+        // Neither arises from a constructed world, whose constructor
+        // and input seam refuse both before verify is reached.
+        ensure!(!world_id.trim().is_empty(), "world ID must not be empty");
+        ensure!(!input.is_empty(), "world input must not be empty");
         let event = chain::decode(bytes)
             .map_err(|err| anyhow::anyhow!("signed move does not decode: {err}"))?;
         ensure!(
@@ -260,6 +268,24 @@ mod tests {
         MoveChain::new()
             .verify(&event.bytes, "ttt", b"cell-0", &author)
             .unwrap();
+    }
+
+    #[test]
+    fn verify_refuses_a_blank_world_id_and_an_empty_input() {
+        let key = key();
+        let author = *key.verifying_key().as_bytes();
+        let event = sign_move(&key, "ttt", 0, None, b"cell-0").unwrap();
+        let chain = MoveChain::new();
+        // The control verifies; the same bytes against a blank world
+        // or with an empty input do not (#6447 triage decision).
+        assert!(chain.verify(&event.bytes, "ttt", b"cell-0", &author).is_ok());
+        for world_id in ["", " ", "\t"] {
+            assert!(
+                chain.verify(&event.bytes, world_id, b"cell-0", &author).is_err(),
+                "{world_id:?}"
+            );
+        }
+        assert!(chain.verify(&event.bytes, "ttt", b"", &author).is_err());
     }
 
     #[test]
