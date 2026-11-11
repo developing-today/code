@@ -142,11 +142,36 @@ export const DEFAULT_CLASSES: Record<string, boolean> = NOTIFICATION_CLASS_DEFAU
 /** Design §2: default quiet window 23:00–07:00 America/Chicago. */
 export const DEFAULT_QUIET: QuietPrefs = { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true };
 
+/** #4981: how many client-supplied class keys one subscription may carry
+ * beyond {@link DEFAULT_CLASSES}. The class registry that would validate
+ * names and give the set its real shape arrives with #3317; until then a
+ * fixed cap keeps a client from growing the stored `classes` object
+ * without bound. Keys past the cap are dropped, not stored. */
+export const MAX_CLASS_KEYS = 16;
+/** #4981: longest accepted class key. Real class names are short slugs
+ * ("quota-wall"); anything longer is not a class this build knows. */
+export const MAX_CLASS_KEY_LENGTH = 64;
+
 export function mergeClasses(input: unknown): Record<string, boolean> {
   const out = { ...DEFAULT_CLASSES };
+  let clientKeys = 0;
+  const seenClient: Record<string, true> = {};
   if (input && typeof input === "object") {
     for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-      if (typeof v === "boolean") out[k] = v;
+      // #4981: bound growth — a key must be a plausible class name, and a
+      // subscription may carry only MAX_CLASS_KEYS client-supplied keys.
+      // Over-limit input is dropped rather than extending the stored
+      // object. Object.hasOwn (not `in`) so prototype names like
+      // "toString" count against the cap like any other client key.
+      if (k.length === 0 || k.length > MAX_CLASS_KEY_LENGTH) continue;
+      if (typeof v !== "boolean") continue;
+      const isClientKey = !Object.hasOwn(DEFAULT_CLASSES, k) && !Object.hasOwn(seenClient, k);
+      if (isClientKey && clientKeys >= MAX_CLASS_KEYS) continue;
+      if (isClientKey) {
+        clientKeys += 1;
+        seenClient[k] = true;
+      }
+      out[k] = v;
     }
   }
   return out;
