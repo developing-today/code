@@ -48,19 +48,20 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
-use crate::chain::ChainExt;
-use crate::connectivity::connect;
-use crate::event_store::Ingest;
-use crate::frames::{read_frame, write_frame};
-use crate::pull_policy::PullGate;
-use crate::store_traits::{ChainLog, SharedEventStore};
-use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
-use crate::time::unix_ms;
+use id_store::chain::ChainExt;
+use id_core::connectivity::connect;
+use id_events::event_store::Ingest;
+use id_core::frames::{read_frame, write_frame};
+use id_events::pull_policy::PullGate;
+use id_events::event_store::sync::RangeStore;
+use id_store::store_traits::{ChainLog, EventStoreBackend, SharedEventStore};
+use id_core::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
+use id_core::time::unix_ms;
 
 /// The ALPN for sync sessions. Range sync joins as a method of the same session, and the
 /// first frame of every session is the [`Request`]: one session shape on this ALPN.
 /// `serve`'s own range sessions (P3.1) run on their own ALPN, `/id-range-sync/1`
-/// ([`crate::event_store::sync::ALPN`]) — a deliberate, documented split (#179), so no
+/// ([`id_events::event_store::sync::ALPN`]) — a deliberate, documented split (#179), so no
 /// second, unlabelled session shape shares this one either.
 pub const SYNC_ALPN: &[u8] = b"/id-sync/1";
 
@@ -182,17 +183,17 @@ pub struct Outcome {
 /// Serves sync sessions on [`SYNC_ALPN`]. Register it with
 /// `Router::builder(..).accept(SYNC_ALPN, SyncProtocol::new(store, support, gate))`.
 #[derive(Clone, Debug)]
-pub struct SyncProtocol {
-    store: SharedEventStore,
+pub struct SyncProtocol<S> {
+    store: SharedEventStore<S>,
     support: Arc<dyn SyncSupport>,
     gate: PullGate,
 }
 
-impl SyncProtocol {
+impl<S> SyncProtocol<S> {
     /// Serves `store`, running the methods that `support` allows, to the peers `gate` admits.
     #[must_use]
     pub fn new(
-        store: SharedEventStore,
+        store: SharedEventStore<S>,
         support: impl SyncSupport + 'static,
         gate: PullGate,
     ) -> Self {
@@ -204,7 +205,10 @@ impl SyncProtocol {
     }
 }
 
-impl ProtocolHandler for SyncProtocol {
+impl<S: EventStoreBackend> ProtocolHandler for SyncProtocol<S>
+where
+    SharedEventStore<S>: RangeStore,
+{
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let mut sessions = JoinSet::new();
         let peer = conn.remote_id();
@@ -240,14 +244,17 @@ impl ProtocolHandler for SyncProtocol {
 ///
 /// Returns [`SyncError::Timeout`] if the session does not finish within `deadline`, and an error
 /// for a refused, mismatched or failed step.
-pub async fn sync_with(
+pub async fn sync_with<S: EventStoreBackend>(
     endpoint: &Endpoint,
     peer: impl Into<EndpointAddr>,
-    store: &SharedEventStore,
+    store: &SharedEventStore<S>,
     topic: Hash,
     stats: &impl SyncStats,
     deadline: Duration,
-) -> Result<Outcome, SyncError> {
+) -> Result<Outcome, SyncError>
+where
+    SharedEventStore<S>: RangeStore,
+{
     let method = choose(stats);
     let session = async {
         let conn = connect(endpoint, peer, SYNC_ALPN)
@@ -289,15 +296,18 @@ pub async fn sync_with(
 /// Returns [`SyncError::Timeout`] past `deadline`, [`SyncError::Refused`] when `support` does not
 /// allow the method, [`SyncError::PullRefused`] when `gate` refuses `peer`, and an error for a
 /// failed step.
-pub async fn answer(
-    store: &SharedEventStore,
+pub async fn answer<S: EventStoreBackend>(
+    store: &SharedEventStore<S>,
     support: &dyn SyncSupport,
     gate: &PullGate,
     peer: EndpointId,
     mut send: SendStream,
     mut recv: RecvStream,
     deadline: Duration,
-) -> Result<Outcome, SyncError> {
+) -> Result<Outcome, SyncError>
+where
+    SharedEventStore<S>: RangeStore,
+{
     let session = async {
         let request: Request = next_message(&mut recv).await?;
         // The pull policy decides before the method is agreed, so a refused peer gets no event.
@@ -337,14 +347,17 @@ pub async fn answer(
 /// and writing, so the `Log` arm hands the streams to [`Frames`] (whose own task reads),
 /// while the `Range` arm keeps the raw streams: a range session sends and receives at
 /// once through its own halves, and reads each frame to its end before answering it.
-async fn run_agreed(
-    store: &SharedEventStore,
+async fn run_agreed<S: EventStoreBackend>(
+    store: &SharedEventStore<S>,
     topic: Hash,
     method: SyncMethod,
     send: SendStream,
     recv: RecvStream,
     initiator: bool,
-) -> Result<Outcome, SyncError> {
+) -> Result<Outcome, SyncError>
+where
+    SharedEventStore<S>: RangeStore,
+{
     match method {
         SyncMethod::Log => {
             let mut frames = Frames::new(send, recv);
@@ -369,19 +382,22 @@ async fn run_agreed(
 /// session never blocks the store's other users behind a network wait. The range sync
 /// set is the store's whole set: range sync has no topic subset, so `topic` names the
 /// session for the `Log` arm only. The deadline is the caller's, as for `Log`.
-async fn run_range_sync(
-    store: &SharedEventStore,
+async fn run_range_sync<S>(
+    store: &SharedEventStore<S>,
     send: &mut SendStream,
     recv: &mut RecvStream,
     initiator: bool,
-) -> Result<Outcome, SyncError> {
+) -> Result<Outcome, SyncError>
+where
+    SharedEventStore<S>: RangeStore,
+{
     let mut store = store.clone();
-    let ranged = crate::event_store::sync::sync_on_streams(
+    let ranged = id_events::event_store::sync::sync_on_streams(
         &mut store,
         send,
         recv,
         initiator,
-        crate::event_store::range::Params::default(),
+        id_events::event_store::range::Params::default(),
         unix_ms(),
     )
     .await
@@ -449,8 +465,8 @@ async fn finish_stream(send: &mut SendStream, recv: &mut RecvStream) {
 ///
 /// The logs are the topic's authors on this side, as `TopicStore::resolve` gives them. An author
 /// the topic does not name here is sent in full by the other side, and the duplicates are counted.
-async fn run_log_sync(
-    store: &SharedEventStore,
+async fn run_log_sync<S: EventStoreBackend>(
+    store: &SharedEventStore<S>,
     topic: Hash,
     frames: &mut Frames,
 ) -> Result<Outcome, SyncError> {
@@ -461,7 +477,7 @@ async fn run_log_sync(
     // Nothing reads the broadcast events. The sender fails only when no receiver exists, so this
     // receiver is kept alive until the session ends.
     let (events_tx, _events_rx) = broadcast::channel::<LogSyncEvent<ChainExt>>(EVENT_BUFFER);
-    let protocol: LogSync<ChainLog, ChainExt, SharedEventStore, LogSyncEvent<ChainExt>> =
+    let protocol: LogSync<ChainLog, ChainExt, SharedEventStore<S>, LogSyncEvent<ChainExt>> =
         LogSync::new(store.clone(), logs, events_tx);
 
     // The operations are stored by a worker on a thread that may block, so a write does not hold the
@@ -542,8 +558,8 @@ enum Arrival {
 ///
 /// Returns [`SyncError::Store`] for the first batch the store refuses. Nothing of that batch is
 /// stored, and the arrivals after it are not read.
-fn ingest_arrivals(
-    store: &SharedEventStore,
+fn ingest_arrivals<S: EventStoreBackend>(
+    store: &SharedEventStore<S>,
     mut arrivals: mpsc::Receiver<Arrival>,
 ) -> Result<Tally, SyncError> {
     let mut tally = Tally::default();
@@ -675,10 +691,129 @@ impl Drop for Frames {
     }
 }
 
+/// Fixtures for the sync-session tests: a folded world reduced to the
+/// membership set the pull gate actually reads, and an operator block
+/// list with fixed rows.
+///
+/// Step 3b of the crate split (#4406): these are the same fixtures the
+/// facade's `pull_policy::testing` provided, re-based on the
+/// `WorldAccess` trait the gate checks (id-events) — a members set is
+/// the whole of what the gate can observe, so the sessions under test
+/// behave identically.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+pub(crate) mod testing {
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+
+    use iroh_base::{EndpointId, SecretKey};
+
+    use id_events::pull_policy::{PullGate, PullPolicy};
+    use id_events::world_access::WorldAccess;
+    use id_store::event_types::{BlockKind, BlockList};
+
+    /// The world every fixture names.
+    pub(crate) const WORLD: &str = "docs";
+
+    /// The identity with byte `n` repeated, so a test knows the endpoint ID before it dials.
+    pub(crate) fn key(n: u8) -> SecretKey {
+        SecretKey::from_bytes(&[n; 32])
+    }
+
+    /// Membership that a test can change between two checks, as a removal changes the fold.
+    #[derive(Debug)]
+    pub(crate) struct Live(Mutex<HashSet<[u8; 32]>>);
+
+    impl Live {
+        /// Replaces the membership, as the fold of a newer log does.
+        pub(crate) fn set(&self, folded: Self) {
+            *self.0.lock().expect("the fixture lock is not poisoned") =
+                folded.0.into_inner().expect("the fixture lock is not poisoned");
+        }
+    }
+
+    impl WorldAccess for Live {
+        fn is_current_member(&self, _world: &str, requester: &EndpointId) -> bool {
+            self.0
+                .lock()
+                .is_ok_and(|members| members.contains(requester.as_bytes()))
+        }
+
+        fn worlds_referencing(&self, _hash: &iroh_blobs::Hash) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    /// The folded `docs` world, founded by `founder`, which adds `member` as a reader and, when
+    /// `removed`, removes them again. Reduced to the membership set the gate reads.
+    pub(crate) fn docs_world(founder: EndpointId, member: EndpointId, removed: bool) -> Live {
+        let mut members = HashSet::from([*founder.as_bytes(), *member.as_bytes()]);
+        if removed {
+            members.remove(member.as_bytes());
+        }
+        Live(Mutex::new(members))
+    }
+
+    /// `folded` as shared membership that a gate can hold.
+    pub(crate) fn live(folded: Live) -> Arc<Live> {
+        Arc::new(folded)
+    }
+
+    /// An operator block list with fixed rows, for the gate tests and the
+    /// session tests: the peers and topic tags it names are blocked, and
+    /// nothing else is.
+    #[derive(Debug, Default)]
+    pub(crate) struct StubBlocks {
+        /// Blocked endpoint keys.
+        pub peers: HashSet<[u8; 32]>,
+        /// Blocked topic tags, as raw bytes.
+        pub topics: HashSet<Vec<u8>>,
+        /// Blocked IPs, in the text form `BlockList::ip_blocked`
+        /// formats them in.
+        pub ips: HashSet<String>,
+    }
+
+    impl BlockList for StubBlocks {
+        fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+            match kind {
+                BlockKind::PeerKey => {
+                    <[u8; 32]>::try_from(value).is_ok_and(|key| self.peers.contains(&key))
+                }
+                BlockKind::TopicTag => self.topics.iter().any(|t| t == value),
+                BlockKind::Ip => {
+                    std::str::from_utf8(value).is_ok_and(|text| self.ips.contains(text))
+                }
+            }
+        }
+    }
+
+    /// A stub block list naming `peers` by key and `topics` by tag.
+    pub(crate) fn stub_blocks(peers: &[[u8; 32]], topics: &[&str]) -> Arc<StubBlocks> {
+        Arc::new(StubBlocks {
+            peers: peers.iter().copied().collect(),
+            topics: topics.iter().map(|t| t.as_bytes().to_vec()).collect(),
+            ips: HashSet::new(),
+        })
+    }
+
+    /// An open gate over the fixture world. It never reads membership.
+    pub(crate) fn open_gate() -> PullGate {
+        PullGate::new(
+            PullPolicy::Open,
+            WORLD,
+            live(docs_world(key(0).public(), key(0).public(), false)),
+        )
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
+
+    /// The tests run against the concrete store, as the facade's alias
+    /// did before step 3b made the sessions generic over the backend.
+    type SharedEventStore = id_store::store_traits::SharedEventStore<EventStore>;
 
     use iroh::endpoint::{Connection, RelayMode, presets};
     use iroh::protocol::Router;
@@ -686,11 +821,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::chain::{Event, sign};
-    use crate::event_store::EventStore;
-    use crate::pull_policy::{PullGate, PullPolicy, testing};
-    use crate::sync_method::{Estimate, LogAndRange, LogSyncOnly};
-    use crate::waiting::WaitingLimits;
+    use id_store::chain::{Event, sign};
+    use id_events::event_store::EventStore;
+    use id_events::pull_policy::{PullGate, PullPolicy};
+    use id_core::sync_method::{Estimate, LogAndRange, LogSyncOnly};
+    use id_core::waiting::WaitingLimits;
     use iroh_base::SecretKey;
 
     // Keep test sessions aligned with production; CI can run the bulk page-transfer test under
@@ -1008,8 +1143,8 @@ mod tests {
     /// the group at that position, is kept without applying.
     #[tokio::test]
     async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
-        use crate::membership::AuthId;
-        use crate::membership::body::encode_body;
+        use id_core::membership::AuthId;
+        use id_core::membership::body::encode_body;
         use p2panda_auth::Access;
         use p2panda_auth::group::{GroupAction, GroupMember};
 

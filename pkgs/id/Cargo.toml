@@ -16,14 +16,14 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
-members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-native-shell"]
+members = ["crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-sync", "crates/id-native-shell"]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
 exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
-default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events"]
+default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "crates/id-events", "crates/id-sync"]
 
 # =============================================================================
 # Features
@@ -57,7 +57,7 @@ web = [
   "id-core/web",
 ]
 # Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
-dht = ["dep:iroh-mainline-address-lookup"]
+dht = ["id-sync/dht"]
 # Live-cluster binding for the currency PoC (#2289): the official TigerBeetle
 # Rust client, pinned to the harness server version (harness.rs). Off by
 # default so normal builds do not link the client native tb_client library.
@@ -77,6 +77,9 @@ id-store = { path = "crates/id-store", default-features = false }
 # Events-family modules extracted in step 2b of the crate split (#4405).
 # Re-exported at their historical crate:: paths in src/lib.rs.
 id-events = { path = "crates/id-events", default-features = false }
+# Sync-family modules extracted in step 3 of the crate split (#4406).
+# Re-exported at their historical crate:: paths in src/lib.rs.
+id-sync = { path = "crates/id-sync", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -92,8 +95,6 @@ futures-lite = "2"
 futures-util = { version = "0.3", features = ["sink"] }
 iroh = "1"
 iroh-mdns-address-lookup = "0.6"
-# Mainline DHT address lookup (P7.3). Optional: only the `dht` feature brings it and n0-mainline in.
-iroh-mainline-address-lookup = { version = "0.6", optional = true }
 iroh-base = "1"
 iroh-tickets = "1"
 iroh-blobs = "0.103"
