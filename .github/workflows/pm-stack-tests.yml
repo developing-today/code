@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - "pm-stack/aggregator/**"
+      - "pm-stack/README.md"
+      - "nixos/services/pm-stack/default.nix"
       - "pm-stack/external-comms/**"
       - "pm-stack/opencode-claimant/**"
       - "pm-stack/opencode-usage-export/**"
@@ -13,6 +16,9 @@ on:
       - ".github/workflows/pm-stack-tests.yml"
   pull_request:
     paths:
+      - "pm-stack/aggregator/**"
+      - "pm-stack/README.md"
+      - "nixos/services/pm-stack/default.nix"
       - "pm-stack/external-comms/**"
       - "pm-stack/opencode-claimant/**"
       - "pm-stack/opencode-usage-export/**"
@@ -25,6 +31,19 @@ permissions:
   contents: read
 
 jobs:
+  provenance:
+    name: 'basic: aggregator provenance matrix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: pm-stack/aggregator
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Check provenance matrix
+        run: bun run provenance:check
+
   test:
     name: aggregator + projector + dispatch + python suites + quota exporters
     runs-on: ubuntu-latest
