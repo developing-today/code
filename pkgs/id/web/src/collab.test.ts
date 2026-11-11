@@ -5,6 +5,7 @@ import {
   MAX_STEPS_PER_MESSAGE,
   buildCollabWsUrl,
   initCollab,
+  isContentMode,
   stepBatch,
   stepWireSize,
 } from "./collab";
@@ -301,6 +302,61 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
     socket.deliver(validInit());
     expect(conn.editor).not.toBeNull();
     expect(onEditorReady).toHaveBeenCalledOnce();
+  });
+
+  it("rejects malformed INIT mode fields before editor initialization (#7859)", () => {
+    const onEditorReady = vi.fn();
+    const { conn, socket } = openCollab(onEditorReady);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const richDoc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "hello" }] }] };
+
+    // Non-string, unknown-string, and falsy modes are all present-but-
+    // invalid: the frame drops, the editor never initializes, and in
+    // particular a rich doc is never coerced into the raw schema.
+    for (const frame of [
+      [MSG_INIT, 0, richDoc, 123],
+      [MSG_INIT, 0, richDoc, { type: "doc" }],
+      [MSG_INIT, 0, richDoc, "bogus"],
+      [MSG_INIT, 0, richDoc, 0],
+      [MSG_INIT, 0, richDoc, false],
+      [MSG_INIT, 0, richDoc, null],
+    ]) {
+      socket.deliver(frame);
+      expect(conn.editor).toBeNull();
+      expect(onEditorReady).not.toHaveBeenCalled();
+    }
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("invalid mode"));
+
+    socket.deliver(validInit());
+    expect(conn.editor).not.toBeNull();
+    expect(onEditorReady).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the raw default for an absent INIT mode and adopts valid modes verbatim (#7859)", () => {
+    const absent = openCollab();
+    absent.socket.deliver([MSG_INIT, 0, { type: "doc", content: [{ type: "code_block" }] }]);
+    expect(absent.conn.editor).not.toBeNull();
+    expect(absent.conn.mode).toBe("raw");
+
+    const markdown = openCollab();
+    markdown.socket.deliver([
+      MSG_INIT,
+      0,
+      { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "hello" }] }] },
+      "markdown",
+    ]);
+    expect(markdown.conn.editor).not.toBeNull();
+    expect(markdown.conn.mode).toBe("markdown");
+    expect(markdown.conn.editor!.view.state.doc.textContent).toContain("hello");
+  });
+
+  it("isContentMode accepts exactly the ContentMode union (#7859)", () => {
+    for (const mode of ["rich", "markdown", "plain", "raw", "media", "binary"]) {
+      expect(isContentMode(mode)).toBe(true);
+    }
+    for (const mode of ["bogus", "", "RAW", 123, 0, false, null, undefined, { type: "doc" }, ["raw"]]) {
+      expect(isContentMode(mode)).toBe(false);
+    }
   });
 });
 
