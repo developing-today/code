@@ -242,7 +242,20 @@ function initWorld(): void {
         }
         break;
       }
-      case "view":
+      case "view": {
+        // #7924: view frames are shape-checked before any state changes:
+        // data must be a string and a present revision must be a finite
+        // number, mirroring the snapshot/event rejectFrame() discipline.
+        if (
+          (frame.data !== undefined && typeof frame.data !== "string") ||
+          (frame.view_revision !== undefined && frame.view_revision !== null && !isFiniteNumber(frame.view_revision)) ||
+          (frame.base_view_revision !== undefined &&
+            frame.base_view_revision !== null &&
+            !isFiniteNumber(frame.base_view_revision))
+        ) {
+          rejectFrame();
+          return;
+        }
         if (frame.patch) {
           if (
             renderedSurface &&
@@ -272,6 +285,7 @@ function initWorld(): void {
           renderedViewRevision = frame.view_revision ?? null;
         }
         break;
+      }
       case "records": {
         if (!recordsPending) return;
         // #2953 (define, don't assign): frame.records is peer-supplied, so
@@ -304,6 +318,16 @@ function initWorld(): void {
       }
       case "invite": {
         const invite = frame.invite ?? frame;
+        // #7924: a present capability must be a string before it can be
+        // persisted; a missing capability stays a no-op (below).
+        if (
+          (frame.invite !== undefined && !isRecord(frame.invite)) ||
+          (invite.capability !== undefined && invite.capability !== null && typeof invite.capability !== "string") ||
+          (invite.display_name !== undefined && invite.display_name !== null && typeof invite.display_name !== "string")
+        ) {
+          rejectFrame();
+          return;
+        }
         if (invite.capability) {
           showCapability(invite.capability);
           appendLine(log, `Invite created for ${invite.display_name ?? (name.value || "guest")}`);
@@ -311,10 +335,17 @@ function initWorld(): void {
         }
         break;
       }
-      case "error":
+      case "error": {
+        // #7924: a present message must be a string; never display a
+        // coerced non-string value.
+        if (frame.message !== undefined && frame.message !== null && typeof frame.message !== "string") {
+          rejectFrame();
+          return;
+        }
         setStatus(frame.message ?? "World request failed", "error");
         appendLine(log, `error: ${frame.message ?? "world request failed"}`);
         break;
+      }
     }
   };
 
