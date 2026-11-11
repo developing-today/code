@@ -58,9 +58,17 @@ server pair, the exact failure the parent files this ticket to avoid.)
 
 ## 3. Default: unclassified data is S2 Confidential
 
-A table, row, or field with no explicit classification is **S2**.
-The parent requires the default to be safe, not permissive; S2 is
-the lowest level that still requires a named-principal clearance.
+The S2 default applies at the root of the classification ancestry
+only: a **table** with no explicit classification is **S2**. A row
+or field with no explicit classification carries no level of its
+own - it inherits the nearest classified ancestor's level, so in
+section 2's formula only the levels that actually apply contribute
+to the `max`. An owner who classifies a table S0 or S1 can publish
+it by that act alone; labelling every row and field is never
+required to lower an inherited level, because inheritance is not a
+refinement. The parent requires the default to be safe, not
+permissive; S2 is the lowest level that still requires a
+named-principal clearance.
 
 Rejected defaults: S1 (permissive — an unclassified table would be
 readable by any internal-clearance identity, so a forgotten label
@@ -99,9 +107,19 @@ Filtering is server-side, before anything leaves the server
    - **Reached via `*` / implicit projection** → the field is
      omitted from the result shape, and the result carries a
      `withheld_fields` notice: field names and levels, never values.
-3. **Aggregates** over a set that includes above-clearance rows or
-   fields are **rejected** in v1: a count or sum over withheld data
-   leaks its magnitude even when every row is hidden.
+     Exception (section 6): an S3 field is never named in the notice -
+     it is omitted entirely, because naming it would be an existence
+     signal.
+3. **Aggregates** are evaluated over the **authorized visible set**
+   in v1 - the rows and fields the requester is cleared to see -
+   never over withheld data, and never rejected because withheld
+   data exists. A count or sum computed over withheld data would
+   leak its magnitude, and a rejection conditioned on hidden data's
+   presence would leak its existence (for S3, section 6 forbids any
+   existence signal: the same aggregate query behaves identically
+   whether or not an S3 row matches). The result describes the
+   visible set; withholding is signalled only per section 6
+   (S0/S1 count, S2 boolean, S3 nothing).
 4. **S3 is local-only in v1.** A remote query never returns S3 data,
    even to an S3-cleared requester; S3 is reachable by local query
    and by the owner-override path (#5819), not by remote execution.
