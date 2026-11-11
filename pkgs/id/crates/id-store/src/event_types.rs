@@ -16,7 +16,7 @@ use redb::{CommitError, DatabaseError, StorageError, TableError, TransactionErro
 use id_core::rejection::Reason;
 use id_core::waiting::AuthorKey;
 
-pub use id_core::block_list::{BlockKind, BlockList};
+pub use id_core::block_list::{BlockKind, BlockList, BlockLookup, BlockLookupFailure};
 
 /// The store's file name in its directory.
 pub const FILE_NAME: &str = "events.redb";

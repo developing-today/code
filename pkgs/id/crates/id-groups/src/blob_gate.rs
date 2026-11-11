@@ -35,7 +35,7 @@ use iroh_blobs::{
 };
 
 use id_core::access::AccessPolicy;
-use id_events::event_store::BlockList;
+use id_events::event_store::{BlockList, BlockLookup};
 
 /// The two questions the gate asks of the world graph. The trait is
 /// sync-gating vocabulary owned by the events layer since step 2b of
@@ -116,8 +116,22 @@ pub fn decide_with_blocks(
     hash: &Hash,
     request: Request,
 ) -> bool {
-    if blocks.is_some_and(|blocks| blocks.peer_blocked(requester.as_bytes())) {
-        return false;
+    if let Some(blocks) = blocks {
+        // Explicit indeterminate-result policy (#8750): blob serving
+        // fails open — a block lookup that cannot answer does not
+        // refuse the request — and the failure is logged for the
+        // operator instead of being treated as a clean "not blocked".
+        // Only a definite block refuses here.
+        match blocks.peer_lookup(requester.as_bytes()) {
+            BlockLookup::Blocked => return false,
+            BlockLookup::Indeterminate(failure) => {
+                tracing::warn!(
+                    "blob gate: block-list lookup failed ({}); failing open",
+                    failure.as_str()
+                );
+            }
+            BlockLookup::Unblocked => {}
+        }
     }
     access.worlds_referencing(hash).iter().any(|world| {
         access.is_current_member(world, requester)

@@ -37,7 +37,9 @@ use p2panda_store::topics::TopicStore;
 use serde::{Deserialize, Serialize};
 
 use crate::chain::Event;
-use crate::event_types::{BlockKind, BlockList, Ingest, StoreError};
+use crate::event_types::{
+    BlockKind, BlockList, BlockLookup, BlockLookupFailure, Ingest, StoreError,
+};
 use id_core::waiting::AuthorKey;
 
 
@@ -393,10 +395,33 @@ impl<S: EventStoreBackend> BlockList for SharedEventStore<S> {
     /// The wall clock judges expiry, and a read error or a poisoned lock
     /// invents no block.
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
-        self.read(|store| {
-            Ok(store.is_blocked_at(kind, value, id_core::time::unix_ms()).unwrap_or(false))
-        })
-        .unwrap_or(false)
+        // The bool seam fails open (see the trait docs): a read error
+        // or a poisoned lock invents no block. `lookup` preserves the
+        // failure for the seams that distinguish it (#8750).
+        self.lookup(kind, value).is_blocked()
+    }
+
+    fn lookup(&self, kind: BlockKind, value: &[u8]) -> BlockLookup {
+        let answered =
+            self.read(|store| Ok(store.is_blocked_at(kind, value, id_core::time::unix_ms())?));
+        match answered {
+            Ok(true) => BlockLookup::Blocked,
+            Ok(false) => BlockLookup::Unblocked,
+            Err(TraitStoreError::Store(err)) => {
+                let failure = if matches!(err, StoreError::Corrupt(_)) {
+                    BlockLookupFailure::Corrupt
+                } else {
+                    BlockLookupFailure::Storage
+                };
+                tracing::warn!("block-list lookup failed ({}): {err}", failure.as_str());
+                BlockLookup::Indeterminate(failure)
+            }
+            Err(err) => {
+                let failure = BlockLookupFailure::Unavailable;
+                tracing::warn!("block-list lookup failed ({}): {err}", failure.as_str());
+                BlockLookup::Indeterminate(failure)
+            }
+        }
     }
 }
 
