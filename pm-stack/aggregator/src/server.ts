@@ -37,7 +37,7 @@ import {
   ACTIVITY_SOURCE_COVERAGE,
 } from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
-import { enforceAccessAuthor } from "./access-identity.ts";
+import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -1474,6 +1474,9 @@ async function handler(req: Request): Promise<Response> {
         deduped?: boolean;
         error?: string;
       }[] = [];
+      // One enforcer for the whole batch: the request's JWT is
+      // verified once, not once per action (see access-identity.ts).
+      const enforceBatchAuthor = createAccessAuthorEnforcer(req);
       for (const [index, raw] of entries.entries()) {
         const objectRef =
           typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
@@ -1484,7 +1487,7 @@ async function handler(req: Request): Promise<Response> {
           results.push({ index, objectRef, ok: false, error: parsed.error });
           continue;
         }
-        const batchAccess = await enforceAccessAuthor(req, parsed.value.author);
+        const batchAccess = await enforceBatchAuthor(parsed.value.author);
         if (!batchAccess.ok) {
           results.push({ index, objectRef, ok: false, error: batchAccess.error });
           continue;

@@ -170,10 +170,16 @@ export function deriveAuthorFromAccess(
     (verified.sub !== "" && ownerIds.includes(verified.sub)) ||
     (verified.email !== "" && ownerIds.includes(verified.email));
   if (isOwner) {
-    return {
-      ok: true,
-      author: { kind: "drew", id: identity.slice(0, 120), label: identity.slice(0, 120) },
-    };
+    // The verified owner IS the standing drew identity (registry.ts:
+    // { kind: "drew", id: "drew" }). Deriving id = email/sub instead
+    // would re-key every pre-Access drew-authored artifact on the day
+    // Access is enabled — saved views above all: ViewsStore owner
+    // operations match ownerKey ("drew:drew") exactly, so the owner
+    // would lose rename/remove/setDefault over their own views
+    // (Codex P2, PR #8645). Map the verified owner to the standing
+    // identity; the allowlist check above is what authorizes it,
+    // never the caller-supplied author.
+    return { ok: true, author: { kind: "drew", id: "drew", label: "Drew" } };
   }
   // Not the owner: asserting drew is a contradiction -> 403. This also
   // covers the fail-closed case (empty allowlist: NOBODY is an owner).
@@ -194,6 +200,56 @@ export function deriveAuthorFromAccess(
   };
 }
 
+type AuthorEnforcement =
+  | { ok: true; author: DashAuthor }
+  | { ok: false; status: 401 | 403; error: string };
+
+/**
+ * Build the Access author enforcer for ONE HTTP request. The JWT is
+ * verified at most once per enforcer: the verified identity — or the
+ * 401 failure — is memoized and reused for every call, while author
+ * derivation (including the per-item contradictory-drew 403) still
+ * runs per call. Batch endpoints MUST use one enforcer for the whole
+ * batch: verifying per item repeats the JWKS fetch per action
+ * whenever the cache is cold or the certs endpoint is failing (a
+ * 100-action batch could stack ~100 sequential 5 s timeouts just to
+ * report the same 401 — Codex P2, PR #8645).
+ */
+export function createAccessAuthorEnforcer(
+  req: Request,
+  env: Record<string, string | undefined> = process.env,
+  fetchImpl: typeof fetch = fetch,
+): (asserted: DashAuthor) => Promise<AuthorEnforcement> {
+  const config = readAccessConfig(env);
+  let verification: Promise<
+    { ok: true; verified: VerifiedAccessIdentity } | { ok: false; status: 401; error: string }
+  > | null = null;
+  return async (asserted: DashAuthor): Promise<AuthorEnforcement> => {
+    if (!config) return { ok: true, author: asserted };
+    if (!verification) {
+      verification = (async () => {
+        const token = req.headers.get(ACCESS_JWT_HEADER) ?? "";
+        if (token === "") {
+          return { ok: false, status: 401, error: "missing Cf-Access-Jwt-Assertion" } as const;
+        }
+        try {
+          const verified = await verifyAccessJwt(token, config, fetchImpl);
+          return { ok: true, verified } as const;
+        } catch (err) {
+          return {
+            ok: false,
+            status: 401,
+            error: `invalid Access JWT: ${err instanceof Error ? err.message : err}`,
+          } as const;
+        }
+      })();
+    }
+    const outcome = await verification;
+    if (!outcome.ok) return outcome;
+    return deriveAuthorFromAccess(outcome.verified, asserted, config.ownerIds);
+  };
+}
+
 /**
  * Enforce Access-derived authorship for one aggregator write. Returns the
  * author to persist, or an HTTP error. When Access is unconfigured the
@@ -204,18 +260,6 @@ export async function enforceAccessAuthor(
   asserted: DashAuthor,
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ ok: true; author: DashAuthor } | { ok: false; status: 401 | 403; error: string }> {
-  const config = readAccessConfig(env);
-  if (!config) return { ok: true, author: asserted };
-  const token = req.headers.get(ACCESS_JWT_HEADER) ?? "";
-  if (token === "") {
-    return { ok: false, status: 401, error: "missing Cf-Access-Jwt-Assertion" };
-  }
-  let verified: VerifiedAccessIdentity;
-  try {
-    verified = await verifyAccessJwt(token, config, fetchImpl);
-  } catch (err) {
-    return { ok: false, status: 401, error: `invalid Access JWT: ${err instanceof Error ? err.message : err}` };
-  }
-  return deriveAuthorFromAccess(verified, asserted, config.ownerIds);
+): Promise<AuthorEnforcement> {
+  return createAccessAuthorEnforcer(req, env, fetchImpl)(asserted);
 }

@@ -5,6 +5,7 @@ import {
   ACCESS_JWT_HEADER,
   clearAccessJwksCache,
   deriveAuthorFromAccess,
+  createAccessAuthorEnforcer,
   enforceAccessAuthor,
   readAccessConfig,
   verifyAccessJwt,
@@ -93,7 +94,7 @@ describe("config-gated Access author derivation (#1253)", () => {
       accessEnv(),
       fakeFetch(),
     );
-    expect(result).toEqual({ ok: true, author: { kind: "drew", id: OWNER, label: OWNER } });
+    expect(result).toEqual({ ok: true, author: { kind: "drew", id: "drew", label: "Drew" } });
   });
 
   test("asserted drew by a non-owner is forbidden", () => {
@@ -157,6 +158,28 @@ describe("config-gated Access author derivation (#1253)", () => {
       fakeFetch(),
     );
     expect(audience).toMatchObject({ ok: false, status: 401 });
+  });
+
+  test("a request enforcer verifies the JWT once, even when the certs endpoint is down", async () => {
+    let fetches = 0;
+    const downFetch = (async () => {
+      fetches += 1;
+      throw new Error("certs endpoint unreachable");
+    }) as unknown as typeof fetch;
+    const jwt = token();
+    const enforce = createAccessAuthorEnforcer(
+      new Request("https://aggregator/api/actions/batch", { headers: { [ACCESS_JWT_HEADER]: jwt } }),
+      accessEnv(),
+      downFetch,
+    );
+    // Three batch items, one shared request: the same 401 must come
+    // back for each, with exactly ONE JWKS fetch attempt — per-item
+    // verification would stack one 5 s timeout per action (PR #8645).
+    for (const asserted of [assertedAgent, assertedDrew, assertedAgent]) {
+      const result = await enforce(asserted);
+      expect(result).toMatchObject({ ok: false, status: 401 });
+    }
+    expect(fetches).toBe(1);
   });
 
   test("bad signature is rejected even when claims and kid look valid", async () => {
