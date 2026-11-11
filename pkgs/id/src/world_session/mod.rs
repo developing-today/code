@@ -326,13 +326,28 @@ impl WorldService {
             .await
             .map_err(|error| format!("compile failed: {error:#}"))?
             .effective;
-        let (wasm, diagnostics, provenance) =
-            crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT)
-                .await
-                .map_err(|error| {
-                    tracing::warn!("world compile failed: {error:#}");
-                    format!("compile failed: {error:#}")
-                })?;
+        // Through the shared compiled-world cache when the operator
+        // configured one (design #5965 §2, P1 in #6235): every compile
+        // is an admin compile today, so entries are attributed to the
+        // house author at `author` scope — unpublished source's
+        // default (§2.3) — and identical recompiles skip the compiler.
+        let compiled = if compiler.cache().is_some() {
+            crate::world_compile::compile_with_cache(
+                spec,
+                compiler,
+                &granted,
+                COMPILE_TIMEOUT,
+                crate::world_compile::ADMIN_CACHE_AUTHOR,
+                crate::world_cache::CacheScope::Author,
+            )
+            .await
+        } else {
+            crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT).await
+        };
+        let (wasm, diagnostics, provenance) = compiled.map_err(|error| {
+            tracing::warn!("world compile failed: {error:#}");
+            format!("compile failed: {error:#}")
+        })?;
         let hash = module_hash(&wasm);
         let permit = self
             .try_reserve_module_upload()

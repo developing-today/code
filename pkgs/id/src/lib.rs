@@ -255,6 +255,7 @@ pub mod world;
 #[cfg(feature = "world")]
 pub use id_core::world_caps;
 #[cfg(feature = "world")]
+pub mod world_cache;
 pub mod world_compile;
 #[cfg(feature = "world")]
 pub mod world_doctor;
