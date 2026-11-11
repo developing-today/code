@@ -54,6 +54,7 @@ impl WorldCommand {
             Self::Input { .. } => "Input",
             Self::EntityInput { .. } => "EntityInput",
             Self::ExportEntity { .. } => "ExportEntity",
+            Self::ImportEntity { .. } => "ImportEntity",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -173,6 +174,18 @@ pub(crate) enum WorldCommand {
         source_region: String,
         target_region: String,
         prior_owner_epoch: u64,
+        reply: oneshot::Sender<Result<HandoffTransferState>>,
+    },
+    ImportEntity {
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+        program_module_hash: String,
+        payload_schema: String,
+        payload: Vec<u8>,
+        payload_digest: String,
         reply: oneshot::Sender<Result<HandoffTransferState>>,
     },
     Snapshot {
@@ -814,6 +827,197 @@ impl WorldActor {
                 tracing::error!("world program records failed after entity export: {error:#}");
                 return Err(error.context(
                     "world program failed after a durable entity export; replay required",
+                ));
+            }
+        };
+        self.republished(records, self.core.sequence);
+        let _ = self.view_changed.send(self.core.sequence);
+        Ok(transfer)
+    }
+
+    fn import_entity(
+        &mut self,
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+        program_module_hash: String,
+        payload_schema: String,
+        payload: Vec<u8>,
+        payload_digest: String,
+    ) -> Result<HandoffTransferState> {
+        self.check_storage()?;
+        ensure!(self.program_healthy, "world program is unavailable");
+        ensure!(
+            self.journal.is_some(),
+            "entity import requires a durable world journal"
+        );
+        ensure!(
+            self.core.limits.region_sharded,
+            "entity import requires a region-sharded world"
+        );
+        ensure!(
+            handoff_id.len() == 32 && handoff_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "handoff ID must be 128-bit hexadecimal"
+        );
+        core::validate_entity_ref(&entity_ref)?;
+        for (name, value) in [
+            ("source region", source_region.as_str()),
+            ("target region", target_region.as_str()),
+        ] {
+            ensure!(!value.trim().is_empty(), "{name} must not be empty");
+            ensure!(value.len() <= 256, "{name} exceeds 256 bytes");
+            ensure!(
+                !value.chars().any(char::is_control),
+                "{name} contains a control character"
+            );
+        }
+        ensure!(
+            source_region != target_region,
+            "source and target regions match"
+        );
+        // Validate the envelope before any mutation (design #2818 \§3):
+        // the module hash and payload schema must be ones this destination
+        // runs, and the payload must hash to the digest the source recorded.
+        let active_module_hash = self
+            .core
+            .active_module_hash
+            .clone()
+            .context("world has no installed program for entity import")?;
+        ensure!(
+            program_module_hash == active_module_hash,
+            "entity import program module hash does not match the destination program"
+        );
+        ensure!(
+            !payload_schema.trim().is_empty() && payload_schema.len() <= 128,
+            "entity transfer payload schema must be 1..=128 bytes"
+        );
+        ensure!(
+            !payload_schema.chars().any(char::is_control),
+            "entity transfer payload schema contains a control character"
+        );
+        ensure!(
+            payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+        );
+        ensure!(
+            payload_digest == hex_encode(blake3::hash(&payload).as_bytes()),
+            "entity transfer payload digest does not match"
+        );
+        let new_owner_epoch = prior_owner_epoch
+            .checked_add(1)
+            .context("entity import owner epoch overflow")?;
+        // Exact-retry recovery: if this import already committed (its reply
+        // was lost, or the actor restarted and replayed it), return the
+        // stored receipt instead of applying the entity twice. A stored
+        // import whose fields differ from the request is not a retry \— it
+        // falls through and validate_entity_import rejects the conflicting
+        // handoff ID / entity, failing closed, never overwriting.
+        if let Some(existing) = self.core.handoff_transfers.iter().find(|transfer| {
+            transfer.direction == HandoffDirection::Import && transfer.handoff_id == handoff_id
+        }) && existing.entity_ref == entity_ref
+            && existing.source_region == source_region
+            && existing.target_region == target_region
+            && existing.prior_owner_epoch == prior_owner_epoch
+            && existing.new_owner_epoch == Some(new_owner_epoch)
+            && existing.program_module_hash == program_module_hash
+            && existing.payload_schema == payload_schema
+            && existing.payload_digest == payload_digest
+        {
+            return Ok(existing.clone());
+        }
+        let request = EntityTransferRequest::Import {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            prior_owner_epoch,
+            program_module_hash: program_module_hash.clone(),
+            payload_schema: payload_schema.clone(),
+            payload: payload.clone(),
+            payload_digest: payload_digest.clone(),
+        };
+        let EntityTransferPlan::Import { app_event } =
+            self.program.prepare_entity_transfer(&request)?
+        else {
+            bail!("world program returned an export plan for an import request");
+        };
+        let event_text = serde_json::json!({
+            "protocol": "world.entity-transfer.v1",
+            "direction": "import",
+            "handoff_id": handoff_id,
+            "entity_ref": entity_ref,
+            "source_region": source_region,
+            "target_region": target_region,
+            "prior_owner_epoch": prior_owner_epoch,
+            "new_owner_epoch": new_owner_epoch,
+            "module_hash": program_module_hash,
+            "payload_schema": payload_schema,
+            "payload_digest": payload_digest,
+            "payload_hex": hex_encode(&payload),
+            "app_event": app_event,
+        })
+        .to_string();
+        ensure!(
+            event_text.len() <= crate::world_caps::MAX_EVENT_BYTES,
+            "entity transfer event exceeds {} bytes",
+            crate::world_caps::MAX_EVENT_BYTES
+        );
+        let destination_event = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: event_text },
+        };
+        let transfer = HandoffTransferState {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            direction: HandoffDirection::Import,
+            prior_owner_epoch,
+            new_owner_epoch: Some(new_owner_epoch),
+            program_module_hash: program_module_hash.clone(),
+            payload_schema: payload_schema.clone(),
+            payload_digest: payload_digest.clone(),
+            payload: None,
+            event: destination_event.clone(),
+        };
+        self.core.validate_entity_import(&transfer)?;
+
+        // Persist-before-apply: the durable entry is the import receipt.
+        // Record it in the dedupe ledger before applying the prepared
+        // event, so a retry after a crash observes the receipt instead of
+        // applying the entity twice. The receipt is returned only after
+        // the program applies the event; a post-append failure withholds
+        // it and recovery replays the durable entry.
+        self.persist(JournalEntry::EntityImported {
+            handoff_id,
+            entity_ref,
+            source_region,
+            target_region,
+            prior_owner_epoch,
+            new_owner_epoch,
+            program_module_hash,
+            payload_schema,
+            payload_digest,
+            destination_event: destination_event.clone(),
+        })?;
+        self.core.record_entity_import(transfer.clone());
+        if let Err(error) = self.program.update(&destination_event) {
+            self.program_healthy = false;
+            tracing::error!("world program rejected a durable entity import: {error:#}");
+            return Err(
+                error.context("world program rejected a durable entity import; replay required")
+            );
+        }
+        let records = match program_records(self.program.as_mut()) {
+            Ok(records) => records.unwrap_or_default(),
+            Err(error) => {
+                self.program_healthy = false;
+                tracing::error!("world program records failed after entity import: {error:#}");
+                return Err(error.context(
+                    "world program failed after a durable entity import; replay required",
                 ));
             }
         };
@@ -1890,6 +2094,31 @@ impl WorldActor {
                     source_region,
                     target_region,
                     prior_owner_epoch,
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::ImportEntity {
+                handoff_id,
+                entity_ref,
+                source_region,
+                target_region,
+                prior_owner_epoch,
+                program_module_hash,
+                payload_schema,
+                payload,
+                payload_digest,
+                reply,
+            } => {
+                let result = self.import_entity(
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                    program_module_hash,
+                    payload_schema,
+                    payload,
+                    payload_digest,
                 );
                 let _ = reply.send(result);
             }

@@ -299,6 +299,53 @@ fn validate_handoff_transfer(
     Ok(())
 }
 
+/// Verify a journaled destination event carries the import envelope for
+/// `payload_digest` (#3870 phase 3, design #2818 \§3): the payload rides
+/// hex-encoded inside the versioned system event, and its BLAKE3 digest
+/// must match the digest the journal entry records \— a tampered or
+/// mismatched envelope is refused at restore, never applied.
+fn validate_import_envelope(event: &WorldEvent, payload_digest: &str) -> Result<()> {
+    let text = match &event.kind {
+        WorldEventKind::System { event } => event,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "journal import event is not a host system event"
+            ));
+        }
+    };
+    let envelope: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| anyhow::anyhow!("journal import event is not a transfer envelope"))?;
+    ensure!(
+        envelope["protocol"] == "world.entity-transfer.v1" && envelope["direction"] == "import",
+        "journal import event is not an import envelope"
+    );
+    ensure!(
+        envelope["payload_digest"] == payload_digest,
+        "journal import envelope digest does not match the journal entry"
+    );
+    let payload_hex = envelope["payload_hex"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("journal import envelope carries no payload"))?;
+    ensure!(
+        payload_hex.len() % 2 == 0 && payload_hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "journal import envelope payload is not hex"
+    );
+    let payload: Vec<u8> = (0..payload_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&payload_hex[i..i + 2], 16))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| anyhow::anyhow!("journal import envelope payload is not hex"))?;
+    ensure!(
+        payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+        "journal import payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+    );
+    ensure!(
+        hex_encode(blake3::hash(&payload).as_bytes()) == payload_digest,
+        "journal import payload digest does not match"
+    );
+    Ok(())
+}
+
 impl WorldCore {
     /// Create an empty in-memory world on the real [`SystemClock`].
     pub fn new(world_id: impl Into<String>, limits: WorldLimits) -> Result<Self> {
@@ -846,8 +893,8 @@ impl WorldCore {
                     destination_event,
                 } => {
                     let transfer = HandoffTransferState {
-                        handoff_id,
-                        entity_ref,
+                        handoff_id: handoff_id.clone(),
+                        entity_ref: entity_ref.clone(),
                         source_region,
                         target_region,
                         direction: HandoffDirection::Import,
@@ -855,11 +902,19 @@ impl WorldCore {
                         new_owner_epoch: Some(new_owner_epoch),
                         program_module_hash,
                         payload_schema,
-                        payload_digest,
+                        payload_digest: payload_digest.clone(),
                         payload: None,
                         event: destination_event.clone(),
                     };
                     validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    validate_entity_ref(&entity_ref)?;
+                    ensure!(
+                        !core.handoff_transfers.iter().any(|t| {
+                            t.entity_ref == entity_ref && t.direction == HandoffDirection::Import
+                        }),
+                        "journal imports entity {entity_ref:?} twice"
+                    );
+                    validate_import_envelope(&destination_event, &payload_digest)?;
                     core.handoff_transfers.push(transfer);
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
@@ -2274,6 +2329,50 @@ impl WorldCore {
     /// Install a source fence after its matching journal record is durable.
     pub(crate) fn record_entity_export(&mut self, transfer: HandoffTransferState) {
         debug_assert!(self.validate_entity_export(&transfer).is_ok());
+        self.handoff_transfers.push(transfer);
+        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
+    }
+
+    /// Validate a destination import against the dedupe ledger (#3870
+    /// phase 3). The actor has already verified the envelope's module
+    /// hash, schema and payload digest before mutation; this checks the
+    /// durable-state invariants: direction, owner-epoch advance, no
+    /// duplicate payload copy, and that neither the handoff ID nor the
+    /// entity already carries an import.
+    pub(crate) fn validate_entity_import(&self, transfer: &HandoffTransferState) -> Result<()> {
+        ensure!(
+            self.limits.region_sharded,
+            "entity import requires a region-sharded world"
+        );
+        ensure!(
+            transfer.direction == HandoffDirection::Import,
+            "destination import has the wrong transfer direction"
+        );
+        validate_entity_ref(&transfer.entity_ref)?;
+        ensure!(
+            transfer.new_owner_epoch.is_some_and(|new_owner_epoch| {
+                transfer.prior_owner_epoch.checked_add(1) == Some(new_owner_epoch)
+            }),
+            "destination import does not advance the owner epoch"
+        );
+        ensure!(
+            transfer.payload.is_none(),
+            "destination import carries a duplicate payload outside its event"
+        );
+        ensure!(
+            !self.handoff_transfers.iter().any(|existing| {
+                existing.handoff_id == transfer.handoff_id
+                    || (existing.direction == HandoffDirection::Import
+                        && existing.entity_ref == transfer.entity_ref)
+            }),
+            "entity already has an active import or handoff ID is duplicated"
+        );
+        Ok(())
+    }
+
+    /// Install an import receipt after its matching journal record is durable.
+    pub(crate) fn record_entity_import(&mut self, transfer: HandoffTransferState) {
+        debug_assert!(self.validate_entity_import(&transfer).is_ok());
         self.handoff_transfers.push(transfer);
         self.since_checkpoint = self.since_checkpoint.saturating_add(1);
     }

@@ -1444,7 +1444,7 @@ pub enum JournalEntry {
     /// (#3870 phase 1, design #2818 §3). Written persist-before-apply; the
     /// durable receipt for `handoff_id`. An exact retry returns the
     /// existing receipt; the same ID with a different digest is a hard
-    /// conflict (enforced from phase 3 of #3870).
+    /// conflict (phase 3 of #3870).
     EntityImported {
         /// Coordinator-generated handoff ID (hex); the dedupe key.
         handoff_id: String,
