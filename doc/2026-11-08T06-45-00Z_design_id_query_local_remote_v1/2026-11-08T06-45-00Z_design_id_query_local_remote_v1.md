@@ -138,9 +138,13 @@ separate surface with separate permissions and audit (or an explicit v1
 - **Formats:** structured (JSON/rows) for scripts/agents; human-readable
   tables for the CLI; a SQLite-shaped result is a candidate format for
   composability (see #5816's foreign-adapter query-Redis-get-SQLite pattern).
-- **Truncation honesty:** when a result is cut (page size, server cap,
-  sensitivity filtering) the result **says so and how to continue** — never a
-  silent partial answer presented as complete.
+- **Truncation honesty:** when a result is cut by page size or a server
+  cap, the result **says so and how to continue** — never a silent partial
+  answer presented as complete. A cut caused by sensitivity filtering is
+  reported **only as far as the per-classification disclosure policy (§4;
+  #5818's design) permits**: where that policy withholds counts or even the
+  existence of filtered data, the result does not announce that filtering
+  occurred — announcing it would leak exactly what the policy hides.
 - **Cost limits:** server-side guardrails (timeout, scan cap) so a remote
   query cannot DoS the serving server.
 - The settled result-format and cursor semantics record is **#5821**.
