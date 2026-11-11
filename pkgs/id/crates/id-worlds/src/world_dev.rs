@@ -1291,8 +1291,22 @@ pub async fn run_dev_watch(
                 fixtures,
             )
             .await;
+        // A rendering failure after a successful promotion is a
+        // cycle diagnostic, not a session failure (Codex P2 on
+        // PR #8792): the program stays healthy after a failed view,
+        // so record the error on the cycle and keep polling -- the
+        // `?` form terminated the watch and discarded the whole
+        // report. The promotion itself stands; only the view is
+        // missing, and the next change can fix the rendering code.
+        let mut detail = promotion.detail;
         let view = if promotion.outcome == PromotionOutcome::Promoted {
-            session.view().await?
+            match session.view().await {
+                Ok(view) => view,
+                Err(err) => {
+                    detail = Some(format!("view failed after promotion: {err:#}"));
+                    None
+                }
+            }
         } else {
             None
         };
@@ -1301,7 +1315,7 @@ pub async fn run_dev_watch(
             snapshot_id: candidate_snapshot_id,
             coalesced_events,
             outcome: promotion.outcome.as_str().to_owned(),
-            detail: promotion.detail,
+            detail,
             view,
         });
     }
