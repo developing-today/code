@@ -539,9 +539,23 @@ fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
         .or_else(|| s.split_once('t'))
         .or_else(|| s.split_once(' '))?;
     let mut dp = date.split('-');
-    let year: i64 = dp.next()?.parse().ok()?;
-    let month: u32 = dp.next()?.parse().ok()?;
-    let day: u32 = dp.next()?.parse().ok()?;
+    // RFC 3339 field widths come first (date-fullyear is 4DIGIT,
+    // month/day/time components 2DIGIT): a year with unbounded
+    // digits parses as an i64 and then overflows the civil-date
+    // arithmetic — a panic in overflow-checked builds, a wrapped
+    // negative epoch that passes the horizon gate in release
+    // (Codex P2 on PR #8489). With the widths enforced, every
+    // value below is provably inside i64 arithmetic range.
+    fn digits(s: &str, n: usize) -> Option<i64> {
+        if s.len() == n && s.bytes().all(|b| b.is_ascii_digit()) {
+            s.parse().ok()
+        } else {
+            None
+        }
+    }
+    let year: i64 = digits(dp.next()?, 4)?;
+    let month: u32 = digits(dp.next()?, 2)?.try_into().ok()?;
+    let day: u32 = digits(dp.next()?, 2)?.try_into().ok()?;
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
     let days_in_month = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -562,8 +576,8 @@ fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
         let (t, off) = rest.split_at(idx);
         let sign: i64 = if rest.as_bytes()[idx] == b'+' { 1 } else { -1 };
         let mut op = off[1..].split(':');
-        let oh: i64 = op.next()?.parse().ok()?;
-        let om: i64 = op.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let oh: i64 = digits(op.next()?, 2)?;
+        let om: i64 = op.next().and_then(|v| digits(v, 2)).unwrap_or(0);
         // RFC 3339 time-numoffset is a time-hour (00-23) and
         // time-minute (00-59): an unbounded offset would let the
         // epoch arithmetic wrap a far-future date back into the
@@ -577,9 +591,9 @@ fn parse_rfc3339_epoch(s: &str) -> Option<i64> {
     };
     let time = time.split('.').next()?; // drop fractional seconds
     let mut tp = time.split(':');
-    let hh: i64 = tp.next()?.parse().ok()?;
-    let mm: i64 = tp.next()?.parse().ok()?;
-    let ss: i64 = tp.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let hh: i64 = digits(tp.next()?, 2)?;
+    let mm: i64 = digits(tp.next()?, 2)?;
+    let ss: i64 = tp.next().and_then(|v| digits(v, 2)).unwrap_or(0);
     if !(0..24).contains(&hh) || !(0..60).contains(&mm) || !(0..61).contains(&ss) {
         return None;
     }
@@ -1139,6 +1153,11 @@ mod tests {
             "2026-11-06T00:00:00+24:00",
             "2026-11-06T00:00:00+00:60",
             "9999-01-01T00:00:00+70000000:00",
+            // Field widths are RFC 3339 syntax, not decoration: an
+            // unbounded year overflows the epoch arithmetic.
+            "300000000000-01-01T00:00:00Z",
+            "10000-01-01T00:00:00Z",
+            "2026-1-06T00:00:00Z",
         ] {
             let err = validate_not_before_at(&json!(bad), "packet.not_before", now)
                 .err()
