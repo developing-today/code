@@ -510,7 +510,7 @@ mod tests {
         };
         let confirm_code = auth.issue_code(confirm.clone(), "a@b.co", now()).unwrap();
         // The other flow can issue during the first flow's resend window.
-        let sign_in_code = auth
+        let mut sign_in_code = auth
             .issue_code(sign_in.clone(), "a@b.co", now() + 1)
             .unwrap();
         let same_flow_error = auth
@@ -521,23 +521,37 @@ mod tests {
             Some(Refusal::RateLimited(_))
         ));
 
+        // The two codes are sampled independently from the same
+        // 1,000,000-value space, so they can coincide; when they do,
+        // the sign-in code IS a correct confirmation code and the
+        // cross-flow rejections below cannot hold. Re-issue the
+        // sign-in code past its resend window until it differs, and
+        // run the remaining checks at that issuance time.
+        let mut issued_at = now() + 1;
+        while sign_in_code == confirm_code {
+            issued_at += CODE_RESEND_MS + 1;
+            sign_in_code = auth
+                .issue_code(sign_in.clone(), "a@b.co", issued_at)
+                .unwrap();
+        }
+
         // Presenting one flow's code to the other neither consumes nor
         // increments attempts on the code's own slot.
         assert!(
-            auth.check_code("a@b.co", PurposeKind::Confirm, &sign_in_code, now() + 1)
+            auth.check_code("a@b.co", PurposeKind::Confirm, &sign_in_code, issued_at)
                 .is_err()
         );
         assert!(
-            auth.check_code("a@b.co", PurposeKind::SignIn, &confirm_code, now() + 1)
+            auth.check_code("a@b.co", PurposeKind::SignIn, &confirm_code, issued_at)
                 .is_err()
         );
         assert_eq!(
-            auth.check_code("a@b.co", PurposeKind::Confirm, &confirm_code, now() + 1)
+            auth.check_code("a@b.co", PurposeKind::Confirm, &confirm_code, issued_at)
                 .unwrap(),
             confirm
         );
         assert_eq!(
-            auth.check_code("a@b.co", PurposeKind::SignIn, &sign_in_code, now() + 1)
+            auth.check_code("a@b.co", PurposeKind::SignIn, &sign_in_code, issued_at)
                 .unwrap(),
             sign_in
         );
