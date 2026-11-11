@@ -180,6 +180,9 @@
             CARGO_INCREMENTAL = "0";
             CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
             CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+            # Fake-compiler probe tests need a real interpreter for their
+            # shebang in the sandbox, where /bin/sh does not exist (#5926).
+            ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs =
@@ -365,7 +368,15 @@
           # parallel jobs instead of one serial ~25-minute check.
           # (3 → 4 shards in #551: the 3-way shards had drifted to
           # ~12.5 min, close to the fast-lane exit.)
-          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 4";
+          # Keep the shard argument/empty-selection regression in the PR
+          # gate once, alongside shard 0, before running its real partition.
+          test-shard-0 = mkCheckWith {
+            name = "test-shard-0";
+            checkCommand = ''
+              bash scripts/test-shard-sandbox-test.sh
+              just test-shard-sandbox 0 4
+            '';
+          };
           test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
           test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
           test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
@@ -824,6 +835,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
@@ -873,6 +887,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh";

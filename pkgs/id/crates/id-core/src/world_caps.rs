@@ -942,7 +942,7 @@ pub fn result_event(id: &str, outcome: Result<serde_json::Value, CapError>) -> S
 
 /// The event delivered when a subscription is refused.
 #[must_use]
-pub fn subscription_refused_event(spec: &str, error: CapError) -> String {
+pub fn subscription_refused_event(spec: &str, error: &CapError) -> String {
     let mut event =
         serde_json::json!({"cap":"subscription","spec":spec,"ok":false,"error":error.code()});
     if let Some(reason) = error.reason() {
@@ -1089,6 +1089,16 @@ impl CapError {
         Self {
             code: CapErrorCode::ActorDenied,
             reason: None,
+        }
+    }
+
+    /// The acting participant lacks the scope for the effect, and `reason`
+    /// says why.
+    #[must_use]
+    pub fn actor_denied_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::ActorDenied,
+            reason: Some(reason.into()),
         }
     }
 

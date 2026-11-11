@@ -118,6 +118,16 @@ pub enum ConvertError {
         /// The repeated transfer ID.
         id: u128,
     },
+    /// A TigerBeetle account or transfer ID is reserved and cannot be
+    /// submitted. Both zero and `u128::MAX` are invalid IDs.
+    InvalidId {
+        /// Whether this is an account ID or a transfer ID.
+        kind: &'static str,
+        /// The account or conversion leg that supplied the ID.
+        role: &'static str,
+        /// The reserved ID value.
+        id: u128,
+    },
 }
 
 impl std::fmt::Display for ConvertError {
@@ -159,6 +169,10 @@ impl std::fmt::Display for ConvertError {
             Self::DuplicateTransferId { id } => {
                 write!(f, "transfer ID {id} is used by more than one leg")
             }
+            Self::InvalidId { kind, role, id } => write!(
+                f,
+                "invalid {kind} ID {id} for {role}: zero and u128::MAX are reserved"
+            ),
         }
     }
 }
@@ -431,8 +445,11 @@ pub struct ConversionAmounts {
 /// request with the typed reason. Pure: no ledger or store access.
 ///
 /// Validation order is fixed so callers see deterministic errors:
-/// amount bounds, rate/scale/fee terms, ledger and account shape,
-/// fee-account presence, then transfer-ID shape.
+/// amount bounds, rate/scale/fee terms, ledger shape,
+/// account-ID validity (caller source, LP source, optional fee
+/// account, LP destination, caller destination), account shape,
+/// fee-account presence, then transfer-ID count, validity, and
+/// uniqueness (in leg order).
 ///
 /// # Errors
 ///
@@ -472,6 +489,13 @@ pub fn build_conversion_batch(
     if request.dest_ledger == 0 {
         return Err(ConvertError::ZeroLedger { leg: "destination" });
     }
+    validate_id("account", "caller_source", request.caller_source)?;
+    validate_id("account", "lp_source", request.lp_source)?;
+    if let Some(fee_account) = request.fee_account {
+        validate_id("account", "fee_account", fee_account)?;
+    }
+    validate_id("account", "lp_dest", request.lp_dest)?;
+    validate_id("account", "caller_dest", request.caller_dest)?;
     if request.caller_source == request.lp_source {
         return Err(ConvertError::SameAccount { leg: "source" });
     }
@@ -495,7 +519,13 @@ pub fn build_conversion_batch(
         });
     }
     let mut seen = std::collections::HashSet::with_capacity(leg_count);
-    for id in &request.transfer_ids {
+    for (index, id) in request.transfer_ids.iter().enumerate() {
+        let role = match (fee > 0, index) {
+            (_, 0) => "source",
+            (true, 1) => "fee",
+            _ => "destination",
+        };
+        validate_id("transfer", role, *id)?;
         if !seen.insert(id) {
             return Err(ConvertError::DuplicateTransferId { id: *id });
         }
@@ -549,6 +579,13 @@ pub fn build_conversion_batch(
         total_source_debit,
     };
     Ok((amounts, legs))
+}
+
+fn validate_id(kind: &'static str, role: &'static str, id: u128) -> Result<(), ConvertError> {
+    if id == 0 || id == u128::MAX {
+        return Err(ConvertError::InvalidId { kind, role, id });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -866,6 +903,96 @@ mod tests {
         assert_eq!(amounts.amount_out, 1_500);
         assert_eq!(legs[0].ledger, 100);
         assert_eq!(legs[1].ledger, 200);
+    }
+
+    #[test]
+    fn rejects_reserved_transfer_ids_in_every_leg_position() {
+        for (index, role) in [(0, "source"), (1, "fee"), (2, "destination")] {
+            for id in [0, u128::MAX] {
+                let mut req = request();
+                req.transfer_ids = vec![11, 22, 33];
+                req.fee_bps = Some(50);
+                req.fee_account = Some(9);
+                req.transfer_ids[index] = id;
+                assert_eq!(
+                    build_conversion_batch(&req),
+                    Err(ConvertError::InvalidId {
+                        kind: "transfer",
+                        role,
+                        id,
+                    })
+                );
+            }
+        }
+
+        // The ordinary IDs still produce the expected control batch.
+        let req = request();
+        let (amounts, legs) = build_conversion_batch(&req).expect("sane IDs build");
+        assert_eq!(amounts.amount_out, 1_500);
+        assert_eq!(legs.iter().map(|leg| leg.id).collect::<Vec<_>>(), [11, 22]);
+    }
+
+    #[test]
+    fn rejects_reserved_account_ids_in_every_role() {
+        for id in [0, u128::MAX] {
+            let mut req = request();
+            req.fee_bps = Some(50);
+            req.transfer_ids = vec![11, 22, 33];
+
+            req.caller_source = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "caller_source",
+                    id,
+                })
+            );
+
+            req.caller_source = 1;
+            req.lp_source = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "lp_source",
+                    id,
+                })
+            );
+
+            req.lp_source = 2;
+            req.fee_account = Some(id);
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "fee_account",
+                    id,
+                })
+            );
+
+            req.fee_account = Some(9);
+            req.lp_dest = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "lp_dest",
+                    id,
+                })
+            );
+
+            req.lp_dest = 3;
+            req.caller_dest = id;
+            assert_eq!(
+                build_conversion_batch(&req),
+                Err(ConvertError::InvalidId {
+                    kind: "account",
+                    role: "caller_dest",
+                    id,
+                })
+            );
+        }
     }
 
     #[test]

@@ -130,15 +130,6 @@ let
   # wrapper below execs it, and the wrapped package joins over it.
   opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
 
-  # The build the watchdog's build-identity check (code#8255) expects
-  # on the port — read from the name of the very package derivation
-  # the unit runs (opencodeCascade), so expectation and ExecStart
-  # resolve from one derivation and cannot drift apart.
-  watchdogExpectedVersion =
-    let
-      m = builtins.match "opencode-(.*)" inputs.openchamber.inputs.opencode.packages.${system}.opencode.name;
-    in
-    if m == null then "" else builtins.head m;
   # Drew's opencode wrapper -- formerly a standalone home.packages
   # entry (writeShellScriptBin "opencode"), logic unchanged:
   # Cloudflare env top-up and the stamp-gated sync-models
@@ -1114,7 +1105,6 @@ in
   };
 
 
-  services.opencode-watchdog.expectedVersion = watchdogExpectedVersion;
 
   services.opencode = {
     # enable comes from the cascade (mkDefault at each layer).

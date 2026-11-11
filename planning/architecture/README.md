@@ -71,6 +71,7 @@ records.
 - [Explicit platform contexts for pure libraries](../../doc/2026-11-08T17-23-00Z_design_id5963_programming_model/2026-11-08T17-23-00Z_design_id5963_programming_model.md)
 - [Capability observability: who can see which capability facts, where](../../doc/2026-11-08T10-40-00Z_design_id_capability_observability/2026-11-08T10-40-00Z_design_id_capability_observability.md)
 - [Deterministic testing for ID across time, replay, corpus, and soak](../../doc/2026-11-08_design_id5779.md)
+- [Turso/libSQL journal fit: how libSQL replication composes with the signed journal](../../doc/2026-11-10_design_id5865.md)
 - [ID relay and proxy protocol (#5813)](../../doc/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol.md)
 - [ID relay/proxy transport-boundary clarification (#5813)](../../doc/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol/2026-11-09T00-07-24Z_design_id5813_relay_proxy_protocol_transport_boundary_clarification.md)
 - [ID relay/proxy sibling contract alignment (#5813)](../../doc/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol/2026-11-10T06-54-33Z_design_id5813_relay_proxy_protocol_sibling_alignment.md)
@@ -78,6 +79,7 @@ records.
 - [Two-level metering: burst bucket + hard per-tick ceiling, per function](../../doc/2026-11-10T03-10-00Z_design_id_two_level_metering/2026-11-10T03-10-00Z_design_id_two_level_metering.md)
 - [Framing and fragmentation across ID carrier classes](../../doc/2026-11-09_decision_id5810_carrier_framing.md) (decision for #5810: length-prefixed stream frames, datagram whole-frame-or-checked-chunk assembly, store-and-forward opaque-object-or-checked-chunk assembly, and the invariants each adapter must hold)
 - [Draft approval queues, outcomes, and rejected-draft forks](../../doc/2026-11-08T11-06-39Z_design_id_draft_approval_flow/2026-11-08T11-06-39Z_design_id_draft_approval_flow.md)
+- [Chat anchor data model: typed links and durable part selectors](../../doc/2026-11-09T01-27-00Z_design_chat_anchor_data_model/2026-11-09T01-27-00Z_design_chat_anchor_data_model.md)
 
 ## Package architecture docs (living, with the code)
 

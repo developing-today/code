@@ -1389,14 +1389,45 @@ export interface ChargeRow {
 /**
  * One tripped bubble rule (§1.3): a metric over 80% of its limit, or
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
+ * "quota-action" entries are the eligible quota actions from
+ * buildQuotaActions (derive.ts, #1174) — expiry/cancellation, walled,
+ * and high-usage — rendered on the same strip, never a second list.
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle" | "quota-action";
   label: string;
   detail: string;
   href: string;
   /** Percent (over-limit) or counted dollars (payg-unbilled); worst first. */
   severity: number;
+}
+
+/**
+ * One actionable quota entry (#1174): an expiring/cancelled plan
+ * period, a walled pool, or a high-usage window whose reset is far
+ * enough away to act on. Derived once by buildQuotaActions (derive.ts)
+ * from the pools' typed source data — never by scraping display
+ * prose — and rendered identically on /quota, /today, and /attention.
+ * An entry exists only while its source condition holds: past
+ * deadlines and cleared states produce no entry, so nothing goes
+ * stale and nothing renders twice.
+ */
+export type QuotaActionKind = "expiry" | "walled" | "high-usage";
+
+export interface QuotaAction {
+  /** Stable per pool + kind, so surfaces dedupe by identity. */
+  id: string;
+  poolId: string;
+  provider: string;
+  plan: string;
+  kind: QuotaActionKind;
+  /** Actionable one-liner, e.g. "OpenCode Go — Personal ends 2026-11-02". */
+  title: string;
+  /** Reason + deadline + concrete next step, when the source names one. */
+  detail: string;
+  /** ISO deadline when the source carries one (expiry date, wall lift, reset). */
+  deadline: string | null;
+  href: string;
 }
 
 /**

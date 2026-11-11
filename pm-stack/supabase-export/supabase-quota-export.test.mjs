@@ -2,6 +2,7 @@
 // No network, no Bitwarden: the Supabase API is an injected fake fetch.
 import { describe, expect, test } from "bun:test";
 import {
+  DEFAULT_PROJECT_REF_SECRET_NAME,
   ExportError,
   FREE_LIMITS,
   PAID_TRIGGER_RATIO,
@@ -10,10 +11,11 @@ import {
   failureDocument,
   parseDbSize,
   parseRequestCount,
+  resolveProjectRef,
   run,
 } from "./supabase-quota-export.mjs";
 
-const REF = "keihfchslgjetkmnmzra";
+const REF = "fixture-project-ref";
 
 function response(status, body) {
   return {
@@ -22,7 +24,7 @@ function response(status, body) {
   };
 }
 
-/** Fake Management API: the project answers like the live probe of 2026-10-29. */
+/** Fake Management API response for an isolated fixture project. */
 function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 200, addons = [] } = {}) {
   const calls = [];
   const impl = async (url, init) => {
@@ -34,7 +36,7 @@ function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 20
     if (path === `/projects/${REF}`) {
       return response(200, {
         ref: REF,
-        name: "muse-dev2",
+        name: "fixture-project",
         organization_slug: "crwkmndylaagtbprrljn",
         status: "ACTIVE_HEALTHY",
       });
@@ -114,6 +116,19 @@ describe("supabase-quota-export", () => {
   test("a missing token is a no-token failure", async () => {
     const err = await run({ token: null, ref: REF }).catch((e) => e);
     expect(err.status).toBe("no-token");
+  });
+
+  test("project ref uses the canonical Bitwarden key and honors the environment override", async () => {
+    expect(DEFAULT_PROJECT_REF_SECRET_NAME).toBe("supabase.project-ref");
+    expect(await resolveProjectRef({ env: { SUPABASE_PROJECT_REF: "from-env" } })).toBe("from-env");
+    expect(await resolveProjectRef({ secretName: "fixture.project-ref", bwsBin: "missing-bws" })).toBeNull();
+  });
+
+  test("a missing project ref fails explicitly", async () => {
+    const err = await run({ token: "sbp_fake", fetchImpl: async () => response(200, {}) }).catch((e) => e);
+    expect(err).toBeInstanceOf(ExportError);
+    expect(err.status).toBe("no-project-ref");
+    expect(err.exitCode).toBe(3);
   });
 
   test("failure documents carry no metric or billing values", () => {

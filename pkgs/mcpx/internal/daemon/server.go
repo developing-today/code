@@ -651,7 +651,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			s.watchConfig()
 			s.reg.Reap()
-			if s.shouldIdleExit() {
+			if s.shouldIdleExit(time.Now()) {
 				s.logger.Printf("no activity for %s and no live instances; exiting", s.idleExit)
 				return s.shutdown()
 			}
@@ -679,11 +679,11 @@ func (s *Server) trackActivity(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) shouldIdleExit() bool {
+func (s *Server) shouldIdleExit(now time.Time) bool {
 	if s.idleExit <= 0 || s.committed.Load() {
 		return false
 	}
-	if time.Since(time.Unix(0, s.lastReq.Load())) < s.idleExit {
+	if now.Sub(time.Unix(0, s.lastReq.Load())) < s.idleExit {
 		return false
 	}
 	for _, st := range s.reg.Status() {
