@@ -388,10 +388,10 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     ms: Date.now() - t0,
     entries,
     // A partially-failed run still surfaces its first failure: a
-    // folded provider (codex answers one row per OpenAI credential)
+    // folded provider (_openai answers one row per OpenAI credential)
     // must not let one credential's ok row hide a sibling credential's
-    // error from the heartbeat — 2026-11-10 the codex run read "ok"
-    // with no error while the openai.main and _openai credentials were
+    // error from the heartbeat — 2026-11-10 the _openai run read "ok"
+    // with no error while the main and self-contained credentials were
     // both failing token_expired at the provider.
     ...(firstFailure?.error
       ? { error: firstFailure.error }

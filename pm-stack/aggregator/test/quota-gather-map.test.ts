@@ -12,7 +12,7 @@ import {
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
-  codexPoolServiceId,
+  openaiPoolServiceId,
   goPoolServiceId,
   lastKnownEntries,
   mapWithConcurrency,
@@ -600,7 +600,7 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
 
 describe("serviceIdFor", () => {
   test("known pools map to hub ids; others pass through", () => {
-    expect(serviceIdFor("codex")).toBe("openai.main");
+    expect(serviceIdFor("_openai")).toBe("_openai.main");
     expect(serviceIdFor("deepseek")).toBe("deepseek");
     expect(serviceIdFor("meta")).toBe("meta");
     expect(serviceIdFor("_muse")).toBe("meta");
@@ -610,7 +610,7 @@ describe("serviceIdFor", () => {
     // the read filed under a key no pool carries and never landed
     // (the silent-mismatch family Drew ruled out, 2026-11-03).
     expect(serviceIdFor("command-code")).toBe("commandcode");
-    expect(serviceIdFor("openai.alternate")).toBe("openai.alternate");
+    expect(serviceIdFor("_openai.alt")).toBe("_openai.alt");
   });
 });
 
@@ -1219,7 +1219,7 @@ describe("canonicalProviderId (config-id alignment, #1823)", () => {
     expect(canonicalProviderId("meta")).toBe("_muse");
     expect(canonicalProviderId("_antigravity")).toBe("_antigravity");
     expect(canonicalProviderId("opendesign")).toBe("opendesign");
-    expect(canonicalProviderId("codex")).toBe("codex");
+    expect(canonicalProviderId("codex")).toBe("_openai");
   });
 
   test("entryFromResult emits the canonical id and keeps the pool service id", () => {
@@ -1276,7 +1276,7 @@ describe("canonicalProviderId (config-id alignment, #1823)", () => {
   });
 });
 
-describe("codexPoolServiceId — folded codex rows file under their own OpenAI pool", () => {
+describe("openaiPoolServiceId — folded _openai rows file under their own OpenAI pool", () => {
   const TICK = "2026-11-10T21:30:00.000Z";
   const win = (usedPercent: number, windowSeconds: number) => ({
     usedPercent,
@@ -1284,12 +1284,12 @@ describe("codexPoolServiceId — folded codex rows file under their own OpenAI p
     windowSeconds,
     resetAt: 1794364348000,
   });
-  const codexResult = (
+  const foldedResult = ( // the fork's folded OpenAI quota answer (providerId "_openai" since fork PR #2261; "codex" before)
     credentialLabel: string | undefined,
     providerName: string,
     windows: Record<string, ReturnType<typeof win>>,
   ): QuotaProviderResult => ({
-    providerId: "codex",
+    providerId: "_openai",
     providerName,
     ok: true,
     configured: true,
@@ -1301,7 +1301,7 @@ describe("codexPoolServiceId — folded codex rows file under their own OpenAI p
 
   test("each instance credential lands on its own serviceId", () => {
     const alt = entryFromResult(
-      codexResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+      foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
         "5h": win(42, 18_000),
         weekly: win(65, 604_800),
       }),
@@ -1309,12 +1309,12 @@ describe("codexPoolServiceId — folded codex rows file under their own OpenAI p
     );
     expect(alt.serviceId).toBe(OPENAI_ALTERNATE_SERVICE_ID);
     const main = entryFromResult(
-      codexResult("OpenAI Main (drewrypope)", "OpenAI Main (drewrypope)", { weekly: win(100, 604_800) }),
+      foldedResult("OpenAI Main (drewrypope)", "OpenAI Main (drewrypope)", { weekly: win(100, 604_800) }),
       TICK,
     );
     expect(main.serviceId).toBe(OPENAI_MAIN_SERVICE_ID);
     const self = entryFromResult(
-      codexResult("OpenAI (_openai, drewrypope) — self-contained", "OpenAI Self-Contained (drewrypope, no Codex)", {
+      foldedResult("OpenAI (_openai, drewrypope) — self-contained", "OpenAI Self-Contained (drewrypope, no Codex)", {
         weekly: win(100, 604_800),
       }),
       TICK,
@@ -1322,16 +1322,30 @@ describe("codexPoolServiceId — folded codex rows file under their own OpenAI p
     expect(self.serviceId).toBe(OPENAI_SELF_SERVICE_ID);
   });
 
-  test("unmatched folded rows keep the historical openai.main fallback; codexPoolServiceId is null", () => {
-    expect(codexPoolServiceId({ credentialLabel: undefined, providerName: "Codex" })).toBeNull();
-    expect(codexPoolServiceId({ credentialLabel: "some future account", providerName: "Codex" })).toBeNull();
-    const bare = entryFromResult(codexResult(undefined, "Codex", { weekly: win(10, 604_800) }), TICK);
-    expect(bare.serviceId).toBe("openai.main");
+  test("unmatched folded rows keep the _openai.main fallback; openaiPoolServiceId is null", () => {
+    expect(openaiPoolServiceId({ credentialLabel: undefined, providerName: "OpenAI" })).toBeNull();
+    expect(openaiPoolServiceId({ credentialLabel: "some future account", providerName: "OpenAI" })).toBeNull();
+    const bare = entryFromResult(foldedResult(undefined, "OpenAI", { weekly: win(10, 604_800) }), TICK);
+    expect(bare.serviceId).toBe("_openai.main");
   });
 
-  test("recordsFromEntries: the alternate account's 5h never enters openai.main's series", () => {
+  test("a pre-rename fork answer (providerId codex) still files under the new ids", () => {
+    const legacy = entryFromResult(
+      { ...foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", { weekly: win(65, 604_800) }) },
+      TICK,
+    );
+    expect(legacy.serviceId).toBe("_openai.alt");
+    const legacyRaw = entryFromResult(
+      { ...foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", { weekly: win(65, 604_800) }), providerId: "codex" },
+      TICK,
+    );
+    expect(legacyRaw.providerId).toBe("_openai");
+    expect(legacyRaw.serviceId).toBe("_openai.alt");
+  });
+
+  test("recordsFromEntries: the alternate account's 5h never enters _openai.main's series", () => {
     const alt = entryFromResult(
-      codexResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
+      foldedResult("OpenAI Alternate (Student - popesdrew)", "OpenAI Alternate (Student - popesdrew)", {
         "5h": win(42, 18_000),
         weekly: win(65, 604_800),
       }),
@@ -1339,7 +1353,7 @@ describe("codexPoolServiceId — folded codex rows file under their own OpenAI p
     );
     const mainDedicated = entryFromResult(
       {
-        providerId: "openai.main",
+        providerId: "_openai.main",
         providerName: "OpenAI Main (drewrypope)",
         ok: true,
         configured: true,
@@ -1352,9 +1366,9 @@ describe("codexPoolServiceId — folded codex rows file under their own OpenAI p
     );
     const { records } = recordsFromEntries([alt, mainDedicated], new Map(), "quota-gatherer");
     const byKey = new Map(records.map((r) => [`${r.serviceId}|${r.metricId}`, r.value]));
-    expect(byKey.get("openai.alternate|5h")).toBe(42);
-    expect(byKey.has("openai.main|5h")).toBe(false);
-    expect(byKey.get("openai.main|weekly")).toBe(100);
-    expect(byKey.get("openai.alternate|weekly")).toBe(65);
+    expect(byKey.get("_openai.alt|5h")).toBe(42);
+    expect(byKey.has("_openai.main|5h")).toBe(false);
+    expect(byKey.get("_openai.main|weekly")).toBe(100);
+    expect(byKey.get("_openai.alt|weekly")).toBe(65);
   });
 });
