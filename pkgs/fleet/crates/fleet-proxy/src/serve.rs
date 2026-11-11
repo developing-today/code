@@ -50,6 +50,29 @@ const KEEPALIVE_S: u64 = 180;
 /// short configured idle is observable in tests.
 const IDLE_TICK_S: u64 = 5;
 
+/// Dial a colocated service's Unix socket bounded by `deadline`
+/// (#6219, Codex review on PR #8388). `UnixStream::connect` has no
+/// timeout variant and can block on a listener that stopped
+/// accepting with a full backlog, so the connect runs on a scratch
+/// thread and the caller waits only for the deadline: on expiry
+/// the caller falls back to TCP while the scratch thread stays
+/// parked in the kernel until the connect resolves or errors
+/// (bounded by the listener coming back or going away, and never
+/// holding broker state). The dial IS the probe here -- a socket
+/// that answers within the deadline is used, any other outcome
+/// selects TCP within the same attempt.
+fn connect_unix_bounded(path: &std::path::Path, deadline: Duration) -> Option<UnixStream> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(UnixStream::connect(&path));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(Ok(stream)) => Some(stream),
+        _ => None,
+    }
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -460,14 +483,23 @@ impl Broker {
             // connect) falls back to the TCP dial below within the
             // same attempt; non-colocated ports never take this
             // path, and the tunnel (non-direct) path is unchanged.
-            if let Some(fleet_config::RoleTransport::Socket(socket)) =
-                self.config.service_transport_choice(port)
-            {
-                if let Ok(stream) = UnixStream::connect(&socket) {
-                    let _ = stream.set_read_timeout(Some(crate::tunnel::TUNNEL_READ_TIMEOUT));
-                    let _ = stream.set_write_timeout(Some(crate::tunnel::TUNNEL_WRITE_TIMEOUT));
-                    return HttpConn::from_unix(stream)
-                        .map_err(|e| format!("socket {} for port {port}: {e}", socket.display()));
+            if let Some((socket, pref)) = self.config.service_socket_resolution(port) {
+                // A "tcp" preference skips the socket entirely; any
+                // other case dials it, bounded by the same setup
+                // deadline the tunnel path enforces (Codex review
+                // on PR #8388: a wedged listener with a full backlog
+                // can block a bare connect indefinitely, and the
+                // read/write timeouts only apply after connect).
+                if pref.as_deref() != Some("tcp") {
+                    if let Some(stream) =
+                        connect_unix_bounded(&socket, crate::tunnel::TRANSPORT_DEADLINE)
+                    {
+                        let _ = stream.set_read_timeout(Some(crate::tunnel::TUNNEL_READ_TIMEOUT));
+                        let _ = stream.set_write_timeout(Some(crate::tunnel::TUNNEL_WRITE_TIMEOUT));
+                        return HttpConn::from_unix(stream).map_err(|e| {
+                            format!("socket {} for port {port}: {e}", socket.display())
+                        });
+                    }
                 }
             }
             let stream: TcpStream = connect_tunnel(None, target, port)
