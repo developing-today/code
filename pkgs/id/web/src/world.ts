@@ -173,6 +173,16 @@ function initWorld(): void {
     }
     return false;
   };
+  // #7908: the records frame is validated like its snapshot/event
+  // siblings. `records` must be a plain object (absent is an empty
+  // page, as before) and `next_after` a string cursor or null/absent.
+  // Anything else is rejected whole: a string records would render
+  // per-character entries, a scalar would silently render an empty
+  // world, and a non-string cursor would be echoed back to the server
+  // verbatim as the next page's `after`.
+  const isWorldRecordsFrame = (frame: WorldFrame): boolean =>
+    (frame.records === undefined || isRecord(frame.records)) &&
+    (frame.next_after === undefined || frame.next_after === null || typeof frame.next_after === "string");
   const rejectFrame = () => {
     setStatus("Received an invalid world frame", "error");
     appendLine(log, "error: invalid world frame");
@@ -266,6 +276,10 @@ function initWorld(): void {
         break;
       case "records": {
         if (!recordsPending) return;
+        if (!isWorldRecordsFrame(frame)) {
+          rejectFrame();
+          return;
+        }
         // #2953 (define, don't assign): frame.records is peer-supplied, so
         // its keys are stored with define semantics — Object.assign would
         // run a "__proto__" key through the setter instead of storing it.
