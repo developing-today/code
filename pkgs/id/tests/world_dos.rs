@@ -139,6 +139,63 @@ fn schedule_ids_are_refused_when_out_of_bounds() {
     assert!(validate_schedule_id(&"x".repeat(65)).is_err());
 }
 
+/// A program whose records.read request carries a non-object args (#7929).
+struct NonObjectArgsProgram;
+
+impl WorldProgram for NonObjectArgsProgram {
+    fn wants(&mut self) -> anyhow::Result<Option<String>> {
+        Ok(Some(
+            r#"{"v":1,"requests":[{"id":"r0","cap":"records.read","args":42}]}"#.to_owned(),
+        ))
+    }
+}
+
+/// The same request with a valid object args: the control.
+struct ObjectArgsProgram;
+
+impl WorldProgram for ObjectArgsProgram {
+    fn wants(&mut self) -> anyhow::Result<Option<String>> {
+        Ok(Some(
+            r#"{"v":1,"requests":[{"id":"r0","cap":"records.read","args":{"prefix":"co"}}]}"#
+                .to_owned(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn non_object_args_never_reach_the_world() {
+    // #7929: before the parse_wants rejection, a non-object args was
+    // dispatched and collapsed to no arguments in the handler. Now the
+    // wants document fails to parse, so the request is never dispatched:
+    // no records.read usage is recorded, and the world stays responsive.
+    let core = WorldCore::new("dos-bad-args", WorldLimits::default()).unwrap();
+    let handle = WorldHandle::spawn_with_program(core, Box::new(NonObjectArgsProgram));
+    let (_participant, token) = handle.issue("probe", WorldScopes::GUEST).await.unwrap();
+    handle.chat(token.clone(), "still here").await.unwrap();
+    let report = handle.caps_report().await.unwrap();
+    assert!(
+        report.usage.get("records.read").is_none_or(|usage| usage.allowed == 0 && usage.denied == 0),
+        "the non-object-args request must never be dispatched: {:?}",
+        report.usage.get("records.read")
+    );
+    handle.chat(token, "and again").await.unwrap();
+    handle.shutdown().await.unwrap();
+
+    // Control: the identical request with an object args IS dispatched
+    // (and refused here only because nothing is granted: cap_denied).
+    let core = WorldCore::new("dos-good-args", WorldLimits::default()).unwrap();
+    let handle = WorldHandle::spawn_with_program(core, Box::new(ObjectArgsProgram));
+    let (_participant, token) = handle.issue("probe", WorldScopes::GUEST).await.unwrap();
+    handle.chat(token, "still here").await.unwrap();
+    let report = handle.caps_report().await.unwrap();
+    assert_eq!(
+        report.usage.get("records.read").map(|usage| usage.denied),
+        Some(1),
+        "the object-args control request must be dispatched exactly once"
+    );
+    handle.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_hostile_program_is_refused_without_taking_the_node_down() {
     let core = WorldCore::new("dos", WorldLimits::default()).unwrap();
