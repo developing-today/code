@@ -2148,6 +2148,211 @@ mod fuzz_tests {
         assert!(float_order_bad.check(&float_records).is_err());
     }
 
+    /// An exactly known generated number: the `serde_json::Number`
+    /// fed to the comparator, paired with an independent exact
+    /// oracle for its value. The oracle is built from the
+    /// generation parameters -- never from the number's float bits
+    /// and never via `NumericValue` -- so it is a second,
+    /// independent statement of the ordering. (The Codex P1 finding
+    /// on PR #8755 asked for property coverage of exactly this
+    /// shape: mixed signed/unsigned integers and floats, negative
+    /// values, unsigned extremes, integral-float boundaries, and
+    /// subnormals, checked against an independent oracle.)
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum ExactOracle {
+        /// The value is exactly `n / 8`.
+        Eighths(i128),
+        /// The value is `sign * 2^-1074` (the subnormal
+        /// `f64::MIN_POSITIVE` and its negation): strictly between
+        /// 0 and 1/8 in magnitude, so it orders against every
+        /// `Eighths` value by sign and zeroness alone.
+        Tiny(i128),
+    }
+
+    impl ExactOracle {
+        fn cmp_oracle(&self, other: &Self) -> Ordering {
+            match (*self, *other) {
+                (Self::Eighths(a), Self::Eighths(b)) => a.cmp(&b),
+                (Self::Tiny(a), Self::Tiny(b)) => a.cmp(&b),
+                (Self::Tiny(sign), Self::Eighths(b)) => {
+                    if sign > 0 {
+                        if b <= 0 {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    } else if b >= 0 {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                }
+                (Self::Eighths(a), Self::Tiny(sign)) => {
+                    Self::Tiny(sign).cmp_oracle(&Self::Eighths(a)).reverse()
+                }
+            }
+        }
+    }
+
+    fn exact_number_strategy()
+    -> impl proptest::strategy::Strategy<Value = (serde_json::Number, ExactOracle)> {
+        use proptest::prelude::*;
+        prop_oneof![
+            // Any signed integer.
+            any::<i64>().prop_map(|v| {
+                (
+                    serde_json::Number::from(v),
+                    ExactOracle::Eighths(i128::from(v) * 8),
+                )
+            }),
+            // Any unsigned integer (covers u64::MAX, far above 2^53).
+            any::<u64>().prop_map(|v| {
+                (
+                    serde_json::Number::from(v),
+                    ExactOracle::Eighths(i128::from(v) * 8),
+                )
+            }),
+            // Boundary integers around 2^52 / 2^53 and the extremes.
+            proptest::sample::select(vec![
+                0i128,
+                1,
+                -1,
+                (1 << 52) - 1,
+                1 << 52,
+                (1 << 53) - 1,
+                1 << 53,
+                (1 << 53) + 1,
+                -((1 << 53) - 1),
+                -(1 << 53),
+                -((1 << 53) + 1),
+                i128::from(i64::MIN),
+                i128::from(i64::MAX),
+                i128::from(u64::MAX),
+            ])
+            .prop_map(|v| {
+                let number = if (i128::from(i64::MIN)..=i128::from(i64::MAX)).contains(&v) {
+                    serde_json::Number::from(v as i64)
+                } else {
+                    serde_json::Number::from(v as u64)
+                };
+                (number, ExactOracle::Eighths(v * 8))
+            }),
+            // Multiples of 1/8 across the full i32 numerator range:
+            // exact as f64 (|n| < 2^31 keeps n / 8 far from any
+            // rounding), covering fractional and integral floats.
+            any::<i32>().prop_map(|n| {
+                (
+                    serde_json::Number::from_f64(f64::from(n) / 8.0).unwrap(),
+                    ExactOracle::Eighths(i128::from(n)),
+                )
+            }),
+            // Integral floats at and above the 2^52 boundary: the
+            // base carries at most 40 significant bits and is
+            // shifted left, so the f64 is exact and its integer
+            // value is base << shift.
+            (-1_000_000_000_000i64..=1_000_000_000_000i64, 0u32..=22u32).prop_map(
+                |(base, shift)| {
+                    let float = (base as f64) * f64::powi(2.0, i32::try_from(shift).unwrap());
+                    (
+                        serde_json::Number::from_f64(float).unwrap(),
+                        ExactOracle::Eighths((i128::from(base) << shift) * 8),
+                    )
+                }
+            ),
+            // Subnormals: the smallest positive f64 and its negation.
+            proptest::sample::select(vec![1i128, -1]).prop_map(|sign| {
+                let float = if sign > 0 {
+                    f64::MIN_POSITIVE
+                } else {
+                    -f64::MIN_POSITIVE
+                };
+                (
+                    serde_json::Number::from_f64(float).unwrap(),
+                    ExactOracle::Tiny(sign),
+                )
+            }),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn numeric_cmp_exact_matches_the_independent_oracle(
+            a in exact_number_strategy(),
+            b in exact_number_strategy(),
+        ) {
+            // Oracle: `ExactOracle::cmp_oracle`, derived from the
+            // generation parameters of the two generated numbers.
+            let (a_number, a_oracle) = a;
+            let (b_number, b_oracle) = b;
+            let expected = a_oracle.cmp_oracle(&b_oracle);
+            let a_value = NumericValue::from_number(&a_number);
+            let b_value = NumericValue::from_number(&b_number);
+            proptest::prop_assert_eq!(
+                a_value.cmp_exact(&b_value),
+                expected,
+                "{} vs {}",
+                a_number,
+                b_number
+            );
+            // Ordering symmetry: reversing the operands reverses
+            // the ordering, never changes its kind.
+            proptest::prop_assert_eq!(b_value.cmp_exact(&a_value), expected.reverse());
+            // The invariant surface must agree with the comparator:
+            // numeric_order holds iff a <= b.
+            let records: Records = [
+                ("a".to_owned(), serde_json::Value::Number(a_number)),
+                ("b".to_owned(), serde_json::Value::Number(b_number)),
+            ]
+            .into_iter()
+            .collect();
+            let order = FuzzInvariant::NumericOrder {
+                first: "a".to_owned(),
+                second: "b".to_owned(),
+            };
+            proptest::prop_assert_eq!(
+                order.check(&records).is_ok(),
+                expected != Ordering::Greater
+            );
+        }
+
+        #[test]
+        fn numeric_bounds_agree_between_declaration_validation_and_record_checks(
+            min in exact_number_strategy(),
+            max in exact_number_strategy(),
+            value in exact_number_strategy(),
+        ) {
+            let (min_number, min_oracle) = min;
+            let (max_number, max_oracle) = max;
+            let (value_number, value_oracle) = value;
+            let text = format!(
+                r#"{{"version": 1, "inputs": ["inc"], "invariants": [{{"kind": "numeric_bounds", "key": "count", "min": {min_number}, "max": {max_number}}}]}}"#
+            );
+            // Declaration validation and record checks must use the
+            // same exact ordering: the declaration parses iff
+            // min <= max, and a parsed declaration then accepts a
+            // record iff min <= value <= max (same oracle).
+            let parsed = parse_fuzz_decl(&text);
+            proptest::prop_assert_eq!(
+                parsed.is_ok(),
+                min_oracle.cmp_oracle(&max_oracle) != Ordering::Greater,
+                "decl {}", text
+            );
+            if let Ok(decl) = parsed {
+                let records: Records =
+                    [("count".to_owned(), serde_json::Value::Number(value_number))]
+                        .into_iter()
+                        .collect();
+                let within = min_oracle.cmp_oracle(&value_oracle) != Ordering::Greater
+                    && value_oracle.cmp_oracle(&max_oracle) != Ordering::Greater;
+                proptest::prop_assert_eq!(
+                    decl.invariants[0].check(&records).is_ok(),
+                    within,
+                    "decl {}", text
+                );
+            }
+        }
+    }
+
     #[test]
     fn fuzz_case_inputs_are_deterministic_and_budget_independent() {
         // Oracle: invariant 6 — the same (decl, seed, case) yields
