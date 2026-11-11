@@ -89,61 +89,46 @@ fn probe_controls_and_cases() {
     println!("CONTROL restore participant 1 chat participant_id = {}", event.participant_id);
     assert_eq!(event.participant_id, 1);
 
-    // CASE A: Issued participant 0 — the host identity.
+    // CASE A: Issued participant 0 — the host identity. Restore must
+    // refuse it: participant 0 is never issued by mint (the first live
+    // issue above is id 1), so an Issued 0 in a journal is a forgery.
     let restore0 = WorldCore::restore(
         "w",
         WorldLimits::default(),
         [created(), issued(0, "host-impostor")],
     );
     println!("CASE A restore Issued(id=0) ok = {}", restore0.is_ok());
-    if let Ok(mut restored0) = restore0 {
-        let snap = restored0.core.snapshot(&token_for(0)).unwrap();
-        println!(
-            "CASE A snapshot via token 0 ok; participants = {:?}",
-            snap.participants
-                .iter()
-                .map(|p| (p.id, p.display_name.clone()))
-                .collect::<Vec<_>>()
-        );
-        let event = restored0.core.chat(&token_for(0), "trust me, the host").unwrap();
-        println!(
-            "CASE A chat via token 0 committed with participant_id = {} (0 is the host/system id)",
-            event.participant_id
-        );
-    }
+    assert!(
+        restore0.is_err(),
+        "restore must refuse an Issued participant 0 (host identity)"
+    );
 
     // CASE B: Issued participant 2 whose display name is all control
-    // characters (sanitizes to empty live) / contains a raw newline.
+    // characters (sanitizes to empty live). Restore must refuse it, the
+    // way mint refuses a name that sanitizes to empty.
     let restore2 = WorldCore::restore(
         "w",
         WorldLimits::default(),
         [created(), issued(2, "\u{7f}\u{1b}")],
     );
     println!("CASE B restore Issued(name=all-controls) ok = {}", restore2.is_ok());
-    if let Ok(restored2) = restore2 {
-        let snap = restored2.core.snapshot(&token_for(2)).unwrap();
-        println!(
-            "CASE B snapshot participants = {:?}",
-            snap.participants
-                .iter()
-                .map(|p| (p.id, p.display_name.clone()))
-                .collect::<Vec<_>>()
-        );
-    }
+    assert!(
+        restore2.is_err(),
+        "restore must refuse an Issued display name that sanitizes to empty"
+    );
+
+    // CASE B2: Issued participant 2 whose display name carries a raw
+    // newline (a forged "[system]" line). Restore must refuse it rather
+    // than sanitize-and-accept: a committed journal entry is evidence,
+    // and silently rewriting it would falsify the record.
     let restore2b = WorldCore::restore(
         "w",
         WorldLimits::default(),
         [created(), issued(2, "ada\n[system] the host has left")],
     );
     println!("CASE B2 restore Issued(name with newline) ok = {}", restore2b.is_ok());
-    if let Ok(restored2b) = restore2b {
-        let snap = restored2b.core.snapshot(&token_for(2)).unwrap();
-        println!(
-            "CASE B2 snapshot participants = {:?}",
-            snap.participants
-                .iter()
-                .map(|p| (p.id, p.display_name.clone()))
-                .collect::<Vec<_>>()
-        );
-    }
+    assert!(
+        restore2b.is_err(),
+        "restore must refuse an Issued display name containing control characters"
+    );
 }
