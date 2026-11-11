@@ -429,16 +429,22 @@ pub fn run() -> i32 {
     use std::io::Read as _;
     let bind =
         std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
-    let home = crate::home::from_env().unwrap_or_else(|error| {
-        eprintln!("secrets-broker: {error}");
-        std::process::exit(2);
-    });
+    let home = match crate::home::from_env() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("secrets-broker: {error}");
+            return 2;
+        }
+    };
     let token_file = std::env::var("SECRETS_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
-        crate::log::info("secrets-broker", &e);
-        std::process::exit(3);
-    });
+    let token = match crate::token_file::load_token_file(&token_file) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::log::info("secrets-broker", &e);
+            return 3;
+        }
+    };
     let ttl_s: u64 = std::env::var("SECRETS_BROKER_TTL_S")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -456,19 +462,24 @@ pub fn run() -> i32 {
     // and a failed refresh keeps the old values).
     {
         let state = Arc::clone(&state);
-        std::thread::spawn(move || loop {
-            match refresh(&state) {
-                Ok(n) => crate::log::info("secrets-broker", &format!("refreshed {n} secrets")),
-                Err(e) => crate::log::info("secrets-broker", &format!("refresh failed: {e}")),
+        std::thread::spawn(move || {
+            loop {
+                match refresh(&state) {
+                    Ok(n) => crate::log::info("secrets-broker", &format!("refreshed {n} secrets")),
+                    Err(e) => crate::log::info("secrets-broker", &format!("refresh failed: {e}")),
+                }
+                std::thread::sleep(Duration::from_secs(ttl_s));
             }
-            std::thread::sleep(Duration::from_secs(ttl_s));
         });
     }
 
-    let server = Server::http(&bind).unwrap_or_else(|e| {
-        crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
-        std::process::exit(3);
-    });
+    let server = match Server::http(&bind) {
+        Ok(server) => server,
+        Err(e) => {
+            crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
+            return 3;
+        }
+    };
     crate::log::info("secrets-broker", &format!("listening on {bind}"));
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
@@ -618,8 +629,8 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_through_with, parse_list_entries, pre_body_refusal, resolve_list_id, url_decode,
-        State,
+        State, fetch_through_with, parse_list_entries, pre_body_refusal, resolve_list_id,
+        url_decode,
     };
 
     #[test]

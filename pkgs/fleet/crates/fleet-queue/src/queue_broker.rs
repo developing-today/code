@@ -664,7 +664,6 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
     }
 }
 
-
 /// The GitHub token the dep rechecker authenticates with,
 /// resolved by name through the secrets broker like every other
 /// broker credential (#8276).
@@ -770,10 +769,7 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
         use crate::turso_queue::DepObs;
         match self.get_json(&format!("/repos/{repo}/pulls/{number}")) {
             Ok(v) => {
-                let merged = v
-                    .get("merged")
-                    .and_then(|m| m.as_bool())
-                    .unwrap_or(false);
+                let merged = v.get("merged").and_then(|m| m.as_bool()).unwrap_or(false);
                 let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
                 if merged {
                     DepObs::Cleared("pr merged".to_string())
@@ -1192,24 +1188,32 @@ pub fn run() -> i32 {
     use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
-    let home = crate::home::from_env().unwrap_or_else(|error| {
-        eprintln!("queue-broker: {error}");
-        std::process::exit(2);
-    });
+    let home = match crate::home::from_env() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("queue-broker: {error}");
+            return 2;
+        }
+    };
     let token_file = std::env::var("QUEUE_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/queue-broker/token"));
-    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &e);
-        std::process::exit(3);
-    });
+    let token = match crate::token_file::load_token_file(&token_file) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::log::info("queue-broker", &e);
+            return 3;
+        }
+    };
     let secrets_url = default_secrets_url(std::env::var("QUEUE_BROKER_SECRETS_URL").ok());
     let secrets_token_file = std::env::var("QUEUE_BROKER_SECRETS_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let secrets_token =
-        crate::token_file::load_token_file(&secrets_token_file).unwrap_or_else(|e| {
+    let secrets_token = match crate::token_file::load_token_file(&secrets_token_file) {
+        Ok(v) => v,
+        Err(e) => {
             crate::log::info("queue-broker", &e);
-            std::process::exit(3);
-        });
+            return 3;
+        }
+    };
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -1237,26 +1241,29 @@ pub fn run() -> i32 {
         let url = std::env::var("QUEUE_BROKER_TURSO_URL")
             .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
         let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
-            Ok(f) => crate::token_file::load_token_file(&f).unwrap_or_else(|e| {
-                crate::log::info("queue-broker", &e);
-                std::process::exit(3);
-            }),
+            Ok(f) => match crate::token_file::load_token_file(&f) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::log::info("queue-broker", &e);
+                    return 3;
+                }
+            },
             Err(_) => {
                 let resolver = Resolver::new(vec![Box::new(DirectSecrets {
                     url: secrets_url.clone(),
                     token: secrets_token.clone(),
                     agent: agent.clone(),
                 })]);
-                resolver
-                    .resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME)
-                    .map(|v| v.expose().to_string())
-                    .unwrap_or_else(|e| {
+                match resolver.resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME) {
+                    Ok(v) => v.expose().to_string(),
+                    Err(e) => {
                         crate::log::info(
                             "queue-broker",
                             &format!("turso backend token resolve failed: {e}"),
                         );
-                        std::process::exit(3);
-                    })
+                        return 3;
+                    }
+                }
             }
         };
         let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
@@ -1269,13 +1276,13 @@ pub fn run() -> i32 {
             agent: agent.clone(),
             token: Mutex::new(None),
         }));
-        backend.ensure_schema().unwrap_or_else(|e| {
+        if let Err(e) = backend.ensure_schema() {
             crate::log::info(
                 "queue-broker",
                 &format!("turso backend schema ensure failed: {e}"),
             );
-            std::process::exit(3);
-        });
+            return 3;
+        }
         crate::log::info(
             "queue-broker",
             &format!("queue backend: turso ({})", backend.url()),
@@ -1296,10 +1303,13 @@ pub fn run() -> i32 {
         turso,
     });
 
-    let server = Server::http(&bind).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
-        std::process::exit(3);
-    });
+    let server = match Server::http(&bind) {
+        Ok(server) => server,
+        Err(e) => {
+            crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
+            return 3;
+        }
+    };
     crate::log::info("queue-broker", &format!("listening on {bind}"));
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
