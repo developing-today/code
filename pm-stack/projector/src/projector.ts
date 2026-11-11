@@ -60,7 +60,27 @@ function itemRef(repo: string, number: number): string {
   return `${repo}#${number}`;
 }
 
+/** A list-page element is a plain object (not null, not an array). */
+function isPlainObject(obj: unknown): obj is Record<string, any> {
+  return typeof obj === "object" && obj !== null && !Array.isArray(obj);
+}
+
+/** A list-page element is projectable as an issue/PR only when it is a
+ * plain object carrying a safe-integer `number` (#7009): anything else
+ * either crashed the projection with a raw TypeError (null, string,
+ * number elements) or upserted a phantom `repo#undefined` row (array,
+ * missing/non-integer number). */
+function isProjectableItem(obj: unknown): obj is Record<string, any> {
+  return isPlainObject(obj) && Number.isSafeInteger((obj as Record<string, unknown>).number);
+}
+
 function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "pr"): Omit<ItemRow, "fetched_at"> {
+  if (!isProjectableItem(obj)) {
+    // Named module-vocabulary refusal, never a raw TypeError and never
+    // a phantom row (#7009). Reconcile validates before calling and
+    // skips-with-count instead of reaching this.
+    throw new Error("projector: refusing to project an element without a safe-integer number");
+  }
   const number = obj.number as number;
   const createdAt = iso(obj.created_at) ?? iso(obj.updated_at) ?? new Date().toISOString();
   const updatedAt = iso(obj.updated_at) ?? createdAt;
@@ -152,7 +172,7 @@ function issueIsPr(issue: Record<string, any>): boolean {
   return Boolean(issue?.pull_request) || Boolean(issue?.html_url?.includes("/pull/"));
 }
 
-export { fromIssueOrPr, issueIsPr, itemRef };
+export { fromIssueOrPr, isPlainObject, isProjectableItem, issueIsPr, itemRef };
 
 /**
  * Apply a single GitHub webhook event to the store. Returns the item refs
