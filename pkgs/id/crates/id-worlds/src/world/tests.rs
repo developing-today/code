@@ -4807,9 +4807,7 @@ mod tests {
         }
 
         fn records(&mut self) -> Result<Option<String>> {
-            Ok(Some(
-                serde_json::json!({"events": self.events}).to_string(),
-            ))
+            Ok(Some(serde_json::json!({"events": self.events}).to_string()))
         }
     }
 
