@@ -571,7 +571,7 @@ describe("renderProgramProject", () => {
         ref: "developing-today/code#1",
         title: "code item",
       }),
-      poolItem({ area: "fleet-ops", repo: "dezren39/nix", ref: "dezren39/nix#2", number: 2, title: "nix item" }),
+      poolItem({ area: "fleet-ops", repo: "dezren39/darwin-nix", ref: "dezren39/darwin-nix#2", number: 2, title: "nix item" }),
       poolItem({
         area: "pm-dashboard",
         repo: "developing-today/code",
@@ -590,7 +590,7 @@ describe("renderProgramProject", () => {
     ]);
     const byRepo = new Map(detail.repoCards.map((c) => [c.card.repo, c]));
     expect(byRepo.get("developing-today/code")?.poolItems.map((p) => p.title)).toEqual(["code item"]);
-    expect(byRepo.get("dezren39/nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
+    expect(byRepo.get("dezren39/darwin-nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
     expect(byRepo.get("developing-today-forks/opencode")?.poolItems).toEqual([]);
     // Fixture roadmap rows name their repo in the title / links.
     expect(byRepo.get("developing-today-forks/opencode")?.roadmapRows.length).toBeGreaterThan(0);

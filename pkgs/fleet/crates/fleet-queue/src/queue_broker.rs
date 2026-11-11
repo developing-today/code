@@ -539,6 +539,93 @@ fn list_limit(req: &Value) -> Result<i64, String> {
     crate::client::list_limit_or_default(raw)
 }
 
+/// One duration field of a request, validated before the RPC
+/// (#6420): the broker is the trust boundary for non-CLI callers, so
+/// an out-of-range value is rejected with the same usage error the
+/// client itself raises (design #6448 Phase 3: reject, not clamp).
+/// An absent or null field stays absent — the SQL defaults apply,
+/// exactly as before. A field that is PRESENT but not an i64 (a
+/// float, a string, an integer beyond i64) is rejected, never
+/// treated as absent: before this guard it reached the SQL integer
+/// parameter and failed there, and silently defaulting it would
+/// mutate the task on a value the caller never chose (Codex
+/// finding on PR #8425).
+fn duration_field(req: &Value, field: &str, flag: &str, max: i64) -> Result<Option<i64>, String> {
+    let raw = match req.get(field) {
+        None => return Ok(None),
+        Some(v) if v.is_null() => return Ok(None),
+        Some(v) => v,
+    };
+    match raw.as_i64() {
+        Some(v) => crate::client::validate_duration(flag, v, max).map(Some),
+        None => Err(format!(
+            "argument --{flag}: value {raw} out of range 1..={max}"
+        )),
+    }
+}
+
+/// The `/claim` lease, validated before the RPC (#6420).
+fn lease_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "lease_seconds",
+        "lease-seconds",
+        crate::client::LEASE_SECONDS_MAX,
+    )
+}
+
+/// The `/heartbeat` extend, validated before the RPC (#6420).
+fn extend_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "extend_seconds",
+        "extend-seconds",
+        crate::client::EXTEND_SECONDS_MAX,
+    )
+}
+
+/// The `/park` delay, validated before the RPC (#6420).
+fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
+    duration_field(
+        req,
+        "delay_seconds",
+        "delay-seconds",
+        crate::client::DELAY_SECONDS_MAX,
+    )
+}
+
+/// The duration guard for one request path (#6420), run at the top
+/// of `dispatch` BEFORE backend selection: the Turso backend
+/// dispatches verbatim, so validating only inside the PostgREST
+/// handlers would leave the trust boundary open on that backend
+/// (Codex finding on PR #8425). The PostgREST handlers keep their
+/// own checks as defense in depth.
+fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
+    match path {
+        "/claim" | "/claim-flow" => lease_seconds(req).map(|_| ()),
+        "/heartbeat" => extend_seconds(req).map(|_| ()),
+        "/park" => delay_seconds(req).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
+/// The not_before gate (#6426): /park and /revive carry a raw
+/// not_before that dispatch forwards to the RPC (or the turso
+/// backend) — validate it BEFORE either, with the same rule the
+/// packet validator applies on /enqueue (validate_packet runs
+/// inside both /enqueue handlers ahead of their RPC call). An
+/// absent or null not_before is untouched; a present one must be a
+/// non-empty RFC 3339 timestamp no more than 366 days out.
+fn validate_request_not_before(path: &str, req: &Value) -> Result<(), String> {
+    if !matches!(path, "/park" | "/revive") {
+        return Ok(());
+    }
+    match req.get("not_before").filter(|v| !v.is_null()) {
+        Some(nb) => crate::validate::validate_not_before(nb, "not_before"),
+        None => Ok(()),
+    }
+}
+
 fn ok(fields: Value) -> Value {
     let mut m = json!({"ok": true});
     if let (Some(dst), Some(src)) = (m.as_object_mut(), fields.as_object()) {
@@ -594,10 +681,213 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
     }
 }
 
+/// The GitHub token the dep rechecker authenticates with,
+/// resolved by name through the secrets broker like every other
+/// broker credential (#8276).
+const GH_DEP_TOKEN_SECRET: &str = "github.developing-today-code-automation";
+
+/// #8276: the production DepProbe — GitHub state reads for the
+/// dep rechecker, inside the broker process. The token resolves
+/// by name through the secrets Resolver (the same one the Turso
+/// token uses) and is cached for ten minutes; the value never
+/// leaves this process. Every transport/auth failure maps to
+/// DepObs::Failed — a broken checker never clears a gate; only
+/// a block's max TTL can release it then. A 404 maps to Broken:
+/// the reference does not exist, and a typo'd gate must not
+/// become a life sentence.
+struct GhDepProbe {
+    // The secrets coordinates, not a Resolver: fleet_secrets'
+    // Resolver is not Send/Sync, and the probe lives behind an
+    // Arc<dyn DepProbe>. The source is rebuilt per resolve,
+    // exactly like the broker builds its own per backend.
+    secrets_url: String,
+    secrets_token: String,
+    agent: ureq::Agent,
+    token: Mutex<Option<(String, std::time::Instant)>>,
+}
+
+impl GhDepProbe {
+    fn token(&self) -> Result<String, String> {
+        let mut slot = self.token.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((tok, at)) = &*slot {
+            if at.elapsed() < std::time::Duration::from_secs(600) {
+                return Ok(tok.clone());
+            }
+        }
+        let source = DirectSecrets {
+            url: self.secrets_url.clone(),
+            token: self.secrets_token.clone(),
+            agent: self.agent.clone(),
+        };
+        let v = source
+            .resolve(GH_DEP_TOKEN_SECRET)
+            .map_err(|e| format!("github token resolve failed: {e}"))?;
+        let tok = v.expose().to_string();
+        *slot = Some((tok.clone(), std::time::Instant::now()));
+        Ok(tok)
+    }
+
+    fn get_json(&self, path: &str) -> Result<Value, crate::turso_queue::DepObs> {
+        use crate::turso_queue::DepObs;
+        let tok = self.token().map_err(DepObs::Failed)?;
+        let url = format!("https://api.github.com{path}");
+        let mut resp = match self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {tok}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fleet-queue-broker")
+            .call()
+        {
+            Ok(r) => r,
+            Err(ureq::Error::StatusCode(404)) => {
+                return Err(DepObs::Broken(format!("github 404 for {path}")));
+            }
+            Err(ureq::Error::StatusCode(code)) => {
+                return Err(DepObs::Failed(format!("github http {code} for {path}")));
+            }
+            Err(e) => {
+                return Err(DepObs::Failed(format!("github request failed: {e}")));
+            }
+        };
+        let status = resp.status().as_u16();
+        if status == 404 {
+            return Err(DepObs::Broken(format!("github 404 for {path}")));
+        }
+        if !(200..300).contains(&status) {
+            return Err(DepObs::Failed(format!("github http {status} for {path}")));
+        }
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| DepObs::Failed(format!("github response unreadable: {e}")))?;
+        serde_json::from_str(&text)
+            .map_err(|e| DepObs::Failed(format!("github response not json: {e}")))
+    }
+}
+
+impl crate::turso_queue::DepProbe for GhDepProbe {
+    fn probe_issue(&self, repo: &str, number: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/issues/{number}")) {
+            Ok(v) => {
+                let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                if state == "closed" {
+                    DepObs::Cleared("issue closed".to_string())
+                } else {
+                    DepObs::Open(format!("issue {state}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+
+    fn probe_pr(&self, repo: &str, number: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/pulls/{number}")) {
+            Ok(v) => {
+                let merged = v.get("merged").and_then(|m| m.as_bool()).unwrap_or(false);
+                let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                if merged {
+                    DepObs::Cleared("pr merged".to_string())
+                } else if state == "closed" {
+                    DepObs::Cleared("pr closed without merge".to_string())
+                } else {
+                    DepObs::Open(format!("pr {state}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+
+    fn probe_ci(&self, repo: &str, run_id: i64) -> crate::turso_queue::DepObs {
+        use crate::turso_queue::DepObs;
+        match self.get_json(&format!("/repos/{repo}/actions/runs/{run_id}")) {
+            Ok(v) => {
+                let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                if status == "completed" {
+                    let conclusion = v
+                        .get("conclusion")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    DepObs::Cleared(format!("run completed: {conclusion}"))
+                } else {
+                    DepObs::Open(format!("run {status}"))
+                }
+            }
+            Err(o) => o,
+        }
+    }
+}
+
+/// #8568 (PM-stack notifications Phase 1): after a block lands,
+/// if it was an escalated-to-user block carrying a needs_drew
+/// payload, raise the alert into the PM aggregator's throat from
+/// inside the broker process — the same fixed wire contract the
+/// CLI half posts (crate::needs_drew). The intake token resolves
+/// by name through the in-process secrets source this broker
+/// already uses for every other credential (DirectSecrets: the
+/// colocated secrets broker). Fire-and-forget on a spawned
+/// thread: the block response never waits on the throat, and a
+/// failure is logged to stderr only — it never fails the block.
+/// The throat dedupes by (source, key), so the CLI half and this
+/// half posting for the same block is safe. This half goes live
+/// only when the broker binary is replaced (the coordinated
+/// switch); until then the CLI half is the live path.
+fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
+    if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return;
+    }
+    if req.get("reason_class").and_then(|v| v.as_str()) != Some("escalated-to-user") {
+        return;
+    }
+    let blocker = req.get("blocker").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(nd) = crate::needs_drew::from_block_request(req, blocker) else {
+        return;
+    };
+    let secrets_url = st.secrets_url.clone();
+    let secrets_token = st.secrets_token.clone();
+    let agent = st.agent.clone();
+    std::thread::spawn(move || {
+        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+            url: secrets_url,
+            token: secrets_token,
+            agent: agent.clone(),
+        })]);
+        let raised = resolver
+            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .map_err(|e| e.to_string())
+            .and_then(|token| crate::needs_drew::post_needs_drew(token.expose(), &nd));
+        match raised {
+            Ok(_) => crate::log::info(
+                "queue-broker",
+                &format!("needs-drew raised for ledger item {}", nd.ledger_id),
+            ),
+            Err(e) => crate::log::info(
+                "queue-broker",
+                &format!("needs-drew throat post failed: {e}"),
+            ),
+        }
+    });
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
+    if let Err(e) = validate_durations(path, req) {
+        return fail(2, e);
+    }
+    if let Err(e) = validate_request_not_before(path, req) {
+        return fail(2, e);
+    }
     if let Some(t) = &st.turso {
         if path != "/validate" && path != "/healthz" {
-            return crate::turso_queue::dispatch(t, path, req);
+            let resp = crate::turso_queue::dispatch(t, path, req);
+            // #8568: the Turso backend answers /block before the
+            // Postgres match below, so the broker-side needs-drew
+            // raise hooks here too — same condition, same helper.
+            if path == "/block" {
+                maybe_raise_needs_drew(st, req, &resp);
+            }
+            return resp;
         }
     }
     match path {
@@ -658,15 +948,107 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
         }
         "/claim" => {
+            let lease = match lease_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
             let mut args = json!({
                 "p_worker": req.get("worker"),
                 "p_queue": req.get("queue"),
-                "p_lease_seconds": req.get("lease_seconds"),
+                "p_lease_seconds": lease,
             });
             if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
                 args["p_lane_id"] = lane.clone();
             }
             simple_rpc(st, "claim_repo_task", args)
+        }
+        "/claim-flow" => {
+            // #5757-A: claim + lane-assign + session-bind in one
+            // broker round trip. Each step is the corresponding
+            // single-verb RPC with the same arguments the three
+            // verbs pass. A claim-step failure — or an empty claim —
+            // returns that step's answer verbatim and later steps
+            // are not attempted (the three-verb flow's semantics,
+            // one trip). A LANE/BIND failure is different: the claim
+            // RPC has already COMMITTED, so it answers as a partial
+            // success (ok envelope + claimed row +
+            // `claim_flow_partial`), never as an error — a retryable
+            // error here (57014 / PGRST002) would make the client's
+            // call_result replay the WHOLE flow and claim a second
+            // task, leaking this one (Codex P1 on PR #8493). The
+            // caller finishes the failed step with the single-verb
+            // /lane or /bind call for this task id. The answer
+            // carries every step's row:
+            // `row` is the claimed task row (the shape /claim
+            // answers and the client's claim_output consumes);
+            // `lane_row` / `bind_row` are what /lane and /bind
+            // answer in the three-verb flow.
+            let lease = match lease_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
+            if let Err(e) = crate::client::claim_flow_precheck(req) {
+                return fail(2, e);
+            }
+            let mut args = json!({
+                "p_worker": req.get("worker"),
+                "p_queue": req.get("queue"),
+                "p_lease_seconds": lease,
+            });
+            if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
+                args["p_lane_id"] = lane.clone();
+            }
+            let row = match st.rpc("claim_repo_task", args) {
+                Ok(row) => row,
+                Err(e) => return fail(e.exit, e.msg),
+            };
+            if row.is_null() {
+                return ok(json!({"row": row}));
+            }
+            let task_id = row.get("id").cloned().unwrap_or(Value::Null);
+            let lane_row = match st.rpc(
+                "assign_repo_task_lane",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_exclusion_reason": req.get("exclusion_reason"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "claim_flow_partial": {
+                            "step": "lane",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            let bind_row = match st.rpc(
+                "bind_repo_task_lane_session",
+                json!({
+                    "p_task_id": task_id,
+                    "p_worker": req.get("worker"),
+                    "p_session_id": req.get("session_id"),
+                    "p_launched_by": req.get("launched_by"),
+                }),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    return ok(json!({
+                        "row": row,
+                        "lane_row": lane_row,
+                        "claim_flow_partial": {
+                            "step": "bind",
+                            "exit": e.exit,
+                            "error": e.msg,
+                        },
+                    }));
+                }
+            };
+            ok(json!({"row": row, "lane_row": lane_row, "bind_row": bind_row}))
         }
         "/lane" => simple_rpc(
             st,
@@ -687,16 +1069,22 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 "p_launched_by": req.get("launched_by"),
             }),
         ),
-        "/heartbeat" => simple_rpc(
-            st,
-            "heartbeat_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_extend_seconds": req.get("extend_seconds"),
-                "p_progress": req.get("progress"),
-            }),
-        ),
+        "/heartbeat" => {
+            let extend = match extend_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
+            simple_rpc(
+                st,
+                "heartbeat_task",
+                json!({
+                    "p_task_id": req.get("task_id"),
+                    "p_worker": req.get("worker"),
+                    "p_extend_seconds": extend,
+                    "p_progress": req.get("progress"),
+                }),
+            )
+        }
         "/checkpoint" => simple_rpc(
             st,
             "checkpoint_task",
@@ -708,6 +1096,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }),
         ),
         "/park" => {
+            let delay = match delay_seconds(req) {
+                Ok(v) => v,
+                Err(e) => return fail(2, e),
+            };
             let mut args = json!({
                 "p_task_id": req.get("task_id"),
                 "p_worker": req.get("worker"),
@@ -716,25 +1108,34 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             });
             if let Some(nb) = req.get("not_before").filter(|v| !v.is_null()) {
                 args["p_not_before"] = nb.clone();
-            } else if let Some(d) = req.get("delay_seconds").filter(|v| !v.is_null()) {
-                args["p_delay_seconds"] = d.clone();
+            } else if let Some(d) = delay {
+                args["p_delay_seconds"] = json!(d);
             }
             if let Some(rc) = req.get("ready_condition").filter(|v| !v.is_null()) {
                 args["p_ready_condition"] = rc.clone();
             }
             verb_with_execution(st, "park_task", args, req)
         }
-        "/block" => simple_rpc(
-            st,
-            "block_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_reason_class": req.get("reason_class"),
-                "p_blocker": req.get("blocker"),
-                "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
-            }),
-        ),
+        "/block" => {
+            let resp = simple_rpc(
+                st,
+                "block_task",
+                json!({
+                    "p_task_id": req.get("task_id"),
+                    "p_worker": req.get("worker"),
+                    "p_reason_class": req.get("reason_class"),
+                    "p_blocker": req.get("blocker"),
+                    "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
+                }),
+            );
+            // #8568: broker-side needs-drew raise, fire-and-forget
+            // (see maybe_raise_needs_drew). NOTE: this arm is the
+            // Postgres backend's route — dispatch() hands /block
+            // to the Turso backend before reaching here when
+            // QUEUE_BROKER_BACKEND=turso.
+            maybe_raise_needs_drew(st, req, &resp);
+            resp
+        }
         "/cancel" => simple_rpc(
             st,
             "cancel_repo_task",
@@ -780,10 +1181,18 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             } else {
                 "id,queue,title,priority,status,dedupe_key,created_at,not_before"
             };
+            let offset =
+                crate::client::list_offset_or_default(req.get("offset").and_then(|o| o.as_i64()));
             let mut path = format!(
-                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc&limit={limit}",
+                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}",
                 quote(queue, "")
             );
+            // #7871: --task narrows to one task id, so a worker can
+            // verify a single recent completion from list output
+            // regardless of the done list's size or ordering.
+            if let Some(t) = req.get("task").and_then(|t| t.as_i64()) {
+                path += &format!("&id=eq.{t}");
+            }
             if let Some(s) = req.get("status").and_then(|s| s.as_str()) {
                 path += &format!("&status=eq.{}", quote(s, ""));
             }
@@ -962,24 +1371,32 @@ pub fn run() -> i32 {
     use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
-    let home = crate::home::from_env().unwrap_or_else(|error| {
-        eprintln!("queue-broker: {error}");
-        std::process::exit(2);
-    });
+    let home = match crate::home::from_env() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("queue-broker: {error}");
+            return 2;
+        }
+    };
     let token_file = std::env::var("QUEUE_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/queue-broker/token"));
-    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &e);
-        std::process::exit(3);
-    });
+    let token = match crate::token_file::load_token_file(&token_file) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::log::info("queue-broker", &e);
+            return 3;
+        }
+    };
     let secrets_url = default_secrets_url(std::env::var("QUEUE_BROKER_SECRETS_URL").ok());
     let secrets_token_file = std::env::var("QUEUE_BROKER_SECRETS_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let secrets_token =
-        crate::token_file::load_token_file(&secrets_token_file).unwrap_or_else(|e| {
+    let secrets_token = match crate::token_file::load_token_file(&secrets_token_file) {
+        Ok(v) => v,
+        Err(e) => {
             crate::log::info("queue-broker", &e);
-            std::process::exit(3);
-        });
+            return 3;
+        }
+    };
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -1007,36 +1424,54 @@ pub fn run() -> i32 {
         let url = std::env::var("QUEUE_BROKER_TURSO_URL")
             .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
         let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
-            Ok(f) => crate::token_file::load_token_file(&f).unwrap_or_else(|e| {
-                crate::log::info("queue-broker", &e);
-                std::process::exit(3);
-            }),
+            Ok(f) => match crate::token_file::load_token_file(&f) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::log::info("queue-broker", &e);
+                    return 3;
+                }
+            },
             Err(_) => {
                 let resolver = Resolver::new(vec![Box::new(DirectSecrets {
                     url: secrets_url.clone(),
                     token: secrets_token.clone(),
                     agent: agent.clone(),
                 })]);
-                resolver
-                    .resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME)
-                    .map(|v| v.expose().to_string())
-                    .unwrap_or_else(|e| {
+                match resolve_with_startup_retry(
+                    &resolver,
+                    crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
+                    Duration::from_secs(30),
+                ) {
+                    Ok(v) => v.expose().to_string(),
+                    Err(e) => {
                         crate::log::info(
                             "queue-broker",
-                            &format!("turso backend token resolve failed: {e}"),
+                            &format!(
+                                "turso backend token resolve failed after 30s of retries: {e}"
+                            ),
                         );
-                        std::process::exit(3);
-                    })
+                        return 3;
+                    }
+                }
             }
         };
-        let backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
-        backend.ensure_schema().unwrap_or_else(|e| {
+        let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
+        // #8276: the dep rechecker's GitHub window, authenticated
+        // by name through the same secrets Resolver as the Turso
+        // token above.
+        backend.set_gh_probe(Arc::new(GhDepProbe {
+            secrets_url: secrets_url.clone(),
+            secrets_token: secrets_token.clone(),
+            agent: agent.clone(),
+            token: Mutex::new(None),
+        }));
+        if let Err(e) = backend.ensure_schema() {
             crate::log::info(
                 "queue-broker",
                 &format!("turso backend schema ensure failed: {e}"),
             );
-            std::process::exit(3);
-        });
+            return 3;
+        }
         crate::log::info(
             "queue-broker",
             &format!("queue backend: turso ({})", backend.url()),
@@ -1057,10 +1492,13 @@ pub fn run() -> i32 {
         turso,
     });
 
-    let server = Server::http(&bind).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
-        std::process::exit(3);
-    });
+    let server = match Server::http(&bind) {
+        Ok(server) => server,
+        Err(e) => {
+            crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
+            return 3;
+        }
+    };
     crate::log::info("queue-broker", &format!("listening on {bind}"));
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
@@ -1190,6 +1628,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
+        // #5757-A Codex P1 oracle (PR #8493): in the PostgREST
+        // broker's /claim-flow handler, the lane and bind RPC
+        // failures answer with claim_flow_partial inside an ok
+        // envelope — never `return fail(...)`, whose retryable
+        // error text the client would replay into a second claim
+        // after the first claim already committed.
+        let src = include_str!("queue_broker.rs");
+        let start = src.find("\"/claim-flow\" => {").expect("claim-flow handler");
+        let end = src[start..].find("\"/lane\" =>").expect("lane handler follows") + start;
+        let flow = &src[start..end];
+        assert_eq!(
+            flow.matches("\"claim_flow_partial\"").count(),
+            2,
+            "lane and bind failures both carry claim_flow_partial"
+        );
+        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
+        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        // The claim RPC's own `return fail(...)` is pre-commit and
+        // legitimate; the invariant binds everything from the lane
+        // RPC onward (post-commit).
+        let lane_at = flow.find("assign_repo_task_lane").expect("lane RPC present");
+        assert!(
+            !flow[lane_at..].contains("return fail(e.exit, e.msg)"),
+            "no post-claim step returns the raw retryable error"
+        );
+    }
+
+    #[test]
+    fn park_and_revive_not_before_are_gated_before_the_rpc() {
+        // #6426: /park and /revive forwarded a raw not_before to the
+        // RPC unchecked. The dispatch gate rejects garbage and
+        // far-future values; absent/null and valid values pass, and
+        // other verbs are untouched by the gate.
+        for path in ["/park", "/revive"] {
+            for bad in [
+                json!("banana"),
+                json!(""),
+                json!(42),
+                json!("9999-01-01T00:00:00Z"),
+            ] {
+                let req = json!({"not_before": bad});
+                let err = validate_request_not_before(path, &req)
+                    .err()
+                    .expect("invalid not_before must be rejected");
+                assert!(err.contains("not_before"), "error names the field: {err}");
+            }
+            assert!(validate_request_not_before(path, &json!({})).is_ok());
+            assert!(validate_request_not_before(path, &json!({"not_before": Value::Null})).is_ok());
+            assert!(
+                validate_request_not_before(path, &json!({"not_before": "2020-01-01T00:00:00Z"}))
+                    .is_ok()
+            );
+        }
+        // A verb without a not_before surface is not gated.
+        assert!(validate_request_not_before("/claim", &json!({"not_before": "banana"})).is_ok());
+    }
+
+    #[test]
     fn pre_body_refusal_decides_from_headers_alone() {
         // #6515 oracle (thread 4492609604): the gate's answer
         // depends only on method/target/token/declared length —
@@ -1316,5 +1813,174 @@ mod tests {
         assert_eq!(list_limit(&json!({"limit": 500})), Ok(500));
         // Absent limit keeps the existing default of 20.
         assert_eq!(list_limit(&json!({})), Ok(20));
+    }
+
+    #[test]
+    fn duration_fields_reject_out_of_range_before_the_rpc() {
+        // #6420: a raw caller could send a born-expired lease, a
+        // self-lapsing heartbeat extend, or a park delay in the past
+        // straight to the RPC. The broker rejects all three with the
+        // client's usage error before any RPC is built.
+        for bad in [0, -1, 86_401, i64::MAX] {
+            let err = lease_seconds(&json!({"lease_seconds": bad}))
+                .err()
+                .expect("out-of-range lease_seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = extend_seconds(&json!({"extend_seconds": bad}))
+                .err()
+                .expect("out-of-range extend_seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, 604_801, i64::MAX] {
+            let err = delay_seconds(&json!({"delay_seconds": bad}))
+                .err()
+                .expect("out-of-range delay_seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        assert_eq!(
+            lease_seconds(&json!({"lease_seconds": 2700})),
+            Ok(Some(2700))
+        );
+        assert_eq!(
+            extend_seconds(&json!({"extend_seconds": 900})),
+            Ok(Some(900))
+        );
+        assert_eq!(
+            delay_seconds(&json!({"delay_seconds": 1200})),
+            Ok(Some(1200))
+        );
+        // Absent fields stay absent (SQL defaults apply, as before).
+        assert_eq!(lease_seconds(&json!({})), Ok(None));
+        assert_eq!(extend_seconds(&json!({})), Ok(None));
+        assert_eq!(delay_seconds(&json!({})), Ok(None));
+        // Present but not an i64 (beyond-i64 integer, float, string)
+        // is rejected, never silently defaulted (Codex finding on
+        // PR #8425): before this guard such a value failed at the
+        // SQL integer parameter instead.
+        for bad in [json!(9223372036854775808u64), json!(1.5), json!("2700")] {
+            let err = lease_seconds(&json!({"lease_seconds": bad}))
+                .err()
+                .expect("present-but-invalid lease_seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = extend_seconds(&json!({"extend_seconds": bad}))
+                .err()
+                .expect("present-but-invalid extend_seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+            let err = delay_seconds(&json!({"delay_seconds": bad}))
+                .err()
+                .expect("present-but-invalid delay_seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        // The dispatch-level guard covers both backends: it fires
+        // per path before backend selection (Codex finding on
+        // PR #8425), and leaves unrelated paths alone.
+        assert!(validate_durations("/claim", &json!({"lease_seconds": 0})).is_err());
+        assert!(validate_durations("/heartbeat", &json!({"extend_seconds": -1})).is_err());
+        assert!(validate_durations("/park", &json!({"delay_seconds": 604_801})).is_err());
+        assert_eq!(
+            validate_durations("/claim", &json!({"lease_seconds": 2700})),
+            Ok(())
+        );
+        assert_eq!(validate_durations("/heartbeat", &json!({})), Ok(()));
+        assert_eq!(
+            validate_durations("/list", &json!({"lease_seconds": 0})),
+            Ok(())
+        );
+    }
+}
+
+/// Resolve `name` through `resolver`, retrying until `budget`
+/// elapses. Startup only: a co-hosted or freshly started
+/// secrets-broker binds before its first vault refresh completes
+/// and answers 503 while its cache is cold, so a one-shot resolve
+/// races its readiness and the whole serve list exits (#8394
+/// Codex P2). Bounded: once the budget is spent the last error is
+/// returned and the caller fails exactly as the one-shot did.
+fn resolve_with_startup_retry(
+    resolver: &Resolver,
+    name: &str,
+    budget: Duration,
+) -> Result<SecretValue, SecretError> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match resolver.resolve(name) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod startup_retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A source that answers Unavailable for the first `fail_first`
+    /// calls, then resolves — the cold secrets-broker shape.
+    struct FlakySource {
+        calls: AtomicUsize,
+        fail_first: usize,
+    }
+
+    impl SecretSource for FlakySource {
+        fn source_name(&self) -> &'static str {
+            "flaky-test"
+        }
+        fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.fail_first {
+                return Err(SecretError::Unavailable {
+                    source: "flaky-test",
+                    name: name.to_string(),
+                    detail: "cold cache".to_string(),
+                });
+            }
+            Ok(SecretValue::from_resolved("tok".to_string()))
+        }
+    }
+
+    #[test]
+    fn startup_retry_outlasts_a_cold_source() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: 3,
+        })]);
+        let v = resolve_with_startup_retry(&resolver, "some.token", Duration::from_secs(5))
+            .expect("retry should reach the warmed source");
+        assert_eq!(v.expose(), "tok");
+    }
+
+    #[test]
+    fn startup_retry_gives_up_within_budget() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: usize::MAX,
+        })]);
+        let start = std::time::Instant::now();
+        let r = resolve_with_startup_retry(&resolver, "some.token", Duration::from_millis(300));
+        assert!(r.is_err());
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }

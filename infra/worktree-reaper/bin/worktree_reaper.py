@@ -32,6 +32,14 @@ reaped only when ALL of these gates hold at decision time:
                is not under ~/backups or ~/atlas, and does not contain
                this running script.
 
+Runs are single-instance (#6899): main() takes an flock on
+<state_dir>/reaper.lock before evaluating anything; a second
+concurrent run exits without evaluating or removing anything.
+Immediately before a removal, reap_tree() re-verifies ALL of the
+gates that can change after evaluation — occupancy, CLEAN, QUIET,
+and PUSHED — so a commit landing during the run (clean tree, tip
+now unpushed and active) retains the tree.
+
 Reap = `git worktree remove` (plain; --force only when the sole blocker
 is allowlisted generated dirt) + `git worktree prune` + `git branch -d`
 (plain -d only; a refusal keeps the branch and is logged). Removals per
@@ -57,6 +65,7 @@ Standard library only. Run the tests:
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -85,6 +94,31 @@ DEFAULT_CONFIG = {
 
 HARD_DENY_PREFIXES = ("~/backups", "~/atlas")
 
+LOCK_FILENAME = "reaper.lock"
+
+
+def acquire_instance_lock(state_dir):
+    """Take the single-instance flock in the state dir (#6899).
+
+    Returns (fd, path) on success — the caller keeps fd open for the
+    whole run; the flock releases when fd closes. Returns (None, path)
+    when another live instance already holds the lock: overlapping
+    runs (a manual live run racing a timer fire) would otherwise
+    evaluate the same trees concurrently and race the state writes
+    and removals. A stale lock FILE is harmless: flock is released
+    when the holder exits, however it exits.
+    """
+    path = os.path.join(state_dir, LOCK_FILENAME)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None, path
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n".encode())
+    return fd, path
+
 
 # ---------------------------------------------------------------- utils
 
@@ -108,6 +142,71 @@ def run_git(repo, *args, timeout=GIT_TIMEOUT):
         return 127, b"", str(exc)
 
 
+class ConfigError(Exception):
+    """A config file is unreadable, malformed, or fails validation.
+
+    The message always names the file. `main` turns this into the
+    clean `worktree-reaper: cannot load config ...` error instead of
+    a traceback (#6394).
+    """
+
+
+def _load_json_object(path):
+    """Read `path` as JSON and require a top-level object (#6394)."""
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        raise ConfigError(f"{path}: cannot read file: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(
+            f"{path}: top level must be a JSON object, "
+            f"got {type(data).__name__}"
+        )
+    return data
+
+
+def validate_config(data, path):
+    """Validate one config file's contents against DEFAULT_CONFIG (#6394).
+
+    Unknown keys are refused: a typo'd `deny_*` key must never load
+    silently, because for a deletion tool that turns an explicit
+    "never reap this" into no protection at all. Types are taken
+    from the defaults: strings stay strings, the list keys stay
+    lists of strings, `fetch` stays a bool, and the numeric keys
+    stay numbers (never bools, never strings that explode mid-run).
+    """
+    for key, val in data.items():
+        if key not in DEFAULT_CONFIG:
+            raise ConfigError(
+                f"{path}: unknown key {key!r} "
+                f"(valid keys: {', '.join(sorted(DEFAULT_CONFIG))})"
+            )
+        default = DEFAULT_CONFIG[key]
+        if isinstance(default, bool):
+            ok = isinstance(val, bool)
+            want = "a boolean"
+        elif isinstance(default, list):
+            ok = isinstance(val, list) and all(
+                isinstance(item, str) for item in val
+            )
+            want = "a list of strings"
+        elif isinstance(default, str):
+            ok = isinstance(val, str)
+            want = "a string"
+        else:  # numeric defaults: quiet_hours, max_removals
+            ok = isinstance(val, (int, float)) and not isinstance(val, bool)
+            want = "a number"
+        if not ok:
+            raise ConfigError(
+                f"{path}: key {key!r} must be {want}, got {val!r}"
+            )
+        if key in ("quiet_hours", "max_removals") and val < 0:
+            raise ConfigError(f"{path}: key {key!r} must be >= 0, got {val!r}")
+
+
 def load_config(script_dir, args):
     cfg = dict(DEFAULT_CONFIG)
     cfg_path = None
@@ -124,14 +223,15 @@ def load_config(script_dir, args):
                 cfg_path = cand
                 break
     if cfg_path:
-        with open(cfg_path) as fh:
-            cfg.update(json.load(fh))
+        data = _load_json_object(cfg_path)
+        validate_config(data, cfg_path)
+        cfg.update(data)
         cfg["_config_path"] = os.path.abspath(cfg_path)
     state_dir = expand(args.state_dir or cfg["state_dir"])
     overlay = os.path.join(state_dir, "config.local.json")
     if os.path.isfile(overlay):
-        with open(overlay) as fh:
-            local = json.load(fh)
+        local = _load_json_object(overlay)
+        validate_config(local, overlay)
         for key, val in local.items():
             if key in ("deny_paths", "deny_prefixes", "deny_names") and isinstance(val, list):
                 cfg[key] = list(cfg.get(key, [])) + val
@@ -612,6 +712,36 @@ def reap_tree(primary, rec, cfg):
         rec["action"] = "keep"
         rec["reason"] = "dirty-at-removal"
         return False
+    # Re-verify PUSHED and QUIET (#6899): both can change after
+    # evaluation while the tree stays clean — a commit landing
+    # during the run moves the tip (now unpushed) and refreshes
+    # activity. Retain the tree if either gate no longer holds.
+    rc, out, _err = run_git(tree, "rev-parse", "HEAD")
+    current_tip = out.decode().strip() if rc == 0 else None
+    if not current_tip:
+        rec["action"] = "keep"
+        rec["reason"] = "pushed-unknown-at-removal"
+        return False
+    ok, method = pushed_proof(primary, current_tip, branch)
+    rec.setdefault("gates", {})["pushed_at_removal"] = {"ok": ok, "method": method}
+    if not ok:
+        rec["action"] = "keep"
+        rec["reason"] = "unpushed-at-removal"
+        return False
+    cutoff = time.time() - float(cfg.get("quiet_hours", DEFAULT_CONFIG["quiet_hours"])) * 3600
+    try:
+        mtime, _size, _complete = walk_activity(tree, cutoff)
+    except OSError as exc:
+        rec["action"] = "keep"
+        rec["reason"] = "quiet-unknown-at-removal"
+        rec["error"] = str(exc)
+        return False
+    activity = max(mtime, float(head_reflog_ts(tree)))
+    rec["gates"]["quiet_at_removal"] = {"ok": activity <= cutoff, "last_activity": int(activity)}
+    if activity > cutoff:
+        rec["action"] = "keep"
+        rec["reason"] = "active-at-removal"
+        return False
     # Record every ignored path in this tree before the irreversible
     # step (#6734): only allowlisted ignored paths can be present
     # here, and the record is the audit trail for their deletion.
@@ -649,7 +779,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    cfg = load_config(script_dir, args)
+    try:
+        cfg = load_config(script_dir, args)
+    except ConfigError as exc:
+        print(f"worktree-reaper: cannot load config: {exc}")
+        return 2
     state_dir = cfg["state_dir"]
 
     if os.path.exists(os.path.join(state_dir, "DISABLED")):
@@ -657,12 +791,18 @@ def main(argv=None):
         return 0
 
     os.makedirs(os.path.join(state_dir, "runs"), exist_ok=True)
+    lock_fd, lock_path = acquire_instance_lock(state_dir)
+    if lock_fd is None:
+        print(f"worktree-reaper: another instance already holds the lock "
+              f"({lock_path}); exiting without evaluating or removing anything.")
+        return 0
     now = time.time()
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(int(now)))
     records = []
     summary = {
         "run": ts, "dry_run": bool(args.dry_run), "evaluated": 0, "candidates": 0,
         "reaped": 0, "reaped_bytes": 0, "branch_deleted": 0, "branch_kept": 0,
+        "stale_registrations": 0, "pruned": 0,
         "kept": {}, "errors": [],
     }
 
@@ -676,6 +816,7 @@ def main(argv=None):
               "failing closed, nothing will be removed this run.")
         summary["errors"].append(f"proc scan failed: {exc}")
         print(json.dumps(summary, indent=2))
+        os.close(lock_fd)
         return 1
     reaped_count = 0
     cap = int(cfg["max_removals"])
@@ -696,11 +837,21 @@ def main(argv=None):
             continue
         primary_real = os.path.realpath(primary)
         removed_any = False
+        stale_any = False
         for wt in worktrees:
             if wt["bare"] or os.path.realpath(wt["path"]) == primary_real:
                 continue  # primaries are never reaped
             summary["evaluated"] += 1
             rec = evaluate_tree(primary, wt, cfg, now, cwds)
+            if rec["action"] == "stale-registration":
+                # A registration whose directory is gone is not a kept
+                # tree: it is prune work for this primary (#6547). Count
+                # it as such, and in a dry run say would-prune instead
+                # of folding it into the kept counts.
+                stale_any = True
+                summary["stale_registrations"] += 1
+                if args.dry_run:
+                    rec["action"] = "would-prune"
             if rec["action"] == "candidate":
                 summary["candidates"] += 1
                 if args.dry_run:
@@ -716,16 +867,30 @@ def main(argv=None):
                         summary["branch_deleted"] += 1
                     else:
                         summary["branch_kept"] += 1
-            if rec["action"] not in ("reaped", "would-reap"):
+            if rec["action"] not in ("reaped", "would-reap", "would-prune",
+                                     "stale-registration"):
                 reason = rec.get("reason", rec["action"])
                 summary["kept"][reason] = summary["kept"].get(reason, 0) + 1
             records.append(rec)
-            verb = {"reaped": "REAP", "would-reap": "WOULD-REAP"}.get(rec["action"])
+            verb = {"reaped": "REAP", "would-reap": "WOULD-REAP",
+                    "would-prune": "WOULD-PRUNE"}.get(rec["action"])
             if verb:
                 print(f"{verb} {rec['tree']} branch={rec['branch']} "
                       f"size={rec.get('size_bytes', 0)} pushed={rec['gates'].get('pushed', {}).get('method')}")
-        if removed_any and not args.dry_run:
-            run_git(primary, "worktree", "prune")
+        # Prune whenever this run left the primary's registrations
+        # stale: a tree was reaped, OR a stale registration was found
+        # (#6547 — previously prune ran only as a side effect of a
+        # same-run reap, so a deleted-directory-only primary was never
+        # pruned). Fail-safe: this block is reached only for primaries
+        # successfully inventoried above, and a prune failure is
+        # surfaced in the summary, never swallowed.
+        if (removed_any or stale_any) and not args.dry_run:
+            rc, _, err = run_git(primary, "worktree", "prune")
+            if rc != 0:
+                summary["errors"].append(
+                    f"prune failed in {primary}: {err.strip()}")
+            else:
+                summary["pruned"] += 1
 
     summary["kept_total"] = sum(summary["kept"].values())
     # The log name must be unique per run: ts has only second resolution,
@@ -750,6 +915,7 @@ def main(argv=None):
     except OSError as exc:
         print(f"worktree-reaper: could not write log: {exc}", file=sys.stderr)
     print(json.dumps(summary, indent=2))
+    os.close(lock_fd)
     return 0
 
 

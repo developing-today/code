@@ -116,6 +116,70 @@ default.nix                 the four variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
+## Versioning — derived per-app versions (#8566; policy #5790)
+
+A fleet binary's version is **derived, never hand-maintained**. The
+workspace `version = "0.1.0"` in `Cargo.toml` is only the release-line
+base cargo requires; the version a deployed binary reports — the one
+`fleet version`, `fleet capabilities` (JSON `build.derived_version`)
+and every `--version` surface print as `Derived version:` — is baked
+at build time by `crates/fleet/build.rs` from the derivation in
+`crates/fleet/src/derived_version.rs`, through the same channel that
+reports the source rev (`FLEET_SOURCE_REV`): a packaged build with no
+git history receives it as `$FLEET_DERIVED_VERSION`, computed by the
+release tooling where the history exists.
+
+Derivation (nearest `<app>/vX.Y.Z` tag on the build commit's history;
+the app is this workspace's short name, `fleet`):
+
+| build state | reported version |
+| --- | --- |
+| exactly on the tag | `X.Y.Z` |
+| on `main`, N commits after the tag | `X.Y.(Z+1)-dev.N+g<shorthash>` |
+| on a feature branch, N commits after | `X.Y.(Z+1)-dev.N+g<shorthash>.<branch-slug>` |
+| no `<app>/v*` tag yet | `0.1.0-dev.N+g<shorthash>` (bare `0.1.0-dev` if no history is available) |
+
+The `+g<hash>` suffix is what guarantees no two distinct commits ever
+report the same version string; the patch-bump + `-dev.N` form is what
+makes the string sort after the tag it descends from and before its
+own release.
+
+### Tag and release procedure (ruled on #5790, 2026-11-06)
+
+1. **Per-app tags.** A release is cut by tagging the exact tested
+   commit `<short-app-name>/vX.Y.Z` — for this workspace,
+   `fleet/vX.Y.Z`. The short app name is the tag prefix for ALL apps
+   (one policy, no per-app mixing); app names used in tags and
+   deploys must be unique across apps — if a short name would
+   collide, fix the app name, not the policy.
+2. **First tag and 0.x discipline.** Each app's first tag is
+   `0.1.0`. Versions stay in 0.x: minor for feature releases, patch
+   for fixes, and **no major-version bumps** until a separate 1.0
+   decision.
+3. **Releases are tag builds only.** Build the release artifact
+   from the tagged commit and verify the artifact itself reports
+   the clean version: `./result/bin/fleet version` must show
+   `Derived version: X.Y.Z`. A packaged (nix) release build takes
+   the version through the package's `derivedVersion` argument —
+   the build source carries no `.git`, so the release tooling
+   computes the version where the history exists and passes it in;
+   a packaged build without one reports the rev-derived prerelease
+   form `0.1.0-dev+g<rev>`, never a clean release string. Builds
+   deployed from `main` are
+   **prereleases** (their `-dev.N` strings say so) — deploying one
+   never makes it a release.
+4. **Repo tags.** At every release point (not every commit, not
+   every deploy), also cut `repo/v<YYYYMMDD>.<minor>.<patch>` —
+   the date is the major segment; within a date, a release point
+   including any app feature increments minor and resets patch, a
+   fix-only or repeat point increments patch; minor/patch may
+   reset to `0.0` on a new date. A repo **prerelease** tag on a
+   deploy from main is also fine and does not make the deploy a
+   release.
+5. **Deploy truth.** What a target runs is read from the deployed
+   binary's own `Derived version:` line, never from paperwork
+   (that read is the #5760 deployed-state check's input).
+
 ## Variants
 
 Capability surface = compiled features ∩ invocation-name profile ∩
@@ -215,6 +279,41 @@ fleet queue fallback scan --repo developing-today/code   # JSON items, exit 0
 If the two installs ever disagree on source rev or verb list, the
 stale one is a bug: file it against this section (the #6728 shape)
 rather than working around it silently.
+
+## Location-aware init: provision before the binary flip (#5687, impl #6770)
+
+`fleet init` is location-aware: it resolves this machine's
+location and role set from the `[host]` section of `fleet.toml`
+(or `FLEET_HOST_CONFIG` / `FLEET_LOCATION`) and ensures exactly
+those roles — sandbox = the session proxy under `init_mode =
+"spawn"`; laptop/lab = the daemon roles under `init_mode =
+"systemd"`, reported via their `fleet-<role>.service` units and
+started only through `systemctl --user`. An unknown location
+reports state, starts nothing, and exits 69. The full design is
+issue #5687 §§1–6.
+
+**The deploy sequence is part of the feature** (§6): the
+location-aware binary has NO "no manifest ⇒ assume proxy"
+fallback — that guess is the bug the design removes. Before a
+location-aware build replaces either live install:
+
+1. Write the `[host]` section into that machine's `fleet.toml`
+   (sandbox: `location = "sandbox"`, `init_mode = "spawn"`,
+   `[host.roles] proxy = {}`).
+2. Pin the sandbox's `init-ensure.sh` call site to
+   `FLEET_LOCATION=sandbox fleet init` (belt-and-braces: the env
+   var makes the caller's assumption explicit and survives a
+   lost/truncated file location).
+3. Only then deploy the binary, and verify per the section
+   above: `fleet init` prints `location sandbox (source: …)`, a
+   second run is the strict no-op, exit 0 both times.
+
+**Rollback gotcha:** `fleet-config` parses with
+`deny_unknown_fields`, so a `fleet.toml` containing `[host]` is a
+**parse error to the pre-#6770 binary**. Rolling the binary back
+therefore requires removing the `[host]` section (or rolling
+config and binary back together) — never discover this during
+an incident.
 
 The connect variants carry the D7 size contract: **≤ 2 MiB hard
 gate** (target ≤ 1.5 MiB), enforced in `default.nix` postFixup

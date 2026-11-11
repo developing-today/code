@@ -893,10 +893,13 @@ def check_package(package, root, require_resolved=False):
             owners.append((owned, task["owner"]))
     resolutions = {}
     for item in items:
+        document = contained(package, item["path"])
         for block in RESOLUTION.findall(
-            unfenced(contained(package, item["path"]).read_text())
+            unfenced(document.read_text())
         ):
             entry = json.loads(block)
+            if not isinstance(entry, dict):
+                fail(f"{document}: resolution block must be a JSON object")
             if entry.get("note") in resolutions:
                 fail("Duplicate note disposition")
             resolutions[entry.get("note")] = (item["id"], entry)
@@ -918,6 +921,8 @@ def check_package(package, root, require_resolved=False):
         if not found:
             fail(f"{path}: expected one immutable note marker")
         note = json.loads(found[1])
+        if not isinstance(note, dict):
+            fail(f"{path}: note marker must be a JSON object")
         body = content[found.end() :]
         if not body.startswith("\n\n") or hashlib.sha256(
             body[2:].encode()

@@ -19,9 +19,92 @@ GB_DIR = os.path.dirname(HERE)
 CONFIG_PATH = os.path.join(GB_DIR, "config.json")
 
 
+# The config fields the github-backup tools read, by name (#6849):
+# app_setup indexes app.name / app.events / app.bitwarden_secret_names
+# (the five names below are the ones it stores under) and
+# worker.webhook_path at import time, so those are the shapes
+# validate_config guarantees for every consumer of load_config.
+CONFIG_SECRET_NAME_KEYS = [
+    "app_id",
+    "client_id",
+    "client_secret",
+    "private_key",
+    "webhook_secret",
+]
+
+
+def validate_config(cfg, source="config.json"):
+    """Split a loaded config.json into (clean config, named problems).
+
+    Same contract as validate_plan/validate_state (#6637): every
+    problem names the field and the shape it found. Only the fields
+    the tools actually index are guaranteed (see above); other
+    sections pass through untouched.
+    """
+    if not isinstance(cfg, dict):
+        return {}, [
+            f"{source}: top level is {_shape(cfg)}, expected an object"
+        ]
+    problems = []
+    app = cfg.get("app")
+    if not isinstance(app, dict):
+        problems.append(
+            f"{source}: 'app' is {_shape(app)}, expected an object"
+        )
+    else:
+        name = app.get("name")
+        if not isinstance(name, str) or not name:
+            problems.append(
+                f"{source}: 'app.name' is {_shape(name)}, "
+                f"expected a non-empty string"
+            )
+        events = app.get("events")
+        if not isinstance(events, list) or not all(
+            isinstance(e, str) for e in events
+        ):
+            problems.append(
+                f"{source}: 'app.events' is {_shape(events)}, "
+                f"expected a list of strings"
+            )
+        names = app.get("bitwarden_secret_names")
+        if not isinstance(names, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and v
+            for k, v in names.items()
+        ):
+            problems.append(
+                f"{source}: 'app.bitwarden_secret_names' is "
+                f"{_shape(names)}, expected an object mapping "
+                f"strings to non-empty strings"
+            )
+        else:
+            for key in CONFIG_SECRET_NAME_KEYS:
+                if key not in names:
+                    problems.append(
+                        f"{source}: 'app.bitwarden_secret_names' is "
+                        f"missing {key!r}, required by app_setup"
+                    )
+    worker = cfg.get("worker")
+    if not isinstance(worker, dict):
+        problems.append(
+            f"{source}: 'worker' is {_shape(worker)}, expected an object"
+        )
+    else:
+        path = worker.get("webhook_path")
+        if not isinstance(path, str) or not path:
+            problems.append(
+                f"{source}: 'worker.webhook_path' is {_shape(path)}, "
+                f"expected a non-empty string"
+            )
+    return (cfg if not problems else {}), problems
+
+
 def load_config():
     with open(CONFIG_PATH) as f:
-        return json.load(f)
+        cfg = json.load(f)
+    _, problems = validate_config(cfg)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return cfg
 
 
 def backup_root(cfg=None):

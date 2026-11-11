@@ -4,6 +4,9 @@
 # fails — with a diagnostic — on a broken ${{ }} expression, on an
 # unknown input to a well-known action, on action metadata with no
 # runs section, and on action metadata with an unsupported runtime.
+# It also pins the explicit-file contract (#6872): relative FILE args
+# resolve against the caller's cwd, and a missing action file reports
+# a cannot-read diagnostic instead of a shape misdiagnosis.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -197,5 +200,30 @@ expect_fail "composite run step without shell"
 else
   echo "skip: PyYAML-branch contract cases (PyYAML unavailable; reduced fallback contract)"
 fi
+
+# 12. A valid action file passed by RELATIVE path from its own
+# directory behaves identically to the absolute-path invocation:
+# explicit FILE args resolve against the caller's cwd, not the repo
+# root the checker cd'ed to (#6872).
+RC=0
+(cd "$TMP/good-action" && bash "$CHECK" action.yml >"$TMP/out" 2>&1) || RC=$?
+expect_pass "valid composite action by relative path from its own directory"
+
+# 13. A missing action file fails with a cannot-read diagnostic naming
+# the file and the OS error — never "invalid YAML" (PyYAML branch) and
+# never "unexpected top-level key ''" (fallback branch) (#6872).
+run_check "$TMP/no-such-action/action.yml"
+expect_fail "missing action file"
+if ! grep -q "cannot read action file: No such file or directory" "$TMP/out"; then
+  echo "FAIL: missing action file should report a cannot-read diagnostic" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
+if grep -qE "invalid YAML|unexpected top-level key ''" "$TMP/out"; then
+  echo "FAIL: missing action file was misdiagnosed as a shape failure" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
+echo "pass: missing action file reports a cannot-read diagnostic"
 
 echo "check-workflows.test: all contract tests passed"

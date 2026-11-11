@@ -748,6 +748,11 @@ export interface TodayView {
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, medium: 2, low: 3 };
 
+function priorityRank(priority: string | undefined): number {
+  const key = (priority ?? "normal").toLowerCase();
+  return Object.hasOwn(PRIORITY_ORDER, key) ? PRIORITY_ORDER[key] : 2;
+}
+
 /**
  * The orchestrator sometimes publishes `progressedSinceLastRun` as a
  * single string rather than a list (its declared shape). Normalize at
@@ -840,8 +845,7 @@ export function deriveToday(
     }
   }
   const byPriority = (a: BoardItem, b: BoardItem) =>
-    (PRIORITY_ORDER[(a.priority ?? "normal").toLowerCase()] ?? 2) -
-      (PRIORITY_ORDER[(b.priority ?? "normal").toLowerCase()] ?? 2) ||
+    priorityRank(a.priority) - priorityRank(b.priority) ||
     (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
   for (const item of board
     .filter((b) => b.status === "in-progress")
@@ -901,7 +905,7 @@ export function deriveToday(
 // PAYG over $5 (unbilled accrual only — Q3 default), surfaces worst-first.
 // ---------------------------------------------------------------------------
 
-import { countedEstimate, type AttentionFlag, type QuotaView, type SnapshotRecord, type UsageView } from "./model.ts";
+import { countedEstimate, type AttentionFlag, type Horizon, type QuotaAction, type QuotaActionKind, type QuotaView, type SnapshotRecord, type UsageView } from "./model.ts";
 
 export const BUBBLE_PCT = 80;
 export const BUBBLE_USD = 5;
@@ -987,6 +991,164 @@ export function buildAttentionFlags(
   const rank = (kind: AttentionFlag["kind"]): number =>
     kind === "credential-lifecycle" ? 0 : kind === "over-limit" ? 1 : kind === "payg-unbilled" ? 2 : 3;
   return flags.sort((a, b) => (rank(a.kind) === rank(b.kind) ? b.severity - a.severity : rank(a.kind) - rank(b.kind)));
+}
+
+// --- Quota actions (#1174) --------------------------------------------------
+// One derivation for the expiring/cancelled, walled, and high-usage
+// quota actions surfaced on /quota's strip, /today, and /attention's
+// orchestrator tier. The cancellation source data is the plan-facts
+// registry (AaPlanFact.cancelled/periodEndsAt, updated with the
+// registry when a plan changes) — never scraped from display prose.
+// Walled and high-usage state comes from the pools themselves. An
+// entry exists only while its condition holds (deadline in the
+// future and inside the window, pool still walled, window still hot
+// with a distant reset), so entries expire and clear on their own and
+// no surface can render a duplicate or stale copy.
+
+/** Structural plan-fact input; AA_PLAN_FACTS satisfies this. */
+export interface QuotaPlanFact {
+  cancelled?: boolean;
+  periodEndsAt?: string | null;
+  renewalAction?: string | null;
+}
+
+/** A cancelled period counts as expiring inside this many days. */
+export const QUOTA_ACTION_WINDOW_DAYS = 14;
+/** High-usage bar: strictly above this percent of limit. */
+export const QUOTA_HIGH_USAGE_PCT = 85;
+/** High-usage counts only when the reset is further out than this. */
+export const QUOTA_HIGH_USAGE_RESET_MS = 24 * 3_600_000;
+
+function planFactKeyForPool(poolId: string): string {
+  return poolId.replace(":", ".");
+}
+
+/**
+ * Every eligible quota action across the pools, worst first: expiring
+ * periods by nearest deadline, then walled pools, then high-usage
+ * windows by percent. Pure — same quota in, same actions out — so the
+ * three surfaces render the identical entries.
+ */
+export function buildQuotaActions(
+  quota: QuotaView,
+  plans: Readonly<Record<string, QuotaPlanFact>> = {},
+  now = Date.now(),
+): QuotaAction[] {
+  const actions: QuotaAction[] = [];
+  for (const pool of quota.pools) {
+    const key = planFactKeyForPool(pool.id);
+    const fact = Object.hasOwn(plans, key) ? plans[key] : undefined; // #3056 own-key guard
+    const periodEnd = fact?.cancelled && fact.periodEndsAt ? Date.parse(fact.periodEndsAt) : NaN;
+    if (Number.isFinite(periodEnd)) {
+      const left = (periodEnd as number) - now;
+      if (left >= 0 && left <= QUOTA_ACTION_WINDOW_DAYS * 86_400_000) {
+        const day = String(fact?.periodEndsAt).slice(0, 10);
+        actions.push({
+          id: `${pool.id}:expiry`,
+          poolId: pool.id,
+          provider: pool.provider,
+          plan: pool.plan,
+          kind: "expiry",
+          title: `${pool.provider} — ${pool.plan} ends ${day}`,
+          detail: `Cancelled — period ends ${day}${fact?.renewalAction ? ` · ${fact.renewalAction}` : ""}`,
+          deadline: new Date(periodEnd as number).toISOString(),
+          href: "/quota",
+        });
+      }
+    }
+    if (pool.state === "walled") {
+      actions.push({
+        id: `${pool.id}:walled`,
+        poolId: pool.id,
+        provider: pool.provider,
+        plan: pool.plan,
+        kind: "walled",
+        title: `${pool.provider} — ${pool.plan} is walled`,
+        detail: pool.wallLiftsAt
+          ? `Walled — lifts ${pool.wallLiftsAt.slice(0, 10)} · hold new sessions until then`
+          : "Walled with no lift date recorded — check the pool before starting sessions",
+        deadline: pool.wallLiftsAt ?? null,
+        href: "/quota",
+      });
+    }
+    // Eligibility before selection (Codex P2, PR #4695): a hotter window
+    // whose reset is near — or unrecorded — must not mask a qualifying
+    // cooler window, so pick the highest-usage window among those whose
+    // reset is distant enough to act on.
+    let worst: QuotaWindow | null = null;
+    let worstPct = 0;
+    let worstReset = "";
+    for (const w of pool.windows) {
+      const pct = windowPercent(w);
+      if (pct <= QUOTA_HIGH_USAGE_PCT || !w.resetsAt) continue;
+      const reset = Date.parse(w.resetsAt);
+      if (!Number.isFinite(reset) || reset - now <= QUOTA_HIGH_USAGE_RESET_MS) continue;
+      if (pct > worstPct) {
+        worstPct = pct;
+        worst = w;
+        worstReset = w.resetsAt;
+      }
+    }
+    if (worst) {
+      actions.push({
+        id: `${pool.id}:high-usage`,
+        poolId: pool.id,
+        provider: pool.provider,
+        plan: pool.plan,
+        kind: "high-usage",
+        title: `${pool.provider} — ${pool.plan} at ${Math.round(worstPct)}%`,
+        detail: `${worst.name} window ${Math.round(worstPct)}% used · resets ${worstReset.slice(0, 10)} — burn it down or hold new sessions`,
+        deadline: worstReset,
+        href: "/quota",
+      });
+    }
+  }
+  const rank: Record<QuotaActionKind, number> = { expiry: 0, walled: 1, "high-usage": 2 };
+  return actions.sort(
+    (a, b) =>
+      rank[a.kind] - rank[b.kind] ||
+      (a.deadline ?? "").localeCompare(b.deadline ?? "") ||
+      a.id.localeCompare(b.id),
+  );
+}
+
+/** The /quota "Needs attention" strip rows for already-derived actions. */
+export function quotaActionFlags(actions: QuotaAction[], now = Date.now()): AttentionFlag[] {
+  return actions.map((a) => ({
+    kind: "quota-action" as const,
+    label: a.title,
+    detail: a.detail,
+    href: a.href,
+    severity:
+      a.kind === "expiry" && a.deadline
+        ? 1000 + (QUOTA_ACTION_WINDOW_DAYS - (Date.parse(a.deadline) - now) / 86_400_000)
+        : a.kind === "walled"
+          ? 500
+          : 100,
+  }));
+}
+
+/** The /attention orchestrator-tier items for already-derived actions. */
+export function quotaActionTierItems(actions: QuotaAction[], now = Date.now()): TierItem[] {
+  const at = new Date(now).toISOString();
+  return actions.map((a) => {
+    const left = a.deadline ? Date.parse(a.deadline) - now : NaN;
+    return {
+      id: `quota-action:${a.id}`,
+      kind: "task" as const,
+      title: a.title,
+      // Aggregator-synthesized like the #1148 watchdog items: derived
+      // live, never published by the orchestrator.
+      source: "watchdog" as const,
+      reason: a.detail,
+      since: at,
+      lastSeenAt: at,
+      horizon: (
+        Number.isFinite(left) ? (left <= 86_400_000 ? "today" : left <= 3 * 86_400_000 ? "next-3-days" : "longer") : "longer"
+      ) as Horizon,
+      recommendedAction: a.detail,
+    };
+  });
 }
 
 export interface Freshness {
@@ -1097,7 +1259,12 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
     if (Number.isFinite(candidate.getTime())) projectedExhaustionAt = candidate.toISOString();
   }
   let projectedPercentAtReset: number | null = null;
-  if (last.resetsAt) {
+  // Same out-of-domain guard as projectedExhaustionAt above (#6316):
+  // a negative last pct cannot support a percent-at-reset projection
+  // either -- the unguarded extrapolation rendered absurd values
+  // (e.g. -999999995.5) for poisoned series whose last record carried
+  // a future resetsAt. Slope and points are still reported.
+  if (lastVal >= 0 && last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;
     if (toReset > 0) projectedPercentAtReset = Math.round((lastVal + slope * toReset) * 10) / 10;
   }

@@ -349,6 +349,45 @@ describe("quota-current overlay", () => {
     expect(pool.freshness?.state).toBe("error");
     expect(pool.windows.map((w) => w.percent)).toEqual([11]);
   });
+
+  test("a lapsed entry survives ingest as a terminal lapse, not an error and without stale percentages", () => {
+    const at = iso(5 * 60_000);
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "opencode-go",
+            providerId: "opencode-go",
+            state: "lapsed",
+            measuredAt: at,
+            error: "No active OpenCode Go subscription on the selected Console account",
+            windows: [{ ...win("monthly", 62, at), state: "lapsed" }],
+          }),
+        ]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers[0].state).toBe("lapsed");
+    const view = baseView();
+    view.pools.push(pool("opencode-go", [{ name: "monthly", unit: "other", limit: 100, used: 62, percent: 62, resetsAt: null }]));
+    view.choices = {
+      hasHeadroom: ["opencode-go"],
+      burnBeforeReset: ["opencode-go"],
+      doNotStart: ["opencode-go"],
+    };
+    const out = overlayQuotaCurrent(view, parsed!, NOW);
+    const go = out.pools.find((p) => p.id === "opencode-go")!;
+    expect(go.state).toBe("lapsed");
+    expect(go.freshness?.state).toBe("lapsed");
+    expect(go.freshness?.error).toContain("No active OpenCode Go subscription");
+    // The dated percentage is not presented as a current reading.
+    expect(go.windows).toEqual([]);
+    // Guidance must not continue recommending a cancelled workspace.
+    expect(out.choices.hasHeadroom).not.toContain("opencode-go");
+    expect(out.choices.burnBeforeReset).not.toContain("opencode-go");
+    expect(out.choices.doNotStart).not.toContain("opencode-go");
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "opencode-go")?.state).toBe("lapsed");
+  });
 });
 
 describe("parseQuotaCurrent", () => {
@@ -417,6 +456,24 @@ describe("overlayTursoUsage (#1049)", () => {
       ["databases", 3, "count", 3],
       ["storage", 1.053323, "gb", 21.066],
     ]);
+  });
+  test("prototype-spelling Turso windows are ignored like unknown names", () => {
+    const at = iso(5 * 60_000);
+    const names = ["databases", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "unknown-window"];
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: names.map((name) => tursoWin(name, 3, 3, at)),
+        }),
+      ]),
+      NOW,
+    );
+    expect(out[0].metrics.map((metric) => metric.id)).toEqual(["databases"]);
   });
   test("an error entry keeps the dated card and adds a dated conflict flag", () => {
     const at = iso(5 * 60_000);
@@ -709,23 +766,23 @@ describe("stale-path newest pick is finite-gated (#2253)", () => {
   });
 });
 
-describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
+describe("overlay: alternate ChatGPT pool (_openai.alt)", () => {
   test("gatherer windows land on the alternate pool, never on the main pool", () => {
     const view = baseView();
-    view.pools.push(pool("openai.alternate", []));
+    view.pools.push(pool("_openai.alt", []));
     const out = overlayQuotaCurrent(
       view,
       file([
         entry({
-          providerId: "openai.alternate",
-          serviceId: "openai.alternate",
+          providerId: "_openai.alt",
+          serviceId: "_openai.alt",
           credentialLabel: "OpenAI Alternate (Student - popesdrew)",
           windows: [win("5h", 100, iso(5 * 60_000)), win("weekly", 42, iso(5 * 60_000))],
         }),
       ]),
       NOW,
     );
-    const alt = out.pools.find((p) => p.id === "openai.alternate")!;
+    const alt = out.pools.find((p) => p.id === "_openai.alt")!;
     expect(alt.windows.map((w) => [w.name, w.percent])).toEqual([
       ["5-hour", 100],
       ["weekly", 42],
@@ -1156,5 +1213,68 @@ describe("shell-pool stale/retained path (#6942)", () => {
     expect(cline.state).toBe("stale");
     expect(cline.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "stale" });
     expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+  });
+});
+
+describe("spec-pool retained path with dead base windows (#7033)", () => {
+  const LEG_ERROR = "Rate limited. Retrying soon.";
+  const VIEW_NOTE = "Freshest dated read in the stewardship quota view; Claude exposes no host-side meter.";
+
+  function claudeView(resetsAt: string | null): QuotaView {
+    const view = baseView();
+    const claude = view.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    claude.windows = [{ name: "weekly", unit: "other", limit: 100, used: 68, percent: 68, resetsAt }];
+    claude.note = VIEW_NOTE;
+    return view;
+  }
+
+  function claudeFile(): QuotaCurrentFile {
+    const f = file([
+      entry({
+        providerId: "claude",
+        serviceId: "anthropic:claude-pro",
+        source: "opencode-quota",
+        measuredAt: iso(45 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [
+          win("5h", 33, iso(45 * 60_000)),
+          win("7d", 61, iso(45 * 60_000)),
+          win("Fable:7d", 0, iso(45 * 60_000)),
+        ],
+      }),
+    ]);
+    f.heartbeat.perProvider = { claude: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } };
+    return f;
+  }
+
+  test("a retained entry whose leg errored supersedes base windows that already reset before the read", () => {
+    // The base row is the quota-view transcription whose weekly reset
+    // (2026-10-26 in fixture time) predates the retained read — a dead
+    // window. The read's dated fallback windows stand instead.
+    const out = overlayQuotaCurrent(claudeView("2026-10-26T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("error");
+    expect(claude.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "error",
+      error: LEG_ERROR,
+    });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 33],
+      ["7d", 61],
+      ["Fable:7d", 0],
+    ]);
+    // The note describes the substituted quota-view row; it must not stand.
+    expect(claude.note).toBeUndefined();
+  });
+
+  test("the same retained entry keeps the #1268 pin when a base window is still live", () => {
+    const out = overlayQuotaCurrent(claudeView("2026-11-02T19:00:00.000Z"), claudeFile(), NOW);
+    const claude = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(claude.state).toBe("stale");
+    expect(claude.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
+    expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(claude.note).toBe(VIEW_NOTE);
   });
 });

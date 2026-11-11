@@ -61,10 +61,21 @@ fn build_fixture_db(tag: &str) -> PathBuf {
 }
 
 fn qvec_file() -> PathBuf {
-    let exp = expectations();
-    let p = std::env::temp_dir().join(format!("atlas-cli-qvec-{}.json", std::process::id()));
-    std::fs::write(&p, serde_json::to_string(&exp["qvec_raw"]).unwrap()).expect("write qvec");
-    p
+    // Written once per test-binary run. The path is named by pid and
+    // shared by every test in this binary, and the tests run in
+    // parallel: rewriting the file on every call let one test's CLI
+    // read it mid-truncate from another test's rewrite and fail with
+    // an empty-JSON error (seen under `cargo test --all-targets`,
+    // where the extra load widens the race window). The content is
+    // the shared golden fixture, identical for every caller.
+    static QVEC: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    QVEC.get_or_init(|| {
+        let exp = expectations();
+        let p = std::env::temp_dir().join(format!("atlas-cli-qvec-{}.json", std::process::id()));
+        std::fs::write(&p, serde_json::to_string(&exp["qvec_raw"]).unwrap()).expect("write qvec");
+        p
+    })
+    .clone()
 }
 
 fn run_bin(db: &Path, args: &[&str]) -> std::process::Output {
@@ -161,6 +172,101 @@ fn cli_rejects_expand_above_limit_before_backend_work() {
         !stderr.contains("missing.db"),
         "backend was reached: {stderr}"
     );
+}
+
+#[test]
+fn cli_rejects_unsupported_query_controls_before_backend_work() {
+    let db = std::env::temp_dir()
+        .join(format!(
+            "atlas-cli-parity-{}-unsupported",
+            std::process::id()
+        ))
+        .join("missing.db");
+    for (flags, expected) in [
+        (
+            vec!["--jaccard_depth", "5"],
+            "Jaccard controls are not implemented",
+        ),
+        (
+            vec!["--planner_enabled"],
+            "planner/spell stages are not implemented",
+        ),
+        (
+            vec!["--raw", "--expand", "1"],
+            "raw mode cannot be combined",
+        ),
+    ] {
+        let mut args = vec!["search", "query", "--backend", "local"];
+        args.extend(flags);
+        let out = run_bin(&db, &args);
+        assert_eq!(out.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(
+            !stderr.contains("missing.db"),
+            "backend was reached: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn cli_wires_rrf_and_signal_weights() {
+    let db = build_fixture_db("weighted-rrf");
+    let out = run_bin(
+        &db,
+        &[
+            "search",
+            "how do we back up the database",
+            "--backend",
+            "local",
+            "--rrf_k",
+            "20",
+            "--fts_weight",
+            "2",
+            "--vector_weight",
+            "1",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let got: Json = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(got["results"][0]["score"], 0.142857);
+}
+
+#[test]
+fn raw_mode_does_not_widen_the_sensitivity_ceiling() {
+    let db = build_fixture_db("raw-ceiling");
+    let normal = run_bin(
+        &db,
+        &[
+            "search",
+            "how do we back up the database",
+            "--backend",
+            "local",
+            "--max-sensitivity",
+            "shareable",
+        ],
+    );
+    let raw = run_bin(
+        &db,
+        &[
+            "search",
+            "how do we back up the database",
+            "--backend",
+            "local",
+            "--max-sensitivity",
+            "shareable",
+            "--raw",
+        ],
+    );
+    assert!(normal.status.success());
+    assert!(raw.status.success());
+    let normal: Json = serde_json::from_slice(&normal.stdout).unwrap();
+    let raw: Json = serde_json::from_slice(&raw.stdout).unwrap();
+    assert_eq!(raw, normal, "raw mode must keep the same filters/ceiling");
 }
 
 #[test]
@@ -339,6 +445,7 @@ fn build_shard_dir(db: &Path, tag: &str) -> PathBuf {
             ("part", part.trim_start_matches('0').to_string()),
             ("expected_chunks", ids.len().to_string()),
             ("metric", "cosine".to_string()),
+            ("embedding_model", "snowflake-arctic-embed-m-v2.0".to_string()),
         ] {
             con.execute(
                 "INSERT INTO atlas_manifest VALUES (?, ?)",

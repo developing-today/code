@@ -847,6 +847,63 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
         self.assertIn("credentials.json", str(ctx.exception))
 
 
+class TestWrongShapePrivateJson(ColdStoreTestBase):
+    """#6845: valid JSON of the wrong shape in credentials.json /
+    state.json raises ColdStoreError naming the file and the shape -
+    never a raw AttributeError/TypeError/ValueError, and never a
+    silently mistyped folder id used against Drive."""
+
+    def test_non_object_credentials_raise_cold_store_error(self):
+        for payload in ('[]', '[{"client_id": "x"}]', '"hello"', "123",
+                        "null", "true"):
+            self.store.credentials_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), payload)
+
+    def test_non_string_credential_value_raises_cold_store_error(self):
+        for key in ("client_id", "client_secret", "refresh_token"):
+            creds = {
+                "client_id": "fake-client-id",
+                "client_secret": "fake-secret",
+                "refresh_token": "fake-refresh-token",
+            }
+            creds[key] = 123
+            self.store._write_private_json(self.store.credentials_path, creds)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), key)
+            self.assertIn(key, str(ctx.exception), key)
+
+    def test_non_object_state_raises_cold_store_error(self):
+        for payload in ('[]', '"hello"', "123", "null", "true"):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_object_folders_raises_cold_store_error(self):
+        for payload in ('{"folders": "abc"}', '{"folders": 123}',
+                        '{"folders": ["root"]}', '{"folders": null}'):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_string_folder_id_raises_cold_store_error(self):
+        self.store.state_path.write_text('{"folders": {"bundles": 123}}')
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_state()
+        self.assertIn("state.json", str(ctx.exception))
+
+    def test_happy_path_controls_still_pass(self):
+        self.assertEqual(
+            self.store.load_credentials()["client_id"], "fake-client-id"
+        )
+        self.store.save_state({"folders": {"a": "1"}})
+        self.assertEqual(self.store.load_state(), {"folders": {"a": "1"}})
+
+
 # ------------------------------------------------------------------ fake D1
 class FakeD1:
     """Captures D1 REST query calls; can be told to fail.
@@ -859,6 +916,7 @@ class FakeD1:
     def __init__(self):
         self.requests = []  # {path, authorization, sql, params}
         self.fail = False
+        self.mode = None  # "success_false" | "wrong_shape" definitive answers
         self.db = None
 
 
@@ -889,6 +947,19 @@ def make_d1_handler(fake: FakeD1):
                     "params": payload.get("params", []),
                 }
             )
+            if fake.mode == "success_false":
+                self._send(
+                    200,
+                    {
+                        "success": False,
+                        "errors": [{"code": 7403, "message": "definitive probe failure"}],
+                        "result": None,
+                    },
+                )
+                return
+            if fake.mode == "wrong_shape":
+                self._send(200, {"success": True, "errors": [], "result": ["x"]})
+                return
             if fake.fail:
                 self._send(
                     500, {"success": False, "errors": [{"message": "fake failure"}]}
@@ -1335,6 +1406,154 @@ class TestBackups(ColdStoreTestBase):
         rows = self.store.list_backups("supabase")
 
         self.assertEqual([row["name"] for row in rows], list(reversed(names)))
+
+
+class TestDriveResponseShapes(ColdStoreTestBase):
+    def test_find_folder_rejects_wrong_response_shapes(self):
+        invalid_bodies = (
+            b"not json",
+            b"[]",
+            b'{"files":"not-a-list"}',
+            b'{"files":[7]}',
+            b'{"files":[{"id":7,"name":"folder"}]}',
+            b'{"files":[{"id":"folder-id"}]}',
+        )
+        with mock.patch.object(self.store, "_auth_headers", return_value={}):
+            for body in invalid_bodies:
+                with self.subTest(body=body):
+                    with mock.patch.object(
+                        cold_store,
+                        "http_request",
+                        return_value=(200, {}, body),
+                    ):
+                        with self.assertRaisesRegex(
+                            cold_store.ColdStoreError, "files.list for folder"
+                        ):
+                            self.store._find_folder("root", None)
+
+            with mock.patch.object(
+                cold_store,
+                "http_request",
+                return_value=(200, {}, b'{"files":[]}'),
+            ):
+                self.assertIsNone(self.store._find_folder("root", None))
+
+    def test_create_folder_requires_object_with_string_id(self):
+        for body in (b"[]", b"{}", b'{"id":7}'):
+            with self.subTest(body=body):
+                with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                    with mock.patch.object(
+                        cold_store,
+                        "http_request",
+                        return_value=(201, {}, body),
+                    ):
+                        with self.assertRaisesRegex(
+                            cold_store.ColdStoreError, "folder create"
+                        ):
+                            self.store._create_folder("root", None)
+
+    def test_resumable_upload_completion_requires_string_id(self):
+        blob = Path(self.tmp.name) / "blob.bin"
+        blob.write_bytes(b"bundle")
+        for body in (b"not json", b"[]", b'{"id":7}'):
+            with self.subTest(body=body):
+                def fake_http(method, _url, **_kwargs):
+                    if method == "POST":
+                        return 200, {"Location": "https://upload.example/session"}, b""
+                    return 201, {}, body
+
+                with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                    with mock.patch.object(
+                        cold_store, "http_request", side_effect=fake_http
+                    ):
+                        with self.assertRaisesRegex(
+                            cold_store.ColdStoreError, "resumable upload completion"
+                        ):
+                            self.store._resumable_upload(blob, "bundle.csb", "parent")
+
+    def test_list_backups_rejects_wrong_response_shapes(self):
+        invalid_bodies = (
+            b"[]",
+            b'{"files":"not-a-list"}',
+            b'{"files":[7]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"abc"}]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"-1"}]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"1","createdTime":7}]}',
+            b'{"nextPageToken":[]}',
+        )
+        with mock.patch.object(self.store, "_folder_id", return_value="folder-id"):
+            with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                for body in invalid_bodies:
+                    with self.subTest(body=body):
+                        with mock.patch.object(
+                            cold_store,
+                            "http_request",
+                            return_value=(200, {}, body),
+                        ):
+                            with self.assertRaisesRegex(
+                                cold_store.ColdStoreError, "files.list for backups"
+                            ):
+                                self.store.list_backups("supabase")
+
+    def test_get_backup_rejects_wrong_response_shapes(self):
+        invalid_bodies = (
+            b"[]",
+            b'{"files":"not-a-list"}',
+            b'{"files":[{"id":7,"name":"backup","size":"1"}]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"abc"}]}',
+        )
+        with mock.patch.object(self.store, "_folder_id", return_value="folder-id"):
+            with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                for body in invalid_bodies:
+                    with self.subTest(body=body):
+                        with mock.patch.object(
+                            cold_store,
+                            "http_request",
+                            return_value=(200, {}, body),
+                        ):
+                            with self.assertRaisesRegex(
+                                cold_store.ColdStoreError,
+                                "files.list for get-backup",
+                            ):
+                                self.store.get_backup(
+                                    "supabase",
+                                    "backup.sql",
+                                    str(Path(self.tmp.name) / "out.sql"),
+                                )
+
+    def test_upload_readback_wrong_shapes_are_verification_errors(self):
+        invalid_bodies = (
+            b"not json",
+            b"[]",
+            b'{"id":"f1","md5Checksum":"abc","size":"not-a-number"}',
+            b'{"id":7,"md5Checksum":"abc","size":"1"}',
+        )
+        request = cold_store.http_request
+        for i, body in enumerate(invalid_bodies):
+            with self.subTest(body=body):
+                source = self.write_src(f"bundle-{i}.txt", b"bundle contents")
+                packed = self.store.pack([str(source)])
+
+                def fail_readback(method, url, *args, **kwargs):
+                    if method == "GET" and "md5Checksum" in url:
+                        return 200, {}, body
+                    return request(method, url, *args, **kwargs)
+
+                with mock.patch.object(
+                    cold_store, "http_request", side_effect=fail_readback
+                ):
+                    with self.assertRaisesRegex(
+                        cold_store.ColdStoreError, "files.get after upload"
+                    ):
+                        self.store.upload(packed["bundle_id"])
+
+                conn = self.store.db()
+                state = conn.execute(
+                    "SELECT state FROM bundles WHERE bundle_id=?",
+                    (packed["bundle_id"],),
+                ).fetchone()["state"]
+                conn.close()
+                self.assertEqual(state, "uploading")
 
 
 class TestSyncManifest(ColdStoreTestBase):
@@ -2746,11 +2965,11 @@ class TestDrillCompare(ColdStoreTestBase):
         path.write_text("\n".join(lines) + "\n")
         return path
 
-    def _run_drill(self, backup_sql: Path):
+    def _run_drill(self, backup_sql: Path, base=None):
         env = dict(os.environ)
         env["CLOUDFLARE_API_TOKEN"] = "fake-cf-token"
         env["COLD_STORE_D1_BASE"] = (
-            f"http://127.0.0.1:{self.d1_server.server_address[1]}"
+            base or f"http://127.0.0.1:{self.d1_server.server_address[1]}"
         )
         return subprocess.run(
             [
@@ -2809,6 +3028,55 @@ class TestDrillCompare(ColdStoreTestBase):
         self.assertIn("objects", proc.stdout)
         self.assertIn(self.HASH_B, proc.stdout)
         self.assertIn("missing", proc.stdout)
+
+    def test_d1_http_error_with_definitive_body_fails_loudly(self):
+        # #6858: an HTTP 500 whose body is a D1 success=false payload is
+        # D1 actively rejecting the query, not unreachability — the
+        # drill must abort carrying the API's message, never downgrade
+        # to the local manifest.
+        self.d1.fail = True
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("fake failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_success_false_fails_loudly(self):
+        # #6858: success=false on HTTP 200 is likewise definitive; the
+        # abort message carries the API error code and message.
+        self.d1.mode = "success_false"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("7403", proc.stdout)
+        self.assertIn("definitive probe failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_wrong_shape_payload_fails_loudly(self):
+        # #6858: a success=true payload whose result is not a list of
+        # row objects is a garbled answer, not unreachability.
+        self.d1.mode = "wrong_shape"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("unexpected shape", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_unreachable_keeps_local_manifest_fallback(self):
+        # #6858 control: genuine transport failure (connection refused)
+        # keeps the documented local-manifest fallback with its
+        # accurate label. The backup is emptied so it is a subset of
+        # any manifest and the drill passes against the local file.
+        def empty(conn):
+            for table in cold_store.MANIFEST_TABLES:
+                conn.execute(f'DELETE FROM "{table}"')
+
+        dead = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(FakeD1()))
+        port = dead.server_address[1]
+        dead.server_close()
+        proc = self._run_drill(
+            self._render_backup_sql(empty), base=f"http://127.0.0.1:{port}"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("local manifest (D1 unreachable)", proc.stdout)
+        self.assertNotIn("drill aborted", proc.stdout)
 
 
 class TestLedgerTrashMigration(ColdStoreTestBase):
@@ -3426,3 +3694,235 @@ class TestListingBounds6602S3(S3TestBase):
                 self.store.s3_list_objects("supabase-backups")
         self.assertIn("supabase-backups", str(ctx.exception))
         self.assertEqual(calls["n"], 5)
+
+
+# ---------------------------------------------------------------------------
+# Property-based coverage for the Drive response parsers (#6855, Codex P1
+# on PR #7135). Oracles are stated per validator as reference predicates
+# written from the Drive contract, not from the implementation: a value is
+# accepted iff the oracle accepts it, and the only exception that may ever
+# escape a validator is ColdStoreError. Generation is seeded stdlib
+# `random` (no new dependency); every failure reproduces from the seed.
+# ---------------------------------------------------------------------------
+
+import random as _random
+
+_DRIVE_PBT_SEED = 6855
+
+
+def _pbt_json_value(rng, depth=0):
+    kinds = ["dict", "list", "str", "int", "float", "bool", "none"]
+    if depth >= 2:
+        kinds = ["str", "int", "bool", "none"]
+    kind = rng.choice(kinds)
+    if kind == "dict":
+        return {
+            rng.choice(["id", "name", "size", "files", "x", ""]): _pbt_json_value(
+                rng, depth + 1
+            )
+            for _ in range(rng.randrange(3))
+        }
+    if kind == "list":
+        return [_pbt_json_value(rng, depth + 1) for _ in range(rng.randrange(3))]
+    if kind == "str":
+        return rng.choice(["", "a", "file-1", "123", " 1", "-1", "1.5", "²", "٤"])
+    if kind == "int":
+        return rng.choice([0, 1, -1, 7, 10**20, -(10**20)])
+    if kind == "float":
+        return rng.choice([0.0, 1.5, -2.5])
+    if kind == "bool":
+        return rng.choice([True, False])
+    return None
+
+
+def _pbt_size_candidate(rng):
+    return rng.choice(
+        [
+            0,
+            1,
+            42,
+            10**25,
+            -1,
+            -(10**10),
+            True,
+            False,
+            "0",
+            "007",
+            "123456789012345678901234567890",
+            "",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e3",
+            "abc",
+            "²",
+            "٤",
+            "１２",
+            None,
+            1.5,
+            [],
+            {},
+        ]
+    )
+
+
+def _pbt_size_oracle(value):
+    """Reference oracle for _drive_size: (accepted, expected_int)."""
+    if isinstance(value, bool):
+        return False, None
+    if isinstance(value, int):
+        return (value >= 0), (value if value >= 0 else None)
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return True, int(value)
+    return False, None
+
+
+def _pbt_file_entry(rng):
+    entry = {}
+    if rng.random() < 0.85:
+        entry["id"] = rng.choice(["f1", "folder-9", "x", "", 7, None, True])
+    if rng.random() < 0.85:
+        entry["name"] = rng.choice(["backup", "n", "", 3, None, False])
+    if rng.random() < 0.6:
+        entry["size"] = _pbt_size_candidate(rng)
+    if rng.random() < 0.2:
+        entry["extra"] = _pbt_json_value(rng)
+    return entry
+
+
+def _pbt_entry_oracle(entry, require_size):
+    """Reference oracle for one files[] entry of _drive_files."""
+    if not isinstance(entry, dict):
+        return False
+    for key in ("id", "name"):
+        value = entry.get(key)
+        if not isinstance(value, str) or not value:
+            return False
+    if require_size or "size" in entry:
+        accepted, _ = _pbt_size_oracle(entry.get("size"))
+        if not accepted:
+            return False
+    return True
+
+
+class TestDriveResponseShapesProperty(ColdStoreTestBase):
+    def test_drive_size_matches_oracle_for_generated_values(self):
+        rng = _random.Random(_DRIVE_PBT_SEED)
+        for _ in range(600):
+            value = _pbt_size_candidate(rng)
+            accepted, expected = _pbt_size_oracle(value)
+            with self.subTest(value=repr(value)):
+                if accepted:
+                    self.assertEqual(
+                        cold_store._drive_size(value, "pbt.size"), expected
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_size(value, "pbt.size")
+
+    def test_drive_parse_object_only_accepts_json_objects(self):
+        rng = _random.Random(_DRIVE_PBT_SEED + 1)
+        for _ in range(400):
+            value = _pbt_json_value(rng)
+            body = json.dumps(value).encode()
+            if rng.random() < 0.25:  # mutate: truncation / garbage / bad bytes
+                body = rng.choice(
+                    [body[: rng.randrange(len(body) + 1)], body + b"x", b"\xff\xfe{"]
+                )
+            with self.subTest(body=body[:60]):
+                try:
+                    parsed = cold_store._drive_parse_object(body, "pbt.parse")
+                except cold_store.ColdStoreError:
+                    # Oracle: rejection is correct iff the body is not a
+                    # JSON object.
+                    try:
+                        reference = json.loads(body)
+                    except (ValueError, TypeError):
+                        reference = None
+                    self.assertNotIsInstance(reference, dict)
+                except Exception as exc:  # noqa: BLE001 - invariant: no leaks
+                    self.fail(f"non-ColdStoreError escaped: {exc!r}")
+                else:
+                    self.assertEqual(parsed, json.loads(body))
+                    self.assertIsInstance(parsed, dict)
+
+    def test_drive_files_matches_entry_oracle_for_generated_payloads(self):
+        rng = _random.Random(_DRIVE_PBT_SEED + 2)
+        for _ in range(400):
+            require_size = rng.random() < 0.5
+            if rng.random() < 0.1:
+                # Non-list files values are always rejected.
+                payload = {"files": rng.choice(["nope", 7, None, {}])}
+                with self.assertRaises(cold_store.ColdStoreError):
+                    cold_store._drive_files(payload, "pbt.files", require_size)
+                continue
+            entries = [_pbt_file_entry(rng) for _ in range(rng.randrange(4))]
+            if rng.random() < 0.1:
+                entries.insert(rng.randrange(len(entries) + 1), 7)
+            payload = {"files": entries}
+            expect_ok = all(
+                _pbt_entry_oracle(entry, require_size) for entry in entries
+            )
+            with self.subTest(payload=repr(payload)[:80], require_size=require_size):
+                if expect_ok:
+                    self.assertIs(
+                        cold_store._drive_files(payload, "pbt.files", require_size),
+                        entries,
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_files(payload, "pbt.files", require_size)
+        # Missing files key is the empty list, whatever require_size says.
+        self.assertEqual(cold_store._drive_files({}, "pbt.files", True), [])
+
+    def test_drive_string_helpers_match_oracles_for_generated_payloads(self):
+        rng = _random.Random(_DRIVE_PBT_SEED + 3)
+        for _ in range(400):
+            payload = _pbt_json_value(rng)
+            if not isinstance(payload, dict):
+                continue
+            key = rng.choice(["id", "name", "absent"])
+            with self.subTest(payload=repr(payload)[:60], key=key):
+                # Required-string oracle: non-empty str value or rejection.
+                value = payload.get(key)
+                if isinstance(value, str) and value:
+                    self.assertEqual(
+                        cold_store._drive_required_string(payload, key, "pbt.req"),
+                        value,
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_required_string(payload, key, "pbt.req")
+                # Optional-string oracle: absent -> default; None -> None
+                # only when the default is None; str -> itself; else reject.
+                if key not in payload:
+                    self.assertEqual(
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        ),
+                        "dflt",
+                    )
+                elif payload[key] is None:
+                    self.assertIsNone(
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", None
+                        )
+                    )
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        )
+                elif isinstance(payload[key], str):
+                    self.assertEqual(
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        ),
+                        payload[key],
+                    )
+                else:
+                    with self.assertRaises(cold_store.ColdStoreError):
+                        cold_store._drive_optional_string(
+                            payload, key, "pbt.opt", "dflt"
+                        )

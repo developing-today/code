@@ -27,6 +27,8 @@ import type { AttentionView } from "./derive.ts";
 import type { HealthView } from "./health.ts";
 import type { QuotaView, TierItem, TieredEntry } from "./model.ts";
 import type { NotificationSendRow } from "./alerts.ts";
+import type { NeedsDrewQuestion } from "./needs-drew.ts";
+import { SENTINEL_SERVICE_IDS, type StackHealthRecord } from "./stack-health.ts";
 
 export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   incident: true,
@@ -36,6 +38,101 @@ export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   "stack-health": true,
   "blocked-age": true,
 };
+
+/** Notification preference classes (#3318, slice (d) of the #1254
+ * design): the classes a subscription can toggle on the preferences
+ * page (/alerts/preferences). Ids are exactly the keys of
+ * NOTIFICATION_CLASS_DEFAULTS — the stored subscription `classes`
+ * map and the engine's classEnabled check read the same keys, so a
+ * toggle on the page is the next engine decision. */
+export interface NotificationClassMeta {
+  id: string;
+  label: string;
+  blurb: string;
+}
+
+export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
+  {
+    id: "incident",
+    label: "Incident alerts",
+    blurb: "A watchdog reports something down. Always immediate — quiet hours never hold an incident.",
+  },
+  {
+    id: "needs-drew",
+    label: "Needs Drew",
+    blurb: "An item enters the needs-Drew tier on the attention page.",
+  },
+  {
+    id: "quota-wall",
+    label: "Quota wall",
+    blurb: "A pool hits its limit well before reset, or a sole-door pool walls at all.",
+  },
+  {
+    id: "quota-near-wall",
+    label: "Quota near wall",
+    blurb: "A sole-door pool crosses 85% of a window.",
+  },
+  {
+    id: "stack-health",
+    label: "Stack health",
+    blurb: "A monitored stack service starts failing its probe.",
+  },
+  {
+    id: "blocked-age",
+    label: "Blocked-age reminders",
+    blurb: "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
+  },
+];
+
+/** Classes a per-class test send accepts: every preference class,
+ * plus "digest" — the digest is not a stored preference (it is the
+ * delivery shape quiet/digest-only candidates take), but its landing
+ * is part of the deep-link acceptance, so it gets a test too. */
+export const NOTIFICATION_TEST_CLASSES: string[] = [...NOTIFICATION_CLASSES.map((c) => c.id), "digest"];
+
+export function isNotificationTestClass(value: unknown): value is string {
+  return typeof value === "string" && NOTIFICATION_TEST_CLASSES.includes(value);
+}
+
+/** The test item's stable object ref for a class test send. The
+ * `test:` prefix keeps test traffic distinguishable in the sends
+ * ledger from real candidates of the same class. */
+export const classTestObjectRef = (cls: string): string => `test:${cls}`;
+
+/** Deep-link landing for a per-class test notification (design §3,
+ * #3318 acceptance). With a real candidate in hand, the landing is
+ * the candidate's own URL — the same URL its dashboard card links
+ * to. Without one, the test item lands on the view the engine itself
+ * assigns that class: incident → its anchored Alerts card, quota
+ * classes → /quota, stack-health → /health, and the attention
+ * classes → /attention anchored to the test item (mirroring
+ * tierItemCandidate's fallback for items with no session/GitHub
+ * ref). Never the origin root; the only list-shaped landing is the
+ * digest case, filtered to the digest's refs. */
+export function notificationTestLanding(
+  cls: string,
+  origin: string,
+  candidate?: Pick<NotificationCandidate, "url"> | null,
+): string {
+  if (candidate?.url) return /^https?:\/\//.test(candidate.url) ? candidate.url : `${origin}${candidate.url}`;
+  switch (cls) {
+    case "incident":
+      return `${origin}/alerts#incident-test`;
+    case "quota-wall":
+    case "quota-near-wall":
+      return `${origin}/quota`;
+    case "stack-health":
+      return `${origin}/health`;
+    case "digest":
+      return `${origin}/attention?refs=${encodeURIComponent("test:needs-drew,test:blocked-age")}`;
+    case "needs-drew":
+      return `${origin}/attention#test-needs-drew`;
+    case "blocked-age":
+      return `${origin}/attention#test-blocked-age`;
+    default:
+      return `${origin}/alerts`;
+  }
+}
 
 export const NOTIFICATION_COOLDOWN_MS = 6 * 60 * 60_000;
 export const BLOCKED_AGE_REMINDER_MS = 24 * 60 * 60_000;
@@ -55,6 +152,9 @@ export interface NotificationCandidate {
   escalationStep?: 24 | 48 | "weekly";
   /** Dashboard object-ref aliases used to stop escalation after Drew acts. */
   actedRefs?: string[];
+  /** #8568: a raised needs-Drew question rides its candidate so the
+   * push payload can carry tappable answer actions. */
+  needsDrew?: { ledgerId: string; question: string; options: Array<{ id: string; label: string }> };
 }
 
 export interface NotificationHistoryEntry {
@@ -88,6 +188,13 @@ export interface NotificationSnapshot {
   soleDoorPoolIds?: ReadonlySet<string>;
   /** Drew-authored dashboard actions/comments, with their event times. */
   drewActivity?: Array<{ objectRef: string; at: string }>;
+  /** #8568: open needs-Drew questions (unanswered, < 7 days old). */
+  needsDrewRaised?: NeedsDrewQuestion[];
+  /** #8568: sentinel services currently down. */
+  stackHealthDown?: StackHealthRecord[];
+  /** #8568: full sentinel state map (up AND down) — decides when the
+   * sentinel is authoritative over the health-derived candidate. */
+  stackHealthStates?: Record<string, StackHealthRecord>;
 }
 
 interface LocalClock {
@@ -294,7 +401,8 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
     // #7193 Codex: a pool whose quota read errored or went stale keeps its
     // last windows, but the measurement is marked unavailable — never
     // derive wall notifications from retained windows in that state.
-    if (pool.state === "error" || pool.state === "stale") continue;
+    // A lapsed pool clears its windows at overlay, but still never burns.
+    if (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed") continue;
     const soleDoor = snapshot.soleDoorPoolIds?.has(pool.id) ?? false;
     const windows = pool.windows.filter((w) => w.limit !== null);
     const percentOf = (w: (typeof windows)[number]) => w.percent ?? (w.used / (w.limit || 1)) * 100;
@@ -340,6 +448,15 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
 
   for (const service of snapshot.health.services) {
     if (service.ok !== false) continue;
+    // #8568: the sentinel is authoritative for its service set — when
+    // it holds any record (up or down) for this service, its candidate
+    // (from stackHealthDown below) replaces the health-derived one.
+    if (
+      (SENTINEL_SERVICE_IDS as readonly string[]).includes(service.def.id) &&
+      snapshot.stackHealthStates?.[service.def.id]
+    ) {
+      continue;
+    }
     candidates.push(
       candidate({
         class: "stack-health",
@@ -349,6 +466,40 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
         url: "/health",
         observedAt: service.probedAt ?? new Date(now).toISOString(),
         state: { state: service.state },
+      }),
+    );
+  }
+
+  // #8568: raised needs-Drew questions — a fleet worker is actively
+  // waiting, so these break through like the 48h blocked-age case.
+  for (const item of snapshot.needsDrewRaised ?? []) {
+    candidates.push(
+      candidate({
+        class: "needs-drew",
+        objectRef: `needs-drew:${item.ledgerId}`,
+        title: item.question,
+        body: item.context ?? "A fleet worker is blocked on your answer.",
+        url: `/answer/${encodeURIComponent(item.ledgerId)}`,
+        observedAt: item.raisedAt,
+        breakthrough: true,
+        actedRefs: [`needs-drew:${item.ledgerId}`],
+        state: { raisedAt: item.raisedAt },
+        needsDrew: { ledgerId: item.ledgerId, question: item.question, options: item.options },
+      }),
+    );
+  }
+
+  // #8568: sentinel-reported down services.
+  for (const svc of snapshot.stackHealthDown ?? []) {
+    candidates.push(
+      candidate({
+        class: "stack-health",
+        objectRef: `service:${svc.serviceId}`,
+        title: `Stack health: ${svc.name}`,
+        body: svc.detail ?? "The monitored service is failing.",
+        url: "/health",
+        observedAt: svc.since,
+        state: { state: "down", since: svc.since },
       }),
     );
   }

@@ -8,8 +8,9 @@
 //! against a single-store oracle.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use super::content::ContentStores;
 use super::{ShardInfo, ShardSet, Tier, TierCeiling};
 use crate::backend::SearchBackend;
 use crate::error::{Error, Result};
@@ -30,7 +31,8 @@ pub struct ShardHit {
 
 pub struct FanoutQuery<'a> {
     pub qvec: &'a [f32],
-    pub k: usize,
+    pub shard_top_k: usize,
+    pub global_top_k: usize,
     pub filters: &'a Filters,
     /// Manifest topics to scope to (`None` = every topic).
     pub topics: Option<&'a [String]>,
@@ -119,7 +121,26 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
         ));
     }
     let shards = set.select(q.ceiling, q.topics)?;
-    let stmt = turso_vector_scan_stmt(set.vec_table(), q.filters, &qvec_json(q.qvec), q.k);
+    // M1 (#7646): never merge across embedding models. Discovery
+    // already refused shards that disagree with the consumer, but
+    // the scanned set itself is checked here so a set assembled
+    // from more than one discovery still cannot mix identities.
+    if let Some(first) = shards.first() {
+        for s in &shards[1..] {
+            if s.embedding_model != first.embedding_model {
+                return Err(Error::fatal(format!(
+                    "shard fan-out: scanned set mixes embedding models — shard {} records `{}` but shard {} records `{}`; vectors from different embedding models are not comparable, refusing to merge",
+                    first.name, first.embedding_model, s.name, s.embedding_model
+                )));
+            }
+        }
+    }
+    let stmt = turso_vector_scan_stmt(
+        set.vec_table(),
+        q.filters,
+        &qvec_json(q.qvec),
+        q.shard_top_k,
+    );
     let per_shard: Vec<Result<Vec<ShardHit>>> = std::thread::scope(|scope| {
         let handles: Vec<_> = shards
             .iter()
@@ -138,7 +159,7 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
         all.extend(r?);
     }
     Ok(FanoutResult {
-        hits: merge_top_k(all, q.k),
+        hits: merge_top_k(all, q.global_top_k),
         scanned: shards.iter().map(|s| s.name.clone()).collect(),
     })
 }
@@ -152,10 +173,27 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
 ///
 /// Keyword search deliberately stays on the monolith: TursoDB MVCC
 /// shards have no `chunks_fts` (#5669 deviation, #5755 FTS gap).
+/// Queries carrying session-level filters
+/// (--kind/--topic/--project/--client/--since/--until) likewise stay
+/// on the monolith — both branches, with a diagnostic note — since
+/// scan shards carry no sessions or labels (#6665); `fanout_scan`
+/// itself still refuses such filters loudly for direct callers.
 pub struct ShardedBackend<B> {
     inner: B,
     set: Arc<ShardSet>,
     topics: Option<Vec<String>>,
+    /// Per-query diagnostics recorded during `branch_pools` (the
+    /// monolith-fallback notices, #6665). `notes()` surfaces them;
+    /// `run_search` folds late notes in after the branches run, so
+    /// a fallback taken mid-search is reported in the envelope.
+    fallback_notes: Mutex<Vec<String>>,
+    /// Tier content stores for hydration (#6664), when attached.
+    content: Option<Arc<ContentStores>>,
+    /// The successor switch (#6664): serve hydration from
+    /// `content` instead of the wrapped monolith. The service's
+    /// successor protocol field (coordination issue #5668) maps
+    /// onto this flag; shipped `--expand` semantics are unchanged.
+    hydrate_from_content: bool,
 }
 
 impl<B: SearchBackend> ShardedBackend<B> {
@@ -164,6 +202,32 @@ impl<B: SearchBackend> ShardedBackend<B> {
             inner,
             set,
             topics: None,
+            fallback_notes: Mutex::new(Vec::new()),
+            content: None,
+            hydrate_from_content: false,
+        }
+    }
+
+    /// Attach tier content stores and choose whether hydration
+    /// (chunk details, neighbors, message) is served from them
+    /// (#6664) instead of the wrapped monolith. With `enabled`
+    /// false the stores are inert: hydration stays on the monolith
+    /// exactly as before.
+    pub fn with_content_stores(
+        mut self,
+        stores: Arc<ContentStores>,
+        enabled: bool,
+    ) -> ShardedBackend<B> {
+        self.content = Some(stores);
+        self.hydrate_from_content = enabled;
+        self
+    }
+
+    fn content_if_enabled(&self) -> Option<&ContentStores> {
+        if self.hydrate_from_content {
+            self.content.as_deref()
+        } else {
+            None
         }
     }
 
@@ -180,6 +244,15 @@ impl<B: SearchBackend> ShardedBackend<B> {
     pub fn shard_set(&self) -> &Arc<ShardSet> {
         &self.set
     }
+}
+
+/// Whether the filters carry any session-level classification or
+/// date clause — the clauses scan shards cannot evaluate, because
+/// shards hold no sessions or labels (the `fanout_scan` refusal).
+/// The sensitivity ceiling is NOT a session clause: it is enforced
+/// on the shards themselves via the tier ceiling.
+fn has_session_filters(filters: &Filters) -> bool {
+    !filters.session_clauses("s2", "l2").0.is_empty()
 }
 
 fn vector_pool(
@@ -201,7 +274,8 @@ fn vector_pool(
         set,
         &FanoutQuery {
             qvec,
-            k: q.pool,
+            shard_top_k: q.shard_top_k,
+            global_top_k: q.global_top_k,
             filters,
             topics,
             ceiling: TierCeiling::from_sensitivity(filters.max_sensitivity),
@@ -233,6 +307,24 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
             self.set.shards().len(),
             &self.set.snapshot_id()[..12]
         ));
+        if let Ok(fallback) = self.fallback_notes.lock() {
+            notes.extend(fallback.iter().cloned());
+        }
+        if let Some(content) = &self.content {
+            if self.hydrate_from_content {
+                let names: Vec<&str> = content.stores().iter().map(|s| s.name.as_str()).collect();
+                notes.push(format!(
+                    "hydration served by tier content stores: {}",
+                    names.join(", ")
+                ));
+            }
+            for r in &content.rejections {
+                notes.push(format!(
+                    "content store {} not connected: {}",
+                    r.name, r.reason
+                ));
+            }
+        }
         notes
     }
 
@@ -241,12 +333,37 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
     }
 
     fn branch_pools(&self, q: &BranchQuery, filters: &Filters) -> Result<BranchPools> {
+        // Session-level filters (#6665): scan shards carry no
+        // sessions or labels, so a filtered query routed to the
+        // fan-out can only fail. Route BOTH branches to the wrapped
+        // monolith instead — it evaluates the filters and the
+        // sensitivity ceiling in its own branch construction — and
+        // record the diagnostic the envelope surfaces. Unfiltered
+        // vector queries keep the shard fan-out below; FTS already
+        // stays on the monolith (shards have no chunks_fts).
+        if q.query_vector.is_some() && has_session_filters(filters) {
+            let pools = self.inner.branch_pools(q, filters)?;
+            if let Ok(mut fallback) = self.fallback_notes.lock() {
+                let note = format!(
+                    "session-level filters present ({}): vector and FTS branches \
+                     served by the wrapped monolith; shard fan-out skipped — \
+                     scan shards carry no sessions or labels (#6665)",
+                    filters.describe()
+                );
+                if !fallback.contains(&note) {
+                    fallback.push(note);
+                }
+            }
+            return Ok(pools);
+        }
         // FTS (if asked) on the wrapped backend, vector on the
         // shards, concurrently; fusion happens upstream over both.
         let fts_query = BranchQuery {
             match_expr: q.match_expr.clone(),
             query_vector: None,
             pool: q.pool,
+            shard_top_k: q.shard_top_k,
+            global_top_k: q.global_top_k,
             vector_backend: q.vector_backend,
         };
         let (set, topics) = (&*self.set, self.topics.as_deref());
@@ -269,14 +386,23 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
     }
 
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.chunk_details(ids);
+        }
         self.inner.chunk_details(ids)
     }
 
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.neighbors(message_id, chunk_idx, n);
+        }
         self.inner.neighbors(message_id, chunk_idx, n)
     }
 
     fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.message(message_id);
+        }
         self.inner.message(message_id)
     }
 }
@@ -306,6 +432,7 @@ mod tests {
             topic: "main".into(),
             part: 1,
             expected_chunks: None,
+            embedding_model: crate::shards::EMBEDDING_MODEL_ID.to_string(),
             chunks: 0,
             endpoint: ShardEndpoint {
                 name: "atlas-core-secret-main-01".into(),

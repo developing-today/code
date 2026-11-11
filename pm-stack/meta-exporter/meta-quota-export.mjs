@@ -69,6 +69,8 @@ export class ExportError extends Error {
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
+const MIN_EPOCH_SECONDS = 1_577_836_800; // 2020-01-01T00:00:00Z
+const MAX_EPOCH_SECONDS = 4_102_444_800; // 2100-01-01T00:00:00Z
 
 /** Parse a subscription-quota payload into export windows. Throws on
  * any shape drift — fail-closed, never partial zeros. The one tolerated
@@ -80,7 +82,18 @@ export function parseSubscriptionQuota(payload) {
   if (!q || typeof q !== "object") {
     throw new ExportError("unparseable", 6, "subscription-quota: subscription_quota object missing");
   }
-  const num = (v) => (typeof v === "string" || typeof v === "number" ? Number(v) : NaN);
+  // Plain decimal spellings only (#2789). Number() also accepts "",
+  // whitespace-only, hex ("0x10" -> 16), and scientific ("1e2" -> 100)
+  // strings, which turned drifted fields into real measurements (a ""
+  // used value exported as a measured 0% window). Reject every
+  // non-decimal spelling here so drift fails closed at the parse;
+  // surrounding whitespace is drift too, not a spelling.
+  const DECIMAL = /^[0-9]+(\.[0-9]+)?$/;
+  const num = (v) => {
+    if (typeof v === "number") return v;
+    if (typeof v === "string" && DECIMAL.test(v)) return Number(v);
+    return NaN;
+  };
   const windowUsed = num(q.window_weighted_used);
   const windowLimit = num(q.window_weighted_limit);
   const weeklyUsed = num(q.weekly_weighted_used);
@@ -92,6 +105,19 @@ export function parseSubscriptionQuota(payload) {
       throw new ExportError("unparseable", 6, `subscription-quota: field ${k} not a finite number`);
     }
   }
+  const epochSecondsField = (v, label) => {
+    if (!Number.isFinite(v) || v < 0) {
+      throw new ExportError("unparseable", 6, `subscription-quota: field ${label} not a finite number`);
+    }
+    if (v < MIN_EPOCH_SECONDS || v > MAX_EPOCH_SECONDS) {
+      throw new ExportError(
+        "unparseable",
+        6,
+        `subscription-quota: field ${label} outside the supported epoch-seconds range`,
+      );
+    }
+    return v;
+  };
   // A window the console has not started yet (no usage recorded in it)
   // has no reset: window_resets_at / weekly_resets_at comes back null
   // or the field is omitted entirely (observed live 2026-10-29, #1301:
@@ -99,9 +125,12 @@ export function parseSubscriptionQuota(payload) {
   // export, including the healthy weekly window and free credits).
   // Tolerate exactly that shape — emit the window with resetAt: null.
   // A missing reset on a window WITH recorded usage, and any malformed
-  // reset value, still fail closed.
+  // reset value, still fail closed. An empty/whitespace-only reset
+  // string is treated like an absent reset: it carries no reading, so
+  // on a zero-usage window it is tolerated, and on a window with usage
+  // it fails closed exactly like the absent case.
   const resetField = (raw, used, label) => {
-    if (raw === null || raw === undefined) {
+    if (raw === null || raw === undefined || (typeof raw === "string" && raw.trim() === "")) {
       if (used === 0) return null;
       throw new ExportError(
         "unparseable",
@@ -109,11 +138,7 @@ export function parseSubscriptionQuota(payload) {
         `subscription-quota: field ${label} absent but the window has recorded usage`,
       );
     }
-    const v = num(raw);
-    if (!Number.isFinite(v) || v < 0) {
-      throw new ExportError("unparseable", 6, `subscription-quota: field ${label} not a finite number`);
-    }
-    return v;
+    return epochSecondsField(num(raw), label);
   };
   const windowReset = resetField(q.window_resets_at, windowUsed, "windowReset");
   const weeklyReset = resetField(q.weekly_resets_at, weeklyUsed, "weeklyReset");
@@ -125,9 +150,18 @@ export function parseSubscriptionQuota(payload) {
   }
   const shortName = durationSecs === 18_000 ? "5h" : durationSecs === 3_600 ? "1h" : `window-${durationSecs}s`;
   const iso = (epochSecs) => new Date(epochSecs * 1000).toISOString();
+  // as_of is console metadata, not a measurement: an absent or
+  // empty value means "the console didn't say when" and stays null,
+  // while any other non-decimal spelling fails closed — never the
+  // 1970 epoch that Number("") used to produce.
+  const asOfRaw = q.as_of;
+  let consoleAsOf = null;
+  if (!(asOfRaw === null || asOfRaw === undefined || (typeof asOfRaw === "string" && asOfRaw.trim() === ""))) {
+    consoleAsOf = iso(epochSecondsField(num(asOfRaw), "as_of"));
+  }
   return {
     tier: typeof q.tier === "string" ? q.tier : null,
-    consoleAsOf: Number.isFinite(num(q.as_of)) ? iso(num(q.as_of)) : null,
+    consoleAsOf,
     windows: [
       { name: shortName, usedPct: round2((windowUsed / windowLimit) * 100), resetAt: windowReset === null ? null : iso(windowReset) },
       { name: "weekly", usedPct: round2((weeklyUsed / weeklyLimit) * 100), resetAt: weeklyReset === null ? null : iso(weeklyReset) },
@@ -138,7 +172,13 @@ export function parseSubscriptionQuota(payload) {
 /** Parse a billing-banner payload into remaining free credits (USD). */
 export function parseBillingBanner(payload) {
   const minor = payload?.remaining_minor_units;
-  if (typeof minor !== "number" || !Number.isFinite(minor) || minor < 0) {
+  // Minor units are a count of cents: only a nonnegative safe integer is a
+  // well-shaped value. A fractional value (1050.5) is shape drift, not
+  // a fractional dollar amount of credit — fail closed (#2510). No domain-specific maximum is
+  // imposed: there is no authoritative upstream bound, and
+  // Number.MAX_SAFE_INTEGER (via isSafeInteger) is a representation-safety
+  // limit, not a business cap.
+  if (typeof minor !== "number" || !Number.isSafeInteger(minor) || minor < 0) {
     throw new ExportError("unparseable", 6, "billing-banner: remaining_minor_units missing/invalid");
   }
   if (payload.currency !== "USD") {

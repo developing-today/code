@@ -274,7 +274,12 @@ export function buildDigest(inputs: DigestInputs): Digest {
     }
     const cappedQ = cap(items);
     const degradedProviders = inputs.quota.pools
-      .filter((p) => (p.freshness?.state ?? p.state) === "error" || (p.freshness?.state ?? p.state) === "stale")
+      .filter(
+        (p) =>
+          (p.freshness?.state ?? p.state) === "error" ||
+          (p.freshness?.state ?? p.state) === "stale" ||
+          (p.freshness?.state ?? p.state) === "lapsed",
+      )
       .map((p) => p.provider);
     quotaSection = {
       id: "quota",
@@ -337,14 +342,18 @@ function quotaPoolNote(pool: QuotaPool, now: Date): string | null {
   const worst = pool.windows.reduce((m, w) => Math.max(m, windowPercent(w)), 0);
   const parts: string[] = [];
   // Provider freshness (#5279 Codex): quota-current marks a pool
-  // error/stale while retaining its historical windows, but poolState()
+  // error/stale/lapsed while retaining its historical windows, but poolState()
   // derives only utilization — without this, a failed pool with low
   // windows would vanish from the outlook and a stale high reading
   // would read as a current forecast.
-  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" ? pool.state : null);
+  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed" ? pool.state : null);
   if (degraded === "error") {
     parts.push(
       `provider read error${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — current readings unavailable; any figures below are the last successful read`,
+    );
+  } else if (degraded === "lapsed") {
+    parts.push(
+      `provider lapsed${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — plan cancelled; no current readings`,
     );
   } else if (degraded === "stale") {
     parts.push(
@@ -415,11 +424,79 @@ export async function writeDigestArchive(dir: string, digest: Digest): Promise<s
   return file;
 }
 
+/** A stored age: a finite number, or null when unmeasured. */
+function isDigestAgeMs(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+/** Structural gate for one stored digest item (#6506). */
+function isDigestItem(value: unknown): value is DigestItem {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.ref === "string" &&
+    typeof item.title === "string" &&
+    typeof item.url === "string" &&
+    typeof item.note === "string"
+  );
+}
+
+/** Structural gate for one stored digest section (#6506). */
+function isDigestSection(value: unknown): value is DigestSection {
+  if (!value || typeof value !== "object") return false;
+  const section = value as Record<string, unknown>;
+  return (
+    typeof section.id === "string" &&
+    typeof section.title === "string" &&
+    typeof section.stale === "boolean" &&
+    (section.staleNote === null || typeof section.staleNote === "string") &&
+    isDigestAgeMs(section.sourceAgeMs) &&
+    Array.isArray(section.items) &&
+    section.items.every(isDigestItem) &&
+    typeof section.truncated === "boolean"
+  );
+}
+
+/** Structural gate for one stored freshness entry (#6506). */
+function isDigestFacetFreshness(value: unknown): value is DigestFacetFreshness {
+  if (!value || typeof value !== "object") return false;
+  const facet = value as Record<string, unknown>;
+  return typeof facet.facet === "string" && typeof facet.state === "string" && isDigestAgeMs(facet.ageMs);
+}
+
+/**
+ * Whole-file gate for a stored digest archive (#6506): every field the
+ * consumers dereference unconditionally — freshness entries, section
+ * items, item string fields — must be present and well-formed. Anything
+ * else reads as absent, per the reader's contract: a malformed archive
+ * (partial write, hand edit, schema drift) used to sail through on a
+ * two-field check and throw inside renderDigest/digestText on /digest,
+ * permanently breaking that date's page instead of falling back.
+ * Mirrors the coverage snapshot gate (#4140).
+ */
+function isDigest(value: unknown, date: string, kind: DigestKind): value is Digest {
+  if (!value || typeof value !== "object") return false;
+  const digest = value as Record<string, unknown>;
+  return (
+    digest.kind === kind &&
+    digest.date === date &&
+    typeof digest.generatedAt === "string" &&
+    typeof digest.windowStart === "string" &&
+    typeof digest.windowHours === "number" &&
+    Number.isFinite(digest.windowHours) &&
+    typeof digest.archiveRoute === "string" &&
+    Array.isArray(digest.freshness) &&
+    digest.freshness.every(isDigestFacetFreshness) &&
+    Array.isArray(digest.sections) &&
+    digest.sections.every(isDigestSection)
+  );
+}
+
 export async function readDigestArchive(dir: string, date: string, kind: DigestKind = "daily"): Promise<Digest | null> {
   try {
     const raw = await readFile(join(dir, digestArchiveName(kind, date)), "utf8");
-    const parsed = JSON.parse(raw) as Digest;
-    return parsed && parsed.date === date && Array.isArray(parsed.sections) ? parsed : null;
+    const parsed: unknown = JSON.parse(raw);
+    return isDigest(parsed, date, kind) ? parsed : null;
   } catch {
     return null;
   }

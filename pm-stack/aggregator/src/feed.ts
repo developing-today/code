@@ -142,6 +142,18 @@ export interface FleetFeed {
   /** Optional collector outcomes. Older feeds have no metadata and keep
    *  their historical presence-only health/provenance behavior. */
   meta?: FeedMetadata;
+  /** #8568: Drew's answers to needs-Drew questions, read by the
+   * collector from the aggregator's needs-drew store; the fleet lane
+   * consumes this to resume blocked workers. Absent in older feeds. */
+  answers?: FleetFeedAnswer[];
+}
+
+export interface FleetFeedAnswer {
+  ledgerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  via: string;
 }
 
 export type FeedSectionStatus = "ok" | "error" | "skipped";
@@ -565,7 +577,7 @@ export function isQuotaWindow(v: unknown): v is QuotaWindow {
   );
 }
 
-const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale", "lapsed"];
 
 /** One quota pool whose own shape is safe to hand to the renderers
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
@@ -583,7 +595,7 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error", "lapsed"];
 
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (
