@@ -90,6 +90,20 @@ impl Provisioned {
         }
     }
 
+    /// Starts from state a previous run persisted: the accounts in
+    /// `directory` and the group `events` already recorded (#5119
+    /// slice 3). [`Provisioned::apply`] skips what already exists, so
+    /// a restart over the same persisted state creates nothing and
+    /// reports nothing.
+    #[must_use]
+    pub fn from_parts(directory: Directory, events: Vec<Event>) -> Self {
+        Self {
+            directory,
+            events,
+            create: CreateRule::Anyone,
+        }
+    }
+
     /// The accounts.
     #[must_use]
     pub const fn directory(&self) -> &Directory {
@@ -134,7 +148,9 @@ impl Provisioned {
     }
 
     /// Creates the accounts and groups the config names, and adds their members. What already
-    /// exists is skipped, so a second run of the same config changes nothing.
+    /// exists is skipped, so a second run of the same config changes nothing. A group recorded
+    /// only in part (an earlier run stopped mid-group) is completed with exactly its missing
+    /// events, so interrupted provisioning resumes instead of succeeding over a half-made group.
     ///
     /// # Errors
     ///
@@ -159,23 +175,30 @@ impl Provisioned {
             report.users_created += 1;
         }
         for group in config.groups() {
-            if self.events.iter().any(|event| event.id == group.id) {
+            let batch = group_events(group);
+            let missing: Vec<Event> = batch
+                .iter()
+                .filter(|event| !self.events.iter().any(|held| held.id == event.id))
+                .cloned()
+                .collect();
+            if missing.is_empty() {
                 continue;
             }
-            if !config
-                .create_rule()
-                .allows(&group.creator, &self.projection()?)
+            let creates = missing.iter().any(|event| event.id == group.id);
+            if creates
+                && !config
+                    .create_rule()
+                    .allows(&group.creator, &self.projection()?)
             {
                 return Err(ProvisionError::NotAllowed {
                     group: group.key.clone(),
                     creator: hex_encode(&group.creator),
                 });
             }
-            let batch = group_events(group);
             let mut next = self.events.clone();
-            next.extend(batch.iter().cloned());
+            next.extend(missing.iter().cloned());
             let projection = fold(&next)?;
-            for event in &batch {
+            for event in &missing {
                 if let Some(Outcome::Refused(refusal)) = projection.outcome(&event.id) {
                     return Err(ProvisionError::Refused {
                         group: group.key.clone(),
@@ -184,8 +207,10 @@ impl Provisioned {
                 }
             }
             self.events = next;
-            report.groups_created += 1;
-            report.members_added += group.members.len();
+            if creates {
+                report.groups_created += 1;
+            }
+            report.members_added += missing.iter().filter(|event| event.id != group.id).count();
         }
         Ok(report)
     }
@@ -566,6 +591,27 @@ mod tests {
                 admins_on_create: false,
             }),
         }
+    }
+
+    #[test]
+    fn test_an_interrupted_group_is_completed_by_the_next_apply() {
+        // The first run recorded the create and stopped before the
+        // member adds: the next apply adds exactly the missing
+        // events and reports them, without recreating the group.
+        let text = config(TEAM);
+        let (state, result) = apply(&text);
+        result.unwrap();
+        let full = state.events().to_vec();
+        let mut resumed = Provisioned::from_parts(state.directory().clone(), full[..1].to_vec());
+        let parsed = ServerConfig::parse(&text).unwrap();
+        let report = resumed.apply(&parsed).unwrap();
+        assert_eq!(report.users_created, 0);
+        assert_eq!(report.groups_created, 0);
+        assert_eq!(report.members_added, 2);
+        assert_eq!(resumed.events(), full.as_slice());
+        // And a third run is a no-op again.
+        let again = resumed.apply(&parsed).unwrap();
+        assert_eq!(again, Report::default());
     }
 
     #[test]

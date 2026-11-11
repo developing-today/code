@@ -39,11 +39,11 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 
 ## BACKEND OUTAGE — FALLBACK MODE (2026-11-06, code#6619)
 
-If the queue backend is down —  (or any broker
+If the queue backend is down — `fleet queue health` (or any broker
 verb) fails with a broker/PostgREST error instead of returning
 state — do NOT improvise a fallback bind. Session binding is a
 database operation; the GitHub-native fallback protocol
-(, doc/fleet/queue-fallback-mode.md in this
+(see doc/fleet/queue-fallback-mode.md in this
 repo) deliberately has no claimant equivalent, because its claims
 are worked by the claiming worker itself. In an outage: record the
 failure in the fire log (the health error verbatim), launch
@@ -59,9 +59,11 @@ outage is recoverable, a double-launch's damage is not.
   `repo-health-opencode-pilot`, `repo-health-openchamber-pilot`,
   `repo-health-nix-pilot`.
 - Queue CLI on this machine: `repo-queue`
-  (`~/fleet-brokers/bin/repo-queue`; it reaches the queue-broker
-  directly — pass `--worker opencode-claimant` on every verb you
-  use).
+  (`~/.local/bin/repo-queue`, the packaged fleet binary's argv0
+  alias — the hand-built `~/fleet-brokers/bin` tree was retired by
+  the code#5362 cutover; this matches `REPO_QUEUE_CMD` in
+  claimant.py/poll.py — pass `--worker opencode-claimant` on every
+  verb you use).
 - Claim-model stamp (#8176): a session that picks up an item
   itself (a lane section's claim, or your own direct claim) names
   the model serving it: read your own serving leaf first with the
@@ -266,7 +268,7 @@ queue task and issue>, "model": {"id": <route model>,
    terminal verbs (complete / park / block / fail) carrying
    `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`
    with the SAME session id you bound in step c. The queue CLI on
-   this machine is `repo-queue` (`~/fleet-brokers/bin/repo-queue`).
+   this machine is `repo-queue` (`~/.local/bin/repo-queue`).
    e. Post the launch agent-note on the issue (agent-note:v1,
    state=handed off) naming task id + session id.
 5. Terminal states are recorded by the worker session itself via the

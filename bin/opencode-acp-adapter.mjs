@@ -24,6 +24,35 @@
 //                                POST /api/session/:id/permission/
 //                                :permId/reply ({decision})
 //   ACP session/cancel        -> POST /api/session/:id/interrupt
+//   Reconnect / fence probes  -> GET /api/session/active (the v2
+//                                active-set read; a map keyed by
+//                                session id)
+// There is no v1 route shape left in this file: every serve call
+// above is the pinned server's v2 contract (#4706 rule 1, #4614).
+// No DELETE /api/session/:id call exists here — see the #4707
+// closing-audit disposition of the sessions map (issue #4707).
+//
+// Prompt lifecycle (design #4706, closing audit #4707) — the four
+// rules every state container below obeys:
+//   1. The pinned server's v2 API is the only contract (above).
+//   2. Prompt state is scoped to the prompt: pendingPrompts,
+//      cancelledSessions and staleTerminalFences are keyed by
+//      session and cleaned for exactly the finishing session —
+//      never another session's. (The v1 partTextSent offset map is
+//      gone: the v2 stream sends deltas, not cumulative text, so
+//      no client-side per-part offsets exist to scope.)
+//   3. Cancellation is a property of an in-flight prompt:
+//      session/cancel records its marker only while a prompt is
+//      pending for that session, and every terminal path (execution
+//      succeeded/failed, submission failure, reconciliation
+//      failure) exits through finishPrompt, which clears that
+//      session's pending entry and cancel marker together.
+//   4. Lost continuity is a terminal event: on event-stream
+//      reconnect, pending prompts are reconciled against
+//      GET /api/session/active — proven finished completes
+//      normally, still-active keeps waiting, state that cannot be
+//      proven fails the prompt explicitly. No prompt stays pending
+//      across a continuity gap on hope.
 //
 // Config:
 //   --server <url>            shared serve base URL

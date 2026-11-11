@@ -24,6 +24,7 @@ import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views
 import { EventsStore, emitEvent, pageEvents } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
+import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -45,6 +46,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import { AA_PLAN_FACTS } from "./aa.ts";
 import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
@@ -57,7 +59,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, filterAttentionViewByRefs, projectPace, type RoadmapGrain } from "./derive.ts";
+import { allRefs, buildAttention, buildQuotaActions, deriveToday, filterAttentionViewByRefs, projectPace, quotaActionTierItems, type RoadmapGrain } from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -550,11 +552,39 @@ function emptyUsageView(): UsageView {
   return { services: [], uninstrumentedServices: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
 }
 
-async function boardContext() {
+async function loadBoardContext() {
   const board = await source.board().catch(() => []);
   const refs = allRefs(board);
   const items = await source.items(refs).catch(() => new Map());
   return { board, items };
+}
+
+// #5082: the board assembly is the stack's most expensive read — a
+// Kaneo login + poll with per-project task pagination, one projector
+// /links call per card, and the items() closure over every ref — and
+// every board-family request used to pay it in full. Under ordinary
+// fleet load the assembly outlives the 10 s dashboard deadline
+// (assembly-deadline.ts), so /board, /api/board.json, and the overview
+// (which embeds the board) 503'd even with every upstream healthy;
+// concurrent cold loads each started their own assembly and multiplied
+// the damage (measured 2026-11-08: 3 concurrent -> 3 assemblies, all
+// 503). The assembly now gets the /today contract (#1179): a short TTL
+// serves warm hits from the last successful read, and concurrent cold
+// requests share one in-flight load.
+//
+// The cache sits BELOW the variant split, which is what makes it safe
+// for every consumer: ?done=all, saved-view filters, and the HTML/JSON
+// renderers are all derived per request from this one context
+// (boardJsonBody / boardJsonViewBody / renderBoard), so no variant can
+// ever be served another variant's body. Provenance stays truthful the
+// same way it does for /today: prov()/provDetail() are still read live
+// per request at the call sites. Fail-soft fallbacks (an empty board
+// when Kaneo is down) are the honest degraded state of the read and
+// are cached as-is until expiry, exactly as #1179 documents; a
+// throwing load is never cached.
+const boardContextCache = new TodayCache<Awaited<ReturnType<typeof loadBoardContext>>>(TODAY_CACHE_TTL_MS);
+async function boardContext(): Promise<Awaited<ReturnType<typeof loadBoardContext>>> {
+  return boardContextCache.get(loadBoardContext);
 }
 
 /** All shared forecast contracts (#3984): epic-completion + stall-risk
@@ -760,8 +790,19 @@ async function attentionContext(opts: { census?: boolean } = {}) {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
+  const quota = await source.quota().catch(() => null);
+  const view = buildAttention(feed, summary, Date.now(), diagnosis, watchdog);
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /today, as orchestrator-tier task items — derived once here from
+  // the same pure function, so entries clear on every surface the
+  // moment their source condition no longer holds.
+  const quotaItems = quota ? quotaActionTierItems(buildQuotaActions(quota, AA_PLAN_FACTS)) : [];
+  if (quota) {
+    view.orchestratorExtra = [...view.orchestratorExtra, ...quotaItems];
+  }
   return {
-    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    view,
+    quotaItems,
     coverage,
     orchestration: summary,
     diagnosis,
@@ -905,7 +946,7 @@ async function queueContext() {
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
-async function overviewContext() {
+async function loadOverviewContext() {
   const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
@@ -916,6 +957,44 @@ async function overviewContext() {
     actionsStore.byObject().catch(() => new Map()),
   ]);
   return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
+}
+
+// #5082: same contract as the board assembly above — the overview
+// fan-out (attention + pool + quota + health + board + orchestration)
+// was re-run live on every /, /frag/overview, and /api/overview.json
+// request and tripped the same 10 s deadline. The per-request
+// derivations (deriveOverview / renderOverview) and the provenance
+// reads stay live; only the assembly is cached. The board leg inside
+// rides the boardContext cache, so a cold overview and a cold board
+// share one board assembly.
+const overviewContextCache = new TodayCache<Awaited<ReturnType<typeof loadOverviewContext>>>(TODAY_CACHE_TTL_MS);
+async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverviewContext>>> {
+  return overviewContextCache.get(loadOverviewContext);
+}
+
+/** The live-source half of the /program assembly (#1046 + #1121): the
+ *  items closure for the program refs, the Project pool, the roadmap,
+ *  orchestration, and the coverage census inputs. Everything
+ *  view-dependent (saved-view filtering, briefs, forecasts, the
+ *  render) is derived per request from this bundle in the handler. */
+async function loadProgramSources() {
+  const [items, pool, rows, orchestration, census, poolAvailable] = await Promise.all([
+    source.items(programRefs()).catch(() => new Map()),
+    source.projects().catch(() => []),
+    source.roadmap().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+  ]);
+  return { items, pool, rows, orchestration, census, poolAvailable };
+}
+
+// #5082: /program is a bounded dashboard route with the same failure
+// shape — its source fan-out ran live on every request. Same TTL +
+// single-flight contract as the board/overview assemblies above.
+const programSourcesCache = new TodayCache<Awaited<ReturnType<typeof loadProgramSources>>>(TODAY_CACHE_TTL_MS);
+async function programSources(): Promise<Awaited<ReturnType<typeof loadProgramSources>>> {
+  return programSourcesCache.get(loadProgramSources);
 }
 
 // -- Saved views (#1276) -------------------------------------------------
@@ -1085,6 +1164,15 @@ async function handler(req: Request): Promise<Response> {
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  // --- #3978: freshness delivery for browsers ------------------------------
+  // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
+  // #3977 journal only. Scope is server-derived from the page name; a caller
+  // cannot widen it, and no notice carries source payload or a secret.
+  if (req.method === "GET" && (path === "/freshness/stream" || path === "/api/freshness-events.json")) {
+    const delivery = await freshnessDeliveryResponse(req, url, { reader: freshnessStore });
+    if (delivery !== null) return delivery;
+  }
 
   // --- Author identities for the on-demand picker (#1179) ------------------
   // List pages render author pickers with the standing identities only;
@@ -1900,16 +1988,11 @@ async function handler(req: Request): Promise<Response> {
     // registry in src/project-config.ts; the live half derived from
     // the same Source the other views read (items / projects /
     // roadmap / orchestration), each facet failing soft on its own.
-    const [items, pool, rows, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
-      source.items(programRefs()).catch(() => new Map()),
-      source.projects().catch(() => []),
-      source.roadmap().catch(() => []),
-      source.orchestration().catch(() => null),
-      commentFormOpts(),
-      actionsStore.byObject(),
-      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
-      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
-    ]);
+    // #5082: the live-source fan-out rides the programSources cache
+    // (TTL + single-flight); the local-store reads and everything
+    // view-dependent below stay per-request.
+    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] =
+      await Promise.all([programSources(), commentFormOpts(), actionsStore.byObject()]);
     // #1276 (Codex P2, PR #4013): /projects redirects here with the
     // view parameters preserved, but this handler never resolved the
     // view — apply it to the pool before rendering, exactly as
@@ -2125,11 +2208,16 @@ async function handler(req: Request): Promise<Response> {
     // HTML renders — the array shape itself is unchanged (Codex P2
     // on PR #2431). #3317: include non-session needs-drew items too,
     // matching the full queue rendered by the attention page.
-    const { view } = await attentionContext();
+    const { view, quotaItems } = await attentionContext();
     return json([
       ...view.all,
       ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
       ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+      // #1174 (Codex P2, PR #4695): the synthesized quota tasks ride along
+      // in the same TierItem shape — this endpoint is the machine-first
+      // interface the attention page advertises, so the quota tasks must
+      // be discoverable here, not only in the HTML orchestrator tier.
+      ...quotaItems.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
     ]);
   }
   if (path === "/api/coverage.json") {

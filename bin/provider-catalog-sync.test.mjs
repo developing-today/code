@@ -21,6 +21,7 @@ import {
   openPrCommands,
   runSync,
   resolveConfigPath,
+  defaultRuntimeConfigPath,
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
 } from './provider-catalog-sync.mjs';
@@ -397,6 +398,17 @@ test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes',
 // #4588: config resolution — OPENCODE_CONFIG_PATH names the runtime overlay
 // since #4544 and must never become this tool's target
 // ---------------------------------------------------------------------------
+
+test('defaultRuntimeConfigPath: home-resolution contract probe matrix (#5762/#5763)', () => {
+  // Oracle: the contract - unset and empty HOME are both a named
+  // error; a set HOME yields exactly the historical path.
+  assert.throws(() => defaultRuntimeConfigPath({}), /HOME is not set or is empty/);
+  assert.throws(() => defaultRuntimeConfigPath({ HOME: '' }), /HOME is not set or is empty/);
+  assert.equal(
+    defaultRuntimeConfigPath({ HOME: '/home/someone' }),
+    path.join('/home/someone', '.local/state/opencode/opencode-runtime.jsonc'),
+  );
+});
 
 test('resolveConfigPath: --config beats env, catalog env beats default, OPENCODE_CONFIG_PATH ignored (#4588)', () => {
   const root = '/repo';

@@ -445,6 +445,9 @@ async function resolveProjectToken(): Promise<string | null> {
  * changes and reused untouched while neither does.
  */
 const aaLastGoodPath = join(dirname(outPath), "aa-last-good.json");
+// #1116: last-good attention entries, carried across runs whose server
+// read fails (restart churn) so one bad read cannot zero the feed.
+const attentionLastGoodPath = join(dirname(outPath), "attention-last-good.json");
 /** Per-batch payload cache (#3302), beside the feed. */
 const aaBatchDir = join(dirname(outPath), "aa-batches");
 /** How many missing historical payloads one tick may build. The latest is
@@ -728,6 +731,27 @@ async function main(): Promise<void> {
   };
   const isMissingInput = (error: unknown): boolean =>
     typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  // #1116: true when this run's attention entries came from the
+  // last-good file rather than a live server read.
+  let attentionCarried = false;
+  async function readAttentionLastGood(): Promise<SessionFeedEntry[] | null> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(attentionLastGoodPath, "utf8"));
+      if (!parsed || typeof parsed !== "object") return null;
+      const rec = parsed as { at?: unknown; entries?: unknown };
+      if (typeof rec.at !== "string" || !Array.isArray(rec.entries) || rec.entries.length === 0) return null;
+      return rec.entries as SessionFeedEntry[];
+    } catch {
+      return null;
+    }
+  }
+  async function writeAttentionLastGood(entries: SessionFeedEntry[]): Promise<void> {
+    try {
+      await writeFile(attentionLastGoodPath, JSON.stringify({ at: new Date().toISOString(), entries }, null, 2));
+    } catch {
+      console.error("collector: attention last-good write failed; a failed read next run has nothing to carry");
+    }
+  }
   // Identity-registry records (#906 §3), accumulated across sources below.
   const registry: SessionRecord[] = [];
 
@@ -824,6 +848,7 @@ async function main(): Promise<void> {
     });
     if (mapped) {
       attention = mapped.entries;
+      if (attention.length) await writeAttentionLastGood(attention);
       for (const e of mapped.entries) {
         registry.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
       }
@@ -859,11 +884,33 @@ async function main(): Promise<void> {
       }
       markSection("attention", "ok");
     } else {
-      console.error("collector: OpenCode server unreachable; attention empty");
+      const carried = await readAttentionLastGood();
+      if (carried) {
+        attention = carried;
+        attentionCarried = true;
+        console.error(
+          "collector: OpenCode server unreachable; carrying " + carried.length + " last-good attention entries (#1116)",
+        );
+      } else {
+        console.error("collector: OpenCode server unreachable; attention empty");
+      }
       markSection("attention", "error", "OpenCode server unreachable");
     }
   } catch (err) {
-    console.error(`collector: OpenCode server read failed (${sanitizeCollectionError(err)}); attention empty`);
+    const carried = await readAttentionLastGood();
+    if (carried) {
+      attention = carried;
+      attentionCarried = true;
+      console.error(
+        "collector: OpenCode server read failed (" +
+          sanitizeCollectionError(err) +
+          "); carrying " +
+          carried.length +
+          " last-good attention entries (#1116)",
+      );
+    } else {
+      console.error("collector: OpenCode server read failed (" + sanitizeCollectionError(err) + "); attention empty");
+    }
     markSection("attention", "error", err);
   }
 
@@ -1203,7 +1250,7 @@ async function main(): Promise<void> {
   });
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource})` +
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource}${attentionCarried ? ", carried last-good" : ""})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
       (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
       (saas

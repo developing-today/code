@@ -8,8 +8,8 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
-import { isAaSection } from "../aa.ts";
-import { aaCacheFileName, isAaBatchCacheEntry } from "../aa-batches.ts";
+import { AA_PLAN_FACTS, aaApplyPriceOverlay, isAaSection } from "../aa.ts";
+import { aaCacheFileName, aaPricesFingerprint, isAaBatchCacheEntry } from "../aa-batches.ts";
 import { isBatchUuid } from "../aa-batch-sql.ts";
 import { isDnsSection } from "../dns.ts";
 import {
@@ -37,7 +37,7 @@ import {
   type KaneoCardSnapshot,
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
-import { buildAttentionFlags } from "../derive.ts";
+import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { summarizeDns } from "../dns.ts";
 import {
@@ -1026,25 +1026,75 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #1116: a laptop leg's health, tracked per state file so the
+  // attention provenance can say which legs are dead instead of the
+  // failure staying silent. Before this, the OpenChamber-managed
+  // server's state file went stale on 2026-10-29 and the leg died
+  // unnoticed for days, leaving attention single-legged.
+  const laptopLegs: { standing: boolean | null; openchamber: boolean | null } = {
+    standing: null,
+    openchamber: null,
+  };
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
-    const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
-      port?: number;
-      password?: string;
-    };
-    if (!state.port || !state.password) return null;
-    const mapped = await mapServerSessions(
-      {
-        baseUrl: `http://127.0.0.1:${state.port}`,
-        password: state.password,
-      },
-      Date.now(),
-      { source: "opencode-laptop" },
-    );
-    if (!mapped) return null;
-    laptopCache = { value: mapped, at: Date.now() };
-    return mapped;
+    // Leg 1: the standing OpenCode server (opencode.service) — its own
+    // state file carries the current url + password and is rewritten
+    // on every restart, so this leg survives the restart churn that
+    // emptied the collector feed in the 2026-11-10 fixture incident.
+    try {
+      const state = JSON.parse(await readFile(cfg.opencodeServerStateFile, "utf8")) as {
+        url?: string;
+        password?: string;
+      };
+      if (state.url && state.password) {
+        const mapped = await mapServerSessions(
+          { baseUrl: state.url, password: state.password },
+          Date.now(),
+          { source: "opencode-laptop" },
+        );
+        laptopLegs.standing = mapped !== null;
+        if (mapped) {
+          laptopCache = { value: mapped, at: Date.now() };
+          return mapped;
+        }
+      } else {
+        laptopLegs.standing = false;
+      }
+    } catch {
+      laptopLegs.standing = false;
+      /* this leg fails soft; the OpenChamber leg is tried next */
+    }
+    // Leg 2: the OpenChamber-managed server, when one is running.
+    try {
+      const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
+        port?: number;
+        password?: string;
+      };
+      if (!state.port || !state.password) {
+        laptopLegs.openchamber = false;
+        return null;
+      }
+      const mapped = await mapServerSessions(
+        { baseUrl: "http://127.0.0.1:" + state.port, password: state.password },
+        Date.now(),
+        { source: "opencode-laptop" },
+      );
+      laptopLegs.openchamber = mapped !== null;
+      if (!mapped) return null;
+      laptopCache = { value: mapped, at: Date.now() };
+      return mapped;
+    } catch {
+      laptopLegs.openchamber = false;
+      return null;
+    }
   }
+  function laptopLegsNote(): string {
+    const bits: string[] = [];
+    if (laptopLegs.standing === false) bits.push("standing-server leg down");
+    if (laptopLegs.openchamber === false) bits.push("openchamber leg down");
+    return bits.length ? " [laptop legs: " + bits.join(", ") + "]" : "";
+  }
+
   async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
     const mapped = await laptopMapped();
     return mapped ? mapped.entries : null;
@@ -1113,6 +1163,22 @@ export function liveSource(
       }
     }
     return merged;
+  }
+
+  // The quota view with the gatherer's quota-current overlay applied —
+  // the same view quota() serves. Usage-derived quota flags/actions must
+  // come from THIS view, not the unoverlaid feed quota (Codex P2,
+  // PR #4695): a pool the gatherer now reports healthy must clear its
+  // walled/high-usage actions on the usage strip too.
+  async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
+    try {
+      const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+      const file = parseQuotaCurrent(JSON.parse(raw));
+      if (file) return overlayQuotaCurrent(base, file);
+    } catch {
+      /* no gatherer file (or unreadable): base view stands */
+    }
+    return base;
   }
 
   return {
@@ -1507,12 +1573,17 @@ export function liveSource(
           subscriptions: feed.subscriptions ?? [],
         };
         partial.services = await tursoOverlay(cfg, partial.services);
+        const quotaForFlags = await overlayCurrent(feed.quota);
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed.quota, partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
@@ -1543,12 +1614,17 @@ export function liveSource(
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
           feedSanitizationNotes;
+        const quotaForFlags = await overlayCurrent(feed?.quota ?? (await fix.quota()));
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
@@ -1596,11 +1672,27 @@ export function liveSource(
       }
 
       if (byId.size > 0) {
-        provenance.attention = `live (${parts.join(" + ")})`;
+        provenance.attention = "live (" + parts.join(" + ") + ")" + laptopLegsNote();
         return [...byId.values()];
       }
-      provenance.attention = "fixtures (no live attention source reachable)";
-      return fix.attention();
+      // #1116 (2026-11-10): production attention must never serve the
+      // demo fixtures. Both live legs being empty/down is an outage
+      // state, not content: serve an empty list with the cause named
+      // in provenance (and logged), so consumers see "no data" rather
+      // than a plausible fake fleet whose synthetic session IDs 404
+      // against the real server. The incident: OpenCode server
+      // restarts emptied the collector feed for two runs and this
+      // branch served FIXTURE_ATTENTION for ~10 minutes.
+      console.error(
+        "[attention] no live attention source reachable (feed " +
+          (feed ? "present, " + feed.attention.length + " entries" : "unreadable") +
+          ";" +
+          (laptopLegsNote() || " laptop legs untested") +
+          ") — serving empty, NOT fixtures",
+      );
+      provenance.attention =
+        "unavailable (no live attention source reachable; fixtures withheld in live mode)" + laptopLegsNote();
+      return [];
     },
     async orchestration(): Promise<OrchestrationSection | null> {
       // #899: the orchestration section rides the fleet feed, embedded
@@ -1758,16 +1850,46 @@ export function liveSource(
             // the old catalog and coverage with no warning, so honour the
             // index's cache-validity flag.
             const staleCache = batchList.find((b) => b.importBatch === batch)?.cached === false;
-            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt}${staleCache ? " · awaiting rebuild" : ""})`;
-            return staleCache
-              ? {
-                  ...parsed.section,
-                  batches: batchList,
-                  stale: true,
-                  staleReason:
-                    "this version is awaiting rebuilding — its opencode config or the current-price overlay changed since it was built",
-                }
-              : { ...parsed.section, batches: batchList };
+            if (staleCache) {
+              provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt} · awaiting rebuild)`;
+              return {
+                ...parsed.section,
+                batches: batchList,
+                stale: true,
+                staleReason:
+                  "this version is awaiting rebuilding — its opencode config or the current-price overlay changed since it was built",
+              };
+            }
+            // #8211: the cached payload is batch-bound, but its prices are
+            // the batch-independent current overlay (v_current_prices).
+            // When the entry was built under a different overlay than the
+            // feed's latest section now carries, re-derive the served
+            // section's prices and catalog rates from the current overlay
+            // instead of serving the frozen snapshot — no batch data is
+            // refetched. When the feed carries no current overlay to
+            // refresh from, frozen prices are served stale-marked, never
+            // silently.
+            const currentPrices =
+              feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? feed.aa.prices : undefined;
+            if (currentPrices !== undefined) {
+              if ((parsed.pricesFingerprint ?? null) === aaPricesFingerprint(currentPrices)) {
+                provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
+                return { ...parsed.section, batches: batchList };
+              }
+              provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt} · price overlay refreshed at serve)`;
+              return { ...aaApplyPriceOverlay(parsed.section, currentPrices), batches: batchList };
+            }
+            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
+            if (parsed.section.prices?.length) {
+              return {
+                ...parsed.section,
+                batches: batchList,
+                stale: true,
+                staleReason:
+                  "the current price overlay is unavailable in the latest feed, so this version's token prices are shown as collected and may be out of date",
+              };
+            }
+            return { ...parsed.section, batches: batchList };
           }
         } catch {
           // No cache file yet — fall through to the honest absent form.

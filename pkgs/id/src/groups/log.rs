@@ -147,6 +147,34 @@ impl GroupLog {
         Ok(Recorded { event: id, outcome })
     }
 
+    /// Records an event that was already formed elsewhere, keeping its
+    /// ID and its place in its own chain: the seeding path for events a
+    /// config provisioned (#5119 slice 3). An event whose ID the log
+    /// already holds is skipped and changes nothing, so seeding the
+    /// same events on every start is a no-op after the first.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the events cannot be folded, or the file cannot be
+    /// written. Nothing is written when the fold fails.
+    pub fn record_preformed(&mut self, event: &Event) -> Result<Option<Recorded>> {
+        if self.events.iter().any(|held| held.id == event.id) {
+            return Ok(None);
+        }
+        let mut next = self.events.clone();
+        next.push(event.clone());
+        let outcome = fold(&next)?
+            .outcome(&event.id)
+            .cloned()
+            .context("the fold did not decide the event")?;
+        self.append(event)?;
+        self.events = next;
+        Ok(Some(Recorded {
+            event: event.id,
+            outcome,
+        }))
+    }
+
     /// The IDs no event names in its `after`. A new event names these, so it comes after all of them.
     fn heads(&self) -> Vec<Hash> {
         let named: BTreeSet<Hash> = self
@@ -374,6 +402,36 @@ mod tests {
             members: Vec::new(),
             admins_on_create: false,
         })
+    }
+
+    #[test]
+    fn test_record_preformed_seeds_once_and_then_skips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        // Form the event in a scratch log, as provisioning forms it
+        // away from the log it will seed.
+        let scratch = dir.path().join("scratch.jsonl");
+        let mut formed = GroupLog::open(&scratch).unwrap();
+        let recorded = formed.record(OWNER, None, create_body()).unwrap();
+        let event = formed.events()[0].clone();
+
+        let mut log = GroupLog::open(&path).unwrap();
+        let seeded = log.record_preformed(&event).unwrap().unwrap();
+        assert_eq!(seeded.event, recorded.event);
+        assert_eq!(seeded.outcome, Outcome::Applied);
+        // Seeding the same event again changes nothing.
+        assert!(log.record_preformed(&event).unwrap().is_none());
+        assert_eq!(log.events().len(), 1);
+        // And the seeded event is what a reopen reads back.
+        let reopened = GroupLog::open(&path).unwrap();
+        assert_eq!(reopened.events(), log.events());
+        assert!(
+            reopened
+                .projection()
+                .unwrap()
+                .group(&recorded.event)
+                .is_some()
+        );
     }
 
     #[test]
