@@ -151,6 +151,7 @@ import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/re
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
 import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
 import { ItemHistoryStore } from "./item-history.ts";
+import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -1769,6 +1770,18 @@ async function handler(req: Request): Promise<Response> {
         forecasts,
       ),
     );
+  }
+
+  if (path === "/api/flow-analytics.json") {
+    // #4829 (step 2 of #1281): the flow-analytics JSON twin — the
+    // exact numbers the step-3 charts (#4830) will render, computed
+    // from the #3981 item-history store. Every group carries its
+    // computation window and gap signal via the shared window block.
+    const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+    return json({
+      generatedAt: new Date().toISOString(),
+      ...computeFlowAnalytics(cutoffs),
+    });
   }
 
   if (path === "/api/forecasts.json") {
