@@ -50,6 +50,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::Compiled { .. } => "compiled",
         ServerFrame::UploadReady { .. } => "upload_ready",
         ServerFrame::ModuleInstalled { .. } => "module_installed",
+        ServerFrame::Revoked { .. } => "revoked",
         ServerFrame::ProgramChanged { .. } => "program_changed",
         ServerFrame::EventHistoryBegin { .. } => "event_history_begin",
         ServerFrame::EventHistoryEvent { .. } => "event_history_event",
@@ -81,6 +82,7 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "compiled",
     "upload_ready",
     "module_installed",
+    "revoked",
     "program_changed",
     "event_history_begin",
     "event_history_event",
@@ -203,7 +205,18 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         ServerFrame::EventHistoryEvent {
             event: &history_event,
         },
-        ServerFrame::Error { message: "no" },
+        ServerFrame::Error {
+            message: "no",
+            code: None,
+        },
+        ServerFrame::Error {
+            message: "denied",
+            code: Some("actor_denied"),
+        },
+        ServerFrame::Revoked {
+            participant_id: 7,
+            revoked: true,
+        },
         ServerFrame::ModuleInfo {
             world_id: "w".to_owned(),
             active_module_hash: None,

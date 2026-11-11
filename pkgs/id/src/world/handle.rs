@@ -644,6 +644,33 @@ impl WorldHandle {
             .context("world actor dropped participant lookup response")?
     }
 
+    /// Authorize a live capability for `required` scopes, returning the
+    /// derived participant ID (design #835 phase 3). The world actor
+    /// performs the check against the capability's current scope,
+    /// revocation state, and expiry; the error is the actor's
+    /// non-oracular "invalid, revoked, or insufficient world
+    /// capability" for every denial cause. Session paths use this as
+    /// the early check before receiving upload bytes — the authorized
+    /// operation commands still re-check at the effect boundary.
+    pub async fn authorize(
+        &self,
+        token: JoinCapability,
+        required: WorldScopes,
+    ) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AuthorizeScope {
+                token,
+                required,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped authorization response")?
+    }
+
     /// Issue a scoped participant capability.
     pub async fn issue(
         &self,
