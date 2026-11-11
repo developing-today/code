@@ -801,3 +801,138 @@ func TestScriptOnlyNamespacesDoNotShareAPool(t *testing.T) {
 		t.Fatal("an unknown outcome in alpha blocks unrelated namespace beta")
 	}
 }
+
+// Oracle: the ledger exemption honors server-level read-only
+// declarations (Codex P2 on PR #8317). The same timeout as
+// TestScriptViewReadOnlyTimeoutRecordsNothing, but read-only comes
+// from the server's readOnlyTools list rather than the view's own
+// flag: nothing is recorded and the caller sees the plain timeout.
+func TestScriptViewServerLevelReadOnlyTimeoutRecordsNothing(t *testing.T) {
+	r := scriptRegistry(t, map[string]*config.Server{
+		"slow": {Mcpx: &config.Extras{ReadOnlyTools: []string{"wait"}, ToolViews: map[string]config.ToolView{
+			"wait": {Command: "sleep", Args: []string{"5"}, Description: "waits", Timeout: "100ms"},
+		}}},
+	})
+	_, err := r.Call(scriptCtx(t), "slow", "wait", config.CallContext{}, map[string]any{})
+	var unknown ErrUnknownOutcome
+	if errors.As(err, &unknown) {
+		t.Fatalf("a server-level read-only timeout must not record an unknown outcome, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not finish within 100ms") {
+		t.Fatalf("want the plain timeout error, got %v", err)
+	}
+	if _, blocked := r.writeLedger.Lookup("slow"); blocked {
+		t.Fatal("a server-level read-only call must not write the ledger")
+	}
+}
+
+// Oracle: script-only catalogs are initialized (Codex P2 on
+// PR #8317). A script-only namespace's tools are locally declared,
+// so Namespaces reports it cached -- before any Warm, and after --
+// instead of uncached forever, which made every CLI invocation pay
+// for a global refresh.
+func TestScriptOnlyNamespaceReportsCached(t *testing.T) {
+	r := scriptOnlyRegistry(t)
+	assertCached := func(stage string) {
+		t.Helper()
+		for _, ns := range r.Namespaces(config.Profile{}) {
+			if ns.Namespace == "scripts" {
+				if !ns.Cached {
+					t.Errorf("%s: a script-only namespace must report Cached", stage)
+				}
+				return
+			}
+		}
+		t.Fatalf("%s: the script-only namespace is missing", stage)
+	}
+	assertCached("before Warm")
+	r.Warm(scriptCtx(t), false)
+	assertCached("after Warm")
+	for _, pl := range r.pools {
+		if _, _, at := pl.CachedSchemas(); at.IsZero() {
+			t.Error("Warm must mark a script-only pool's catalog as initialized")
+		}
+	}
+}
+
+// Oracle: a Python file-backed tool using ordinary decorators
+// (Codex P2 on PR #8317). Before the fix, @dataclass was minted as
+// a required generated parameter, so a valid call with no such
+// argument was rejected and rendering would have replaced the
+// decorator with a string literal.
+func TestScriptFileToolPythonDecoratorsAreNotParameters(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "greeter.py")
+	body := "from dataclasses import dataclass\n\n@dataclass\nclass Greeter:\n    name: str = 'world'\n\nprint('hello', Greeter().name)\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"greet": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "greet", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a decorated Python tool must run clean: %s", raw)
+	}
+	if got := strings.TrimSpace(res.Content[0].Text); got != "hello world" {
+		t.Errorf("script output = %q, want %q", got, "hello world")
+	}
+}
+
+// Oracle: a file-backed script call through the ask surface
+// (Codex P2 on PR #8317). The call registers like an ordinary ask
+// call, its execution run is associated with it while it runs, and
+// nothing is left registered after it ends.
+func TestScriptFileToolCallAskRegistersAndCleansUp(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "hi.py")
+	if err := os.WriteFile(script, []byte("print('hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"hi": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	raw, err := srv.reg.CallAsk(scriptCtx(t), "ask-1", "ops", "hi", config.CallContext{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("CallAsk: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("an ask script call must run clean: %s", raw)
+	}
+	if _, ok := srv.reg.asks.get("ask-1"); ok {
+		t.Error("the ask call is still registered after it ended")
+	}
+	srv.reg.asks.mu.Lock()
+	leftover := len(srv.reg.asks.byRun)
+	srv.reg.asks.mu.Unlock()
+	if leftover != 0 {
+		t.Errorf("the ask table holds %d run registrations after the call ended", leftover)
+	}
+}

@@ -253,8 +253,21 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	// extension, so without it a .py declaration with no shebang was
 	// misrouted to the TypeScript runtime (Codex P2 on PR #8317).
 	// Passing it as File instead would execute the unrendered file.
+	// The execution's run id is chosen here, and when this call
+	// belongs to an ask call (its context carries the ask id) or to
+	// a live run (a file-backed call nested inside one), the run is
+	// registered against that owner in the ask table: the script's
+	// upstream calls join through the run id, and an unregistered
+	// run's questions found no owner and never reached the caller's
+	// ask poll (Codex P2 on PR #8317).
+	runID := execsvc.NewRunID()
+	if askID, ok := ctx.Value(askCallKey{}).(string); ok && askID != "" {
+		s.reg.asks.attachRun(askID, runID)
+	} else if parent := runFrom(ctx); parent != "" {
+		s.reg.asks.attachRunToRun(parent, runID)
+	}
 	mcpclient.NoteToolCallDispatched(ctx)
-	req := execsvc.Request{Source: rendered, SourceName: view.Path, Opts: opts}
+	req := execsvc.Request{Source: rendered, SourceName: view.Path, Opts: opts, RunID: runID}
 	cleanup := func() {}
 	if file, cf, ferr := materializeDeclaredScript(view.Path, rendered); ferr == nil {
 		// Run the rendered body as a file in a directory holding
@@ -264,7 +277,7 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 		// materialised the body under a generated name in its
 		// cache directory, where no sibling exists (Codex P2 on
 		// PR #8317).
-		req = execsvc.Request{File: file, Opts: opts}
+		req = execsvc.Request{File: file, Opts: opts, RunID: runID}
 		cleanup = cf
 	}
 	defer cleanup()
@@ -318,7 +331,14 @@ func (r *Registry) callScriptWithLedger(ctx context.Context, pl *pool.Pool, serv
 	r.mu.RUnlock()
 	res, err := r.runScriptView(callCtx, pl, tool, tv, args, session, resolved)
 	var invalid *mcpclient.InvalidParamsError
-	if err != nil && dispatched.Load() && !tv.ReadOnly && r.writeLedger != nil &&
+	// Read-only is read-only however it was declared: the view's own
+	// flag, or the server-level readOnlyTools list the policy guards
+	// honor via declaredReadOnly (upstream callWithLedger exempts
+	// both). Checking only tv.ReadOnly recorded an unknown write
+	// outcome -- and a persistent write block -- for a tool the
+	// operator had declared read-only at server level (Codex P2 on
+	// PR #8317).
+	if err != nil && dispatched.Load() && !tv.ReadOnly && !r.declaredReadOnly(server, tool) && r.writeLedger != nil &&
 		!mcpclient.IsConclusiveUpstreamError(err) && !errors.As(err, &invalid) {
 		return nil, r.recordUnknownOutcome(pl, server, tool, args, surface)
 	}

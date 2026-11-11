@@ -1583,6 +1583,14 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 		// declared views, and warming it would record a failure for a
 		// server that was never meant to start (#1933 slice 2).
 		if cfg := p.Config(); cfg != nil && cfg.ScriptOnly() {
+			// Its catalog is locally declared, so it is initialized
+			// by definition: seed the timestamp, or Namespaces
+			// reports it uncached forever and every CLI invocation
+			// pays for a global refresh that re-lists every other
+			// server too (Codex P2 on PR #8317).
+			if tools, res, at := p.CachedSchemas(); at.IsZero() {
+				p.SetSchemas(tools, res, p.CachedPrompts(), p.Instructions(), time.Now(), time.Time{}, false)
+			}
 			continue
 		}
 		_, _, at := p.CachedSchemas()
@@ -1674,7 +1682,7 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			Sharing:         st.Sharing,
 			Scope:           st.Scope,
 			Error:           st.LastError,
-			Cached:          !at.IsZero(),
+			Cached:          !at.IsZero() || view.ScriptOnly(),
 			RequiresSecrets: view.RequiresSecrets,
 		})
 	}

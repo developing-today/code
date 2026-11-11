@@ -415,8 +415,21 @@ func refsFor(src string, lang string) []string {
 			offset += len(line) + 1
 			continue
 		}
+		// A Python decorator is the first thing on its line: an
+		// `@name` there (@dataclass, @staticmethod) names a function
+		// in the language, not a placeholder, and minting it as a
+		// required argument both rejects valid calls and makes the
+		// renderer replace the decorator with a literal (Codex P2
+		// on PR #8317).
+		firstCode := -1
+		if lang == langPython {
+			firstCode = len(line) - len(strings.TrimLeft(line, " \t"))
+		}
 		for i := 0; i < len(line); i++ {
 			if line[i] != '@' || !code[offset+i] {
+				continue
+			}
+			if i == firstCode {
 				continue
 			}
 			// An email address or a decorator is not a placeholder, and the
@@ -535,7 +548,7 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 			offset += len(line) + 1
 			continue
 		}
-		b.WriteString(substitute(line, code[offset:offset+len(line)], lits))
+		b.WriteString(substituteFor(line, code[offset:offset+len(line)], lits, lang))
 		b.WriteString("\n")
 		offset += len(line) + 1
 	}
@@ -547,9 +560,21 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 // position (in a comment or a string) is copied through untouched, so a
 // filled value is never spliced into a literal.
 func substitute(line string, code []bool, lits map[string]string) string {
+	return substituteFor(line, code, lits, langJS)
+}
+
+// substituteFor is substitute in the body's language: a Python
+// decorator (an `@name` as the first thing on its line) is language
+// syntax, never a placeholder, so it is copied through even when a
+// placeholder of the same name exists (Codex P2 on PR #8317).
+func substituteFor(line string, code []bool, lits map[string]string, lang string) string {
+	firstCode := -1
+	if lang == langPython {
+		firstCode = len(line) - len(strings.TrimLeft(line, " \t"))
+	}
 	var b strings.Builder
 	for i := 0; i < len(line); i++ {
-		if line[i] != '@' || !code[i] || (i > 0 && isWordByte(line[i-1])) {
+		if line[i] != '@' || !code[i] || i == firstCode || (i > 0 && isWordByte(line[i-1])) {
 			b.WriteByte(line[i])
 			continue
 		}

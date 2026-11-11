@@ -561,3 +561,25 @@ func TestHashCommentMentionsAreNotPlaceholdersInPythonOrShell(t *testing.T) {
 		}
 	}
 }
+
+// Oracle: Python decorators are not placeholders (Codex P2 on
+// PR #8317). An ordinary @dataclass / @staticmethod at the start of
+// a line is language syntax: discovery must not mint it as a
+// required argument, and rendering must not replace it with a
+// literal.
+func TestPythonDecoratorsAreNotPlaceholders(t *testing.T) {
+	src := "# @param who:string\nfrom dataclasses import dataclass\n\n@dataclass\nclass Greeter:\n    @staticmethod\n    def greet():\n        return @who\n"
+	r := recipes.Parse("greeter", "/tmp/greeter.py", src)
+	if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+		t.Fatalf("placeholders = %+v, want only the declared @who", r.Placeholders)
+	}
+	out, err := r.Render(map[string]any{"who": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"@dataclass", "@staticmethod", `"world"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered output must contain %q:\n%s", want, out)
+		}
+	}
+}
