@@ -175,3 +175,95 @@ describe("organizationUuidOf / credential config / gatherClaude", () => {
     expect(outcome.value).toEqual(PREVIOUS.value);
   });
 });
+
+describe("parseClaudeUsagePayload / collectClaudeAdapter properties (#1163, Codex P1 on PR #8480)", () => {
+  // Deterministic seeded sweep (fixed seed: failures reproduce exactly),
+  // following the seeded property precedent in token-adapter.test.ts.
+  // Oracles are the parser invariants:
+  //  (1) every accepted window's usedPct is finite, within 0..100, and
+  //      equal to the raw utilization clamped to 0..100;
+  //  (2) malformed utilization never becomes a successful zero reading:
+  //      a payload with no usable window throws AdapterError;
+  //  (3) a failed collection retains the previous entry verbatim -
+  //      never a fabricated zero row.
+  let state = 0x1163;
+  const rand = () => {
+    state |= 0;
+    state = (state + 0x6d2b79f5) | 0;
+    let x = Math.imul(state ^ (state >>> 15), 1 | state);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+  const PLAIN_DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+  const clamp = (n: number) => Math.min(100, Math.max(0, n));
+  // Returns the raw utilization when the parser must accept it, else null.
+  const acceptedRaw = (value: unknown): number | null => {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string" && PLAIN_DECIMAL.test(value)) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+  const genUtilization = (): unknown => {
+    const pool = rand();
+    if (pool < 0.3) return rand() * 200 - 50; // finite number, in/out of range
+    if (pool < 0.45) return String(Math.round((rand() * 200 - 50) * 100) / 100); // plain-decimal string
+    if (pool < 0.55) return [NaN, Infinity, -Infinity][Math.floor(rand() * 3)];
+    if (pool < 0.7) return ["0x10", "1e3", "", "abc", "12%"][Math.floor(rand() * 5)]; // non-plain-decimal strings
+    if (pool < 0.85) return [null, true, {}, []][Math.floor(rand() * 4)]; // wrong types
+    return undefined; // missing
+  };
+  const FIELDS: [string, string][] = [
+    ["five_hour", "5h"],
+    ["seven_day", "weekly"],
+  ];
+
+  test("property: accepted percentages are finite, in 0..100, and equal the clamped raw value", () => {
+    for (let iter = 0; iter < 300; iter++) {
+      const payload: Record<string, unknown> = {};
+      const expected = new Map<string, number>();
+      for (const [field, name] of FIELDS) {
+        if (rand() < 0.15) continue; // field absent
+        const utilization = genUtilization();
+        payload[field] = { utilization, resets_at: "2026-11-02T17:00:00Z" };
+        const raw = acceptedRaw(utilization);
+        if (raw !== null) expected.set(name, clamp(raw));
+      }
+      if (expected.size === 0) {
+        // Invariant (2): nothing usable -> fail closed, never a zero reading.
+        expect(() => parseClaudeUsagePayload(payload)).toThrow(AdapterError);
+        continue;
+      }
+      const reading = parseClaudeUsagePayload(payload);
+      expect(reading.windows.map((w) => w.name).sort()).toEqual([...expected.keys()].sort());
+      for (const window of reading.windows) {
+        expect(Number.isFinite(window.usedPct)).toBe(true);
+        expect(window.usedPct).toBeGreaterThanOrEqual(0);
+        expect(window.usedPct).toBeLessThanOrEqual(100);
+        expect(window.usedPct).toBe(expected.get(window.name)!);
+      }
+    }
+  });
+
+  test("property: failed collection retains the previous entry, never zeros", async () => {
+    const failureModes = [
+      () => ({ httpStatus: 401, payload: null }),
+      () => ({ httpStatus: 403, payload: null }),
+      () => ({ httpStatus: 500, payload: null }),
+      () => ({ httpStatus: 200, payload: { drifted: true } }),
+      () => ({ httpStatus: 200, payload: { five_hour: { utilization: "0x10" } } }),
+      () => {
+        throw new Error("network down");
+      },
+    ];
+    for (let iter = 0; iter < 120; iter++) {
+      const fetchPayload = failureModes[Math.floor(rand() * failureModes.length)]!;
+      const outcome = await collectClaudeAdapter({ now: NOW, previous: PREVIOUS, fetchPayload });
+      expect(outcome.status).not.toBe("ok");
+      expect(outcome.value).toEqual(PREVIOUS.value);
+      expect(outcome.value?.measuredAt).toBe(PREVIOUS.measuredAt);
+      expect(outcome.value?.windows.every((w) => w.pctOfLimit !== 0)).toBe(true);
+    }
+  });
+});
