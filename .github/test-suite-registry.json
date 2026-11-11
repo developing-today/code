@@ -727,7 +727,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "related_issues": [5937]
+      "related_issues": [5937, 7777]
     },
     {
       "id": "repo-universe.python",
