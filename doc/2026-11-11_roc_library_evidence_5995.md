@@ -45,7 +45,7 @@ Using the Go host (the Rust host's `build.roc` built its stub `platform/libapp.s
 
 ```sh
 roc build --lib main.roc --output libapp.so        # applications/hello/go-basic-cli, 43,048 bytes
-CGO_LDFLAGS="-L<app dir> -Wl,-rpath,$ORIGIN/../applications/hello/go-basic-cli" \
+CGO_LDFLAGS="-L<app dir> -Wl,-rpath,\$ORIGIN/../../applications/hello/go-basic-cli" \
   go build -buildmode=pie -o dynhost .             # platforms/go-basic-cli, 2,621,432 bytes
 roc preprocess-host ./dynhost ./main.roc <app dir>/libapp.so   # succeeded
 ```
