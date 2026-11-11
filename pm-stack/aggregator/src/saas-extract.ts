@@ -725,7 +725,14 @@ export function extractSaasServices(doc: string): SaasService[] {
       sourceClass: "manual",
       sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
       sources: {
-        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, ""),
+        // The displayed section name is the literal heading text: strip the
+        // regex anchors, then unescape regex escapes (Fly.io's heading is
+        // /^### Fly\.io$/ - without the unescape it renders a section name
+        // that does not exist in quota-view.md; #6848).
+        quotaViewSection: spec.heading.source
+          .replace(/^\^/, "")
+          .replace(/\$$/, "")
+          .replace(/\\(.)/g, "$1"),
         trackerRow: row?.[0] ?? null,
         baselineDoc: "evidence-and-interpretation-baseline-2026-10-20.md (~/workspace/ai-subscriptions/)",
       },
