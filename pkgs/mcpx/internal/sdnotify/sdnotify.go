@@ -7,7 +7,15 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 )
+
+// writeTimeout bounds one notify write. sd_notify is fire-and-forget:
+// a daemon must never wedge on an unresponsive socket (in some
+// container environments an abstract unixgram write blocks instead of
+// erroring — run 41819578987 hung 1800s there), so the write carries
+// a deadline and the failure surfaces as an ordinary error.
+const writeTimeout = 5 * time.Second
 
 // Send writes one state assignment, such as "READY=1", to $NOTIFY_SOCKET.
 // Outside systemd the variable is unset and Send does nothing.
@@ -23,6 +31,7 @@ func Send(state string) error {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
 	defer func() { _ = conn.Close() }()
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	if _, err := conn.Write([]byte(state)); err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
