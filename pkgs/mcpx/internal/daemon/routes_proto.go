@@ -350,7 +350,7 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 		r.beginAsk(id, server, rs.Key, cc.SessionID)
 		defer r.endAsk(id)
 		ctx = withRequestedCallTimeout(withAskCall(ctx, id))
-		return r.callScriptWithLedger(ctx, p, server, effTool, script, effArgs, cc.SessionID, "ask")
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "ask")
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)

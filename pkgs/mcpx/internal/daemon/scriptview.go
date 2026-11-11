@@ -107,7 +107,27 @@ func (r *Registry) runScriptView(ctx context.Context, pl *pool.Pool, tool string
 				return nil, &mcpclient.InvalidParamsError{Tool: tool, Err: err}
 			}
 		}
-		return run(ctx, tool, *tv, values, session)
+		view := *tv
+		if view.Timeout == "" {
+			// An undeclared timeout inherits the pool's resolved
+			// call timeout, exactly as the command path below
+			// resolves it (with a caller's requested lowering on
+			// top): without it the exec service fell back to the
+			// daemon's exec.timeout, so a namespace with a shorter
+			// call budget kept executing local script side effects
+			// past that budget (Codex P2 on PR #8317).
+			timeout := config.DefaultCallTimeout
+			if pl != nil {
+				if resolved := pl.CallTimeout(ctx); resolved > 0 {
+					timeout = resolved
+				}
+			}
+			if req, ok := pool.RequestedCallTimeout(ctx); ok && req < timeout {
+				timeout = req
+			}
+			view.Timeout = timeout.String()
+		}
+		return run(ctx, tool, view, values, session)
 	}
 	return callScriptView(ctx, pl, tool, tv, args, resolved)
 }
@@ -277,6 +297,15 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	if view.Timeout != "" {
 		opts.Timeout = view.Timeout
 	}
+	if ps := parentSessionFrom(ctx); ps != "" {
+		// The caller's parent-session identity rides into the run's
+		// environment, where the generated client reads it as the
+		// x-mcpx-parent-session header on its nested calls: without
+		// it a parent-session-scoped server resolved the nested
+		// call to the child session's scope instead of the
+		// parent's (Codex P2 on PR #8317).
+		opts.Env = map[string]string{"MCPX_PARENT_SESSION_ID": ps}
+	}
 	// SourceName carries the declared script name as language evidence:
 	// the runner executes Source (the rendered body), but ScriptLanguage
 	// reads the shebang from the source and otherwise the file
@@ -395,6 +424,25 @@ func hookReplacementText(res *execsvc.Result) (string, bool) {
 // the execution paths themselves (NoteToolCallDispatched) at the
 // moment the program starts; an error before that point, or a
 // conclusive validation error, records nothing.
+// parentSessionKey carries a caller's parent-session identity
+// (CallContext.ParentSessionID, from X-Mcpx-Parent-Session) to the
+// script execution a call dispatches, which the CallContext itself
+// does not reach: callScriptWithLedger's arguments carry the child
+// session only.
+type parentSessionKey struct{}
+
+func withParentSession(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, parentSessionKey{}, id)
+}
+
+func parentSessionFrom(ctx context.Context) string {
+	id, _ := ctx.Value(parentSessionKey{}).(string)
+	return id
+}
+
 func (r *Registry) callScriptWithLedger(ctx context.Context, pl *pool.Pool, server, tool string, tv *config.ToolView, args any, session, surface string) (json.RawMessage, error) {
 	var dispatched atomic.Bool
 	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })

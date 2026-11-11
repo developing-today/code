@@ -1192,3 +1192,92 @@ func TestScriptFileToolForwardsCallSettings(t *testing.T) {
 		t.Errorf("the caller's call settings must reach the script via MCPX_SETTINGS, got: %s", raw)
 	}
 }
+
+// Oracle: a file-backed tool with no declared timeout inherits the
+// pool's resolved call timeout (Codex P2 on PR #8317, eighth round).
+// The command path already resolved the inherited budget; the file
+// path left the exec service on the daemon's exec.timeout, so a
+// namespace configured with a 100ms call budget kept running a 5s
+// script's side effects. The call must be cut at the pool budget.
+func TestScriptFileToolInheritsPoolCallTimeout(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "slow.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{CallTimeout: "100ms", ToolViews: map[string]config.ToolView{
+				"slow": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	start := time.Now()
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "slow", config.CallContext{}, map[string]any{})
+	elapsed := time.Since(start)
+	if elapsed > 3*time.Second {
+		t.Fatalf("the file-backed call ran %s, past its inherited 100ms pool budget", elapsed)
+	}
+	if err == nil {
+		res := decodeCallResult(t, raw)
+		if !res.IsError {
+			t.Fatalf("a call cut at its pool budget must not report clean success: %s", raw)
+		}
+	}
+}
+
+// Oracle: a caller's parent-session identity reaches a file-backed
+// tool's execution environment (Codex P2 on PR #8317, eighth round).
+// The generated client reads MCPX_PARENT_SESSION_ID to send
+// x-mcpx-parent-session on nested calls; without it a
+// parent-session-scoped server resolved nested calls to the child
+// session's scope. The script echoes the variable it was given.
+func TestScriptFileToolForwardsParentSession(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "psession.ts")
+	body := "const g = globalThis as any;\n" +
+		"let v = \"\";\n" +
+		"try { v = g.process?.env?.MCPX_PARENT_SESSION_ID ?? \"\"; } catch {}\n" +
+		"if (!v) { try { v = g.Deno?.env?.get(\"MCPX_PARENT_SESSION_ID\") ?? \"\"; } catch {} }\n" +
+		"console.log(JSON.stringify({ parent: v }));\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"psession": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	cc := config.CallContext{SessionID: "child-1", ParentSessionID: "parent-42"}
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "psession", cc, map[string]any{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a clean run is not an error: %s", raw)
+	}
+	joined := ""
+	for _, c := range res.Content {
+		joined += c.Text
+	}
+	if !strings.Contains(joined, "parent-42") {
+		t.Errorf("the caller's parent-session identity must reach the script via MCPX_PARENT_SESSION_ID, got: %s", raw)
+	}
+}

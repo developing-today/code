@@ -2338,7 +2338,7 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		return nil, err
 	}
 	if script != nil {
-		return r.callScriptWithLedger(ctx, p, server, effTool, script, effArgs, cc.SessionID, "call")
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "call")
 	}
 	defer r.joinAsk(ctx, server, rs.Key)()
 	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "call")

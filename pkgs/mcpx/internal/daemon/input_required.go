@@ -82,7 +82,7 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 		r.beginAsk(id, server, rs.Key, cc.SessionID)
 		defer r.endAsk(id)
 		ctx = withAskCall(ctx, id)
-		return r.callScriptWithLedger(ctx, p, server, effTool, script, effArgs, cc.SessionID, "reporting")
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "reporting")
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
