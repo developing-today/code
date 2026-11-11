@@ -683,17 +683,16 @@ func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Keep maxAge well beyond the test's sleeps. A one-second ceiling only
-	// left 200ms between reopening and expiry, making this persistence check
-	// fail under CI scheduling delays even when the touch was saved correctly.
-	st1.Configure(700*time.Millisecond, 5*time.Second)
-	task := completedTask(t, st1, 700, 0)
+	// Keep maxAge well beyond the test's timing window so the terminal-age
+	// ceiling cannot race this persistence check under CI scheduling delays.
+	st1.Configure(2*time.Second, 5*time.Second)
+	task := completedTask(t, st1, 2_000, 0)
 	initial, ok := st1.Get(task.TaskID)
 	if !ok || initial.ExpiresAt == nil {
 		t.Fatalf("terminal task has no initial expiry: %+v", initial)
 	}
 	originalExpiry := *initial.ExpiresAt
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(1_200 * time.Millisecond)
 	touched, ok := st1.Read(task.TaskID)
 	if !ok || touched.ExpiresAt == nil || touched.LastTouched == nil {
 		t.Fatalf("touch failed: %+v", touched)
@@ -702,7 +701,7 @@ func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
 	if err := st1.Close(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(400 * time.Millisecond) // past the original expiry, before the renewed expiry
+	time.Sleep(1_200 * time.Millisecond) // past the original expiry, before the renewed expiry
 	if time.Now().Before(originalExpiry) {
 		t.Fatal("test did not wait past the original expiry before reopening")
 	}
