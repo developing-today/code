@@ -788,6 +788,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn install_reports_failure_when_transfer_replay_still_fails() {
+        let (mut actor, _, journal, _, _) = transfer_actor(b"entity".to_vec(), true);
+        assert!(import(&mut actor).await.is_err());
+        assert_eq!(actor.pending_transfer_replays.len(), 1);
+
+        // A replacement that also rejects the pending import must not be
+        // acknowledged as a successful install: the world is still
+        // unhealthy and the receipt still withheld, so the install
+        // result (and its audit record) reports the replay failure
+        // (#3902).
+        let failing_replacement = TransferProgram {
+            payload: b"entity".to_vec(),
+            fail_apply: true,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: Arc::new(std::sync::Mutex::new(false)),
+            applied_events: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::InstallProgram {
+                module_hash: "module-hash".to_owned(),
+                seed: 0,
+                provenance: None,
+                installed_by: None,
+                trust: None,
+                program: Box::new(failing_replacement),
+                reply,
+            })
+            .await;
+        let error = response.await.unwrap().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("rejected a retained transfer replay"),
+            "the install result names the replay failure: {error:#}"
+        );
+        assert!(!actor.program_healthy);
+        assert_eq!(actor.pending_transfer_replays.len(), 1);
+
+        // Recovery is still possible: a program that accepts the replay
+        // installs successfully and drains the requirement.
+        let good_replacement = TransferProgram {
+            payload: b"entity".to_vec(),
+            fail_apply: false,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: Arc::new(std::sync::Mutex::new(false)),
+            applied_events: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::InstallProgram {
+                module_hash: "module-hash".to_owned(),
+                seed: 0,
+                provenance: None,
+                installed_by: None,
+                trust: None,
+                program: Box::new(good_replacement),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_ok());
+        assert!(actor.program_healthy);
+        assert!(actor.pending_transfer_replays.is_empty());
+    }
+
+    #[tokio::test]
     async fn entity_input_on_a_read_only_replica_never_reaches_the_program() {
         let (mut actor, token, _, _, applied) = transfer_actor(b"entity".to_vec(), false);
         actor.read_only = true;

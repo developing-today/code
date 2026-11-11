@@ -2394,6 +2394,7 @@ impl WorldActor {
                         // stay withheld (see transfer_replay_pending),
                         // and health is declared only once none remain.
                         let mut still_pending = Vec::new();
+                        let mut first_replay_error = None;
                         for transfer in self.core.handoff_transfers.clone() {
                             match self.program.update(&transfer.event) {
                                 Ok(()) => {}
@@ -2401,6 +2402,9 @@ impl WorldActor {
                                     tracing::error!(
                                         "world program rejected a transfer replay after install: {error:#}"
                                     );
+                                    if first_replay_error.is_none() {
+                                        first_replay_error = Some(error);
+                                    }
                                     still_pending.push(transfer);
                                 }
                             }
@@ -2422,8 +2426,19 @@ impl WorldActor {
                         match program_records(self.program.as_mut()) {
                             Ok(records) => {
                                 self.republished(records.unwrap_or_default(), event.sequence);
-                                let _ = self.event_sender.send(event.clone());
-                                Ok(event)
+                                if let Some(error) = first_replay_error {
+                                    // The install stands (it is journaled),
+                                    // but recovery is incomplete: report the
+                                    // replay failure as the install result
+                                    // instead of acknowledging success while
+                                    // the world stays unhealthy (#3902).
+                                    Err(error.context(
+                                        "world program rejected a retained transfer replay after install",
+                                    ))
+                                } else {
+                                    let _ = self.event_sender.send(event.clone());
+                                    Ok(event)
+                                }
                             }
                             Err(error) => {
                                 self.program_healthy = false;
