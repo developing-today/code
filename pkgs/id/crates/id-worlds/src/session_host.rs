@@ -77,6 +77,13 @@ impl ArtifactSink for Directory {
         Directory::receive_artifact(self, artifact)
     }
 
+    fn receive_artifact_with_outcome(
+        &mut self,
+        artifact: &SignedArtifact,
+    ) -> Result<(Stored, Option<id_sync::artifact::LegacyArtifactNote>)> {
+        Directory::receive_artifact_with_outcome(self, artifact)
+    }
+
     fn artifact_head_seq(&self, account: &str) -> u64 {
         self.artifacts().head_seq(account)
     }

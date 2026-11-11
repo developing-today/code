@@ -24,6 +24,16 @@
 //! artifact was legitimately stored does not brick replay of its log — the
 //! replay path (`parsed_for_replay`) carries each such grandfathered rule.
 //!
+//! Peer receipt has one chain-position legacy path for the old
+//! `home_declared` world-ID length bound (#4459): an artifact that extends
+//! its author's held chain at a position before the first artifact this
+//! receiver accepted under strict receipt may use the bounded legacy
+//! exception, recorded as a [`LegacyArtifactNote`] in the pull outcome.
+//! The cutoff comes only from the chain's signed links and this receiver's
+//! own strict-receipt history — never from a field the sender asserts, and
+//! the signed format carries no version marker; when an artifact's chain
+//! position cannot be established, receipt stays strict.
+//!
 //! An artifact may also name, in `after`, the hashes of artifacts its author
 //! had applied before writing it. Those names are signed, so a receiver can
 //! order concurrent statements; enforcing that order is up to the consumer.
@@ -254,12 +264,25 @@ fn check_key(key: &str) -> Result<()> {
     }
 }
 
+/// How a known-kind body is checked: strict live receipt, replay of
+/// history a log already holds, or the bounded legacy receipt (#4459).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseMode {
+    /// Every current rule applies.
+    Strict,
+    /// The bounds added for #3187 do not apply, so a declaration accepted
+    /// before them still replays.
+    Replay,
+    /// Only the `home_declared` world-ID byte bound is bypassed; every
+    /// other rule applies exactly as in [`ParseMode::Strict`].
+    LegacyReceive,
+}
+
 /// The `home_declared` rules, shared by receipt ([`SignedArtifact::parsed`])
 /// and the directory's producer seam ([`Directory::declare_home`]) so a
 /// declaration is refused before it is signed under the same rules that
-/// refuse it on receipt (#3187). With `replay` set, the bounds added for
-/// #3187 do not apply, so a declaration accepted before them still replays.
-pub fn check_home_declared(author: &str, body: &HomeDeclared, replay: bool) -> Result<()> {
+/// refuse it on receipt (#3187).
+pub fn check_home_declared(author: &str, body: &HomeDeclared, mode: ParseMode) -> Result<()> {
     check_key(&body.account)?;
     if author != body.account {
         return Err(forbidden(
@@ -278,7 +301,7 @@ pub fn check_home_declared(author: &str, body: &HomeDeclared, replay: bool) -> R
     for server in &body.servers {
         let target =
             check_target(&server.endpoint).map_err(|error| forbidden(format!("{error:#}")))?;
-        if !replay && targets.iter().any(|prior| prior.id == target.id) {
+        if mode != ParseMode::Replay && targets.iter().any(|prior| prior.id == target.id) {
             return Err(forbidden("a declaration names each endpoint at most once"));
         }
         targets.push(target);
@@ -287,10 +310,10 @@ pub fn check_home_declared(author: &str, body: &HomeDeclared, replay: bool) -> R
         if server.world_id.is_empty() {
             return Err(forbidden("a home server needs a world ID"));
         }
-        if replay {
+        if mode == ParseMode::Replay {
             continue;
         }
-        if server.world_id.len() > MAX_WORLD_ID_BYTES {
+        if mode != ParseMode::LegacyReceive && server.world_id.len() > MAX_WORLD_ID_BYTES {
             return Err(forbidden(format!(
                 "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
             )));
@@ -365,6 +388,22 @@ impl SignedArtifact {
     /// artifacts that receipt-side tests exist to refuse.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn sign_unchecked(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<Self> {
+        Self::build_signed(key, seq, prev, kind, body, Vec::new())
+    }
+
+    /// Sign without the known-kind body check, in the plain wire format:
+    /// the way artifacts minted before the #3187 strict receipt rules were
+    /// signed. The signed format has no version marker, so a legacy
+    /// artifact differs from a current one only in that its body may break
+    /// a rule added after it was minted. Test-only.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn sign_legacy_unchecked(
         key: &SigningKey,
         seq: u64,
         prev: &str,
@@ -501,7 +540,7 @@ impl SignedArtifact {
     /// Fails with [`Refusal::Forbidden`] when a known kind is malformed or its
     /// author may not make it.
     pub fn parsed(&self) -> Result<Option<Kind>> {
-        self.parsed_mode(false)
+        self.parsed_mode(ParseMode::Strict)
     }
 
     /// [`SignedArtifact::parsed`] for history a log already holds: the
@@ -509,10 +548,42 @@ impl SignedArtifact {
     /// accepted before them still replays (mirroring how replay skips the
     /// frame check in `store`). New receipts always go through `parsed`.
     pub fn parsed_for_replay(&self) -> Result<Option<Kind>> {
-        self.parsed_mode(true)
+        self.parsed_mode(ParseMode::Replay)
     }
 
-    fn parsed_mode(&self, replay: bool) -> Result<Option<Kind>> {
+    /// Strict receipt validation except for the legacy world-ID byte
+    /// bound, plus the typed note when that exception was used. Called
+    /// only after the author's chain position is classified as legacy
+    /// (see [`ArtifactLog::insert_received`]).
+    fn parsed_for_legacy_receive(&self) -> Result<(Option<Kind>, Option<LegacyArtifactNote>)> {
+        let kind = self.parsed_mode(ParseMode::LegacyReceive)?;
+        let note = match kind.as_ref() {
+            Some(Kind::HomeDeclared(declared)) => {
+                let world_ids: Vec<LegacyWorldIdBound> = declared
+                    .servers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, server)| server.world_id.len() > MAX_WORLD_ID_BYTES)
+                    .map(|(server_index, server)| LegacyWorldIdBound {
+                        server_index,
+                        bytes: server.world_id.len(),
+                    })
+                    .collect();
+                (!world_ids.is_empty()).then(|| LegacyArtifactNote {
+                    author: self.author.clone(),
+                    seq: self.seq,
+                    reason: LegacyArtifactReason::HomeDeclaredWorldIdOverBound {
+                        world_ids,
+                        max_bytes: MAX_WORLD_ID_BYTES,
+                    },
+                })
+            }
+            _ => None,
+        };
+        Ok((kind, note))
+    }
+
+    fn parsed_mode(&self, mode: ParseMode) -> Result<Option<Kind>> {
         match self.kind.as_str() {
             FRIEND_REMOVE => {
                 let body: FriendRemove = self.decode()?;
@@ -539,7 +610,7 @@ impl SignedArtifact {
                 // the #3187 grandfathering below: a removal stored before
                 // this rule still replays, and its effect on the
                 // removed-request set is idempotent.
-                if !replay {
+                if mode != ParseMode::Replay {
                     let mut named = HashSet::with_capacity(body.requests.len());
                     if body.requests.iter().any(|request| !named.insert(request)) {
                         return Err(forbidden("a friend removal names the same request twice"));
@@ -557,7 +628,7 @@ impl SignedArtifact {
             }
             HOME_DECLARED => {
                 let body: HomeDeclared = self.decode()?;
-                check_home_declared(&self.author, &body, replay)?;
+                check_home_declared(&self.author, &body, mode)?;
                 Ok(Some(Kind::HomeDeclared(body)))
             }
             DOCUMENT => {
@@ -568,7 +639,7 @@ impl SignedArtifact {
                 // The NFC rule (#3192) postdates logs the producer
                 // path legitimately wrote; replay grandfathers it
                 // (#5625), fresh receipt stays strict.
-                if !replay && !is_nfc(&body.media_type) {
+                if mode != ParseMode::Replay && !is_nfc(&body.media_type) {
                     return Err(forbidden("a document's media type is not NFC"));
                 }
                 let size = serde_json::to_vec(&body.content)
@@ -589,13 +660,15 @@ impl SignedArtifact {
                 if body.name.is_empty() || body.name.len() > 64 {
                     return Err(forbidden("a tag's name is 1 to 64 bytes"));
                 }
-                if !replay && !is_nfc(&body.name) {
+                if mode != ParseMode::Replay && !is_nfc(&body.name) {
                     return Err(forbidden("a tag's name is not NFC"));
                 }
                 if body.value.as_ref().is_some_and(|value| value.len() > 256) {
                     return Err(forbidden("a tag's value is at most 256 bytes"));
                 }
-                if !replay && body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
+                if mode != ParseMode::Replay
+                    && body.value.as_ref().is_some_and(|value| !is_nfc(value))
+                {
                     return Err(forbidden("a tag's value is not NFC"));
                 }
                 Ok(Some(Kind::Tag(body)))
@@ -619,11 +692,70 @@ pub enum Stored {
     Duplicate,
 }
 
+/// An accepted pre-cutoff artifact that needed a compatibility exception.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyArtifactNote {
+    /// The signing account.
+    pub author: String,
+    /// The position in the signing account's chain.
+    pub seq: u64,
+    /// The exact legacy condition tolerated.
+    pub reason: LegacyArtifactReason,
+}
+
+/// A narrowly tolerated condition on a legacy artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LegacyArtifactReason {
+    /// A legacy home declaration contains world IDs longer than the current bound.
+    HomeDeclaredWorldIdOverBound {
+        /// Offending servers and their UTF-8 byte lengths.
+        world_ids: Vec<LegacyWorldIdBound>,
+        /// Current maximum length in bytes.
+        max_bytes: usize,
+    },
+}
+
+/// The location and byte length of one legacy over-bound world ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyWorldIdBound {
+    /// Zero-based index in the declaration's `servers` list.
+    pub server_index: usize,
+    /// World ID length in UTF-8 bytes.
+    pub bytes: usize,
+}
+
+struct InsertOutcome {
+    stored: Stored,
+    kind: Option<Kind>,
+    legacy_note: Option<LegacyArtifactNote>,
+    /// The artifact also passes strict parsing, so accepting it sets the
+    /// author's chain-position cutoff for the legacy exception.
+    strict_valid: bool,
+}
+
 /// Every author's chain of verified artifacts, in sequence order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct ArtifactLog {
     chains: BTreeMap<String, Vec<SignedArtifact>>,
+    /// Per author, the first sequence number this receiver accepted that
+    /// also passes strict parsing: the chain-position cutoff for the
+    /// legacy exception (#4459). Receiver-side state only — it is derived
+    /// from artifacts this log itself verified, never from anything a
+    /// sender asserts. Replay does not set it, so after a restart the
+    /// cutoff is re-established by the first strict-valid receipt.
+    strict_since: BTreeMap<String, u64>,
 }
+
+// Two logs are equal when they hold the same chains: `strict_since` is
+// per-session receipt state (re-established after a restart), not part
+// of what a log holds.
+impl PartialEq for ArtifactLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.chains == other.chains
+    }
+}
+
+impl Eq for ArtifactLog {}
 
 impl ArtifactLog {
     /// Add an artifact to its author's chain, if it verifies and extends the chain.
@@ -638,20 +770,86 @@ impl ArtifactLog {
         self.store(artifact, true)
     }
 
+    /// Insert an artifact received from a peer, selecting receipt
+    /// validation from the artifact's per-account chain position
+    /// (#4459): the bounded legacy exception applies only to an artifact
+    /// that extends the held chain before this receiver's strict cutoff
+    /// for that author (see `strict_since`); anything else — including
+    /// an artifact whose chain position cannot be established from the
+    /// held chain's signed links — is validated strictly.
+    pub fn insert_received(
+        &mut self,
+        artifact: SignedArtifact,
+    ) -> Result<(Stored, Option<Kind>, Option<LegacyArtifactNote>)> {
+        let mode = self.receive_mode(&artifact);
+        let outcome = self.store_mode(artifact, true, mode)?;
+        Ok((outcome.stored, outcome.kind, outcome.legacy_note))
+    }
+
+    fn receive_mode(&self, artifact: &SignedArtifact) -> ParseMode {
+        let held = self
+            .chains
+            .get(&artifact.author)
+            .map_or(&[][..], Vec::as_slice);
+        let have = u64::try_from(held.len()).unwrap_or(u64::MAX);
+        let expected_prev = held
+            .last()
+            .map_or_else(String::new, |last| last.hash.clone());
+        // The position is established only by the signed chain links
+        // this log already holds: the artifact must be the exact next
+        // link (its signed `seq` and `prev`, both authenticity-checked
+        // in `store_mode` before anything is stored).
+        if artifact.seq != have.saturating_add(1) || artifact.prev != expected_prev {
+            return ParseMode::Strict;
+        }
+        match self.strict_since.get(&artifact.author) {
+            Some(&first_strict) if artifact.seq >= first_strict => ParseMode::Strict,
+            _ => ParseMode::LegacyReceive,
+        }
+    }
+
     /// [`ArtifactLog::insert`], with the frame check only when `frame_check` is set.
     /// Opening a file replays its lines without the check, so a line the file held
     /// before the check still loads.
     fn store(&mut self, artifact: SignedArtifact, frame_check: bool) -> Result<Stored> {
-        if frame_check {
-            artifact.verify()?;
-            artifact.parsed()?;
+        let mode = if frame_check {
+            ParseMode::Strict
         } else {
-            // Trusted local replay (open / open_read_only only): the
-            // grandfathered-rule twins. Remote receipt goes through
-            // `insert` and never reaches this branch (#5625).
-            artifact.verify_for_replay()?;
-            artifact.parsed_for_replay()?;
-        }
+            ParseMode::Replay
+        };
+        self.store_mode(artifact, frame_check, mode)
+            .map(|outcome| outcome.stored)
+    }
+
+    fn store_mode(
+        &mut self,
+        artifact: SignedArtifact,
+        frame_check: bool,
+        mode: ParseMode,
+    ) -> Result<InsertOutcome> {
+        let (kind, legacy_note, strict_valid) = match mode {
+            ParseMode::Strict => {
+                artifact.verify()?;
+                (artifact.parsed()?, None, true)
+            }
+            ParseMode::Replay => {
+                // Trusted local replay (open / open_read_only only): the
+                // grandfathered-rule twins. Remote receipt goes through
+                // `insert`/`insert_received` and never reaches this
+                // branch (#5625).
+                artifact.verify_for_replay()?;
+                (artifact.parsed_for_replay()?, None, false)
+            }
+            ParseMode::LegacyReceive => {
+                artifact.verify()?;
+                // An artifact that needs no exception — it also passes
+                // strict parsing — is a strict receipt for cutoff
+                // purposes: accepting it sets the author's cutoff.
+                let strict_valid = artifact.parsed().is_ok();
+                let (kind, note) = artifact.parsed_for_legacy_receive()?;
+                (kind, note, strict_valid)
+            }
+        };
         let size = encoded_len(&artifact);
         if frame_check && page_frame_bytes().saturating_add(size) > MAX_FRAME_BYTES {
             return Err(forbidden(format!(
@@ -671,7 +869,12 @@ impl ArtifactLog {
                 .get(usize::try_from(artifact.seq - 1)?)
                 .is_some_and(|at| at.hash == artifact.hash);
             return if same {
-                Ok(Stored::Duplicate)
+                Ok(InsertOutcome {
+                    stored: Stored::Duplicate,
+                    kind,
+                    legacy_note,
+                    strict_valid,
+                })
             } else {
                 Err(Refusal::Conflict(format!(
                     "artifact {} of this account is already held as a different one",
@@ -698,11 +901,24 @@ impl ArtifactLog {
             ))
             .into());
         }
+        let author = artifact.author.clone();
+        let seq = artifact.seq;
         self.chains
-            .entry(artifact.author.clone())
+            .entry(author.clone())
             .or_default()
             .push(artifact);
-        Ok(Stored::New)
+        if strict_valid {
+            let first = self.strict_since.entry(author).or_insert(seq);
+            if seq < *first {
+                *first = seq;
+            }
+        }
+        Ok(InsertOutcome {
+            stored: Stored::New,
+            kind,
+            legacy_note,
+            strict_valid,
+        })
     }
 
     /// Every held artifact, author by author, each in sequence order.
@@ -924,6 +1140,8 @@ pub struct PageOutcome {
     pub stored: usize,
     /// Artifacts already held.
     pub duplicates: usize,
+    /// Typed compatibility notes for legacy artifacts accepted in this page.
+    pub legacy: Vec<LegacyArtifactNote>,
     /// The first artifact refused. Nothing after it is applied, since later
     /// artifacts in a chain depend on it.
     pub refused: Option<PageRefusal>,
@@ -945,6 +1163,15 @@ pub trait ArtifactSink {
     /// Store one verified artifact, as `Directory::receive_artifact` does.
     fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored>;
 
+    /// [`Self::receive_artifact`], also reporting the typed legacy note
+    /// when the bounded legacy exception accepted the artifact (#4459).
+    fn receive_artifact_with_outcome(
+        &mut self,
+        artifact: &SignedArtifact,
+    ) -> Result<(Stored, Option<LegacyArtifactNote>)> {
+        self.receive_artifact(artifact).map(|stored| (stored, None))
+    }
+
     /// The sequence number of `account`'s newest artifact, or 0 for none.
     fn artifact_head_seq(&self, account: &str) -> u64;
 }
@@ -959,13 +1186,19 @@ pub fn apply_page<D: ArtifactSink>(
     let mut outcome = PageOutcome::default();
     for artifact in page {
         let refusal = if artifact.author == account {
-            match directory.receive_artifact(artifact) {
-                Ok(Stored::New) => {
+            match directory.receive_artifact_with_outcome(artifact) {
+                Ok((Stored::New, note)) => {
                     outcome.stored += 1;
+                    if let Some(note) = note {
+                        outcome.legacy.push(note);
+                    }
                     None
                 }
-                Ok(Stored::Duplicate) => {
+                Ok((Stored::Duplicate, note)) => {
                     outcome.duplicates += 1;
+                    if let Some(note) = note {
+                        outcome.legacy.push(note);
+                    }
                     None
                 }
                 Err(error) => Some(format!("{error:#}")),
@@ -1221,6 +1454,7 @@ pub async fn pull_within<D: ArtifactSink>(
         let outcome = apply_page(directory, account, &page);
         total.stored += outcome.stored;
         total.duplicates += outcome.duplicates;
+        total.legacy.extend(outcome.legacy);
         if outcome.refused.is_some() {
             total.refused = outcome.refused;
             break;

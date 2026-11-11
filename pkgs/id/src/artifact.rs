@@ -450,4 +450,199 @@ mod tests {
         assert!(outcome.refused.is_none());
         assert_eq!(reader.artifacts().head_seq(&ann), 100);
     }
+    /// #4459 regression, updated to the chain-position cutoff: a pull
+    /// crosses a pre-cutoff `home_declared` whose world ID is over the
+    /// strict bound, records the typed legacy note, and continues to the
+    /// author's later artifacts.
+    #[tokio::test]
+    async fn a_pull_continues_after_a_pre_cutoff_overlong_home_world_id() {
+        let ann = public(1);
+        let legacy = SignedArtifact::sign_legacy_unchecked(
+            &key(1),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({
+                "account": ann,
+                "servers": [{"endpoint": endpoint_of(7), "world_id": "w".repeat(65)}]
+            }),
+        )
+        .unwrap();
+        let strict = SignedArtifact::sign(
+            &key(1),
+            2,
+            &legacy.hash,
+            DOCUMENT,
+            json!({"media_type": "application/json", "content": {"text": "after legacy"}}),
+        )
+        .unwrap();
+
+        let world = WorldHandle::spawn(WorldCore::new("home", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, None);
+        for artifact in [&legacy, &strict] {
+            let outcome = service
+                .directory(
+                    Caller::default(),
+                    DirectoryAction::ReceiveArtifact {
+                        artifact: artifact.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.stored, Some(Stored::New));
+        }
+
+        let server = endpoint().await;
+        let _router = Router::builder(server.clone())
+            .accept(
+                PULL_ALPN,
+                ArtifactPullProtocol::new(WorldHub::single(service)),
+            )
+            .spawn();
+        let client = endpoint().await;
+        let mut away = Directory::new();
+        let outcome = pull(&client, loopback(&server), &ann, &mut away)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.stored, 2);
+        assert!(outcome.refused.is_none());
+        assert_eq!(away.artifacts().head_seq(&ann), 2);
+        assert_eq!(outcome.legacy.len(), 1);
+        assert_eq!(outcome.legacy[0].author, ann);
+        assert_eq!(outcome.legacy[0].seq, 1);
+        assert_eq!(
+            outcome.legacy[0].reason,
+            LegacyArtifactReason::HomeDeclaredWorldIdOverBound {
+                world_ids: vec![LegacyWorldIdBound {
+                    server_index: 0,
+                    bytes: 65,
+                }],
+                max_bytes: MAX_WORLD_ID_BYTES,
+            }
+        );
+        assert_eq!(
+            away.artifacts().declared(&public(1)).unwrap().servers[0].world_id,
+            "w".repeat(65)
+        );
+    }
+    /// #4459: the legacy exception bypasses only the world-ID bound, and
+    /// only before the author's chain-position cutoff — the first
+    /// position this receiver accepted under strict receipt. After the
+    /// cutoff, or where a chain position cannot be established, receipt
+    /// is fully strict.
+    #[test]
+    fn legacy_receipt_only_bypasses_the_world_id_bound_before_the_chain_position_cutoff() {
+        let oversized = json!({
+            "account": public(1),
+            "servers": [{"endpoint": endpoint_of(7), "world_id": "w".repeat(65)}]
+        });
+        let legacy =
+            SignedArtifact::sign_legacy_unchecked(&key(1), 1, "", HOME_DECLARED, oversized.clone())
+                .unwrap();
+        // Strict parsing refuses the over-bound declaration, and the
+        // current builder refuses to mint one (#5623 symmetry): the
+        // exception exists only on the receive path, before the cutoff.
+        assert!(legacy.parsed().is_err());
+        assert!(SignedArtifact::sign(&key(1), 1, "", HOME_DECLARED, oversized.clone()).is_err());
+
+        let mut receiver = Directory::new();
+        let (stored, note) = receiver.receive_artifact_with_outcome(&legacy).unwrap();
+        assert_eq!(stored, Stored::New);
+        assert!(note.is_some());
+
+        // A strictly valid artifact is accepted strictly: it sets the
+        // author's cutoff at its position.
+        let next = SignedArtifact::sign(
+            &key(1),
+            2,
+            &legacy.hash,
+            DOCUMENT,
+            json!({"media_type": "application/json", "content": null}),
+        )
+        .unwrap();
+        assert_eq!(receiver.receive_artifact(&next).unwrap(), Stored::New);
+
+        // At/after the cutoff the same over-bound declaration is refused.
+        let post_cutoff = SignedArtifact::sign_legacy_unchecked(
+            &key(1),
+            3,
+            &next.hash,
+            HOME_DECLARED,
+            oversized.clone(),
+        )
+        .unwrap();
+        assert!(receiver.receive_artifact(&post_cutoff).is_err());
+        assert_eq!(receiver.artifacts().head_seq(&public(1)), 2);
+
+        // Position cannot be established (a gap in a fresh receiver):
+        // validation stays strict, so the over-bound declaration refuses.
+        let gap = SignedArtifact::sign_legacy_unchecked(
+            &key(2),
+            9,
+            "",
+            HOME_DECLARED,
+            json!({
+                "account": public(2),
+                "servers": [{"endpoint": endpoint_of(7), "world_id": "w".repeat(65)}]
+            }),
+        )
+        .unwrap();
+        assert!(Directory::new().receive_artifact(&gap).is_err());
+
+        // Authenticity is strict at every position.
+        let mut tampered = legacy.clone();
+        tampered.body["servers"][0]["world_id"] = json!("changed".repeat(20));
+        let error = Directory::new().receive_artifact(&tampered).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::Unauthenticated(_))
+            ),
+            "{error:#}"
+        );
+
+        // Every other structural rule is strict in legacy receipt too.
+        let malformed_legacy = SignedArtifact::sign_legacy_unchecked(
+            &key(2),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({
+                "account": public(2),
+                "servers": [{"endpoint": "not an endpoint", "world_id": "w".repeat(65)}]
+            }),
+        )
+        .unwrap();
+        assert!(
+            Directory::new()
+                .receive_artifact(&malformed_legacy)
+                .is_err()
+        );
+    }
+    /// Compat pin (#4459 decision): the signed format does not change.
+    /// A newly signed artifact carries no version field, and its hash
+    /// and signature verify against `signed_bytes` exactly as an
+    /// unupgraded peer — which knows no version marker — computes them.
+    #[test]
+    fn a_newly_signed_artifact_verifies_under_the_pre_cutoff_signed_format() {
+        let artifact =
+            SignedArtifact::sign(&key(1), 1, "", "note", json!({"text": "compat"})).unwrap();
+        let wire = serde_json::to_value(&artifact).unwrap();
+        assert!(wire.get("format_version").is_none());
+        let bytes = signed_bytes(
+            &artifact.author,
+            artifact.seq,
+            &artifact.prev,
+            &artifact.kind,
+            &artifact.body,
+            &artifact.after,
+        )
+        .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("format_version"));
+        assert_eq!(artifact.hash, hex_encode(&Sha256::digest(&bytes)));
+        artifact.verify().unwrap();
+        let round_tripped: SignedArtifact = serde_json::from_value(wire).unwrap();
+        round_tripped.verify().unwrap();
+    }
 }
