@@ -229,6 +229,8 @@ pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+#[cfg(feature = "sandbox")]
+pub mod world_dev;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;

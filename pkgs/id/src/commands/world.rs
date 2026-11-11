@@ -736,6 +736,26 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             } = args;
             verify_fixture(&module, &fixture, seed, allow_partial)
         }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::Dev(args) => {
+            let crate::cli::WorldDevArgs {
+                dir,
+                platform,
+                roc,
+                seed,
+                inputs,
+            } = args;
+            let report = crate::world_dev::run_dev_once(
+                &dir,
+                platform.as_deref(),
+                roc.as_deref(),
+                seed,
+                &inputs,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         WorldCommand::List(args) => {
             let crate::cli::WorldListArgs {
                 node,
