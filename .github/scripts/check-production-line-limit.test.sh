@@ -27,12 +27,15 @@ gen() { # gen <path> <production-lines> [test-lines]
 mkdir -p "$TMP/ok/pkgs/id/src/web"
 gen "$TMP/ok/pkgs/id/src/small.rs" 100
 gen "$TMP/ok/pkgs/id/src/long_with_tests.rs" 100 5000
-# The real grandfathered path, over the limit: warning, not failure.
-gen "$TMP/ok/pkgs/id/src/world_session/mod.rs" 3000
+# The grandfather list is empty (world_session/mod.rs entry removed by
+# its #4717 split on main; web/markdown.rs entry removed by the #4704
+# split), so the compliant tree carries no grandfathered file. If a
+# future PR adds an entry, restore the fixture here: gen a 3000-line
+# file at the grandfathered path and grep the guard output for
+# "GRANDFATHERED <path>".
 bash "$SCRIPT" "$TMP/ok" >"$TMP/ok.out"
-grep -q "GRANDFATHERED pkgs/id/src/world_session/mod.rs" "$TMP/ok.out"
 grep -q "production-line-guard: OK" "$TMP/ok.out"
-echo "pass: compliant tree passes, grandfather reported"
+echo "pass: compliant tree passes"
 
 # Violating tree: one synthetic over-limit production file.
 mkdir -p "$TMP/bad/pkgs/id/src"
