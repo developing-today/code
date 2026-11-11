@@ -8442,6 +8442,66 @@ mod tests {
     }
 
     #[test]
+    fn claim_by_id_targets_exactly_the_named_task_7735() {
+        // #7735 oracle: a targeted claim is a claim of one row or
+        // no claim — it can never fall through to the queue's
+        // next-up row (the monitor's Duty 1B footgun: an untargeted
+        // claim fired on whatever was next). The by-id path reads
+        // the named row, flips it with an UPDATE keyed to that id
+        // plus the status it read, and reads the result back by
+        // the same id; it contains no pick at all.
+        let src = include_str!("turso_queue.rs");
+        // Bound the segment at claim_by_id's own closing brace:
+        // seg8217's usual end marker (claim_transfer) is defined
+        // BEFORE claim_by_id in this file, so its segment would
+        // run to EOF and the forbidden-needle checks below would
+        // trip on the pick function further down.
+        let seg = src
+            .split("fn claim_by_id(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n}\n")
+            .next()
+            .unwrap_or("");
+        assert!(
+            seg.contains("get_task(t, task_id)"),
+            "by-id claim reads the named row"
+        );
+        assert!(
+            seg.contains("WHERE id = ? AND status = ? AND queue = ?"),
+            "by-id claim's UPDATE is keyed to the named id and the status it read"
+        );
+        assert!(
+            seg.contains("SELECT {TASK_COLS} FROM tasks WHERE id = ?"),
+            "by-id claim reads its result back by the named id"
+        );
+        for forbidden in ["claim_pick_once(", "ORDER BY priority"] {
+            assert!(
+                !seg.contains(forbidden),
+                "by-id claim must never pick a different task: found {forbidden}"
+            );
+        }
+        // Predicate half, in the claim_race idiom: the named row is
+        // claimable while it is queued, and the instant it is
+        // claimed (by anyone) a targeted claim of it refuses —
+        // there is no state in which it silently substitutes the
+        // next queued row, which stays claimable under its own id.
+        let now = "2026-11-11T02:45:00Z";
+        let mut named = json!({
+            "status": "queued", "attempts": 0, "max_attempts": 6,
+            "not_before": null, "platform": null, "lane_id": null,
+        });
+        assert!(by_id_claimable(&named, now));
+        named["status"] = json!("claimed");
+        assert!(!by_id_claimable(&named, now));
+        let next = json!({
+            "status": "queued", "attempts": 0, "max_attempts": 6,
+            "not_before": null, "platform": null, "lane_id": null,
+        });
+        assert!(by_id_claimable(&next, now));
+    }
+
+    #[test]
     fn release_verb_contract_8217() {
         // Oracle: release is holder-checked and reason-required,
         // and returns the row to `queued` with its lease and
