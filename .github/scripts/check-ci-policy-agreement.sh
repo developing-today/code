@@ -218,22 +218,26 @@ push_targets_main() {
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", val)
       if (subkey == "branches") {
         seen_branches = 1
+        seen_branch_filter = 1
         branches_list = add_tokens(val)
       } else if (subkey == "branches-ignore") {
+        seen_branch_filter = 1
         ignore_list = add_tokens(val)
       } else if (subkey == "tags" || subkey == "tags-ignore") {
         seen_tags = 1
       }
       next
     }
-    inpush && /^      -[[:space:]]/ {
+    inpush && /^    (  )?-[[:space:]]/ {
       item = $0
-      sub(/^      -[[:space:]]*/, "", item)
+      sub(/^    (  )?-[[:space:]]*/, "", item)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") sub(/[[:space:]]#.*/, "", item)
       if (subkey == "branches") {
         seen_branches = 1
+        seen_branch_filter = 1
         branches_list = branches_list " " clean(item)
       } else if (subkey == "branches-ignore") {
+        seen_branch_filter = 1
         ignore_list = ignore_list " " clean(item)
       } else if (subkey == "tags" || subkey == "tags-ignore") {
         seen_tags = 1
@@ -254,6 +258,8 @@ push_targets_main() {
       } else if (seen_branches) {
         if (branches_allow_main(branches_list)) print "yes"
         else print "no"
+      } else if (seen_branch_filter) {
+        print "yes"
       } else if (seen_tags) {
         print "no"
       } else {

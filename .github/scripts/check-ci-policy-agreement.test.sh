@@ -294,4 +294,38 @@ fi
 grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-pattern_main.out"
 echo "pass: branches: ['m*'] satisfies the main leg (waiver stale)"
 
+
+# Codex P2 regressions on #8513 round 2: indentless block sequences
+# are valid YAML — items aligned with the filter key still count.
+build_tree "$TMP/filter-indentless"
+wf_raw "$TMP/filter-indentless" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches:
+    - main
+EOF
+if bash "$SCRIPT" "$TMP/filter-indentless" >"$TMP/filter-indentless.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for an indentless branches sequence" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-indentless.out"
+echo "pass: indentless branches sequence including main satisfies the main leg"
+
+# A branch filter that does not exclude main means branch pushes
+# run, even when a tag filter is also declared (the tag filter
+# governs tag pushes separately) — not a tags-only push.
+build_tree "$TMP/filter-ignore_plus_tags"
+wf_raw "$TMP/filter-ignore_plus_tags" mcpx-nixbuild.yml <<'EOF'
+  workflow_dispatch:
+  push:
+    branches-ignore: [release]
+    tags: ['v*']
+EOF
+if bash "$SCRIPT" "$TMP/filter-ignore_plus_tags" >"$TMP/filter-ignore_plus_tags.out" 2>&1; then
+  echo "FAIL: checker accepted a stale waiver for a branches-ignore + tags push" >&2
+  exit 1
+fi
+grep -q "STALE WAIVER mcpx-nixbuild.yml: main leg now agrees" "$TMP/filter-ignore_plus_tags.out"
+echo "pass: branches-ignore (not main) plus tags still satisfies the main leg"
+
 echo "check-ci-policy-agreement.test: all contract tests passed"
