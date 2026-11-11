@@ -2820,6 +2820,36 @@ mod tests {
                     "chat.history",
                     serde_json::json!({"count": 100_000}),
                 ),
+                (
+                    "hist-u32-overflow",
+                    "chat.history",
+                    serde_json::json!({"count": 4_294_967_296_u64}),
+                ),
+                (
+                    "hist-string",
+                    "chat.history",
+                    serde_json::json!({"count": "2"}),
+                ),
+                (
+                    "hist-negative",
+                    "chat.history",
+                    serde_json::json!({"count": -1}),
+                ),
+                (
+                    "hist-fractional",
+                    "chat.history",
+                    serde_json::json!({"count": 1.5}),
+                ),
+                (
+                    "hist-null",
+                    "chat.history",
+                    serde_json::json!({"count": null}),
+                ),
+                (
+                    "hist-object",
+                    "chat.history",
+                    serde_json::json!({"count": {"n": 2}}),
+                ),
             ]
             .into_iter()
             .filter(|(id, _, _)| !self.answered.contains(*id))
@@ -2882,6 +2912,22 @@ mod tests {
         assert_eq!(lines.len(), crate::world_caps::MAX_CHAT_HISTORY_LINES);
         assert_eq!(lines[0]["text"], "line-7");
         assert_eq!(lines[63]["text"], "line-70");
+        let large = &results["hist-u32-overflow"];
+        assert_eq!(large["ok"], true, "{large}");
+        assert_eq!(large["value"]["lines"], clamped["value"]["lines"]);
+        // A supplied count of the wrong JSON kind is rejected, never
+        // treated as omitted (#7892).
+        for id in [
+            "hist-string",
+            "hist-negative",
+            "hist-fractional",
+            "hist-null",
+            "hist-object",
+        ] {
+            let malformed = &results[id];
+            assert_eq!(malformed["ok"], false, "{id}: {malformed}");
+            assert_eq!(malformed["error"], "bad_args", "{id}: {malformed}");
+        }
         // records.read whose first record cannot fit one page is BadArgs,
         // never an empty page that looks complete.
         let oversized_result = &results["records-oversized"];
