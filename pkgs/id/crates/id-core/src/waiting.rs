@@ -394,6 +394,9 @@ where
         if self.by_key.contains_key(&key) {
             return Ok(());
         }
+        // Re-holding a handed-out key consumes its mark, as in
+        // [`restore`](Self::restore) (#7724).
+        self.handed_out.remove(&key);
         self.hold(author, key, HashSet::new(), event, arrived_at)
     }
 
@@ -532,6 +535,23 @@ where
         let ready = std::mem::take(&mut self.ready);
         self.handed_out.extend(self.ready_keys.drain());
         ready.into_iter().map(|(_, event)| event).collect()
+    }
+
+    /// Forget a handed-out key without recording an arrival: the
+    /// pool's owner has permanently dropped the event (refused it,
+    /// found it a duplicate in its own record, deleted its row), so
+    /// it will never arrive and its handed-out mark must not linger
+    /// (#7724, Codex review on PR #8439). The event store calls this
+    /// on its drop path (`Mirror::drop_row`): a released event that
+    /// is decided against there reaches neither
+    /// [`release`](Self::release) nor [`restore`](Self::restore),
+    /// and without this call each such event leaked one set entry
+    /// for the life of the pool, outside every cap. Forgetting a key
+    /// that is not handed out is a no-op. This records nothing else:
+    /// a later [`insert`](Self::insert) of the key is judged on the
+    /// other indexes exactly as before.
+    pub fn forget(&mut self, key: &K) {
+        self.handed_out.remove(key);
     }
 
     /// Move the events that have reached the age cap at `now_ms` into `expired`.
@@ -1068,5 +1088,17 @@ mod tests {
         // about the in-flight copy, not a duplicate arrival.
         pool.restore(author(1), 10, [30], "waiter", 0).unwrap();
         assert!(pool.contains(&10));
+        // And an owner that permanently drops a handed-out event
+        // finalizes it with forget: the mark clears, so a later
+        // insert of the key is a fresh arrival again (the store's
+        // drop_row path -- a refused released event must not leak
+        // its mark for the life of the pool).
+        pool.insert(author(1), 11, [], "dropped", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["dropped"]);
+        pool.insert(author(1), 11, [], "dropped-again", 0).unwrap();
+        assert!(pool.take_ready().is_empty());
+        pool.forget(&11);
+        pool.insert(author(1), 11, [], "dropped-again", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["dropped-again"]);
     }
 }
