@@ -737,7 +737,15 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Open Design",
       "options": {
-        "baseURL": "https://amr-link.open-design.ai/v1"
+        "baseURL": "https://amr-link.open-design.ai/v1",
+        // Membership caps declared on the provider definition (fork #2253): the
+        // router meters every start against this one account — 10 concurrent,
+        // 100 requests/minute — waits briefly for a slot, then fails over
+        // silently instead of letting a session see tier_limit_exceeded.
+        "membership": {
+          "concurrent": 10,
+          "requestsPerMinute": 100
+        }
       },
       "models": {
         "claude-haiku-5.5": {
