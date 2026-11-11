@@ -74,6 +74,9 @@ struct Model {
     arrived: BTreeSet<u32>,
     /// Ready events by key and id, so an arrival can drop its copy (#4730).
     ready: Vec<(u32, u32)>,
+    /// Keys handed out by `take_ready` or released by an arrival, not
+    /// yet arrived themselves: a re-insert is a duplicate (#7724).
+    handed_out: BTreeSet<u32>,
     expired: Vec<(u8, u32)>,
     /// Every event the model has expired, so that none is released later.
     ever_expired: BTreeSet<u32>,
@@ -87,6 +90,7 @@ impl Model {
             held: Vec::new(),
             arrived: BTreeSet::new(),
             ready: Vec::new(),
+            handed_out: BTreeSet::new(),
             expired: Vec::new(),
             ever_expired: BTreeSet::new(),
         }
@@ -115,7 +119,11 @@ impl Model {
     /// Returns `true` when the event is refused.
     fn insert(&mut self, author: u8, key: u32, deps: &[u32], id: u32, now: u64) -> bool {
         self.expire_due(now);
-        if self.arrived.contains(&key) || self.held.iter().any(|held| held.key == key) {
+        if self.arrived.contains(&key)
+            || self.held.iter().any(|held| held.key == key)
+            || self.ready.iter().any(|(ready_key, _)| *ready_key == key)
+            || self.handed_out.contains(&key)
+        {
             return false;
         }
         let missing: BTreeSet<u32> = deps
@@ -146,11 +154,13 @@ impl Model {
         self.expire_due(now);
         self.held.retain(|held| held.key != key);
         self.ready.retain(|(ready_key, _)| *ready_key != key);
+        self.handed_out.remove(&key);
         self.arrived.insert(key);
         let mut released = Vec::new();
         for mut held in std::mem::take(&mut self.held) {
             held.missing.remove(&key);
             if held.missing.is_empty() {
+                self.handed_out.insert(held.key);
                 released.push(held);
             } else {
                 self.held.push(held);
@@ -162,7 +172,10 @@ impl Model {
     fn take_ready(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.ready)
             .into_iter()
-            .map(|(_, id)| id)
+            .map(|(key, id)| {
+                self.handed_out.insert(key);
+                id
+            })
             .collect()
     }
 

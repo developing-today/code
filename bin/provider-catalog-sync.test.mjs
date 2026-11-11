@@ -185,6 +185,12 @@ test('prettifyModelName follows sibling display conventions', () => {
   assert.equal(prettifyModelName('claude-haiku-5-5'), 'Claude Haiku 5.5');
 });
 
+test('prettifyModelName treats prototype-spelling brand ids as ordinary unknown tokens', () => {
+  for (const token of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    assert.equal(prettifyModelName(token), token.charAt(0).toUpperCase() + token.slice(1));
+  }
+});
+
 test('makeEntry: name-only block yields a name-only entry with the block suffix', () => {
   const siblings = parseJsonc(FIXTURE).provider['name-only-b'].models;
   const e = makeEntry('name-only-b', 'acme/turbo-3', siblings, null);

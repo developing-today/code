@@ -748,6 +748,11 @@ export interface TodayView {
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, medium: 2, low: 3 };
 
+function priorityRank(priority: string | undefined): number {
+  const key = (priority ?? "normal").toLowerCase();
+  return Object.hasOwn(PRIORITY_ORDER, key) ? PRIORITY_ORDER[key] : 2;
+}
+
 /**
  * The orchestrator sometimes publishes `progressedSinceLastRun` as a
  * single string rather than a list (its declared shape). Normalize at
@@ -840,8 +845,7 @@ export function deriveToday(
     }
   }
   const byPriority = (a: BoardItem, b: BoardItem) =>
-    (PRIORITY_ORDER[(a.priority ?? "normal").toLowerCase()] ?? 2) -
-      (PRIORITY_ORDER[(b.priority ?? "normal").toLowerCase()] ?? 2) ||
+    priorityRank(a.priority) - priorityRank(b.priority) ||
     (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
   for (const item of board
     .filter((b) => b.status === "in-progress")

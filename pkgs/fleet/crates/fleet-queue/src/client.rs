@@ -845,6 +845,69 @@ pub(crate) fn list_limit_or_default(raw: Option<i64>) -> Result<i64, String> {
     validate_list_limit(raw.unwrap_or(LIST_LIMIT_DEFAULT))
 }
 
+/// The accepted ranges for the queue duration flags (#6420; design
+/// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
+/// REJECTED, never clamped, at both the client and the broker).
+/// A 0/negative lease is born expired, a 0/negative heartbeat extend
+/// lapses the holder's own claim, and a negative park delay puts
+/// `not_before` in the past and silently defeats the park; an
+/// unbounded value overflows the SQL `integer` RPC parameters.
+/// Maxima: a lease or extend beyond a day defeats the expiry the
+/// lease exists to provide; a park delay beyond the dep-block TTL
+/// ceiling (7 days, #8276) outlives every broker wait.
+pub(crate) const LEASE_SECONDS_MAX: i64 = 86_400;
+pub(crate) const LEASE_SECONDS_DEFAULT: i64 = 2_700;
+pub(crate) const EXTEND_SECONDS_MAX: i64 = 86_400;
+pub(crate) const EXTEND_SECONDS_DEFAULT: i64 = 900;
+pub(crate) const DELAY_SECONDS_MAX: i64 = 604_800;
+
+/// Validate one duration flag's value against `1..=max`; the error
+/// names the flag so a usage failure points at it. Zero is rejected
+/// for every flag: for `--delay-seconds` that is the explicit #6420
+/// decision — a park that waits zero seconds is a requeue, and a
+/// requeue already has its own verb (`release`).
+pub(crate) fn validate_duration(flag: &str, value: i64, max: i64) -> Result<i64, String> {
+    if (1..=max).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "argument --{flag}: value {value} out of range 1..={max}"
+        ))
+    }
+}
+
+/// Validate a `claim --lease-seconds` value against
+/// `1..=LEASE_SECONDS_MAX`; the error names `--lease-seconds`.
+pub(crate) fn validate_lease_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("lease-seconds", value, LEASE_SECONDS_MAX)
+}
+
+/// The `claim --lease-seconds` value for a call: the flag's value
+/// validated, or the unchanged default when the flag is absent.
+pub(crate) fn lease_seconds_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_lease_seconds(raw.unwrap_or(LEASE_SECONDS_DEFAULT))
+}
+
+/// Validate a `heartbeat --extend-seconds` value against
+/// `1..=EXTEND_SECONDS_MAX`; the error names `--extend-seconds`.
+pub(crate) fn validate_extend_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("extend-seconds", value, EXTEND_SECONDS_MAX)
+}
+
+/// The `heartbeat --extend-seconds` value for a call: the flag's
+/// value validated, or the unchanged default when the flag is absent.
+pub(crate) fn extend_seconds_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_extend_seconds(raw.unwrap_or(EXTEND_SECONDS_DEFAULT))
+}
+
+/// Validate a `park --delay-seconds` value against
+/// `1..=DELAY_SECONDS_MAX`; the error names `--delay-seconds`.
+/// (No default: the flag is optional, and an absent flag leaves
+/// `delay_seconds` out of the park request entirely.)
+pub(crate) fn validate_delay_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("delay-seconds", value, DELAY_SECONDS_MAX)
+}
+
 fn env_or_default(value: Option<&str>, default: &str) -> String {
     value
         .map(str::trim)
@@ -884,6 +947,22 @@ fn default_queue() -> String {
 
 fn opt_queue(args: &Args) -> String {
     args.get("queue").unwrap_or_else(default_queue)
+}
+
+/// The claim command's queue resolution (#8097 one-queue
+/// model): an explicit --queue wins, then the
+/// REPO_QUEUE_DEFAULT_QUEUE env; with neither, the claim is
+/// UNSCOPED (None) and the broker claims across the one fleet
+/// queue in priority order. Every other command keeps
+/// opt_queue's built-in default.
+fn opt_queue_claim(args: &Args) -> Option<String> {
+    if let Some(q) = args.get("queue") {
+        return Some(q);
+    }
+    std::env::var("REPO_QUEUE_DEFAULT_QUEUE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn opt_worker(args: &Args) -> String {
@@ -1322,16 +1401,43 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "model-provider",
             "model-id",
             "model-variant",
+            "filter",
+            "pool",
         ],
         &["handoff"],
     );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
+    let lease_seconds = match lease_seconds_or_default(args.get_i64("lease-seconds")) {
+        Ok(v) => v,
+        Err(e) => die(2, &e),
+    };
     let mut body = json!({
-        "queue": opt_queue(&args),
         "worker": worker,
-        "lease_seconds": args.get_i64("lease-seconds").unwrap_or(2700),
+        "lease_seconds": lease_seconds,
     });
+    // One-queue model (#8097, 2026-11-10): a claim with no
+    // --queue (and no REPO_QUEUE_DEFAULT_QUEUE in the env) is
+    // UNSCOPED — the broker claims across the one fleet queue
+    // in priority order. An explicit --queue still scopes the
+    // claim to one stream exactly as before, so existing shift
+    // bodies keep working unchanged.
+    if let Some(q) = opt_queue_claim(&args) {
+        body["queue"] = json!(q);
+    }
+    // --filter '<expr>': the claimer-side boolean filter
+    // expression over task metadata (repo, queue, pool,
+    // platform, label, kind, priority, lane, model), evaluated
+    // by the broker inside the claim. Absent: no filtering.
+    if let Some(f) = args.get("filter") {
+        body["filter"] = json!(f);
+    }
+    // --pool <name>: the claimer's declared pool identity,
+    // recorded like the other claim marks and used only to
+    // satisfy a task's own requires.pool.
+    if let Some(p) = args.get("pool") {
+        body["pool"] = json!(p);
+    }
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
@@ -1759,13 +1865,17 @@ fn cmd_heartbeat(rest: &[String]) -> i32 {
         &[],
     );
     reject_extra_pos("heartbeat", &args, 1);
+    let extend_seconds = match extend_seconds_or_default(args.get_i64("extend-seconds")) {
+        Ok(v) => v,
+        Err(e) => die(2, &e),
+    };
     let resp = unwrap_ok_fb(
         call_fb(
             "/heartbeat",
             &json!({
                 "task_id": args.pos_i64(0, "task_id"),
                 "worker": opt_worker(&args),
-                "extend_seconds": args.get_i64("extend-seconds").unwrap_or(900),
+                "extend_seconds": extend_seconds,
                 "progress": progress_arg(&args),
             }),
         ),
@@ -1831,6 +1941,10 @@ fn cmd_park(rest: &[String]) -> i32 {
     if let Some(nb) = args.get("not-before") {
         body["not_before"] = json!(nb);
     } else if let Some(d) = args.get_i64("delay-seconds") {
+        let d = match validate_delay_seconds(d) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["delay_seconds"] = json!(d);
     }
     if let Some(rc_raw) = args.get("ready-condition") {
@@ -2179,8 +2293,15 @@ fn cmd_complete(rest: &[String]) -> i32 {
     0
 }
 
+/// Value flags the `health` verb accepts (#7349). `--worker` is
+/// accepted for attribution only: the opencode-claimant packet
+/// mandates `--worker` on every verb, and a packet-literal fire used
+/// to abort on its first health call. It changes neither the request
+/// body nor the printed table.
+const HEALTH_FLAGS: &[&str] = &["queue", "worker"];
+
 fn cmd_health(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &[]);
+    let args = parse_args(rest, HEALTH_FLAGS, &[]);
     reject_extra_pos("health", &args, 0);
     let mut body = json!({});
     if let Some(q) = args.get("queue") {
@@ -2414,25 +2535,93 @@ fn cmd_outbox_resolve(rest: &[String]) -> i32 {
     0
 }
 
-/// Run one `gh` command and capture (success, stdout, stderr)
-/// without a shell — arguments never pass through shell expansion.
-fn gh_run(argv: &[String]) -> (bool, String, String) {
-    match std::process::Command::new("gh").args(argv).output() {
-        Ok(out) => (
-            out.status.success(),
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ),
-        Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+/// How one `gh` invocation is run. Production runs the real `gh`
+/// binary; tests substitute a stub binary through this seam so the
+/// exact argv and the failure shapes are observable (#8361 — the
+/// creation-outbox production leg previously had no seam at all and
+/// its marker search was never exercised by a test).
+#[derive(Debug, Clone)]
+struct GhRunner {
+    bin: String,
+}
+
+impl GhRunner {
+    fn system() -> Self {
+        let bin = std::env::var("FLEET_QUEUE_GH_BIN")
+            .ok()
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "gh".to_string());
+        GhRunner { bin }
+    }
+
+    fn with_bin(bin: impl Into<String>) -> Self {
+        GhRunner { bin: bin.into() }
+    }
+
+    /// Run one `gh` command and capture (success, stdout, stderr)
+    /// without a shell — arguments never pass through shell expansion.
+    fn run(&self, argv: &[String]) -> (bool, String, String) {
+        match std::process::Command::new(&self.bin).args(argv).output() {
+            Ok(out) => (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ),
+            Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+        }
+    }
+
+    /// Run one `gh` command expecting JSON on stdout. A failure is
+    /// an `Err` carrying the error class derived from stderr —
+    /// never a silent `None` — so callers that must distinguish
+    /// "checked and absent" from "could not check" can (#8361).
+    fn json(&self, argv: &[String]) -> Result<Value, String> {
+        let (ok, stdout, stderr) = self.run(argv);
+        if !ok {
+            return Err(gh_error_class(&stderr));
+        }
+        serde_json::from_str(&stdout).map_err(|_| "unparseable_json".to_string())
     }
 }
 
-fn gh_json(argv: &[String]) -> Option<Value> {
-    let (ok, stdout, _) = gh_run(argv);
-    if !ok {
-        return None;
+/// Classify a failed `gh` invocation's stderr into the error-class
+/// vocabulary recorded in an outbox entry's `last_error_class`.
+fn gh_error_class(stderr: &str) -> String {
+    let lower = stderr.to_lowercase();
+    if lower.contains("rate limit")
+        || lower.contains("submitted too quickly")
+        || lower.contains("429")
+    {
+        "rate_limit".to_string()
+    } else if lower.contains("404") {
+        "http_404".to_string()
+    } else if lower.contains("403") {
+        "http_403".to_string()
+    } else if lower.contains("cannot run gh") {
+        "spawn_failed".to_string()
+    } else if stderr.trim().is_empty() {
+        "gh_failed_no_stderr".to_string()
+    } else {
+        "gh_failed".to_string()
     }
-    serde_json::from_str(&stdout).ok()
+}
+
+/// The three-way result of a marker lookup (#8361). The old
+/// `Option` collapsed "the search ran and found nothing" into the
+/// same `None` as "the search itself failed", and the drain loop
+/// re-created on both — duplicating objects whose create had
+/// actually landed.
+#[derive(Debug, Clone, PartialEq)]
+enum MarkerLookup {
+    Found(i64, String),
+    /// The search completed and no listed object carries the marker:
+    /// absence is proven, re-creating is safe.
+    Absent,
+    /// The lookup could not be performed (non-2xx, transport error,
+    /// unparseable response). Absence is NOT proven: the entry must
+    /// stay uncertain and must never be re-created on this. Carries
+    /// the stderr error class.
+    CouldNotCheck(String),
 }
 
 fn s(v: &Value, key: &str) -> String {
@@ -2445,7 +2634,21 @@ fn s(v: &Value, key: &str) -> String {
 /// The drainer's GitHub leg (production `Creator` for the
 /// creation_outbox state machine): submits with the entry's marker
 /// in the body, classifies the result, and verifies by read-back.
-struct GhCreator;
+struct GhCreator {
+    gh: GhRunner,
+}
+
+impl GhCreator {
+    fn new() -> Self {
+        GhCreator {
+            gh: GhRunner::system(),
+        }
+    }
+
+    fn with_runner(gh: GhRunner) -> Self {
+        GhCreator { gh }
+    }
+}
 
 impl GhCreator {
     fn create(&mut self, entry: &Value) -> crate::creation_outbox::CreateOutcome {
@@ -2521,7 +2724,7 @@ impl GhCreator {
             ],
             other => return CreateOutcome::Failed(format!("unknown outbox kind {other:?}")),
         };
-        let (ok, stdout, stderr) = gh_run(&argv);
+        let (ok, stdout, stderr) = self.gh.run(&argv);
         if !ok {
             let lower = stderr.to_lowercase();
             if lower.contains("403")
@@ -2553,11 +2756,19 @@ impl GhCreator {
     }
 
     fn read_back(&mut self, entry: &Value, number: i64) -> bool {
+        matches!(self.read_back_checked(entry, number), Ok(true))
+    }
+
+    /// The read-back with the failure kept: `Err(class)` when the
+    /// verifying call itself could not be performed, so a marker
+    /// lookup never mistakes a failed verification for a proven
+    /// absence (#8361).
+    fn read_back_checked(&mut self, entry: &Value, number: i64) -> Result<bool, String> {
         let repo = s(entry, "repo");
         let kind = s(entry, "kind");
         let id = s(entry, "id");
         let obj = match kind.as_str() {
-            "issue" => gh_json(&[
+            "issue" => self.gh.json(&[
                 "issue".into(),
                 "view".into(),
                 number.to_string(),
@@ -2565,8 +2776,8 @@ impl GhCreator {
                 repo,
                 "--json".into(),
                 "number,url,body".into(),
-            ]),
-            "pull_request" => gh_json(&[
+            ])?,
+            "pull_request" => self.gh.json(&[
                 "pr".into(),
                 "view".into(),
                 number.to_string(),
@@ -2574,37 +2785,50 @@ impl GhCreator {
                 repo,
                 "--json".into(),
                 "number,url,body".into(),
-            ]),
-            _ => gh_json(&[
+            ])?,
+            _ => self.gh.json(&[
                 "api".into(),
                 format!("repos/{repo}/issues/comments/{number}"),
-            ]),
+            ])?,
         };
-        match obj {
-            Some(v) => crate::creation_outbox::marker_id(&s(&v, "body")) == Some(id),
-            None => false,
-        }
+        Ok(crate::creation_outbox::marker_id(&s(&obj, "body")) == Some(id))
     }
 
-    fn find_by_marker(&mut self, entry: &Value) -> Option<(i64, String)> {
+    /// Reconcile an uncertain entry by searching for its marker.
+    /// Three-way (#8361): the search is issued as a GET — the old
+    /// `gh api search/issues -f q=...` form makes gh use POST,
+    /// /search/issues has no POST route (404), and the failure read
+    /// as proven absence, so every uncertain entry was re-created.
+    fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
         let id = s(entry, "id");
         let q = format!("repo:{repo} fleet-outbox:{id}");
-        let results = gh_json(&[
+        let results = match self.gh.json(&[
             "api".into(),
+            "--method".into(),
+            "GET".into(),
             "search/issues".into(),
             "-f".into(),
             format!("q={q}"),
-        ])?;
-        let items = results.get("items").and_then(|i| i.as_array())?;
+        ]) {
+            Ok(v) => v,
+            Err(class) => return MarkerLookup::CouldNotCheck(class),
+        };
+        let Some(items) = results.get("items").and_then(|i| i.as_array()) else {
+            return MarkerLookup::CouldNotCheck("unexpected_search_shape".to_string());
+        };
         for item in items {
-            let number = item.get("number").and_then(|n| n.as_i64())?;
+            let Some(number) = item.get("number").and_then(|n| n.as_i64()) else {
+                continue;
+            };
             let url = s(item, "html_url");
-            if self.read_back(entry, number) {
-                return Some((number, url));
+            match self.read_back_checked(entry, number) {
+                Ok(true) => return MarkerLookup::Found(number, url),
+                Ok(false) => {}
+                Err(class) => return MarkerLookup::CouldNotCheck(class),
             }
         }
-        None
+        MarkerLookup::Absent
     }
 }
 
@@ -2616,7 +2840,7 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
         .get("owner")
         .unwrap_or_else(|| "outbox-drainer".to_string());
     let max = args.get_i64("max").unwrap_or(20).max(1);
-    let mut creator = GhCreator;
+    let mut creator = GhCreator::new();
     let mut processed = 0i64;
     let mut last_create: Option<std::time::Instant> = None;
     for _ in 0..max {
@@ -2636,7 +2860,7 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
         // Uncertain first: reconcile by marker, never blind-retry.
         if state == "uncertain" {
             match creator.find_by_marker(&row) {
-                Some((number, url)) => {
+                MarkerLookup::Found(number, url) => {
                     let resp = outbox_resolve(
                         &id,
                         "done",
@@ -2648,9 +2872,26 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
                     );
                     continue;
                 }
-                None => {
+                MarkerLookup::Absent => {
                     // Marker search proves absence: fall through and
                     // re-create under the same entry.
+                }
+                MarkerLookup::CouldNotCheck(class) => {
+                    // The lookup itself failed (#8361): absence is
+                    // NOT proven. Keep the entry uncertain (the
+                    // resolve applies the backoff) with the error
+                    // class recorded, and never re-create on an
+                    // unchecked lookup.
+                    let resp = outbox_resolve(
+                        &id,
+                        "uncertain",
+                        json!({"error": format!("marker lookup could not check: {class}")}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "lookup_unchecked", "error_class": class, "row": resp.get("row")})
+                    );
+                    continue;
                 }
             }
         }
@@ -3095,6 +3336,69 @@ mod tests {
     }
 
     #[test]
+    fn duration_flags_range_is_validated() {
+        // #6420: 0/negative durations corrupt claim state (a lease
+        // born expired, a heartbeat that lapses its own claim, a park
+        // whose not_before lands in the past) and unbounded values
+        // overflow the SQL integer RPC parameters. Out-of-range is a
+        // usage error naming the flag (design #6448 Phase 3: reject,
+        // not clamp). Park delay 0 is rejected by explicit decision:
+        // a zero-wait park is a requeue, which has its own verb.
+        for bad in [0, -1, LEASE_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_lease_seconds(bad)
+                .err()
+                .expect("out-of-range --lease-seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, EXTEND_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_extend_seconds(bad)
+                .err()
+                .expect("out-of-range --extend-seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, DELAY_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_delay_seconds(bad)
+                .err()
+                .expect("out-of-range --delay-seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        // Boundaries and ordinary values pass through unchanged.
+        assert_eq!(validate_lease_seconds(1), Ok(1));
+        assert_eq!(
+            validate_lease_seconds(LEASE_SECONDS_MAX),
+            Ok(LEASE_SECONDS_MAX)
+        );
+        assert_eq!(validate_extend_seconds(1), Ok(1));
+        assert_eq!(
+            validate_extend_seconds(EXTEND_SECONDS_MAX),
+            Ok(EXTEND_SECONDS_MAX)
+        );
+        assert_eq!(validate_delay_seconds(1), Ok(1));
+        assert_eq!(
+            validate_delay_seconds(DELAY_SECONDS_MAX),
+            Ok(DELAY_SECONDS_MAX)
+        );
+        // Absent flags keep the existing defaults (claim 2700,
+        // heartbeat 900).
+        assert_eq!(lease_seconds_or_default(None), Ok(2700));
+        assert_eq!(extend_seconds_or_default(None), Ok(900));
+        assert_eq!(lease_seconds_or_default(Some(0)), validate_lease_seconds(0));
+        assert_eq!(
+            extend_seconds_or_default(Some(-1)),
+            validate_extend_seconds(-1)
+        );
+    }
+
+    #[test]
     fn well_formed_invocation_is_unchanged() {
         // Control (#5939 acceptance): list --queue alpha records
         // queue=alpha and the absent --limit defaults at the call site.
@@ -3103,6 +3407,43 @@ mod tests {
             .expect("well-formed invocation parses");
         assert_eq!(args.get("queue"), Some("alpha".to_string()));
         assert_eq!(args.get_i64("limit").unwrap_or(20), 20);
+    }
+
+    #[test]
+    fn health_accepts_worker_flag() {
+        // #7349 regression, oracle: the health verb's CLI flag set
+        // accepts the same `--worker` the mutating verbs accept. The
+        // value is attribution only — it never reaches the request
+        // body — but a packet-literal claimant fire
+        // (`health ... --worker opencode-claimant`) must not abort on
+        // its first call with "unrecognized argument".
+        let args = parse_args_inner(
+            &pos(&[
+                "--queue",
+                "repo-health-code-pilot",
+                "--worker",
+                "opencode-claimant",
+            ]),
+            HEALTH_FLAGS,
+            &[],
+        )
+        .ok()
+        .expect("health must accept --worker");
+        assert_eq!(
+            args.get("queue"),
+            Some("repo-health-code-pilot".to_string())
+        );
+        assert_eq!(args.get("worker"), Some("opencode-claimant".to_string()));
+
+        // Acceptance: health without --worker is unchanged.
+        let args = parse_args_inner(&pos(&["--queue", "q"]), HEALTH_FLAGS, &[])
+            .ok()
+            .expect("health without --worker parses");
+        assert_eq!(args.get("queue"), Some("q".to_string()));
+        assert_eq!(args.get("worker"), None);
+
+        // The acceptance is narrow: unrelated flags stay rejected.
+        assert!(parse_args_inner(&pos(&["--bogus", "x"]), HEALTH_FLAGS, &[]).is_err());
     }
 
     /// One spelling of a value flag: `--flag value` or `--flag=value`.
@@ -3409,5 +3750,137 @@ mod tests {
             "{args:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- #8361: GhCreator marker-search seam tests ----
+    // Oracle: the production drainer's reconciliation leg, driven
+    // through a stub `gh` binary that logs its argv and plays back
+    // canned responses. The argv log is the evidence for the GET
+    // shape; the stub's exit/stderr shapes drive the three-way
+    // lookup (found / checked-absent / could-not-check).
+
+    fn stub_gh_8361(tag: &str, script: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-queue-ghcreator-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("argv.log");
+        let bin = dir.join("gh");
+        let full = format!("#!/bin/sh\necho \"$@\" >> '{}'\n{}", log.display(), script);
+        std::fs::write(&bin, full).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (bin, log)
+    }
+
+    fn outbox_entry_8361() -> Value {
+        json!({
+            "id": "OB-test-1",
+            "repo": "developing-today/code",
+            "kind": "issue",
+            "payload": {"title": "t", "body": "b"},
+        })
+    }
+
+    #[test]
+    fn marker_search_is_a_get_and_finds_the_landed_marker() {
+        let (bin, log) = stub_gh_8361(
+            "found",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":42,"html_url":"https://github.com/developing-today/code/issues/42"}]}' ;;
+  *view*) printf '%s' '{"number":42,"url":"https://github.com/developing-today/code/issues/42","body":"landed <!-- fleet-outbox:OB-test-1 -->"}' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        let found = creator.find_by_marker(&outbox_entry_8361());
+        assert_eq!(
+            found,
+            MarkerLookup::Found(
+                42,
+                "https://github.com/developing-today/code/issues/42".to_string()
+            )
+        );
+        let argv_log = std::fs::read_to_string(&log).unwrap();
+        let search_line = argv_log
+            .lines()
+            .find(|l| l.contains("search/issues"))
+            .expect("the stub must have seen the search call");
+        assert!(
+            search_line.contains("--method GET"),
+            "marker search must be a GET, argv was: {search_line}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_404_is_could_not_check_not_absent() {
+        let (bin, _log) = stub_gh_8361("e404", "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_403_is_could_not_check_not_absent() {
+        let (bin, _log) = stub_gh_8361("e403", "echo 'gh: Forbidden (HTTP 403)' >&2\nexit 1\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_403".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_empty_result_is_checked_absent() {
+        let (bin, _log) =
+            stub_gh_8361("absent", "printf '%s' '{\"total_count\":0,\"items\":[]}'\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::Absent
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_unparseable_is_could_not_check() {
+        let (bin, _log) = stub_gh_8361("garbage", "printf '%s' 'not json'\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("unparseable_json".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_failed_candidate_readback_is_could_not_check() {
+        let (bin, _log) = stub_gh_8361(
+            "readback404",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":42,"html_url":"https://github.com/developing-today/code/issues/42"}]}' ;;
+  *view*) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
     }
 }

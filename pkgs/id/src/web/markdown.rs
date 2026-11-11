@@ -1184,7 +1184,7 @@ pub fn raw_text_to_prosemirror(text: &str) -> Value {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -1829,6 +1829,55 @@ mod tests {
             markdown_to_prosemirror(&saved),
             markdown_to_prosemirror(original),
             "saving and reopening must keep all blocks inside one blockquote: {saved:?}"
+        );
+    }
+
+    #[test]
+    fn test_blockquote_leading_block_round_trips_without_extra_blank_lines() {
+        // #1002: comrak's formatter inserts empty quote lines before a
+        // quote's first block when it is a fence, table, or rule unless
+        // the save path strips them. Inputs use the renderer's canonical
+        // spellings (padded table delimiters, `-----` rules, `"> "` blank
+        // quote lines), so the first save is byte-identical and stable.
+        // The last two cases are controls: quotes starting with a
+        // paragraph, and a paragraph-then-fence quote whose single
+        // interior separator must survive.
+        for original in [
+            "> ```rust\n> code\n> ```\n",
+            "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
+            "> -----\n> \n> after\n",
+            "> > ```rust\n> > code\n> > ```\n",
+            "> ```rust\n> code\n> ```\n\n> second\n",
+            "> paragraph\n",
+            "> # heading\n",
+            "> - item\n",
+            "> paragraph\n> \n> ```rust\n> code\n> ```\n",
+        ] {
+            let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+            assert_eq!(saved, original, "first save polluted {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&saved),
+                markdown_to_prosemirror(original),
+                "structure changed for {original:?}"
+            );
+            let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+            assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+        }
+        // Unpadded table delimiters still take comrak's canonical padded
+        // spelling (pre-existing behaviour, also outside quotes), but the
+        // save must not add leading blank quote lines and must reopen to
+        // the same document.
+        let unpadded = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(unpadded)).unwrap();
+        assert_eq!(
+            saved,
+            "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
+            "table canonicalized without leading blanks: {saved:?}"
+        );
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(unpadded),
+            "table structure changed"
         );
     }
 

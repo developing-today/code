@@ -181,8 +181,13 @@ func TestTheGuardWouldHaveCaughtWhatItMissed(t *testing.T) {
 	for _, line := range []string{
 		"for i := 0; i < len(rows); i++ {",
 		"return fmt.Sprintf(\"%d\", n)",
-		"if limit = 0; false {",
+		"timeout := defaults.CtxTimeout",
+		"limit := pages",
+		"0o7",
 	} {
-		_ = line
+		if got := matches(line); len(got) != 0 {
+			t.Errorf("the guard matched %q as %v; these are not hard-coded defaults, "+
+				"and matching them would push people to widen the allowlist", line, got)
+		}
 	}
 }

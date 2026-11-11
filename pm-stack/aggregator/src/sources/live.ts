@@ -606,7 +606,10 @@ export function titleRefs(title: string, onInvalid?: (ref: string) => void): Ref
   }
   const aliases: { at: number; repo: string }[] = [];
   for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
-    aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
+    const alias = m[1].toLowerCase();
+    if (Object.hasOwn(TITLE_REPO_ALIASES, alias)) {
+      aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[alias] });
+    }
   }
   if (aliases.length) {
     for (const m of title.matchAll(/#(\d+)/g)) {

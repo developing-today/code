@@ -512,6 +512,7 @@ dependencies = [
 name = "fleet-config"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "serde",
  "toml",
 ]
