@@ -273,9 +273,10 @@ def get_active_root_session_count() -> int:
         active_ids = poll.fetch_active_ids()
         if active_ids is None:
             return -1  # Unknown
-        return poll.count_active_roots(
+        count = poll.count_active_roots(
             sessions, int(time.time() * 1000), active_ids
         )
+        return -1 if count is None else count
     except Exception as e:
         print(f"Warning: Could not get active session count: {e}")
         return -1  # Unknown
