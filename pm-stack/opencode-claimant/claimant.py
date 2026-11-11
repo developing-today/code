@@ -818,6 +818,7 @@ Issue: {issue}
 Packet: {json.dumps(_prompt_safe_packet(packet), indent=2)}
 
 You are a build agent working on this opencode-lane task.
+Build discipline: run heavy cargo builds/tests through ~/tools/cargo-target-broker exec --repo <repo short name> --profile <test|dev|release> -- cargo ... so they use a leased pooled target dir (code#6797); never use a per-worktree CARGO_TARGET_DIR and never blank RUSTC_WRAPPER. ~/tools/fleet-build-lock is an accepted equivalent wrapper.
 Use --worker {worker_id} for all queue CLI operations.
 Heartbeat while working to keep the claim lease alive.
 Finish with a queue terminal verb (complete, park, block, or fail) carrying --worker {worker_id} and --execution '{{"lane": "opencode", "session_id": "{session_id}"}}'.
