@@ -1560,6 +1560,14 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                                             == Some(handle)
                                         {
                                             d["minutes"] = json!(minutes);
+                                            // Mark reconciliation itself,
+                                            // separately from the session's
+                                            // execution state (Codex P2 on
+                                            // PR #8325): a terminal session
+                                            // whose duration fetch failed
+                                            // stays unreconciled and is
+                                            // retried by later dispatches.
+                                            d["reconciled"] = json!(true);
                                         }
                                     }
                                 }
@@ -1581,6 +1589,43 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
 struct Cli {
     registry: Option<String>,
     json: bool,
+}
+
+/// The shipped surface registry, embedded so the installed
+/// binary has a cwd-independent default (Codex P2 on PR #8325):
+/// neither the nix package nor a caller's working directory has
+/// to provide the file. Explicit --registry / FLEET_PLACE_REGISTRY
+/// / the ~/git/code copy still win when present.
+const EMBEDDED_REGISTRY: &str = include_str!("../../../fleet-surfaces.json");
+
+fn load_embedded_registry() -> R<Value> {
+    let value: Value = serde_json::from_str(EMBEDDED_REGISTRY)
+        .map_err(|e| Die(format!("embedded registry is not valid JSON: {e}")))?;
+    if value.get("surfaces").and_then(|s| s.as_array()).is_none() {
+        return die("embedded registry has no surfaces array".to_string());
+    }
+    Ok(value)
+}
+
+/// Registry resolution: an explicit override (--registry flag or
+/// FLEET_PLACE_REGISTRY) is strict — a bad path is an error, never
+/// a silent fallback. Without an override, the ~/git/code copy
+/// wins when it exists (a live checkout can carry a newer
+/// registry), then the source-tree relative path, and finally
+/// the embedded copy.
+fn registry_value(cli: &Cli) -> R<Value> {
+    if cli.registry.is_some() || std::env::var("FLEET_PLACE_REGISTRY").is_ok() {
+        return load_registry(&registry_path(cli));
+    }
+    let home_copy = format!("{}/git/code/pkgs/fleet/fleet-surfaces.json", home_dir());
+    if std::path::Path::new(&home_copy).exists() {
+        return load_registry(&home_copy);
+    }
+    let rel = "pkgs/fleet/fleet-surfaces.json";
+    if std::path::Path::new(rel).exists() {
+        return load_registry(rel);
+    }
+    load_embedded_registry()
 }
 
 fn registry_path(cli: &Cli) -> String {
@@ -1660,6 +1705,50 @@ fn render_decision(out: &Value) -> String {
         lines.push(m.to_string());
     }
     lines.join("\n")
+}
+
+/// Handles whose Blacksmith usage still needs reconciliation:
+/// every non-terminal Blacksmith session, plus terminal sessions
+/// whose ledger entry was never successfully reconciled (zero
+/// minutes and no reconciled mark) — a transient duration-fetch
+/// failure must not permanently bypass budget accounting
+/// (Codex P2 on PR #8325).
+fn blacksmith_reconcile_handles(store: &Value, registry: &Value) -> Vec<String> {
+    let ledger = store
+        .get("blacksmith_dispatches")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+    store
+        .get("sessions")
+        .and_then(|s| s.as_object())
+        .map(|m| {
+            m.iter()
+                .filter(|(h, rec)| {
+                    let sid = rec.get("surface").and_then(|v| v.as_str()).unwrap_or("");
+                    if !find_surface(registry, sid)
+                        .map(|s| surf_str(s, "kind") == "blacksmith")
+                        .unwrap_or(false)
+                    {
+                        return false;
+                    }
+                    if rec.get("run_id").and_then(|v| v.as_i64()).is_none() {
+                        return false;
+                    }
+                    let state = rec.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                    if !["succeeded", "failed", "cancelled"].contains(&state) {
+                        return true;
+                    }
+                    ledger.iter().any(|d| {
+                        d.get("handle").and_then(|v| v.as_str()) == Some(h.as_str())
+                            && d.get("reconciled").and_then(|v| v.as_bool()) != Some(true)
+                            && d.get("minutes").and_then(|v| v.as_f64()).unwrap_or(0.0) == 0.0
+                    })
+                })
+                .map(|(h, _)| h.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --command '<cmd>' \
@@ -1758,7 +1847,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         actions_cache,
         allow_paid_blacksmith: allow_paid,
     };
-    let registry = load_registry(&registry_path(&cli))?;
+    let registry = registry_value(&cli)?;
     let gh = RealGh::new();
     // Reconcile outstanding Blacksmith sessions BEFORE the
     // placement decision (Codex P2 on PR #8325), so the budget
@@ -1767,24 +1856,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     if dispatch && assume_blacksmith_used.is_none() {
         let _ = with_store_lock(|| {
             let mut store = load_store();
-            let handles: Vec<String> = store
-                .get("sessions")
-                .and_then(|s| s.as_object())
-                .map(|m| {
-                    m.iter()
-                        .filter(|(_h, rec)| {
-                            let sid = rec.get("surface").and_then(|v| v.as_str()).unwrap_or("");
-                            let state = rec.get("state").and_then(|v| v.as_str()).unwrap_or("");
-                            rec.get("run_id").and_then(|v| v.as_i64()).is_some()
-                                && !["succeeded", "failed", "cancelled"].contains(&state)
-                                && find_surface(&registry, sid)
-                                    .map(|s| surf_str(s, "kind") == "blacksmith")
-                                    .unwrap_or(false)
-                        })
-                        .map(|(h, _)| h.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let handles = blacksmith_reconcile_handles(&store, &registry);
             for h in &handles {
                 let _ = refresh_session(&mut store, h, &registry, &gh);
             }
@@ -1910,6 +1982,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     "minutes": 0.0,
                     "run_id": result.run_id,
                     "note": "minutes reconciled from the run's duration on later invocations",
+                    "reconciled": false,
                 }))
             } else {
                 None
@@ -1943,7 +2016,7 @@ fn run_session(args: &[String]) -> R<i32> {
                 .get(1)
                 .cloned()
                 .ok_or_else(|| Die(format!("session {sub} needs a HANDLE")))?;
-            let registry = load_registry(&registry_path(&cli))?;
+            let registry = registry_value(&cli)?;
             let rec = with_store_lock(|| {
                 let mut store = load_store();
                 let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
@@ -2049,7 +2122,7 @@ fn run_session(args: &[String]) -> R<i32> {
 
 fn run_surfaces(args: &[String]) -> R<i32> {
     let (cli, _rest) = extract_common(args)?;
-    let registry = load_registry(&registry_path(&cli))?;
+    let registry = registry_value(&cli)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&registry).unwrap_or_else(|_| "null".to_string())
@@ -2671,6 +2744,62 @@ mod tests {
         assert_eq!(back["blacksmith_dispatches"].as_array().unwrap().len(), 1);
         unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_registry_parses_and_has_org_run() {
+        let reg = load_embedded_registry().unwrap();
+        let org = find_surface(&reg, "org-run").expect("org-run in embedded registry");
+        assert!(surf_targets(org).contains(&"developing-today-forks/opencode".to_string()));
+    }
+
+    #[test]
+    fn blacksmith_reconcile_candidates_cover_unreconciled_terminal() {
+        let reg = registry();
+        let store = json!({
+            "sessions": {
+                "fp_live": { "handle": "fp_live", "surface": "fleet-org-blacksmith", "run_id": 11, "state": "running" },
+                "fp_done_unrec": { "handle": "fp_done_unrec", "surface": "fleet-org-blacksmith", "run_id": 12, "state": "succeeded" },
+                "fp_done_rec": { "handle": "fp_done_rec", "surface": "fleet-org-blacksmith", "run_id": 13, "state": "succeeded" },
+                "fp_gh": { "handle": "fp_gh", "surface": "fleet-personal", "run_id": 14, "state": "running" }
+            },
+            "blacksmith_dispatches": [
+                { "handle": "fp_done_unrec", "month": "2026-01", "minutes": 0.0 },
+                { "handle": "fp_done_rec", "month": "2026-01", "minutes": 42.0, "reconciled": true }
+            ]
+        });
+        let mut handles = blacksmith_reconcile_handles(&store, &reg);
+        handles.sort();
+        assert_eq!(handles, vec!["fp_done_unrec".to_string(), "fp_live".to_string()]);
+    }
+
+    #[test]
+    fn refresh_session_marks_blacksmith_reconciliation() {
+        let reg = registry();
+        let mut store = json!({
+            "sessions": {
+                "fp_bs": { "handle": "fp_bs", "surface": "fleet-org-blacksmith", "run_id": 777, "state": "running" }
+            },
+            "blacksmith_dispatches": [
+                { "handle": "fp_bs", "month": "2026-01", "minutes": 0.0 }
+            ]
+        });
+        let gh = FakeGh {
+            runs_by_id: Map2::from([(
+                777,
+                json!({
+                    "status": "completed",
+                    "conclusion": "success",
+                    "run_started_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:30:00Z"
+                }),
+            )]),
+            ..Default::default()
+        };
+        let rec = refresh_session(&mut store, "fp_bs", &reg, &gh).unwrap();
+        assert_eq!(rec["state"], json!("succeeded"));
+        assert_eq!(store["blacksmith_dispatches"][0]["minutes"], json!(30.0));
+        assert_eq!(store["blacksmith_dispatches"][0]["reconciled"], json!(true));
     }
 
     #[test]
