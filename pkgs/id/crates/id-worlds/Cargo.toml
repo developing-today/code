@@ -8,33 +8,85 @@ license = "MIT OR Apache-2.0"
 
 # Step 5 of the pkgs/id crate split (#3447 umbrella, #4408): the world
 # family lives here. Dependencies per the design map: id-core, id-caps,
-# id-store, id-events, id-groups, id-sync. This first step-5 PR brings
-# the leaves that name nothing above them (the compiled-world cache,
-# the line/terminal helpers), seam 6's cross-world bridge
-# (`groups::worlds` — the consumer side of the groups/worlds
-# relationship, per the design), and the blob gate's `FoldedWorlds`
-# adapter over that bridge (parked in the facade by step 4 to move
-# together with the bridge). The world core, sessions and the rest of
-# the family follow in later step-5 PRs.
+# id-store, id-events, id-groups, id-sync.
+#
+# Step 5a brought the leaves, seam 6's cross-world bridge
+# (`groups::worlds`) and the blob gate's `FoldedWorlds` adapter.
+# Step 5b brings the runtime core: `world`, `world_session`, the
+# sandbox and its compile/fixture/native paths, the hub, net and
+# store, `world_records` and `shell_contract` — and, with them, the
+# directory cluster (`directory`, `directory_auth`, `directory_view`,
+# `directory_mail`). The directory is the world runtime's own state:
+# `WorldCore` holds it, the world actor executes directory actions
+# against it, and `world_store` persists it beside the journal, so
+# the cluster moves as the consumer side of the relationship (the
+# seam-6 pattern). Seam 10's remaining half is unchanged by this:
+# step 6's `id-directory` extraction must still invert or re-home
+# `WorldCore`'s hold on the directory, exactly as it would have had
+# to from the facade. The facade re-exports the directory modules at
+# their historical `id::` paths until then.
+#
+# `session_host` also lands here: it implements `id_sync::host::
+# SessionHost` for the hub and `id_sync::artifact::ArtifactSink` for
+# the directory, and the orphan rule puts those impls in the crate
+# that owns the types (they sat in the facade only while the hub and
+# directory did).
 
 [features]
 default = []
+# The wasmtime dependency lives inside id-worlds (design feature
+# mapping); the facade's `sandbox` feature forwards here.
+sandbox = ["dep:wasmtime", "id-caps/sandbox", "id-core/sandbox"]
 
 [dependencies]
 anyhow = "1"
 blake3 = "1"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+futures-lite = "2"
+id-caps = { path = "../id-caps", default-features = false }
+id-core = { path = "../id-core", default-features = false, features = [
+  "world",
+] }
 id-events = { path = "../id-events", default-features = false }
 id-groups = { path = "../id-groups", default-features = false }
+id-store = { path = "../id-store", default-features = false }
+id-sync = { path = "../id-sync", default-features = false }
+iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
+iroh-docs = "0.101"
+iroh-gossip = { version = "0.101", features = ["net"] }
 libc = "0.2"
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+postcard = { version = "1", features = ["alloc"] }
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
+subtle = "2"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+wasmtime = { version = "=48.0.7", default-features = false, features = [
+  "cranelift",
+  "runtime",
+  "std",
+], optional = true }
 
 [dev-dependencies]
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+id-core = { path = "../id-core", default-features = false, features = [
+  "test-utils",
+] }
+# The directory tests sign artifacts through the id-sync test seam
+# (SignedArtifact::sign_unchecked), as the facade dev build did.
+id-sync = { path = "../id-sync", default-features = false, features = [
+  "test-utils",
+] }
 proptest = "1.12"
-tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+wat = "=1.261.0"
 
 [lints.rust]
 unsafe_code = "warn"

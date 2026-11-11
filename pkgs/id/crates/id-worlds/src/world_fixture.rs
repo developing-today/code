@@ -1105,8 +1105,8 @@ mod tests {
 
     #[test]
     fn check_module_refuses_a_different_module() {
-        let wasm: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
-        let other: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm: &[u8] = include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+        let other: &[u8] = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let mut recorded = header(0, true);
         assert!(check_module(&recorded, wasm).is_err(), "no module recorded");
         recorded.module_hash = Some(module_hash(wasm));
@@ -1129,7 +1129,7 @@ mod tests {
         use crate::world_net::{WORLD_ALPN, WorldProtocol};
         use crate::world_session::WorldService;
 
-        const TIC_TAC_TOE: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+        const TIC_TAC_TOE: &[u8] = include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 
         /// A tic-tac-toe game as a live instance plays it: a leading install,
         /// one chat line, and five moves. Returns the runner and the fixture a
@@ -1220,7 +1220,7 @@ mod tests {
                 ),
             ];
 
-            let fixture_text = include_str!("../tests/fixtures/tic-tac-toe-determinism.jsonl");
+            let fixture_text = include_str!("../../../tests/fixtures/tic-tac-toe-determinism.jsonl");
             let fixture = decode(fixture_text).unwrap();
             check_module(&fixture.header, TIC_TAC_TOE).unwrap();
             let runner = Sandbox::compile(TIC_TAC_TOE, SandboxLimits::default()).unwrap();
@@ -1481,7 +1481,7 @@ mod tests {
 
         #[test]
         fn territory_fixture_replays_host_events_interleaved_with_inputs() {
-            let wasm: &[u8] = include_bytes!("../examples/territory/territory.wasm");
+            let wasm: &[u8] = include_bytes!("../../../examples/territory/territory.wasm");
             let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
             let joined = |id: u64, name: &str| {
                 format!(
@@ -1612,7 +1612,7 @@ mod tests {
 
         #[tokio::test]
         async fn recording_replays_host_presence_from_admin_history() {
-            let wasm: &[u8] = include_bytes!("../examples/territory/territory.wasm");
+            let wasm: &[u8] = include_bytes!("../../../examples/territory/territory.wasm");
             let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
             core.ledger
                 .set_granted(std::collections::BTreeSet::from(["players".to_owned()]));

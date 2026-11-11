@@ -31,7 +31,7 @@ default-members = [".", "crates/id-core", "crates/id-caps", "crates/id-store", "
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["dep:wasmtime", "world", "id-core/sandbox", "id-caps/sandbox"]
+sandbox = ["world", "id-core/sandbox", "id-caps/sandbox", "id-worlds/sandbox"]
 world = [
   "dep:subtle",
   "dep:hmac",
@@ -179,11 +179,8 @@ hmac = { version = "0.13", optional = true }
 # scrypt for the Seitan V2 stretch (P6.1). Already in the lock as a transitive dependency.
 scrypt = { version = "0.12", optional = true }
 subtle = { version = "2", optional = true }
-wasmtime = { version = "=48.0.7", default-features = false, features = [
-  "cranelift",
-  "runtime",
-  "std",
-], optional = true }
+# wasmtime moved to id-worlds in step 5b of the crate split (#4408):
+# the `sandbox` feature above forwards to `id-worlds/sandbox`.
 russh = { version = "=0.65.0", optional = true }
 
 [dev-dependencies]

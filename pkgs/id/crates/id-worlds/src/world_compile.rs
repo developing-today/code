@@ -1094,7 +1094,7 @@ mod tests {
             .with_cache(cache.clone());
         let counter = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-counter/main.roc"
+            "/../../examples/roc-counter/main.roc"
         ))
         .unwrap();
         let granted = ["Screen".to_owned(), "RocText".to_owned()];
@@ -1784,7 +1784,7 @@ restore = |text| match U64.from_str(text) {
         let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
         let counter = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-counter/main.roc"
+            "/../../examples/roc-counter/main.roc"
         ))
         .unwrap();
         eprintln!("PROBE roc={}", compiler.roc_bin);
@@ -1845,7 +1845,7 @@ restore = |text| match U64.from_str(text) {
         let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
         let app = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-screen/main.roc"
+            "/../../examples/roc-screen/main.roc"
         ))
         .unwrap();
         let (wasm, _diagnostics, provenance) = compile(
@@ -1914,7 +1914,7 @@ restore = |text| match U64.from_str(text) {
         let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
         let counter = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-counter/main.roc"
+            "/../../examples/roc-counter/main.roc"
         ))
         .unwrap();
         let (native, _diagnostics, provenance) = compile(
@@ -2051,7 +2051,7 @@ restore = |text| match U64.from_str(text) {
         let compiler = Compiler::new(platform_dir, "/nonexistent/roc".to_owned()).unwrap();
         let app = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-screen/main.roc"
+            "/../../examples/roc-screen/main.roc"
         ))
         .unwrap();
         let error = compile(
@@ -2083,7 +2083,7 @@ restore = |text| match U64.from_str(text) {
 
     fn default_platform_dir() -> Option<PathBuf> {
         let candidates = [
-            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/roc-world")),
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/roc-world")),
             PathBuf::from("examples/roc-world"),
             PathBuf::from("../examples/roc-world"),
         ];

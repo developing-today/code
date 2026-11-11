@@ -1172,7 +1172,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         let hash = module_hash(&wasm);
         writer
             .install_wasm(Some("writer-admin"), wasm, 42, &hash)
@@ -1273,7 +1273,7 @@ mod tests {
         // module is served read-only from the replica's module
         // directory, while uploads stay refused (the writer admin token
         // was stripped at replica open).
-        let expected_wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let expected_wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         assert_eq!(replica.module_bytes(&hash).await.unwrap(), expected_wasm);
         assert!(
             replica
@@ -1666,7 +1666,7 @@ mod tests {
             .unwrap();
             service
         }
-        let wasm = include_bytes!("../examples/lounge/lounge.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/lounge/lounge.wasm").to_vec();
         let hash = module_hash(&wasm);
         let dir = TempDir::new().unwrap();
 
@@ -1724,7 +1724,7 @@ mod tests {
     async fn restored_program_uses_the_current_server_runtime_ceiling() {
         use iroh_blobs::store::mem::MemStore;
 
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         let hash = module_hash(&wasm);
         let dir = TempDir::new().unwrap();
         let blobs: iroh_blobs::api::Store = MemStore::new().into();
@@ -2057,7 +2057,7 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn roc_program_state_is_rebuilt_by_replay() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         let dir = TempDir::new().unwrap();
         let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
         let make = |blobs: iroh_blobs::api::Store| {
@@ -2119,7 +2119,7 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_native_world_installs_and_plays_in_process() {
-        let wasm = include_bytes!("../examples/roc-counter/counter-native").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter-native").to_vec();
         let dir = TempDir::new().unwrap();
         let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
         let make = |blobs: iroh_blobs::api::Store| {
@@ -2170,7 +2170,7 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn the_journal_is_trimmed_behind_a_checkpoint_and_restart_resumes_from_it() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         let dir = TempDir::new().unwrap();
         let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
         let limits = WorldLimits {
@@ -2666,7 +2666,7 @@ mod tests {
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_missing_module_leaves_chat_working_and_the_program_unavailable() {
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm").to_vec();
         let dir = TempDir::new().unwrap();
         let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
         let (svc, _) = open_world(
