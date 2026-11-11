@@ -482,7 +482,14 @@ impl WorldCache {
         }
         let hash = artifact_hash(artifact);
         let artifact_path = self.root.join("artifacts").join(&hash);
-        if !artifact_path.is_file() {
+        // Verify-and-repair (Codex round on PR #8450): an existing file
+        // under this content hash is trusted only if its bytes actually
+        // hash to the name. A corrupt file can survive a lookup eviction
+        // when another key still references it; storing the fresh bytes
+        // must replace it, not skip the write on existence alone.
+        let existing_ok = std::fs::read(&artifact_path)
+            .is_ok_and(|bytes| artifact_hash(&bytes) == hash);
+        if !existing_ok {
             let temp = self.root.join("artifacts").join(format!(".{hash}.tmp"));
             std::fs::write(&temp, artifact)
                 .with_context(|| format!("write cached artifact {}", temp.display()))?;
@@ -504,7 +511,7 @@ impl WorldCache {
             last_hit_at: now,
             last_used_seq: 0,
         };
-        let evictions = {
+        let (evictions, replaced) = {
             let mut index = self
                 .index
                 .lock()
@@ -512,7 +519,7 @@ impl WorldCache {
             entry.last_used_seq = index.next_use_seq();
             self.write_entry(&entry)?;
             index.stats.stores += 1;
-            index.entries.insert(entry.key.clone(), entry.clone());
+            let replaced = index.entries.insert(entry.key.clone(), entry.clone());
             let mut evicted = Vec::new();
             while index.total_bytes() > self.lru_bytes {
                 let victim = index
@@ -533,10 +540,21 @@ impl WorldCache {
                     evicted.push(removed);
                 }
             }
-            evicted
+            (evicted, replaced)
         };
         for removed in &evictions {
             self.remove_entry_files(removed, true);
+        }
+        // Reclaim the artifact a same-key replacement orphaned (Codex
+        // round on PR #8450): the replaced entry is out of the index,
+        // so an artifact no remaining entry references would otherwise
+        // leak outside total_bytes() and every future eviction pass.
+        // The entry metadata file is NOT touched here — it now belongs
+        // to the replacing entry under the same key.
+        if let Some(replaced) = &replaced {
+            if replaced.artifact_hash != entry.artifact_hash {
+                self.drop_artifact_if_orphan(&replaced.artifact_hash);
+            }
         }
         Ok(StoreOutcome::Stored)
     }
@@ -545,17 +563,27 @@ impl WorldCache {
     /// drop its determinism proofs (§4: invalidation beats every
     /// tier). Returns how many entries were evicted.
     pub fn invalidate_compiler(&self, compiler_blake3: &str) -> usize {
-        self.invalidate(|entry| entry.compiler_blake3 == compiler_blake3)
+        self.invalidate(
+            |entry| entry.compiler_blake3 == compiler_blake3,
+            |(compiler, _platform)| compiler == compiler_blake3,
+        )
     }
 
     /// Hard-evict every entry built against this platform tree, and
     /// drop its determinism proofs (§4). Returns how many entries
     /// were evicted.
     pub fn invalidate_platform(&self, platform_tree_hash: &str) -> usize {
-        self.invalidate(|entry| entry.platform_tree_hash == platform_tree_hash)
+        self.invalidate(
+            |entry| entry.platform_tree_hash == platform_tree_hash,
+            |(_compiler, platform)| platform == platform_tree_hash,
+        )
     }
 
-    fn invalidate(&self, matches: impl Fn(&CacheEntry) -> bool) -> usize {
+    fn invalidate(
+        &self,
+        matches: impl Fn(&CacheEntry) -> bool,
+        matches_proof: impl Fn(&(String, String)) -> bool,
+    ) -> usize {
         let (removed, proofs) = {
             let Ok(mut index) = self.index.lock() else {
                 return 0;
@@ -573,14 +601,16 @@ impl WorldCache {
                     removed.push(entry);
                 }
             }
+            // Proofs are revoked by matching the proof tuple itself
+            // against the invalidated component (Codex round on
+            // PR #8450): deriving revocation from the entries this call
+            // happened to remove left the proof intact whenever LRU
+            // eviction had already removed the pair's last entry, and
+            // the stale proof then survived reopening.
             let stale_proofs: Vec<(String, String)> = index
                 .proofs
                 .iter()
-                .filter(|(compiler, platform)| {
-                    removed.iter().any(|entry| {
-                        entry.compiler_blake3 == *compiler || entry.platform_tree_hash == *platform
-                    })
-                })
+                .filter(|pair| matches_proof(pair))
                 .cloned()
                 .collect();
             for pair in &stale_proofs {
@@ -617,16 +647,21 @@ impl WorldCache {
                 .join(format!("{}.json", entry.key)),
         );
         if drop_artifact_if_orphan {
-            let still_referenced = self.index.lock().is_ok_and(|index| {
-                index
-                    .entries
-                    .values()
-                    .any(|other| other.artifact_hash == entry.artifact_hash)
-            });
-            if !still_referenced {
-                let _ =
-                    std::fs::remove_file(self.root.join("artifacts").join(&entry.artifact_hash));
-            }
+            self.drop_artifact_if_orphan(&entry.artifact_hash);
+        }
+    }
+
+    /// Remove the artifact file stored under  when no
+    /// indexed entry references it any more.
+    fn drop_artifact_if_orphan(&self, artifact_hash: &str) {
+        let still_referenced = self.index.lock().is_ok_and(|index| {
+            index
+                .entries
+                .values()
+                .any(|other| other.artifact_hash == artifact_hash)
+        });
+        if !still_referenced {
+            let _ = std::fs::remove_file(self.root.join("artifacts").join(artifact_hash));
         }
     }
 
@@ -951,4 +986,302 @@ mod tests {
             Lookup::Miss
         );
     }
+    // ---- Codex round on PR #8450: the three P2 fixes, pinned ----
+
+    #[test]
+    fn replaced_entry_reclaims_its_orphaned_artifact() {
+        let (dir, cache) = cache(1 << 20);
+        let inp = input("s");
+        cache
+            .store(&inp, "alice", CacheScope::Author, b"first-artifact", "roc 1")
+            .unwrap();
+        let first_hash = artifact_hash(b"first-artifact");
+        // A second compile of the same key producing different bytes
+        // (determinism is not guaranteed) replaces the entry; the old
+        // artifact file must be reclaimed, not leaked outside the LRU
+        // accounting.
+        cache
+            .store(&inp, "alice", CacheScope::Author, b"second-artifact!", "roc 1")
+            .unwrap();
+        let artifacts = dir.path().join("cache").join("artifacts");
+        assert!(!artifacts.join(&first_hash).exists(), "replaced artifact leaked");
+        assert_eq!(cache.total_bytes(), b"second-artifact!".len() as u64);
+        match cache.lookup(&inp, "alice").unwrap() {
+            Lookup::Hit { artifact, .. } => assert_eq!(artifact, b"second-artifact!"),
+            Lookup::Miss => panic!("replaced entry must hit"),
+        }
+    }
+
+    #[test]
+    fn invalidate_revokes_proofs_without_resident_entries() {
+        // Budget holds one 8-byte artifact; storing a second evicts the
+        // first pair's only entry by LRU while its proof stays on
+        // record. Invalidating that compiler must still revoke the
+        // proof — revocation matches the proof tuple, not the entries
+        // this call happens to remove.
+        let (_dir, cache) = cache(8);
+        let mut first = input("s1");
+        first.compiler_blake3 = "compiler-a".to_owned();
+        cache
+            .store(&first, "alice", CacheScope::Server, b"artifact", "roc 1")
+            .unwrap();
+        cache
+            .record_determinism_proof("compiler-a", "platform-a", "h", "h")
+            .unwrap();
+        let mut second = input("s2");
+        second.compiler_blake3 = "compiler-b".to_owned();
+        cache
+            .store(&second, "alice", CacheScope::Server, b"artifact", "roc 1")
+            .unwrap();
+        assert_eq!(cache.entry_count(), 1, "first entry LRU-evicted");
+        assert!(cache.has_determinism_proof("compiler-a", "platform-a"));
+        assert_eq!(cache.invalidate_compiler("compiler-a"), 0, "no resident entries");
+        assert!(
+            !cache.has_determinism_proof("compiler-a", "platform-a"),
+            "proof must be revoked even with no resident entry"
+        );
+    }
+
+    #[test]
+    fn store_repairs_a_corrupt_artifact_shared_by_two_keys() {
+        let (dir, cache) = cache(1 << 20);
+        let bytes = b"shared-artifact";
+        let hash = artifact_hash(bytes);
+        cache
+            .store(&input("k1"), "alice", CacheScope::Author, bytes, "roc 1")
+            .unwrap();
+        cache
+            .store(&input("k2"), "alice", CacheScope::Author, bytes, "roc 1")
+            .unwrap();
+        // Corrupt the shared artifact file on disk.
+        let artifact_path = dir.path().join("cache").join("artifacts").join(&hash);
+        std::fs::write(&artifact_path, b"corrupt!").unwrap();
+        // Lookup of k1 evicts k1 but keeps the (corrupt) file because
+        // k2 still references it.
+        assert_eq!(cache.lookup(&input("k1"), "alice").unwrap(), Lookup::Miss);
+        assert!(artifact_path.exists());
+        // Storing the freshly compiled bytes under k1 must verify and
+        // replace the corrupt file, not skip on existence.
+        cache
+            .store(&input("k1"), "alice", CacheScope::Author, bytes, "roc 1")
+            .unwrap();
+        match cache.lookup(&input("k2"), "alice").unwrap() {
+            Lookup::Hit { artifact, .. } => assert_eq!(artifact, bytes),
+            Lookup::Miss => panic!("k2 must hit the repaired artifact"),
+        }
+    }
+
+    // ---- Codex P1 on PR #8450: generated transition sequences checked
+    // against a reference model (testing doctrine: state invariants of
+    // a state machine get model-derived coverage, oracle = the model).
+
+    #[derive(Clone)]
+    struct ModelEntry {
+        author: String,
+        scope: CacheScope,
+        compiler: String,
+        platform: String,
+        hash: String,
+        bytes: u64,
+        seq: u64,
+    }
+
+    #[derive(Default)]
+    struct Model {
+        entries: BTreeMap<String, ModelEntry>,
+        proofs: BTreeSet<(String, String)>,
+        seq: u64,
+    }
+
+    impl Model {
+        fn next_seq(&mut self) -> u64 {
+            self.seq += 1;
+            self.seq
+        }
+        fn total(&self) -> u64 {
+            self.entries.values().map(|e| e.bytes).sum()
+        }
+        fn visible(&self, e: &ModelEntry, author: &str) -> bool {
+            if e.author == author {
+                return true;
+            }
+            match e.scope {
+                CacheScope::Author => false,
+                CacheScope::Server | CacheScope::Public => {
+                    self.proofs.contains(&(e.compiler.clone(), e.platform.clone()))
+                }
+            }
+        }
+    }
+
+    fn model_input(src: usize, compiler: usize, platform: usize) -> CacheKeyInput {
+        CacheKeyInput {
+            platform_tree_hash: format!("platform-{platform}"),
+            source_closure_hash: format!("source-{src}"),
+            dll_closure_hash: dll_closure_hash(&[]),
+            compiler_blake3: format!("compiler-{compiler}"),
+            target: "wasm32".to_owned(),
+        }
+    }
+
+    fn model_artifact(src: usize, variant: usize) -> Vec<u8> {
+        let len = 40 + variant * 30;
+        vec![(src * 7 + variant) as u8; len]
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        #[test]
+        fn generated_sequences_match_the_reference_model(
+            ops in proptest::collection::vec(
+                (0usize..6, 0usize..3, 0usize..2, 0usize..3, 0usize..3, 0usize..2, 0usize..2),
+                1..48,
+            ),
+        ) {
+            const BUDGET: u64 = 220;
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("cache");
+            let mut cache = WorldCache::open(root.clone(), BUDGET).unwrap();
+            let mut model = Model::default();
+            let authors = ["alice", "bob"];
+            let scopes = [CacheScope::Author, CacheScope::Server, CacheScope::Public];
+
+            for (kind, a, b, c, d, e, f) in &ops {
+                let (kind, a, b, c, d, e, f) = (*kind, *a, *b, *c, *d, *e, *f);
+                match kind {
+                    // Store
+                    0 => {
+                        let inp = model_input(a, e, f);
+                        let artifact = model_artifact(a, d);
+                        let bytes = artifact.len() as u64;
+                        let author = authors[b];
+                        let scope = scopes[c];
+                        cache.store(&inp, author, scope, &artifact, "roc 1").unwrap();
+                        if bytes <= BUDGET {
+                            let seq = model.next_seq();
+                            model.entries.insert(
+                                cache_key(&inp),
+                                ModelEntry {
+                                    author: author.to_owned(),
+                                    scope,
+                                    compiler: inp.compiler_blake3.clone(),
+                                    platform: inp.platform_tree_hash.clone(),
+                                    hash: artifact_hash(&artifact),
+                                    bytes,
+                                    seq,
+                                },
+                            );
+                            while model.total() > BUDGET {
+                                let victim = model
+                                    .entries
+                                    .iter()
+                                    .filter(|(k, _)| **k != cache_key(&inp))
+                                    .min_by(|(lk, lv), (rk, rv)| {
+                                        lv.seq.cmp(&rv.seq).then_with(|| lk.cmp(rk))
+                                    })
+                                    .map(|(k, _)| k.clone());
+                                match victim {
+                                    Some(victim) => {
+                                        model.entries.remove(&victim);
+                                    }
+                                    None => break,
+                                }
+                            }
+                        }
+                    }
+                    // Lookup
+                    1 => {
+                        let inp = model_input(a, e, f);
+                        let author = authors[b];
+                        let key = cache_key(&inp);
+                        let expected = model
+                            .entries
+                            .get(&key)
+                            .filter(|en| model.visible(en, author))
+                            .map(|en| (en.hash.clone(), en.bytes));
+                        match (cache.lookup(&inp, author).unwrap(), expected) {
+                            (Lookup::Hit { artifact, .. }, Some((hash, bytes))) => {
+                                prop_assert_eq!(artifact_hash(&artifact), hash);
+                                prop_assert_eq!(artifact.len() as u64, bytes);
+                                let seq = model.next_seq();
+                                if let Some(en) = model.entries.get_mut(&key) {
+                                    en.seq = seq;
+                                }
+                            }
+                            (Lookup::Miss, None) => {}
+                            (got, want) => {
+                                prop_assert!(false, "lookup mismatch: hit={} model={}", matches!(got, Lookup::Hit { .. }), want.is_some());
+                            }
+                        }
+                    }
+                    // Record a determinism proof (matching hashes)
+                    2 => {
+                        cache
+                            .record_determinism_proof(
+                                &format!("compiler-{e}"),
+                                &format!("platform-{f}"),
+                                "h",
+                                "h",
+                            )
+                            .unwrap();
+                        model.proofs.insert((
+                            format!("compiler-{e}"),
+                            format!("platform-{f}"),
+                        ));
+                    }
+                    // Invalidate compiler
+                    3 => {
+                        let target = format!("compiler-{e}");
+                        cache.invalidate_compiler(&target);
+                        model.entries.retain(|_, en| en.compiler != target);
+                        model.proofs.retain(|(comp, _)| comp != &target);
+                    }
+                    // Invalidate platform
+                    4 => {
+                        let target = format!("platform-{f}");
+                        cache.invalidate_platform(&target);
+                        model.entries.retain(|_, en| en.platform != target);
+                        model.proofs.retain(|(_, plat)| plat != &target);
+                    }
+                    // Reopen (state must persist identically)
+                    _ => {
+                        cache = WorldCache::open(root.clone(), BUDGET).unwrap();
+                    }
+                }
+                prop_assert_eq!(cache.entry_count(), model.entries.len());
+                prop_assert_eq!(cache.total_bytes(), model.total());
+                for (comp, plat) in [
+                    ("compiler-0", "platform-0"),
+                    ("compiler-0", "platform-1"),
+                    ("compiler-1", "platform-0"),
+                    ("compiler-1", "platform-1"),
+                ] {
+                    prop_assert_eq!(
+                        cache.has_determinism_proof(comp, plat),
+                        model.proofs.contains(&(comp.to_owned(), plat.to_owned()))
+                    );
+                }
+                // Disk invariant: the artifact files on disk are exactly
+                // the distinct artifacts the model still references —
+                // no replacement or eviction leaks.
+                let mut disk: u64 = 0;
+                for file in std::fs::read_dir(root.join("artifacts")).unwrap() {
+                    let file = file.unwrap();
+                    let name = file.file_name().to_string_lossy().into_owned();
+                    if !name.starts_with('.') {
+                        disk += file.metadata().unwrap().len();
+                    }
+                }
+                let mut referenced: BTreeMap<String, u64> = BTreeMap::new();
+                for en in model.entries.values() {
+                    referenced.insert(en.hash.clone(), en.bytes);
+                }
+                prop_assert_eq!(disk, referenced.values().sum::<u64>());
+            }
+        }
+    }
 }
+
