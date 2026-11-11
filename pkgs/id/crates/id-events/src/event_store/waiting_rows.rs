@@ -3,7 +3,7 @@
 //!
 //! An event is held when it has arrived but cannot apply yet: a dependency is missing, or it
 //! can never apply and is parked, so that a conflict with it is still seen. The pool holds it
-//! in memory, under the caps in [`WaitingLimits`](crate::waiting::WaitingLimits). The same
+//! in memory, under the caps in [`WaitingLimits`](id_core::waiting::WaitingLimits). The same
 //! events are written to two tables:
 //!
 //! - `waiting`: an event's ID to its row. The row holds the author, the sequence number, the
@@ -20,8 +20,8 @@ use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
 use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num};
-use crate::chain::Event;
-use crate::waiting::{AuthorKey, WaitRefusal, WaitingPool};
+use id_store::chain::Event;
+use id_core::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 
 /// Bytes before a row's dependencies: the author, the sequence number, the arrival time, the
 /// arrival number, and the dependency count.

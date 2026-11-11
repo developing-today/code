@@ -17,14 +17,15 @@
 //!   event sync paths name. The facade's blob gate keeps its
 //!   enforcement logic and re-exports [`world_access::WorldAccess`].
 //!
-//! The event-store implementation itself (`event_store`,
-//! `local_events`, `event_sync`, `attestation`) joins this crate in
-//! step 2b's second half. The facade re-exports each module at its
-//! historical `id::` path, so no call site outside the moved modules
-//! changed.
+//! The facade re-exports each module at its historical `id::` path,
+//! so no call site outside the moved modules changed.
 
+pub mod attestation;
+pub mod event_store;
+pub mod event_sync;
 pub mod groups;
 pub mod idset;
 pub mod local_claims;
+pub mod local_events;
 pub mod pull_policy;
 pub mod world_access;

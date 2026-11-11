@@ -45,15 +45,15 @@ use p2panda_core::{Hash, SeqNum};
 use redb::ReadableTable;
 
 use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
-use crate::chain::Event;
-use crate::chat::CHAT_MESSAGE_KIND;
+use id_store::chain::Event;
+use id_store::chat::CHAT_MESSAGE_KIND;
 use crate::groups::{
     Body as GroupBody, Create as GroupCreate, DeviceOp, Event as GroupEvent, MemberOp, Policy,
     Projection, Role as GroupRole, Template,
 };
-use crate::membership::{AuthId, CausalEvent, Membership, Role};
-use crate::rejection::Reason;
-use crate::waiting::AuthorKey;
+use id_core::membership::{AuthId, CausalEvent, Membership, Role};
+use id_core::rejection::Reason;
+use id_core::waiting::AuthorKey;
 
 /// One stored event, with the membership action it carries when it is a group operation.
 #[derive(Clone, Debug)]
