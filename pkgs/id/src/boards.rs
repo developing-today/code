@@ -1249,6 +1249,17 @@ impl BoardGraph {
     /// Returns the package's state snapshot after the final turn: the
     /// same signed lineage and the same bytes always produce the same
     /// snapshot.
+    ///
+    /// Transition validity (Codex P1 on PR #8327): every turn must
+    /// actually transition the package state. A package may ignore an
+    /// action it considers invalid (an occupied cell, a move after
+    /// the game is won, an out-of-range cell in the pinned tic-tac-toe
+    /// package) and return its model unchanged; counting such a call
+    /// as a consumed turn would desynchronize the signed turn order
+    /// from the executed move order — the next participant's action
+    /// would execute as the previous player's move. A lineage whose
+    /// turn leaves the state snapshot unchanged is therefore refused:
+    /// signed roles can never drift from executed moves.
     pub fn replay_game_lineage(
         &self,
         game_post: &ArtifactHash,
@@ -1281,6 +1292,7 @@ impl BoardGraph {
         if !genesis_bytes.is_empty() {
             instance.restore(&genesis_bytes)?;
         }
+        let mut previous_snapshot = instance.snapshot()?;
         for (hash, turn) in &lineage {
             let signed = self
                 .objects
@@ -1299,10 +1311,17 @@ impl BoardGraph {
                 other => serde_json::to_vec(other)?,
             };
             instance.update(participant, &action_bytes)?;
+            let current_snapshot = instance.snapshot()?;
+            if let (Some(before), Some(after)) = (&previous_snapshot, &current_snapshot) {
+                ensure!(
+                    before != after,
+                    "game turn {} was ignored by the package (state unchanged):                      replayed roles would drift from executed moves",
+                    turn.turn_index
+                );
+            }
+            previous_snapshot = current_snapshot;
         }
-        instance
-            .snapshot()?
-            .context("game package exposes no state snapshot")
+        previous_snapshot.context("game package exposes no state snapshot")
     }
 
     /// Every hash in one board's replication set: the board root plus
@@ -4549,6 +4568,169 @@ mod tests {
                 .replay_game_lineage(&game_hash, &head, b"not the pinned package")
                 .is_err()
         );
+    }
+
+
+    /// Build a wasm tic-tac-toe graph with an accepted challenge and
+    /// one alternating lineage over `actions` (even indices are X,
+    /// odd are O), returning the graph, the game hash, and the head.
+    fn wasm_game_lineage(
+        actions: &[&str],
+    ) -> (BoardGraph, ArtifactHash, ArtifactHash) {
+        let creator = key(71);
+        let opponent = key(72);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let game_hash = graph
+            .insert(wasm_game_post_object(&creator, &opponent, root_hash.clone()))
+            .unwrap();
+        graph
+            .insert(game_acceptance_object(
+                &opponent,
+                1,
+                root_hash.clone(),
+                game_hash.clone(),
+            ))
+            .unwrap();
+        let mut prev: Option<ArtifactHash> = None;
+        for (index, action) in actions.iter().enumerate() {
+            let (player, role) = if index % 2 == 0 {
+                (&creator, "x")
+            } else {
+                (&opponent, "o")
+            };
+            prev = Some(
+                graph
+                    .insert(game_turn_object(
+                        player,
+                        root_hash.clone(),
+                        game_hash.clone(),
+                        role,
+                        u64::try_from(index).unwrap(),
+                        prev,
+                        action,
+                    ))
+                    .unwrap(),
+            );
+        }
+        (graph, game_hash, prev.unwrap())
+    }
+
+    #[test]
+    fn game_replay_rejects_actions_the_package_ignores() {
+        // Codex P1 on PR #8327, its exact example: X signs turn 0
+        // with the out-of-range action "9" (the package ignores it,
+        // plays stays 0), then O signs turn 1 with "4". Before the
+        // transition-validity check, replay consumed both turns and
+        // O's action placed an X — signed roles drifted from
+        // executed moves.
+        let (graph, game_hash, head) = wasm_game_lineage(&["9", "4"]);
+        let error = graph
+            .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("was ignored by the package"),
+            "{error:#}"
+        );
+
+        // An occupied-cell action is likewise a no-op for the
+        // package: X at 0, then O at 0 again.
+        let (graph, game_hash, head) = wasm_game_lineage(&["0", "0"]);
+        assert!(
+            graph
+                .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+                .is_err()
+        );
+
+        // A turn signed after the game is already won is ignored by
+        // the package and must not extend the replayed lineage.
+        let (graph, game_hash, head) =
+            wasm_game_lineage(&["0", "4", "1", "3", "2", "5"]);
+        assert!(
+            graph
+                .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+                .is_err()
+        );
+
+        // Control: the same lineage without the post-win turn
+        // replays to the winning board.
+        let (graph, game_hash, head) = wasm_game_lineage(&["0", "4", "1", "3", "2"]);
+        assert_eq!(
+            graph
+                .replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM)
+                .unwrap(),
+            b"XXXOO----"
+        );
+    }
+
+    /// The tic-tac-toe rules, restated as the property oracle: a
+    /// lineage is executable exactly when every action, at its
+    /// position, names an empty in-range cell in a game not yet won;
+    /// the final board is then fully determined. Oracle for
+    /// `game_replay_matches_ttt_oracle_for_arbitrary_action_sequences`.
+    fn tic_tac_toe_oracle(actions: &[String]) -> Result<String, ()> {
+        let mut board = [b'-'; 9];
+        let mut plays = 0usize;
+        let mut won = false;
+        for action in actions {
+            let cell: usize = action.parse().map_err(|_| ())?;
+            if won || cell > 8 || board[cell] != b'-' {
+                return Err(());
+            }
+            board[cell] = if plays % 2 == 0 { b'X' } else { b'O' };
+            plays += 1;
+            let lines = [
+                [0, 1, 2],
+                [3, 4, 5],
+                [6, 7, 8],
+                [0, 3, 6],
+                [1, 4, 7],
+                [2, 5, 8],
+                [0, 4, 8],
+                [2, 4, 6],
+            ];
+            won = lines
+                .iter()
+                .any(|line| line.iter().all(|&i| board[i] == board[line[0]] && board[i] != b'-'));
+        }
+        Ok(String::from_utf8(board.to_vec()).unwrap())
+    }
+
+    proptest! {
+        // Each case compiles the pinned wasm package in a fresh
+        // sandbox (~seconds), so the case count is kept small; the
+        // deterministic test above pins the exact Codex example.
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        /// Invariant (testing doctrine, oracle: `tic_tac_toe_oracle`):
+        /// for any alternating signed action sequence, replay accepts
+        /// the lineage iff the oracle can execute every action, and
+        /// the replayed board equals the oracle's board — signed
+        /// roles never drift from executed moves, whatever invalid or
+        /// no-op actions the sequence contains.
+        #[test]
+        fn game_replay_matches_ttt_oracle_for_arbitrary_action_sequences(
+            actions in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "x", "",
+                ]),
+                1..=9,
+            ),
+        ) {
+            let owned: Vec<String> = actions.iter().map(|a| a.to_string()).collect();
+            let refs: Vec<&str> = actions.clone();
+            let (graph, game_hash, head) = wasm_game_lineage(&refs);
+            let replayed = graph.replay_game_lineage(&game_hash, &head, TIC_TAC_TOE_WASM);
+            match tic_tac_toe_oracle(&owned) {
+                Ok(expected) => {
+                    let state = replayed.unwrap();
+                    prop_assert_eq!(String::from_utf8(state).unwrap(), expected);
+                }
+                Err(()) => {
+                    prop_assert!(replayed.is_err());
+                }
+            }
+        }
     }
 
     #[test]
