@@ -37,15 +37,12 @@ use crate::access::AccessPolicy;
 use crate::event_store::BlockList;
 use crate::groups::{Role, worlds::Worlds};
 
-/// The two questions the gate asks of the world graph.
-pub trait WorldAccess: Send + Sync + 'static {
-    /// Whether `requester` is a current member of `world`.
-    fn is_current_member(&self, world: &str, requester: &EndpointId) -> bool;
-
-    /// The worlds whose content names `hash`. Empty for a hash that no world names, which
-    /// includes every unknown hash.
-    fn worlds_referencing(&self, hash: &Hash) -> Vec<String>;
-}
+/// The two questions the gate asks of the world graph. The trait is
+/// sync-gating vocabulary owned by the events layer since step 2b of
+/// the crate split (#4405); it is re-exported here at its historical
+/// path, and the implementations (below, over the folded worlds) stay
+/// with the gate until step 4.
+pub use id_events::world_access::WorldAccess;
 
 /// The server's blob policy.
 ///

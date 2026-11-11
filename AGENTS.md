@@ -32,7 +32,7 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
   - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
   - **CI-first verification:** Review the checks actually triggered on the PR and use [`.github/ci-policy.md`](.github/ci-policy.md) to distinguish the basic merge-gating PR tier from the full main tier; formatting is not a merge gate. Run targeted local checks on the laptop when useful; sandboxed workers use CI and must not run builds or tests in the sandbox. If a policy-listed check is missing from the PR, inspect the workflow trigger and report the coverage gap instead of assuming it ran.
-  - **Build discipline on the laptop (2026-11-10):** Heavy builds/tests (cargo, nix) on the laptop go through `~/tools/fleet-build-lock` (max 2 heavy builds fleet-wide; it also defaults CARGO_BUILD_JOBS to half the cores). Never set `RUSTC_WRAPPER=` empty — that bypasses the shared sccache cache every other lane benefits from. `fleet-build-lock` defaults CARGO_TARGET_DIR to a shared per-package dir (`~/build-cache/<pkg>`, e.g. `~/build-cache/id` for pkgs/id) for cargo builds, instead of a per-worktree target dir: lanes then reuse each other's dependency builds instead of each paying a full ~17-minute compile (measured 2026-11-10: a second source tree on a shared target dir verified in 1s; re-measured 2026-11-11 through the lock, pkgs/atlas-search: 35s isolated target dir -> 1s shared). Set CARGO_TARGET_DIR yourself only to override that default. For Rust verification, run the narrowest build that proves the change: `cargo check` for type-only changes; `cargo test --lib` without `--features web` when the change does not touch web code; named test filters always. The full `--features web` test build of a package like `pkgs/id` costs many minutes of fleet-wide compile and must be justified by the change actually touching that surface.
+  - **Build discipline on the laptop (2026-11-10):** Heavy builds/tests (cargo, nix) on the laptop go through `~/tools/fleet-build-lock` (max 2 heavy builds fleet-wide; it also defaults CARGO_BUILD_JOBS to half the cores). Never set `RUSTC_WRAPPER=` empty — that bypasses the shared sccache cache every other lane benefits from. `fleet-build-lock` leases CARGO_TARGET_DIR from the cargo target broker (`~/tools/cargo-target-broker`, code#6797) for cargo builds — a bounded pool of warm per-workspace dirs under `~/build-cache/broker-pool`, held under an exclusive lease for the build and returned warm — instead of a per-worktree target dir: lanes then reuse each other's dependency builds instead of each paying a full ~17-minute compile (measured 2026-11-11 through the broker: a pkgs/id test build from a second worktree compiled 1 of 535 units, and a build returning to its own leased dir compiles none; re-measured 2026-11-11 through the lock, pkgs/atlas-search: 35s isolated target dir -> 1s shared). If the broker cannot lease a dir, the lock falls back to the pre-broker static per-package dir (`~/build-cache/<pkg>`, e.g. `~/build-cache/id` for pkgs/id). Sessions launched outside the lock run cargo through `~/tools/cargo-target-broker exec --repo <repo> --profile <test|dev|release> -- cargo ...` to land on the same leased dirs. Set CARGO_TARGET_DIR yourself only to override all of that. For Rust verification, run the narrowest build that proves the change: `cargo check` for type-only changes; `cargo test --lib` without `--features web` when the change does not touch web code; named test filters always. The full `--features web` test build of a package like `pkgs/id` costs many minutes of fleet-wide compile and must be justified by the change actually touching that surface.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
 
 ## Testing doctrine
@@ -44,6 +44,26 @@ Three tools, used where they fit:
 - **Oracles:** the decision procedure that tells you whether actual output matches expected — the hard part of automated testing. Every automated test names its oracle: a reference implementation, the model, an invariant check, or a golden corpus. A test with no decidable oracle is a smell to fix, not ship.
 
 Example-based tests remain fine for smoke and acceptance coverage; they do not replace PBT/MBT where those fit.
+
+## Operator script argument contract (#3352)
+
+Every argument is accounted for before anything happens. An operator
+script (deploys, installs, `bin/` tools, `pm-stack` scripts and
+exporters, Go tools) declares its whole command line — boolean flags,
+value options, positionals — and parses strictly against that
+declaration, before any subprocess, network, file write, lock, or
+deploy step. Anything unaccounted for is a usage error naming the
+offending argument, with a non-zero exit (2 where the tool has no
+established usage code). Unknown flag, stray positional, and typo'd
+flag are the same event; `--opt=value` either works identically to
+`--opt value` or is refused, never a silent fall-through to a
+different operation; a present-but-valueless option is a usage error,
+never the default; a parsed safety flag (`--dry-run`, `--status`) is
+honoured on every code path. Parsing is per-tool (no shared library);
+new operator scripts copy the strict pattern from a covered sibling
+(`provider-catalog-sync.mjs`, `append-usage-snapshots.ts`) and state
+the contract in their header comment. Deliberate exceptions are
+named, with their reason, in the #3353 closing inventory.
 
 ## Worker Git preflight
 

@@ -39,7 +39,7 @@ Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
 `mcpx nix build`, `go modules build`, `identity build`,
 `map build`, `id bench`) are deliberately NOT renamed:
 `main-broken.yml` (the Phase 3 watcher) references them by name in
-its `workflow_run` trigger; `jules.yml` has no `workflow_run`
+its `workflow_run` trigger; `pm-dispatch.yml` has no `workflow_run`
 trigger. If branch rules
 ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
@@ -190,7 +190,8 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | atlas-search                                                   | `basic: atlas-search Rust checks` on pull requests touching `pkgs/atlas-search/**`                 | —                                                                                                   | —                                                                |
 | deploy-flake-checks | `basic: deploy flake checks (deploy-list + deploy-list-malformed)` on `pull_request` (paths `pkgs/deploy/**`, `lib/default.nix`, the workflow itself) | full flake check in nix ci | — |
 | workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) | — | — |
-| id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
+| cargo target janitor | `basic: cargo target janitor deletion safety` on pull requests touching `infra/cargo-target-janitor/**` or its workflow | same path-gated suite on push to main | - |
+| id                                                             | guard only (contract tests; matrix + full tiers are main-only)                                      | push: guard + matrix + aggregator; schedule/manual: guard + full flake check                       | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                                        | — (main covers it)                                               |
 | id bench                                                       | — (removed)                                                                                         | yes                                                                                                 | —                                                                |
 | go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                                               | —                                                                |
@@ -329,10 +330,12 @@ runs every 15 minutes (`*/15 * * * *`, one live run: group
 sweeper is schedule/dispatch-only) and performs the management
 duties in one deterministic pass. It replaced `auto-assign.yml`
 (assign the maintainer to open issues/PRs). Kept event-based,
-deliberately: `jules.yml` is retained because `main-broken.yml` and
-`repo-sweeper.yml` reference the path. The retained `jules` label
-starts remediation via `pm-dispatch`; Jules was decommissioned
-(#5098), and the old `workflow_run` ci-failure-fix leg is gone. This
+deliberately: `pm-dispatch.yml` is retained because `main-broken.yml` and
+`repo-sweeper.yml` reference the path. The retained `dispatch/remediate` label
+starts remediation via `pm-dispatch`; file and label carried
+Jules-era names until the 2026-11-11 rename (Jules was
+decommissioned, #5098), and the old `workflow_run` ci-failure-fix
+leg is gone. This
 is a synchronous human-initiated handoff, not management
 bookkeeping. Never
 pair `queue: max` with a cancel-in-progress expression that

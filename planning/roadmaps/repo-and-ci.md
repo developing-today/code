@@ -1,6 +1,6 @@
 # Roadmap: repo-wide CI and automation
 
-This file covers `.github/workflows`, the Jules automation and the way pull requests are triaged. Each project's own checks are in its roadmap. How to read this file: [planning README](../README.md).
+This file covers `.github/workflows`, the pm-dispatch automation (formerly Jules) and the way pull requests are triaged. Each project's own checks are in its roadmap. How to read this file: [planning README](../README.md).
 
 ## Now
 

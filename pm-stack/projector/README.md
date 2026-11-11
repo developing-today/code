@@ -110,7 +110,7 @@ local source you don't commit.
 | `/hot/checkpoints`                            | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`                  |
 | `/reconcile`                                  | POST   | bearer | trigger a reconciliation poll                                     |
 
-### Integrated queue/PM view — machine face (#7078, #2072 slice 3)
+### Integrated queue/PM view — machine + human faces (#7078, #2072 slice 3)
 
 `bun run src/cli.ts queue-view --tasks <tasks.json> [--window-hours 24] [--consumer queue-view] [--no-ack]`
 prints one read-only JSON view joining fleet queue task records (JSON
@@ -122,7 +122,15 @@ order, items claimed inside the window with their claiming
 system/lane, snapshot counts by status (which reconcile with
 `fleet queue health` when fed the full task list), and links to the
 existing aggregator/projector trend stores. It writes nothing and
-collects nothing new; the human face is a later slice-3 piece.
+collects nothing new.
+
+`--format html` on the same command prints the human face: the same
+view rendered as one standalone HTML page/report (status counts,
+queued in claim order, picked-up items with their claiming
+system/lane, hot-list summary, and trend panels that link — never
+copy — the same stores the machine face links). The read model is
+identical for both faces; only the rendering differs
+(`src/queue-view-html.ts`).
 
 **Subjects** are external keys:
 

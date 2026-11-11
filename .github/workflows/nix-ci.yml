@@ -101,7 +101,7 @@ jobs:
   # ci-fix: when any main job above fails, dispatch a pm-dispatch
   # ci-fix task from inside this failing run (via the thin
   # pm-dispatch-ci-fix wrapper over pm-dispatch-task). This replaces
-  # the old workflow_run-triggered ci-failure-fix job in jules.yml.
+  # the old workflow_run-triggered ci-failure-fix job in pm-dispatch.yml.
   # continue-on-error: a dispatch failure must never change this
   # workflow's own result.
   ci-fix:

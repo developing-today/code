@@ -3901,7 +3901,10 @@ dependencies = [
  "futures-util",
  "hkdf 0.13.0",
  "hmac 0.13.0",
+ "id-caps",
  "id-core",
+ "id-events",
+ "id-store",
  "iroh",
  "iroh-base",
  "iroh-blobs",
@@ -3959,6 +3962,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-caps"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id-core",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "id-core"
 version = "0.1.0"
 dependencies = [
@@ -3988,6 +4002,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-events"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cbor-core",
+ "clap",
+ "id-core",
+ "id-store",
+ "iroh",
+ "iroh-base",
+ "iroh-blobs",
+ "p2panda-auth",
+ "p2panda-core",
+ "proptest",
+ "redb 4.3.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "id-native-shell"
 version = "0.1.0"
 dependencies = [
@@ -3996,6 +4036,37 @@ dependencies = [
  "id",
  "iroh",
  "serde_json",
+]
+
+[[package]]
+name = "id-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "cbor-core",
+ "clap",
+ "dcbor",
+ "ed25519-dalek 3.0.0",
+ "futures-lite",
+ "id",
+ "id-core",
+ "iroh",
+ "iroh-base",
+ "iroh-blobs",
+ "iroh-docs",
+ "iroh-gossip",
+ "p2panda-core",
+ "p2panda-store",
+ "postcard",
+ "redb 4.3.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]

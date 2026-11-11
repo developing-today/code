@@ -2,6 +2,7 @@
 //   bun run src/cli.ts reconcile
 //   bun run src/cli.ts queue-view --tasks <tasks.json> [--window-hours 24]
 //                                 [--consumer queue-view] [--no-ack]
+//                                 [--format json|html]
 //
 // queue-view (#7078, #2072 slice 3 first piece) is the read-only
 // integrated queue/PM view, machine face: it joins fleet queue task
@@ -13,6 +14,7 @@
 import { readFileSync } from "node:fs";
 import { openDb, migrate } from "./store";
 import { buildQueueView, consumeHotList, defaultTrendLinks, type QueueTaskRecord } from "./queue-view";
+import { renderQueueViewHtml } from "./queue-view-html";
 
 const cmd = process.argv[2] ?? "reconcile";
 const env = process.env as Record<string, string | undefined>;
@@ -44,6 +46,11 @@ if (cmd === "reconcile") {
     console.error("queue-view: tasks file must be a JSON array or { tasks: [...] }");
     process.exit(2);
   }
+  const format = arg("format") ?? "json";
+  if (format !== "json" && format !== "html") {
+    console.error(`queue-view: --format must be json or html, got ${format}`);
+    process.exit(2);
+  }
   const windowHours = Number(arg("window-hours") ?? "24");
   const consumer = arg("consumer") ?? "queue-view";
   // Consume BEFORE capturing the window end: consumeHotList pins the
@@ -65,7 +72,10 @@ if (cmd === "reconcile") {
     highWater: consumed.highWater,
     links: defaultTrendLinks(env),
   });
-  console.log(JSON.stringify(view, null, 2));
+  // One read model, two faces: --format json is the machine face
+  // (unchanged shape); --format html is the human face (#7078 second
+  // piece), the same view rendered as a page/report.
+  console.log(format === "html" ? renderQueueViewHtml(view) : JSON.stringify(view, null, 2));
   if (!process.argv.includes("--no-ack")) {
     const cursor = await consumed.ack();
     console.error(`[projector] queue-view: consumer ${consumer} checkpoint acked at ${cursor}`);

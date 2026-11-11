@@ -1892,6 +1892,111 @@ mod tests {
     }
 
     #[test]
+    fn test_top_level_fence_with_quote_like_content_round_trips() {
+        // #8665: strip_leading_blank_quote_lines had no fence state, so
+        // a top-level fenced block whose first content lines are `> `
+        // and `> text` lost its first line on save — the fence opener
+        // reset the quote-run scan and the literal code content was
+        // stripped as if it led a blockquote.
+        for original in [
+            "```\n> \n> text\n```\n",
+            "```rust\n> \n> text\n```\n",
+            "```\n> \n> text\n```\n\n> quote\n",
+        ] {
+            let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+            assert_eq!(saved, original, "first save polluted {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&saved),
+                markdown_to_prosemirror(original),
+                "structure changed for {original:?}"
+            );
+            let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+            assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+        }
+        // Control: quote-like lines inside a blockquote's own fence are
+        // content too — structure and fixpoint must hold.
+        let quoted = "> ```\n> \n> text\n> ```\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(quoted)).unwrap();
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(quoted),
+            "quoted fence structure changed: {saved:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for quoted fence");
+        // Tilde fences are canonicalized to backticks by the renderer,
+        // but their content must survive intact and reach a fixpoint.
+        let tilde = "~~~\n> \n> text\n~~~\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(tilde)).unwrap();
+        assert_eq!(
+            saved, "```\n> \n> text\n```\n",
+            "tilde fence content changed: {saved:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for tilde fence");
+    }
+
+    #[test]
+    fn test_list_fence_does_not_suppress_quote_cleanup() {
+        // PR #8678 Codex P2: a list item whose first block is fenced
+        // code renders its opener behind the item marker (- ```), so
+        // the fence scan missed it and mistook the closing delimiter
+        // for a new fence; the phantom fence then suppressed the
+        // #1002 leading-blank cleanup for every later quote in the
+        // document. The rule-first quote below needs that cleanup.
+        let original = "- ```\n  code\n  ```\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+    }
+
+    #[test]
+    fn test_html_comment_fence_does_not_suppress_quote_cleanup() {
+        // PR #8678 Codex P2, second round: a fence-shaped line inside
+        // a raw HTML comment is literal content, not a fence opener.
+        // Treating it as one opened a phantom fence that suppressed
+        // the #1002 cleanup for the rest of the document (the
+        // rule-first quote below needs it).
+        let original = "<!--\n```\n-->\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+    }
+
+    #[test]
+    fn test_indented_html_comment_terminator_releases_cleanup() {
+        // PR #8678 Codex P2, third round: the htmlBlock serialization
+        // path preserves indentation, so a comment terminator can be
+        // indented four spaces. The scan's indent limit applies to
+        // opening detection, not to an already-active block: the
+        // terminator must still be fed, or html state leaks into the
+        // rest of the document and suppresses the #1002 cleanup for
+        // the rule-first quote below.
+        let original = "<!--\n    -->\n\n> -----\n> \n> after\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        assert_eq!(saved, original, "first save polluted {original:?}");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "structure changed for {original:?}"
+        );
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+    }
+
+    #[test]
     fn test_info_less_fence_in_blockquote_trailing_content_round_trips() {
         // #1496 acceptance cases: a no-info fence inside a blockquote
         // followed by each kind of trailing quoted content must reopen
@@ -3511,6 +3616,7 @@ mod tests {
         assert_eq!(first, second, "literal-context round-trip is a fixpoint");
     }
 
+    #[test]
     fn test_footnote_roundtrip_fixpoint() {
         // #945: a footnote reference + definition round-trip open->save
         // intact — emitted as [^label] syntax, never backslash-escaped,
@@ -3544,7 +3650,6 @@ mod tests {
         assert_eq!(first, second, "multi-footnote round-trip is a fixpoint");
     }
 
-    #[test]
     #[test]
     fn test_unreferenced_footnote_definition_survives_save() {
         // #1565: a definition nothing references is dropped by comrak

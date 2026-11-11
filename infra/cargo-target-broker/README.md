@@ -60,12 +60,22 @@ instead of failing when the per-key cap is fully leased),
 
 ## Integration status
 
-Lanes can use `exec` today. The named follow-up wiring point is
-`~/tools/fleet-build-lock`: its `CARGO_TARGET_DIR` default block
-(code#8392) currently points every same-workspace build at ONE
-static dir under `~/build-cache/<key>` — builds that collide there
-serialize on cargo's own lock and still alternate fingerprints.
-Routing that default through `target-broker checkout/checkin`
-gives those lanes pooled, leased dirs instead. That change is a
-follow-up, not part of the broker landing; the broker was verified
-standalone and against the measurement builds on code#6797.
+Fully wired (2026-11-11, code#6797):
+
+- `~/tools/fleet-build-lock` routes its `CARGO_TARGET_DIR` default
+  through `checkout`/`checkin`: a cargo build that reaches the lock
+  without `CARGO_TARGET_DIR` set leases a pooled dir — keyed by the
+  lock's workspace key plus the invocation's profile label — for
+  the build's duration. If the broker cannot lease, the lock falls
+  back to the pre-broker static per-workspace dir.
+- Repo-queue session launches: the opencode claimant's session
+  prompts (`pm-stack/opencode-claimant/launch_one.py` and
+  `claimant.py`) instruct launched sessions to run heavy cargo
+  builds through `target-broker exec`, and the repo `AGENTS.md`
+  build-discipline paragraph describes both routes.
+
+Known remaining bypasses: launch surfaces whose stored prompts
+predate the claimant change (e.g. OpenChamber's own saved
+scheduled-task prompts) inherit only the repo `AGENTS.md`
+discipline, and ad-hoc interactive cargo runs are unrouted by
+definition.

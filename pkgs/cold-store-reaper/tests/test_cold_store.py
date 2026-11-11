@@ -847,6 +847,63 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
         self.assertIn("credentials.json", str(ctx.exception))
 
 
+class TestWrongShapePrivateJson(ColdStoreTestBase):
+    """#6845: valid JSON of the wrong shape in credentials.json /
+    state.json raises ColdStoreError naming the file and the shape -
+    never a raw AttributeError/TypeError/ValueError, and never a
+    silently mistyped folder id used against Drive."""
+
+    def test_non_object_credentials_raise_cold_store_error(self):
+        for payload in ('[]', '[{"client_id": "x"}]', '"hello"', "123",
+                        "null", "true"):
+            self.store.credentials_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), payload)
+
+    def test_non_string_credential_value_raises_cold_store_error(self):
+        for key in ("client_id", "client_secret", "refresh_token"):
+            creds = {
+                "client_id": "fake-client-id",
+                "client_secret": "fake-secret",
+                "refresh_token": "fake-refresh-token",
+            }
+            creds[key] = 123
+            self.store._write_private_json(self.store.credentials_path, creds)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), key)
+            self.assertIn(key, str(ctx.exception), key)
+
+    def test_non_object_state_raises_cold_store_error(self):
+        for payload in ('[]', '"hello"', "123", "null", "true"):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_object_folders_raises_cold_store_error(self):
+        for payload in ('{"folders": "abc"}', '{"folders": 123}',
+                        '{"folders": ["root"]}', '{"folders": null}'):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_string_folder_id_raises_cold_store_error(self):
+        self.store.state_path.write_text('{"folders": {"bundles": 123}}')
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_state()
+        self.assertIn("state.json", str(ctx.exception))
+
+    def test_happy_path_controls_still_pass(self):
+        self.assertEqual(
+            self.store.load_credentials()["client_id"], "fake-client-id"
+        )
+        self.store.save_state({"folders": {"a": "1"}})
+        self.assertEqual(self.store.load_state(), {"folders": {"a": "1"}})
+
+
 # ------------------------------------------------------------------ fake D1
 class FakeD1:
     """Captures D1 REST query calls; can be told to fail.
@@ -859,6 +916,7 @@ class FakeD1:
     def __init__(self):
         self.requests = []  # {path, authorization, sql, params}
         self.fail = False
+        self.mode = None  # "success_false" | "wrong_shape" definitive answers
         self.db = None
 
 
@@ -889,6 +947,19 @@ def make_d1_handler(fake: FakeD1):
                     "params": payload.get("params", []),
                 }
             )
+            if fake.mode == "success_false":
+                self._send(
+                    200,
+                    {
+                        "success": False,
+                        "errors": [{"code": 7403, "message": "definitive probe failure"}],
+                        "result": None,
+                    },
+                )
+                return
+            if fake.mode == "wrong_shape":
+                self._send(200, {"success": True, "errors": [], "result": ["x"]})
+                return
             if fake.fail:
                 self._send(
                     500, {"success": False, "errors": [{"message": "fake failure"}]}
@@ -2894,11 +2965,11 @@ class TestDrillCompare(ColdStoreTestBase):
         path.write_text("\n".join(lines) + "\n")
         return path
 
-    def _run_drill(self, backup_sql: Path):
+    def _run_drill(self, backup_sql: Path, base=None):
         env = dict(os.environ)
         env["CLOUDFLARE_API_TOKEN"] = "fake-cf-token"
         env["COLD_STORE_D1_BASE"] = (
-            f"http://127.0.0.1:{self.d1_server.server_address[1]}"
+            base or f"http://127.0.0.1:{self.d1_server.server_address[1]}"
         )
         return subprocess.run(
             [
@@ -2957,6 +3028,55 @@ class TestDrillCompare(ColdStoreTestBase):
         self.assertIn("objects", proc.stdout)
         self.assertIn(self.HASH_B, proc.stdout)
         self.assertIn("missing", proc.stdout)
+
+    def test_d1_http_error_with_definitive_body_fails_loudly(self):
+        # #6858: an HTTP 500 whose body is a D1 success=false payload is
+        # D1 actively rejecting the query, not unreachability — the
+        # drill must abort carrying the API's message, never downgrade
+        # to the local manifest.
+        self.d1.fail = True
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("fake failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_success_false_fails_loudly(self):
+        # #6858: success=false on HTTP 200 is likewise definitive; the
+        # abort message carries the API error code and message.
+        self.d1.mode = "success_false"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("7403", proc.stdout)
+        self.assertIn("definitive probe failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_wrong_shape_payload_fails_loudly(self):
+        # #6858: a success=true payload whose result is not a list of
+        # row objects is a garbled answer, not unreachability.
+        self.d1.mode = "wrong_shape"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("unexpected shape", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_unreachable_keeps_local_manifest_fallback(self):
+        # #6858 control: genuine transport failure (connection refused)
+        # keeps the documented local-manifest fallback with its
+        # accurate label. The backup is emptied so it is a subset of
+        # any manifest and the drill passes against the local file.
+        def empty(conn):
+            for table in cold_store.MANIFEST_TABLES:
+                conn.execute(f'DELETE FROM "{table}"')
+
+        dead = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(FakeD1()))
+        port = dead.server_address[1]
+        dead.server_close()
+        proc = self._run_drill(
+            self._render_backup_sql(empty), base=f"http://127.0.0.1:{port}"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("local manifest (D1 unreachable)", proc.stdout)
+        self.assertNotIn("drill aborted", proc.stdout)
 
 
 class TestLedgerTrashMigration(ColdStoreTestBase):

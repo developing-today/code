@@ -40,7 +40,7 @@ use fleet_proxy_proto::{
 };
 
 use crate::http::{HttpConn, HttpError};
-use crate::tunnel::{Egress, connect_tunnel, egress_from_env};
+use crate::tunnel::{Egress, connect_raw_tunnel, connect_tunnel, egress_from_env};
 
 /// Keepalive cadence (the Python's KEEPALIVE_S).
 const KEEPALIVE_S: u64 = 180;
@@ -466,6 +466,21 @@ struct Broker {
 }
 
 impl Broker {
+    fn open_raw_tunnel(&self, port: u16) -> Result<TcpStream, String> {
+        let target = self.config.target_host();
+        let stream = if self.config.proxy_direct() {
+            connect_raw_tunnel(None, target, port)
+        } else {
+            let egress = self
+                .egress
+                .as_ref()
+                .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
+            connect_raw_tunnel(Some(egress), target, port)
+        }
+        .map_err(|e| format!("raw tunnel to {target}:{port}: {e}"))?;
+        Ok(stream)
+    }
+
     fn open_conn(&self, port: u16) -> Result<HttpConn, String> {
         // Tunnel opens pass through the recovery gate: ungated
         // while healthy, single-flight once an open has failed —
@@ -751,6 +766,7 @@ fn parse_port(frame: &serde_json::Value) -> Result<Option<u16>, String> {
 }
 
 fn serve_session(broker: &Broker, mut stream: UnixStream) {
+    let mut client_supports_raw_splice = false;
     let first = match read_frame(&mut stream) {
         Ok(f) => f,
         Err(_) => return, // probe connects and closes; the Python exits the same way
@@ -777,10 +793,22 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
             );
             return;
         }
+        client_supports_raw_splice = hello
+            .capabilities
+            .iter()
+            .any(|cap| cap == fleet_registry::Capability::ProxyRawSplice.id());
+        let services = broker.services_map();
+        let raw_splice_available = services
+            .get(&fleet_config::PORT_RUSTDESK.to_string())
+            .is_some_and(|service| service.name == "rustdesk");
+        let mut capabilities = vec![fleet_registry::Capability::ProxyServe.id().to_string()];
+        if raw_splice_available {
+            capabilities.push(fleet_registry::Capability::ProxyRawSplice.id().to_string());
+        }
         let resp = HelloResponse {
             proto: fleet_proxy_proto::PROTO_MAJOR,
-            services: broker.services_map(),
-            capabilities: vec![fleet_registry::Capability::ProxyServe.id().to_string()],
+            services,
+            capabilities,
         };
         if write_frame(&mut stream, &fleet_proxy_proto::hello_response_frame(&resp)).is_err() {
             return;
@@ -807,6 +835,68 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
     loop {
         match read_frame(&mut stream) {
             Ok(frame) => {
+                if let Some(raw_splice) = frame.get("raw_splice") {
+                    let port = raw_splice
+                        .get("port")
+                        .and_then(|value| value.as_u64())
+                        .and_then(|value| u16::try_from(value).ok());
+                    let service_available = broker
+                        .services_map()
+                        .get(&fleet_config::PORT_RUSTDESK.to_string())
+                        .is_some_and(|service| service.name == "rustdesk");
+                    if !client_supports_raw_splice
+                        || port != Some(fleet_config::PORT_RUSTDESK)
+                        || !service_available
+                    {
+                        let _ = write_frame(
+                            &mut stream,
+                            &serde_json::json!({
+                                "raw_splice": {"error": "raw-splice capability or service unavailable"}
+                            }),
+                        );
+                        return;
+                    }
+                    broker.last_used.store(now_secs(), Ordering::Relaxed);
+                    match broker.open_raw_tunnel(fleet_config::PORT_RUSTDESK) {
+                        Ok(tunnel) => {
+                            if write_frame(
+                                &mut stream,
+                                &serde_json::json!({"raw_splice": {"ready": true}}),
+                            )
+                            .is_err()
+                            {
+                                return;
+                            }
+                            // A raw relay can be the broker's only
+                            // activity for hours (a live RustDesk
+                            // session): refresh last_used while it
+                            // runs, or keepalive_loop's idle exit
+                            // would kill the broker — and the session
+                            // — after idle_exit_secs (Codex P2, PR
+                            // #8618).
+                            let relay_done = std::sync::atomic::AtomicBool::new(false);
+                            std::thread::scope(|scope| {
+                                scope.spawn(|| {
+                                    while !relay_done.load(Ordering::Relaxed) {
+                                        std::thread::sleep(Duration::from_secs(60));
+                                        if !relay_done.load(Ordering::Relaxed) {
+                                            broker.last_used.store(now_secs(), Ordering::Relaxed);
+                                        }
+                                    }
+                                });
+                                let _ = crate::raw_stream::relay(stream, tunnel);
+                                relay_done.store(true, Ordering::Relaxed);
+                            });
+                        }
+                        Err(why) => {
+                            let _ = write_frame(
+                                &mut stream,
+                                &serde_json::json!({"raw_splice": {"error": why}}),
+                            );
+                        }
+                    }
+                    return;
+                }
                 let reply = handle_request(broker, &frame);
                 if write_frame(&mut stream, &reply).is_err() {
                     return;
@@ -818,7 +908,7 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
     }
 }
 
-fn keepalive_loop(broker: Arc<Broker>) {
+fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
     let idle = broker.config.idle_exit_secs();
     let health_req = Request {
         method: "GET".to_string(),
@@ -831,10 +921,15 @@ fn keepalive_loop(broker: Arc<Broker>) {
     loop {
         std::thread::sleep(Duration::from_secs(IDLE_TICK_S));
         let now = now_secs();
-        if now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle {
+        if idle_exit
+            && now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle
+        {
             // The Python exits via os._exit from its keepalive
             // loop; the same abruptness is fine — the broker holds
-            // nothing that needs draining.
+            // nothing that needs draining. Standalone brokers only:
+            // a co-hosted proxy (run_cohosted) must never exit the
+            // shared process out from under its sibling roles
+            // (#8394 Codex P1).
             std::process::exit(0);
         }
         if now.saturating_sub(last_health) >= KEEPALIVE_S {
@@ -844,12 +939,26 @@ fn keepalive_loop(broker: Arc<Broker>) {
     }
 }
 
+/// Run the broker co-hosted with other serve roles in one process
+/// (`fleet serve <role> [<role> ...]`, #6264): same broker, but the
+/// idle-exit is disabled — the proxy's standalone lifetime contract
+/// (auto-spawned, exits when idle) must not terminate the sibling
+/// roles sharing the process (design #5698 point 5, #8394 Codex P1).
+/// The serve-list supervisor owns this process's lifetime instead.
+pub fn run_cohosted(config: &Config) -> i32 {
+    run_inner(config, false)
+}
+
 /// Run the broker in the foreground. Returns the process exit code.
 ///
 /// Startup mirrors the Python exactly: if the socket file exists
 /// and a connect succeeds, a live broker owns it — exit 0 quietly.
 /// If the connect fails, the file is stale — unlink and bind.
 pub fn run(config: &Config) -> i32 {
+    run_inner(config, true)
+}
+
+fn run_inner(config: &Config, idle_exit: bool) -> i32 {
     let socket_path = config.broker_socket();
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -922,7 +1031,7 @@ pub fn run(config: &Config) -> i32 {
     }
     {
         let broker = Arc::clone(&broker);
-        std::thread::spawn(move || keepalive_loop(broker));
+        std::thread::spawn(move || keepalive_loop(broker, idle_exit));
     }
     // CONNECT-UDP (RFC 9298) spike (#6109): only when the
     // config opts in — the flag defaults off and nothing in

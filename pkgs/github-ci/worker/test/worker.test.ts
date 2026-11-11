@@ -94,6 +94,30 @@ describe("github-ci worker", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rejects a signed null body with 400 for workflow_run (#6946)", async () => {
+    const body = "null";
+    const res = await post(body, "workflow_run", await sign(body));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a signed null body with 400 for push (#6946)", async () => {
+    const body = "null";
+    const res = await post(body, "push", await sign(body));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a signed array body with 400 (#6946)", async () => {
+    const body = "[]";
+    const res = await post(body, "workflow_run", await sign(body));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a signed scalar body with 400 (#6946)", async () => {
+    const body = "\"hello\"";
+    const res = await post(body, "push", await sign(body));
+    expect(res.status).toBe(400);
+  });
+
   it("answers ping", async () => {
     const body = JSON.stringify({ zen: "ok" });
     const res = await post(body, "ping", await sign(body));

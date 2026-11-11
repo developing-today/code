@@ -273,9 +273,10 @@ def get_active_root_session_count() -> int:
         active_ids = poll.fetch_active_ids()
         if active_ids is None:
             return -1  # Unknown
-        return poll.count_active_roots(
+        count = poll.count_active_roots(
             sessions, int(time.time() * 1000), active_ids
         )
+        return -1 if count is None else count
     except Exception as e:
         print(f"Warning: Could not get active session count: {e}")
         return -1  # Unknown
@@ -818,6 +819,7 @@ Issue: {issue}
 Packet: {json.dumps(_prompt_safe_packet(packet), indent=2)}
 
 You are a build agent working on this opencode-lane task.
+Build discipline: run heavy cargo builds/tests through ~/tools/cargo-target-broker exec --repo <repo short name> --profile <test|dev|release> -- cargo ... so they use a leased pooled target dir (code#6797); never use a per-worktree CARGO_TARGET_DIR and never blank RUSTC_WRAPPER. ~/tools/fleet-build-lock is an accepted equivalent wrapper.
 Use --worker {worker_id} for all queue CLI operations.
 Heartbeat while working to keep the claim lease alive.
 Finish with a queue terminal verb (complete, park, block, or fail) carrying --worker {worker_id} and --execution '{{"lane": "opencode", "session_id": "{session_id}"}}'.
@@ -827,7 +829,8 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     "task_id": task_id,
                     "session_id": session_id,
                     "worker_id": worker_id,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "queue": candidate.get("queue"),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True

@@ -7,10 +7,16 @@ Usage:
 
 The record lives in a repository variable, like the conformance records, and
 holds the counts and the name of every skipped test. A run that skips more
-tests than the record fails; the newly skipped tests are named. The record
-only moves down: a run with fewer skips becomes the new ceiling, so a skip
-cannot creep back in. With no record yet the run is reported and becomes the
-record when saved on main.
+tests than the record fails; the newly skipped tests are named. A run whose
+skipped set contains ANY name the record does not hold also fails, whatever
+the count does (#6391): an equal-count swap -- one test un-skipped, a
+different one newly skipped -- must not silently become the new record, or
+the newly skipped test is ratified without ever failing a run. A genuine
+rename is a new name under this rule: it fails once, and the record is
+re-baselined only by explicitly updating the repository variable, never by
+a passing run. The record only moves down: a run with fewer skips and no
+new names becomes the new ceiling, so a skip cannot creep back in. With no
+record yet the run is reported and becomes the record when saved on main.
 
 One exemption: a skip whose reason is a testsupport.Quarantine notice
 ("quarantined until <date> (<issue link>)", #1973) is reported but does NOT
@@ -18,14 +24,18 @@ count against the record. A quarantine is a tracked, expiring exemption
 with its own guard test; counting it here would make the documented
 quarantine path unusable the first time anyone used it.
 
-Exits 1 when any test/package failed or more tests were skipped than the record.
+Exits 1 when any test/package failed, more tests were skipped than the
+record, or any skipped test's name is not in the record.
 <new-record-file> is written when the record should change; saving it is the
 workflow's decision, on main only.
 """
 
 import collections
+import datetime
 import json
+import re
 import sys
+from urllib.parse import urlsplit
 
 
 class StoredRecordError(ValueError):
@@ -84,7 +94,50 @@ def parse_stored(raw):
 _EVENT_STRING_FIELDS = ("Package", "Test", "Action", "Output")
 
 
-def read(path):
+QUARANTINE_NOTICE = re.compile(
+    r"quarantined until (?P<expiry>\d{4}-\d{2}-\d{2}) "
+    r"\((?P<issue>[^()\s]+)\)"
+)
+GITHUB_ISSUE_PATH = re.compile(r"/[^/\s?#]+/[^/\s?#]+/issues/[1-9]\d*")
+# In the real `go test -json` stream, a test's skip message carries the
+# Go-generated source location of the t.Skipf call site:
+# "widgets_test.go:42: quarantined until ...". That prefix is part of
+# the output format, not of the notice, so strip exactly that shape
+# before validating the complete notice.
+GO_SOURCE_PREFIX = re.compile(r"[^\s/:]+\.go:\d+: ")
+
+
+def is_valid_quarantine_notice(reason, today):
+    match = QUARANTINE_NOTICE.fullmatch(GO_SOURCE_PREFIX.sub("", reason, count=1))
+    if not match:
+        return False
+
+    expiry_text = match.group("expiry")
+    try:
+        expiry = datetime.date.fromisoformat(expiry_text)
+        issue = urlsplit(match.group("issue"))
+    except ValueError:
+        return False
+
+    return (
+        expiry.isoformat() == expiry_text
+        and expiry >= today
+        and issue.scheme == "https"
+        and issue.netloc == "github.com"
+        and GITHUB_ISSUE_PATH.fullmatch(issue.path) is not None
+        and not issue.query
+        and not issue.fragment
+    )
+
+
+def utc_date(now):
+    parsed = datetime.datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc).date()
+
+
+def read(path, today):
     counts = collections.Counter()
     out = collections.defaultdict(list)
     skipped, failed, package_failed = [], [], []
@@ -122,7 +175,9 @@ def read(path):
             if o.strip() and not o.lstrip().startswith(("=== ", "--- "))
         ]
         reasons[k] = (lines[-1] if lines else "(no reason given)")[:200]
-    quarantined = sorted(k for k in skipped if "quarantined until " in reasons[k])
+    quarantined = sorted(
+        k for k in skipped if is_valid_quarantine_notice(reasons[k], today)
+    )
     counted = sorted(k for k in skipped if k not in quarantined)
     # A failing test also emits a package-level fail for its package; only
     # packages without their own test failure are independent package failures
@@ -160,7 +215,12 @@ def decide(skipped, passed, failed_n, stored, run, now):
     prev = set(stored.get("skipped", []))
     new_names = sorted(set(skipped) - prev)
     gone_names = sorted(prev - set(skipped))
-    if len(skipped) > stored["skipped_count"]:
+    # The name half of the invariant (#6391): a skipped name the record
+    # does not hold fails the run even when the count did not rise -- an
+    # equal-count (or lower-count) swap must never re-baseline the record.
+    # `rose` therefore means "the run failed on skips"; main() words the
+    # consequence from the counts.
+    if len(skipped) > stored["skipped_count"] or new_names:
         return None, True, new_names, gone_names
     if len(skipped) < stored["skipped_count"] or skipped != stored.get("skipped"):
         return cur, False, new_names, gone_names
@@ -169,7 +229,7 @@ def decide(skipped, passed, failed_n, stored, run, now):
 
 def main(path, stored_raw, run, now, summary, new_file):
     counts, skipped, failed, reasons, quarantined, all_skipped, package_failed = read(
-        path
+        path, utc_date(now)
     )
     try:
         stored = parse_stored(stored_raw)
@@ -204,10 +264,17 @@ def main(path, stored_raw, run, now, summary, new_file):
                 + "\n"
             )
         if rose:
-            f.write(
-                f"> [!CAUTION]\n> # More tests skipped than the record: {len(skipped)} against {ceiling}\n"
-                "> A skipped test passes nothing. Newly skipped:\n"
-            )
+            if len(skipped) > ceiling:
+                f.write(
+                    f"> [!CAUTION]\n> # More tests skipped than the record: {len(skipped)} against {ceiling}\n"
+                    "> A skipped test passes nothing. Newly skipped:\n"
+                )
+            else:
+                f.write(
+                    f"> [!CAUTION]\n> # Skipped tests not in the record: {len(new_names)} new name(s) at {len(skipped)} skipped against the record's {ceiling}\n"
+                    "> Same-or-fewer count does not ratify a swap (#6391): this run FAILED and the record is held unchanged. "
+                    "If a name here is a genuine rename, re-baseline by updating the record variable explicitly. Newly skipped:\n"
+                )
             for k in new_names:
                 f.write(f"> - `{k}` -- {reasons.get(k, '')}\n")
             f.write("\n")
@@ -216,12 +283,6 @@ def main(path, stored_raw, run, now, summary, new_file):
                 f"Skipped tests **down** from {ceiling} to {len(skipped)}"
                 f"{' (no longer skipped: ' + ', '.join(f'`{k}`' for k in gone) + ')' if gone else ''}. "
                 "On main this becomes the new record.\n\n"
-            )
-        elif stored and (new_names or gone):
-            f.write(
-                f"Same number skipped, different tests. Newly skipped: "
-                f"{', '.join(f'`{k}`' for k in new_names) or 'none'}; no longer skipped: "
-                f"{', '.join(f'`{k}`' for k in gone) or 'none'}.\n\n"
             )
         if quarantined:
             f.write(
@@ -249,10 +310,16 @@ def main(path, stored_raw, run, now, summary, new_file):
     for k in all_skipped:
         print(f"  skip  {k}  -- {reasons[k]}")
     if rose:
-        print(
-            f"::error::{len(skipped)} Go tests skipped, more than the record of {ceiling}; newly skipped: "
-            + ", ".join(new_names)
-        )
+        if len(skipped) > ceiling:
+            print(
+                f"::error::{len(skipped)} Go tests skipped, more than the record of {ceiling}; newly skipped: "
+                + ", ".join(new_names)
+            )
+        else:
+            print(
+                f"::error::skipped tests not in the record of {ceiling}; run failed, record held unchanged; newly skipped: "
+                + ", ".join(new_names)
+            )
     if new is not None:
         with open(new_file, "w") as f:
             json.dump(new, f, separators=(",", ":"))

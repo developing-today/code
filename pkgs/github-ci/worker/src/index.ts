@@ -100,6 +100,14 @@ export default {
     } catch {
       return new Response("bad json", { status: 400 });
     }
+    // #6946: JSON.parse also succeeds for null/array/scalar bodies, and
+    // dereferencing payload.repository on those threw out of fetch
+    // (outside the receiver-failed envelope below). A webhook payload
+    // is an object by contract; anything else is a deliberate 400 for
+    // every event type, before any dereference.
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return new Response("bad payload", { status: 400 });
+    }
 
     const eventType = req.headers.get("x-github-event") ?? "workflow_run";
     if (eventType === "ping") return new Response("pong", { status: 200 });

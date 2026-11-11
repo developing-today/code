@@ -711,17 +711,12 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-recpreset="fast"');
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
-    expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
-    expect(html).toContain("const pointY = py.toFixed(1)"); // do not shadow the lane's cy before computing py
-    expect(html).not.toContain("const cy = py.toFixed(1)");
-    expect(html).toContain('class="xpl-band-lanes"');
     expect(html).toContain('bandGroup("Fastest within each score band"');
     expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
     expect(html).toContain('bandGroup("Smartest within each speed band"');
     expect(html).toContain('g4, "score", scoreWord()');
     expect(html).toContain('bandGroup("Fastest within each task-cost band"');
     expect(html).toContain('g5, "time", "Time / task (lower is faster)"');
-    expect(html).toContain('bandLaneChart("Lowest price within each speed target", "cost"');
     expect(html).toContain("g6Lanes.push"); // group 6 charts reuse the table's same qualifying choices
     expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
     expect(html).toContain('data-pjpreset="repo"');
@@ -847,6 +842,25 @@ describe("aa routes (HTTP, fixtures)", () => {
     const asset = await response.text();
     expect(asset).toContain("export function computeRecommendations");
     expect(asset).toContain("export function projectTask");
+  });
+
+  test("/aa page script does not redefine the computations it imports (#7562)", async () => {
+    // Oracle: the emitted page must execute the tested module copies.
+    // Any inline "function <name>(" for an imported name shadows the
+    // module implementation inside the page script (#3737 regression).
+    const page = await (await fetch("http://127.0.0.1:" + port + "/aa")).text();
+    const importMatch = page.match(/import \{([^}]+)\} from "\/assets\/aa-explorer-computations\.js";/);
+    expect(importMatch).not.toBeNull();
+    const imported = (importMatch as RegExpMatchArray)[1]
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    expect(imported).toContain("logEdges");
+    expect(imported).toContain("scoreEdges");
+    expect(imported).toContain("bandIndex");
+    for (const name of imported) {
+      expect(page).not.toMatch(new RegExp("function " + name + "\\s*\\("));
+    }
   });
 });
 

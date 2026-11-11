@@ -553,8 +553,48 @@ pub struct WorldDevArgs {
     /// guest (repeatable, in order). The view is reported after each.
     #[arg(long = "input", value_name = "TEXT")]
     pub inputs: Vec<String>,
+    /// Fixture to replay against the compiled candidate before
+    /// launch (repeatable, in order). A fixture whose replayed
+    /// records mismatch its recorded expectation blocks promotion:
+    /// the candidate is not launched and the command fails. Fixtures
+    /// recorded under an earlier module hash still replay (the dev
+    /// cross-module regression mode) and the report says so.
+    #[arg(long = "fixture", value_name = "FILE")]
+    pub fixtures: Vec<PathBuf>,
+    /// Deterministic fuzz declaration file (Phase 4): a bounded,
+    /// versioned JSON file naming a generated input alphabet and
+    /// the invariants the compiled candidate must hold. Given, the
+    /// command compiles the candidate and runs a fuzz campaign
+    /// instead of launching a session; it never runs on the
+    /// ordinary edit-to-running path.
+    #[arg(long = "fuzz", value_name = "FILE")]
+    pub fuzz: Option<PathBuf>,
+    /// Seed for the fuzz campaign's input generator. The same
+    /// declaration, seed, and case budget reproduce the same input
+    /// sequences and the same first failure.
+    #[arg(long, default_value_t = 42)]
+    pub fuzz_seed: u64,
+    /// Bounded fuzz case budget (cases are generated input
+    /// sequences, each applied to a fresh scratch world).
+    #[arg(long, default_value_t = 32)]
+    pub fuzz_cases: u32,
+    /// Watch the app's declared sources and hot-swap each debounced
+    /// change into the scratch world (Phase 2): a bounded,
+    /// long-running session that polls for edits, compiles one
+    /// candidate per snapshot, and promotes it only when the
+    /// fixture gates and the F12.9 migration commit pass — a failed
+    /// or stale candidate leaves the last-good program running.
+    #[arg(long)]
+    pub watch: bool,
+    /// Bounded watch poll budget (the session ends on its own
+    /// after this many polls).
+    #[arg(long, default_value_t = 1000)]
+    pub watch_max_cycles: u32,
+    /// Debounce window for watch polls, in milliseconds: change
+    /// events inside the window coalesce into one candidate.
+    #[arg(long, default_value_t = 150)]
+    pub watch_debounce_ms: u64,
 }
-
 
 /// The arguments of `id world logs`, extracted into
 /// their own `Args` struct for the same reason as `ServeArgs`

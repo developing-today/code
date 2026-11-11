@@ -204,6 +204,21 @@ in
         };
       }
       {
+        # Supabase -> Turso coord mirror (code#1723): the daily
+        # sync_agent_to_turso duty that moved to the laptop with
+        # the Tier-2 migration but was never scheduled (its
+        # watermark sat at 2026-10-28). Declared in this flake
+        # (nixos/home/supabase-turso-coord-mirror.nix) per Drew's
+        # all-laptop-services-in-nix rule. The identical hand
+        # units were installed 2026-11-11 ahead of the switch so
+        # the schedule was live; the switch replaces them with
+        # the store units below.
+        home-manager.users.user = {
+          imports = [ ../home/supabase-turso-coord-mirror.nix ];
+          services.supabase-turso-coord-mirror.enable = true;
+        };
+      }
+      {
         # Dashboard backup, laptop leg (code#1459) — the older
         # ~/tools job, distinct from pm-dashboard-backup above.
         # Folded into the flake 2026-11-01 (code#3720).

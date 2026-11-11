@@ -712,5 +712,61 @@ class SingleInstanceLockTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class StaleRegistrationTests(unittest.TestCase):
+    """#6547: a stale registration (worktree directory deleted out from
+    under git) is prune work on its own — no same-run candidate reap
+    may be required to trigger `git worktree prune`, and a dry run
+    must report it as would-prune while changing nothing on disk."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="wtreaper-stale-")
+        cls.repo = SyntheticRepo(cls.tmp)
+        cls.state = os.path.join(cls.tmp, "state")
+        cls.runner = ReaperRun(cls.repo, cls.state)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def registered_paths(self):
+        rc, out, _ = wr.run_git(self.repo.primary, "worktree", "list",
+                                "--porcelain")
+        assert rc == 0
+        return [line.split(" ", 1)[1] for line in out.decode().splitlines()
+                if line.startswith("worktree ")]
+
+    def last_summary(self):
+        with open(os.path.join(self.state, "last-run.json")) as fh:
+            return json.load(fh)
+
+    def test_01_dry_run_reports_would_prune_and_changes_nothing(self):
+        tree = self.repo.branch_tree("t/stale-dry", push=True)
+        shutil.rmtree(tree)
+        assert tree in self.registered_paths()
+        decisions = self.runner.run(dry_run=True)
+        assert decisions[tree]["action"] == "would-prune", decisions[tree]
+        summary = self.last_summary()
+        assert summary["stale_registrations"] == 1, summary
+        assert summary["pruned"] == 0, summary
+        assert "stale-registration" not in summary["kept"], summary
+        assert tree in self.registered_paths()
+
+    def test_02_non_dry_run_prunes_deleted_directory_only_primary(self):
+        tree = self.repo.branch_tree("t/stale-real", push=True)
+        shutil.rmtree(tree)
+        assert tree in self.registered_paths()
+        decisions = self.runner.run()
+        assert decisions[tree]["action"] == "stale-registration", decisions[tree]
+        summary = self.last_summary()
+        # The dry-run test's registration is still stale too (that test
+        # proved a dry run changes nothing), so the count is >= 1; this
+        # run prunes the primary once, clearing both.
+        assert summary["stale_registrations"] >= 1, summary
+        assert summary["pruned"] == 1, summary
+        assert summary["errors"] == [], summary
+        assert tree not in self.registered_paths()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

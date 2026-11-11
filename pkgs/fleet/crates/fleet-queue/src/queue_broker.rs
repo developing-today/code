@@ -1371,24 +1371,32 @@ pub fn run() -> i32 {
     use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
-    let home = crate::home::from_env().unwrap_or_else(|error| {
-        eprintln!("queue-broker: {error}");
-        std::process::exit(2);
-    });
+    let home = match crate::home::from_env() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("queue-broker: {error}");
+            return 2;
+        }
+    };
     let token_file = std::env::var("QUEUE_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/queue-broker/token"));
-    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &e);
-        std::process::exit(3);
-    });
+    let token = match crate::token_file::load_token_file(&token_file) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::log::info("queue-broker", &e);
+            return 3;
+        }
+    };
     let secrets_url = default_secrets_url(std::env::var("QUEUE_BROKER_SECRETS_URL").ok());
     let secrets_token_file = std::env::var("QUEUE_BROKER_SECRETS_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let secrets_token =
-        crate::token_file::load_token_file(&secrets_token_file).unwrap_or_else(|e| {
+    let secrets_token = match crate::token_file::load_token_file(&secrets_token_file) {
+        Ok(v) => v,
+        Err(e) => {
             crate::log::info("queue-broker", &e);
-            std::process::exit(3);
-        });
+            return 3;
+        }
+    };
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -1416,26 +1424,35 @@ pub fn run() -> i32 {
         let url = std::env::var("QUEUE_BROKER_TURSO_URL")
             .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
         let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
-            Ok(f) => crate::token_file::load_token_file(&f).unwrap_or_else(|e| {
-                crate::log::info("queue-broker", &e);
-                std::process::exit(3);
-            }),
+            Ok(f) => match crate::token_file::load_token_file(&f) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::log::info("queue-broker", &e);
+                    return 3;
+                }
+            },
             Err(_) => {
                 let resolver = Resolver::new(vec![Box::new(DirectSecrets {
                     url: secrets_url.clone(),
                     token: secrets_token.clone(),
                     agent: agent.clone(),
                 })]);
-                resolver
-                    .resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME)
-                    .map(|v| v.expose().to_string())
-                    .unwrap_or_else(|e| {
+                match resolve_with_startup_retry(
+                    &resolver,
+                    crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
+                    Duration::from_secs(30),
+                ) {
+                    Ok(v) => v.expose().to_string(),
+                    Err(e) => {
                         crate::log::info(
                             "queue-broker",
-                            &format!("turso backend token resolve failed: {e}"),
+                            &format!(
+                                "turso backend token resolve failed after 30s of retries: {e}"
+                            ),
                         );
-                        std::process::exit(3);
-                    })
+                        return 3;
+                    }
+                }
             }
         };
         let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
@@ -1448,13 +1465,13 @@ pub fn run() -> i32 {
             agent: agent.clone(),
             token: Mutex::new(None),
         }));
-        backend.ensure_schema().unwrap_or_else(|e| {
+        if let Err(e) = backend.ensure_schema() {
             crate::log::info(
                 "queue-broker",
                 &format!("turso backend schema ensure failed: {e}"),
             );
-            std::process::exit(3);
-        });
+            return 3;
+        }
         crate::log::info(
             "queue-broker",
             &format!("queue backend: turso ({})", backend.url()),
@@ -1475,10 +1492,13 @@ pub fn run() -> i32 {
         turso,
     });
 
-    let server = Server::http(&bind).unwrap_or_else(|e| {
-        crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
-        std::process::exit(3);
-    });
+    let server = match Server::http(&bind) {
+        Ok(server) => server,
+        Err(e) => {
+            crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
+            return 3;
+        }
+    };
     crate::log::info("queue-broker", &format!("listening on {bind}"));
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
@@ -1884,5 +1904,83 @@ mod tests {
             validate_durations("/list", &json!({"lease_seconds": 0})),
             Ok(())
         );
+    }
+}
+
+/// Resolve `name` through `resolver`, retrying until `budget`
+/// elapses. Startup only: a co-hosted or freshly started
+/// secrets-broker binds before its first vault refresh completes
+/// and answers 503 while its cache is cold, so a one-shot resolve
+/// races its readiness and the whole serve list exits (#8394
+/// Codex P2). Bounded: once the budget is spent the last error is
+/// returned and the caller fails exactly as the one-shot did.
+fn resolve_with_startup_retry(
+    resolver: &Resolver,
+    name: &str,
+    budget: Duration,
+) -> Result<SecretValue, SecretError> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match resolver.resolve(name) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod startup_retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A source that answers Unavailable for the first `fail_first`
+    /// calls, then resolves — the cold secrets-broker shape.
+    struct FlakySource {
+        calls: AtomicUsize,
+        fail_first: usize,
+    }
+
+    impl SecretSource for FlakySource {
+        fn source_name(&self) -> &'static str {
+            "flaky-test"
+        }
+        fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.fail_first {
+                return Err(SecretError::Unavailable {
+                    source: "flaky-test",
+                    name: name.to_string(),
+                    detail: "cold cache".to_string(),
+                });
+            }
+            Ok(SecretValue::from_resolved("tok".to_string()))
+        }
+    }
+
+    #[test]
+    fn startup_retry_outlasts_a_cold_source() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: 3,
+        })]);
+        let v = resolve_with_startup_retry(&resolver, "some.token", Duration::from_secs(5))
+            .expect("retry should reach the warmed source");
+        assert_eq!(v.expose(), "tok");
+    }
+
+    #[test]
+    fn startup_retry_gives_up_within_budget() {
+        let resolver = Resolver::new(vec![Box::new(FlakySource {
+            calls: AtomicUsize::new(0),
+            fail_first: usize::MAX,
+        })]);
+        let start = std::time::Instant::now();
+        let r = resolve_with_startup_retry(&resolver, "some.token", Duration::from_millis(300));
+        assert!(r.is_err());
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }
