@@ -647,3 +647,106 @@ export async function listDecisionResolutions(file: string): Promise<DecisionRes
   }
   return out;
 }
+
+// --- Decisions-page draft persistence (#8777) ---------------------------
+//
+// The 2026-11-11 "front end crashed" incident: pm-aggregator was killed
+// mid-session and Drew's typed-but-unsubmitted work existed only in the
+// page's form fields — gone the moment the tab died. The page now keeps
+// a per-set draft in localStorage: every in-progress answer, comment,
+// defer pick, info note and bulk selection is saved as he types and
+// restored on load. Drafts for questions that have been recorded (their
+// blocks leave the DOM on submit) prune themselves via the
+// MutationObserver re-save. Storage is best-effort: any localStorage
+// failure (private mode, quota) leaves the page exactly as functional
+// as before, just without drafts.
+
+/** localStorage key prefix for one set's decisions-page draft. */
+export const DECISIONS_DRAFT_KEY_PREFIX = "decisions-drafts:";
+
+export function decisionsDraftKey(setId: string): string {
+  return DECISIONS_DRAFT_KEY_PREFIX + setId;
+}
+
+/**
+ * The draft-persistence script for the decisions page (JS source, no
+ * <script> tags — server.ts interpolates it as the page script's last
+ * block, after every handler it complements exists). It works purely
+ * off the page's DOM contract: `.q` blocks keyed by data-qid carrying
+ * radio inputs named per question, `textarea.ft`, `select.defer`,
+ * `textarea.infonote`; item cards `section.item[data-ledger]` with
+ * `input.bulk` checkboxes; the bulk bar's #bulkLean and #bulkInfoNote.
+ */
+export function decisionsDraftScript(setId: string): string {
+  const key = JSON.stringify(decisionsDraftKey(setId));
+  return `
+// --- Draft persistence (#8777): in-progress work survives a crash ---
+var DRAFT_KEY = ${key};
+function draftSave() {
+  try {
+    var d = { q: {}, bulk: [], bulkLean: '', bulkNote: '' };
+    document.querySelectorAll('.q').forEach(function (block) {
+      var entry = {};
+      var picked = block.querySelector('input[type=radio]:checked');
+      if (picked) entry.opt = picked.value;
+      var ft = block.querySelector('textarea.ft').value;
+      if (ft) entry.ft = ft;
+      var lean = block.querySelector('select.defer').value;
+      if (lean) entry.lean = lean;
+      var note = block.querySelector('textarea.infonote').value;
+      if (note) entry.note = note;
+      if (Object.keys(entry).length) d.q[block.getAttribute('data-qid')] = entry;
+    });
+    document.querySelectorAll('section.item').forEach(function (card) {
+      var box = card.querySelector('input.bulk');
+      if (box && box.checked) d.bulk.push(card.getAttribute('data-ledger'));
+    });
+    var bl = document.getElementById('bulkLean');
+    if (bl) d.bulkLean = bl.value;
+    var bn = document.getElementById('bulkInfoNote');
+    if (bn) d.bulkNote = bn.value;
+    if (!Object.keys(d.q).length && !d.bulk.length && !d.bulkNote && !d.bulkLean) {
+      localStorage.removeItem(DRAFT_KEY);
+    } else {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    }
+  } catch (e) { /* storage unavailable: drafts are best-effort */ }
+}
+function draftRestore() {
+  var d;
+  try {
+    var raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return;
+    d = JSON.parse(raw);
+  } catch (e) { return; }
+  if (!d || typeof d !== 'object') return;
+  var restored = 0;
+  document.querySelectorAll('.q').forEach(function (block) {
+    var entry = (d.q || {})[block.getAttribute('data-qid')];
+    if (!entry) return;
+    if (entry.opt) {
+      block.querySelectorAll('input[type=radio]').forEach(function (r) {
+        if (r.value === entry.opt) { r.checked = true; restored++; }
+      });
+    }
+    if (entry.ft) { block.querySelector('textarea.ft').value = entry.ft; restored++; }
+    if (entry.lean) { block.querySelector('select.defer').value = entry.lean; restored++; }
+    if (entry.note) { block.querySelector('textarea.infonote').value = entry.note; restored++; }
+  });
+  (d.bulk || []).forEach(function (ledger) {
+    document.querySelectorAll('section.item').forEach(function (card) {
+      var box = card.querySelector('input.bulk');
+      if (box && card.getAttribute('data-ledger') === ledger) box.checked = true;
+    });
+  });
+  if (d.bulkLean) { var bl2 = document.getElementById('bulkLean'); if (bl2) bl2.value = d.bulkLean; }
+  if (d.bulkNote) { var bn2 = document.getElementById('bulkInfoNote'); if (bn2) { bn2.value = d.bulkNote; restored++; } }
+  if (restored) status('Restored your in-progress work from before the interruption — nothing you typed was lost.');
+}
+document.addEventListener('input', draftSave);
+document.addEventListener('change', draftSave);
+new MutationObserver(draftSave).observe(document.querySelector('main'), { childList: true, subtree: true });
+draftRestore();
+draftSave();
+`;
+}

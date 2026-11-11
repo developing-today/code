@@ -79,6 +79,7 @@ import {
   type DecisionItem,
   type DecisionSet,
   type DecisionSubmission,
+  decisionsDraftScript,
 } from "./decisions.ts";
 import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
@@ -980,6 +981,7 @@ document.querySelectorAll('[data-reqinfo]').forEach(function (b) {
   b.addEventListener('click', function () { requestInfoOne(b.closest('.q')); });
 });
 document.getElementById('reqinfoChecked').addEventListener('click', requestInfoChecked);
+${decisionsDraftScript(set.setId)}
 </script>
 </main></body></html>`;
 }
