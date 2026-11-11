@@ -2302,7 +2302,7 @@ mod upload_router_tests {
             opener.clone();
         let hub = crate::world_hub::WorldHub::new(
             dyn_opener,
-            Some("s3cret".to_owned()),
+            Some("admin".to_owned()),
             "arena",
             crate::world_hub::HubLimits::default(),
         );
@@ -2317,14 +2317,14 @@ mod upload_router_tests {
                 .method("POST")
                 .uri(uri)
                 .header("content-type", "application/json")
-                .header("x-world-admin-token", "s3cret")
+                .header("x-world-admin-token", "admin")
                 .body(Body::from(body))
                 .unwrap()
         };
         let get_admin = |uri: &str| {
             Request::builder()
                 .uri(uri)
-                .header("x-world-admin-token", "s3cret")
+                .header("x-world-admin-token", "admin")
                 .body(Body::empty())
                 .unwrap()
         };
