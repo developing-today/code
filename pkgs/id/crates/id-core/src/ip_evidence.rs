@@ -51,8 +51,18 @@ pub struct ForwardTrust {
 
 impl ForwardTrust {
     /// Whether this socket peer may speak for the client behind it.
+    /// Configured addresses are compared as parsed addresses, so any
+    /// valid spelling of the same address matches (`2001:0db8:0:0:...:1`
+    /// names the same proxy as the socket's canonical `2001:db8::1`);
+    /// an entry that does not parse as an address falls back to exact
+    /// text comparison and so never matches a real peer by accident.
     pub fn trusts(&self, socket_peer: &IpAddr) -> bool {
-        self.trusted_proxies.contains(&socket_peer.to_string())
+        self.trusted_proxies.iter().any(|configured| {
+            configured.parse::<IpAddr>().map_or_else(
+                |_| configured == &socket_peer.to_string(),
+                |addr| addr == *socket_peer,
+            )
+        })
     }
 }
 
@@ -96,6 +106,9 @@ pub enum IpUnknownReason {
     SignalsDisagree,
     /// No observation was available at all.
     NoObservation,
+    /// The lookup ran but determined no field at all: a verdict with
+    /// no country, region, or boundary judgement is not evidence.
+    LookupEmpty,
 }
 
 /// The resolved IP evidence for a subject: either one agreed verdict,
@@ -162,6 +175,12 @@ pub fn resolve_signals(signals: &[IpVerdict]) -> IpEvidence {
     let Some(first) = signals.first() else {
         return IpEvidence::Unknown(IpUnknownReason::NoObservation);
     };
+    // A lookup that determined nothing has not produced a verdict,
+    // however many signals agree on the emptiness: agreeing on
+    // nothing is unknown, never a Known that satisfies a policy.
+    if first.country.is_none() && first.region.is_none() && first.inside_boundary.is_none() {
+        return IpEvidence::Unknown(IpUnknownReason::LookupEmpty);
+    }
     if signals.iter().all(|s| s == first) {
         IpEvidence::Known(first.clone())
     } else {
@@ -186,6 +205,24 @@ pub enum RetentionError {
     WindowTooLong,
     /// The window ends at or before the observation it retains.
     WindowInPast,
+    /// Raw-IP retention was enabled without the stated purpose the
+    /// retention contract (design §4.1) requires.
+    PurposeMissing,
+}
+
+/// Reduce evidence to what [`PrivacyClass::VerdictOnly`] permits: the
+/// boundary verdict alone. Country and region are derived geography
+/// and never ride along under a verdict-only label, however the
+/// record was produced.
+fn verdict_only(evidence: IpEvidence) -> IpEvidence {
+    match evidence {
+        IpEvidence::Known(v) => IpEvidence::Known(IpVerdict {
+            country: None,
+            region: None,
+            inside_boundary: v.inside_boundary,
+        }),
+        unknown => unknown,
+    }
 }
 
 /// What of an IP observation a scope retains, after the privacy rules
@@ -221,7 +258,7 @@ pub fn retain(
 ) -> Result<RetainedIpEvidence, RetentionError> {
     let Some(retention) = retention else {
         return Ok(RetainedIpEvidence {
-            evidence,
+            evidence: verdict_only(evidence),
             privacy_class: PrivacyClass::VerdictOnly,
             raw_ip: None,
             retention: None,
@@ -229,7 +266,7 @@ pub fn retain(
     };
     let Some(observation) = observation else {
         return Ok(RetainedIpEvidence {
-            evidence,
+            evidence: verdict_only(evidence),
             privacy_class: PrivacyClass::VerdictOnly,
             raw_ip: None,
             retention: Some(retention),
@@ -240,6 +277,9 @@ pub fn retain(
     }
     if retention.retain_until - observation.observed_at > MAX_RAW_RETENTION_SECS {
         return Err(RetentionError::WindowTooLong);
+    }
+    if raw_enabled && retention.purpose.trim().is_empty() {
+        return Err(RetentionError::PurposeMissing);
     }
     let raw_ip = if raw_enabled && !observation.via_relay {
         Some(observation.socket_ip)
@@ -638,5 +678,112 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn empty_lookup_result_is_unknown_not_a_known_verdict() {
+        // Codex finding on PR #8551: a lookup that determines no field
+        // must not produce Known evidence that satisfies a policy.
+        let empty = IpVerdict {
+            country: None,
+            region: None,
+            inside_boundary: None,
+        };
+        assert_eq!(
+            resolve_signals(&[empty.clone(), empty]),
+            IpEvidence::Unknown(IpUnknownReason::LookupEmpty)
+        );
+        let o = obs(ip(192, 0, 2, 1), None, false);
+        let evidence = resolve_evidence(Some(&o), &ForwardTrust::default(), &|_| IpVerdict {
+            country: None,
+            region: None,
+            inside_boundary: None,
+        });
+        assert!(!evidence.is_known());
+        assert_eq!(
+            judge(
+                Some(true),
+                Some(true),
+                &evidence,
+                AccessKind::New,
+                Some(ContradictionChoice::Warn)
+            ),
+            Ok(IpOutcome::NotSatisfied)
+        );
+    }
+
+    #[test]
+    fn verdict_only_retention_strips_geography() {
+        // Codex finding on PR #8551: a VerdictOnly record may carry
+        // the boundary verdict alone, never country/region.
+        let o = obs(ip(192, 0, 2, 1), None, false);
+        let mut v = verdict("DE", false);
+        v.region = Some("Bavaria".to_string());
+        let r = retain(IpEvidence::Known(v.clone()), Some(&o), true, None).unwrap();
+        assert_eq!(r.privacy_class, PrivacyClass::VerdictOnly);
+        let IpEvidence::Known(stripped) = &r.evidence else {
+            panic!("expected known boundary verdict, got {:?}", r.evidence);
+        };
+        assert_eq!(stripped.country, None);
+        assert_eq!(stripped.region, None);
+        assert_eq!(stripped.inside_boundary, Some(false));
+        // The missing-observation early return classifies the same way.
+        let r = retain(
+            IpEvidence::Known(v),
+            None,
+            false,
+            Some(Retention {
+                purpose: "audit".into(),
+                retain_until: 2_000,
+            }),
+        )
+        .unwrap();
+        assert_eq!(r.privacy_class, PrivacyClass::VerdictOnly);
+        let IpEvidence::Known(stripped) = &r.evidence else {
+            panic!("expected known boundary verdict, got {:?}", r.evidence);
+        };
+        assert_eq!(stripped.country, None);
+        assert_eq!(stripped.region, None);
+    }
+
+    #[test]
+    fn raw_retention_requires_a_stated_purpose() {
+        // Codex finding on PR #8551: an empty or whitespace purpose
+        // does not satisfy the retention contract for raw IPs.
+        let o = obs(ip(192, 0, 2, 1), None, false);
+        for purpose in ["", "   "] {
+            assert_eq!(
+                retain(
+                    IpEvidence::Known(verdict("DE", false)),
+                    Some(&o),
+                    true,
+                    Some(Retention {
+                        purpose: purpose.into(),
+                        retain_until: 2_000,
+                    })
+                ),
+                Err(RetentionError::PurposeMissing)
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_proxy_matching_normalizes_address_spelling() {
+        // Codex finding on PR #8551: an expanded IPv6 spelling in the
+        // trust set names the same proxy as the canonical socket form.
+        let mut trust = ForwardTrust::default();
+        trust
+            .trusted_proxies
+            .insert("2001:0db8:0000:0000:0000:0000:0000:0001".to_string());
+        let socket: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(trust.trusts(&socket));
+        // The forwarded signal now joins and, disagreeing, makes the
+        // evidence unknown instead of silently resolving the proxy.
+        let o = obs(socket, Some(ip(10, 1, 2, 3)), false);
+        let evidence = resolve_evidence(Some(&o), &trust, &lookup);
+        assert_eq!(
+            evidence,
+            IpEvidence::Unknown(IpUnknownReason::SignalsDisagree)
+        );
     }
 }
