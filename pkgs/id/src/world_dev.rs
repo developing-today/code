@@ -20,17 +20,26 @@
 //! recorded under a different module — it replays it anyway and
 //! reports the cross-module fact on the gate result (invariant 5).
 //!
-//! Later phases (watch/debounce + F12.9 hot-swap, deterministic fuzz)
-//! build on [`DevScratchWorld`] and [`discover_sources`]; they are
+//! Phase 4 (this module): deterministic fuzzing against declared
+//! invariants. A bounded, versioned declaration file names a
+//! generated input alphabet and the invariants a candidate must
+//! hold; a seeded generator (never host entropy) produces case
+//! sequences over that alphabet, each applied to a fresh scratch
+//! world, and the campaign stops at the first failure with a
+//! reproducible counterexample. Fuzzing is a separate, opt-in check:
+//! it never runs on the edit-to-running path.
+//!
+//! Later phases (watch/debounce + F12.9 hot-swap) build on
+//! [`DevScratchWorld`] and [`discover_sources`]; they are
 //! deliberately not stubbed here.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::sandbox::{Sandbox, SandboxLimits};
-use crate::world::{JoinCapability, WorldCore, WorldHandle, WorldLimits, WorldScopes};
+use crate::world::{JoinCapability, Records, WorldCore, WorldHandle, WorldLimits, WorldScopes};
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec, Compiler, validate_spec};
 use crate::world_fixture::{Fixture, Verdict};
 
@@ -497,6 +506,430 @@ pub async fn run_dev_once(
     Ok(report)
 }
 
+/// Largest fuzz declaration file the parser accepts, in bytes.
+pub const MAX_FUZZ_DECL_BYTES: usize = 64 * 1024;
+/// Hard cap on generated cases per campaign (invariant 7: bounded work).
+pub const MAX_FUZZ_CASES: u32 = 10_000;
+/// Hard cap on inputs generated for one case.
+pub const MAX_FUZZ_SEQUENCE: usize = 64;
+/// Hard cap on the declared input alphabet's size.
+const MAX_FUZZ_INPUTS: usize = 32;
+/// Hard cap on one declared input's length, in bytes.
+const MAX_FUZZ_INPUT_BYTES: usize = 128;
+/// Hard cap on declared invariants per file.
+const MAX_FUZZ_INVARIANTS: usize = 32;
+/// Hard cap on keys in one `keys_present` invariant.
+const MAX_FUZZ_KEYS: usize = 64;
+
+/// One declared invariant in a fuzz declaration file (Phase 4).
+///
+/// The v1 set is deliberately narrow and machine-checkable, per the
+/// design: guest calls do not trap, records remain valid JSON,
+/// declared record keys remain present, and declared numeric
+/// bounds/order relations hold. A numeric invariant naming a key the
+/// records do not hold, or holding a non-numeric value, is a
+/// violation: the declaration asserts the key's presence and shape.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FuzzInvariant {
+    /// Applying any generated input must not error (trap/refuse).
+    NoTrap,
+    /// The records must serialize as JSON after every input.
+    RecordsValidJson,
+    /// Every named key is present in the records after every input.
+    KeysPresent {
+        /// Record keys that must remain present.
+        keys: Vec<String>,
+    },
+    /// The named record key is numeric and stays within the bounds
+    /// (`min`/`max` are inclusive; either may be omitted).
+    NumericBounds {
+        /// The record key checked.
+        key: String,
+        /// Inclusive lower bound, if any.
+        min: Option<f64>,
+        /// Inclusive upper bound, if any.
+        max: Option<f64>,
+    },
+    /// Both named keys are numeric and `first <= second` holds.
+    NumericOrder {
+        /// The key that must be the smaller (or equal) value.
+        first: String,
+        /// The key that must be the larger (or equal) value.
+        second: String,
+    },
+}
+
+impl FuzzInvariant {
+    /// The declaration-format name of this invariant's kind.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::NoTrap => "no_trap",
+            Self::RecordsValidJson => "records_valid_json",
+            Self::KeysPresent { .. } => "keys_present",
+            Self::NumericBounds { .. } => "numeric_bounds",
+            Self::NumericOrder { .. } => "numeric_order",
+        }
+    }
+
+    /// Check this invariant against `records` (the state after one
+    /// applied input). Returns a human-readable violation detail.
+    fn check(&self, records: &Records) -> std::result::Result<(), String> {
+        match self {
+            Self::NoTrap => Ok(()),
+            Self::RecordsValidJson => serde_json::to_string(records)
+                .map(|_| ())
+                .map_err(|err| format!("records do not serialize as JSON: {err}")),
+            Self::KeysPresent { keys } => {
+                for key in keys {
+                    if !records.contains_key(key) {
+                        return Err(format!("declared key {key:?} is absent from the records"));
+                    }
+                }
+                Ok(())
+            }
+            Self::NumericBounds { key, min, max } => {
+                let value = numeric(records, key)?;
+                if let Some(min) = min
+                    && value < *min
+                {
+                    return Err(format!("{key} = {value} is below the declared min {min}"));
+                }
+                if let Some(max) = max
+                    && value > *max
+                {
+                    return Err(format!("{key} = {value} exceeds the declared max {max}"));
+                }
+                Ok(())
+            }
+            Self::NumericOrder { first, second } => {
+                let a = numeric(records, first)?;
+                let b = numeric(records, second)?;
+                if a > b {
+                    return Err(format!(
+                        "declared order violated: {first} = {a} > {second} = {b}"
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The numeric value of a declared record key, for invariant checks.
+fn numeric(records: &Records, key: &str) -> std::result::Result<f64, String> {
+    match records.get(key) {
+        None => Err(format!("declared key {key:?} is absent from the records")),
+        Some(value) => value
+            .as_f64()
+            .ok_or_else(|| format!("declared key {key:?} is not numeric: {value}")),
+    }
+}
+
+/// A parsed fuzz declaration file (Phase 4): the bounded generated
+/// input alphabet plus the declared invariants a candidate must
+/// hold under generated inputs.
+///
+/// Format (version 1), JSON:
+///
+/// ```json
+/// {
+///   "version": 1,
+///   "inputs": ["inc", "dec"],
+///   "invariants": [
+///     {"kind": "no_trap"},
+///     {"kind": "keys_present", "keys": ["count"]},
+///     {"kind": "numeric_bounds", "key": "count", "min": 0, "max": 10}
+///   ]
+/// }
+/// ```
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct FuzzDecl {
+    /// Format version; only `1` is understood.
+    pub version: u32,
+    /// The input alphabet: generated cases are sequences over these
+    /// input texts.
+    pub inputs: Vec<String>,
+    /// The declared invariants, checked after every applied input.
+    #[serde(default)]
+    pub invariants: Vec<FuzzInvariant>,
+}
+
+/// Parse and bound-check a fuzz declaration file's text.
+///
+/// # Errors
+///
+/// The text is not valid JSON in the version-1 shape, the version is
+/// not 1, or the declaration exceeds its bounds (alphabet size, input
+/// length, invariant count, key count).
+pub fn parse_fuzz_decl(text: &str) -> Result<FuzzDecl> {
+    ensure!(
+        text.len() <= MAX_FUZZ_DECL_BYTES,
+        "fuzz declaration exceeds {MAX_FUZZ_DECL_BYTES} bytes"
+    );
+    let decl: FuzzDecl =
+        serde_json::from_str(text).context("parse the fuzz declaration as version-1 JSON")?;
+    ensure!(
+        decl.version == 1,
+        "unsupported fuzz declaration version {}",
+        decl.version
+    );
+    ensure!(
+        !decl.inputs.is_empty(),
+        "the fuzz declaration names no inputs"
+    );
+    ensure!(
+        decl.inputs.len() <= MAX_FUZZ_INPUTS,
+        "the fuzz declaration names {} inputs; the bound is {MAX_FUZZ_INPUTS}",
+        decl.inputs.len()
+    );
+    for input in &decl.inputs {
+        ensure!(
+            input.len() <= MAX_FUZZ_INPUT_BYTES,
+            "a declared fuzz input exceeds {MAX_FUZZ_INPUT_BYTES} bytes"
+        );
+    }
+    ensure!(
+        decl.invariants.len() <= MAX_FUZZ_INVARIANTS,
+        "the fuzz declaration names {} invariants; the bound is {MAX_FUZZ_INVARIANTS}",
+        decl.invariants.len()
+    );
+    for invariant in &decl.invariants {
+        if let FuzzInvariant::KeysPresent { keys } = invariant {
+            ensure!(
+                keys.len() <= MAX_FUZZ_KEYS,
+                "a keys_present invariant names {} keys; the bound is {MAX_FUZZ_KEYS}",
+                keys.len()
+            );
+        }
+        if let FuzzInvariant::NumericBounds { min, max, .. } = invariant
+            && let (Some(min), Some(max)) = (min, max)
+        {
+            ensure!(
+                min <= max,
+                "a numeric_bounds invariant has min {min} above max {max}"
+            );
+        }
+    }
+    Ok(decl)
+}
+
+/// A SplitMix64 generator: the campaign's only randomness source.
+/// Pure `u64` arithmetic, so a `(seed, case)` pair produces the same
+/// sequence on every platform and run (invariant 6). Host entropy is
+/// never consulted.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        (self.next_u64() % bound as u64) as usize
+    }
+}
+
+/// The generated input sequence for one case of a campaign.
+///
+/// Deterministic in `(decl, fuzz_seed, case)`: the generator is
+/// seeded per case, so a case's sequence does not depend on the
+/// campaign budget — the same seed and case index reproduce the same
+/// sequence in a longer or shorter run (invariant 6).
+#[must_use]
+pub fn fuzz_case_inputs(decl: &FuzzDecl, fuzz_seed: u64, case: u32) -> Vec<String> {
+    let mut rng = SplitMix64(fuzz_seed ^ u64::from(case).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let len = 1 + rng.below(MAX_FUZZ_SEQUENCE);
+    let mut inputs = Vec::with_capacity(len);
+    for _ in 0..len {
+        inputs.push(decl.inputs[rng.below(decl.inputs.len())].clone());
+    }
+    inputs
+}
+
+/// The first invariant failure of a fuzz campaign: the reproducible
+/// counterexample. Re-running the campaign with the same declaration,
+/// fuzz seed, and case budget reports this same failure (invariant
+/// 6); applying `inputs` (up to and including the failing input) to a
+/// fresh candidate reproduces it directly.
+#[derive(Clone, Debug, Serialize)]
+pub struct FuzzFailure {
+    /// Index of the failing case within the campaign.
+    pub case: u32,
+    /// Index of the failing input within the case's sequence.
+    pub step: usize,
+    /// The case's input sequence up to and including the failing input.
+    pub inputs: Vec<String>,
+    /// The violated invariant's kind (`no_trap`, `keys_present`, ...).
+    pub invariant: String,
+    /// What violated the invariant.
+    pub detail: String,
+    /// The candidate's records at the failure (after the failing
+    /// input; the pre-input records when the input itself trapped).
+    pub records: Records,
+}
+
+/// The outcome of one deterministic fuzz campaign (Phase 4).
+#[derive(Clone, Debug, Serialize)]
+pub struct FuzzReport {
+    /// The fuzz seed the campaign was generated from.
+    pub fuzz_seed: u64,
+    /// Cases the campaign set out to run (the bounded budget).
+    pub cases_budgeted: u32,
+    /// Cases actually run (the budgeted count, or the failing case
+    /// index + 1 when the campaign stopped at a failure).
+    pub cases_run: u32,
+    /// Inputs applied across all run cases, including a failing one.
+    pub inputs_applied: u64,
+    /// Number of invariants declared.
+    pub invariants: usize,
+    /// The first failure, when one was found.
+    pub failure: Option<FuzzFailure>,
+}
+
+impl FuzzReport {
+    /// The one-line reproducible summary of the first failure, in
+    /// the shape the CLI prints and bails with; `None` when the
+    /// campaign passed.
+    #[must_use]
+    pub fn failure_summary(&self) -> Option<String> {
+        self.failure.as_ref().map(|failure| {
+            format!(
+                "fuzz seed {} case {} step {}: invariant {} violated: {} (inputs: {:?})",
+                self.fuzz_seed,
+                failure.case,
+                failure.step,
+                failure.invariant,
+                failure.detail,
+                failure.inputs
+            )
+        })
+    }
+}
+
+/// Run a deterministic fuzz campaign against the compiled candidate
+/// `module`: generate `budget` cases from `decl` under `fuzz_seed`,
+/// apply each case's inputs to a fresh scratch world (initialized
+/// with `seed`), and check the declared invariants after every
+/// input. The campaign stops at the first failure and reports it as
+/// the counterexample; it never loops past `budget` cases
+/// (invariants 6 and 7).
+///
+/// # Errors
+///
+/// The budget is zero or above [`MAX_FUZZ_CASES`], or launching a
+/// scratch world fails. A guest input that errors is reported as a
+/// `no_trap` failure, not an error: trapping is an outcome the
+/// campaign exists to find.
+pub async fn fuzz_candidate(
+    module: &[u8],
+    seed: u64,
+    decl: &FuzzDecl,
+    fuzz_seed: u64,
+    budget: u32,
+) -> Result<FuzzReport> {
+    ensure!(budget >= 1, "the fuzz case budget must be at least 1");
+    ensure!(
+        budget <= MAX_FUZZ_CASES,
+        "the fuzz case budget {budget} exceeds the bound {MAX_FUZZ_CASES}"
+    );
+    let mut inputs_applied: u64 = 0;
+    for case in 0..budget {
+        let inputs = fuzz_case_inputs(decl, fuzz_seed, case);
+        let world = DevScratchWorld::launch(module, seed).await?;
+        let mut failure: Option<FuzzFailure> = None;
+        for (step, input) in inputs.iter().enumerate() {
+            let before = world.records();
+            if let Err(err) = world.input(input.as_bytes()).await {
+                failure = Some(FuzzFailure {
+                    case,
+                    step,
+                    inputs: inputs[..=step].to_vec(),
+                    invariant: "no_trap".to_owned(),
+                    detail: format!("guest call for input {input:?} failed: {err}"),
+                    records: before,
+                });
+                inputs_applied += 1;
+                break;
+            }
+            inputs_applied += 1;
+            let records = world.records();
+            for invariant in &decl.invariants {
+                if let Err(detail) = invariant.check(&records) {
+                    failure = Some(FuzzFailure {
+                        case,
+                        step,
+                        inputs: inputs[..=step].to_vec(),
+                        invariant: invariant.kind().to_owned(),
+                        detail,
+                        records,
+                    });
+                    break;
+                }
+            }
+            if failure.is_some() {
+                break;
+            }
+        }
+        drop(world);
+        if let Some(failure) = failure {
+            return Ok(FuzzReport {
+                fuzz_seed,
+                cases_budgeted: budget,
+                cases_run: case + 1,
+                inputs_applied,
+                invariants: decl.invariants.len(),
+                failure: Some(failure),
+            });
+        }
+    }
+    Ok(FuzzReport {
+        fuzz_seed,
+        cases_budgeted: budget,
+        cases_run: budget,
+        inputs_applied,
+        invariants: decl.invariants.len(),
+        failure: None,
+    })
+}
+
+/// Compile the app in `dir` exactly as [`run_dev_once`] does and run
+/// a deterministic fuzz campaign against the compiled candidate.
+///
+/// # Errors
+///
+/// Discovery, platform/compiler setup, compilation, or the campaign
+/// itself fails (see [`parse_fuzz_decl`] and [`fuzz_candidate`]). A
+/// found invariant failure is a report, not an error; the caller
+/// decides how to present it.
+pub async fn run_dev_fuzz(
+    dir: &Path,
+    platform: Option<&Path>,
+    roc: Option<&str>,
+    seed: u64,
+    decl: &FuzzDecl,
+    fuzz_seed: u64,
+    budget: u32,
+) -> Result<FuzzReport> {
+    let sources = discover_sources(dir)?;
+    let platform_dir = resolve_platform_dir(dir, platform, sources.main_source())?;
+    let roc_bin = match roc {
+        Some(roc) => roc.to_owned(),
+        None => crate::world_compile::locate_roc()?,
+    };
+    let compiler = Compiler::new(platform_dir.clone(), roc_bin)?;
+    let granted = platform_module_names(&platform_dir)?;
+    let (module, _, _) =
+        crate::world_compile::compile(&sources.spec(seed), &compiler, &granted, COMPILE_TIMEOUT)
+            .await?;
+    fuzz_candidate(&module, seed, decl, fuzz_seed, budget).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,5 +1121,147 @@ mod tests {
             Some("the fixture has no records")
         );
         assert!(!gate.blocks_promotion);
+    }
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+
+    fn counter_decl(invariants: Vec<FuzzInvariant>) -> FuzzDecl {
+        FuzzDecl {
+            version: 1,
+            inputs: vec!["inc".to_owned(), "dec".to_owned(), "bogus".to_owned()],
+            invariants,
+        }
+    }
+
+    #[test]
+    fn parse_fuzz_decl_accepts_the_version_1_shape() {
+        let decl = parse_fuzz_decl(
+            r#"{
+                "version": 1,
+                "inputs": ["inc", "dec"],
+                "invariants": [
+                    {"kind": "no_trap"},
+                    {"kind": "records_valid_json"},
+                    {"kind": "keys_present", "keys": ["count"]},
+                    {"kind": "numeric_bounds", "key": "count", "min": 0, "max": 10},
+                    {"kind": "numeric_order", "first": "a", "second": "b"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(decl.inputs, ["inc", "dec"]);
+        assert_eq!(decl.invariants.len(), 5);
+        assert_eq!(decl.invariants[2].kind(), "keys_present");
+        assert_eq!(decl.invariants[3].kind(), "numeric_bounds");
+    }
+
+    #[test]
+    fn parse_fuzz_decl_refuses_out_of_bound_declarations() {
+        // Oracle: each refusal names the bound the declaration broke;
+        // an out-of-bound declaration must never reach the generator
+        // (invariant 7: bounded work).
+        let cases: Vec<String> = vec![
+            r#"{"version": 2, "inputs": ["inc"]}"#.to_owned(),
+            r#"{"version": 1, "inputs": []}"#.to_owned(),
+            format!(
+                r#"{{"version": 1, "inputs": [{}]}}"#,
+                (0..MAX_FUZZ_INPUTS + 1)
+                    .map(|i| format!("\"in{i}\""))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            format!(
+                r#"{{"version": 1, "inputs": ["{}"]}}"#,
+                "x".repeat(MAX_FUZZ_INPUT_BYTES + 1)
+            ),
+            r#"{"version": 1, "inputs": ["inc"], "invariants": [{"kind": "numeric_bounds", "key": "count", "min": 5, "max": 1}]}"#.to_owned(),
+            r#"{"version": 1, "inputs": ["inc"], "invariants": [{"kind": "not_a_kind"}]}"#.to_owned(),
+        ];
+        for text in &cases {
+            assert!(parse_fuzz_decl(text).is_err(), "accepted: {text}");
+        }
+    }
+
+    #[test]
+    fn fuzz_case_inputs_are_deterministic_and_budget_independent() {
+        // Oracle: invariant 6 — the same (decl, seed, case) yields
+        // the same sequence regardless of anything else, and two
+        // different cases (or seeds) do not collapse onto one
+        // sequence.
+        let decl = counter_decl(vec![]);
+        let a = fuzz_case_inputs(&decl, 42, 3);
+        let b = fuzz_case_inputs(&decl, 42, 3);
+        assert_eq!(a, b);
+        assert!(!a.is_empty() && a.len() <= MAX_FUZZ_SEQUENCE);
+        assert!(a.iter().all(|input| decl.inputs.contains(input)));
+        assert_ne!(a, fuzz_case_inputs(&decl, 42, 4));
+        assert_ne!(a, fuzz_case_inputs(&decl, 43, 3));
+    }
+
+    #[tokio::test]
+    async fn fuzz_campaign_passes_a_candidate_that_holds_its_invariants() {
+        // Oracle: the counter example under a bound its reachable
+        // counts cannot break within one case (a case applies at
+        // most MAX_FUZZ_SEQUENCE inputs, so count <= 64 < 1000):
+        // the campaign must run the whole budget and find nothing.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let decl = counter_decl(vec![
+            FuzzInvariant::NoTrap,
+            FuzzInvariant::RecordsValidJson,
+            FuzzInvariant::KeysPresent {
+                keys: vec!["count".to_owned()],
+            },
+            FuzzInvariant::NumericBounds {
+                key: "count".to_owned(),
+                min: Some(0.0),
+                max: Some(1000.0),
+            },
+        ]);
+        let report = fuzz_candidate(wasm, 7, &decl, 42, 8).await.unwrap();
+        assert!(report.failure.is_none(), "{report:?}");
+        assert_eq!(report.cases_run, 8);
+        assert!(report.inputs_applied >= 8);
+    }
+
+    #[tokio::test]
+    async fn fuzz_campaign_catches_the_seeded_faulty_pair_at_a_fixed_seed() {
+        // The seeded-bug regression test the design requires: the
+        // counter example paired with a bound it does not enforce
+        // (count <= 2, while `inc` increments without limit) is a
+        // deliberately faulty example/invariant pair. At the fixed
+        // seed the campaign must catch it, deterministically, and
+        // the reported counterexample must replay to the violation:
+        // applying the reported inputs to a fresh world reaches
+        // count = 3, the first value above the bound.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let decl = counter_decl(vec![FuzzInvariant::NumericBounds {
+            key: "count".to_owned(),
+            min: Some(0.0),
+            max: Some(2.0),
+        }]);
+        let report = fuzz_candidate(wasm, 7, &decl, 42, 200).await.unwrap();
+        let failure = report
+            .failure
+            .clone()
+            .expect("the seeded faulty pair must be caught within the budget");
+        assert_eq!(failure.invariant, "numeric_bounds");
+        assert_eq!(failure.records.get("count"), Some(&serde_json::json!(3)));
+        // Determinism: the identical campaign reports the identical
+        // first failure (invariant 6).
+        let again = fuzz_candidate(wasm, 7, &decl, 42, 200).await.unwrap();
+        let again = again.failure.expect("deterministic rerun must fail too");
+        assert_eq!(again.case, failure.case);
+        assert_eq!(again.step, failure.step);
+        assert_eq!(again.inputs, failure.inputs);
+        // Replay oracle: the reported sequence, applied fresh,
+        // reaches exactly the reported violating records.
+        let world = DevScratchWorld::launch(wasm, 7).await.unwrap();
+        for input in &failure.inputs {
+            world.input(input.as_bytes()).await.unwrap();
+        }
+        assert_eq!(world.records().get("count"), Some(&serde_json::json!(3)));
     }
 }

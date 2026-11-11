@@ -561,6 +561,23 @@ pub struct WorldDevArgs {
     /// cross-module regression mode) and the report says so.
     #[arg(long = "fixture", value_name = "FILE")]
     pub fixtures: Vec<PathBuf>,
+    /// Deterministic fuzz declaration file (Phase 4): a bounded,
+    /// versioned JSON file naming a generated input alphabet and
+    /// the invariants the compiled candidate must hold. Given, the
+    /// command compiles the candidate and runs a fuzz campaign
+    /// instead of launching a session; it never runs on the
+    /// ordinary edit-to-running path.
+    #[arg(long = "fuzz", value_name = "FILE")]
+    pub fuzz: Option<PathBuf>,
+    /// Seed for the fuzz campaign's input generator. The same
+    /// declaration, seed, and case budget reproduce the same input
+    /// sequences and the same first failure.
+    #[arg(long, default_value_t = 42)]
+    pub fuzz_seed: u64,
+    /// Bounded fuzz case budget (cases are generated input
+    /// sequences, each applied to a fresh scratch world).
+    #[arg(long, default_value_t = 32)]
+    pub fuzz_cases: u32,
 }
 
 /// The arguments of `id world logs`, extracted into

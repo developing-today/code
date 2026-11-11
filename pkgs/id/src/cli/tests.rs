@@ -2705,31 +2705,62 @@ fn test_cli_parse_world_profile() {
     }
 }
 
-    #[test]
-    fn test_cli_parse_world_dev() {
-        let cli = Cli::parse_from([
-            "id",
-            "world",
-            "dev",
-            "apps/ping",
-            "--seed",
-            "7",
-            "--input",
-            "inc",
-            "--input",
-            "dec",
-        ]);
-        match cli.command {
-            Some(Command::World(cmd)) => match *cmd {
-                WorldCommand::Dev(args) => {
-                    assert!(args.dir.ends_with("apps/ping"));
-                    assert_eq!(args.seed, 7);
-                    assert_eq!(args.inputs, ["inc", "dec"]);
-                    assert!(args.platform.is_none());
-                    assert!(args.roc.is_none());
-                }
-                other => panic!("unexpected: {other:?}"),
-            },
+#[test]
+fn test_cli_parse_world_dev_fuzz() {
+    let cli = Cli::parse_from([
+        "id",
+        "world",
+        "dev",
+        "apps/ping",
+        "--fuzz",
+        "fuzz.json",
+        "--fuzz-seed",
+        "7",
+        "--fuzz-cases",
+        "12",
+    ]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Dev(args) => {
+                assert!(
+                    args.fuzz
+                        .as_deref()
+                        .is_some_and(|f| f.ends_with("fuzz.json"))
+                );
+                assert_eq!(args.fuzz_seed, 7);
+                assert_eq!(args.fuzz_cases, 12);
+            }
             other => panic!("unexpected: {other:?}"),
-        }
+        },
+        other => panic!("unexpected: {other:?}"),
     }
+}
+
+#[test]
+fn test_cli_parse_world_dev() {
+    let cli = Cli::parse_from([
+        "id",
+        "world",
+        "dev",
+        "apps/ping",
+        "--seed",
+        "7",
+        "--input",
+        "inc",
+        "--input",
+        "dec",
+    ]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Dev(args) => {
+                assert!(args.dir.ends_with("apps/ping"));
+                assert_eq!(args.seed, 7);
+                assert_eq!(args.inputs, ["inc", "dec"]);
+                assert!(args.platform.is_none());
+                assert!(args.roc.is_none());
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}
