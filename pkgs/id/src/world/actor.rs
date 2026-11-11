@@ -1420,8 +1420,17 @@ impl WorldActor {
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, CapError> {
         let records = self.records_sender.borrow().1.clone();
-        let prefix = args.get("prefix").and_then(serde_json::Value::as_str);
-        let after = args.get("after").and_then(serde_json::Value::as_str);
+        // #7899: a present-but-non-string prefix/after is bad_args,
+        // not "omitted" — treating it as omitted silently widens a
+        // scoped read to every record, or restarts pagination.
+        let prefix = match args.get("prefix") {
+            None => None,
+            Some(value) => Some(value.as_str().ok_or(CapError::bad_args())?),
+        };
+        let after = match args.get("after") {
+            None => None,
+            Some(value) => Some(value.as_str().ok_or(CapError::bad_args())?),
+        };
         let mut page: Vec<serde_json::Value> = Vec::new();
         let mut used = 0usize;
         let mut last_included: Option<String> = None;
