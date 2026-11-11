@@ -54,7 +54,20 @@ pub struct Compiler {
     /// The `roc` binary to run.
     pub roc_bin: String,
     modules: Vec<String>,
+    /// The shared compiled-world cache (design #5965 §2, P1 in #6235),
+    /// when the operator configured one. Without it, compiles always
+    /// run the compiler, exactly as before the cache existed.
+    cache: Option<std::sync::Arc<crate::world_cache::WorldCache>>,
 }
+
+/// The author key compiles are attributed to while every compile is
+/// an admin compile (design #5965 §5.1: "admin compiles are metered
+/// and logged"). Per-author keys arrive with the P3 gating matrix;
+/// until then the house is the only author, entries are stored at
+/// `author` scope under this key, and cross-author reuse can only
+/// ever be exercised by the determinism-gated paths the cache unit
+/// tests cover.
+pub const ADMIN_CACHE_AUTHOR: &str = "server-admin";
 
 impl Compiler {
     /// # Errors
@@ -72,7 +85,26 @@ impl Compiler {
             platform_dir,
             roc_bin,
             modules,
+            cache: None,
         })
+    }
+
+    /// Attach the shared compiled-world cache: compiles through this
+    /// compiler consult it before running `roc` and store their
+    /// artifacts in it afterwards (see [`compile_with_cache`]).
+    #[must_use]
+    pub fn with_cache(
+        mut self,
+        cache: std::sync::Arc<crate::world_cache::WorldCache>,
+    ) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// The attached shared compiled-world cache, if any.
+    #[must_use]
+    pub fn cache(&self) -> Option<&std::sync::Arc<crate::world_cache::WorldCache>> {
+        self.cache.as_ref()
     }
 }
 
@@ -194,6 +226,41 @@ pub fn validate_spec(spec: &CompileSpec) -> Result<()> {
     Ok(())
 }
 
+/// The target a spec compiles for, refusing a native compile the
+/// platform cannot serve. Shared by the plain and cached paths so
+/// both derive the same cache-key component.
+fn target_of(spec: &CompileSpec, compiler: &Compiler) -> Result<&'static str> {
+    if spec.native {
+        ensure!(
+            compiler
+                .platform_dir
+                .join("targets/x64musl/libhost.a")
+                .is_file(),
+            "this platform has no native targets (run examples/roc-world/build-native.sh)"
+        );
+        Ok("x64musl")
+    } else {
+        Ok("wasm32")
+    }
+}
+
+/// The compiler arguments a build records in its provenance, minus
+/// the per-job `--output` path: exactly the list [`compile_uncached`]
+/// derives from its real argument vector, rebuilt here so a cache hit
+/// reports the same provenance a fresh compile would.
+fn stable_arguments(target: &str) -> Vec<String> {
+    let mut arguments = vec![
+        "build".to_owned(),
+        "main.roc".to_owned(),
+        format!("--target={target}"),
+        "--debug".to_owned(),
+    ];
+    if target == "wasm32" {
+        arguments.push(format!("--wasm-memory={WASM_MEMORY_BYTES}"));
+    }
+    arguments
+}
+
 /// Compile `spec` and return the validated Wasm module plus compiler
 /// diagnostics. `granted` is the effective list: the platform modules the
 /// source may import, bounded by the server and world ceilings.
@@ -208,22 +275,205 @@ pub async fn compile(
     granted: &[String],
     timeout: Duration,
 ) -> Result<(Vec<u8>, String, crate::world::ModuleProvenance)> {
+    compile_uncached(spec, compiler, granted, timeout).await
+}
+
+/// Compile `spec` through the shared compiled-world cache attached
+/// to `compiler` (design #5965 §2, P1 in #6235): a visible, verified
+/// hit is served without invoking the compiler; a miss compiles and
+/// stores the artifact at `scope` under `author`. With no cache
+/// attached this is exactly [`compile`]. The seed is not part of the
+/// key (§2.1), so a hit serves every seed. Metering is logged only:
+/// the measured compiler cost of a miss (0 on a hit) goes to the
+/// `world_compile_cache` tracing target, per §7 P1.
+///
+/// # Errors
+///
+/// The same failures as [`compile`]; a cache that cannot store its
+/// entry never fails a compile that succeeded.
+pub async fn compile_with_cache(
+    spec: &CompileSpec,
+    compiler: &Compiler,
+    granted: &[String],
+    timeout: Duration,
+    author: &str,
+    scope: crate::world_cache::CacheScope,
+) -> Result<(Vec<u8>, String, crate::world::ModuleProvenance)> {
+    use crate::world_cache::{CacheKeyInput, Lookup};
+    let Some(cache) = compiler.cache() else {
+        return compile_uncached(spec, compiler, granted, timeout).await;
+    };
+    validate_spec(spec)?;
+    check_imports(spec, &compiler.modules, granted)?;
+    let target = target_of(spec, compiler)?;
+    let roc_bin = std::fs::canonicalize(resolve_program(&compiler.roc_bin))
+        .context("resolve Roc compiler executable")?;
+    let input = CacheKeyInput {
+        platform_tree_hash: digest_platform_tree(&compiler.platform_dir)?,
+        source_closure_hash: digest_sources(&spec.files)?,
+        dll_closure_hash: crate::world_cache::dll_closure_hash(&[]),
+        compiler_blake3: digest_file(&roc_bin)?,
+        target: target.to_owned(),
+    };
+    if let Lookup::Hit { artifact, entry } = cache.lookup(&input, author)? {
+        tracing::info!(
+            target: "world_compile_cache",
+            outcome = "hit",
+            key = %entry.key,
+            author,
+            compiler_cost_ms = 0_u64,
+            "compiled-world cache hit; compiler not invoked"
+        );
+        validate_artifact(&artifact, spec.native)?;
+        let provenance =
+            crate::world::ModuleProvenance::SourceBuild(crate::world::SourceBuildProvenance {
+                schema_version: 1,
+                compiler_blake3: input.compiler_blake3.clone(),
+                compiler_version: entry.compiler_version.clone(),
+                platform_blake3: input.platform_tree_hash.clone(),
+                source_blake3: input.source_closure_hash.clone(),
+                target: target.to_owned(),
+                arguments: stable_arguments(target),
+            });
+        return Ok((
+            artifact,
+            format!(
+                "served from the shared compiled-world cache (key {})",
+                entry.key
+            ),
+            provenance,
+        ));
+    }
+    let started = std::time::Instant::now();
+    let (wasm, diagnostics, provenance) =
+        compile_uncached(spec, compiler, granted, timeout).await?;
+    let compiler_cost_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // Store under the provenance's own components: they are the
+    // digests of record, and if the pre-computed platform digest ever
+    // diverged from the staged-tree digest the entry would simply
+    // never be looked up — so only store when they agree.
+    if let crate::world::ModuleProvenance::SourceBuild(build) = &provenance {
+        if build.platform_blake3 == input.platform_tree_hash
+            && build.compiler_blake3 == input.compiler_blake3
+            && build.source_blake3 == input.source_closure_hash
+            && build.target == input.target
+        {
+            match cache.store(&input, author, scope, &wasm, &build.compiler_version) {
+                Ok(outcome) => {
+                    tracing::info!(
+                        target: "world_compile_cache",
+                        outcome = "miss",
+                        store = ?outcome,
+                        author,
+                        compiler_cost_ms,
+                        "compiled-world cache miss; artifact stored"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "world_compile_cache",
+                        outcome = "miss",
+                        author,
+                        compiler_cost_ms,
+                        "compiled-world cache store failed: {error:#}"
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                target: "world_compile_cache",
+                outcome = "miss",
+                author,
+                compiler_cost_ms,
+                "compiled-world cache store skipped: key components diverged from provenance"
+            );
+        }
+    }
+    Ok((wasm, diagnostics, provenance))
+}
+
+/// The determinism proof harness (design §2.2): compile `spec` twice
+/// through the uncached path — each run stages its platform and
+/// sources in a fresh job directory — and record a determinism proof
+/// for the (compiler, platform) pair when the two artifacts are
+/// byte-identical. Returns whether a proof is on record afterwards.
+/// Without a cache attached there is nothing to record into and this
+/// returns `false`.
+///
+/// # Errors
+///
+/// Propagates either compile's failure.
+pub async fn verify_determinism(
+    spec: &CompileSpec,
+    compiler: &Compiler,
+    granted: &[String],
+    timeout: Duration,
+) -> Result<bool> {
+    let Some(cache) = compiler.cache() else {
+        return Ok(false);
+    };
+    let (first, _, first_provenance) =
+        compile_uncached(spec, compiler, granted, timeout).await?;
+    let (second, _, _) = compile_uncached(spec, compiler, granted, timeout).await?;
+    let crate::world::ModuleProvenance::SourceBuild(build) = &first_provenance else {
+        return Ok(false);
+    };
+    cache.record_determinism_proof(
+        &build.compiler_blake3,
+        &build.platform_blake3,
+        &crate::world_cache::artifact_hash(&first),
+        &crate::world_cache::artifact_hash(&second),
+    )
+}
+
+/// The output policy a fresh compile applies, applied identically to
+/// a cache hit before its bytes are served: size bound, the native
+/// shape check, and (for Wasm) the sandbox's import-free validation.
+fn validate_artifact(wasm: &[u8], native: bool) -> Result<()> {
+    use crate::world_session::MAX_WORLD_MODULE_BYTES;
+    ensure!(
+        wasm.len() <= MAX_WORLD_MODULE_BYTES,
+        "compiled module exceeds {MAX_WORLD_MODULE_BYTES} bytes"
+    );
+    if native {
+        ensure!(
+            crate::world_native::is_native_module(wasm),
+            "the compiler did not produce a native executable"
+        );
+        return Ok(());
+    }
+    #[cfg(feature = "sandbox")]
+    crate::sandbox::Sandbox::compile(
+        wasm,
+        crate::sandbox::SandboxLimits {
+            module_bytes: MAX_WORLD_MODULE_BYTES,
+            ..crate::sandbox::SandboxLimits::default()
+        },
+    )
+    .context("the compiled module is not a valid world module")?;
+    Ok(())
+}
+
+/// Compile `spec` by actually running the compiler, and return the
+/// validated Wasm module plus compiler diagnostics. `granted` is the
+/// effective list: the platform modules the source may import, bounded
+/// by the server and world ceilings.
+///
+/// # Errors
+///
+/// Anything outside the bounds, an import the world does not grant, a compiler
+/// failure (with its diagnostics), or output the sandbox refuses.
+async fn compile_uncached(
+    spec: &CompileSpec,
+    compiler: &Compiler,
+    granted: &[String],
+    timeout: Duration,
+) -> Result<(Vec<u8>, String, crate::world::ModuleProvenance)> {
     use crate::world_session::MAX_WORLD_MODULE_BYTES;
 
     validate_spec(spec)?;
     check_imports(spec, &compiler.modules, granted)?;
-    let target = if spec.native {
-        ensure!(
-            compiler
-                .platform_dir
-                .join("targets/x64musl/libhost.a")
-                .is_file(),
-            "this platform has no native targets (run examples/roc-world/build-native.sh)"
-        );
-        "x64musl"
-    } else {
-        "wasm32"
-    };
+    let target = target_of(spec, compiler)?;
     let source_blake3 = digest_sources(&spec.files)?;
     let job = tempfile::tempdir().context("create compile job directory")?;
     copy_platform(&compiler.platform_dir, job.path())?;
@@ -486,12 +736,37 @@ fn digest_file(path: &Path) -> Result<String> {
 }
 
 fn digest_tree(root: &Path) -> Result<String> {
-    fn visit(root: &Path, dir: &Path, hasher: &mut blake3::Hasher) -> Result<()> {
+    digest_tree_filtered(root, &|_| true)
+}
+
+/// The platform tree hash the cache key uses (design §2.1): the
+/// digest of the platform exactly as [`copy_platform`] stages it —
+/// the top-level `.roc` modules plus the `targets/` tree — computed
+/// on the configured platform directory without staging a copy.
+/// Equals `digest_tree` of the staged copy (a test pins this), so a
+/// cached entry's key always names the same tree a fresh compile's
+/// provenance records.
+fn digest_platform_tree(platform_dir: &Path) -> Result<String> {
+    digest_tree_filtered(platform_dir, &|name| {
+        name == "targets" || Path::new(name).extension().is_some_and(|ext| ext == "roc")
+    })
+}
+
+fn digest_tree_filtered(root: &Path, top_filter: &dyn Fn(&str) -> bool) -> Result<String> {
+    fn visit(
+        root: &Path,
+        dir: &Path,
+        hasher: &mut blake3::Hasher,
+        top_filter: &dyn Fn(&str) -> bool,
+    ) -> Result<()> {
         let mut entries = std::fs::read_dir(dir)
             .with_context(|| format!("read {}", dir.display()))?
             .collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
+            if dir == root && !top_filter(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
             ensure!(
                 !entry.file_type()?.is_symlink(),
                 "no symlinks in the platform"
@@ -505,7 +780,7 @@ fn digest_tree(root: &Path) -> Result<String> {
                 hasher.update(b"D");
                 hasher.update(&name_len.to_le_bytes());
                 hasher.update(name_bytes);
-                visit(root, &path, hasher)?;
+                visit(root, &path, hasher, top_filter)?;
                 continue;
             }
             let relative = path.strip_prefix(root)?;
@@ -532,7 +807,7 @@ fn digest_tree(root: &Path) -> Result<String> {
     }
 
     let mut hasher = blake3::Hasher::new();
-    visit(root, root, &mut hasher)?;
+    visit(root, root, &mut hasher, top_filter)?;
     Ok(hasher.finalize().to_hex().to_string())
 }
 
@@ -761,6 +1036,128 @@ mod tests {
             seed: 1,
             native: false,
         }
+    }
+
+    #[test]
+    fn platform_tree_digest_matches_the_staged_copy_digest() {
+        // Oracle: design #5965 §2.1 — the cache key's platform tree
+        // hash must name the same tree a compile's provenance records
+        // (the digest of the staged platform copy), even when the
+        // configured platform directory carries files the staging
+        // step does not copy.
+        let platform = tempfile::tempdir().unwrap();
+        std::fs::write(platform.path().join("platform.roc"), "platform \"x\"\n").unwrap();
+        std::fs::write(platform.path().join("Screen.roc"), "Screen := [].{}\n").unwrap();
+        std::fs::write(platform.path().join("README.md"), "not staged\n").unwrap();
+        std::fs::write(platform.path().join("notes.txt"), "not staged\n").unwrap();
+        let targets = platform.path().join("targets/wasm32");
+        std::fs::create_dir_all(&targets).unwrap();
+        std::fs::write(targets.join("host.wasm"), b"host-bytes").unwrap();
+
+        let job = tempfile::tempdir().unwrap();
+        copy_platform(platform.path(), job.path()).unwrap();
+        assert_eq!(
+            digest_platform_tree(platform.path()).unwrap(),
+            digest_tree(&job.path().join("platform")).unwrap(),
+            "pre-computed platform digest must equal the staged digest"
+        );
+        // And a staged-content change moves the digest.
+        std::fs::write(platform.path().join("Screen.roc"), "Screen := [].{ }\n").unwrap();
+        let job2 = tempfile::tempdir().unwrap();
+        copy_platform(platform.path(), job2.path()).unwrap();
+        assert_ne!(
+            digest_platform_tree(platform.path()).unwrap(),
+            digest_tree(&job.path().join("platform")).unwrap(),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_identical_compile_is_served_from_the_cache() {
+        // Oracle: issue #6235 acceptance — a second compile of
+        // identical inputs (same author) is served from cache with no
+        // compiler invocation, installs byte-identical bytes, and the
+        // seed (not a key component, design §2.1) does not matter.
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!("skipping: no roc-world platform with targets/wasm32/host.wasm");
+            return;
+        };
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = std::sync::Arc::new(
+            crate::world_cache::WorldCache::open(
+                cache_dir.path().join("cache"),
+                crate::world_cache::DEFAULT_LRU_BYTES,
+            )
+            .unwrap(),
+        );
+        let compiler = Compiler::new(platform_dir, roc_bin)
+            .unwrap()
+            .with_cache(cache.clone());
+        let counter = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-counter/main.roc"
+        ))
+        .unwrap();
+        let granted = ["Screen".to_owned(), "RocText".to_owned()];
+        let first_spec = CompileSpec {
+            files: vec![("main.roc".to_owned(), counter.clone())],
+            seed: 42,
+            native: false,
+        };
+        let (first_wasm, _, _) = compile_with_cache(
+            &first_spec,
+            &compiler,
+            &granted,
+            COMPILE_TIMEOUT,
+            ADMIN_CACHE_AUTHOR,
+            crate::world_cache::CacheScope::Author,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cache.stats().misses, 1);
+        assert_eq!(cache.stats().stores, 1);
+
+        // Same inputs, different seed: a hit, byte-identical, and the
+        // diagnostics say the compiler never ran.
+        let mut second_spec = first_spec.clone();
+        second_spec.seed = 7;
+        let (second_wasm, diagnostics, _) = compile_with_cache(
+            &second_spec,
+            &compiler,
+            &granted,
+            COMPILE_TIMEOUT,
+            ADMIN_CACHE_AUTHOR,
+            crate::world_cache::CacheScope::Author,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_wasm, second_wasm);
+        assert!(
+            diagnostics.contains("served from the shared compiled-world cache"),
+            "hit diagnostics must name the cache: {diagnostics}"
+        );
+        assert_eq!(cache.stats().hits, 1);
+
+        // Changed source: a miss again (invalidation by key, §2.1).
+        let changed_spec = CompileSpec {
+            files: vec![("main.roc".to_owned(), format!("{counter}\n"))],
+            seed: 42,
+            native: false,
+        };
+        let _ = compile_with_cache(
+            &changed_spec,
+            &compiler,
+            &granted,
+            COMPILE_TIMEOUT,
+            ADMIN_CACHE_AUTHOR,
+            crate::world_cache::CacheScope::Author,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cache.stats().misses, 2);
     }
 
     /// A reader that generates `total` bytes of a deterministic pattern
