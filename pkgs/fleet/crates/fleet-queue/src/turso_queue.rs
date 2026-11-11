@@ -1528,10 +1528,38 @@ fn on_binding_cleared(
     )
 }
 
+/// What lease expiry does to one claimed task (#6463): a task with
+/// attempts left returns to queued; a task already at its attempt cap
+/// fails terminally instead. Before #6463 the at-cap task also went
+/// back to queued, where the claim query (attempts < max_attempts)
+/// could never select it again -- it sat in queued forever, invisible
+/// to terminal counts, with no failed event (142 such silent zombies
+/// measured in repo-health-code-pilot on 2026-11-06).
+#[derive(Debug, PartialEq)]
+enum ExpiryDisposition {
+    Requeue,
+    FailAtCap,
+}
+
+fn expiry_disposition(attempts: i64, max_attempts: i64) -> ExpiryDisposition {
+    if attempts >= max_attempts {
+        ExpiryDisposition::FailAtCap
+    } else {
+        ExpiryDisposition::Requeue
+    }
+}
+
 /// expire_leases (migration 0023 §1): claimed rows whose lease has
-/// lapsed return to queued, binding cleared, lease rows dropped.
+/// lapsed return to queued, binding cleared, lease rows dropped --
+/// except rows already at their attempt cap, which transition to
+/// failed with a lease_expired_at_cap event (#6463, mirroring
+/// fail_repo_task's terminal branch). Sink-bound rows (#8234) keep
+/// their sink return regardless of cap: the sink pick serves them
+/// under its own rule, so the at-cap failure applies to the ordinary
+/// claim path only.
 /// Returns how many tasks were returned to queued (PG returned the
 /// count; claim ignores it, the /sweep verb reports it, #6803).
+/// At-cap failures are not counted: they were not returned to queued.
 fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     let now = now_iso();
     let mut expired = 0i64;
@@ -1553,7 +1581,29 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
         let to_sink = expired_claim_returns_to_sink(&progress);
         let (progress, cleared) = clear_binding(&progress, "expire_leases");
-        let upd = if to_sink {
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(4);
+        let at_cap = !to_sink
+            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
+        let upd = if at_cap {
+            t.exec(
+                "UPDATE tasks SET status = 'failed', worker_id = NULL, lease_until = NULL, \
+                   last_error = ?, progress = ?, updated_at = ? \
+                 WHERE id = ? AND status = 'claimed' AND lease_until < ?",
+                &[
+                    Arg::Text(format!(
+                        "lease expired at attempt cap ({attempts}/{max_attempts})"
+                    )),
+                    Arg::Text(progress.to_string()),
+                    Arg::Text(now.clone()),
+                    Arg::Int(id),
+                    Arg::Text(now.clone()),
+                ],
+            )?
+        } else if to_sink {
             // #8234: the sink is its own status now — the return
             // lands in 'handed_off' with NO wait fields at all. The
             // pre-#8234 shape stamped a fresh not_before = +1200s
@@ -1584,15 +1634,30 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         if upd.affected == 0 {
             continue;
         }
-        expired += 1;
-        event(
-            t,
-            Some(&worker),
-            Some(id),
-            "lease_expired",
-            &json!({"via": "expire_leases", "cleared_session_id": cleared,
-                    "return": if to_sink { "handed_off" } else { "queued" }}),
-        )?;
+        if at_cap {
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired_at_cap",
+                &json!({
+                    "via": "expire_leases",
+                    "attempts": attempts,
+                    "max_attempts": max_attempts,
+                    "cleared_session_id": cleared,
+                }),
+            )?;
+        } else {
+            expired += 1;
+            event(
+                t,
+                Some(&worker),
+                Some(id),
+                "lease_expired",
+                &json!({"via": "expire_leases", "cleared_session_id": cleared,
+                        "return": if to_sink { "handed_off" } else { "queued" }}),
+            )?;
+        }
         if let Some(old) = cleared {
             on_binding_cleared(t, &worker, id, &old, "expire_leases")?;
         }
@@ -7357,6 +7422,19 @@ mod tests {
         // not a wait at all, it is already claimable.
         let err = wake_eligible("handed_off").unwrap_err();
         assert!(err.contains("already claimable"), "{err}");
+    }
+
+    #[test]
+    #[test]
+    fn expiry_disposition_fails_only_at_cap() {
+        // Below cap: the task returns to queued for another attempt.
+        assert_eq!(expiry_disposition(0, 4), ExpiryDisposition::Requeue);
+        assert_eq!(expiry_disposition(3, 4), ExpiryDisposition::Requeue);
+        // At or past cap (#6463): terminal failure, never a silent
+        // return to a queued state the claim query cannot select.
+        assert_eq!(expiry_disposition(4, 4), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(24, 24), ExpiryDisposition::FailAtCap);
+        assert_eq!(expiry_disposition(9, 4), ExpiryDisposition::FailAtCap);
     }
 
     #[test]
