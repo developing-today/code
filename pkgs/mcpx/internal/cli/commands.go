@@ -1008,6 +1008,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Runtime:        runtimePref,
 		Interpreter:    interpreterPref,
 		CwdPolicy:      cwdPolicy,
+		Devshell:       set.String("script.devshell"),
 		ConfigDir:      configDir,
 		Setup:          rtSetup,
 		Timeout:        *timeout,

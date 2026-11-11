@@ -438,6 +438,18 @@ func scriptSettings() []Setting {
 			FlagAliases: []string{"env"},
 			Name:        "Extra environment", Short: "KEY=VALUE pairs added to the script's environment",
 		},
+		{
+			Path: "script.devshell", Commands: runCommands, Kind: KindString, Default: "host",
+			Scope: ScopeClient,
+			Name:  "Script environment",
+			Short: "environment the script runs inside: host, or flake:<ref> for a Nix flake devshell",
+			Long: "\"host\" runs the script with the caller's environment, as before. " +
+				"\"flake:<ref>\" runs it inside the named flake's devshell via " +
+				"nix develop <ref> -c, so the runtime and tools come from the flake. " +
+				"An absent nix or an unresolvable ref fails the run loudly; there is " +
+				"no silent fallback to host. A devshell is a reproducible " +
+				"environment, not a security sandbox.",
+		},
 	}
 }
 

@@ -117,7 +117,10 @@ type Options struct {
 	// (flag aliases, env, config) and forwards the result, so a remote
 	// run honours the caller's policy instead of silently substituting
 	// the daemon's.
-	CwdPolicy    string            `json:"cwdPolicy,omitempty"`
+	CwdPolicy string `json:"cwdPolicy,omitempty"`
+	// Devshell is the caller's script.devshell for this run; empty
+	// takes the service's configured one.
+	Devshell     string            `json:"devshell,omitempty"`
 	Timeout      string            `json:"timeout,omitempty"`
 	Permissions  string            `json:"permissions,omitempty"`
 	Placeholders map[string]any    `json:"placeholders,omitempty"`
@@ -537,6 +540,8 @@ type Limits struct {
 	Interpreter string
 	// CwdPolicy is the configured script.cwd policy.
 	CwdPolicy string
+	// Devshell is the configured script.devshell.
+	Devshell string
 	// Setup holds declared runtimes, the auto order and user profiles.
 	Setup runner.Setup
 	// SetupErr is why Setup could not be read; every run reports it.
@@ -757,6 +762,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		Runtime:                firstNonEmpty(opts.Runtime, s.Limits.Runtime),
 		Interpreter:            firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
 		CwdPolicy:              firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
+		Devshell:               firstNonEmpty(opts.Devshell, s.Limits.Devshell),
 		ConfigDir:              s.ConfigDir,
 		Setup:                  s.Limits.Setup,
 		Timeout:                timeout,
