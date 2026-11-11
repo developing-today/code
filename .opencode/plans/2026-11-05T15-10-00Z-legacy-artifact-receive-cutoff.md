@@ -56,6 +56,7 @@ Implement the accepted ruling on [#4459](https://github.com/developing-today/cod
 
 ## Change log
 - 2026-11-05: Initial plan created; implementation detail narrowed to signed format marker and typed receive outcome.
+- 2026-11-11: Superseded in part by the task 12788 decision on #4459 (see the design record's Revision 2026-11-11): the signed format marker was dropped after the accepted Codex P2 on PR #6407; the cutoff is now receive-side per-account chain position, implemented in the id-sync crate after the #4406 split (task 15019).
 
 ## Change log
 - 2026-11-05: Initial plan created

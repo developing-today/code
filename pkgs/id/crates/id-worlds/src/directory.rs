@@ -1704,7 +1704,7 @@ impl Directory {
         // Preserve the #5624 distinction between a removal artifact that
         // was fully processed with no effect and one whose journal entry
         // was lost. `parsed` is the already-validated receive result, so
-        // this also works for a version-scoped legacy receipt.
+        // this also works for a chain-position legacy receipt.
         let no_effect_removal = match parsed.as_ref() {
             Some(Kind::FriendRemove(removal)) => Some(DirectoryEntry::FriendRemovalNoted {
                 a: removal.a.clone(),

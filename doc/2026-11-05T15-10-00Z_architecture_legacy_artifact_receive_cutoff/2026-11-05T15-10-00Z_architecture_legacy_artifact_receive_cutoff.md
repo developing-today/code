@@ -19,3 +19,29 @@ Implementation will keep the public pull path non-halting for the accepted legac
 - `pkgs/id/src/artifact.rs`
 - `pkgs/id/src/directory.rs`
 - [Implementation plan](../../.opencode/plans/2026-11-05T15-10-00Z-legacy-artifact-receive-cutoff.md)
+
+## Revision 2026-11-11 (task 12788 decision, implemented by task 15019)
+
+The format-version cutoff above was superseded before merge: an accepted
+Codex P2 on PR #6407 showed that putting `format_version` inside
+`signed_bytes` makes unupgraded peers reject every newly signed artifact
+(the push/pull protocols have no version negotiation). The recorded
+decision on issue #4459 replaces the marker with a receive-side-only
+cutoff derived from per-account chain position:
+
+- The signed format does not change; nothing about what signers emit
+  changes, so unupgraded peers keep verifying new artifacts as today.
+- The legacy world-ID exception applies only to an artifact that extends
+  its author's held chain at a position before the first artifact the
+  receiver itself accepted under strict receipt for that author.
+- The position comes only from the chain's signed links and the
+  receiver's own strict-receipt history — never a sender-asserted field.
+  When a position cannot be established, validation stays strict.
+- Signature and all other structural checks stay strict at every
+  position; the typed legacy note is still recorded during pulls.
+
+Implementation note: the artifact wire layer moved to the `id-sync`
+crate in the #4406 crate split, so the receive path lives in
+`pkgs/id/crates/id-sync/src/artifact.rs` (`ArtifactLog::insert_received`),
+with the pull-path regression tests in the facade tests in
+`pkgs/id/src/artifact.rs`.
