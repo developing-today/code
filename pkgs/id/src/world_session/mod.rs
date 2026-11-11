@@ -755,8 +755,23 @@ impl WorldService {
         if claimed_hash != module_hash {
             return Err(InstallError::InvalidUpload);
         }
-        // The same publisher trust gate as an admin upload.
+        // The same publisher trust gate as an admin upload, and the
+        // same trust decision recorded for it: a builder install the
+        // gate admitted on a verified signature must journal that
+        // decision (basis + publisher) in its install event, exactly
+        // as the admin path's does (#1069).
         verify_module_signature(&self.trusted_module_keys, &wasm, signature)?;
+        let trust_decision = if self.trusted_module_keys.is_empty() {
+            crate::world::TrustDecision {
+                basis: crate::world::TrustBasis::NoTrustList,
+                publisher: None,
+            }
+        } else {
+            crate::world::TrustDecision {
+                basis: crate::world::TrustBasis::SignatureVerified,
+                publisher: signature.map(|sig| sig.public_key.clone()),
+            }
+        };
         if crate::world_native::is_native_module(&wasm) {
             return Err(InstallError::InvalidModule);
         }
@@ -803,12 +818,15 @@ impl WorldService {
             return Err(InstallError::Unavailable);
         }
 
-        // The effect boundary: classify a denial here, where the
-        // actor's answer is unambiguous, so the session can carry the
-        // stable `actor_denied` code. The authorized command re-checks
-        // inside the actor regardless — this call never widens what
-        // the command would allow, and a capability revoked between
-        // the two is still refused by the command (fail-closed).
+        // The effect boundary: the authorized command re-checks the
+        // capability inside the actor, and its own answer classifies
+        // the outcome — a denial the command itself returns (the
+        // capability expired, or a revocation landed, after the early
+        // check below) carries the stable `actor_denied` code, told
+        // apart from an activation failure by the typed denial in the
+        // command's error. The early check only avoids receiving an
+        // upload the command would certainly refuse; it never widens
+        // what the command allows (fail-closed).
         self.world
             .authorize(token.clone(), WorldScopes::BUILDER)
             .await
@@ -820,10 +838,17 @@ impl WorldService {
                 module_hash.clone(),
                 seed,
                 Some(crate::world::ModuleProvenance::Artifact),
+                Some(trust_decision),
                 guest,
             )
             .await
-            .map_err(|_| InstallError::Unavailable)?;
+            .map_err(|error| {
+                if crate::world::is_capability_denied(&error) {
+                    InstallError::ActorDenied
+                } else {
+                    InstallError::Unavailable
+                }
+            })?;
         if !matches!(
             installed.kind,
             crate::world::WorldEventKind::ProgramInstalled { .. }
@@ -3251,10 +3276,14 @@ async fn handle_client_frame<I: SessionIo>(
             return send_error(service.frame_meter(), io, "no module upload in progress").await;
         }
         ClientFrame::Revoke { participant_id } => {
-            // The early scope check classifies the denial with the
-            // stable wire code; `revoke_authorized` re-checks inside
-            // the actor at the effect boundary and derives the audit
-            // actor from the capability, never from this frame.
+            // The early scope check classifies a certain denial with
+            // the stable wire code; `revoke_authorized` re-checks
+            // inside the actor at the effect boundary and derives the
+            // audit actor from the capability, never from this frame.
+            // A denial the command itself returns — the capability
+            // expired, or a revocation landed, after the early check —
+            // is classified from the command's own error and carries
+            // the same code.
             if world
                 .authorize(token.clone(), WorldScopes::MODERATOR)
                 .await
@@ -3277,6 +3306,15 @@ async fn handle_client_frame<I: SessionIo>(
                             participant_id,
                             revoked,
                         },
+                    )
+                    .await;
+                }
+                Err(error) if crate::world::is_capability_denied(&error) => {
+                    return send_error_with_code(
+                        service.frame_meter(),
+                        io,
+                        Some(ACTOR_DENIED),
+                        "revoke denied",
                     )
                     .await;
                 }

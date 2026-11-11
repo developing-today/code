@@ -1081,13 +1081,17 @@ impl WorldHandle {
     /// Install a program on the authority of a joined builder's live
     /// capability (design #835 phase 2). The world actor authorizes the
     /// capability itself at the mutation boundary and derives the audit
-    /// actor (`BuilderInstalled { by }`) from it.
+    /// actor (`BuilderInstalled { by }`) from it. The caller's module
+    /// trust decision is carried through to the durable install event,
+    /// exactly as on the admin path (#1069): a verified publisher must
+    /// stay attributable in the journal.
     pub async fn install_program_authorized(
         &self,
         token: JoinCapability,
         module_hash: String,
         seed: u64,
         provenance: Option<ModuleProvenance>,
+        trust: Option<TrustDecision>,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
@@ -1097,7 +1101,7 @@ impl WorldHandle {
                 module_hash,
                 seed,
                 provenance,
-                trust: None,
+                trust,
                 program,
                 reply,
             })

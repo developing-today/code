@@ -2677,6 +2677,19 @@ mod tests {
             )),
             "install must be journal-attributed to the builder: {entries:?}"
         );
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::Committed { event }
+                    if matches!(
+                        &event.kind,
+                        crate::world::WorldEventKind::ProgramInstalled { trust: Some(decision), .. }
+                            if decision.basis == crate::world::TrustBasis::NoTrustList
+                                && decision.publisher.is_none()
+                    )
+            )),
+            "the install event must record the no-trust-list decision: {entries:?}"
+        );
 
         // The installed program is live for ordinary participants.
         let (_, guest) = world.issue("ada".to_owned(), WorldScopes::GUEST).await.unwrap();
@@ -2688,6 +2701,72 @@ mod tests {
                 .as_deref()
                 .is_some_and(|view| view.contains("count=0")),
             "the builder-installed program must serve views"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn joined_builder_install_with_trusted_signer_journals_signature_decision() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let journal = CapturingJournal::default();
+        let world = WorldHandle::spawn_durable(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(NoProgram),
+            Some(Box::new(journal.clone())),
+        );
+        let signer = SigningKey::from_bytes(&[42; 32]);
+        let publisher = hex_encode(&signer.verifying_key().to_bytes());
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into())
+            .with_module_trust_keys(vec![signer.verifying_key().to_bytes()]);
+        let (builder, builder_token) = world
+            .issue(
+                "builder".to_owned(),
+                WorldScopes::from_role("builder").unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut peer = join_as(&service, &builder_token).await;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        let hash = module_hash(wasm);
+        let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+        message.extend_from_slice(blake3::hash(wasm).as_bytes());
+        let signature = hex_encode(&signer.sign(&message).to_bytes());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "total_bytes": wasm.len(),
+            "module_hash": hash,
+            "seed": 12,
+            "signature": {"public_key": publisher, "signature": signature},
+        }))
+        .await;
+        let ready = next_of_type(&mut peer, "upload_ready").await;
+        upload_chunks(&mut peer, &ready, wasm).await;
+        let ack = next_of_type(&mut peer, "module_installed").await;
+        assert_eq!(ack["module_hash"], hash);
+
+        let entries = journal.entries();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::BuilderInstalled { by, .. } if *by == builder.id
+            )),
+            "install must be journal-attributed to the builder: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::world::JournalEntry::Committed { event }
+                    if matches!(
+                        &event.kind,
+                        crate::world::WorldEventKind::ProgramInstalled { trust: Some(decision), .. }
+                            if decision.basis == crate::world::TrustBasis::SignatureVerified
+                                && decision.publisher.as_deref() == Some(publisher.as_str())
+                    )
+            )),
+            "the install event must record the verified publisher: {entries:?}"
         );
     }
 
