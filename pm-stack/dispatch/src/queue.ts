@@ -156,11 +156,24 @@ export class QueueClient {
     if (!res.ok) {
       throw new QueueError(`task GET ${id} failed (HTTP ${res.status})`, res.status);
     }
-    // A malformed 200 body is a lookup failure, not a row (#7299):
-    // it resolves null ("unknown") — never a raw SyntaxError from
-    // res.json(), never a phantom non-object row.
-    const body: unknown = await res.json().catch(() => null);
-    return firstTaskRow(body);
+    // A malformed 200 body is a lookup failure, not a missing task
+    // (#7299): null is reserved for a successful EMPTY array, as with
+    // the session lookup below — anything else (non-JSON, non-array,
+    // or an array whose first element is not a task row) throws
+    // QueueError, so the read route reports a lookup failure instead
+    // of a 404 for a task that may exist. Never a raw SyntaxError
+    // from res.json(), never a phantom non-object row.
+    const body: unknown = await res.json().catch(() => {
+      throw new QueueError(`task GET ${id} returned a non-JSON body`);
+    });
+    if (!Array.isArray(body)) {
+      throw new QueueError(`task GET ${id} returned an unexpected shape: expected an array of task rows`);
+    }
+    const row = firstTaskRow(body);
+    if (body.length > 0 && !row) {
+      throw new QueueError(`task GET ${id} returned an unexpected shape: first element is not a task row`);
+    }
+    return row;
   }
 
   /** Session -> task lookup (issue #5555): the dispatch-launched task

@@ -67,7 +67,8 @@ describe("getTask / findTaskBySessionId failure mapping (#5555)", () => {
 // Row-body shape validation (#7299): a PostgREST 200 body is
 // shape-untrusted in all three row readers. Null, scalar, object,
 // and non-JSON bodies must land in the module's own vocabulary —
-// QueueError for patchTask, null ("unknown") for the lookups —
+// QueueError for patchTask and getTask, null ("unknown") only for
+// the degrade-by-contract dedupe lookup —
 // never a raw TypeError/SyntaxError and never a phantom row.
 describe("row body shape validation (#7299)", () => {
   const ROW = { id: 7, queue: "q", status: "queued", dedupe_key: "k" };
@@ -86,10 +87,13 @@ describe("row body shape validation (#7299)", () => {
       await expect(client.patchTask(7, { status: "claimed" })).rejects.toBeInstanceOf(QueueError);
     });
 
-    test(`getTask resolves null on a ${name} body`, async () => {
+    // A malformed body is a lookup failure, not a missing task:
+    // null is reserved for a successful empty array (Codex P2 on
+    // PR #8706 — the read route turns null into a definitive 404).
+    test(`getTask throws QueueError on a ${name} body`, async () => {
       stubFetch(async () => make());
       const client = new QueueClient("http://queue.test", "test-key");
-      expect(await client.getTask(7)).toBeNull();
+      await expect(client.getTask(7)).rejects.toBeInstanceOf(QueueError);
     });
 
     test(`findByDedupeKey resolves null on a ${name} body`, async () => {
