@@ -301,6 +301,20 @@ impl DevScratchWorld {
         Ok(())
     }
 
+    /// Whether the scratch world's program is still healthy after
+    /// all processing triggered so far — including the post-input
+    /// `after_change` pass (`plaza_wants` and the requests it
+    /// issues), which runs after the input reply is sent. The query
+    /// is answered in actor order, after that pass completes; see
+    /// [`WorldHandle::program_healthy`].
+    ///
+    /// # Errors
+    ///
+    /// The world actor is closed or drops the response.
+    pub async fn program_healthy(&self) -> Result<bool> {
+        self.handle.program_healthy().await
+    }
+
     /// The records sequence the scratch world has reached.
     #[must_use]
     pub fn records_sequence(&self) -> u64 {
@@ -1289,7 +1303,9 @@ const MAX_FUZZ_KEYS: usize = 64;
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FuzzInvariant {
-    /// Applying any generated input must not error (trap/refuse).
+    /// Applying any generated input must not error (trap/refuse),
+    /// including in the post-input `after_change` processing the
+    /// input triggers (`plaza_wants`).
     NoTrap,
     /// The records must serialize as JSON after every input.
     RecordsValidJson,
@@ -1582,7 +1598,12 @@ impl FuzzReport {
 /// The budget is zero or above [`MAX_FUZZ_CASES`], or launching a
 /// scratch world fails. A guest input that errors is reported as a
 /// `no_trap` failure, not an error: trapping is an outcome the
-/// campaign exists to find.
+/// campaign exists to find. A guest that traps in the post-input
+/// processing an input triggers (`plaza_wants`, run by the actor
+/// after the input reply) is likewise a `no_trap` failure at that
+/// input's step: the campaign checks program health after every
+/// input, and the health query is answered only after the post-input
+/// pass completes.
 pub async fn fuzz_candidate(
     module: &[u8],
     seed: u64,
@@ -1616,6 +1637,28 @@ pub async fn fuzz_candidate(
             }
             inputs_applied += 1;
             let records = world.records();
+            // The input reply is sent before the actor's post-input
+            // `after_change` pass runs `plaza_wants`; a trap there
+            // only latches `program_healthy = false` in the actor and
+            // would otherwise surface, if at all, as the NEXT input's
+            // failure — never when the trapping input is the last one
+            // (#8751). The health query is answered in actor order,
+            // after that pass, so this is where a post-input trap
+            // becomes visible: report it as this step's `no_trap`
+            // failure, with the records the input left behind.
+            if !world.program_healthy().await? {
+                failure = Some(FuzzFailure {
+                    case,
+                    step,
+                    inputs: inputs[..=step].to_vec(),
+                    invariant: "no_trap".to_owned(),
+                    detail: format!(
+                        "guest trapped in post-input processing (plaza_wants) after input {input:?}"
+                    ),
+                    records,
+                });
+                break;
+            }
             for invariant in &decl.invariants {
                 if let Err(detail) = invariant.check(&records) {
                     failure = Some(FuzzFailure {
@@ -1981,6 +2024,53 @@ mod fuzz_tests {
         assert!(report.failure.is_none(), "{report:?}");
         assert_eq!(report.cases_run, 8);
         assert!(report.inputs_applied >= 8);
+    }
+
+    #[tokio::test]
+    async fn fuzz_campaign_fails_when_guest_traps_in_post_input_wants() {
+        // Oracle: issue #8751 — the input reply is sent before the
+        // actor's `after_change` pass calls `plaza_wants`, so a guest
+        // whose wants traps only after an input used to pass `no_trap`
+        // (the trap surfaced, if at all, as the NEXT input's failure —
+        // and never when the trapping input was a case's last one).
+        // This guest accepts every input and traps in `plaza_wants`
+        // from the first input on: the campaign must report a
+        // `no_trap` failure at step 0 of case 0.
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1 1)
+              (global (mut i32) (i32.const 0))
+              (data (i32.const 32) "{}")
+              (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+              (func (export "plaza_free") (param i32 i32))
+              (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+              (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+                (global.set 0 (i32.const 1))
+                local.get 0)
+              (func (export "plaza_view") (param i32) (result i32) (i32.const 32))
+              (func (export "plaza_records") (param i32) (result i32) (i32.const 32))
+              (func (export "plaza_wants") (param i32) (result i32)
+                (if (global.get 0) (then unreachable))
+                (i32.const 32))
+              (func (export "plaza_out_len") (result i32) (i32.const 2)))
+            "#,
+        )
+        .unwrap();
+        let decl = FuzzDecl {
+            version: 1,
+            inputs: vec!["inc".to_owned()],
+            invariants: vec![FuzzInvariant::NoTrap],
+        };
+        let report = fuzz_candidate(&wasm, 7, &decl, 42, 4).await.unwrap();
+        let failure = report
+            .failure
+            .expect("a post-input trap must fail the campaign");
+        assert_eq!(failure.invariant, "no_trap");
+        assert_eq!(failure.case, 0);
+        assert_eq!(failure.step, 0);
+        assert!(failure.detail.contains("post-input"), "{}", failure.detail);
+        assert_eq!(report.cases_run, 1);
     }
 
     #[tokio::test]

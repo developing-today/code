@@ -290,6 +290,31 @@ impl WorldHandle {
             .context("world actor dropped metrics response")
     }
 
+    /// Whether the world's program is still healthy: `false` once a
+    /// guest call has failed inside the actor — a trap in the input
+    /// call itself, or in the post-input `after_change` processing
+    /// (such as `plaza_wants`) that the input triggered.
+    ///
+    /// The actor runs commands strictly in order and awaits
+    /// `after_change` after each one before receiving the next, so
+    /// querying this after an [`input`](Self::input) call returns only
+    /// after that input's post-input processing has completed: the
+    /// query is a barrier for post-input guest work.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed or drops the response.
+    pub async fn program_healthy(&self) -> Result<bool> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ProgramHealth { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped program health response")
+    }
+
     /// Capture journal-order event history and its records for an admin export.
     /// The session layer must authorize the admin token before calling this.
     pub(crate) async fn admin_event_history(&self) -> Result<AdminEventHistory> {
