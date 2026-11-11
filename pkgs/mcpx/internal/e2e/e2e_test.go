@@ -3296,6 +3296,21 @@ func guardedMain(m *testing.M) int {
 			strings.Join(before, " "), strings.Join(after, " "))
 		return 1
 	}
+	// The suite-wide process/temp sweep (#1971 remainder item 2): the
+	// builders' temp dirs (mcpx-bin-*/mcpx-fake-*) are removed, and a
+	// process still executing from one of them — a leaked test daemon
+	// or fake server — fails the run. The sweep is scoped to the dirs
+	// this test binary registered, so a neighbouring suite's binaries
+	// on the same machine are never touched.
+	removed, leftover := testsupport.SweepBuildTempDirs()
+	fmt.Printf("e2e sweep: removed %d build temp dirs\n", len(removed))
+	if len(leftover) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"e2e: %d process(es) still executing from the suite's build temp dirs after the suite ran (#1971): %v. "+
+				"Each test owns the children it spawns; a survivor is a leaked daemon or fake server.\n",
+			len(leftover), leftover)
+		return 1
+	}
 	// The feature coverage ledger is written here, at the end of the
 	// one guarded main flow: a test package gets exactly one TestMain,
 	// and this is it (the ledger write used to live in a second

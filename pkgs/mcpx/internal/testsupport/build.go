@@ -78,6 +78,7 @@ func FakeMCPBinary(t *testing.T) string {
 			buildErr = err
 			return
 		}
+		registerBuildTempDir(dir)
 		binary = filepath.Join(dir, "fakemcp")
 		cmd := exec.Command("go", "build", "-o", binary, "./internal/testsupport/fakemcp")
 		cmd.Dir = repoRoot()
@@ -109,6 +110,7 @@ func MCPXBinary(t *testing.T) string {
 			mcpxErr = err
 			return
 		}
+		registerBuildTempDir(dir)
 		mcpxBin = filepath.Join(dir, "mcpx")
 		cmd := exec.Command("go", "build", "-o", mcpxBin, "./cmd/mcpx")
 		cmd.Dir = repoRoot()
