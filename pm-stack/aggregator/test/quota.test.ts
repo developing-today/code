@@ -401,6 +401,7 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
       "_openai.alt",
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
+      "opencode-go.developing-today-0",
       "cline-pass",
       "_commandcode",
       "_antigravity.gemini",
