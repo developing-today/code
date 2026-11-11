@@ -28,9 +28,9 @@ mkdir -p "$TMP/ok/pkgs/id/src/web"
 gen "$TMP/ok/pkgs/id/src/small.rs" 100
 gen "$TMP/ok/pkgs/id/src/long_with_tests.rs" 100 5000
 # The real grandfathered path, over the limit: warning, not failure.
-gen "$TMP/ok/pkgs/id/src/web/markdown.rs" 3000
+gen "$TMP/ok/pkgs/id/src/cli.rs" 3000
 bash "$SCRIPT" "$TMP/ok" >"$TMP/ok.out"
-grep -q "GRANDFATHERED pkgs/id/src/web/markdown.rs" "$TMP/ok.out"
+grep -q "GRANDFATHERED pkgs/id/src/cli.rs" "$TMP/ok.out"
 grep -q "production-line-guard: OK" "$TMP/ok.out"
 echo "pass: compliant tree passes, grandfather reported"
 
