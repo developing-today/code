@@ -31,8 +31,18 @@ ends. A line ending in ``');`` inside the embedded SQL — a trigger
 body's ``SELECT RAISE(ABORT, 'bad');`` — therefore does not split the
 statement. An unterminated statement at EOF is flushed unchanged —
 the caller's truncation guard judges the filtered stream.
+
+One bound keeps the constant-memory promise honest (#6525): a
+candidate that grows past MAX_CANDIDATE_BYTES without terminating
+is flushed unchanged and the rest of its statement streams through
+line by line (the end is still recognised, so the following
+statement is processed normally). Such a statement is not repaired
+— repair requires holding it — but an unterminated or pathological
+candidate can no longer grow the filter's memory to the size of
+the remaining dump while emitting nothing.
 """
 
+import os
 import re
 import sys
 
@@ -42,6 +52,25 @@ QUOTE = 0x27  # '
 COMMA = 0x2C  # ,
 SPACE = b" \t\r\n"
 # A line that begins a new top-level dump statement (column 0).
+# The largest candidate statement held for repair, in bytes. Real
+# sqlite_schema statements (a table, view, trigger or index
+# definition) are orders of magnitude smaller; the cap exists for
+# the pathological candidate, not for them. Overridable for tests
+# and for an operator repairing a genuinely huge schema.
+def _max_candidate_bytes():
+    raw = os.environ.get("REPAIR_DUMP_MAX_CANDIDATE_BYTES")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return 8 * 1024 * 1024
+
+
+MAX_CANDIDATE_BYTES = _max_candidate_bytes()
+
 TOP_LEVEL_START = re.compile(
     rb"(?:INSERT|PRAGMA|COMMIT|BEGIN|CREATE|DELETE|UPDATE|DROP|ALTER|"
     rb"REPLACE|ANALYZE|VACUUM|--)",
@@ -196,24 +225,52 @@ def _final_literal_start(text):
 def main():
     out = sys.stdout.buffer
     buffered = None
+    buffered_bytes = 0
+    passthrough = False
     lines = iter(sys.stdin.buffer)
     line = next(lines, None)
     while line is not None:
         next_line = next(lines, None)
-        if buffered is not None:
+        if passthrough:
+            # The rest of an over-cap candidate streams through
+            # unchanged; only its end is still recognised (the same
+            # boundary test, applied to the current line), so the
+            # statement after it is processed normally.
+            out.write(line)
+            out.flush()
+            if line.rstrip(b"\r\n").endswith(STATEMENT_END) and ends_statement(
+                line, next_line
+            ):
+                passthrough = False
+        elif buffered is not None:
             buffered.append(line)
-            if line.rstrip(b"\r\n").endswith(STATEMENT_END):
+            buffered_bytes += len(line)
+            if buffered_bytes > MAX_CANDIDATE_BYTES:
+                # Over the cap: flush what was buffered unchanged
+                # and stream the rest of the statement (#6525).
+                for part in buffered:
+                    out.write(part)
+                out.flush()
+                buffered = None
+                buffered_bytes = 0
+                passthrough = True
+            elif line.rstrip(b"\r\n").endswith(STATEMENT_END):
                 chunk = b"".join(buffered)
                 if ends_statement(chunk, next_line):
                     out.write(repair_chunk(chunk))
                     buffered = None
+                    buffered_bytes = 0
         elif line.lstrip().startswith(SCHEMA_INSERT):
             if line.rstrip(b"\r\n").endswith(STATEMENT_END) and ends_statement(
                 line, next_line
             ):
                 out.write(repair_chunk(line))
+            elif len(line) > MAX_CANDIDATE_BYTES:
+                out.write(line)
+                passthrough = True
             else:
                 buffered = [line]
+                buffered_bytes = len(line)
         else:
             out.write(line)
         line = next_line

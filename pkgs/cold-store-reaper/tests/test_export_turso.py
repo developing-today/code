@@ -313,6 +313,67 @@ class TestDumpRepairFilter(unittest.TestCase):
         )
         self.assertEqual(self.run_filter(data), data)
 
+    def run_filter_capped(self, data: bytes, cap: int) -> bytes:
+        env = dict(os.environ, REPAIR_DUMP_MAX_CANDIDATE_BYTES=str(cap))
+        result = subprocess.run(
+            [sys.executable, str(REPAIR)],
+            input=data,
+            capture_output=True,
+            timeout=60,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_over_cap_candidate_streams_through_and_following_statement_is_repaired(self):
+        # #6525: a candidate that grows past the buffer cap without
+        # terminating is flushed unchanged and streamed, not held;
+        # its end is still recognised, so the next statement gets
+        # the normal repair treatment.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 100  # 10 KB, no terminator line
+        data = opener + filler + b"');\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_over_cap_candidate_emits_before_eof(self):
+        # #6525, the streaming half of the oracle: with stdin held
+        # open, output from an over-cap candidate must already be
+        # flowing (the old code emitted nothing until a terminator
+        # or EOF, buffering the whole remainder of the dump).
+        import select
+
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"y" * 100 + b"\n") * 100
+        env = dict(os.environ, REPAIR_DUMP_MAX_CANDIDATE_BYTES="4096")
+        proc = subprocess.Popen(
+            [sys.executable, str(REPAIR)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            env=env,
+        )
+        try:
+            proc.stdin.write(opener + filler)
+            proc.stdin.flush()
+            ready, _, _ = select.select([proc.stdout], [], [], 15)
+            self.assertTrue(ready, "no output before EOF: the candidate is being buffered whole")
+            first = os.read(proc.stdout.fileno(), 4096)
+            self.assertTrue(first.startswith(b"INSERT INTO sqlite_schema("))
+            proc.stdin.write(b"');\nPRAGMA writable_schema=OFF;\n")
+            proc.stdin.close()
+            rest = proc.stdout.read()
+            self.assertEqual(proc.wait(timeout=60), 0)
+            self.assertEqual(first + rest, opener + filler + b"');\nPRAGMA writable_schema=OFF;\n")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
 
 if __name__ == "__main__":
     unittest.main()
