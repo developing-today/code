@@ -76,6 +76,16 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
 /// literal content, so a line like `> \[\!NOTE\]` inside one is authored
 /// text, not a renderer-escaped marker, and rewriting it would silently
 /// change the code (Codex P2 on the first cut).
+/// Mark every quote level up to `depth` as having content. A fence or
+/// HTML block inside a quote IS content of the quote (and of its
+/// ancestors), so a marker line after one is not the quote's first
+/// content (#7563).
+fn mark_quote_content(quote_has_content: &mut [bool; 64], depth: usize) {
+    for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
+        *seen = true;
+    }
+}
+
 pub(crate) fn restore_github_alert_markers(markdown: &str) -> String {
     let mut output = String::with_capacity(markdown.len());
     let mut quote_has_content = [false; 64];
@@ -111,6 +121,7 @@ pub(crate) fn restore_github_alert_markers(markdown: &str) -> String {
             match strip_quote_depth(content_start, opened_at) {
                 Some(body) => {
                     fence.feed(fence_feed_line(body));
+                    mark_quote_content(&mut quote_has_content, opened_at);
                     if !fence.in_fence() {
                         fence_depth = None;
                     }
@@ -128,6 +139,7 @@ pub(crate) fn restore_github_alert_markers(markdown: &str) -> String {
             match strip_quote_depth(content_start, opened_at) {
                 Some(body) => {
                     html.feed(body, at_block_start);
+                    mark_quote_content(&mut quote_has_content, opened_at);
                     if !html.in_html() {
                         html_depth = None;
                     }
@@ -146,12 +158,14 @@ pub(crate) fn restore_github_alert_markers(markdown: &str) -> String {
         // literal from here on.
         if fence.feed(fence_feed_line(rest)) {
             fence_depth = Some(depth);
+            mark_quote_content(&mut quote_has_content, depth);
             output.push_str(line);
             at_block_start = false;
             continue;
         }
         if html.feed(rest, at_block_start) {
             html_depth = Some(depth);
+            mark_quote_content(&mut quote_has_content, depth);
             output.push_str(line);
             at_block_start = false;
             continue;

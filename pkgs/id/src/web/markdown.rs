@@ -2874,6 +2874,37 @@ mod tests {
     }
 
     #[test]
+    fn test_fence_first_blockquote_marker_stays_escaped() {
+        // #7563: a blockquote whose first block is a fenced code block
+        // HAS content, so a standalone escaped marker line in a later
+        // paragraph is authored literal text, not an alert opener: it
+        // must stay escaped, hard break intact. The restore scan's
+        // fence branches never marked quote_has_content, so the quote
+        // still counted as empty and the marker was unescaped.
+        let original = "> ```\n> code\n> ```\n>\n> \\[\\!NOTE\\]\\\n> Body.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains(r"\[\!NOTE\]"),
+            "marker after a fence-first block must stay escaped: {first:?}"
+        );
+        assert_eq!(first, second, "fence-first quote must be a save fixpoint");
+    }
+
+    #[test]
+    fn test_html_first_blockquote_marker_stays_escaped() {
+        // #7563: the HTML-block sibling of the fence-first case,
+        // pinned directly on the restore scan: in the saved spelling
+        // an HTML block as the quote's first block is content, so the
+        // later escaped marker line (hard break intact) is authored
+        // text and passes through byte-identical. (No two_saves form:
+        // the renderer splits an HTML-first quote ahead of the marker
+        // paragraph into a separate blockquote, where the marker
+        // legitimately IS the first content.)
+        let saved = "> <div>\n> html\n> </div>\n>\n> \\[\\!NOTE\\]\\\n> Body.\n";
+        assert_eq!(restore_github_alert_markers(saved), saved);
+    }
+
+    #[test]
     fn test_strong_link_roundtrip_fixpoint() {
         // Both spellings of a bold link canonicalize to the link-outermost
         // form and are byte-stable from the first save on (#944).
