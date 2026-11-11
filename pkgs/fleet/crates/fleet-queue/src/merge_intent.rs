@@ -215,13 +215,45 @@ pub fn validate_append(req: &AppendRequest) -> Result<(), String> {
             return Err(format!("merge-intent record requires a non-empty {field}"));
         }
     }
+    if let Some(base) = &req.base_branch {
+        if base.trim().is_empty() {
+            return Err(
+                "merge-intent record requires a non-empty base_branch when one is given"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A stack lives in one repository: an append naming a different
+/// repo than the rows already recorded under its `stack_id` is
+/// rejected — otherwise [`plan_append`] would base the new branch
+/// on a tip from another repository (CodeRabbit finding, PR #8660).
+pub fn validate_append_against_stack(
+    existing: &[MergeIntent],
+    req: &AppendRequest,
+) -> Result<(), String> {
+    if let Some(other) = existing
+        .iter()
+        .find(|i| i.stack_id == req.stack_id && i.repo != req.repo)
+    {
+        return Err(format!(
+            "merge-intent stack {} already records repo {}; refusing append for repo {}",
+            req.stack_id, other.repo, req.repo
+        ));
+    }
     Ok(())
 }
 
 /// Plan the row an append inserts: position from [`next_position`],
 /// base from the request's explicit base or [`next_base_branch`]
 /// (the current tip, so each new branch stacks on the previous
-/// one), state `intended`.
+/// one), state `intended`. The inferred base is the stack
+/// construction contract — a branch recorded without an explicit
+/// base asserts it was built on the stack tip; a caller whose
+/// branch was built on a different base passes that real base
+/// explicitly (see [`AppendRequest::base_branch`]).
 pub fn plan_append(existing: &[MergeIntent], req: &AppendRequest) -> MergeIntent {
     MergeIntent {
         stack_id: req.stack_id.clone(),
@@ -556,6 +588,30 @@ mod tests {
             let err = validate_append(&req).expect_err("blank field must be rejected");
             assert!(err.contains(blank), "{err}");
         }
+    }
+
+    #[test]
+    fn validate_append_rejects_a_blank_explicit_base() {
+        // Oracle: a recorded base must be a branch replay can rebase
+        // onto; an explicit blank base is not one (CodeRabbit, PR #8660).
+        let mut req = append_req("s1", "queue/a");
+        req.base_branch = Some("  ".to_string());
+        let err = validate_append(&req).expect_err("blank explicit base must be rejected");
+        assert!(err.contains("base_branch"), "{err}");
+    }
+
+    #[test]
+    fn validate_append_against_stack_rejects_a_repo_mismatch() {
+        // Oracle: one stack, one repository — a tip from another
+        // repo can never be this stack's base (CodeRabbit, PR #8660).
+        let existing = vec![intent("s1", 0, "queue/a", IntentState::Intended)];
+        assert!(validate_append_against_stack(&existing, &append_req("s1", "queue/b")).is_ok());
+        assert!(validate_append_against_stack(&existing, &append_req("s2", "queue/b")).is_ok());
+        let mut foreign = append_req("s1", "queue/b");
+        foreign.repo = "developing-today-forks/opencode".to_string();
+        let err = validate_append_against_stack(&existing, &foreign)
+            .expect_err("cross-repo append must be rejected");
+        assert!(err.contains("already records repo"), "{err}");
     }
 
     #[test]

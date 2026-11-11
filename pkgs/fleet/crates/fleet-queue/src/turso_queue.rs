@@ -6520,6 +6520,18 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
     if let Err(e) = crate::merge_intent::validate_append(&append) {
         return fail(2, e);
     }
+    // One stack, one repository (#8582): refuse a cross-repo append
+    // before planning — plan_append would otherwise base the new
+    // branch on a tip from the other repository (CodeRabbit finding,
+    // PR #8660). A read failure here is not a verdict: the work
+    // closure below re-reads under the retry loop and surfaces it.
+    if let Ok(pre_rows) = stack_rows(t, &append.stack_id) {
+        let pre_existing: Vec<crate::merge_intent::MergeIntent> =
+            pre_rows.iter().filter_map(merge_intent_core).collect();
+        if let Err(e) = crate::merge_intent::validate_append_against_stack(&pre_existing, &append) {
+            return fail(2, e);
+        }
+    }
     let work = (|| -> Result<Value, TErr> {
         // Concurrent lanes recording into the same stack can read the
         // same rows and plan the same next position; the loser's INSERT
@@ -6534,6 +6546,9 @@ fn verb_stack_record(t: &TursoBackend, req: &Value) -> Value {
             let existing_rows = stack_rows(t, &append.stack_id)?;
             let existing: Vec<crate::merge_intent::MergeIntent> =
                 existing_rows.iter().filter_map(merge_intent_core).collect();
+            // Safety net for a cross-repo row landing between the
+            // pre-check below and this read: never plan on its tip.
+            crate::merge_intent::validate_append_against_stack(&existing, &append)?;
             let planned = crate::merge_intent::plan_append(&existing, &append);
             let now = now_iso();
             let res = t.exec(
