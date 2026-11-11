@@ -101,6 +101,11 @@ mod tests {
             Ok(())
         }
 
+        fn records(&mut self) -> Result<Option<String>> {
+            let applied = self.applied_events.lock().unwrap().clone();
+            Ok(Some(serde_json::json!({ "applied": applied }).to_string()))
+        }
+
         fn prepare_entity_transfer(
             &self,
             request: &EntityTransferRequest,
@@ -621,6 +626,106 @@ mod tests {
         assert_eq!(
             *applied_after_install.lock().unwrap(),
             vec!["add-entity".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_import_replays_into_replacement_on_live_install() {
+        let (mut actor, _, journal, _, applied_first) = transfer_actor(b"entity".to_vec(), false);
+        let receipt = import(&mut actor).await.unwrap();
+        assert_eq!(receipt.direction, HandoffDirection::Import);
+        assert_eq!(
+            *applied_first.lock().unwrap(),
+            vec!["add-entity".to_owned()]
+        );
+        assert!(actor.pending_transfer_replays.is_empty());
+        assert!(actor.program_healthy);
+
+        // A live reinstall of the same module must hand the replacement
+        // the same transfer history a journal restore would: restore
+        // retains the successful import across the install, so the live
+        // replacement applies it too - exactly once - instead of losing
+        // the entity until a restart resurrects it (#3902).
+        let applied_after_install = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let replacement = TransferProgram {
+            payload: b"entity".to_vec(),
+            fail_apply: false,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: Arc::new(std::sync::Mutex::new(false)),
+            applied_events: applied_after_install.clone(),
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::InstallProgram {
+                module_hash: "module-hash".to_owned(),
+                seed: 0,
+                provenance: None,
+                installed_by: None,
+                trust: None,
+                program: Box::new(replacement),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_ok());
+        assert!(actor.program_healthy);
+        assert!(actor.pending_transfer_replays.is_empty());
+        assert_eq!(
+            *applied_after_install.lock().unwrap(),
+            vec!["add-entity".to_owned()],
+            "the replacement program applied the retained import exactly once"
+        );
+
+        // The restore path agrees: the same journal replays the import
+        // into a restored program as well.
+        let restored = WorldCore::restore(
+            "source",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+            journal.entries(),
+        )
+        .unwrap();
+        assert_eq!(restored.replay, vec![receipt.event.clone()]);
+    }
+
+    #[tokio::test]
+    async fn install_publishes_records_recomputed_after_transfer_replay() {
+        let (mut actor, _, journal, _, _) = transfer_actor(b"entity".to_vec(), true);
+        assert!(import(&mut actor).await.is_err());
+        assert_eq!(actor.pending_transfer_replays.len(), 1);
+
+        // The replacement recovers the pending import during install;
+        // the records published for the install must describe the
+        // replacement AFTER that replay, not the empty pre-replay state
+        // computed before it (#3902).
+        let applied_after_install = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let replacement = TransferProgram {
+            payload: b"entity".to_vec(),
+            fail_apply: false,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: Arc::new(std::sync::Mutex::new(false)),
+            applied_events: applied_after_install.clone(),
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::InstallProgram {
+                module_hash: "module-hash".to_owned(),
+                seed: 0,
+                provenance: None,
+                installed_by: None,
+                trust: None,
+                program: Box::new(replacement),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_ok());
+        assert!(actor.program_healthy);
+        let published = actor.records_sender.borrow().1.clone();
+        assert_eq!(
+            published["applied"],
+            serde_json::json!(["add-entity"]),
+            "published records reflect the import the replacement just applied"
         );
     }
 

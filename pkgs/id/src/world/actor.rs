@@ -2382,22 +2382,26 @@ impl WorldActor {
                         self.core.active_module_provenance = provenance;
                         self.core.active_seed = seed;
                         self.program = replacement;
-                        // A program replacement does not discharge the
-                        // replay requirement of transfers the previous
-                        // program never applied (#3902): replay them into
-                        // the replacement now, and declare health only
-                        // once every pending transfer has been applied.
-                        // Receipts for any that still fail stay withheld
-                        // (see `transfer_replay_pending`).
+                        // The replacement starts from the same transfer
+                        // history a journal restore would apply to it
+                        // (#3902): restore retains every handoff transfer
+                        // event across an install, so the live install
+                        // replays the full retained history here too -
+                        // not only the transfers the previous program
+                        // never applied. Anything less would let a
+                        // restart change application state. Transfers
+                        // whose replay fails stay pending, their receipts
+                        // stay withheld (see transfer_replay_pending),
+                        // and health is declared only once none remain.
                         let mut still_pending = Vec::new();
-                        for pending in std::mem::take(&mut self.pending_transfer_replays) {
-                            match self.program.update(&pending.event) {
+                        for transfer in self.core.handoff_transfers.clone() {
+                            match self.program.update(&transfer.event) {
                                 Ok(()) => {}
                                 Err(error) => {
                                     tracing::error!(
-                                        "world program rejected a pending transfer replay after install: {error:#}"
+                                        "world program rejected a transfer replay after install: {error:#}"
                                     );
-                                    still_pending.push(pending);
+                                    still_pending.push(transfer);
                                 }
                             }
                         }
@@ -2409,9 +2413,28 @@ impl WorldActor {
                         self.denied_subs.clear();
                         self.active_subs.clear();
                         self.ticks.clear();
-                        self.republished(new_records, event.sequence);
-                        let _ = self.event_sender.send(event.clone());
-                        Ok(event)
+                        // The records computed before the replay describe
+                        // the replacement without the transfers it just
+                        // applied; recompute them from the replayed state
+                        // before publishing, so an imported entity is
+                        // visible in records() as soon as the install is
+                        // acknowledged.
+                        match program_records(self.program.as_mut()) {
+                            Ok(records) => {
+                                self.republished(records.unwrap_or_default(), event.sequence);
+                                let _ = self.event_sender.send(event.clone());
+                                Ok(event)
+                            }
+                            Err(error) => {
+                                self.program_healthy = false;
+                                tracing::error!(
+                                    "world program records failed after transfer replay on install: {error:#}"
+                                );
+                                Err(error.context(
+                                    "world program records failed after transfer replay on install",
+                                ))
+                            }
+                        }
                     }
                     Err(error) => Err(error),
                 };
