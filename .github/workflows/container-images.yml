@@ -80,6 +80,15 @@ jobs:
     if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
+    # Serialize publishers: the workflow-level group is per-run for
+    # push events, so without this an older overlapping run could
+    # finish after a newer one and overwrite the rolling v1 tags
+    # (Codex P2 on PR #8369). SHA tags are immutable per commit; only
+    # v1 needs the ordering. cancel-in-progress stays false so a
+    # queued publish is never dropped mid-push.
+    concurrency:
+      group: publish-generic-images
+      cancel-in-progress: false
     timeout-minutes: 45
     permissions:
       contents: read
