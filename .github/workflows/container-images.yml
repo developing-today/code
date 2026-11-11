@@ -10,6 +10,7 @@ on:
       - "pkgs/lab-ops-hub/container-image.nix"
       - "pkgs/lab-ops-hub/container/**"
       - "pkgs/lab-ops-hub/wrangler.jsonc"
+      - "pkgs/generic-containers/**"
       - "lib/default.nix"
       - "flake.nix"
       - "flake.lock"
@@ -22,6 +23,7 @@ on:
       - "pkgs/lab-ops-hub/container-image.nix"
       - "pkgs/lab-ops-hub/container/**"
       - "pkgs/lab-ops-hub/wrangler.jsonc"
+      - "pkgs/generic-containers/**"
       - "lib/default.nix"
       - "flake.nix"
       - "flake.lock"
@@ -59,6 +61,71 @@ jobs:
           .#packages.x86_64-linux.identity-provider-image
           --print-build-logs
 
+      - name: Build generic ID/fleet images (#6076)
+        run: >-
+          nix build
+          .#packages.x86_64-linux.generic-runtime
+          .#packages.x86_64-linux.generic-js-runtime
+          .#packages.x86_64-linux.generic-python-runtime
+          --print-build-logs
+
       - name: Build Lab Ops Hub image
         working-directory: pkgs/lab-ops-hub
         run: nix build -f container-image.nix --print-build-logs
+
+  publish-generic:
+    name: "publish: generic ID/fleet images to GHCR (#6076)"
+    # Publishing is push-to-main only, per doc/fleet/generic-containers.md
+    # section 3: PR builds verify, they never publish.
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Build generic images
+        run: >-
+          nix build
+          .#packages.x86_64-linux.generic-runtime
+          --out-link generic-runtime.tar.gz
+          --print-build-logs
+
+      - name: Build generic JS runtime image
+        run: >-
+          nix build
+          .#packages.x86_64-linux.generic-js-runtime
+          --out-link generic-js-runtime.tar.gz
+          --print-build-logs
+
+      - name: Build generic Python runtime image
+        run: >-
+          nix build
+          .#packages.x86_64-linux.generic-python-runtime
+          --out-link generic-python-runtime.tar.gz
+          --print-build-logs
+
+      - name: Push generic images to GHCR (v1 + commit SHA tags)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for img in generic-runtime generic-js-runtime generic-python-runtime; do
+            docker load < "$img.tar.gz"
+            docker tag "$img:v1" "ghcr.io/developing-today/$img:v1"
+            docker tag "$img:v1" "ghcr.io/developing-today/$img:${{ github.sha }}"
+            docker push "ghcr.io/developing-today/$img:v1"
+            docker push "ghcr.io/developing-today/$img:${{ github.sha }}"
+          done

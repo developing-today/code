@@ -671,6 +671,9 @@ let
         inherit identity;
       };
       identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
+      genericRuntime = pkgs.callPackage ../pkgs/generic-containers/runtime-base.nix { };
+      genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
+      genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -693,6 +696,9 @@ let
         mcpx-container = mcpxContainer;
         identity-image = identityImage;
         identity-provider-image = identityProviderImage;
+        generic-runtime = genericRuntime;
+        generic-js-runtime = genericJsRuntime;
+        generic-python-runtime = genericPythonRuntime;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
